@@ -149,6 +149,8 @@ def test_fetch_wraps_transport_errors(fetch_enabled: None) -> None:
         "http://169.254.169.254/latest/meta-data/",
         "http://100.64.0.1/",
         "http://192.0.2.10/",
+        "http://224.0.0.1/",
+        "http://[ff02::1]/",
     ],
 )
 def test_require_public_http_url_rejects_unsafe_targets(url: str) -> None:

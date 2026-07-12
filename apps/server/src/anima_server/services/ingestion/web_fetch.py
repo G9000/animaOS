@@ -142,8 +142,10 @@ def _is_public_address(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
 ) -> bool:
     # is_global covers ranges a flag blacklist misses (e.g. the shared
-    # address space 100.64.0.0/10, which is neither private nor reserved).
-    return address.is_global
+    # address space 100.64.0.0/10, which is neither private nor reserved),
+    # but ipaddress reports some multicast ranges as global — only public
+    # unicast destinations are acceptable fetch targets.
+    return address.is_global and not address.is_multicast
 
 
 __all__ = [

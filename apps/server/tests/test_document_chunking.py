@@ -216,3 +216,19 @@ def test_chunk_pages_structured_keeps_single_titled_path_after_preamble_merge() 
     merged = chunks[0]
     assert merged.section_title is None
     assert merged.metadata_json == {"section_paths": ["Alpha"]}
+
+
+def test_chunk_pages_structured_preserves_overlong_single_path_in_metadata() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    long_heading = "SPECIFICATION " + "DETAIL " * 40  # single ALL-CAPS heading > 255
+    long_heading = long_heading.strip()[:300]
+    chunks = chunk_pages_structured(
+        [PageText(page_number=1, text=f"# {long_heading}\n\nBody under a deep heading.")],
+        target_chars=400,
+    )
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert len(chunk.section_title) > 255  # pre-insert value keeps the full path
+    assert chunk.metadata_json == {"section_paths": [chunk.section_title]}

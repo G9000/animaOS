@@ -144,6 +144,7 @@ def chunk_pages_structured(
     the heading path. Overlap applies within oversized sections only —
     section boundaries are semantic boundaries.
     """
+    from anima_server.services.documents.store import _SECTION_TITLE_MAX_LENGTH
     from anima_server.services.ingestion.structured import (
         chunk_structured_document,
         structure_pages_markdown,
@@ -171,9 +172,14 @@ def chunk_pages_structured(
         ]
         metadata: dict[str, object] | None = None
         # Also needed when the chunk's own path is empty (untitled preamble
-        # merged with a titled section) so the titled section stays
-        # addressable by name.
-        if section_paths and (len(section_paths) > 1 or not chunk.section_path):
+        # merged with a titled section) or longer than the section_title
+        # column (which truncates at insert) so the full path stays
+        # addressable by name and searchable.
+        if section_paths and (
+            len(section_paths) > 1
+            or not chunk.section_path
+            or len(chunk.section_path) > _SECTION_TITLE_MAX_LENGTH
+        ):
             metadata = {"section_paths": section_paths}
         chunks.append(
             ExtractedDocumentChunk(

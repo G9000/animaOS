@@ -536,3 +536,25 @@ def test_read_parent_section_includes_descendant_chunks(runtime_db, tool_ctx) ->
     child = read_document_section(str(document.id), section_path="Parent > Child A")
     assert "Child A body" in child
     assert "Child B body" not in child
+
+
+def test_overlong_section_path_stays_addressable_after_title_truncation(
+    runtime_db, tool_ctx
+) -> None:
+    long_path = "Deep Heading " + "x" * 300
+    document = _make_document(
+        runtime_db,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text="Body under a very deep heading.",
+                section_title=long_path,
+                metadata_json={"section_paths": [long_path]},
+            )
+        ],
+    )
+
+    # The stored column value is truncated, but the metadata copy is intact
+    # and the tools resolve the full path.
+    output = read_document_section(str(document.id), section_path=long_path)
+    assert "Body under a very deep heading" in output
