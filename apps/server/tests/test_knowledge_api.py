@@ -687,3 +687,44 @@ def test_reingest_with_compile_retries_failed_compile_run() -> None:
             },
         )
         assert again.json()["compileRun"]["id"] == payload["compileRun"]["id"]
+
+
+def test_reextract_recompiles_when_source_had_concepts() -> None:
+    with managed_test_client("anima-knowledge-reextract-compile-") as client:
+        user_id, headers = _register(client, username="knowledge-reextract-compile")
+
+        created = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+        assert created.json()["compileRun"]["status"] == "completed"
+
+        reextracted = client.post(
+            f"/api/knowledge/sources/{source_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+
+        assert reextracted.status_code == 200
+        payload = reextracted.json()
+        # A compiled source recompiles after re-extraction so concepts and
+        # citations track the fresh spans.
+        assert payload["compileRun"]["runType"] == "compile:refresh"
+        assert payload["compileRun"]["status"] == "completed"
+
+        with get_runtime_session_factory()() as runtime_db:
+            citations = list(
+                runtime_db.scalars(
+                    select(RuntimeKnowledgeConceptSource).where(
+                        RuntimeKnowledgeConceptSource.source_id == source_id
+                    )
+                ).all()
+            )
+        assert citations

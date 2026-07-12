@@ -103,9 +103,12 @@ def test_retrieve_knowledge_fills_missing_span_hits_from_text(runtime_db) -> Non
         embedding_fn=_embedding_for,
     )
 
-    assert [item.concept_id for item in result.concepts] == [concept.id]
+    # The hybrid lexical arm now also surfaces the (unembedded) compiled
+    # concepts of the ingested source; the embedded concept still ranks first.
+    assert result.concepts[0].concept_id == concept.id
+    # The unembedded span now surfaces through the hybrid lexical arm
+    # directly (dense score 0.0) rather than the text-search fallback.
     assert [item.span_id for item in result.evidence_spans] == [spans[0].id]
-    assert result.evidence_spans[0].score == 1.0
 
 
 def test_retrieve_knowledge_fills_missing_concept_hits_from_text(runtime_db) -> None:
@@ -136,8 +139,9 @@ def test_retrieve_knowledge_fills_missing_concept_hits_from_text(runtime_db) -> 
         embedding_fn=_embedding_for,
     )
 
-    concept_hit = next(item for item in result.concepts if item.concept_id == concept.id)
-    assert concept_hit.score == 1.0
+    # The unembedded concept now surfaces through the hybrid lexical arm
+    # directly (dense score 0.0) rather than the text-search fallback.
+    assert any(item.concept_id == concept.id for item in result.concepts)
     assert [item.span_id for item in result.evidence_spans] == [spans[0].id]
 
 
@@ -210,3 +214,93 @@ def test_retrieve_knowledge_lexical_arm_promotes_exact_token_span(runtime_db) ->
     generic_span = next(span for span in spans if "portable" in span.content_text)
     assert token_span.id in span_ids
     assert generic_span.id in span_ids
+
+
+def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
+    import hashlib
+
+    from anima_server.models.runtime import (
+        RuntimeSource,
+        RuntimeSourceArtifact,
+        RuntimeSourceSpan,
+    )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent.embedding_integrity import (
+        compute_embedding_checksum,
+    )
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge
+
+    def _sha(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    source = RuntimeSource(
+        user_id=7,
+        kind="markdown",
+        source_uri="markdown://mixed.md",
+        content_hash=_sha("mixed"),
+        title="Mixed Coverage",
+        media_type="text/markdown",
+        status="indexed",
+    )
+    runtime_db.add(source)
+    runtime_db.flush()
+    artifact = RuntimeSourceArtifact(
+        user_id=7,
+        source_id=source.id,
+        artifact_kind="markdown",
+        content_text="Embedded body.\n\nE-17 fault body.",
+        content_hash=_sha("artifact"),
+    )
+    runtime_db.add(artifact)
+    runtime_db.flush()
+    embedded_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="paragraph",
+        locator_json={"paragraph_index": 0},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 0}),
+        content_text="Embedded body about gardens.",
+        content_hash=_sha("embedded"),
+    )
+    unembedded_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="paragraph",
+        locator_json={"paragraph_index": 1},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 1}),
+        content_text="The E-17 fault body ingested during an embedding outage.",
+        content_hash=_sha("unembedded"),
+    )
+    runtime_db.add_all([embedded_span, unembedded_span])
+    runtime_db.flush()
+    vector = [1.0] + [0.0] * 767
+    runtime_db.add(
+        RuntimeEmbedding(
+            user_id=7,
+            source_type="source_span",
+            source_id=embedded_span.id,
+            content_hash=embedded_span.content_hash,
+            embedding_checksum=compute_embedding_checksum(vector),
+            embedding=vector,
+            content_preview=embedded_span.content_text[:200],
+            category="knowledge",
+            importance=3,
+        )
+    )
+    runtime_db.flush()
+
+    result = retrieve_knowledge(
+        runtime_db,
+        user_id=7,
+        query="E-17",
+        embedding_fn=lambda text: [1.0] + [0.0] * 767,
+        limit_concepts=0,
+        limit_spans=5,
+    )
+
+    # Dense succeeded (the embedded span ranks), but the exact-token match
+    # in the unembedded span must still surface through the lexical arm.
+    hit_ids = {hit.span_id for hit in result.evidence_spans}
+    assert unembedded_span.id in hit_ids

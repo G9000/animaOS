@@ -301,6 +301,20 @@ async def reextract_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     require_unlocked_user(request, userId)
+    # Checked before re-extraction: replacing spans cascades citation rows,
+    # so an already-compiled source must be recompiled afterwards or its
+    # concepts would go stale/orphaned until a manual compile.
+    had_compiled_concepts = (
+        runtime_db.scalar(
+            select(RuntimeKnowledgeConceptSource.id)
+            .where(
+                RuntimeKnowledgeConceptSource.user_id == userId,
+                RuntimeKnowledgeConceptSource.source_id == source_id,
+            )
+            .limit(1)
+        )
+        is not None
+    )
     try:
         source, artifacts, spans = reextract_source_html(
             runtime_db,
@@ -314,8 +328,18 @@ async def reextract_source(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    compile_run = None
+    if had_compiled_concepts:
+        result = await compile_source_knowledge_auto(
+            runtime_db,
+            source=source,
+            spans=spans,
+            embedding_fn=generate_embedding,
+            mode="refresh",
+        )
+        compile_run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
     runtime_db.commit()
-    return _source_response(source, artifacts, spans)
+    return _source_response(source, artifacts, spans, compile_run=compile_run)
 
 
 @router.get("/sources/{source_id}")

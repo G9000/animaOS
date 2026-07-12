@@ -275,6 +275,17 @@ def _concept_hits(
     query_embedding: list[float],
     limit: int,
 ) -> list[KnowledgeConceptHit]:
+    # The lexical corpus covers every active concept — a concept ingested
+    # while embeddings were unavailable must stay keyword-searchable — while
+    # the dense arm naturally only ranks embedded rows.
+    all_concepts = list(
+        db.scalars(
+            select(RuntimeKnowledgeConcept).where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                RuntimeKnowledgeConcept.status == "active",
+            )
+        ).all()
+    )
     rows = list(
         db.execute(
             select(RuntimeKnowledgeConcept, RuntimeEmbedding)
@@ -291,7 +302,7 @@ def _concept_hits(
             )
         ).all()
     )
-    concepts_by_id = {concept.id: concept for concept, _embedding in rows}
+    concepts_by_id = {concept.id: concept for concept in all_concepts}
     dense_ranked = sorted(
         (
             (
@@ -308,7 +319,7 @@ def _concept_hits(
     lexical_ranked = _lexical_ranking(
         [
             (concept.id, _concept_embedding_text(concept))
-            for concept, _embedding in rows
+            for concept in all_concepts
         ],
         query=query,
         limit=limit * 4,
@@ -344,6 +355,21 @@ def _span_hits(
     query_embedding: list[float],
     limit: int,
 ) -> list[KnowledgeEvidenceSpanHit]:
+    # The lexical corpus covers every evidence span — a source ingested
+    # while embeddings were unavailable must stay keyword-searchable. Section
+    # spans are parent read units, not evidence, and stay excluded (they are
+    # deliberately never embedded either).
+    all_rows = list(
+        db.execute(
+            select(RuntimeSourceSpan, RuntimeSource)
+            .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
+            .where(
+                RuntimeSourceSpan.user_id == user_id,
+                RuntimeSource.user_id == user_id,
+                RuntimeSourceSpan.span_kind != "section",
+            )
+        ).all()
+    )
     rows = list(
         db.execute(
             select(RuntimeSourceSpan, RuntimeSource, RuntimeEmbedding)
@@ -361,7 +387,7 @@ def _span_hits(
             )
         ).all()
     )
-    spans_by_id = {span.id: (span, source) for span, source, _embedding in rows}
+    spans_by_id = {span.id: (span, source) for span, source in all_rows}
     dense_ranked = sorted(
         (
             (
@@ -376,7 +402,7 @@ def _span_hits(
     dense_ranked = [(item_id, score) for item_id, score in dense_ranked if score > 0]
     dense_scores = dict(dense_ranked)
     lexical_ranked = _lexical_ranking(
-        [(span.id, span.content_text) for span, _source, _embedding in rows],
+        [(span.id, span.content_text) for span, _source in all_rows],
         query=query,
         limit=limit * 4,
     )
