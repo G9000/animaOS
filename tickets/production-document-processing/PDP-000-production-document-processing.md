@@ -103,6 +103,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-12 - Codex round-15 findings fixed with regression tests: (P2) a bogus upstream charset declaration decodes as UTF-8 instead of raising LookupError (500); (P2) the text-search fallback excludes section spans so parent read units cannot displace paragraph evidence when embeddings are unavailable.
 - 2026-07-13 - Codex round-16 finding fixed with a regression test: (P2) the /api/knowledge/search route also excludes section spans from evidenceSpans, matching the retrieval paths.
 - 2026-07-13 - Codex round-17 finding fixed with regression tests: (P2) heading-only sections (e.g. an ALL-CAPS warning line the page-heading detector classified) keep their heading text as chunk content instead of vanishing from the index; a heading-only document now yields a chunk instead of zero.
+- 2026-07-13 - Codex round-18 finding fixed with a regression test: (P2) sections are now sized on the text actually emitted (heading text included), so heading-heavy documents split at the chunk-size cap instead of collapsing into one oversized chunk; the oversized-split path is guarded to only run for sections with splittable body content (keeping the round-17 fix intact for long headings).
 
 ## Validation
 

@@ -274,3 +274,24 @@ def test_heading_only_document_still_produces_a_chunk() -> None:
 
     assert len(chunks) == 1
     assert "WARNING HIGH VOLTAGE" in chunks[0].content_text
+
+
+def test_heading_only_sections_count_toward_chunk_size() -> None:
+    from anima_server.services.ingestion.structured import (
+        chunk_structured_document,
+        parse_markdown_structure,
+    )
+
+    # 20 heading-only sections of ~40 chars each; with a 100-char target
+    # they must split into multiple chunks, not collapse into one.
+    markdown = "\n\n".join(
+        f"# WARNING SECTION NUMBER {index:02d} HIGH VOLTAGE" for index in range(20)
+    )
+    document = parse_markdown_structure(markdown)
+    chunks = chunk_structured_document(document, target_chars=100, min_chars=0)
+
+    assert len(chunks) > 1
+    assert all(len(chunk.content_text) <= 200 for chunk in chunks)
+    combined = "\n".join(chunk.content_text for chunk in chunks)
+    for index in range(20):
+        assert f"NUMBER {index:02d}" in combined

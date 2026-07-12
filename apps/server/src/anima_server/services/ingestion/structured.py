@@ -396,8 +396,14 @@ def chunk_structured_document(
         pending_length = 0
 
     for section in document.sections():
-        section_length = len(section.content_text)
-        if section_length > target:
+        # Size on the text that will actually be emitted so heading-only
+        # sections (whose body is empty but whose heading is kept) still
+        # count toward the target and trigger flushes.
+        section_length = len(_section_chunk_text(section))
+        # A heading-only section has no splittable body — the oversized path
+        # (which skips heading blocks) would drop it. Only split sections
+        # that actually have body content.
+        if section_length > target and section.content_text:
             flush_pending()
             for part_chunk in _split_oversized_section(
                 section,
