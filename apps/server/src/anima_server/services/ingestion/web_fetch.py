@@ -101,7 +101,11 @@ def _read_html_body(response: httpx.Response, *, max_bytes: int) -> str:
         if len(received) > max_bytes:
             raise WebFetchError(f"Page exceeds the {max_bytes}-byte fetch limit.")
     encoding = response.charset_encoding or "utf-8"
-    return bytes(received).decode(encoding, errors="replace")
+    try:
+        return bytes(received).decode(encoding, errors="replace")
+    except LookupError:
+        # A bogus upstream charset declaration must not become a 500.
+        return bytes(received).decode("utf-8", errors="replace")
 
 
 def require_public_http_url(url: str) -> None:

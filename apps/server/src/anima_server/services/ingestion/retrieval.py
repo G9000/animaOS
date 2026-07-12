@@ -505,7 +505,13 @@ def _text_span_hits(
         db.execute(
             select(RuntimeSourceSpan, RuntimeSource)
             .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
-            .where(RuntimeSourceSpan.user_id == user_id, RuntimeSource.user_id == user_id)
+            .where(
+                RuntimeSourceSpan.user_id == user_id,
+                RuntimeSource.user_id == user_id,
+                # Section spans are parent read units, not evidence — the
+                # hybrid path excludes them and the fallback must match.
+                RuntimeSourceSpan.span_kind != "section",
+            )
             .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
         ).all()
     )

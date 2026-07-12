@@ -182,3 +182,34 @@ def test_require_public_http_url_accepts_public_hosts(monkeypatch: Any) -> None:
         lambda host, port: [ipaddress.ip_address("93.184.216.34")],
     )
     require_public_http_url("https://example.com/article")
+
+
+def test_fetch_falls_back_to_utf8_for_bogus_charset(fetch_enabled: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=x-bogus"},
+            content=HTML_BODY.encode("utf-8"),
+        )
+
+    _final_url, html = fetch_capture_html(
+        "https://example.com/bogus-charset", transport=_transport(handler)
+    )
+    assert html == HTML_BODY
+
+
+def test_fetch_falls_back_to_utf8_on_bogus_charset(fetch_enabled: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=x-bogus"},
+            content=HTML_BODY.encode("utf-8"),
+        )
+
+    _final_url, html = fetch_capture_html(
+        "https://example.com/bogus-charset", transport=_transport(handler)
+    )
+
+    # An unknown upstream charset declaration decodes as UTF-8 instead of
+    # raising a LookupError (which would surface as a 500).
+    assert html == HTML_BODY

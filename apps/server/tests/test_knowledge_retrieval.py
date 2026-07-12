@@ -304,3 +304,31 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
     # in the unembedded span must still surface through the lexical arm.
     hit_ids = {hit.span_id for hit in result.evidence_spans}
     assert unembedded_span.id in hit_ids
+
+
+def test_text_fallback_excludes_section_spans(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge_text
+
+    _source, _artifacts, spans = ingest_markdown_content(
+        runtime_db,
+        user_id=1,
+        content="# Relay Guide\n\nUnique zephyrblade paragraph body.",
+        filename="sections.md",
+        compile_knowledge=False,
+    )
+    assert any(span.span_kind == "section" for span in spans)
+
+    result = retrieve_knowledge_text(
+        runtime_db,
+        user_id=1,
+        query="zephyrblade",
+        limit_concepts=0,
+        limit_spans=5,
+    )
+
+    # The paragraph evidence span matches; the parent section span (which
+    # duplicates the same text) must not displace it.
+    kinds = {hit.span_kind for hit in result.evidence_spans}
+    assert "paragraph" in kinds
+    assert "section" not in kinds
