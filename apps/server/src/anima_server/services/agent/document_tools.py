@@ -209,7 +209,11 @@ def read_document_section(
         text = chunk.content_text[chunk_offset:]
         if not text:
             continue
-        if parts and used + len(text) > call_cap:
+        # Charge the blank-line separator too — the emitted body joins parts
+        # with "\n\n", and undercounting here would let the budget cap chop
+        # the tail after the loop already decided everything fits (no hint).
+        joined_length = used + len(text) if not parts else used + 2 + len(text)
+        if parts and joined_length > call_cap:
             next_chunk_index = chunk.chunk_index
             budget_limited = call_cap < settings.document_tool_read_char_limit
             break
@@ -223,7 +227,7 @@ def read_document_section(
             budget_limited = call_cap < settings.document_tool_read_char_limit
             break
         parts.append(text)
-        used += len(text)
+        used = joined_length
 
     _record_citation(ctx, document.id, document.filename)
     lines = [header, "", "\n\n".join(parts)]

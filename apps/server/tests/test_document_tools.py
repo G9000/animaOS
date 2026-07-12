@@ -469,3 +469,30 @@ def test_untitled_preamble_merged_with_titled_section_stays_addressable(
 
     by_path = read_document_section(str(document.id), section_path="Guide > Alpha")
     assert "Alpha section body" in by_path
+
+
+def test_read_accounts_for_separators_so_hint_is_never_lost(
+    runtime_db, tool_ctx, monkeypatch: Any
+) -> None:
+    # Budget close to the read cap with many small chunks: separator
+    # overhead must be charged up front, or the body would overrun the cap
+    # and the budget truncation would eat the continuation hint.
+    monkeypatch.setattr(settings, "document_tool_turn_char_budget", 2280)
+    document = _make_document(
+        runtime_db,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=index,
+                content_text=f"w{index:09d}",
+                page_start=1,
+                page_end=1,
+            )
+            for index in range(200)
+        ],
+    )
+
+    output = read_document_section(str(document.id))
+
+    assert len(output) <= 2280
+    assert "Continue with start_chunk=" in output
+    assert output.rstrip().endswith("]")
