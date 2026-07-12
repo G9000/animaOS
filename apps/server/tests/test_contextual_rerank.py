@@ -514,3 +514,28 @@ def test_search_returns_lexical_hits_when_query_embedding_unavailable(
 
     assert results
     assert "E-17" in results[0].content
+
+
+def test_lexical_hits_hydrate_without_embedding_rows_during_outage(
+    runtime_db,
+) -> None:
+    from anima_server.services.documents.rag import search_document_chunks
+
+    # Indexed document whose embedding rows were lost to a vector reset,
+    # while the embedding provider is also down: BM25 must still surface
+    # and hydrate the exact-token chunk.
+    document, _chunks = _document_with_chunks(
+        runtime_db, ["alpha filler body", "the E-17 fault code body"]
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        USER_ID,
+        "E-17",
+        document_ids=[document.id],
+        limit=5,
+        embedding_fn=lambda text: None,
+    )
+
+    assert results
+    assert "E-17" in results[0].content

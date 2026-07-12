@@ -147,6 +147,8 @@ def test_fetch_wraps_transport_errors(fetch_enabled: None) -> None:
         "http://10.1.2.3/admin",
         "http://192.168.0.10/",
         "http://169.254.169.254/latest/meta-data/",
+        "http://100.64.0.1/",
+        "http://192.0.2.10/",
     ],
 )
 def test_require_public_http_url_rejects_unsafe_targets(url: str) -> None:

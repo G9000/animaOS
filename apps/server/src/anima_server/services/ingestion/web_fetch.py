@@ -141,14 +141,9 @@ def _resolve_addresses(
 def _is_public_address(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
 ) -> bool:
-    return not (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    )
+    # is_global covers ranges a flag blacklist misses (e.g. the shared
+    # address space 100.64.0.0/10, which is neither private nor reserved).
+    return address.is_global
 
 
 __all__ = [

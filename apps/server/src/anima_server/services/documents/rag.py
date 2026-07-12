@@ -149,6 +149,11 @@ def search_document_chunks(
         user_id=user_id,
         chunk_ids=ranked_chunk_ids,
         document_ids=allowed_document_ids,
+        # The current-embedding join validates dense hits (and repair has
+        # run when a query vector exists). Without a query vector every hit
+        # is lexical — the text itself matched — so requiring an embedding
+        # row would drop all results during an outage after a vector reset.
+        require_current_embedding=bool(query_embedding),
     )
 
     if settings.retrieval_reranker != "off":
@@ -396,17 +401,11 @@ def _load_document_chunks(
     user_id: int,
     chunk_ids: Sequence[int],
     document_ids: set[int] | None,
+    require_current_embedding: bool = True,
 ) -> dict[int, tuple[RuntimeDocumentChunk, RuntimeDocument]]:
     stmt = (
         select(RuntimeDocumentChunk, RuntimeDocument)
         .join(RuntimeDocument, RuntimeDocumentChunk.document_id == RuntimeDocument.id)
-        .join(
-            RuntimeEmbedding,
-            (RuntimeEmbedding.user_id == RuntimeDocumentChunk.user_id)
-            & (RuntimeEmbedding.source_type == "document_chunk")
-            & (RuntimeEmbedding.source_id == RuntimeDocumentChunk.id)
-            & (RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash),
-        )
         .where(
             RuntimeDocumentChunk.id.in_(chunk_ids),
             RuntimeDocumentChunk.user_id == user_id,
@@ -414,6 +413,14 @@ def _load_document_chunks(
             RuntimeDocument.status == "indexed",
         )
     )
+    if require_current_embedding:
+        stmt = stmt.join(
+            RuntimeEmbedding,
+            (RuntimeEmbedding.user_id == RuntimeDocumentChunk.user_id)
+            & (RuntimeEmbedding.source_type == "document_chunk")
+            & (RuntimeEmbedding.source_id == RuntimeDocumentChunk.id)
+            & (RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash),
+        )
     if document_ids is not None:
         stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
 
