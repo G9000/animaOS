@@ -74,18 +74,6 @@ def search_document_chunks(
         if not source_ids:
             return []
 
-    embed = embedding_fn or generate_embedding
-    query_embedding = _run_embedding(embed, query)
-    if not query_embedding:
-        return []
-
-    _repair_documents_missing_vectors_after_reset(
-        runtime_db,
-        user_id=user_id,
-        document_ids=allowed_document_ids,
-        embedding_fn=embed,
-    )
-
     search_limit = _candidate_limit(limit)
     if allowed_document_ids is not None:
         search_limit = limit
@@ -93,24 +81,38 @@ def search_document_chunks(
         # Over-fetch for the rerank stage; the cross-encoder picks top-k.
         search_limit = max(search_limit, settings.retrieval_rerank_candidates)
 
-    store = PgVecStore(runtime_db)
-    if source_id_query is not None:
-        vector_hits = store.search_by_vector(
-            user_id,
-            query_embedding=query_embedding,
-            limit=search_limit,
-            source_types=["document_chunk"],
-            source_id_query=source_id_query,
+    embed = embedding_fn or generate_embedding
+    query_embedding = _run_embedding(embed, query)
+
+    # The lexical arm runs regardless of query-vector availability so exact
+    # keyword searches keep working through embedding outages (scaffold
+    # provider, missing keys, provider cooldown).
+    dense_ranking: list[tuple[int, float]] = []
+    if query_embedding:
+        _repair_documents_missing_vectors_after_reset(
+            runtime_db,
+            user_id=user_id,
+            document_ids=allowed_document_ids,
+            embedding_fn=embed,
         )
-    else:
-        vector_hits = store.search_by_vector(
-            user_id,
-            query_embedding=query_embedding,
-            limit=search_limit,
-            source_types=["document_chunk"],
-            source_ids=source_ids,
-        )
-    dense_ranking = _dense_document_chunk_ranking(vector_hits)
+        store = PgVecStore(runtime_db)
+        if source_id_query is not None:
+            vector_hits = store.search_by_vector(
+                user_id,
+                query_embedding=query_embedding,
+                limit=search_limit,
+                source_types=["document_chunk"],
+                source_id_query=source_id_query,
+            )
+        else:
+            vector_hits = store.search_by_vector(
+                user_id,
+                query_embedding=query_embedding,
+                limit=search_limit,
+                source_types=["document_chunk"],
+                source_ids=source_ids,
+            )
+        dense_ranking = _dense_document_chunk_ranking(vector_hits)
     lexical_ranking = _lexical_document_chunk_ranking(
         runtime_db,
         user_id=user_id,

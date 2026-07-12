@@ -472,3 +472,45 @@ def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
     # hit must win the single slot.
     assert len(results) == 1
     assert "E-17" in results[0].content
+
+
+def test_search_returns_lexical_hits_when_query_embedding_unavailable(
+    runtime_db, monkeypatch: Any
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent.embedding_integrity import (
+        compute_embedding_checksum,
+    )
+    from anima_server.services.documents.rag import search_document_chunks
+
+    document, chunks = _document_with_chunks(
+        runtime_db, ["alpha filler body", "the E-17 fault code body"]
+    )
+    for chunk in chunks:
+        vector = [1.0] + [0.0] * 767
+        runtime_db.add(
+            RuntimeEmbedding(
+                user_id=USER_ID,
+                source_type="document_chunk",
+                source_id=chunk.id,
+                content_hash=chunk.content_hash,
+                embedding_checksum=compute_embedding_checksum(vector),
+                embedding=vector,
+                content_preview=chunk.content_text[:200],
+                category="document",
+                importance=3,
+            )
+        )
+    runtime_db.flush()
+
+    results = search_document_chunks(
+        runtime_db,
+        USER_ID,
+        "E-17",
+        document_ids=[document.id],
+        limit=5,
+        embedding_fn=lambda text: None,  # embedding provider outage
+    )
+
+    assert results
+    assert "E-17" in results[0].content

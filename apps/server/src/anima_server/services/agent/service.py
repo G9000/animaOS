@@ -1771,6 +1771,32 @@ def _build_document_context_block(
     cleaned_document_ids = _dedupe_positive_ids(document_ids)
     if not cleaned_document_ids:
         return None
+    # Stale, deleted, or not-owned ids must not push the turn into document
+    # mode (which suppresses personal memory): validate ownership first and
+    # behave like no selection when nothing valid remains. Lookup failures
+    # fail open so a transient DB error does not silently drop a valid
+    # selection.
+    try:
+        owned_document_ids = [
+            document_id
+            for document_id in cleaned_document_ids
+            if get_document_for_user(
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+            is not None
+        ]
+    except Exception:
+        logger.debug(
+            "Selected document ownership check failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+    else:
+        if not owned_document_ids:
+            return None
+        cleaned_document_ids = owned_document_ids
     query = user_message.strip() or _default_document_only_user_message(
         cleaned_document_ids
     )
