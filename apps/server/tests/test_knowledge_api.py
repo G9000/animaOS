@@ -625,3 +625,65 @@ def test_reextract_endpoint_replaces_spans_idempotently() -> None:
             headers=headers,
         )
         assert no_raw_html.status_code == 422
+
+
+def test_reingest_with_compile_retries_failed_compile_run() -> None:
+    with managed_test_client("anima-knowledge-compile-retry-") as client:
+        user_id, headers = _register(client, username="knowledge-compile-retry")
+
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retry.md",
+                "title": "Retry",
+                "content": "# Retry\n\nBody.",
+                "compile": False,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+
+        # Simulate a transient compiler failure recorded for this source.
+        with get_runtime_session_factory()() as runtime_db:
+            runtime_db.add(
+                RuntimeKnowledgeBundleRun(
+                    user_id=user_id,
+                    run_type="compile:initial",
+                    status="failed",
+                    source_id=source_id,
+                )
+            )
+            runtime_db.commit()
+
+        retried = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retry.md",
+                "title": "Retry",
+                "content": "# Retry\n\nBody.",
+                "compile": True,
+            },
+        )
+
+        assert retried.status_code == 201
+        payload = retried.json()
+        # The failed run must not short-circuit the explicit compile request.
+        assert payload["compileRun"]["status"] == "completed"
+
+        # A completed run does short-circuit the next request (no duplicate).
+        again = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retry.md",
+                "title": "Retry",
+                "content": "# Retry\n\nBody.",
+                "compile": True,
+            },
+        )
+        assert again.json()["compileRun"]["id"] == payload["compileRun"]["id"]

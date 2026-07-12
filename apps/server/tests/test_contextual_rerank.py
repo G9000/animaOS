@@ -188,7 +188,9 @@ def test_blurbs_prefix_embedding_text_but_not_stored_content(
         embedding_fn=embedding_fn,
     )
 
-    assert embedded_texts == ["Context line about relays.\n\nrelay housing body"]
+    assert embedded_texts == [
+        "Context line about relays.\n\nSection 0\n\nrelay housing body"
+    ]
     assert stored[0]["content"] == "relay housing body"
 
 
@@ -198,7 +200,31 @@ def test_chunk_index_text_ignores_blurbs_when_flag_off(runtime_db) -> None:
     chunk.metadata_json = {CONTEXT_BLURB_METADATA_KEY: "Stale blurb."}
 
     assert settings.contextual_chunks == "off"
-    assert chunk_index_text(chunk) == "body text"
+    # Section titles always join the index text; the LLM blurb is flag-gated.
+    assert chunk_index_text(chunk) == "Section 0\n\nbody text"
+
+
+def test_section_titles_join_lexical_index_without_blurb_flag(runtime_db) -> None:
+    assert settings.contextual_chunks == "off"
+    document, chunks = _document_with_chunks(
+        runtime_db, ["first body text", "second body text"]
+    )
+    target = chunks[1]
+    target.section_title = "Calibration"
+    runtime_db.add(target)
+    runtime_db.flush()
+
+    ranking = _lexical_document_chunk_ranking(
+        runtime_db,
+        user_id=USER_ID,
+        document_ids={document.id},
+        query="Calibration",
+        limit=5,
+    )
+
+    # The heading term appears only in section_title, never in the body.
+    assert ranking
+    assert ranking[0][0] == target.id
 
 
 def test_blurbs_join_lexical_index_but_not_evidence(

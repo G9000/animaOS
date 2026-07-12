@@ -596,12 +596,16 @@ def _latest_source_compile_run(
     *,
     source: RuntimeSource,
 ) -> RuntimeKnowledgeBundleRun | None:
+    # Only successful or in-flight runs short-circuit a compile request;
+    # a failed run must not make transient compiler failures sticky when
+    # the user explicitly re-ingests with compile=true.
     return runtime_db.scalar(
         select(RuntimeKnowledgeBundleRun)
         .where(
             RuntimeKnowledgeBundleRun.user_id == source.user_id,
             RuntimeKnowledgeBundleRun.source_id == source.id,
             RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
+            RuntimeKnowledgeBundleRun.status.in_(("pending", "running", "completed")),
         )
         .order_by(RuntimeKnowledgeBundleRun.id.desc())
     )

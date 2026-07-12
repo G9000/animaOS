@@ -110,11 +110,32 @@ def chunk_context_blurb(chunk: RuntimeDocumentChunk) -> str | None:
 
 
 def chunk_index_text(chunk: RuntimeDocumentChunk) -> str:
-    """Chunk text for embedding/lexical indexing: blurb-prefixed when present."""
+    """Chunk text for embedding/lexical indexing.
+
+    Prefixed with the chunk's section path(s) — the structured chunker keeps
+    headings out of the body, so heading terms must join the index here or
+    section-name queries would miss — and, when the flag is on, the
+    contextual blurb. Evidence text shown to callers stays the raw body.
+    """
+    parts: list[str] = []
     blurb = chunk_context_blurb(chunk)
     if blurb:
-        return f"{blurb}\n\n{chunk.content_text}"
-    return chunk.content_text
+        parts.append(blurb)
+    section_paths = _chunk_section_paths(chunk)
+    if section_paths:
+        parts.append("\n".join(section_paths))
+    parts.append(chunk.content_text)
+    return "\n\n".join(parts)
+
+
+def _chunk_section_paths(chunk: RuntimeDocumentChunk) -> list[str]:
+    metadata = chunk.metadata_json or {}
+    merged = metadata.get("section_paths")
+    if isinstance(merged, list):
+        paths = [path for path in merged if isinstance(path, str) and path]
+        if paths:
+            return paths
+    return [chunk.section_title] if chunk.section_title else []
 
 
 def _generate_blurb(
