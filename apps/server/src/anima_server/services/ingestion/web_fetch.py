@@ -106,17 +106,25 @@ def _read_html_body(response: httpx.Response, *, max_bytes: int) -> str:
 
 def require_public_http_url(url: str) -> None:
     """Reject URLs that are not absolute http(s) or resolve to non-public hosts."""
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        # urlparse is lazy: .hostname/.port raise ValueError for malformed
+        # authorities (bad brackets, nonnumeric or out-of-range ports).
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise UnsafeFetchUrlError(
+            "url must be a valid absolute http(s) URL"
+        ) from exc
+    if parsed.scheme not in {"http", "https"} or not host:
         raise UnsafeFetchUrlError("url must be an absolute http(s) URL")
-    host = parsed.hostname
     try:
         addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [
             ipaddress.ip_address(host)
         ]
     except ValueError:
         addresses = _resolve_addresses(
-            host, parsed.port or (443 if parsed.scheme == "https" else 80)
+            host, port or (443 if parsed.scheme == "https" else 80)
         )
     for address in addresses:
         if not _is_public_address(address):

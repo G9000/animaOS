@@ -151,6 +151,8 @@ def test_fetch_wraps_transport_errors(fetch_enabled: None) -> None:
         "http://192.0.2.10/",
         "http://224.0.0.1/",
         "http://[ff02::1]/",
+        "https://example.com:abc/",
+        "https://example.com:99999/",
     ],
 )
 def test_require_public_http_url_rejects_unsafe_targets(url: str) -> None:
