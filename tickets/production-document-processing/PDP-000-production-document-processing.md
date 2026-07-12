@@ -91,6 +91,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-12 - Codex round-3 findings fixed with regression tests: (P2) LLM concept slugs/titles bounded to their column lengths before persist (links rebind through the bounded slug); (P2) read_document_section reserves budget headroom for the header and continuation notice so the start_chunk/start_offset hint always survives the per-turn budget truncation.
 - 2026-07-12 - Codex round-4 finding fixed with a regression test: (P2) read_document_section charges the blank-line separators between chunks in its cap accounting, so a many-small-chunks read near the budget can no longer overrun the cap and lose its continuation hint to the budget truncation.
 - 2026-07-12 - Codex round-5 findings fixed with regression tests: (P2) section titles/merged paths now always join the chunk embedding and BM25 index text (heading-name queries work without the blurb flag; eval hybrid recall@5 rose 0.867 → 0.9); (P2) failed compile runs no longer short-circuit an explicit re-ingest compile=true — only pending/running/completed runs are reused.
+- 2026-07-12 - Codex round-6 findings fixed with regression tests: (P2) the document primer (selected docs + tool hint) now emits even when retrieval returns zero hits or raises, so document-selected turns can always recover through the tools; (P2) read_document_section on a parent heading includes descendant "Parent > Child" chunks via separator-aware prefix matching (name-prefix siblings excluded).
 
 ## Validation
 

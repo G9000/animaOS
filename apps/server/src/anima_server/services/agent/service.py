@@ -1790,7 +1790,10 @@ def _build_document_context_block(
             cleaned_document_ids,
             exc_info=True,
         )
-        return None
+        # Fall through with no hits: the primer below still names the
+        # selected documents and the tools, so the turn can recover
+        # through get_document_outline / read_document_section.
+        results = []
 
     try:
         knowledge_hits = _document_knowledge_hits(
@@ -1809,12 +1812,19 @@ def _build_document_context_block(
         )
         knowledge_hits = []
 
-    if not results and not knowledge_hits:
-        return None
-
+    # Even with zero retrieval hits (embedding outage, query missing the
+    # index) the primer must still name the selected documents and the
+    # document tools — the block is the model's only signal that documents
+    # were selected for this turn.
     lines = [
         "Selected document context from indexed PDFs. Use this only when it is relevant.",
     ]
+    if not results and not knowledge_hits:
+        lines.append("")
+        lines.append(
+            "No excerpts were retrieved for this query. Use the document tools "
+            "below to investigate the selected documents directly."
+        )
     if knowledge_hits:
         lines.append("")
         lines.append("Compiled knowledge from selected PDFs:")

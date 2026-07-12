@@ -496,3 +496,43 @@ def test_read_accounts_for_separators_so_hint_is_never_lost(
     assert len(output) <= 2280
     assert "Continue with start_chunk=" in output
     assert output.rstrip().endswith("]")
+
+
+def test_read_parent_section_includes_descendant_chunks(runtime_db, tool_ctx) -> None:
+    document = _make_document(
+        runtime_db,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text="Parent intro body.",
+                section_title="Parent",
+            ),
+            ExtractedDocumentChunk(
+                chunk_index=1,
+                content_text="Child A body.",
+                section_title="Parent > Child A",
+            ),
+            ExtractedDocumentChunk(
+                chunk_index=2,
+                content_text="Child B body.",
+                section_title="Parent > Child B",
+            ),
+            ExtractedDocumentChunk(
+                chunk_index=3,
+                content_text="Parentheses trap body.",
+                section_title="Parentheses",
+            ),
+        ],
+    )
+
+    parent = read_document_section(str(document.id), section_path="Parent")
+    assert "Parent intro body" in parent
+    assert "Child A body" in parent
+    assert "Child B body" in parent
+    # Prefix matching requires the path separator; sibling headings that
+    # merely share a name prefix stay excluded.
+    assert "Parentheses trap" not in parent
+
+    child = read_document_section(str(document.id), section_path="Parent > Child A")
+    assert "Child A body" in child
+    assert "Child B body" not in child

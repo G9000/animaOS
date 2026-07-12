@@ -713,3 +713,54 @@ def test_build_document_context_block_skips_empty_selection() -> None:
         )
         is None
     )
+
+
+def test_build_document_context_block_emits_tool_primer_when_retrieval_is_empty(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return []
+
+    monkeypatch.setattr(
+        agent_service, "search_document_chunks", fake_search_document_chunks
+    )
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="what does chapter three say?",
+        document_ids=[4],
+    )
+
+    # Zero hits must still produce the primer: the block is the model's only
+    # signal that documents were selected and that the tools exist.
+    assert block is not None
+    assert "No excerpts were retrieved" in block.value
+    assert "read_document_section" in block.value
+    assert "get_document_outline" in block.value
+
+
+def test_build_document_context_block_emits_tool_primer_when_retrieval_raises(
+    monkeypatch: Any,
+) -> None:
+    def failing_search(*args: Any, **kwargs: Any) -> list[DocumentRagResult]:
+        raise RuntimeError("embedding provider down")
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", failing_search)
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="what does chapter three say?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "read_document_section" in block.value

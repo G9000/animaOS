@@ -21,6 +21,8 @@ _SEARCH_EXCERPT_CHARS = 400
 _MAX_SEARCH_LIMIT = 20
 _OUTLINE_MAX_LINES = 60
 _UNTITLED_SECTION = "(untitled preamble)"
+# Matches SECTION_PATH_SEPARATOR in services/ingestion/structured.py.
+_SECTION_PATH_SEPARATOR = " > "
 # Headroom kept out of the read cap so the truncation/continuation notice
 # always survives the per-turn budget truncation.
 _READ_NOTICE_RESERVE_CHARS = 160
@@ -389,10 +391,17 @@ def _select_chunks(
     if section_path:
         if section_path == _UNTITLED_SECTION:
             return [chunk for chunk in chunks if not chunk.section_title]
+        # A parent heading owns its descendants: reading "Parent" must
+        # include chunks tagged "Parent > Child", not just the chunks that
+        # carry the bare parent path.
+        descendant_prefix = f"{section_path}{_SECTION_PATH_SEPARATOR}"
         return [
             chunk
             for chunk in chunks
-            if section_path in _chunk_section_paths(chunk)
+            if any(
+                path == section_path or path.startswith(descendant_prefix)
+                for path in _chunk_section_paths(chunk)
+            )
         ]
     if page_start is not None or page_end is not None:
         low = page_start if page_start is not None else 1
