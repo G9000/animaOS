@@ -170,7 +170,10 @@ def chunk_pages_structured(
             if path
         ]
         metadata: dict[str, object] | None = None
-        if len(section_paths) > 1:
+        # Also needed when the chunk's own path is empty (untitled preamble
+        # merged with a titled section) so the titled section stays
+        # addressable by name.
+        if section_paths and (len(section_paths) > 1 or not chunk.section_path):
             metadata = {"section_paths": section_paths}
         chunks.append(
             ExtractedDocumentChunk(

@@ -199,10 +199,19 @@ async def compile_source_knowledge_llm(
 def _prepare_llm_payload(
     payload: dict[str, Any], spans: Sequence[RuntimeSourceSpan]
 ) -> str:
-    """Drop uncited concepts (and their links) from the model payload."""
+    """Drop uncited concepts (and their links); coalesce duplicate slugs.
+
+    Batched compiles can emit the same slug from more than one batch. The
+    downstream compiler replaces a concept's citations per payload entry, so
+    duplicates must merge here — first occurrence keeps the content fields,
+    citations and tags are unioned — or later batches would silently
+    overwrite earlier-batch evidence.
+    """
     valid_span_ids = {span.id for span in spans}
-    kept_concepts: list[dict[str, Any]] = []
-    dropped_slugs: set[str] = set()
+    kept_by_slug: dict[str, dict[str, Any]] = {}
+    kept_order: list[str] = []
+    unsluggable: list[dict[str, Any]] = []
+    uncited_slugs: set[str] = set()
     for concept in payload["concepts"]:
         if not isinstance(concept, dict):
             continue
@@ -211,12 +220,36 @@ def _prepare_llm_payload(
             for span_id in (concept.get("source_span_ids") or [])
             if isinstance(span_id, int) and span_id in valid_span_ids
         ]
+        slug = concept.get("slug")
         if not cited:
-            slug = concept.get("slug")
             if isinstance(slug, str):
-                dropped_slugs.add(slug)
+                uncited_slugs.add(slug)
             continue
-        kept_concepts.append({**concept, "source_span_ids": cited})
+        if not isinstance(slug, str) or not slug:
+            # Preserved so the compiler records its own missing-slug failure.
+            unsluggable.append({**concept, "source_span_ids": cited})
+            continue
+        existing = kept_by_slug.get(slug)
+        if existing is None:
+            kept_by_slug[slug] = {**concept, "source_span_ids": cited}
+            kept_order.append(slug)
+            continue
+        existing["source_span_ids"] = existing["source_span_ids"] + [
+            span_id
+            for span_id in cited
+            if span_id not in existing["source_span_ids"]
+        ]
+        existing_tags = (
+            existing.get("tags") if isinstance(existing.get("tags"), list) else []
+        )
+        new_tags = (
+            concept.get("tags") if isinstance(concept.get("tags"), list) else []
+        )
+        existing["tags"] = existing_tags + [
+            tag for tag in new_tags if tag not in existing_tags
+        ]
+    kept_concepts = [kept_by_slug[slug] for slug in kept_order] + unsluggable
+    dropped_slugs = uncited_slugs - set(kept_order)
     if not kept_concepts:
         raise ValueError(
             "Compiler model output contained no concepts with valid span citations."

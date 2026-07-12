@@ -384,3 +384,62 @@ def test_merged_section_paths_stay_addressable(runtime_db, tool_ctx) -> None:
         str(document.id), section_path="Guide > Beta"
     )
     assert "Beta section body" in by_merged_path
+
+
+def test_read_document_section_continues_inside_oversized_chunk(
+    runtime_db, tool_ctx, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "document_tool_read_char_limit", 60)
+    oversized_text = "".join(f"word{index:03d} " for index in range(40)).strip()
+    document = _make_document(
+        runtime_db,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text=oversized_text,
+                page_start=1,
+                page_end=1,
+            )
+        ],
+    )
+
+    collected = ""
+    start_chunk = "0"
+    start_offset = "0"
+    for _round in range(10):
+        output = read_document_section(
+            str(document.id), start_chunk=start_chunk, start_offset=start_offset
+        )
+        body = output.split("\n\n", 1)[1]
+        body = body.split("[Truncated", 1)[0].strip()
+        collected += body
+        if "start_offset=" in output:
+            tail = output.rsplit("start_chunk=", 1)[1]
+            start_chunk = tail.split(",", 1)[0].strip()
+            start_offset = tail.rsplit("start_offset=", 1)[1].split(".", 1)[0].strip("] ")
+        else:
+            break
+
+    # The whole oversized chunk is reachable through continuations.
+    assert collected.replace(" ", "") == oversized_text.replace(" ", "")
+
+
+def test_untitled_preamble_merged_with_titled_section_stays_addressable(
+    runtime_db, tool_ctx
+) -> None:
+    merged_chunk = ExtractedDocumentChunk(
+        chunk_index=0,
+        content_text="Intro preamble text.\n\nAlpha section body.",
+        page_start=1,
+        page_end=1,
+        section_title=None,
+        metadata_json={"section_paths": ["Guide > Alpha"]},
+    )
+    document = _make_document(runtime_db, chunks=[merged_chunk])
+
+    outline = get_document_outline(str(document.id))
+    assert "- Guide > Alpha" in outline
+    assert "no section structure" not in outline
+
+    by_path = read_document_section(str(document.id), section_path="Guide > Alpha")
+    assert "Alpha section body" in by_path

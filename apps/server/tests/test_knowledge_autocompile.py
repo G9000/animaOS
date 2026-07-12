@@ -505,3 +505,66 @@ async def test_llm_compile_batches_prompts_so_every_span_is_visible(
     # Concepts from both batches persisted.
     slugs = set(runtime_db.scalars(select(RuntimeKnowledgeConcept.slug)).all())
     assert {"batch-topic-1", "batch-topic-2"} <= slugs
+
+
+@pytest.mark.asyncio()
+async def test_llm_compile_coalesces_duplicate_slugs_across_batches(
+    runtime_db,
+) -> None:
+    paragraphs = "\n\n".join(f"Fact number {index}." for index in range(90))
+    source, spans = _ingest_markdown(runtime_db, paragraphs, filename="dupes.md")
+    span_ids = _evidence_ids(spans)
+    assert len(span_ids) > 80
+
+    class _SameSlugClient:
+        def __init__(self) -> None:
+            self.cited: list[int] = []
+
+        async def ainvoke(self, messages: Any) -> Any:
+            import re
+            from types import SimpleNamespace
+
+            prompt = "\n".join(str(m.content) for m in messages)
+            visible = [int(m) for m in re.findall(r"- span (\d+)", prompt)]
+            self.cited.append(visible[0])
+            return SimpleNamespace(
+                content=_llm_payload(
+                    [
+                        {
+                            "type": "topic",
+                            "slug": "shared-topic",
+                            "title": "Shared Topic",
+                            "description": "x",
+                            "body_markdown": "# Shared",
+                            "source_span_ids": visible[:1],
+                            "tags": [f"batch-{len(self.cited)}"],
+                        }
+                    ]
+                )
+            )
+
+    client = _SameSlugClient()
+    result = await compile_source_knowledge_llm(
+        runtime_db, source=source, spans=spans, llm_client=client
+    )
+
+    assert result.status == "completed"
+    assert len(client.cited) == 2
+    concepts = list(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConcept).where(
+                RuntimeKnowledgeConcept.slug == "shared-topic"
+            )
+        ).all()
+    )
+    assert len(concepts) == 1
+    # Citations union across batches instead of the last batch overwriting.
+    citation_span_ids = set(
+        runtime_db.scalars(
+            select(RuntimeKnowledgeConceptSource.span_id).where(
+                RuntimeKnowledgeConceptSource.concept_id == concepts[0].id
+            )
+        ).all()
+    )
+    assert citation_span_ids == set(client.cited)
+    assert set(concepts[0].frontmatter_json["tags"]) >= {"batch-1", "batch-2"}

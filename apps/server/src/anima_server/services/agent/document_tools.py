@@ -140,8 +140,9 @@ def read_document_section(
     page_start: str = "",
     page_end: str = "",
     start_chunk: str = "0",
+    start_offset: str = "0",
 ) -> str:
-    """Read document text: a full section by section_path (from get_document_outline), a page range, or the document sequentially. Long reads are bounded per call — continue with the start_chunk value given in the truncation notice."""
+    """Read document text: a full section by section_path (from get_document_outline), a page range, or the document sequentially. Long reads are bounded per call — continue with the start_chunk (and, inside an oversized chunk, start_offset) values given in the truncation notice."""
     from anima_server.config import settings
     from anima_server.services.agent.tool_context import get_tool_context
 
@@ -183,22 +184,29 @@ def read_document_section(
             f"of doc:{document.id}."
         )
 
+    offset = _parse_bounded_int(start_offset, default=0, low=0, high=10**9)
     call_cap = min(settings.document_tool_read_char_limit, remaining)
     parts: list[str] = []
     used = 0
     next_chunk_index: int | None = None
+    next_offset = 0
     budget_limited = False
     for position, chunk in enumerate(selected):
-        text = chunk.content_text
+        chunk_offset = offset if position == 0 else 0
+        text = chunk.content_text[chunk_offset:]
+        if not text:
+            continue
         if parts and used + len(text) > call_cap:
             next_chunk_index = chunk.chunk_index
             budget_limited = call_cap < settings.document_tool_read_char_limit
             break
         if not parts and len(text) > call_cap:
+            # An oversized chunk (atomic table/code or a legacy chunk):
+            # continue inside the same chunk so its tail stays reachable.
             parts.append(text[:call_cap].rstrip())
             used = call_cap
-            if position + 1 < len(selected):
-                next_chunk_index = selected[position + 1].chunk_index
+            next_chunk_index = chunk.chunk_index
+            next_offset = chunk_offset + call_cap
             budget_limited = call_cap < settings.document_tool_read_char_limit
             break
         parts.append(text)
@@ -210,17 +218,19 @@ def read_document_section(
         where += _format_pages(first_page, last_page)
     lines = [f"doc:{document.id} {document.filename}{where}:", "", "\n\n".join(parts)]
     if next_chunk_index is not None:
+        continuation = f"start_chunk={next_chunk_index}"
+        if next_offset:
+            continuation += f", start_offset={next_offset}"
         if budget_limited:
             lines.append("")
             lines.append(
                 "[Truncated: per-turn document text budget is nearly used up. "
-                f"Continue with start_chunk={next_chunk_index} only if essential.]"
+                f"Continue with {continuation} only if essential.]"
             )
         else:
             lines.append("")
             lines.append(
-                f"[Truncated at {call_cap} chars. Continue with "
-                f"start_chunk={next_chunk_index}.]"
+                f"[Truncated at {call_cap} chars. Continue with {continuation}.]"
             )
     return _emit_within_budget(ctx, "\n".join(lines))
 
@@ -327,7 +337,7 @@ def _section_summaries(
     chunks: Sequence[Any],
 ) -> list[tuple[str, int | None, int | None, int, int]]:
     """(title, page_start, page_end, chunk_count, char_count) in first-appearance order."""
-    if not any(chunk.section_title for chunk in chunks):
+    if not any(_chunk_section_paths(chunk) for chunk in chunks):
         return []
     order: list[str] = []
     stats: dict[str, list[Any]] = {}

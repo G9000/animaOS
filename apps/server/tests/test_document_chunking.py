@@ -197,3 +197,22 @@ def test_chunk_pages_structured_records_merged_section_paths() -> None:
     merged = chunks[0]
     assert merged.section_title == "Alpha"
     assert merged.metadata_json == {"section_paths": ["Alpha", "Beta"]}
+
+
+def test_chunk_pages_structured_keeps_single_titled_path_after_preamble_merge() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    chunks = chunk_pages_structured(
+        [
+            PageText(
+                page_number=1,
+                text="Intro preamble before any heading.\n\n# Alpha\n\nAlpha body.",
+            ),
+        ],
+        target_chars=300,
+    )
+
+    assert len(chunks) == 1
+    merged = chunks[0]
+    assert merged.section_title is None
+    assert merged.metadata_json == {"section_paths": ["Alpha"]}
