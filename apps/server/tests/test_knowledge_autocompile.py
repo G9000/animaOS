@@ -621,3 +621,79 @@ async def test_llm_compile_bounds_long_slugs_and_titles(runtime_db) -> None:
     concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
     assert all(len(concept.slug) <= 255 for concept in concepts)
     assert all(len(concept.title) <= 512 for concept in concepts)
+
+
+@pytest.mark.asyncio()
+async def test_compile_prompt_includes_pdf_section_titles(runtime_db) -> None:
+    import hashlib
+
+    from anima_server.models.runtime import (
+        RuntimeSource,
+        RuntimeSourceArtifact,
+        RuntimeSourceSpan,
+    )
+
+    def _sha(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    source = RuntimeSource(
+        user_id=USER_ID,
+        kind="document",
+        source_uri="runtime-document://1",
+        content_hash=_sha("pdf source"),
+        title="manual.pdf",
+        media_type="application/pdf",
+        status="indexed",
+    )
+    runtime_db.add(source)
+    runtime_db.flush()
+    artifact = RuntimeSourceArtifact(
+        user_id=USER_ID,
+        source_id=source.id,
+        artifact_kind="document_text",
+        content_text="Relay body.",
+        content_hash=_sha("artifact"),
+    )
+    runtime_db.add(artifact)
+    runtime_db.flush()
+    span = RuntimeSourceSpan(
+        user_id=USER_ID,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="document_chunk",
+        locator_json={"chunk_index": 0},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash({"chunk_index": 0}),
+        content_text="Relay body.",
+        content_hash=_sha("span"),
+        metadata_json={
+            "section_title": "Guide (truncated)",
+            "source_metadata": {
+                "section_paths": ["Guide > Relay Installation Procedures"]
+            },
+        },
+    )
+    runtime_db.add(span)
+    runtime_db.flush()
+
+    client = _ScriptedClient(
+        _llm_payload(
+            [
+                {
+                    "type": "topic",
+                    "slug": "relay-topic",
+                    "title": "Relay",
+                    "description": "x",
+                    "body_markdown": "# Relay",
+                    "source_span_ids": [span.id],
+                    "tags": [],
+                }
+            ]
+        )
+    )
+    result = await compile_source_knowledge_llm(
+        runtime_db, source=source, spans=[span], llm_client=client
+    )
+
+    assert result.status == "completed"
+    # The prompt carries the full merged path, not the truncated column copy.
+    assert "Guide > Relay Installation Procedures" in client.prompts[0]

@@ -186,12 +186,28 @@ def search_document_chunks(
                 similarity=similarity_by_chunk_id.get(chunk_id, 0.0),
                 page_start=chunk.page_start,
                 page_end=chunk.page_end,
-                section_title=chunk.section_title,
+                section_title=_result_section_title(chunk),
             )
         )
         if len(results) >= limit:
             break
     return results
+
+
+def _result_section_title(chunk: RuntimeDocumentChunk) -> str | None:
+    """The chunk's primary section path, untruncated when metadata has it.
+
+    The section_title column truncates at 255 chars; the full path lives in
+    chunk metadata. Search results must surface the full path or a follow-up
+    read_document_section(section_path=...) on the hint would not match.
+    """
+    metadata = chunk.metadata_json or {}
+    paths = metadata.get("section_paths")
+    if isinstance(paths, list):
+        strings = [path for path in paths if isinstance(path, str) and path]
+        if strings:
+            return strings[0]
+    return chunk.section_title
 
 
 def _candidate_limit(limit: int) -> int:

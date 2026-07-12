@@ -393,14 +393,19 @@ def _select_chunks(
             return [chunk for chunk in chunks if not chunk.section_title]
         # A parent heading owns its descendants: reading "Parent" must
         # include chunks tagged "Parent > Child", not just the chunks that
-        # carry the bare parent path.
+        # carry the bare parent path. The stored (possibly truncated)
+        # section_title column value also matches so hints from older data
+        # or truncated displays still resolve.
         descendant_prefix = f"{section_path}{_SECTION_PATH_SEPARATOR}"
         return [
             chunk
             for chunk in chunks
             if any(
                 path == section_path or path.startswith(descendant_prefix)
-                for path in _chunk_section_paths(chunk)
+                for path in {
+                    *_chunk_section_paths(chunk),
+                    *([chunk.section_title] if chunk.section_title else []),
+                }
             )
         ]
     if page_start is not None or page_end is not None:

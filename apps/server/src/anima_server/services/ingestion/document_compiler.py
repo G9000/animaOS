@@ -302,8 +302,7 @@ def _build_compile_prompt(
         f"SPANS ({len(spans)})",
     ]
     for span in spans:
-        metadata = span.metadata_json or {}
-        section_path = metadata.get("section_path") or metadata.get("heading") or ""
+        section_path = _span_section_label(span.metadata_json or {})
         section = f" [{section_path}]" if section_path else ""
         location = _span_location(span)
         lines.append(
@@ -326,6 +325,27 @@ def _build_compile_prompt(
         "Compile this source into concept pages now. Respond with the JSON object only."
     )
     return _COMPILER_SYSTEM_PROMPT, "\n".join(lines)
+
+
+def _span_section_label(metadata: dict[str, Any]) -> str:
+    """Section names for a prompt span across adapter metadata shapes.
+
+    Markdown/HTML spans carry ``section_path``/``heading``; PDF-bridge spans
+    carry ``section_title`` with the full (untruncated) merged paths under
+    ``source_metadata.section_paths``.
+    """
+    source_metadata = metadata.get("source_metadata")
+    if isinstance(source_metadata, dict):
+        paths = source_metadata.get("section_paths")
+        if isinstance(paths, list):
+            strings = [path for path in paths if isinstance(path, str) and path]
+            if strings:
+                return " | ".join(strings)
+    for key in ("section_path", "section_title", "heading"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _related_existing_concepts(

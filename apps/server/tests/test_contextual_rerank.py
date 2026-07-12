@@ -539,3 +539,15 @@ def test_lexical_hits_hydrate_without_embedding_rows_during_outage(
 
     assert results
     assert "E-17" in results[0].content
+
+
+def test_search_surfaces_full_section_path_from_metadata(runtime_db) -> None:
+    from anima_server.services.documents.rag import _result_section_title
+
+    _document, chunks = _document_with_chunks(runtime_db, ["deep body text"])
+    chunk = chunks[0]
+    long_path = "Deep Heading " + "x" * 300
+    chunk.section_title = long_path[:255]  # what the column stores
+    chunk.metadata_json = {"section_paths": [long_path]}
+
+    assert _result_section_title(chunk) == long_path
