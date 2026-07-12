@@ -245,3 +245,32 @@ def test_to_markdown_round_trips_structure() -> None:
     document = parse_markdown_structure(content)
 
     assert document.to_markdown() == content
+
+
+def test_heading_only_sections_keep_their_text_in_chunks() -> None:
+    from anima_server.services.ingestion.structured import (
+        chunk_structured_document,
+        parse_markdown_structure,
+    )
+
+    document = parse_markdown_structure(
+        "# Intro\n\nIntro body.\n\n# WARNING HIGH VOLTAGE\n\n# Outro\n\nOutro body."
+    )
+    chunks = chunk_structured_document(document, target_chars=400)
+
+    combined = "\n".join(chunk.content_text for chunk in chunks)
+    # The heading-only section's text must not vanish from the index.
+    assert "WARNING HIGH VOLTAGE" in combined
+
+
+def test_heading_only_document_still_produces_a_chunk() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+    from anima_server.services.documents.pdf_text import PageText
+
+    chunks = chunk_pages_structured(
+        [PageText(page_number=1, text="WARNING HIGH VOLTAGE")],
+        target_chars=400,
+    )
+
+    assert len(chunks) == 1
+    assert "WARNING HIGH VOLTAGE" in chunks[0].content_text

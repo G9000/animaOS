@@ -380,7 +380,9 @@ def chunk_structured_document(
         if not pending:
             return
         content = "\n\n".join(
-            section.content_text for section in pending if section.content_text
+            text
+            for text in (_section_chunk_text(section) for section in pending)
+            if text
         )
         if content:
             chunks.append(
@@ -519,6 +521,20 @@ def _split_oversized_section(
             "" if part.is_atomic else _overlap_tail(part.content_text, overlap_chars)
         )
     return chunk_parts
+
+
+def _section_chunk_text(section: StructuredSection) -> str:
+    """A section's chunkable text; heading-only sections keep their heading.
+
+    Body text normally excludes headings (they live in the section path),
+    but a section that is *only* a heading — e.g. an ALL-CAPS warning line
+    the page-heading detector classified — has no body at all, and dropping
+    it would erase that text from the index entirely.
+    """
+    content = section.content_text
+    if content:
+        return content
+    return section.path[-1] if section.path else ""
 
 
 def _split_long_text(text: str, target: int) -> list[str]:

@@ -102,6 +102,7 @@ Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), 
 - 2026-07-12 - Codex round-14 finding fixed with regression tests: (P2) malformed fetch URLs (nonnumeric/out-of-range ports, bad authorities) raise UnsafeFetchUrlError from the guard instead of a bare ValueError, keeping the route response a controlled 422 rather than a 500.
 - 2026-07-12 - Codex round-15 findings fixed with regression tests: (P2) a bogus upstream charset declaration decodes as UTF-8 instead of raising LookupError (500); (P2) the text-search fallback excludes section spans so parent read units cannot displace paragraph evidence when embeddings are unavailable.
 - 2026-07-13 - Codex round-16 finding fixed with a regression test: (P2) the /api/knowledge/search route also excludes section spans from evidenceSpans, matching the retrieval paths.
+- 2026-07-13 - Codex round-17 finding fixed with regression tests: (P2) heading-only sections (e.g. an ALL-CAPS warning line the page-heading detector classified) keep their heading text as chunk content instead of vanishing from the index; a heading-only document now yields a chunk instead of zero.
 
 ## Validation
 
