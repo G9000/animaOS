@@ -617,12 +617,13 @@ export function createApiClient(options: ApiClientOptions) {
         recoveryPhrase: string,
         pendingGeneration: number,
         scope: "full" | "soul" | "fs",
+        currentPassword: string,
       ) =>
         request<ConfirmRecoveryCredentialResponse>(
           "/auth/recovery-credential/confirm",
           {
             method: "POST",
-            body: { recoveryPhrase, pendingGeneration, scope },
+            body: { recoveryPhrase, pendingGeneration, scope, currentPassword },
           },
         ),
       confirmCorefsRecoveryCredential: (

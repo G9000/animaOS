@@ -35,6 +35,7 @@ from anima_server.services.corefs.keyslots import (
     _manifest_slot,
     _record_from_payload,
     _record_to_payload,
+    manifest_has_versioned_key_hierarchy,
     unlock_key_hierarchy,
     unlock_manifest_key_hierarchy,
     validate_scope_completeness,
@@ -477,6 +478,49 @@ def test_versioned_login_never_falls_back_to_legacy_wrappers() -> None:
             json={"username": "alice", "password": "password-123"},
         )
         assert login.status_code == 401
+
+
+@pytest.mark.parametrize("slot_status", ["active", "decrypt-only"])
+def test_activated_versioned_slots_block_legacy_login_and_recovery_without_markers(
+    slot_status: str,
+) -> None:
+    with managed_test_client(f"anima-versioned-marker-damage-{slot_status}-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        assert registered.status_code == 201
+        recovery_phrase = registered.json()["recoveryPhrase"]
+
+        def remove_authority_markers(manifest: dict[str, object]) -> None:
+            manifest["keyslots"] = [
+                {**slot, "status": slot_status} for slot in manifest["keyslots"]
+            ]
+            manifest.pop("active_password_credential_generation", None)
+            manifest.pop("active_recovery_credential_generation", None)
+            manifest.pop("frk_rotation", None)
+
+        update_core_manifest(remove_authority_markers)
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert manifest_has_versioned_key_hierarchy(manifest)
+        unlock_session_store.clear()
+        clear_sqlcipher_key()
+        dispose_all_user_engines()
+
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "password-123"},
+        )
+        recovery = client.post(
+            "/api/auth/recover",
+            json={
+                "recoveryPhrase": recovery_phrase,
+                "newPassword": "new-password-123",
+                "scope": "full",
+            },
+        )
+        assert login.status_code == 401
+        assert recovery.status_code == 401
 
 
 def test_versioned_login_rejects_corrupt_active_manifest_soul_root() -> None:

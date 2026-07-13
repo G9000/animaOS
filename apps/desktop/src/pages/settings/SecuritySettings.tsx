@@ -69,6 +69,7 @@ export default function SecuritySettings() {
           result.recoveryPhrase,
           result.pendingGeneration,
           result.scope,
+          currentRecoveryPassword,
         ),
       );
     } catch (err) {
@@ -87,7 +88,13 @@ export default function SecuritySettings() {
       recoveryConfirmation,
     );
     setRecoveryReview(checked);
-    if (checked.error || checked.phrase === null || checked.pendingGeneration === null || checked.scope === null) {
+    if (
+      checked.error
+      || checked.phrase === null
+      || checked.pendingGeneration === null
+      || checked.scope === null
+      || checked.currentPassword === null
+    ) {
       return;
     }
     setReplacingRecovery(true);
@@ -97,6 +104,7 @@ export default function SecuritySettings() {
         checked.phrase,
         checked.pendingGeneration,
         checked.scope,
+        checked.currentPassword,
       );
       setRecoveryReview(completeRecoveryPhraseReview(checked));
       setRecoveryConfirmation("");

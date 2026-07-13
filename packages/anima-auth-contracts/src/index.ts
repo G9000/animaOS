@@ -124,6 +124,7 @@ export interface ConfirmRecoveryCredentialRequest {
   recoveryPhrase: string;
   pendingGeneration: number;
   scope: RecoveryCredentialScope;
+  currentPassword: string;
 }
 
 export interface ConfirmRecoveryCredentialResponse {

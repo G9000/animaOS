@@ -123,6 +123,7 @@ class ConfirmRecoveryCredentialRequest(BaseModel):
     recoveryPhrase: str = Field(min_length=1)
     pendingGeneration: int = Field(gt=0)
     scope: Literal["full", "soul", "fs"]
+    currentPassword: str = Field(min_length=1)
 
 
 class ConfirmRecoveryCredentialResponse(BaseModel):

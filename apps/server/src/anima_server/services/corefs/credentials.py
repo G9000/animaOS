@@ -82,6 +82,7 @@ def _verify_pending_password_generation(
     expected_sqlcipher: bytes | None,
     expected_frks: dict[int, object],
     expected_domains: dict[str, bytes],
+    manifest_status: KeyslotStatus = KeyslotStatus.PENDING,
 ) -> None:
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     core_id = str(manifest["core_id"])
@@ -91,7 +92,7 @@ def _verify_pending_password_generation(
         for slot in _manifest_slots(manifest)
         if slot.wrapping_path is WrappingPath.PASSWORD
         and slot.credential_generation == generation
-        and slot.status is KeyslotStatus.PENDING
+        and slot.status is manifest_status
         and slot.scope is scope
     ]
     if len({(slot.purpose, slot.key_version) for slot in slots}) != len(slots):
@@ -135,13 +136,17 @@ def _verify_pending_password_generation(
                     SoulKeyslot.owner_id == owner_id,
                     SoulKeyslot.wrapping_path == WrappingPath.PASSWORD.value,
                     SoulKeyslot.credential_generation == generation,
-                    SoulKeyslot.status == KeyslotStatus.PENDING.value,
+                    SoulKeyslot.status.in_(
+                        [KeyslotStatus.PENDING.value, KeyslotStatus.ACTIVE.value]
+                    ),
                 )
             ).all()
         )
         if scope in {PayloadScope.FULL, PayloadScope.SOUL}
         else []
     )
+    if len({row.domain for row in rows}) != len(rows):
+        raise ValueError("duplicate Soul password generation keyslots")
     if {row.domain for row in rows} != set(expected_domains):
         raise ValueError("pending Soul password generation is incomplete")
     for row in rows:
@@ -1127,12 +1132,15 @@ def confirm_recovery_credential(
     recovery_phrase: str,
     pending_generation: int,
     scope: PayloadScope,
+    current_password: str,
     failure_injector: FailureInjector | None = None,
 ) -> None:
     """Activate only after the generated phrase is typed back and reopened."""
+    if not verify_password(current_password, user.password_hash).valid:
+        raise ValueError("Invalid credentials")
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     active_generation = int(manifest.get("active_recovery_credential_generation", 0))
-    upgrading_legacy = active_generation == 0
+    upgrading_legacy = pending_generation == 1
     required_frk_versions = (
         {1}
         if upgrading_legacy
@@ -1155,6 +1163,18 @@ def confirm_recovery_credential(
         manifest_status=status,
         required_frk_versions=required_frk_versions,
     )
+    if upgrading_legacy:
+        _verify_pending_password_generation(
+            db,
+            password=current_password,
+            generation=pending_generation,
+            scope=PayloadScope.FULL,
+            required_frk_versions=required_frk_versions,
+            expected_sqlcipher=pending.sqlcipher_key,
+            expected_frks=pending.frks,
+            expected_domains=pending.soul_domains,
+            manifest_status=status,
+        )
     _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
 
     if active_generation < pending_generation:
@@ -1245,4 +1265,17 @@ def confirm_recovery_credential(
         or verified.soul_domains != pending.soul_domains
     ):
         raise ValueError("active recovery credential generation verification failed")
+    if upgrading_legacy:
+        verified_password = unlock_key_hierarchy(
+            db,
+            credential=current_password,
+            wrapping_path=WrappingPath.PASSWORD,
+            scope=PayloadScope.FULL,
+        )
+        if (
+            verified_password.sqlcipher_key != pending.sqlcipher_key
+            or not _filesystem_roots_match(verified_password.frks, pending.frks)
+            or verified_password.soul_domains != pending.soul_domains
+        ):
+            raise ValueError("active password credential generation verification failed")
     _inject(failure_injector, CredentialBoundary.ACTIVE_REOPEN_VERIFIED)

@@ -37,6 +37,7 @@ describe("recovery credential replacement", () => {
       result.recoveryPhrase,
       result.pendingGeneration,
       result.scope,
+      "current-password",
     );
 
     expect(result.recoveryPhrase).toBe("new phrase words");
@@ -52,6 +53,7 @@ describe("recovery credential replacement", () => {
       recoveryPhrase: "new phrase words",
       pendingGeneration: 2,
       scope: "full",
+      currentPassword: "current-password",
     });
     expect(new Headers(requests[0]?.init?.headers).get("x-anima-unlock")).toBe(
       "unlock-token",
@@ -59,12 +61,19 @@ describe("recovery credential replacement", () => {
   });
 
   test("keeps the phrase only until the user types it back exactly", () => {
-    const review = beginRecoveryPhraseReview("alpha beta gamma", 2, "full");
+    const review = beginRecoveryPhraseReview(
+      "alpha beta gamma",
+      2,
+      "full",
+      "current-password",
+    );
     expect(review.phrase).toBe("alpha beta gamma");
+    expect(review.currentPassword).toBe("current-password");
 
     const mismatch = validateRecoveryPhraseConfirmation(review, "alpha beta");
     expect(mismatch.phase).toBe("review");
     expect(mismatch.phrase).toBe("alpha beta gamma");
+    expect(mismatch.currentPassword).toBe("current-password");
     expect(mismatch.error).toBe("Type the new recovery phrase exactly to confirm it.");
 
     const typedBack = validateRecoveryPhraseConfirmation(mismatch, "alpha beta gamma");
@@ -74,6 +83,7 @@ describe("recovery credential replacement", () => {
     const confirmed = completeRecoveryPhraseReview(typedBack);
     expect(confirmed.phase).toBe("complete");
     expect(confirmed.phrase).toBeNull();
+    expect(confirmed.currentPassword).toBeNull();
     expect(confirmed.error).toBeNull();
   });
 

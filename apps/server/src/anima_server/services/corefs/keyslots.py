@@ -541,18 +541,33 @@ def _manifest_slots(manifest: dict[str, object]) -> list[ManifestKeyslot]:
 def manifest_has_versioned_key_hierarchy(manifest: dict[str, object]) -> bool:
     """Return whether the manifest declares any versioned credential state.
 
-    The generation/rotation markers are authoritative even if an interrupted or
-    malicious edit removed every slot. This keeps legacy wrappers from becoming
-    a fallback authentication path for a damaged versioned Core.
+    Generation/rotation markers and activated slot evidence are authoritative
+    even if an interrupted or malicious edit removed the other representation.
+    A valid PENDING-only slot set remains non-authoritative so an unconfirmed
+    legacy upgrade can still use its legacy credential wrappers.
     """
-    return any(
+    if any(
         field in manifest
         for field in (
             "active_password_credential_generation",
             "active_recovery_credential_generation",
             "frk_rotation",
         )
-    )
+    ):
+        return True
+
+    raw_slots = manifest.get("keyslots", [])
+    if not isinstance(raw_slots, list):
+        return "keyslots" in manifest
+    for raw_slot in raw_slots:
+        if not isinstance(raw_slot, dict):
+            return True
+        status = raw_slot.get("status")
+        if status in {KeyslotStatus.ACTIVE.value, KeyslotStatus.DECRYPT_ONLY.value}:
+            return True
+        if status != KeyslotStatus.PENDING.value:
+            return True
+    return False
 
 
 def get_active_manifest_scope(wrapping_path: WrappingPath) -> PayloadScope:

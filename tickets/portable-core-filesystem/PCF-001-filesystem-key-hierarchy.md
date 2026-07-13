@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 02:11 MYT
+- Updated: 2026-07-14 02:49 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -31,7 +31,7 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 ## Acceptance
 
 - Password and recovery paths unlock every required root and Soul-domain key.
-- No raw key or private profile field appears in the manifest.
+- No raw key or private profile field is added to the new versioned owner/keyslot structures; legacy manifest compatibility fields, including `user_index`, remain until PCF-007.
 - Cross-store interruption tests pass at every durable boundary.
 - No live password/recovery endpoint can bypass the active manifest/Soul/FRK credential generation.
 - Soul-only completeness requires every Soul root/domain key but forbids FRK slots; CoreFS-only completeness requires every retained FRK but forbids SQLCipher/Soul-domain slots.
@@ -46,10 +46,14 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-13 23:13 MYT - Implemented the native opaque FRK/Object-DEK boundary, owner-bound password/recovery generations, typed CoreFS AAD, two-phase recovery confirmation, scoped credential rotation, strict legacy backfill, migration compatibility coverage, and Security UI/API flow; validation is green and the ticket remains `in_progress` pending supervising-agent review.
 - 2026-07-14 01:09 MYT - Addressed follow-up security review findings: active versioned roots now gate login/recovery before SQLCipher, Soul crash finalization derives the active scope, genuine CoreFS-only credential replacement is manifest-only, persisted unwrap profiles are bounded, manifest publication is native and durable, and the closed object/FRK/password contracts are enforced. Ticket remains `in_progress` for re-review.
 - 2026-07-14 02:11 MYT - Addressed retained-FRK review findings: pending password and recovery generations now verify against the authoritative pre-activation FRK catalog, legacy upgrade uses its protocol-defined v1 catalog without publishing active markers early, and full/FS tamper tests prove failure before activation while the old credential generation remains usable. Ticket remains `in_progress` for re-review.
+- 2026-07-14 02:49 MYT - Addressed the fourth follow-up: activated keyslot evidence now prevents legacy fallback when generation markers are removed while PENDING-only legacy-upgrade slots remain non-authoritative; legacy confirmation revalidates both password and recovery generations immediately before activation and reopens both afterward; the desktop supplies the current password only from ephemeral review state. Clarified that PCF-001 preserves legacy manifest compatibility fields for PCF-007. Ticket remains `in_progress` for re-review.
 
 ## Validation
 
 - Commands:
+  - Fourth follow-up TDD: the focused backend regression set failed 5 tests before implementation and passed 5 tests afterward; the desktop recovery test failed 2 of 3 tests before implementation and passed 3 of 3 afterward.
+  - Fourth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 33 passed; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_recovery.py -q` - 21 passed.
+  - Fourth follow-up: `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 3 passed; `bun run build:desktop`, `bun run lint:server`, and `bun run build:server` passed.
   - Retained-FRK follow-up: targeted legacy-upgrade plus full/FS password/recovery tamper matrix - 5 passed; full `test_corefs_keyslots.py` - 31 passed; full `test_recovery.py` - 18 passed.
   - Retained-FRK follow-up: scoped Ruff, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server`, and `git diff --check` passed.
   - Follow-up: `.venv\Scripts\maturin.exe develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt the editable extension and exported `corefs_atomic_publish`.
@@ -79,5 +83,6 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
   - `packages/anima-auth-contracts/`, `packages/api-client/`
   - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`, `tickets/portable-core-filesystem/PCF-001-filesystem-key-hierarchy.md`
 - Notes:
+  - PCF-001 adds versioned owner/keyslot authority without deleting legacy manifest compatibility fields. `user_index` and the remaining legacy compatibility surface are intentionally retained until the PCF-007 cutover.
   - Portability tests must set `ANIMA_TEST_TEMP_ROOT` outside the OneDrive-synchronized checkout on Windows; the same isolated test failed only when OneDrive held the directory and passed immediately under `%TEMP%`.
   - FRK generation/wrapping/unwrapping and Object-DEK generation/wrapping/unwrapping remain opaque native handles. Python retains only existing Soul/SQLCipher and legacy UserKey byte handling.

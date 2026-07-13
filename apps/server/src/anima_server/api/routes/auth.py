@@ -377,6 +377,7 @@ def confirm_recovery(
             recovery_phrase=payload.recoveryPhrase.strip().lower(),
             pending_generation=payload.pendingGeneration,
             scope=PayloadScope(payload.scope),
+            current_password=payload.currentPassword,
         )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
