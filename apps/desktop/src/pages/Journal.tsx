@@ -24,6 +24,7 @@ import {
   getSpeechRecognitionConstructor,
   type SpeechRecognitionLike,
 } from "./journal/speech";
+import { resolveDiaryBody } from "./journal/content";
 import { createDiaryHtmlSanitizer } from "./journal/html";
 
 const MAX_ENTRY_LIMIT = 200;
@@ -568,6 +569,7 @@ export default function Journal() {
   const [entryDate, setEntryDate] = useState(todayISODate);
   const [title, setTitle] = useState("");
   const [bodyText, setBodyText] = useState("");
+  const [editorHasContent, setEditorHasContent] = useState(false);
   const [mood, setMood] = useState("");
   const [entryFolderId, setEntryFolderId] = useState<number | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -628,6 +630,11 @@ export default function Journal() {
       top: coords.bottom - wrapperRect.top + 4,
       left: Math.max(0, coords.left - wrapperRect.left),
     });
+  };
+
+  const syncEditorContent = (ed: Editor) => {
+    setBodyText(ed.getText());
+    setEditorHasContent(!ed.isEmpty);
   };
 
   const editor = useEditor({
@@ -702,14 +709,14 @@ export default function Journal() {
           event.preventDefault();
           const parsedHtml = marked.parse(text, { async: false, gfm: true, breaks: false });
           editorRef.current?.chain().focus().insertContent(parsedHtml).run();
-          setBodyText(editorRef.current?.getText() ?? "");
+          if (editorRef.current) syncEditorContent(editorRef.current);
           return true;
         }
         return false;
       },
     },
     onUpdate: ({ editor: e }) => {
-      setBodyText(e.getText());
+      syncEditorContent(e);
       syncSlashMenu(e);
     },
     onSelectionUpdate: ({ editor: e }) => {
@@ -764,7 +771,7 @@ export default function Journal() {
     try {
       const dataUrl = await fileToDataUrl(file);
       editorRef.current?.chain().focus().setImage({ src: dataUrl, alt: file.name }).run();
-      setBodyText(editorRef.current?.getText() ?? "");
+      if (editorRef.current) syncEditorContent(editorRef.current);
     } catch {
       setError(`Failed to embed "${file.name}".`);
     }
@@ -783,7 +790,7 @@ export default function Journal() {
   const pendingCoverPreviewUrl = useFileObjectUrl(pendingCoverFile);
   const composerCoverAttachment = isEditingSelected ? coverAttachment : null;
   const wordCount = useMemo(() => countWords(bodyText), [bodyText]);
-  const canSave = bodyText.trim().length > 0 || files.length > 0;
+  const canSave = editorHasContent || bodyText.trim().length > 0 || files.length > 0;
 
   const availableMoods = useMemo(() => {
     const moods = new Set<string>();
@@ -903,6 +910,7 @@ export default function Journal() {
     setLiveTranscript("");
     setTitle("");
     setBodyText("");
+    setEditorHasContent(false);
     editorRef.current?.commands.clearContent();
     setMood("");
     setEntryFolderId(null);
@@ -937,7 +945,7 @@ export default function Journal() {
         ? selectedEntry.body
         : escapeHtmlForEditor(selectedEntry.body));
     editorRef.current?.commands.setContent(html);
-    setBodyText(editorRef.current?.getText() ?? "");
+    if (editorRef.current) syncEditorContent(editorRef.current);
     setFiles([]);
     setPendingCoverFile(null);
     setEntryFolderId(selectedEntry.folderId);
@@ -1008,7 +1016,7 @@ export default function Journal() {
         const ed = editorRef.current;
         if (ed) {
           ed.commands.insertContentAt(ed.state.doc.content.size, `${finalText.trim()} `);
-          setBodyText(ed.getText());
+          syncEditorContent(ed);
         }
       }
       setLiveTranscript(interimText.trim());
@@ -1104,10 +1112,13 @@ export default function Journal() {
     setError(null);
     const editingEntry = isEditingSelected ? selectedEntry : null;
     try {
-      const hasText = bodyText.trim().length > 0;
-      const bodyValue = hasText
-        ? (editorRef.current?.getHTML() ?? bodyText.trim())
-        : "Attachment-only diary entry.";
+      const currentEditor = editorRef.current;
+      const bodyValue =
+        resolveDiaryBody({
+          editorIsEmpty: currentEditor?.isEmpty ?? bodyText.trim().length === 0,
+          editorHtml: currentEditor?.getHTML() ?? "",
+          plainText: bodyText,
+        }) ?? "Attachment-only diary entry.";
 
       let savedId: number;
       if (editingEntry) {

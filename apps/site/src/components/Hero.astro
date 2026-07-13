@@ -4,7 +4,7 @@ import ReserveButton from "./ReserveButton.tsx";
 ---
 
 <section class="h-screen min-h-screen flex flex-col px-6 relative overflow-hidden justify-end">
-  <AnimaLogoBg client:load />
+  <AnimaLogoBg client:idle={{ timeout: 2000 }} />
 
   <div class="shrink-0 flex justify-center pb-12 z-30">
     <ReserveButton client:load />
