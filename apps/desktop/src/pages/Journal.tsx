@@ -27,7 +27,6 @@ import {
 
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
-const DRAFT_DEBOUNCE_MS = 500;
 const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
 
 const INLINE_IMAGE_CLASS =
@@ -44,13 +43,6 @@ const DIARY_PROSE_CLASS = cn(
   "prose-hr:border-border",
   "prose-li:my-1",
 );
-
-interface DiaryDraft {
-  title: string;
-  html: string;
-  mood: string;
-  entryDate: string;
-}
 
 function todayISODate(): string {
   const now = new Date();
@@ -295,26 +287,6 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
     reader.readAsDataURL(file);
   });
-}
-
-function draftStorageKey(userId: number, mode: string): string {
-  return `anima:diary:draft:${userId}:${mode}`;
-}
-
-function readDraft(userId: number, mode: string): DiaryDraft | null {
-  try {
-    const raw = window.localStorage.getItem(draftStorageKey(userId, mode));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<DiaryDraft>;
-    return {
-      title: parsed.title ?? "",
-      html: parsed.html ?? "",
-      mood: parsed.mood ?? "",
-      entryDate: parsed.entryDate ?? todayISODate(),
-    };
-  } catch {
-    return null;
-  }
 }
 
 function isPreviewableAttachment(kind: string): boolean {
@@ -808,7 +780,6 @@ export default function Journal() {
   }, [selectedEntry]);
   const pendingCoverPreviewUrl = useFileObjectUrl(pendingCoverFile);
   const composerCoverAttachment = isEditingSelected ? coverAttachment : null;
-  const composing = !selectedEntry || isEditingSelected;
   const wordCount = useMemo(() => countWords(bodyText), [bodyText]);
   const canSave = bodyText.trim().length > 0 || files.length > 0;
 
@@ -899,49 +870,20 @@ export default function Journal() {
     };
   }, []);
 
-  // Restores a crashed/closed unsaved new-entry draft once the editor mounts.
+  // Remove drafts written by older builds. Diary content must stay in the
+  // encrypted diary service, not in browser storage.
   useEffect(() => {
-    if (user?.id == null || !editor) return;
-    const draft = readDraft(user.id, "new");
-    if (!draft) return;
-    setTitle(draft.title);
-    setMood(draft.mood);
-    if (draft.entryDate) setEntryDate(draft.entryDate);
-    if (draft.html) {
-      editor.commands.setContent(draft.html);
-      setBodyText(editor.getText());
+    if (user?.id == null) return;
+    const prefix = `anima:diary:draft:${user.id}:`;
+    try {
+      for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+        const key = window.localStorage.key(index);
+        if (key?.startsWith(prefix)) window.localStorage.removeItem(key);
+      }
+    } catch {
+      // Browser storage can be unavailable in restricted environments.
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, editor]);
-
-  // Autosaves the active composer (new entry or in-progress edit) so work
-  // survives a crash or accidental reload; stops touching storage once the
-  // composer is closed so navigating away doesn't clobber a saved draft.
-  useEffect(() => {
-    if (user?.id == null || !composing) return;
-    const mode = isEditingSelected && selectedEntry ? `edit-${selectedEntry.id}` : "new";
-    const key = draftStorageKey(user.id, mode);
-    const timer = window.setTimeout(() => {
-      const hasContent = title.trim() || bodyText.trim() || mood.trim();
-      if (!hasContent) {
-        window.localStorage.removeItem(key);
-        return;
-      }
-      const draft: DiaryDraft = {
-        title,
-        mood,
-        entryDate,
-        html: editorRef.current?.getHTML() ?? "",
-      };
-      try {
-        window.localStorage.setItem(key, JSON.stringify(draft));
-      } catch {
-        // Drafts with large embedded images can exceed the localStorage
-        // quota; autosave is best-effort, so just skip this write.
-      }
-    }, DRAFT_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [user?.id, composing, isEditingSelected, selectedEntry, title, bodyText, mood, entryDate]);
+  }, [user?.id]);
 
   const releaseRecordingResources = () => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -984,13 +926,11 @@ export default function Journal() {
   };
 
   const startEditEntry = () => {
-    if (!selectedEntry || user?.id == null) return;
-    const draft = readDraft(user.id, `edit-${selectedEntry.id}`);
-    setTitle(draft?.title ?? selectedEntry.title ?? "");
-    setMood(draft?.mood ?? selectedEntry.mood ?? "");
-    setEntryDate(draft?.entryDate ?? selectedEntry.entryDate);
+    if (!selectedEntry) return;
+    setTitle(selectedEntry.title ?? "");
+    setMood(selectedEntry.mood ?? "");
+    setEntryDate(selectedEntry.entryDate);
     const html =
-      draft?.html ||
       (isHtmlBody(selectedEntry.body)
         ? selectedEntry.body
         : escapeHtmlForEditor(selectedEntry.body));
@@ -1004,9 +944,6 @@ export default function Journal() {
   };
 
   const cancelEdit = () => {
-    if (user?.id != null && selectedEntry) {
-      window.localStorage.removeItem(draftStorageKey(user.id, `edit-${selectedEntry.id}`));
-    }
     setIsEditingSelected(false);
     resetComposer();
   };
@@ -1203,9 +1140,6 @@ export default function Journal() {
         await api.diary.update(savedId, { coverAttachmentId: coverUpload.id });
       }
 
-      window.localStorage.removeItem(
-        draftStorageKey(user.id, editingEntry ? `edit-${editingEntry.id}` : "new"),
-      );
       setIsEditingSelected(false);
       resetComposer();
       await Promise.all([loadEntries(), loadFolders()]);
