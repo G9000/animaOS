@@ -1,7 +1,7 @@
 # Portable Core Key Hierarchy and Rotation Design
 
 **Date:** 2026-07-12  
-**Status:** Approved
+**Status:** Approved<br>
 **Scope:** Key derivation, wrapping, compromise boundaries, recovery, and resumable rotation for the SQLCipher Soul and encrypted Core Filesystem  
 **Parent design:** [Portable Core Filesystem](2026-07-12-portable-core-filesystem-design.md)
 

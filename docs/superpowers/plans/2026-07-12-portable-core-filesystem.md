@@ -335,7 +335,7 @@ Register `corefs_router` in `main.py`; require an unlocked Core session, authent
 
 - [ ] **Step 12: Implement and run the catalog benchmark**
 
-Generate deterministic 5,000/25,000-entry fixtures and measure the full durable commit path described in the spec. Commit `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json` with OS/CPU/RAM/storage/filesystem, 4-KiB durable-write p95, crypto/serialization versions, warm-up/sample counts, p50/p95/p99, bytes written, and pass/fail against both gates. Do not treat an unrecorded local timing as release evidence.
+Generate the deterministic fixture matrix from the spec: 5,000 live entries plus 500 tombstones; 25,000 live entries plus 2,500 tombstones that must serialize at or below 16 MiB; and, if the maximum-live fixture is smaller than 16 MiB, a separate 16-MiB serialized-catalog fixture with no more than 25,000 live entries. Measure the full durable commit path. Commit `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json` with OS/CPU/RAM/storage/filesystem, 4-KiB durable-write p95, crypto/serialization versions, warm-up/sample counts, live/tombstone/total counts, serialized size, p50/p95/p99, bytes written, and pass/fail for the 100-ms medium gate, the maximum-live size gate, and both 250-ms maximum gates. A maximum-live fixture above 16 MiB fails the design and blocks cutover. Do not treat an unrecorded local timing as release evidence.
 
 - [ ] **Step 13: Run focused tests**
 
@@ -479,27 +479,31 @@ git -c commit.gpgsign=false commit -m "runtime: rebuild CoreFS indexes after unl
 - Modify: `apps/server/src/anima_server/services/corefs/formats.py`
 - Modify: `apps/server/src/anima_server/services/corefs/migration.py`
 - Modify: `apps/desktop/src/pages/Journal.tsx`
+- Modify: `apps/desktop/src/pages/journal/content.ts`
+- Modify: `apps/desktop/src/pages/journal/html.ts`
 - Modify: `apps/desktop/src/lib/api.ts`
 - Test: `apps/server/tests/test_diary_api.py`
 - Test: `apps/server/tests/test_corefs_diary_migration.py`
 - Test: `apps/server/tests/test_corefs_notes.py`
 - Test: `apps/desktop/tests/journal-corefs.test.ts`
+- Test: `apps/desktop/tests/journal-content.test.ts`
+- Test: `apps/desktop/tests/journal-html.test.ts`
 
 - [ ] **Step 1: Add failing logical-format and folder-role tests**
 
-Cover Markdown frontmatter, first-class stable IDs/empty/custom folders, `core.journal` and `core.notes` role resolution across rename/move/restart, default Journal and Notes `owner=user` plus `agentAccess=write`, deny inheritance, cover/attachment CoreFS URIs, note Markdown/sanitized HTML, and encrypted draft objects.
+Cover versioned diary HTML sanitization, first-class stable IDs/empty/custom folders, `core.journal` and `core.notes` role resolution across rename/move/restart, default Journal and Notes `owner=user` plus `agentAccess=write`, deny inheritance, cover/attachment/extracted-inline-media CoreFS URIs, note Markdown/sanitized HTML, and encrypted draft objects. Prove sanitized diary HTML preserves the current Tiptap formatting contract while canonical bodies reject scripts, event handlers, unsafe URLs, and residual `data:` payloads.
 
 - [ ] **Step 2: Add failing diary migration tests**
 
-Seed SQLCipher diary folders/entries/attachments, including an empty folder and binary cover; convert; verify IDs, hashes, logical paths, and API parity; rerun idempotently.
+Seed SQLCipher diary folders/entries/attachments with plain-text bodies, rich HTML, inline base64 images, duplicate inline images, an empty folder, a binary cover, attachment-only entries, and cover-only entries. Convert plain text into escaped HTML paragraphs, sanitize existing HTML with the current versioned allowlist, extract and deduplicate valid inline media under MIME/size limits, replace it with stable CoreFS URIs, and reject malformed/oversized payloads without partial publication. Verify IDs, hashes, formatting, references, logical paths, API parity, zero canonical `data:` URLs, and idempotent reruns.
 
 - [ ] **Step 3: Implement diary/note codecs, folder migration, and converter**
 
-Convert each legacy diary folder to a first-class CoreFS folder with its stable ID, hierarchy, ordering, and metadata. Bind the Journal app to the unique `core.journal` role and standalone notes to the unique `core.notes` role rather than display paths; both roots default to `owner=user` and `agentAccess=write`. Private diary and note content remains writable by ANIMA unless the user explicitly lowers access. Keep legacy reads behind the CoreFS layout version until converted and verified. Never dual-authority write after the slice activates.
+Convert each legacy diary folder to a first-class CoreFS folder with its stable ID, hierarchy, ordering, and metadata. Use sanitized HTML plus typed metadata as the canonical diary format so existing Tiptap formatting is not downgraded to Markdown. Reuse the desktop sanitizer contract on the server through one versioned allowlist; extract inline `data:` images into encrypted CoreFS binary objects and publish their diary references atomically. Bind the Journal app to the unique `core.journal` role and standalone notes to the unique `core.notes` role rather than display paths; both roots default to `owner=user` and `agentAccess=write`. Private diary and note content remains writable by ANIMA unless the user explicitly lowers access. Keep legacy reads behind the CoreFS layout version until converted and verified. Never dual-authority write after the slice activates.
 
 - [ ] **Step 4: Prepare diary service/routes for CoreFS behind the cutover gate**
 
-Preserve existing response schemas and authorization checks so the desktop API contract does not change unnecessarily. Before PCF-008, converters write only the inactive validation catalog and routes keep legacy authority; the CoreFS adapter becomes writable authority only through the global cutover state machine.
+Preserve existing response schemas and authorization checks so the desktop API contract does not change unnecessarily. Return resolvable CoreFS media references only through an unlocked authorized session, and update the Journal renderer/content helpers so rich HTML, covers, attachments, and extracted inline media behave as they do today. Before PCF-008, converters write only the inactive validation catalog and routes keep legacy authority; the CoreFS adapter becomes writable authority only through the global cutover state machine.
 
 - [ ] **Step 5: Move Journal drafts out of localStorage**
 
@@ -513,14 +517,14 @@ Provide format validation and generic CoreFS/agent access through the stable `co
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py -q
-bun test apps/desktop/tests/journal-corefs.test.ts
+bun test apps/desktop/tests/journal-corefs.test.ts apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts
 bun run --cwd apps/desktop build
 ```
 
 - [ ] **Step 8: Commit diary/notes slice**
 
 ```powershell
-git add apps/server/src/anima_server/services/diary.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py apps/server/src/anima_server/services/corefs apps/desktop/src/pages/Journal.tsx apps/desktop/src/lib/api.ts apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/desktop/tests/journal-corefs.test.ts
+git add apps/server/src/anima_server/services/diary.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py apps/server/src/anima_server/services/corefs apps/desktop/src/pages/Journal.tsx apps/desktop/src/pages/journal/content.ts apps/desktop/src/pages/journal/html.ts apps/desktop/src/lib/api.ts apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/desktop/tests/journal-corefs.test.ts apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts
 git -c commit.gpgsign=false commit -m "diary: move portable writing to encrypted Core objects"
 ```
 
@@ -595,13 +599,17 @@ git -c commit.gpgsign=false commit -m "chat: make encrypted message segments can
 - Modify: `apps/server/src/anima_server/services/images/backfill.py`
 - Modify: `apps/server/src/anima_server/services/agent/attachments.py`
 - Modify: `apps/server/src/anima_server/services/agent/state.py`
+- Modify: `apps/server/src/anima_server/services/agent/document_tools.py`
 - Modify: `apps/server/src/anima_server/services/documents/store.py`
 - Modify: `apps/server/src/anima_server/services/documents/indexing.py`
 - Modify: `apps/server/src/anima_server/services/documents/rag.py`
+- Modify: `apps/server/src/anima_server/services/documents/parsing.py`
+- Modify: `apps/server/src/anima_server/services/documents/contextual.py`
 - Modify: `apps/server/src/anima_server/services/documents/pdf_workflow.py`
 - Modify: `apps/server/src/anima_server/services/documents/pdf_text.py`
 - Modify: `apps/server/src/anima_server/services/ingestion/artifacts.py`
 - Modify: `apps/server/src/anima_server/services/ingestion/sources.py`
+- Modify: `apps/server/src/anima_server/services/ingestion/compiler.py`
 - Modify: `apps/server/src/anima_server/services/ingestion/document_compiler.py`
 - Modify: `apps/server/src/anima_server/services/ingestion/retrieval.py`
 - Modify: `apps/server/src/anima_server/services/ingestion/okf.py`
@@ -623,6 +631,15 @@ git -c commit.gpgsign=false commit -m "chat: make encrypted message segments can
 - Test: `apps/server/tests/test_agent_biography_preview.py`
 - Test: `apps/server/tests/test_corefs_knowledge_sources.py`
 - Test: `apps/server/tests/test_pdf_workflow.py`
+- Test: `apps/server/tests/test_pdf_workflow_checkpoints.py`
+- Test: `apps/server/tests/test_document_parsing.py`
+- Test: `apps/server/tests/test_document_tools.py`
+- Test: `apps/server/tests/test_contextual_rerank.py`
+- Test: `apps/server/tests/test_html_ingestion.py`
+- Test: `apps/server/tests/test_structured_document.py`
+- Test: `apps/server/tests/test_web_fetch.py`
+- Test: `apps/server/tests/test_knowledge_autocompile.py`
+- Test: `apps/server/tests/test_retrieval_eval.py`
 
 - [ ] **Step 1: Add failing binary-object/reference tests**
 
@@ -630,7 +647,14 @@ Cover per-object DEKs, chunk-authenticated streaming/range reads, content hashes
 
 - [ ] **Step 2: Add failing source migration tests**
 
-Seed `runtime_image_assets`, annotations/links, `runtime_documents`, original uploads, pasted text/Markdown, captured web pages, source artifacts/spans, and derived chunks. Verify original user-owned bytes or normalized imported source snapshots plus metadata become canonical. Extracted chunks, OCR, source spans, compiled concepts, previews, embeddings, and workflow state are rebuilt in unlocked process memory; PostgreSQL retains only safe hashes/locators/status/checkpoints.
+Seed `runtime_image_assets`, annotations/links, `runtime_documents`, original uploads, pasted text/Markdown, captured web pages, source artifacts/spans, derived chunks, contextual blurbs, compiled concepts, and concept citations. Verify original user-owned bytes and every captured source needed for deterministic offline rebuild become canonical CoreFS objects. Enforce this current-field migration matrix:
+
+- `RuntimeDocument` filename/title/storage-path metadata becomes private canonical metadata or safe Runtime hashes/CoreFS references; no legacy host path remains authoritative.
+- `RuntimeDocumentChunk.content_text`, section title/path metadata, contextual blurb, previews, embeddings, and vectors become unlock-scoped in-memory derivations and are scrubbed from persistent Runtime.
+- `RuntimeSourceArtifact.content_text`, raw HTML, normalized structured Markdown, and `RuntimeSourceSpan.content_text` become encrypted captured-source objects or unlock-scoped derivations according to the source contract; none remains plaintext Runtime data.
+- `RuntimeKnowledgeConcept` title, description, `body_markdown`, and frontmatter plus `RuntimeKnowledgeConceptSource.quote_text` become unlock-scoped compiled projections backed by canonical captured sources; Runtime retains only safe opaque/hash/locator/progress metadata.
+
+Delete Runtime, rebuild without network access, compare document/source/concept retrieval behavior, and scan the rebuilt persistent store for seeded plaintext markers.
 
 - [ ] **Step 3: Rewire image and attachment storage**
 
@@ -638,11 +662,11 @@ Implement adapters replacing direct `users/<id>/avatars`, `users/<id>/attachment
 
 - [ ] **Step 4: Rewire document registration**
 
-Register the original document as a canonical attachment object; runtime ingestion rows reference its object ID/revision and rebuild chunks/indexes. Change PDF reindex/text extraction to consume bounded authenticated CoreFS streams or random-access chunk readers. Never materialize a decrypted normal temp file merely to satisfy a host-`Path` API.
+Register the original document as a canonical attachment object; runtime ingestion rows reference its object ID/revision and rebuild chunks/indexes. Change `documents/parsing.py`, PDF reindex, and text extraction to consume a typed bounded authenticated CoreFS byte/range source instead of a host `Path`. Rewire `agent/document_tools.py` to query the unlocked in-memory document index and hydrate canonical CoreFS/source content rather than reading persisted `RuntimeDocumentChunk.content_text`. Generate contextual blurbs in memory for the active unlock/index generation; never persist them in Runtime chunk metadata. Never materialize a decrypted normal temp file merely to satisfy a host-`Path` API.
 
 - [ ] **Step 5: Canonicalize imported knowledge sources**
 
-Store pasted text/Markdown and a normalized fetched web snapshot as encrypted source objects with source URI, fetch timestamp, content type, and content hash. Runtime source rows point to the CoreFS URI/revision; refresh creates a new canonical revision rather than silently replacing history. Rebuild ingestion from the captured object without network refetch. Keep compiled concepts/spans/chunks in memory only, except safe opaque/hash/locator progress metadata.
+Store pasted text/Markdown and, for web capture, both the original raw HTML and its normalized structured snapshot as encrypted source objects with source URI, fetch timestamp, content type, extractor/sanitizer version, and content hash. Keeping raw HTML permits future deterministic re-extraction without network refetch; the normalized snapshot preserves the exact imported revision. Runtime source rows point only to CoreFS IDs/revisions and safe progress metadata; refresh creates new canonical revisions rather than silently replacing history. Rework `ingestion/compiler.py` so compiled concept title/description/body/frontmatter, source spans, citation quote text, and chunks exist only in the active unlocked index/projection. Persist no compiled plaintext duplicate in PostgreSQL. The merged `documents/reranker.py`, `ingestion/structured.py`, `ingestion/html_extract.py`, and `ingestion/web_fetch.py` remain validation surfaces because they are pure/in-memory adapters; their regression tests must still pass, and any future persistence or host-path dependency moves them into the explicit migration inventory.
 
 - [ ] **Step 6: Reconcile conversation attachment links**
 
@@ -651,13 +675,13 @@ Ensure canonical message segments reference migrated gallery/document CoreFS URI
 - [ ] **Step 7: Run focused tests**
 
 ```powershell
-$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_image_retrieval_context.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_pdf_workflow.py -q
+$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_image_retrieval_context.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_pdf_workflow.py apps/server/tests/test_pdf_workflow_checkpoints.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py -q
 ```
 
 - [ ] **Step 8: Commit asset/document/knowledge-source slice**
 
 ```powershell
-git add apps/server/src/anima_server/services/images apps/server/src/anima_server/services/agent/attachments.py apps/server/src/anima_server/services/agent/state.py apps/server/src/anima_server/services/agent/tools.py apps/server/src/anima_server/services/documents/store.py apps/server/src/anima_server/services/documents/indexing.py apps/server/src/anima_server/services/documents/rag.py apps/server/src/anima_server/services/documents/pdf_workflow.py apps/server/src/anima_server/services/documents/pdf_text.py apps/server/src/anima_server/services/ingestion/artifacts.py apps/server/src/anima_server/services/ingestion/sources.py apps/server/src/anima_server/services/ingestion/document_compiler.py apps/server/src/anima_server/services/ingestion/retrieval.py apps/server/src/anima_server/services/ingestion/okf.py apps/server/src/anima_server/services/ingestion/lint.py apps/server/src/anima_server/services/ingestion/adapters apps/server/src/anima_server/api/routes/images.py apps/server/src/anima_server/api/routes/documents.py apps/server/src/anima_server/api/routes/consciousness.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/src/anima_server/services/corefs/migration.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_pdf_workflow.py
+git add apps/server/src/anima_server/services/images apps/server/src/anima_server/services/agent/attachments.py apps/server/src/anima_server/services/agent/state.py apps/server/src/anima_server/services/agent/document_tools.py apps/server/src/anima_server/services/agent/tools.py apps/server/src/anima_server/services/documents apps/server/src/anima_server/services/ingestion/artifacts.py apps/server/src/anima_server/services/ingestion/sources.py apps/server/src/anima_server/services/ingestion/compiler.py apps/server/src/anima_server/services/ingestion/document_compiler.py apps/server/src/anima_server/services/ingestion/retrieval.py apps/server/src/anima_server/services/ingestion/okf.py apps/server/src/anima_server/services/ingestion/lint.py apps/server/src/anima_server/services/ingestion/adapters apps/server/src/anima_server/api/routes/images.py apps/server/src/anima_server/api/routes/documents.py apps/server/src/anima_server/api/routes/consciousness.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/src/anima_server/services/corefs/migration.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_pdf_workflow.py apps/server/tests/test_pdf_workflow_checkpoints.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py
 git -c commit.gpgsign=false commit -m "content: move user assets into encrypted Core objects"
 ```
 
@@ -803,7 +827,7 @@ git -c commit.gpgsign=false commit -m "core: separate portable account and app p
 - Modify: `packages/api-client/src/types.ts`
 - Create: `apps/desktop/src/pages/settings/CoreTransferSettings.tsx`
 - Modify: `apps/desktop/src/pages/settings/VaultSettings.tsx` (redirect/deprecate legacy UI)
-- Modify: architecture/thesis/PRD docs listed in the design
+- Modify: architecture/thesis/PRD docs listed in the design, including `docs/architecture/agent/document-processing.md` and `docs/architecture/agent/source-ingestion.md`
 - Test: `apps/server/tests/test_corefs_cutover.py`
 - Test: `apps/server/tests/test_corefs_transfer.py`
 - Test: `apps/server/tests/test_corefs_authority.py`

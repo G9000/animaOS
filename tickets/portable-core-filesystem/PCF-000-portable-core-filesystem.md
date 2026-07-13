@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 18:58 MYT
+- Updated: 2026-07-13 20:47 MYT
 - Started:
 - Completed:
 
@@ -65,11 +65,15 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-12 17:34 MYT - Closed final review gaps for structural-only `manage`, broker-derived package identity, user-reauthenticated trash purge, complete Apache license/NOTICE distribution, and Animus submodule staging.
 - 2026-07-12 18:00 MYT - Added the linked full target-architecture graph for topology, startup/indexing, tool routing, operations, authorization, and transfer/recovery.
 - 2026-07-12 18:58 MYT - Closed the final execution-readiness gaps for standalone CI/release notices, stable Notes/Conversations roots, and principal-aware CoreFS API authorization.
+- 2026-07-13 20:47 MYT - Reconciled the initiative with merged main: preserved current rich Journal HTML/media behavior, inventoried new document parsing/tool/context/compiler persistence boundaries, expanded migration tests/docs, and made catalog benchmark fixtures unambiguous.
 
 ## Validation
 
 - Commands:
-  - documentation review only
+  - `git diff --check`
+  - scoped Markdown link/anchor, plan action/path, and docs-drift checks
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
+  - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
 - Changed paths:
   - `docs/prds/portable-core-filesystem-v1.md`
   - `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md`
@@ -82,3 +86,4 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `tickets/portable-core-filesystem/`
 - Notes:
   - Implementation has not started.
+  - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.

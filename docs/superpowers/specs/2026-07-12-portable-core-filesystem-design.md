@@ -1,7 +1,7 @@
 # Portable Core Filesystem Design
 
 **Date:** 2026-07-12  
-**Status:** Approved
+**Status:** Approved<br>
 **Scope:** Define animaOS's ANIMA CORE subsystem: separate agent-internal Soul state from portable application content, keep runtime PostgreSQL disposable and machine-local, and support local streaming transfer/recovery  
 **PRD:** [Portable Core Filesystem v1](../../prds/portable-core-filesystem-v1.md)
 
@@ -245,7 +245,7 @@ The key hierarchy, per-object DEKs, compromise boundaries, recovery wrappers, an
 |---|---|---|
 | Account profile | versioned JSON | atomic revision replacement |
 | Folder | first-class catalog entry with stable ID, parent, role, owner, access policy, and namespaced metadata | atomic catalog revision; survives while empty |
-| Diary | Markdown plus typed metadata | atomic document replacement or patch |
+| Diary | sanitized HTML plus typed metadata | atomic document replacement or patch; embedded media extracted to CoreFS objects |
 | Draft | Markdown or JSON draft plus target reference | atomic replacement; explicit promotion/removal on save |
 | Note | Markdown or sanitized HTML plus typed metadata | atomic document replacement or patch |
 | Thread | JSON metadata | atomic metadata revision |
@@ -254,6 +254,8 @@ The key hierarchy, per-object DEKs, compromise boundaries, recovery wrappers, an
 | Attachment | content-addressed binary plus metadata | immutable binary; reference-counted links |
 | Task | JSON document | atomic revision replacement |
 | Preferences | versioned JSON document | atomic revision replacement |
+
+Diary migration is lossless against the current Tiptap/Journal contract. Plain-text legacy bodies are HTML-escaped and wrapped as paragraphs; legacy HTML is normalized through the same versioned sanitizer used for new writes. An inline `data:` image is decoded, MIME- and size-validated, content-deduplicated into an encrypted binary CoreFS object, and replaced with a stable `corefs://object/<object-id>` URI before the diary revision is published. Covers, attachment-only entries, cover-only entries, folder membership, and rich formatting must survive conversion. The unlocked desktop API resolves CoreFS media URIs for rendering; canonical diary HTML never retains base64 `data:` payloads.
 
 Messages are segmented rather than stored in one ever-growing encrypted file. The unlocked API projects the segments as one ordered JSONL-compatible event stream.
 
@@ -337,9 +339,11 @@ Reference benchmark profile and fixture:
 - Windows 11 x64, local NTFS volume, release/optimized build, production Argon2id/AES-GCM/serialization code
 - at least 4 physical CPU cores, 16 GiB RAM, and an internal NVMe SSD whose separately recorded 4 KiB durable-write/fsync p95 is <= 5 ms
 - no OneDrive-synchronized, network, removable, RAM-disk, or write-cache-without-durability target
-- deterministic synthetic catalogs at exactly 5,000 entries and 25,000 entries, with the latter serialized to 16 MiB using representative path, metadata, hash, wrapped-object-key, and tombstone distributions
+- deterministic fixture matrix: 5,000 live entries plus 500 tombstones; 25,000 live entries plus 2,500 tombstones that must serialize at or below 16 MiB; and, when that maximum-live fixture serializes below 16 MiB, a separate 16-MiB serialized-catalog fixture with no more than 25,000 live entries
 - each sample measures the complete commit path: serialize, encrypt, temporary-file write, durable flush, atomic rename, directory durability operation supported by the platform, `fs/HEAD` write/flush, and lock hold time
-- 30 warm-up commits followed by at least 200 measured commits; report p50/p95/p99, bytes written, and hardware/filesystem metadata in a checked benchmark artifact
+- 30 warm-up commits followed by at least 200 measured commits per fixture; report p50/p95/p99, bytes written, live/tombstone/total counts, and hardware/filesystem metadata in a checked benchmark artifact
+
+The 5,000-live fixture must meet p95 <= 100 ms. Both the 25,000-live fixture and the separate 16-MiB fixture, when required, must meet p95 <= 250 ms. If the maximum-live fixture exceeds 16 MiB, the declared support envelope fails and the design must be revised before cutover; the benchmark must not measure an unsupported oversized catalog or skip the max-size gate. Tombstones do not reduce the advertised live-entry capacity.
 
 These are V1 support targets, not a reason to reject or delete content at runtime. Approaching the envelope produces health/capacity warnings and a documented export path. A later version may introduce family-sharded catalogs, a persistent authenticated tree, or deltas with periodic compaction, but V1 cannot silently substitute one of those structures because it would change recovery and atomicity semantics.
 
@@ -400,7 +404,8 @@ The service must:
 - require a user-approved, folder-scoped read/write/manage capability for each client extension
 - revoke every CoreFS handle, stream, iterator, and derived plaintext view when the Core locks
 - validate decoded schema before returning content
-- sanitize HTML at the presentation boundary
+- sanitize HTML with a versioned content-family allowlist before canonical publication; for Diary, decode/validate/extract permitted inline `data:` media and replace it with CoreFS URIs in the same preflighted publication
+- sanitize canonical HTML again at the presentation boundary as defense in depth
 - require optimistic revision checks for mutation
 - bound read/search output for context-window safety
 - record runtime audit events without copying private body content into logs
@@ -621,7 +626,7 @@ ANIMA interacts with CoreFS like a coding agent interacts with a repository:
 4. write or apply a revision-checked narrow patch
 5. create/mkdir/move/trash/restore through explicit tools
 
-Feature-specific tools may remain as convenience wrappers, but they must delegate to CoreFS. For example, `create_diary_entry` can construct validated Markdown and call `CoreFS.create`; it cannot write a separate diary database row.
+Feature-specific tools may remain as convenience wrappers, but they must delegate to CoreFS. For example, `create_diary_entry` can construct sanitized HTML plus typed metadata and call `CoreFS.create`; it cannot write a separate diary database row.
 
 Search and read results identify logical path, Core object ID, revision, and content hash so later edits are race-safe and memory provenance is stable.
 
@@ -704,14 +709,14 @@ Before cutover, an automated/static inventory test must enumerate browser storag
 | manifest wrapped/recovery keys | password/recovery keyslots for the SQLCipher Soul key and Filesystem Root Key, with active/decrypt-only versions |
 | plaintext manifest `user_index` | removed; optional remembered username remains device-local only |
 | SQLCipher `diary_folders` | first-class folder entries preserving stable IDs, hierarchy, ordering, names, empty folders, and the unique `core.journal` role |
-| SQLCipher `diary_entries`, `diary_attachments` | diary Markdown objects plus encrypted attachment objects linked to folder CoreFS URIs |
+| SQLCipher `diary_entries`, `diary_attachments` | sanitized diary HTML objects plus encrypted cover, attachment, and extracted-inline-media objects linked by CoreFS URIs; plaintext legacy bodies are escaped into HTML paragraphs and no canonical `data:` URL remains after migration |
 | SQLCipher `tasks` | task JSON objects |
 | legacy SQLCipher `agent_threads/messages/runs/steps` | canonical thread/message objects where still populated; runs/steps remain runtime only if operational |
 | PostgreSQL `runtime_threads`, `runtime_messages` | canonical thread metadata and message segments |
 | encrypted transcript JSONL | canonical historical message segments, deduplicated against runtime messages |
 | PostgreSQL image assets/annotations/links | gallery/attachment objects and CoreFS URI references |
-| PostgreSQL `runtime_documents` and original file-backed uploads/source artifacts | canonical attachment/document/source objects when original user-owned bytes or imported text/Markdown/web snapshots exist; safe ingestion status remains Runtime |
-| PostgreSQL document chunks, OCR text, source spans, compiled concepts, previews, and workflow checkpoints | plaintext derivations rebuild into unlock-scoped process memory; PostgreSQL retains only safe opaque/hash/locator/status/checkpoint fields |
+| PostgreSQL `runtime_documents` and original file-backed uploads/source artifacts | canonical attachment/document/source objects when original user-owned bytes or imported text/Markdown exist; web capture preserves both original raw HTML and its normalized structured snapshot as immutable encrypted source revisions so exact rebuild and future offline re-extraction do not require the network; safe ingestion status remains Runtime |
+| PostgreSQL document chunks, OCR text, source spans, contextual blurbs, compiled concept title/description/body/frontmatter, citation quote text, previews, and workflow checkpoints | plaintext derivations rebuild into unlock-scoped process memory; PostgreSQL retains only safe opaque/hash/locator/status/checkpoint fields |
 | desktop localStorage/Tauri app-data/server settings | migrate according to Section 12.2; no unclassified key may cross cutover |
 | presence/integration/config/link tables | explicit row/field inventory into Soul, portable preferences, device config, OS secrets, or removed derived state |
 | Soul-side vector caches (`memory_vectors`, all `embedding_json`/`embedding_checksum` columns, and experience-cluster centroids) | remove after the observation gate; rebuild unlock-scoped vectors/indexes from retained Soul text/state into process memory only |
@@ -831,8 +836,8 @@ Metrics:
 
 ### 16.2 Format Contracts
 
-- Markdown frontmatter round-trip
-- HTML sanitization boundary
+- Markdown frontmatter round-trip for Notes and imported text sources
+- versioned diary/Note HTML sanitization boundary, including extraction and URI resolution for embedded `data:` media
 - JSON schema versioning
 - first-class folder entries preserving empty/custom folders, stable IDs, roles, ownership, policy, and namespaced metadata
 - message-segment ordering, append, deduplication, and corruption isolation
@@ -904,6 +909,8 @@ Implementation must update documents that currently say PostgreSQL lives inside 
 - `docs/architecture/system/anima-core-filesystem.md` (remove the planned-status warning only after the cutover acceptance gate passes)
 - `docs/architecture/memory/memory-system.md`
 - `docs/architecture/system/database-schema.md`
+- `docs/architecture/agent/document-processing.md`
+- `docs/architecture/agent/source-ingestion.md`
 - `docs/prds/three-tier-architecture.md`
 - relevant setup, vault, recovery, and developer workflow documentation
 

@@ -1,7 +1,7 @@
 ---
 title: Portable Core Filesystem (Product)
 author: Julio Caesar
-last_edited: 2026-07-12
+last_edited: 2026-07-13
 version: 1
 status: approved
 ---
@@ -14,7 +14,7 @@ status: approved
 | Version | 1 |
 | Status | Approved |
 | Created | 2026-07-12 |
-| Last edited | 2026-07-12 |
+| Last edited | 2026-07-13 |
 
 > Keep the complete portable identity and user-owned experience in one Core while reserving SQLCipher exclusively for ANIMA's internal continuity and excluding device capabilities and external credentials.
 
@@ -108,7 +108,7 @@ The placement rule is:
 
 | Family | Logical representation after unlock | Examples |
 |---|---|---|
-| Diary | Markdown with structured metadata | entries, folders, covers, attachments |
+| Diary | sanitized HTML with structured metadata | rich entries, folders, covers, extracted inline media, attachments |
 | Folders | first-class catalog entries with stable ID, parent, role, owner, access policy, and namespaced metadata | user folders, ANIMA folders, shared folders, stable/empty app roots |
 | Notes | Markdown or HTML with structured metadata | user notes, linked documents |
 | Conversations | thread metadata plus append-oriented JSONL message records | threads, messages, attachment references |
@@ -144,7 +144,7 @@ Local transfer is streamed rather than assembled in memory. Export pins one comm
 | Soul purity | No app-specific canonical tables or feature CRUD paths remain in active SQLCipher schema/services after cutover | Schema allowlist test plus dependency/import boundary test |
 | Runtime disposability | Deleting the runtime directory loses no canonical user content or Soul state | Delete runtime fixture, restart, rebuild, and compare user-visible content |
 | Catalog readiness | Existing medium-size Core reaches navigable state without waiting for embeddings | Startup benchmark with staged readiness assertions |
-| Catalog scale | Full-snapshot catalog commit meets p95 <= 100 ms at 5,000 entries and p95 <= 250 ms at 25,000 entries/16 MiB on the defined reference profile | Deterministic release-build catalog publication benchmark using the fixture and hardware/storage profile in the design, with fsync enabled |
+| Catalog scale | Full-snapshot catalog commit meets p95 <= 100 ms with 5,000 live entries plus 500 tombstones and p95 <= 250 ms both with 25,000 live entries plus 2,500 tombstones within the 16-MiB envelope and at the 16-MiB serialized-catalog limit | Deterministic release-build catalog publication benchmark using the fixture matrix and hardware/storage profile in the design, with fsync enabled and live/tombstone/total counts recorded; a maximum-live fixture above 16 MiB fails the support envelope rather than benchmarking an unsupported catalog |
 | Progressive indexing | Interrupted indexing resumes or safely restarts without duplicate or missing index rows | Failure injection at each phase and repeated reconciliation |
 | Atomic content safety | No acknowledged Core write produces a partial or undecryptable canonical object | Crash/failure injection around temporary write, fsync, rename, and index notification |
 | Locked privacy | Canonical Core files reveal no private content through direct disk inspection | Seed known plaintext markers and scan raw Core bytes before unlock |
