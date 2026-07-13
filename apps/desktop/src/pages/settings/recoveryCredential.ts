@@ -6,6 +6,13 @@ export type RecoveryPhraseReview = {
   error: string | null;
 };
 
+export function validateNewPassword(password: string): string | null {
+  if (password.length < 8) {
+    return "New password must be at least 8 characters.";
+  }
+  return null;
+}
+
 export function beginRecoveryPhraseReview(
   phrase: string,
   pendingGeneration: number,

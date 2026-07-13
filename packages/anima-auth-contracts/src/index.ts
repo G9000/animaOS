@@ -10,6 +10,9 @@ export const AUTH_ROUTES = {
   RECOVER: "/api/auth/recover",
   PREPARE_RECOVERY_CREDENTIAL: "/api/auth/recovery-credential/prepare",
   CONFIRM_RECOVERY_CREDENTIAL: "/api/auth/recovery-credential/confirm",
+  CORE_FS_CHANGE_PASSWORD: "/api/auth/corefs/change-password",
+  CORE_FS_PREPARE_RECOVERY_CREDENTIAL: "/api/auth/corefs/recovery-credential/prepare",
+  CORE_FS_CONFIRM_RECOVERY_CREDENTIAL: "/api/auth/corefs/recovery-credential/confirm",
 } as const;
 
 export type UserGender = string | null;
@@ -73,6 +76,33 @@ export interface ChangePasswordRequest {
 export interface ChangePasswordResponse {
   success: boolean;
   unlockToken: string;
+}
+
+export interface CorefsChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface CorefsCredentialResponse {
+  success: boolean;
+  scope: "fs";
+}
+
+export interface PrepareCorefsRecoveryCredentialRequest {
+  currentRecoveryPhrase: string;
+  currentPassword: string;
+}
+
+export interface PrepareCorefsRecoveryCredentialResponse {
+  success: boolean;
+  recoveryPhrase: string;
+  pendingGeneration: number;
+  scope: "fs";
+}
+
+export interface ConfirmCorefsRecoveryCredentialRequest {
+  recoveryPhrase: string;
+  pendingGeneration: number;
 }
 
 export type RecoveryCredentialScope = "full" | "soul" | "fs";

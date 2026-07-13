@@ -3,6 +3,7 @@ import { api, setUnlockToken } from "../../lib/api";
 import {
   beginRecoveryPhraseReview,
   completeRecoveryPhraseReview,
+  validateNewPassword,
   validateRecoveryPhraseConfirmation,
   type RecoveryPhraseReview,
 } from "./recoveryCredential";
@@ -29,7 +30,8 @@ export default function SecuritySettings() {
     event.preventDefault();
     setChangeStatus("");
     setChangeError("");
-    if (newPassword.length < 6) { setChangeError("New password must be at least 6 characters."); return; }
+    const passwordError = validateNewPassword(newPassword);
+    if (passwordError) { setChangeError(passwordError); return; }
     if (newPassword !== confirmPassword) { setChangeError("New password confirmation does not match."); return; }
     setChanging(true);
     try {

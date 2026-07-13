@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-13 23:13 MYT
+- Updated: 2026-07-14 01:09 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -44,10 +44,17 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-12 17:34 MYT - Assigned CoreFS crypto ownership to Rust and the existing `anima-core` Python extension boundary.
 - 2026-07-13 21:27 MYT - Implementation started on `codex/pcf-001-key-hierarchy`; isolated worktree dependencies installed and baseline Rust/crypto/recovery tests verified.
 - 2026-07-13 23:13 MYT - Implemented the native opaque FRK/Object-DEK boundary, owner-bound password/recovery generations, typed CoreFS AAD, two-phase recovery confirmation, scoped credential rotation, strict legacy backfill, migration compatibility coverage, and Security UI/API flow; validation is green and the ticket remains `in_progress` pending supervising-agent review.
+- 2026-07-14 01:09 MYT - Addressed follow-up security review findings: active versioned roots now gate login/recovery before SQLCipher, Soul crash finalization derives the active scope, genuine CoreFS-only credential replacement is manifest-only, persisted unwrap profiles are bounded, manifest publication is native and durable, and the closed object/FRK/password contracts are enforced. Ticket remains `in_progress` for re-review.
 
 ## Validation
 
 - Commands:
+  - Follow-up: `.venv\Scripts\maturin.exe develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt the editable extension and exported `corefs_atomic_publish`.
+  - Follow-up: `cargo test -p anima-corefs` - 9 passed; `cargo test -p anima-core` - 218 passed; total Rust coverage 227 passed.
+  - Follow-up: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_crypto.py apps/server/tests/test_corefs_crypto.py apps/server/tests/test_corefs_keyslots.py apps/server/tests/test_recovery.py apps/server/tests/test_auth.py -q` - 69 passed.
+  - Follow-up under a unique `%TEMP%` `ANIMA_TEST_TEMP_ROOT`: `test_corefs_migration.py` - 1 passed; `test_encrypted_core_regression.py` - 6 passed; `test_crypto.py` - 6 passed. The precedence pair proves a corrupt legacy SQLCipher wrapper cannot override valid versioned roots, while a corrupt active manifest Soul root fails login.
+  - Follow-up: `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 3 passed; `bun run build:desktop`, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server`, scoped Ruff, and `bun run lint:server` passed.
+  - Follow-up: `.venv\Scripts\alembic.exe -c apps/server/alembic_core.ini heads` - exactly `20260712_0001 (head)`; `git diff --check` passed.
   - `uvx maturin develop --manifest-path packages/anima-core/Cargo.toml --features python` - built and installed the editable PyO3 extension.
   - `cargo test -p anima-corefs -p anima-core` - 226 Rust tests passed.
   - `cargo check -p anima-core --features python` and `rustfmt --edition 2021 --check packages/anima-corefs/src/crypto.rs` - passed (existing Rust warnings only); a whole-file check of the pre-existing `anima-core/src/ffi.rs` reports formatting outside the three PCF hunks, which was deliberately left untouched.

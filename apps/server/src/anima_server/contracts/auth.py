@@ -86,6 +86,26 @@ class ChangePasswordResponse(BaseModel):
     unlockToken: str
 
 
+class CorefsChangePasswordRequest(BaseModel):
+    currentPassword: str = Field(min_length=1)
+    newPassword: str = Field(min_length=8)
+
+
+class CorefsCredentialResponse(BaseModel):
+    success: bool
+    scope: Literal["fs"]
+
+
+class PrepareCorefsRecoveryCredentialRequest(BaseModel):
+    currentRecoveryPhrase: str = Field(min_length=1)
+    currentPassword: str = Field(min_length=1)
+
+
+class ConfirmCorefsRecoveryCredentialRequest(BaseModel):
+    recoveryPhrase: str = Field(min_length=1)
+    pendingGeneration: int = Field(gt=0)
+
+
 class PrepareRecoveryCredentialRequest(BaseModel):
     currentRecoveryPhrase: str = Field(min_length=1)
     currentPassword: str = Field(min_length=1)

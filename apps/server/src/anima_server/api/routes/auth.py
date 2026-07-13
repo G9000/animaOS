@@ -12,13 +12,17 @@ from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.contracts.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
+    ConfirmCorefsRecoveryCredentialRequest,
     ConfirmRecoveryCredentialRequest,
     ConfirmRecoveryCredentialResponse,
+    CorefsChangePasswordRequest,
+    CorefsCredentialResponse,
     CreateAIChatRequest,
     CreateAIChatResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
+    PrepareCorefsRecoveryCredentialRequest,
     PrepareRecoveryCredentialRequest,
     PrepareRecoveryCredentialResponse,
     RecoverRequest,
@@ -40,8 +44,11 @@ from anima_server.services.auth import (
     serialize_user,
 )
 from anima_server.services.corefs.credentials import (
+    change_filesystem_password_credential,
     change_password_credential_generation,
+    confirm_filesystem_recovery_credential,
     confirm_recovery_credential,
+    prepare_filesystem_recovery_credential,
     prepare_recovery_credential,
 )
 from anima_server.services.corefs.types import PayloadScope
@@ -237,8 +244,64 @@ def change_password(
     return {"success": True, "unlockToken": new_unlock_token}
 
 
+@router.post("/corefs/change-password", response_model=CorefsCredentialResponse)
+def change_corefs_password(payload: CorefsChangePasswordRequest) -> dict[str, object]:
+    try:
+        change_filesystem_password_credential(
+            current_password=payload.currentPassword,
+            new_password=payload.newPassword,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {"success": True, "scope": "fs"}
+
+
+@router.post(
+    "/corefs/recovery-credential/prepare",
+    response_model=PrepareRecoveryCredentialResponse,
+)
+def prepare_corefs_recovery(
+    payload: PrepareCorefsRecoveryCredentialRequest,
+) -> dict[str, object]:
+    try:
+        prepared = prepare_filesystem_recovery_credential(
+            current_password=payload.currentPassword,
+            current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {
+        "success": True,
+        "recoveryPhrase": prepared.recovery_phrase,
+        "pendingGeneration": prepared.pending_generation,
+        "scope": "fs",
+    }
+
+
+@router.post(
+    "/corefs/recovery-credential/confirm",
+    response_model=CorefsCredentialResponse,
+)
+def confirm_corefs_recovery(
+    payload: ConfirmCorefsRecoveryCredentialRequest,
+) -> dict[str, object]:
+    try:
+        confirm_filesystem_recovery_credential(
+            recovery_phrase=payload.recoveryPhrase.strip().lower(),
+            pending_generation=payload.pendingGeneration,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {"success": True, "scope": "fs"}
+
+
 @router.post("/recover", response_model=RecoverResponse)
 def recover(payload: RecoverRequest) -> dict[str, object]:
+    if PayloadScope(payload.scope) is PayloadScope.FS:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "CoreFS-only recovery cannot start an agent session"},
+        )
     phrase = payload.recoveryPhrase.strip().lower()
     if not phrase:
         raise HTTPException(status_code=422, detail="Recovery phrase is required")

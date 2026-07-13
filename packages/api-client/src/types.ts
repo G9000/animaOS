@@ -2,6 +2,7 @@ import type {
   AuthUser,
   ChangePasswordRequest as ContractChangePasswordRequest,
   ChangePasswordResponse as ContractChangePasswordResponse,
+  ConfirmCorefsRecoveryCredentialRequest as ContractConfirmCorefsRecoveryCredentialRequest,
   CreateAiChatResponse as ContractCreateAiChatResponse,
   CreateAiChatRequest as ContractCreateAiChatRequest,
   LoginResponse as ContractLoginResponse,
@@ -13,6 +14,10 @@ import type {
   RecoverResponse as ContractRecoverResponse,
   ConfirmRecoveryCredentialRequest as ContractConfirmRecoveryCredentialRequest,
   ConfirmRecoveryCredentialResponse as ContractConfirmRecoveryCredentialResponse,
+  CorefsChangePasswordRequest as ContractCorefsChangePasswordRequest,
+  CorefsCredentialResponse as ContractCorefsCredentialResponse,
+  PrepareCorefsRecoveryCredentialRequest as ContractPrepareCorefsRecoveryCredentialRequest,
+  PrepareCorefsRecoveryCredentialResponse as ContractPrepareCorefsRecoveryCredentialResponse,
   PrepareRecoveryCredentialRequest as ContractPrepareRecoveryCredentialRequest,
   PrepareRecoveryCredentialResponse as ContractPrepareRecoveryCredentialResponse,
   UserResponse as ContractUserResponse,
@@ -35,6 +40,14 @@ export interface LogoutResponse extends ContractLogoutResponse {}
 export interface RecoverRequest extends ContractRecoverRequest {}
 export interface RecoverResponse extends ContractRecoverResponse {}
 export interface ChangePasswordRequest extends ContractChangePasswordRequest {}
+export interface CorefsChangePasswordRequest extends ContractCorefsChangePasswordRequest {}
+export interface CorefsCredentialResponse extends ContractCorefsCredentialResponse {}
+export interface PrepareCorefsRecoveryCredentialRequest
+  extends ContractPrepareCorefsRecoveryCredentialRequest {}
+export interface PrepareCorefsRecoveryCredentialResponse
+  extends ContractPrepareCorefsRecoveryCredentialResponse {}
+export interface ConfirmCorefsRecoveryCredentialRequest
+  extends ContractConfirmCorefsRecoveryCredentialRequest {}
 export interface PrepareRecoveryCredentialRequest
   extends ContractPrepareRecoveryCredentialRequest {}
 export interface PrepareRecoveryCredentialResponse

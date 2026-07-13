@@ -185,6 +185,12 @@ mod python {
     }
 
     #[pyfunction]
+    fn corefs_atomic_publish(path: &str, payload: &[u8]) -> PyResult<()> {
+        anima_corefs::publication::atomic_publish(Path::new(path), payload)
+            .map_err(pyo3::exceptions::PyOSError::new_err)
+    }
+
+    #[pyfunction]
     fn corefs_wrap_root_key(
         credential: &str,
         root: &PyCorefsRootKey,
@@ -1860,6 +1866,7 @@ mod python {
         m.add_class::<PyCorefsObjectDek>()?;
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
+        m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_generate_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_wrap_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_unwrap_root_key, m)?)?;

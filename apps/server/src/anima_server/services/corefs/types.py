@@ -65,6 +65,8 @@ class ManifestKeyslot:
         if self.purpose is KeyPurpose.FILESYSTEM_ROOT:
             if self.frk_version is None or self.frk_version <= 0:
                 raise ValueError("filesystem-root keyslot requires a positive FRK version")
+            if self.frk_version != self.key_version:
+                raise ValueError("FRK version must match key version")
             if self.object_key_epoch is None or self.object_key_epoch <= 0:
                 raise ValueError("filesystem-root keyslot requires a positive object-key epoch")
         elif self.frk_version is not None or self.object_key_epoch is not None:
@@ -96,7 +98,10 @@ class ManifestKeyslot:
                 wrapped=dict(value["wrapped"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            if isinstance(exc, ValueError) and str(exc).startswith("unsupported"):
+            if isinstance(exc, ValueError) and (
+                str(exc).startswith("unsupported")
+                or str(exc) == "FRK version must match key version"
+            ):
                 raise
             raise ValueError("invalid manifest keyslot") from exc
 

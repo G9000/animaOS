@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from anima_server.services.auth import (
 from anima_server.services.core import (
     allocate_user_id,
     ensure_core_manifest,
+    get_manifest_path,
     get_owner_user_id,
     get_user_id_from_index,
     get_wrapped_sqlcipher_key,
@@ -106,8 +108,7 @@ def find_account_by_username(
 
         try:
             with get_user_session_factory(user_id)() as db:
-                user = db.scalar(select(User).where(
-                    User.username == normalized))
+                user = db.scalar(select(User).where(User.username == normalized))
                 if user is None:
                     continue
                 return AccountRecord(
@@ -175,8 +176,7 @@ def register_account(
         )
 
         # Store recovery-wrapped DEKs alongside password-wrapped DEKs
-        recovery_records = wrap_keys_for_recovery(
-            recovery_phrase, deks, user_id)
+        recovery_records = wrap_keys_for_recovery(recovery_phrase, deks, user_id)
         for domain, wrapped_dek in recovery_records:
             db.add(build_user_key(user_id, domain, wrapped_dek))
         db.commit()
@@ -217,6 +217,53 @@ def authenticate_account(
     if not normalized:
         raise InvalidCredentialsError("Invalid credentials")
 
+    manifest_path = get_manifest_path()
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    )
+    from anima_server.services.corefs.keyslots import (
+        manifest_has_versioned_key_hierarchy,
+        unlock_key_hierarchy,
+        unlock_manifest_key_hierarchy,
+    )
+
+    if manifest_has_versioned_key_hierarchy(manifest):
+        from cryptography.exceptions import InvalidTag
+
+        from anima_server.services.corefs.credentials import (
+            finalize_pending_password_generation,
+        )
+        from anima_server.services.corefs.types import WrappingPath
+        from anima_server.services.sessions import set_sqlcipher_key
+
+        try:
+            roots = unlock_manifest_key_hierarchy(
+                credential=password,
+                wrapping_path=WrappingPath.PASSWORD,
+            )
+            if roots.scope is PayloadScope.FS or roots.sqlcipher_key is None:
+                raise ValueError("filesystem-only credentials cannot unlock an agent")
+            set_sqlcipher_key(roots.sqlcipher_key)
+            account_user_id = get_user_id_from_index(normalized)
+            if account_user_id is None:
+                raise ValueError("versioned Core is missing its user index")
+            with get_user_session_factory(account_user_id)() as db:
+                user = db.scalar(select(User).where(User.username == normalized))
+                if user is None:
+                    raise ValueError("versioned user does not match the manifest index")
+                finalize_pending_password_generation(db, user, password=password)
+                unlocked = unlock_key_hierarchy(
+                    db,
+                    credential=password,
+                    wrapping_path=WrappingPath.PASSWORD,
+                    scope=roots.scope,
+                )
+                return serialize_user(user), unlocked.soul_domains
+        except (InvalidTag, KeyError, TypeError, ValueError) as exc:
+            raise InvalidCredentialsError(
+                f"versioned key hierarchy authentication failed: {exc}"
+            ) from exc
+
     # Unified passphrase: unwrap SQLCipher key before opening the database
     _maybe_unwrap_sqlcipher_key(password)
 
@@ -243,7 +290,9 @@ def authenticate_account(
                 finalize_pending_password_generation(db, pending_user, password=password)
             user, deks = authenticate_user(db, normalized, password)
         except ValueError as exc:
-            raise InvalidCredentialsError(f"authenticate_user failed for user_id={account_user_id}: {exc}") from exc
+            raise InvalidCredentialsError(
+                f"authenticate_user failed for user_id={account_user_id}: {exc}"
+            ) from exc
         return serialize_user(user), deks
 
 
@@ -263,8 +312,7 @@ def _migrate_legacy_shared_database_locked() -> None:
             if bind is None or not inspect(bind).has_table("users"):
                 return
 
-            users = list(legacy_db.scalars(
-                select(User).order_by(User.id)).all())
+            users = list(legacy_db.scalars(select(User).order_by(User.id)).all())
             if not users:
                 return
 
@@ -319,7 +367,7 @@ def make_legacy_database_path() -> Path | None:
     prefix = "sqlite:///"
     if not settings.database_url.startswith(prefix):
         return None
-    return Path(settings.database_url[len(prefix):]).expanduser().resolve()
+    return Path(settings.database_url[len(prefix) :]).expanduser().resolve()
 
 
 def _legacy_backup_path(shared_db_path: Path) -> Path:
@@ -351,10 +399,54 @@ def recover_account_with_phrase(
     """
     from cryptography.exceptions import InvalidTag
 
+    from anima_server.services.corefs.keyslots import (
+        manifest_has_versioned_key_hierarchy,
+        unlock_manifest_key_hierarchy,
+    )
+    from anima_server.services.corefs.types import WrappingPath
+    from anima_server.services.sessions import set_sqlcipher_key
+
+    manifest_path = get_manifest_path()
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    )
+    if manifest_has_versioned_key_hierarchy(manifest):
+        if scope is PayloadScope.FS:
+            raise ValueError("CoreFS-only recovery cannot start an agent session")
+        try:
+            roots = unlock_manifest_key_hierarchy(
+                credential=phrase,
+                wrapping_path=WrappingPath.RECOVERY,
+                expected_scope=scope,
+            )
+            if roots.sqlcipher_key is None:
+                raise ValueError("versioned recovery is missing the Soul root")
+            set_sqlcipher_key(roots.sqlcipher_key)
+            user_id = get_owner_user_id()
+            if user_id is None:
+                raise ValueError("versioned recovery is missing its owner binding")
+            with get_user_session_factory(user_id)() as db:
+                from anima_server.services.corefs.credentials import (
+                    recover_password_credential_generation,
+                )
+
+                user = db.get(User, user_id)
+                if user is None:
+                    raise ValueError("User not found")
+                deks = recover_password_credential_generation(
+                    db,
+                    user,
+                    recovery_phrase=phrase,
+                    new_password=new_password,
+                    scope=scope,
+                )
+                return serialize_user(user), deks
+        except (InvalidTag, KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Versioned recovery failed: {exc}") from None
+
     from anima_server.services.core import get_recovery_sqlcipher_key
     from anima_server.services.crypto import WrappedDekRecord, unwrap_dek
     from anima_server.services.recovery import recover_account
-    from anima_server.services.sessions import set_sqlcipher_key
 
     # 1. Unwrap SQLCipher key from manifest using recovery phrase when unified
     # passphrase mode is active. Env-passphrase and unencrypted test modes do
@@ -386,46 +478,17 @@ def recover_account_with_phrase(
         if user_id is None:
             raise ValueError("No recovery data found")
 
-    # 3. Open the user database and recover every root/domain generation.
-    used_versioned_hierarchy = False
+    # 3. Legacy fallback remains authoritative only when no versioned
+    # generation/rotation markers exist.
+    if scope is not PayloadScope.FULL:
+        raise ValueError("legacy recovery requires full scope")
     with get_user_session_factory(user_id)() as db:
-        import json
-
-        from anima_server.models import User
-        from anima_server.services.core import get_manifest_path
-
-        manifest_path = get_manifest_path()
-        manifest = (
-            json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest_path.is_file()
-            else {}
-        )
-        requested_scope = scope
-        if int(manifest.get("active_recovery_credential_generation", 0)) > 0:
-            from anima_server.services.corefs.credentials import (
-                recover_password_credential_generation,
-            )
-
-            user = db.get(User, user_id)
-            if user is None:
-                raise ValueError("User not found")
-            deks = recover_password_credential_generation(
-                db,
-                user,
-                recovery_phrase=phrase,
-                new_password=new_password,
-                scope=requested_scope,
-            )
-            used_versioned_hierarchy = True
-        else:
-            if requested_scope is not PayloadScope.FULL:
-                raise ValueError("legacy recovery requires full scope")
-            deks = recover_account(db, phrase, new_password, user_id)
+        deks = recover_account(db, phrase, new_password, user_id)
 
     # 4. Re-wrap SQLCipher key with new password in manifest when present.
     from anima_server.services.crypto import wrap_dek
 
-    if raw_key is not None and not used_versioned_hierarchy:
+    if raw_key is not None:
         wrapped = wrap_dek(new_password, raw_key, user_id, "sqlcipher")
         store_wrapped_sqlcipher_key(
             {
@@ -443,8 +506,6 @@ def recover_account_with_phrase(
 
     # 5. Re-read user for response
     with get_user_session_factory(user_id)() as db:
-        from anima_server.models import User
-
         user = db.get(User, user_id)
         if user is None:
             raise ValueError("User not found after recovery")
@@ -526,8 +587,7 @@ def _maybe_unwrap_sqlcipher_key(password: str) -> None:
         wrapped_dek=str(wrapped_data["wrapped_key"]),
     )
     try:
-        raw_key = unwrap_dek(password, record, int(
-            wrapped_data.get("user_id", 0)), "sqlcipher")
-    except InvalidTag as exc:
+        raw_key = unwrap_dek(password, record, int(wrapped_data.get("user_id", 0)), "sqlcipher")
+    except (InvalidTag, KeyError, TypeError, ValueError) as exc:
         raise InvalidCredentialsError("Invalid credentials") from exc
     set_sqlcipher_key(raw_key)

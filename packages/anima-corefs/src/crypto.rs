@@ -276,7 +276,6 @@ pub enum ObjectKind {
     MessageSegment,
     Note,
     Preferences,
-    Source,
     Task,
     Thread,
 }
@@ -294,7 +293,6 @@ impl ObjectKind {
             "message-segment" => Ok(Self::MessageSegment),
             "note" => Ok(Self::Note),
             "preferences" => Ok(Self::Preferences),
-            "source" => Ok(Self::Source),
             "task" => Ok(Self::Task),
             "thread" => Ok(Self::Thread),
             other => Err(CryptoError::UnsupportedObjectKind(other.to_owned())),
@@ -313,7 +311,6 @@ impl ObjectKind {
             Self::MessageSegment => "message-segment",
             Self::Note => "note",
             Self::Preferences => "preferences",
-            Self::Source => "source",
             Self::Task => "task",
             Self::Thread => "thread",
         }
@@ -838,6 +835,7 @@ mod tests {
         ] {
             assert_eq!(ObjectKind::parse(kind).unwrap().as_str(), kind);
         }
+        assert!(ObjectKind::parse("source").is_err());
         assert!(ObjectKind::parse("future-unregistered-kind").is_err());
     }
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import anima_server.services.crypto as crypto_module
 import pytest
 from anima_server.services.crypto import (
     create_wrapped_dek,
@@ -44,3 +47,18 @@ def test_unwrap_dek_rejects_domain_swap() -> None:
         unwrap_dek("pw123456", record, 7, "tasks")
 
     assert unwrap_dek("pw123456", record, 7, "memories") == dek
+
+
+def test_unwrap_dek_rejects_persisted_kdf_abuse_before_derivation(monkeypatch) -> None:
+    _, record = create_wrapped_dek("pw123456", 7, "memories")
+    malicious = replace(record, kdf_memory_cost_kib=2**31)
+    monkeypatch.setattr(
+        crypto_module,
+        "derive_argon2id_key",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unbounded Argon2 derivation was reached")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unsupported wrapped-key profile"):
+        unwrap_dek("pw123456", malicious, 7, "memories")

@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import platform
-import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -314,22 +313,12 @@ def _load_manifest(*, now: str) -> dict[str, object]:
 
 
 def _write_manifest(manifest: dict[str, object]) -> None:
+    import anima_core
+
     path = get_manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f"{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(manifest, stream, indent=2)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if os.name != "nt":
-            os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    payload = json.dumps(manifest, indent=2).encode("utf-8")
+    anima_core.corefs_atomic_publish(str(path), payload)
 
 
 def _detect_next_user_id() -> int:

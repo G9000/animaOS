@@ -57,6 +57,15 @@ class UnlockedKeyHierarchy:
     frks: dict[int, object] = field(repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class UnlockedManifestRoots:
+    scope: PayloadScope
+    owner_id: str
+    credential_generation: int
+    sqlcipher_key: bytes | None = field(repr=False)
+    frks: dict[int, object] = field(repr=False)
+
+
 def validate_scope_completeness(
     scope: PayloadScope,
     *,
@@ -513,14 +522,57 @@ def _manifest_slots(manifest: dict[str, object]) -> list[ManifestKeyslot]:
     return [ManifestKeyslot.from_dict(dict(value)) for value in raw_slots]
 
 
-def unlock_key_hierarchy(
-    db: Session,
+def manifest_has_versioned_key_hierarchy(manifest: dict[str, object]) -> bool:
+    """Return whether the manifest declares any versioned credential state.
+
+    The generation/rotation markers are authoritative even if an interrupted or
+    malicious edit removed every slot. This keeps legacy wrappers from becoming
+    a fallback authentication path for a damaged versioned Core.
+    """
+    return any(
+        field in manifest
+        for field in (
+            "active_password_credential_generation",
+            "active_recovery_credential_generation",
+            "frk_rotation",
+        )
+    )
+
+
+def get_active_manifest_scope(wrapping_path: WrappingPath) -> PayloadScope:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    generation_field = (
+        "active_password_credential_generation"
+        if wrapping_path is WrappingPath.PASSWORD
+        else "active_recovery_credential_generation"
+    )
+    generation = int(manifest[generation_field])
+    if generation <= 0:
+        raise ValueError("active credential generation must be positive")
+    scopes = {
+        slot.scope
+        for slot in _manifest_slots(manifest)
+        if slot.wrapping_path is wrapping_path
+        and slot.credential_generation == generation
+        and slot.status is KeyslotStatus.ACTIVE
+    }
+    if len(scopes) != 1:
+        raise ValueError("active credential generation has an ambiguous scope")
+    return next(iter(scopes))
+
+
+def unlock_manifest_key_hierarchy(
     *,
     credential: str,
     wrapping_path: WrappingPath,
-    scope: PayloadScope,
-) -> UnlockedKeyHierarchy:
+    expected_scope: PayloadScope | None = None,
+    generation: int | None = None,
+    status: KeyslotStatus = KeyslotStatus.ACTIVE,
+) -> UnlockedManifestRoots:
+    """Authenticate and open only the roots stored in the public manifest."""
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    if not manifest_has_versioned_key_hierarchy(manifest):
+        raise ValueError("versioned key hierarchy is absent")
     core_id = str(manifest["core_id"])
     owner_id = str(manifest["owner_id"])
     generation_field = (
@@ -528,17 +580,24 @@ def unlock_key_hierarchy(
         if wrapping_path is WrappingPath.PASSWORD
         else "active_recovery_credential_generation"
     )
-    generation = int(manifest[generation_field])
+    selected_generation = int(manifest[generation_field]) if generation is None else generation
+    if selected_generation <= 0:
+        raise ValueError("active credential generation must be positive")
     candidates = [
         slot
         for slot in _manifest_slots(manifest)
         if slot.wrapping_path is wrapping_path
-        and slot.credential_generation == generation
-        and slot.status is KeyslotStatus.ACTIVE
-        and slot.scope is scope
+        and slot.credential_generation == selected_generation
+        and slot.status is status
     ]
+    scopes = {slot.scope for slot in candidates}
+    if len(scopes) != 1:
+        raise ValueError("credential generation has an ambiguous scope")
+    scope = next(iter(scopes))
+    if expected_scope is not None and scope is not expected_scope:
+        raise ValueError("credential generation scope does not match the requested scope")
     if len({(slot.purpose, slot.key_version) for slot in candidates}) != len(candidates):
-        raise ValueError("duplicate active manifest keyslots")
+        raise ValueError("duplicate manifest keyslots")
 
     sqlcipher_key: bytes | None = None
     frks: dict[int, object] = {}
@@ -558,8 +617,52 @@ def unlock_key_hierarchy(
                 raise ValueError("Soul keyslot produced an invalid key type")
             sqlcipher_key = secret
         else:
-            assert slot.frk_version is not None
+            if slot.frk_version is None:
+                raise ValueError("Filesystem Root keyslot is missing its FRK version")
             frks[slot.frk_version] = secret
+
+    rotation = manifest.get("frk_rotation", {})
+    if not isinstance(rotation, dict):
+        raise ValueError("invalid FRK rotation state")
+    required_frks: set[int] = set()
+    if scope in {PayloadScope.FULL, PayloadScope.FS}:
+        required_frks = {
+            int(rotation["active_version"]),
+            *(int(version) for version in rotation.get("decrypt_only_versions", [])),
+        }
+    validate_scope_completeness(
+        scope,
+        purposes=purposes,
+        soul_domains=set(),
+        required_soul_domains=set(),
+        frk_versions=set(frks),
+        required_frk_versions=required_frks,
+    )
+    return UnlockedManifestRoots(
+        scope=scope,
+        owner_id=owner_id,
+        credential_generation=selected_generation,
+        sqlcipher_key=sqlcipher_key,
+        frks=frks,
+    )
+
+
+def unlock_key_hierarchy(
+    db: Session,
+    *,
+    credential: str,
+    wrapping_path: WrappingPath,
+    scope: PayloadScope,
+) -> UnlockedKeyHierarchy:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    core_id = str(manifest["core_id"])
+    roots = unlock_manifest_key_hierarchy(
+        credential=credential,
+        wrapping_path=wrapping_path,
+        expected_scope=scope,
+    )
+    owner_id = roots.owner_id
+    generation = roots.credential_generation
 
     soul_domains: dict[str, bytes] = {}
     if scope in {PayloadScope.FULL, PayloadScope.SOUL}:
@@ -591,28 +694,22 @@ def unlock_key_hierarchy(
                 aad,
             )
 
-    rotation = manifest.get("frk_rotation", {})
-    if not isinstance(rotation, dict):
-        raise ValueError("invalid FRK rotation state")
-    required_frks = {
-        int(rotation["active_version"]),
-        *(int(version) for version in rotation.get("decrypt_only_versions", [])),
-    }
-    if scope is PayloadScope.SOUL:
-        required_frks = set()
     validate_scope_completeness(
         scope,
-        purposes=purposes,
+        purposes=(
+            ({KeyPurpose.SOUL} if roots.sqlcipher_key is not None else set())
+            | ({KeyPurpose.FILESYSTEM_ROOT} if roots.frks else set())
+        ),
         soul_domains=set(soul_domains),
         required_soul_domains=set(ALL_DOMAINS) if scope is not PayloadScope.FS else set(),
-        frk_versions=set(frks),
-        required_frk_versions=required_frks,
+        frk_versions=set(roots.frks),
+        required_frk_versions=set(roots.frks),
     )
     return UnlockedKeyHierarchy(
         scope=scope,
         owner_id=owner_id,
         credential_generation=generation,
-        sqlcipher_key=sqlcipher_key,
+        sqlcipher_key=roots.sqlcipher_key,
         soul_domains=soul_domains,
-        frks=frks,
+        frks=roots.frks,
     )

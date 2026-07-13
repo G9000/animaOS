@@ -31,7 +31,9 @@ from anima_server.services.corefs.keyslots import (
     _record_to_payload,
     _soul_row_record,
     _unwrap_manifest_slot,
+    get_active_manifest_scope,
     unlock_key_hierarchy,
+    unlock_manifest_key_hierarchy,
     verify_legacy_soul_keys,
 )
 from anima_server.services.corefs.types import (
@@ -428,11 +430,14 @@ def finalize_pending_password_generation(
     if not pending:
         return False
 
+    scope = get_active_manifest_scope(WrappingPath.PASSWORD)
+    if scope is PayloadScope.FS:
+        raise ValueError("filesystem-only credentials cannot finalize Soul state")
     unlocked = unlock_key_hierarchy(
         db,
         credential=password,
         wrapping_path=WrappingPath.PASSWORD,
-        scope=PayloadScope.FULL,
+        scope=scope,
     )
     if {row.domain for row in pending} != set(unlocked.soul_domains):
         raise ValueError("pending Soul password generation is incomplete")
@@ -497,6 +502,239 @@ class PreparedRecoveryCredential:
     recovery_phrase: str
     pending_generation: int
     scope: PayloadScope
+
+
+def _filesystem_roots_match(
+    first: dict[int, object],
+    second: dict[int, object],
+) -> bool:
+    return set(first) == set(second) and all(
+        _manifest_secret_matches(first[version], second[version]) for version in first
+    )
+
+
+def change_filesystem_password_credential(
+    *,
+    current_password: str,
+    new_password: str,
+    failure_injector: FailureInjector | None = None,
+) -> None:
+    """Rotate a genuine FS-only password without opening the Soul database."""
+    unlocked = unlock_manifest_key_hierarchy(
+        credential=current_password,
+        wrapping_path=WrappingPath.PASSWORD,
+        expected_scope=PayloadScope.FS,
+    )
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    core_id = str(manifest["core_id"])
+    previous_generation = unlocked.credential_generation
+    generation = previous_generation + 1
+    object_key_epoch = int(dict(manifest["frk_rotation"]).get("object_key_epoch", 1))
+    pending_slots = [
+        _manifest_slot(
+            new_password,
+            root,
+            core_id=core_id,
+            owner_id=unlocked.owner_id,
+            purpose=KeyPurpose.FILESYSTEM_ROOT,
+            wrapping_path=WrappingPath.PASSWORD,
+            status=KeyslotStatus.PENDING,
+            scope=PayloadScope.FS,
+            key_version=version,
+            credential_generation=generation,
+            frk_version=version,
+            object_key_epoch=object_key_epoch,
+        )
+        for version, root in sorted(unlocked.frks.items())
+    ]
+
+    def write_pending(value: dict[str, object]) -> None:
+        retained = [
+            slot
+            for slot in _manifest_slots(value)
+            if not (
+                slot.wrapping_path is WrappingPath.PASSWORD
+                and slot.credential_generation == generation
+                and slot.status is KeyslotStatus.PENDING
+            )
+        ]
+        value["keyslots"] = [
+            *(slot.to_dict() for slot in retained),
+            *(slot.to_dict() for slot in pending_slots),
+        ]
+
+    update_core_manifest(write_pending)
+    _inject(failure_injector, CredentialBoundary.MANIFEST_PENDING_DURABLE)
+    pending = unlock_manifest_key_hierarchy(
+        credential=new_password,
+        wrapping_path=WrappingPath.PASSWORD,
+        expected_scope=PayloadScope.FS,
+        generation=generation,
+        status=KeyslotStatus.PENDING,
+    )
+    if not _filesystem_roots_match(pending.frks, unlocked.frks):
+        raise ValueError("pending filesystem password generation verification failed")
+    _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
+
+    def activate(value: dict[str, object]) -> None:
+        activated: list[dict[str, object]] = []
+        for slot in _manifest_slots(value):
+            if slot.wrapping_path is WrappingPath.PASSWORD and slot.scope is PayloadScope.FS:
+                if (
+                    slot.credential_generation == previous_generation
+                    and slot.status is KeyslotStatus.ACTIVE
+                ):
+                    slot = replace(slot, status=KeyslotStatus.DECRYPT_ONLY)
+                elif (
+                    slot.credential_generation == generation
+                    and slot.status is KeyslotStatus.PENDING
+                ):
+                    slot = replace(slot, status=KeyslotStatus.ACTIVE)
+            activated.append(slot.to_dict())
+        value["keyslots"] = activated
+        value["active_password_credential_generation"] = generation
+
+    update_core_manifest(activate)
+    _inject(failure_injector, CredentialBoundary.MANIFEST_ACTIVATED)
+    active = unlock_manifest_key_hierarchy(
+        credential=new_password,
+        wrapping_path=WrappingPath.PASSWORD,
+        expected_scope=PayloadScope.FS,
+    )
+    if not _filesystem_roots_match(active.frks, unlocked.frks):
+        raise ValueError("active filesystem password generation verification failed")
+    _inject(failure_injector, CredentialBoundary.ACTIVE_REOPEN_VERIFIED)
+
+
+def prepare_filesystem_recovery_credential(
+    *,
+    current_password: str,
+    current_recovery_phrase: str,
+    failure_injector: FailureInjector | None = None,
+) -> PreparedRecoveryCredential:
+    """Prepare a replacement FS-only recovery phrase using manifest roots only."""
+    password_roots = unlock_manifest_key_hierarchy(
+        credential=current_password,
+        wrapping_path=WrappingPath.PASSWORD,
+        expected_scope=PayloadScope.FS,
+    )
+    recovery_roots = unlock_manifest_key_hierarchy(
+        credential=current_recovery_phrase,
+        wrapping_path=WrappingPath.RECOVERY,
+        expected_scope=PayloadScope.FS,
+    )
+    if password_roots.owner_id != recovery_roots.owner_id or not _filesystem_roots_match(
+        password_roots.frks, recovery_roots.frks
+    ):
+        raise ValueError("filesystem password and recovery roots do not match")
+
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    core_id = str(manifest["core_id"])
+    generation = recovery_roots.credential_generation + 1
+    object_key_epoch = int(dict(manifest["frk_rotation"]).get("object_key_epoch", 1))
+    phrase = generate_recovery_phrase()
+    pending_slots = [
+        _manifest_slot(
+            phrase,
+            root,
+            core_id=core_id,
+            owner_id=recovery_roots.owner_id,
+            purpose=KeyPurpose.FILESYSTEM_ROOT,
+            wrapping_path=WrappingPath.RECOVERY,
+            status=KeyslotStatus.PENDING,
+            scope=PayloadScope.FS,
+            key_version=version,
+            credential_generation=generation,
+            frk_version=version,
+            object_key_epoch=object_key_epoch,
+        )
+        for version, root in sorted(recovery_roots.frks.items())
+    ]
+
+    def write_pending(value: dict[str, object]) -> None:
+        retained = [
+            slot
+            for slot in _manifest_slots(value)
+            if not (
+                slot.wrapping_path is WrappingPath.RECOVERY
+                and slot.credential_generation == generation
+                and slot.status is KeyslotStatus.PENDING
+            )
+        ]
+        value["keyslots"] = [
+            *(slot.to_dict() for slot in retained),
+            *(slot.to_dict() for slot in pending_slots),
+        ]
+
+    update_core_manifest(write_pending)
+    _inject(failure_injector, CredentialBoundary.MANIFEST_PENDING_DURABLE)
+    pending = unlock_manifest_key_hierarchy(
+        credential=phrase,
+        wrapping_path=WrappingPath.RECOVERY,
+        expected_scope=PayloadScope.FS,
+        generation=generation,
+        status=KeyslotStatus.PENDING,
+    )
+    if not _filesystem_roots_match(pending.frks, recovery_roots.frks):
+        raise ValueError("pending filesystem recovery generation verification failed")
+    _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
+    return PreparedRecoveryCredential(phrase, generation, PayloadScope.FS)
+
+
+def confirm_filesystem_recovery_credential(
+    *,
+    recovery_phrase: str,
+    pending_generation: int,
+    failure_injector: FailureInjector | None = None,
+) -> None:
+    """Activate a prepared FS-only recovery phrase without Soul state."""
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    active_generation = int(manifest["active_recovery_credential_generation"])
+    if active_generation not in {pending_generation - 1, pending_generation}:
+        raise ValueError("pending filesystem recovery generation is stale")
+    status = (
+        KeyslotStatus.PENDING if active_generation < pending_generation else KeyslotStatus.ACTIVE
+    )
+    pending = unlock_manifest_key_hierarchy(
+        credential=recovery_phrase,
+        wrapping_path=WrappingPath.RECOVERY,
+        expected_scope=PayloadScope.FS,
+        generation=pending_generation,
+        status=status,
+    )
+    _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
+
+    if active_generation < pending_generation:
+
+        def activate(value: dict[str, object]) -> None:
+            activated: list[dict[str, object]] = []
+            for slot in _manifest_slots(value):
+                if slot.wrapping_path is WrappingPath.RECOVERY and slot.scope is PayloadScope.FS:
+                    if (
+                        slot.credential_generation == active_generation
+                        and slot.status is KeyslotStatus.ACTIVE
+                    ):
+                        slot = replace(slot, status=KeyslotStatus.DECRYPT_ONLY)
+                    elif (
+                        slot.credential_generation == pending_generation
+                        and slot.status is KeyslotStatus.PENDING
+                    ):
+                        slot = replace(slot, status=KeyslotStatus.ACTIVE)
+                activated.append(slot.to_dict())
+            value["keyslots"] = activated
+            value["active_recovery_credential_generation"] = pending_generation
+
+        update_core_manifest(activate)
+        _inject(failure_injector, CredentialBoundary.MANIFEST_ACTIVATED)
+
+    active = unlock_manifest_key_hierarchy(
+        credential=recovery_phrase,
+        wrapping_path=WrappingPath.RECOVERY,
+        expected_scope=PayloadScope.FS,
+    )
+    if not _filesystem_roots_match(active.frks, pending.frks):
+        raise ValueError("active filesystem recovery generation verification failed")
+    _inject(failure_injector, CredentialBoundary.ACTIVE_REOPEN_VERIFIED)
 
 
 def _legacy_record(payload: object):

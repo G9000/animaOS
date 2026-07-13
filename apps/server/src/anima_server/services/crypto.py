@@ -201,10 +201,35 @@ def unwrap_secret_with_aad(
     record: WrappedDekRecord,
     aad: bytes,
 ) -> bytes:
-    salt = base64.b64decode(record.kdf_salt, validate=True)
-    iv = base64.b64decode(record.wrap_iv, validate=True)
-    tag = base64.b64decode(record.wrap_tag, validate=True)
-    ciphertext = base64.b64decode(record.wrapped_dek, validate=True)
+    profile = (
+        record.kdf_time_cost,
+        record.kdf_memory_cost_kib,
+        record.kdf_parallelism,
+        record.kdf_key_length,
+    )
+    supported_profile = (
+        ARGON2_TIME_COST,
+        ARGON2_MEMORY_COST_KIB,
+        ARGON2_PARALLELISM,
+        KEY_LENGTH,
+    )
+    if profile != supported_profile:
+        raise ValueError("unsupported wrapped-key profile")
+
+    try:
+        salt = base64.b64decode(record.kdf_salt, validate=True)
+        iv = base64.b64decode(record.wrap_iv, validate=True)
+        tag = base64.b64decode(record.wrap_tag, validate=True)
+        ciphertext = base64.b64decode(record.wrapped_dek, validate=True)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid wrapped-key envelope encoding") from exc
+    if (
+        len(salt) != SALT_LENGTH
+        or len(iv) != IV_LENGTH
+        or len(tag) != AUTH_TAG_LENGTH
+        or len(ciphertext) != KEY_LENGTH
+    ):
+        raise ValueError("invalid wrapped-key envelope size")
     kek = derive_argon2id_key(
         passphrase,
         salt,

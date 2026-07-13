@@ -4,6 +4,7 @@ import { createApiClient } from "@anima/api-client";
 import {
   beginRecoveryPhraseReview,
   completeRecoveryPhraseReview,
+  validateNewPassword,
   validateRecoveryPhraseConfirmation,
 } from "../src/pages/settings/recoveryCredential";
 
@@ -74,5 +75,12 @@ describe("recovery credential replacement", () => {
     expect(confirmed.phase).toBe("complete");
     expect(confirmed.phrase).toBeNull();
     expect(confirmed.error).toBeNull();
+  });
+
+  test("uses the API minimum of eight characters for password changes", () => {
+    expect(validateNewPassword("1234567")).toBe(
+      "New password must be at least 8 characters.",
+    );
+    expect(validateNewPassword("12345678")).toBeNull();
   });
 });

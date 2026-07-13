@@ -7,8 +7,10 @@ import type {
   AgentStateData,
   AuthResponse,
   ChangePasswordResponse,
+  CorefsCredentialResponse,
   ConfirmRecoveryCredentialResponse,
   PrepareRecoveryCredentialResponse,
+  PrepareCorefsRecoveryCredentialResponse,
   ChatMessage,
   ChatContextMessage,
   ChatRequestAttachment,
@@ -574,6 +576,11 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { oldPassword, newPassword, scope },
         }),
+      changeCorefsPassword: (currentPassword: string, newPassword: string) =>
+        request<CorefsCredentialResponse>("/auth/corefs/change-password", {
+          method: "POST",
+          body: { currentPassword, newPassword },
+        }),
       recover: (
         recoveryPhrase: string,
         newPassword: string,
@@ -595,6 +602,17 @@ export function createApiClient(options: ApiClientOptions) {
             body: { currentRecoveryPhrase, currentPassword, scope },
           },
         ),
+      prepareCorefsRecoveryCredential: (
+        currentRecoveryPhrase: string,
+        currentPassword: string,
+      ) =>
+        request<PrepareCorefsRecoveryCredentialResponse>(
+          "/auth/corefs/recovery-credential/prepare",
+          {
+            method: "POST",
+            body: { currentRecoveryPhrase, currentPassword },
+          },
+        ),
       confirmRecoveryCredential: (
         recoveryPhrase: string,
         pendingGeneration: number,
@@ -605,6 +623,17 @@ export function createApiClient(options: ApiClientOptions) {
           {
             method: "POST",
             body: { recoveryPhrase, pendingGeneration, scope },
+          },
+        ),
+      confirmCorefsRecoveryCredential: (
+        recoveryPhrase: string,
+        pendingGeneration: number,
+      ) =>
+        request<CorefsCredentialResponse>(
+          "/auth/corefs/recovery-credential/confirm",
+          {
+            method: "POST",
+            body: { recoveryPhrase, pendingGeneration },
           },
         ),
     },
