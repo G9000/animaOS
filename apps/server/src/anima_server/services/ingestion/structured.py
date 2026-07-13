@@ -448,8 +448,10 @@ class _SectionPart:
         return "\n\n".join(self.texts)
 
     def add(self, text: str, block: StructuredBlock) -> None:
+        # content_text joins with "\n\n"; count that separator in length so
+        # fit checks match the emitted size for dense short-paragraph parts.
+        self.length += len(text) + (_SECTION_JOIN_LEN if self.texts else 0)
         self.texts.append(text)
-        self.length += len(text)
         if block.page_number is not None:
             self.page_start = (
                 block.page_number
@@ -506,7 +508,10 @@ def _split_oversized_section(
             else [block.text]
         )
         for piece in pieces:
-            if current.texts and current.length + len(piece) > target:
+            if (
+                current.texts
+                and current.length + _SECTION_JOIN_LEN + len(piece) > target
+            ):
                 flush_part()
             current.add(piece, block)
     flush_part()

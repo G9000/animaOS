@@ -340,3 +340,30 @@ def test_oversized_section_atomic_block_stays_standalone() -> None:
     for chunk in atomic_chunks:
         # The atomic table chunk is verbatim: no carried prose overlap.
         assert chunk.content_text == table
+
+
+def test_oversized_section_split_counts_paragraph_separators() -> None:
+    from anima_server.services.ingestion.structured import (
+        StructuredBlock,
+        StructuredDocument,
+        chunk_structured_document,
+    )
+
+    # One section with many short paragraphs whose separators would push a
+    # naive fit check over the cap. Body is oversized so it takes the split
+    # path; each emitted part must respect the target including separators.
+    paragraphs = tuple(
+        StructuredBlock(kind="paragraph", text=f"para{index:02d}")
+        for index in range(40)
+    )
+    document = StructuredDocument(
+        blocks=(StructuredBlock(kind="heading", text="Guide", heading_level=1), *paragraphs)
+    )
+    target = 40
+    chunks = chunk_structured_document(
+        document, target_chars=target, overlap_chars=0, min_chars=0
+    )
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk.content_text) <= target
