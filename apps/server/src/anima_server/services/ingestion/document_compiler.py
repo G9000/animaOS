@@ -272,20 +272,30 @@ def _prepare_llm_payload(
     links = payload.get("links")
     kept_links = []
     for link in links if isinstance(links, list) else []:
-        if isinstance(link, dict):
-            link = {
-                **link,
-                **{
-                    key: _limit_slug(value)
-                    for key in ("source_slug", "target_slug")
-                    if isinstance(value := link.get(key), str)
-                },
-            }
-            if (
-                link.get("source_slug") in dropped_slugs
-                or link.get("target_slug") in dropped_slugs
-            ):
-                continue
+        if not isinstance(link, dict):
+            continue
+        required_link_fields = ("source_slug", "target_slug", "link_type")
+        if not all(
+            isinstance(link.get(key), str) and link[key].strip()
+            for key in required_link_fields
+        ):
+            continue
+        confidence = link.get("confidence")
+        if confidence is not None and not isinstance(confidence, int | float):
+            continue
+        link = {
+            **link,
+            **{
+                key: _limit_slug(value)
+                for key in ("source_slug", "target_slug")
+                if isinstance(value := link.get(key), str)
+            },
+        }
+        if (
+            link.get("source_slug") in dropped_slugs
+            or link.get("target_slug") in dropped_slugs
+        ):
+            continue
         kept_links.append(link)
     return json.dumps(
         {**payload, "concepts": kept_concepts, "links": kept_links}

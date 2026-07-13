@@ -244,6 +244,55 @@ async def test_llm_compile_drops_uncited_concepts(runtime_db) -> None:
 
 
 @pytest.mark.asyncio()
+async def test_llm_compile_drops_malformed_optional_links(runtime_db) -> None:
+    source, spans = _ingest_markdown(
+        runtime_db, "# Facts\n\nCited fact body.", filename="malformed-links.md"
+    )
+    span_ids = _evidence_ids(spans)
+    client = _ScriptedClient(
+        _llm_payload(
+            [
+                {
+                    "type": "topic",
+                    "slug": "cited-topic",
+                    "title": "Cited Topic",
+                    "description": "ok",
+                    "body_markdown": "# Cited",
+                    "source_span_ids": span_ids,
+                    "tags": [],
+                },
+                {
+                    "type": "topic",
+                    "slug": "second-topic",
+                    "title": "Second Topic",
+                    "description": "ok",
+                    "body_markdown": "# Second",
+                    "source_span_ids": span_ids,
+                    "tags": [],
+                },
+            ],
+            links=[
+                {
+                    "source_slug": "cited-topic",
+                    "target_slug": "second-topic",
+                    "link_type": "supports",
+                },
+                {"source_slug": "cited-topic", "link_type": "supports"},
+                {"source_slug": "cited-topic", "target_slug": "second-topic"},
+                "not an object",
+            ],
+        )
+    )
+
+    result = await compile_source_knowledge_llm(
+        runtime_db, source=source, spans=spans, llm_client=client
+    )
+
+    assert result.status == "completed"
+    assert result.link_count == 1
+
+
+@pytest.mark.asyncio()
 async def test_llm_compile_fails_run_when_nothing_is_cited(runtime_db) -> None:
     source, spans = _ingest_markdown(
         runtime_db, "# Facts\n\nBody.", filename="allbad.md"
