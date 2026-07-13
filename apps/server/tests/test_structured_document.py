@@ -295,3 +295,48 @@ def test_heading_only_sections_count_toward_chunk_size() -> None:
     combined = "\n".join(chunk.content_text for chunk in chunks)
     for index in range(20):
         assert f"NUMBER {index:02d}" in combined
+
+
+def test_merged_section_sizing_accounts_for_separators() -> None:
+    from anima_server.services.ingestion.structured import (
+        chunk_structured_document,
+        parse_markdown_structure,
+    )
+
+    # Many short heading-only sections: with separators counted, the merged
+    # chunks must stay within a small tolerance of the target rather than
+    # overrunning it by separator bytes alone.
+    markdown = "\n\n".join(f"# H{index:02d}" for index in range(40))
+    document = parse_markdown_structure(markdown)
+    target = 60
+    chunks = chunk_structured_document(document, target_chars=target, min_chars=0)
+
+    assert len(chunks) > 1
+    # No chunk exceeds target by more than one section+separator worth.
+    for chunk in chunks:
+        assert len(chunk.content_text) <= target + len("# H00") + 2
+
+
+def test_oversized_section_atomic_block_stays_standalone() -> None:
+    from anima_server.services.ingestion.structured import (
+        StructuredBlock,
+        StructuredDocument,
+        chunk_structured_document,
+    )
+
+    prose = "word " * 60  # ~300 chars of prose before the table
+    table = "| A | B |\n|---|---|\n| 1 | 2 |"
+    document = StructuredDocument(
+        blocks=(
+            StructuredBlock(kind="heading", text="Guide", heading_level=1),
+            StructuredBlock(kind="paragraph", text=prose.strip()),
+            StructuredBlock(kind="table", text=table),
+        )
+    )
+    chunks = chunk_structured_document(document, target_chars=200, overlap_chars=80)
+
+    atomic_chunks = [chunk for chunk in chunks if chunk.is_atomic]
+    assert atomic_chunks
+    for chunk in atomic_chunks:
+        # The atomic table chunk is verbatim: no carried prose overlap.
+        assert chunk.content_text == table

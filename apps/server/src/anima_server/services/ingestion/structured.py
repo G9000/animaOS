@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from anima_server.services.documents.pdf_text import PageText
 
 SECTION_PATH_SEPARATOR = " > "
+# Merged sections are joined with a blank line; count it when sizing chunks.
+_SECTION_JOIN_LEN = len("\n\n")
 
 # ~256-512 token target approximated as chars/4.
 DEFAULT_CHUNK_TARGET_CHARS = 1600
@@ -414,10 +416,18 @@ def chunk_structured_document(
                 chunks.append(part_chunk)
             continue
 
-        if pending and pending_length + section_length > target and pending_length >= minimum:
+        # Account for the "\n\n" join between merged sections so dense
+        # heading outlines do not overrun the cap by separator bytes alone.
+        separator = _SECTION_JOIN_LEN if pending else 0
+        if (
+            pending
+            and pending_length + separator + section_length > target
+            and pending_length >= minimum
+        ):
             flush_pending()
+            separator = 0
         pending.append(section)
-        pending_length += section_length
+        pending_length += separator + section_length
 
     flush_pending()
     return chunks
@@ -504,9 +514,11 @@ def _split_oversized_section(
     chunk_parts: list[SectionChunk] = []
     previous_tail = ""
     for offset, part in enumerate(parts):
+        # Atomic parts (tables/code) must stay verbatim and standalone —
+        # never prepend carried overlap into them.
         content = (
             f"{previous_tail}\n\n{part.content_text}"
-            if previous_tail
+            if previous_tail and not part.is_atomic
             else part.content_text
         )
         chunk_parts.append(
