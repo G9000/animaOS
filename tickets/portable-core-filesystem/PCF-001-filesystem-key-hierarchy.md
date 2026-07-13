@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 04:05 MYT
+- Updated: 2026-07-14 04:28 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -48,10 +48,14 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-14 02:11 MYT - Addressed retained-FRK review findings: pending password and recovery generations now verify against the authoritative pre-activation FRK catalog, legacy upgrade uses its protocol-defined v1 catalog without publishing active markers early, and full/FS tamper tests prove failure before activation while the old credential generation remains usable. Ticket remains `in_progress` for re-review.
 - 2026-07-14 02:49 MYT - Addressed the fourth follow-up: activated keyslot evidence now prevents legacy fallback when generation markers are removed while PENDING-only legacy-upgrade slots remain non-authoritative; legacy confirmation revalidates both password and recovery generations immediately before activation and reopens both afterward; the desktop supplies the current password only from ephemeral review state. Clarified that PCF-001 preserves legacy manifest compatibility fields for PCF-007. Ticket remains `in_progress` for re-review.
 - 2026-07-14 04:05 MYT - Addressed the fifth quality review: registration now publishes legacy login/recovery locators before activating versioned authority; native AAD binds immutable generation/scope/FRK/object-epoch metadata while status transitions in place; unauthenticated CoreFS credential routes share pre-KDF rate/concurrency admission; credential coordinators serialize complete transactions with active-generation CAS; and a live prepared recovery phrase cannot be replaced by a second prepare. Ticket remains `in_progress` for supervising-agent re-review.
+- 2026-07-14 04:28 MYT - Addressed the sixth restart-correctness review: persisted `ready` recovery preparation now blocks replacement independently of process/coordinator identity, while a stale `preparing` transaction remains reclaimable after restart. Full and CoreFS-only restart tests prove the original returned phrase and all pending rows survive a rejected second prepare and still confirm. Ticket remains `in_progress` for supervising-agent re-review.
 
 ## Validation
 
 - Commands:
+  - Sixth follow-up TDD: after restoring the editable PyO3 extension, the restart matrix failed 2 ready-marker tests and passed the stale-preparing retry test before implementation; after the one-line authority fix, all 3 passed.
+  - Sixth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest -q apps/server/tests/test_recovery.py` - 26 passed; the equivalent `test_corefs_keyslots.py` run - 42 passed.
+  - Sixth follow-up quality checks: focused Ruff check/format and `bun run build:server` passed; `git diff --check` passed before staging.
   - Fifth follow-up TDD: the combined review regression command passed 15 tests after implementation; focused red runs previously failed 9 AAD/schema/registration tests and 6 admission/concurrency tests before implementation.
   - Fifth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest -q apps/server/tests/test_corefs_keyslots.py` - 42 passed; the equivalent `test_recovery.py` run - 24 passed.
   - Fifth follow-up crypto/migration bundle: `test_corefs_crypto.py test_corefs_migration.py test_crypto.py test_data_crypto.py` - 26 passed.

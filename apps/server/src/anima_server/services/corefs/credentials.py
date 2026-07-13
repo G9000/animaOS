@@ -82,11 +82,7 @@ def _require_active_generation(
 
 def _reject_live_pending_recovery(manifest: dict[str, object]) -> None:
     marker = manifest.get(_PENDING_RECOVERY_CREDENTIAL)
-    if (
-        isinstance(marker, dict)
-        and marker.get("phase") == "ready"
-        and marker.get("coordinator_id") == _COORDINATOR_ID
-    ):
+    if isinstance(marker, dict) and marker.get("phase") == "ready":
         raise ValueError("recovery credential preparation is in progress")
 
 

@@ -11,6 +11,7 @@ from anima_server.api.routes import auth as auth_routes
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import SoulKeyslot, User
 from anima_server.services.core import get_manifest_path, update_core_manifest
+from anima_server.services.corefs import credentials as credential_service
 from anima_server.services.corefs.credentials import (
     CredentialBoundary,
     confirm_filesystem_recovery_credential,
@@ -199,6 +200,32 @@ def _make_soul_only(*, password: str, recovery_phrase: str) -> None:
         value["degraded_state"] = "filesystem_missing"
 
     update_core_manifest(publish)
+
+
+def _pending_manifest_snapshot() -> list[dict[str, object]]:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    return [slot for slot in manifest["keyslots"] if slot["status"] == KeyslotStatus.PENDING.value]
+
+
+def _pending_soul_snapshot(db) -> list[tuple[object, ...]]:
+    return [
+        (
+            row.id,
+            row.owner_id,
+            row.domain,
+            row.wrapping_path,
+            row.key_version,
+            row.credential_generation,
+            row.status,
+            row.kdf_salt,
+            row.wrap_iv,
+            row.wrap_tag,
+            row.wrapped_dek,
+        )
+        for row in db.query(SoulKeyslot)
+        .filter_by(status=KeyslotStatus.PENDING.value)
+        .order_by(SoulKeyslot.id)
+    ]
 
 
 def test_register_returns_recovery_phrase() -> None:
@@ -489,6 +516,73 @@ def test_filesystem_recovery_prepare_preserves_live_pending_phrase() -> None:
                 current_password="password-123",
                 current_recovery_phrase=str(registered["recoveryPhrase"]),
             )
+        confirm_filesystem_recovery_credential(
+            recovery_phrase=first.recovery_phrase,
+            pending_generation=first.pending_generation,
+        )
+
+
+def test_full_recovery_ready_marker_survives_coordinator_restart(monkeypatch) -> None:
+    with managed_test_client("anima-recovery-ready-restart-") as client:
+        registered = _register_user(client, password="password-123")
+        with get_user_session_factory(0)() as db:
+            user = db.get(User, 0)
+            assert user is not None
+            first = prepare_recovery_credential(
+                db,
+                user,
+                current_recovery_phrase=str(registered["recoveryPhrase"]),
+                current_password="password-123",
+            )
+            manifest_before = _pending_manifest_snapshot()
+            soul_before = _pending_soul_snapshot(db)
+
+            monkeypatch.setattr(credential_service, "_COORDINATOR_ID", "restarted-full")
+            with pytest.raises(ValueError, match="recovery credential preparation is in progress"):
+                prepare_recovery_credential(
+                    db,
+                    user,
+                    current_recovery_phrase=str(registered["recoveryPhrase"]),
+                    current_password="password-123",
+                )
+
+            assert _pending_manifest_snapshot() == manifest_before
+            assert _pending_soul_snapshot(db) == soul_before
+            confirm_recovery_credential(
+                db,
+                user,
+                recovery_phrase=first.recovery_phrase,
+                pending_generation=first.pending_generation,
+                scope=first.scope,
+                current_password="password-123",
+            )
+
+
+def test_filesystem_recovery_ready_marker_survives_coordinator_restart(monkeypatch) -> None:
+    with managed_test_client("anima-fs-recovery-ready-restart-") as client:
+        registered = _register_user(client, password="password-123")
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+        first = prepare_filesystem_recovery_credential(
+            current_password="password-123",
+            current_recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+        manifest_before = _pending_manifest_snapshot()
+        with get_user_session_factory(0)() as db:
+            soul_before = _pending_soul_snapshot(db)
+
+        monkeypatch.setattr(credential_service, "_COORDINATOR_ID", "restarted-fs")
+        with pytest.raises(ValueError, match="recovery credential preparation is in progress"):
+            prepare_filesystem_recovery_credential(
+                current_password="password-123",
+                current_recovery_phrase=str(registered["recoveryPhrase"]),
+            )
+
+        assert _pending_manifest_snapshot() == manifest_before
+        with get_user_session_factory(0)() as db:
+            assert _pending_soul_snapshot(db) == soul_before == []
         confirm_filesystem_recovery_credential(
             recovery_phrase=first.recovery_phrase,
             pending_generation=first.pending_generation,
@@ -989,7 +1083,7 @@ def test_scoped_recovery_replacement_preserves_degraded_compartment(
             assert after_soul_rows == before_soul_rows
 
 
-def test_recovery_replacement_retry_replaces_pre_activation_pending_rows(monkeypatch) -> None:
+def test_recovery_preparing_marker_is_retryable_after_coordinator_restart(monkeypatch) -> None:
     phrases = iter(
         [
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -1018,6 +1112,14 @@ def test_recovery_replacement_retry_replaces_pre_activation_pending_rows(monkeyp
                         else None
                     ),
                 )
+            stale_manifest = _pending_manifest_snapshot()
+            stale_soul = _pending_soul_snapshot(db)
+            marker = json.loads(get_manifest_path().read_text(encoding="utf-8"))[
+                "pending_recovery_credential"
+            ]
+            assert marker["phase"] == "preparing"
+
+            monkeypatch.setattr(credential_service, "_COORDINATOR_ID", "restarted-preparing")
             replacement = prepare_recovery_credential(
                 db,
                 user,
@@ -1025,3 +1127,24 @@ def test_recovery_replacement_retry_replaces_pre_activation_pending_rows(monkeyp
                 current_password="password-123",
             )
             assert replacement.recovery_phrase.startswith("legal winner")
+            assert _pending_manifest_snapshot() != stale_manifest
+            assert len(_pending_manifest_snapshot()) == len(stale_manifest)
+            assert _pending_soul_snapshot(db) != stale_soul
+            assert len(_pending_soul_snapshot(db)) == len(stale_soul)
+            marker = json.loads(get_manifest_path().read_text(encoding="utf-8"))[
+                "pending_recovery_credential"
+            ]
+            assert marker == {
+                "generation": replacement.pending_generation,
+                "scope": replacement.scope.value,
+                "phase": "ready",
+                "coordinator_id": "restarted-preparing",
+            }
+            confirm_recovery_credential(
+                db,
+                user,
+                recovery_phrase=replacement.recovery_phrase,
+                pending_generation=replacement.pending_generation,
+                scope=replacement.scope,
+                current_password="password-123",
+            )
