@@ -11,6 +11,10 @@ import type {
   RegisterRequest as ContractRegisterRequest,
   RecoverRequest as ContractRecoverRequest,
   RecoverResponse as ContractRecoverResponse,
+  ConfirmRecoveryCredentialRequest as ContractConfirmRecoveryCredentialRequest,
+  ConfirmRecoveryCredentialResponse as ContractConfirmRecoveryCredentialResponse,
+  PrepareRecoveryCredentialRequest as ContractPrepareRecoveryCredentialRequest,
+  PrepareRecoveryCredentialResponse as ContractPrepareRecoveryCredentialResponse,
   UserResponse as ContractUserResponse,
 } from "@anima/auth-contracts";
 
@@ -31,6 +35,14 @@ export interface LogoutResponse extends ContractLogoutResponse {}
 export interface RecoverRequest extends ContractRecoverRequest {}
 export interface RecoverResponse extends ContractRecoverResponse {}
 export interface ChangePasswordRequest extends ContractChangePasswordRequest {}
+export interface PrepareRecoveryCredentialRequest
+  extends ContractPrepareRecoveryCredentialRequest {}
+export interface PrepareRecoveryCredentialResponse
+  extends ContractPrepareRecoveryCredentialResponse {}
+export interface ConfirmRecoveryCredentialRequest
+  extends ContractConfirmRecoveryCredentialRequest {}
+export interface ConfirmRecoveryCredentialResponse
+  extends ContractConfirmRecoveryCredentialResponse {}
 export interface LoginRequest extends ContractLoginRequest {}
 export interface RegisterRequest extends ContractRegisterRequest {}
 export interface UserResponse extends ContractUserResponse {}

@@ -17,6 +17,7 @@
 //! - Decision replay traces for agent debugging
 
 pub mod adaptive;
+pub use anima_corefs as corefs;
 pub mod capsule;
 pub mod cards;
 pub mod chunker;

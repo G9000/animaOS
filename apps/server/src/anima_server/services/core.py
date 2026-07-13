@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import platform
+import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -40,6 +42,17 @@ def ensure_core_manifest() -> dict[str, object]:
         )
         manifest["encryption_mode"] = _detect_encryption_mode()
         manifest["encryption_version"] = 1
+        _write_manifest(manifest)
+        return manifest
+
+
+def update_core_manifest(
+    update: Callable[[dict[str, object]], None],
+) -> dict[str, object]:
+    """Apply one in-process atomic manifest mutation under the writer lock."""
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        update(manifest)
         _write_manifest(manifest)
         return manifest
 
@@ -216,7 +229,13 @@ def set_owner_user_id(user_id: int) -> None:
     """Stamp the manifest with the owner after first provisioning."""
     with _manifest_lock:
         manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        binding = manifest.get("owner_binding")
+        if isinstance(binding, dict):
+            bound_user_id = binding.get("legacy_user_id")
+            if bound_user_id is not None and int(bound_user_id) != user_id:
+                raise ValueError("opaque owner ID is already bound to another local user")
         manifest["owner_user_id"] = user_id
+        manifest["owner_binding"] = {"legacy_user_id": user_id}
         _write_manifest(manifest)
 
 
@@ -245,6 +264,16 @@ def get_owner_user_id() -> int | None:
     return int(raw) if raw is not None else None
 
 
+def get_owner_id() -> str | None:
+    """Return the stable opaque Core owner UUID without profile data."""
+    path = get_manifest_path()
+    if not path.is_file():
+        return None
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    raw = manifest.get("owner_id")
+    return str(raw) if raw is not None else None
+
+
 def set_next_user_id(next_user_id: int) -> None:
     with _manifest_lock:
         manifest = _load_manifest(now=datetime.now(UTC).isoformat())
@@ -271,15 +300,36 @@ def _load_manifest(*, now: str) -> dict[str, object]:
     manifest.setdefault("created_at", now)
     manifest.setdefault("last_opened_at", now)
     manifest.setdefault("next_user_id", _detect_next_user_id())
+    manifest.setdefault("owner_id", str(uuid.uuid7()))
+    legacy_owner = manifest.get("owner_user_id")
+    if legacy_owner is not None:
+        binding = manifest.setdefault("owner_binding", {"legacy_user_id": int(legacy_owner)})
+        if not isinstance(binding, dict) or int(binding.get("legacy_user_id", -1)) != int(
+            legacy_owner
+        ):
+            raise ValueError("opaque owner ID has an ambiguous local owner binding")
+    manifest.setdefault("keyslots_version", 1)
+    manifest.setdefault("keyslots", [])
     return manifest
 
 
 def _write_manifest(manifest: dict[str, object]) -> None:
     path = get_manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    if os.name != "nt":
-        os.chmod(path, 0o600)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f"{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _detect_next_user_id() -> int:

@@ -38,6 +38,7 @@ from anima_server.services.core import (
     store_user_index_entry,
     store_wrapped_sqlcipher_key,
 )
+from anima_server.services.corefs.types import PayloadScope
 from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
 
@@ -180,6 +181,22 @@ def register_account(
             db.add(build_user_key(user_id, domain, wrapped_dek))
         db.commit()
 
+        # Bind the stable opaque owner before any AAD-bound slot is published.
+        # At this boundary the complete legacy account remains independently usable.
+        set_owner_user_id(user_id)
+
+        if sqlcipher_raw_key is not None:
+            from anima_server.services.corefs.keyslots import provision_initial_key_hierarchy
+
+            provision_initial_key_hierarchy(
+                db,
+                user_id=user_id,
+                password=password,
+                recovery_phrase=recovery_phrase,
+                sqlcipher_key=sqlcipher_raw_key,
+                deks=deks,
+            )
+
     # Store recovery-wrapped SQLCipher key in manifest
     if sqlcipher_raw_key is not None:
         from anima_server.services.core import store_recovery_sqlcipher_key
@@ -189,7 +206,6 @@ def register_account(
         )
         store_recovery_sqlcipher_key(recovery_wrapped)
 
-    set_owner_user_id(user_id)
     store_user_index_entry(normalized, user_id)
     return serialize_user(user), deks, recovery_phrase
 
@@ -218,6 +234,13 @@ def authenticate_account(
 
     with get_user_session_factory(account_user_id)() as db:
         try:
+            from anima_server.services.corefs.credentials import (
+                finalize_pending_password_generation,
+            )
+
+            pending_user = db.scalar(select(User).where(User.username == normalized))
+            if pending_user is not None:
+                finalize_pending_password_generation(db, pending_user, password=password)
             user, deks = authenticate_user(db, normalized, password)
         except ValueError as exc:
             raise InvalidCredentialsError(f"authenticate_user failed for user_id={account_user_id}: {exc}") from exc
@@ -319,6 +342,8 @@ def _legacy_backup_path(shared_db_path: Path) -> Path:
 def recover_account_with_phrase(
     phrase: str,
     new_password: str,
+    *,
+    scope: PayloadScope = PayloadScope.FULL,
 ) -> tuple[dict[str, object], dict[str, bytes]]:
     """Recover an account using the recovery phrase and set a new password.
 
@@ -361,14 +386,46 @@ def recover_account_with_phrase(
         if user_id is None:
             raise ValueError("No recovery data found")
 
-    # 3. Open the user database and recover DEKs
+    # 3. Open the user database and recover every root/domain generation.
+    used_versioned_hierarchy = False
     with get_user_session_factory(user_id)() as db:
-        deks = recover_account(db, phrase, new_password, user_id)
+        import json
+
+        from anima_server.models import User
+        from anima_server.services.core import get_manifest_path
+
+        manifest_path = get_manifest_path()
+        manifest = (
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest_path.is_file()
+            else {}
+        )
+        requested_scope = scope
+        if int(manifest.get("active_recovery_credential_generation", 0)) > 0:
+            from anima_server.services.corefs.credentials import (
+                recover_password_credential_generation,
+            )
+
+            user = db.get(User, user_id)
+            if user is None:
+                raise ValueError("User not found")
+            deks = recover_password_credential_generation(
+                db,
+                user,
+                recovery_phrase=phrase,
+                new_password=new_password,
+                scope=requested_scope,
+            )
+            used_versioned_hierarchy = True
+        else:
+            if requested_scope is not PayloadScope.FULL:
+                raise ValueError("legacy recovery requires full scope")
+            deks = recover_account(db, phrase, new_password, user_id)
 
     # 4. Re-wrap SQLCipher key with new password in manifest when present.
     from anima_server.services.crypto import wrap_dek
 
-    if raw_key is not None:
+    if raw_key is not None and not used_versioned_hierarchy:
         wrapped = wrap_dek(new_password, raw_key, user_id, "sqlcipher")
         store_wrapped_sqlcipher_key(
             {

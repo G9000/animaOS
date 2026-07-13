@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -9,8 +9,8 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-13 20:47 MYT
-- Started:
+- Updated: 2026-07-13 21:27 MYT
+- Started: 2026-07-13 21:27 MYT
 - Completed:
 
 ## Goal
@@ -21,7 +21,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
-| PCF-001 | Filesystem key hierarchy and credential generations | backlog | none |
+| PCF-001 | Filesystem key hierarchy and credential generations | in_progress | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | backlog | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
@@ -66,6 +66,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-12 18:00 MYT - Added the linked full target-architecture graph for topology, startup/indexing, tool routing, operations, authorization, and transfer/recovery.
 - 2026-07-12 18:58 MYT - Closed the final execution-readiness gaps for standalone CI/release notices, stable Notes/Conversations roots, and principal-aware CoreFS API authorization.
 - 2026-07-13 20:47 MYT - Reconciled the initiative with merged main: preserved current rich Journal HTML/media behavior, inventoried new document parsing/tool/context/compiler persistence boundaries, expanded migration tests/docs, and made catalog benchmark fixtures unambiguous.
+- 2026-07-13 21:27 MYT - Began PCF-001 implementation in an isolated worktree after a green Rust and crypto/recovery baseline.
 
 ## Validation
 

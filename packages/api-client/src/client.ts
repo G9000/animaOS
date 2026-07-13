@@ -7,6 +7,8 @@ import type {
   AgentStateData,
   AuthResponse,
   ChangePasswordResponse,
+  ConfirmRecoveryCredentialResponse,
+  PrepareRecoveryCredentialResponse,
   ChatMessage,
   ChatContextMessage,
   ChatRequestAttachment,
@@ -563,16 +565,48 @@ export function createApiClient(options: ApiClientOptions) {
       me: () => request<User>("/auth/me"),
       logout: () =>
         request<{ success: boolean }>("/auth/logout", { method: "POST" }),
-      changePassword: (oldPassword: string, newPassword: string) =>
+      changePassword: (
+        oldPassword: string,
+        newPassword: string,
+        scope: "full" | "soul" | "fs" = "full",
+      ) =>
         request<ChangePasswordResponse>("/auth/change-password", {
           method: "POST",
-          body: { oldPassword, newPassword },
+          body: { oldPassword, newPassword, scope },
         }),
-      recover: (recoveryPhrase: string, newPassword: string) =>
+      recover: (
+        recoveryPhrase: string,
+        newPassword: string,
+        scope: "full" | "soul" | "fs" = "full",
+      ) =>
         request<LoginResponse>("/auth/recover", {
           method: "POST",
-          body: { recoveryPhrase, newPassword },
+          body: { recoveryPhrase, newPassword, scope },
         }),
+      prepareRecoveryCredential: (
+        currentRecoveryPhrase: string,
+        currentPassword: string,
+        scope: "full" | "soul" | "fs" = "full",
+      ) =>
+        request<PrepareRecoveryCredentialResponse>(
+          "/auth/recovery-credential/prepare",
+          {
+            method: "POST",
+            body: { currentRecoveryPhrase, currentPassword, scope },
+          },
+        ),
+      confirmRecoveryCredential: (
+        recoveryPhrase: string,
+        pendingGeneration: number,
+        scope: "full" | "soul" | "fs",
+      ) =>
+        request<ConfirmRecoveryCredentialResponse>(
+          "/auth/recovery-credential/confirm",
+          {
+            method: "POST",
+            body: { recoveryPhrase, pendingGeneration, scope },
+          },
+        ),
     },
     users: {
       me: (id: number) => request<User>(`/users/${id}`),

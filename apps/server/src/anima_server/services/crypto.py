@@ -159,11 +159,16 @@ def create_wrapped_deks_for_domains(
 
 
 def wrap_dek(passphrase: str, dek: bytes, user_id: int, domain: str) -> WrappedDekRecord:
+    return wrap_secret_with_aad(passphrase, dek, _build_dek_wrap_aad(user_id, domain))
+
+
+def wrap_secret_with_aad(passphrase: str, secret: bytes, aad: bytes) -> WrappedDekRecord:
+    if len(secret) != KEY_LENGTH:
+        raise ValueError("wrapped secret must be exactly 32 bytes")
     salt = os.urandom(SALT_LENGTH)
     iv = os.urandom(IV_LENGTH)
     kek = derive_argon2id_key(passphrase, salt)
-    aad = _build_dek_wrap_aad(user_id, domain)
-    encrypted = AESGCM(kek).encrypt(iv, dek, aad)
+    encrypted = AESGCM(kek).encrypt(iv, secret, aad)
     ciphertext, tag = encrypted[:-AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
 
     return WrappedDekRecord(
@@ -184,6 +189,18 @@ def unwrap_dek(
     user_id: int,
     domain: str,
 ) -> bytes:
+    return unwrap_secret_with_aad(
+        passphrase,
+        record,
+        _build_dek_wrap_aad(user_id, domain),
+    )
+
+
+def unwrap_secret_with_aad(
+    passphrase: str,
+    record: WrappedDekRecord,
+    aad: bytes,
+) -> bytes:
     salt = base64.b64decode(record.kdf_salt, validate=True)
     iv = base64.b64decode(record.wrap_iv, validate=True)
     tag = base64.b64decode(record.wrap_tag, validate=True)
@@ -196,7 +213,6 @@ def unwrap_dek(
         parallelism=record.kdf_parallelism,
         key_length=record.kdf_key_length,
     )
-    aad = _build_dek_wrap_aad(user_id, domain)
     return AESGCM(kek).decrypt(iv, ciphertext + tag, aad)
 
 

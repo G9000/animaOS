@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/anima-core",
+    "packages/anima-corefs",
     "apps/local-runtime-daemon",
     "apps/desktop/src-tauri",
     "apps/animus",

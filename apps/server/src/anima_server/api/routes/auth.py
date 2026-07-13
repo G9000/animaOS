@@ -12,11 +12,15 @@ from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.contracts.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
+    ConfirmRecoveryCredentialRequest,
+    ConfirmRecoveryCredentialResponse,
     CreateAIChatRequest,
     CreateAIChatResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
+    PrepareRecoveryCredentialRequest,
+    PrepareRecoveryCredentialResponse,
     RecoverRequest,
     RecoverResponse,
     RegisterRequest,
@@ -31,11 +35,16 @@ from anima_server.db.user_store import (
     register_account,
 )
 from anima_server.services.auth import (
-    change_user_password,
     get_user_by_id,
     normalize_username,
     serialize_user,
 )
+from anima_server.services.corefs.credentials import (
+    change_password_credential_generation,
+    confirm_recovery_credential,
+    prepare_recovery_credential,
+)
+from anima_server.services.corefs.types import PayloadScope
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -212,18 +221,16 @@ def change_password(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        change_user_password(
+        change_password_credential_generation(
             db,
             user,
             old_password=payload.oldPassword,
             new_password=payload.newPassword,
             current_deks=session.deks,
+            scope=PayloadScope(payload.scope),
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials") from None
-
-    # Re-wrap SQLCipher key with new password (unified passphrase mode)
-    _rewrap_sqlcipher_key_if_unified(payload.newPassword)
 
     unlock_session_store.revoke_user(user.id)
     new_unlock_token = unlock_session_store.create(user.id, session.deks)
@@ -237,7 +244,11 @@ def recover(payload: RecoverRequest) -> dict[str, object]:
         raise HTTPException(status_code=422, detail="Recovery phrase is required")
 
     try:
-        response, deks = recover_account_with_phrase(phrase, payload.newPassword)
+        response, deks = recover_account_with_phrase(
+            phrase,
+            payload.newPassword,
+            scope=PayloadScope(payload.scope),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
 
@@ -248,42 +259,62 @@ def recover(payload: RecoverRequest) -> dict[str, object]:
     }
 
 
-def _rewrap_sqlcipher_key_if_unified(new_password: str) -> None:
-    """Re-wrap the SQLCipher key with a new password in unified mode."""
-    from anima_server.config import settings
+@router.post(
+    "/recovery-credential/prepare",
+    response_model=PrepareRecoveryCredentialResponse,
+)
+def prepare_recovery(
+    payload: PrepareRecoveryCredentialRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    session = unlock_session_store.resolve(read_unlock_token(request))
+    if session is None:
+        raise HTTPException(status_code=401, detail="Session locked. Please sign in again.")
+    user = get_user_by_id(db, session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        prepared = prepare_recovery_credential(
+            db,
+            user,
+            current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
+            current_password=payload.currentPassword,
+            scope=PayloadScope(payload.scope),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {
+        "success": True,
+        "recoveryPhrase": prepared.recovery_phrase,
+        "pendingGeneration": prepared.pending_generation,
+        "scope": prepared.scope.value,
+    }
 
-    if settings.core_passphrase.strip():
-        return
 
-    from anima_server.services.core import (
-        get_owner_user_id,
-        get_wrapped_sqlcipher_key,
-        store_wrapped_sqlcipher_key,
-    )
-    from anima_server.services.sessions import get_sqlcipher_key
-
-    raw_key = get_sqlcipher_key()
-    if raw_key is None:
-        return
-
-    wrapped_data = get_wrapped_sqlcipher_key()
-    if wrapped_data is None:
-        return
-
-    from anima_server.services.crypto import wrap_dek
-
-    owner_user_id = get_owner_user_id() or 0
-    wrapped = wrap_dek(new_password, raw_key, owner_user_id, "sqlcipher")
-    store_wrapped_sqlcipher_key(
-        {
-            "user_id": owner_user_id,
-            "kdf_salt": wrapped.kdf_salt,
-            "kdf_time_cost": wrapped.kdf_time_cost,
-            "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
-            "kdf_parallelism": wrapped.kdf_parallelism,
-            "kdf_key_length": wrapped.kdf_key_length,
-            "wrap_iv": wrapped.wrap_iv,
-            "wrap_tag": wrapped.wrap_tag,
-            "wrapped_key": wrapped.wrapped_dek,
-        }
-    )
+@router.post(
+    "/recovery-credential/confirm",
+    response_model=ConfirmRecoveryCredentialResponse,
+)
+def confirm_recovery(
+    payload: ConfirmRecoveryCredentialRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    session = unlock_session_store.resolve(read_unlock_token(request))
+    if session is None:
+        raise HTTPException(status_code=401, detail="Session locked. Please sign in again.")
+    user = get_user_by_id(db, session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        confirm_recovery_credential(
+            db,
+            user,
+            recovery_phrase=payload.recoveryPhrase.strip().lower(),
+            pending_generation=payload.pendingGeneration,
+            scope=PayloadScope(payload.scope),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {"success": True}

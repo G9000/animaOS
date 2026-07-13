@@ -1,6 +1,6 @@
 # PCF-001 - Filesystem key hierarchy and credential generations
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-corefs`, `packages/anima-core`, `apps/server`, `apps/desktop`, and `packages/api-client` crypto, manifest, Soul keyslots, credential UI/API
 - Parent: `PCF-000`
@@ -9,8 +9,8 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 17:34 MYT
-- Started:
+- Updated: 2026-07-13 23:13 MYT
+- Started: 2026-07-13 21:27 MYT
 - Completed:
 
 ## Goal
@@ -42,12 +42,32 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-12 15:45 MYT - Added scoped recovery/keyslot completeness and credential-generation requirements for independently recoverable Soul and CoreFS artifacts.
 - 2026-07-12 16:01 MYT - Closed review conflict between full-Core recovery and intentional Soul-only/CoreFS-only credential scopes.
 - 2026-07-12 17:34 MYT - Assigned CoreFS crypto ownership to Rust and the existing `anima-core` Python extension boundary.
+- 2026-07-13 21:27 MYT - Implementation started on `codex/pcf-001-key-hierarchy`; isolated worktree dependencies installed and baseline Rust/crypto/recovery tests verified.
+- 2026-07-13 23:13 MYT - Implemented the native opaque FRK/Object-DEK boundary, owner-bound password/recovery generations, typed CoreFS AAD, two-phase recovery confirmation, scoped credential rotation, strict legacy backfill, migration compatibility coverage, and Security UI/API flow; validation is green and the ticket remains `in_progress` pending supervising-agent review.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uvx maturin develop --manifest-path packages/anima-core/Cargo.toml --features python` - built and installed the editable PyO3 extension.
+  - `cargo test -p anima-corefs -p anima-core` - 226 Rust tests passed.
+  - `cargo check -p anima-core --features python` and `rustfmt --edition 2021 --check packages/anima-corefs/src/crypto.rs` - passed (existing Rust warnings only); a whole-file check of the pre-existing `anima-core/src/ffi.rs` reports formatting outside the three PCF hunks, which was deliberately left untouched.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_crypto.py -q` - 7 passed.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 19 passed.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_migration.py -q` - 1 passed; fresh upgrade/downgrade/re-upgrade preserved legacy key rows.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_recovery.py -q` - 16 passed after removal of the obsolete one-phase helper.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; $env:ANIMA_TEST_TEMP_ROOT=Join-Path $env:TEMP 'animaos-pcf-tests'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_crypto.py apps/server/tests/test_encrypted_core_regression.py -q` - 11 passed.
+  - `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 2 passed.
+  - `bun run build:desktop` and `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server` - passed.
+  - scoped `.venv\Scripts\ruff.exe check ...` - passed.
+  - `.venv\Scripts\alembic.exe -c apps/server/alembic_core.ini heads` - exactly `20260712_0001 (head)`.
+  - `git diff --check` - passed.
 - Changed paths:
-  - none
+  - `packages/anima-corefs/`, `packages/anima-core/`, root Cargo workspace/lock
+  - `apps/server/src/anima_server/services/corefs/`, auth routes/contracts/user-store, Core manifest/crypto, Soul keyslot model/migration
+  - `apps/server/tests/test_corefs_*.py`, `apps/server/tests/test_recovery.py`
+  - `apps/desktop/src/pages/settings/`, `apps/desktop/tests/recovery-credential-replacement.test.ts`
+  - `packages/anima-auth-contracts/`, `packages/api-client/`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`, `tickets/portable-core-filesystem/PCF-001-filesystem-key-hierarchy.md`
 - Notes:
-  - Claim before implementation.
+  - Portability tests must set `ANIMA_TEST_TEMP_ROOT` outside the OneDrive-synchronized checkout on Windows; the same isolated test failed only when OneDrive held the directory and passed immediately under `%TEMP%`.
+  - FRK generation/wrapping/unwrapping and Object-DEK generation/wrapping/unwrapping remain opaque native handles. Python retains only existing Soul/SQLCipher and legacy UserKey byte handling.

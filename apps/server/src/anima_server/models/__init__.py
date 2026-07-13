@@ -67,6 +67,7 @@ from anima_server.models.soul_consciousness import (
     GrowthLogEntry,
     IdentityBlock,
 )
+from anima_server.models.soul_keyslot import SoulKeyslot
 from anima_server.models.task import Task
 from anima_server.models.user import User
 from anima_server.models.user_key import UserKey
@@ -126,6 +127,7 @@ __all__ = [
     "RuntimeWorkflowCheckpoint",
     "RuntimeWorkflowRun",
     "SelfModelBlock",
+    "SoulKeyslot",
     "Task",
     "TelegramLink",
     "User",
