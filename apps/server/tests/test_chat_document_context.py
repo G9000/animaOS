@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeKnowledgeConcept,
     RuntimeKnowledgeConceptSource,
@@ -20,6 +21,25 @@ pytest_plugins = ("conftest_runtime",)
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _register_owned_document(runtime_db: Session, *, user_id: int = 7) -> int:
+    """A real RuntimeDocument row so the ownership gate admits the selection."""
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=user_id,
+            filename="manual.pdf",
+            mime_type="application/pdf",
+            storage_path=f".anima/documents/{user_id}/manual.pdf",
+            sha256="9" * 64,
+            size_bytes=100,
+        ),
+    )
+    return document.id
 
 
 def test_build_document_context_block_uses_selected_pdf_hits(monkeypatch: Any) -> None:
@@ -71,9 +91,10 @@ def test_build_document_context_block_uses_selected_pdf_hits(monkeypatch: Any) -
             "user_id": 7,
             "query": "How do I restart the checkpoint?",
             "document_ids": [4],
-            "limit": 5,
+            "limit": settings.document_context_chunk_limit,
         }
     ]
+    assert settings.document_context_chunk_limit == 15
     assert block is not None
     assert block.label == "document_context"
     assert "manual.pdf" in block.value
@@ -246,6 +267,12 @@ def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chu
         fake_document_knowledge_hits,
         raising=False,
     )
+    monkeypatch.setattr(
+        agent_service,
+        "_compiled_document_chunk_ids",
+        lambda runtime_db, *, user_id, concept_ids, document_chunk_ids: {12},
+        raising=False,
+    )
 
     block = agent_service._build_document_context_block(
         object(),
@@ -261,14 +288,93 @@ def test_build_document_context_block_uses_compiled_knowledge_instead_of_raw_chu
     assert "Raw relay instructions" not in block.value
 
 
+def test_build_document_context_block_keeps_raw_chunks_when_coverage_lookup_fails(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return [
+            DocumentRagResult(
+                chunk_id=12,
+                document_id=4,
+                filename="manual.pdf",
+                content="Raw relay instructions survive a coverage lookup failure.",
+                similarity=0.91,
+                page_start=2,
+                page_end=2,
+                section_title="Install",
+            )
+        ]
+
+    def fake_document_knowledge_hits(
+        runtime_db: object,
+        *,
+        user_id: int,
+        document_ids: list[int],
+        document_chunk_ids: list[int],
+        limit: int,
+    ) -> list[KnowledgeConceptHit]:
+        return [
+            KnowledgeConceptHit(
+                concept_id=22,
+                title="Pump Maintenance",
+                slug="document-4-pump-maintenance",
+                concept_type="topic",
+                summary="Use the compiled maintenance concept.",
+                score=1.0,
+            )
+        ]
+
+    def raising_coverage_lookup(
+        runtime_db: object,
+        *,
+        user_id: int,
+        concept_ids: list[int],
+        document_chunk_ids: set[int],
+    ) -> set[int]:
+        raise RuntimeError("coverage lookup unavailable")
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+    monkeypatch.setattr(
+        agent_service,
+        "_document_knowledge_hits",
+        fake_document_knowledge_hits,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        agent_service,
+        "_compiled_document_chunk_ids",
+        raising_coverage_lookup,
+        raising=False,
+    )
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="maintenance schedule?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "Raw evidence excerpts from selected PDFs" in block.value
+    assert "Raw relay instructions survive a coverage lookup failure." in block.value
+
+
 def test_build_document_context_block_uses_query_matched_compiled_pdf_concept(
     monkeypatch: Any,
     runtime_db: Session,
 ) -> None:
+    document_id = _register_owned_document(runtime_db)
     source = RuntimeSource(
         user_id=7,
         kind="document",
-        source_uri="runtime-document://4",
+        source_uri=f"runtime-document://{document_id}",
         content_hash=_sha("selected"),
         title="manual.pdf",
         media_type="application/pdf",
@@ -410,7 +516,7 @@ def test_build_document_context_block_uses_query_matched_compiled_pdf_concept(
         runtime_db,
         user_id=7,
         user_message="How should I calibrate the relay?",
-        document_ids=[4],
+        document_ids=[document_id],
     )
 
     assert block is not None
@@ -424,10 +530,11 @@ def test_build_document_context_block_keeps_raw_excerpts_for_unmatched_chunks(
     monkeypatch: Any,
     runtime_db: Session,
 ) -> None:
+    document_id = _register_owned_document(runtime_db)
     source = RuntimeSource(
         user_id=7,
         kind="document",
-        source_uri="runtime-document://4",
+        source_uri=f"runtime-document://{document_id}",
         content_hash=_sha("selected"),
         title="manual.pdf",
         media_type="application/pdf",
@@ -532,7 +639,7 @@ def test_build_document_context_block_keeps_raw_excerpts_for_unmatched_chunks(
         runtime_db,
         user_id=7,
         user_message="How should I set the relay and torque?",
-        document_ids=[4],
+        document_ids=[document_id],
     )
 
     assert block is not None
@@ -627,3 +734,111 @@ def test_build_document_context_block_skips_empty_selection() -> None:
         )
         is None
     )
+
+
+def test_build_document_context_block_emits_tool_primer_when_retrieval_is_empty(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        return []
+
+    monkeypatch.setattr(
+        agent_service, "search_document_chunks", fake_search_document_chunks
+    )
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="what does chapter three say?",
+        document_ids=[4],
+    )
+
+    # Zero hits must still produce the primer: the block is the model's only
+    # signal that documents were selected and that the tools exist.
+    assert block is not None
+    assert "No excerpts were retrieved" in block.value
+    assert "read_document_section" in block.value
+    assert "get_document_outline" in block.value
+
+
+def test_build_document_context_block_emits_tool_primer_when_retrieval_raises(
+    monkeypatch: Any,
+) -> None:
+    def failing_search(*args: Any, **kwargs: Any) -> list[DocumentRagResult]:
+        raise RuntimeError("embedding provider down")
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", failing_search)
+
+    block = agent_service._build_document_context_block(
+        object(),
+        user_id=7,
+        user_message="what does chapter three say?",
+        document_ids=[4],
+    )
+
+    assert block is not None
+    assert "read_document_section" in block.value
+
+
+def test_build_document_context_block_ignores_unowned_document_ids(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+
+    owned = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=7,
+            filename="mine.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/7/mine.pdf",
+            sha256="1" * 64,
+            size_bytes=100,
+        ),
+    )
+    foreign = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=8,
+            filename="theirs.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/8/theirs.pdf",
+            sha256="2" * 64,
+            size_bytes=100,
+        ),
+    )
+
+    def fake_search_document_chunks(*args: Any, **kwargs: Any):
+        return []
+
+    monkeypatch.setattr(
+        agent_service, "search_document_chunks", fake_search_document_chunks
+    )
+
+    # Only invalid/foreign ids: behaves like no selection at all.
+    none_valid = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="question",
+        document_ids=[foreign.id, 999_999],
+    )
+    assert none_valid is None
+
+    # Mixed selection keeps only the owned document in the primer.
+    mixed = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="question",
+        document_ids=[foreign.id, owned.id],
+    )
+    assert mixed is not None
+    assert "mine.pdf" in mixed.value
+    assert "theirs.pdf" not in mixed.value

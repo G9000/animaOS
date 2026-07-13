@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveDiaryBody } from "../src/pages/journal/content";
+import { canSaveDiaryEntry, resolveDiaryBody } from "../src/pages/journal/content";
 
 describe("diary editor content", () => {
   test("preserves inline-image-only editor HTML", () => {
@@ -23,5 +23,16 @@ describe("diary editor content", () => {
         plainText: "",
       }),
     ).toBeNull();
+  });
+
+  test("allows a cover-image-only diary entry to be saved", () => {
+    expect(
+      canSaveDiaryEntry({
+        editorHasContent: false,
+        plainText: "",
+        attachmentCount: 0,
+        hasPendingCover: true,
+      }),
+    ).toBe(true);
   });
 });

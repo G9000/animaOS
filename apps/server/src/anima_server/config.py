@@ -63,6 +63,50 @@ class Settings(BaseSettings):
     agent_background_memory_enabled: bool = True
     chat_image_max_size_bytes: int = 10 * 1024 * 1024
     chat_image_max_count: int = 4
+    # PDF parsing tier: "fast" (pypdf only), "quality" (Docling when the
+    # optional extra is installed), or "auto" (pypdf first, escalate to
+    # Docling when extraction quality looks poor or pages are scanned).
+    document_parser_tier: str = "auto"
+    # Document-grounded turns retrieve this many chunks for the context block.
+    document_context_chunk_limit: int = 15
+    # Raw evidence chunks pass through untruncated up to this safety cap,
+    # which only bounds pathological chunks (deliberate chunk size is 1800).
+    document_context_chunk_char_cap: int = 2500
+    # Document tools (search/outline/read) may return at most this much
+    # document text per turn; over-budget calls get a truncation notice.
+    document_tool_turn_char_budget: int = 40_000
+    # Single read_document_section call cap; longer sections continue via
+    # the start_chunk parameter.
+    document_tool_read_char_limit: int = 6_000
+    # Contextual retrieval blurbs: when "on", each document chunk gets an
+    # LLM-generated context line stored in chunk metadata and prepended to
+    # the chunk text for embedding and lexical indexing only (never shown
+    # as evidence). Off by default until the eval harness justifies the
+    # ingestion cost.
+    contextual_chunks: Literal["off", "on"] = "off"
+    # Skip blurb generation for documents with more chunks than this.
+    contextual_chunks_max_chunks: int = 200
+    # Optional cross-encoder rerank stage after RRF fusion. "local" requires
+    # the reranker extra (sentence-transformers); anything unavailable
+    # degrades to the fused order.
+    retrieval_reranker: Literal["off", "local"] = "off"
+    retrieval_reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    retrieval_rerank_candidates: int = 50
+    # Knowledge compiler backend: "llm" uses the runtime's configured model
+    # (falling back to deterministic when the model is unreachable);
+    # "deterministic" forces the stub builder.
+    knowledge_compiler: Literal["llm", "deterministic"] = "llm"
+    # Sleep-agent auto-compile policy for sources with spans but no compiled
+    # concepts: off, markdown_only (cheap, high-signal), or all kinds.
+    knowledge_autocompile: Literal["off", "markdown_only", "all"] = "markdown_only"
+    knowledge_autocompile_budget_per_cycle: int = 2
+    # A source is not re-attempted (success or failure) within this window.
+    knowledge_autocompile_cooldown_hours: float = 24.0
+    # Server-side URL fetching for web captures is opt-in; the local-first
+    # threat model expects clients to supply captured HTML themselves.
+    web_capture_url_fetch_enabled: bool = False
+    web_capture_url_fetch_max_bytes: int = 5 * 1024 * 1024
+    web_capture_url_fetch_timeout: float = 10.0
     diary_attachment_max_size_bytes: int = 100 * 1024 * 1024
     core_passphrase: str = ""
     core_require_encryption: bool = True

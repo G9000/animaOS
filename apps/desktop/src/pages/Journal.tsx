@@ -24,7 +24,7 @@ import {
   getSpeechRecognitionConstructor,
   type SpeechRecognitionLike,
 } from "./journal/speech";
-import { resolveDiaryBody } from "./journal/content";
+import { canSaveDiaryEntry, resolveDiaryBody } from "./journal/content";
 import { createDiaryHtmlSanitizer } from "./journal/html";
 
 const MAX_ENTRY_LIMIT = 200;
@@ -790,7 +790,12 @@ export default function Journal() {
   const pendingCoverPreviewUrl = useFileObjectUrl(pendingCoverFile);
   const composerCoverAttachment = isEditingSelected ? coverAttachment : null;
   const wordCount = useMemo(() => countWords(bodyText), [bodyText]);
-  const canSave = editorHasContent || bodyText.trim().length > 0 || files.length > 0;
+  const canSave = canSaveDiaryEntry({
+    editorHasContent,
+    plainText: bodyText,
+    attachmentCount: files.length,
+    hasPendingCover: pendingCoverFile !== null,
+  });
 
   const availableMoods = useMemo(() => {
     const moods = new Set<string>();

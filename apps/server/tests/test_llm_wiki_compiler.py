@@ -277,6 +277,58 @@ def test_compiler_resolves_links_using_payload_slugs_after_high_confidence_merge
     assert link.target_concept_id == target.id
 
 
+def test_compiler_resolves_links_to_existing_concepts_not_in_payload(runtime_db) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    existing = RuntimeKnowledgeConcept(
+        user_id=1,
+        concept_type="topic",
+        slug="topic-existing-shared",
+        title="Shared Topic",
+        body_markdown="Existing shared body.",
+        frontmatter_json={"type": "topic", "title": "Shared Topic"},
+        content_hash=_sha("Existing shared body."),
+    )
+    runtime_db.add(existing)
+    runtime_db.commit()
+    notes_payload = _concept_payload(
+        "source_summary",
+        "source-notes",
+        "Notes",
+        [spans[0].id],
+    )
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[spans[0].id],
+        model=lambda _request: json.dumps(
+            {
+                "concepts": [notes_payload],
+                "links": [
+                    {
+                        "source_slug": "source-notes",
+                        "target_slug": "topic-existing-shared",
+                        "link_type": "supports",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        ),
+    )
+
+    link = runtime_db.scalar(select(RuntimeKnowledgeLink))
+    source_concept = runtime_db.scalar(
+        select(RuntimeKnowledgeConcept).where(
+            RuntimeKnowledgeConcept.slug == "source-notes"
+        )
+    )
+    assert result.status == "completed"
+    assert result.link_count == 1
+    assert link.source_concept_id == source_concept.id
+    assert link.target_concept_id == existing.id
+
+
 def test_malformed_model_output_records_failed_run_without_corrupting_concepts(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
     existing = RuntimeKnowledgeConcept(

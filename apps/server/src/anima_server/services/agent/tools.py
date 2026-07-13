@@ -1414,6 +1414,9 @@ def get_core_tools() -> list[Any]:
     These tools are the AI's core capabilities — communicate,
     remember, learn, persist.  Everything else is an extension.
     """
+    # Imported here: document_tools uses this module's @tool decorator.
+    from anima_server.services.agent.document_tools import get_document_tools
+
     return [
         send_message,
         recall_memory,
@@ -1421,6 +1424,7 @@ def get_core_tools() -> list[Any]:
         search_knowledge_bundle,
         search_images,
         recall_conversation,
+        *get_document_tools(),
         core_memory_append,
         core_memory_replace,
         save_to_memory,

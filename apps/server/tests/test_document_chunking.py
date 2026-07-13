@@ -7,19 +7,69 @@ from anima_server.services.documents.chunking import chunk_pages
 from anima_server.services.documents.pdf_text import PageText
 
 
-def test_chunk_pages_default_overlap_is_zero() -> None:
+def test_chunk_pages_default_overlap_is_enabled() -> None:
     parameters = signature(chunk_pages).parameters
 
-    assert parameters["overlap_chars"].default == 0
+    assert parameters["overlap_chars"].default == 200
 
 
-def test_chunk_pages_rejects_positive_overlap_until_supported() -> None:
+def test_chunk_pages_rejects_negative_overlap() -> None:
     with pytest.raises(ValueError, match="overlap_chars"):
         chunk_pages(
             [PageText(page_number=1, text="First paragraph.\n\nSecond paragraph.")],
             target_chars=20,
-            overlap_chars=1,
+            overlap_chars=-1,
         )
+
+
+def test_chunk_pages_carries_overlap_tail_into_next_chunk() -> None:
+    chunks = chunk_pages(
+        [
+            PageText(
+                page_number=1,
+                text="First paragraph body here.\n\nSecond paragraph body here.",
+            ),
+        ],
+        target_chars=40,
+        overlap_chars=10,
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].content_text == "First paragraph body here."
+    assert chunks[1].content_text == "here.\n\nSecond paragraph body here."
+    assert chunks[1].page_start == 1
+
+
+def test_chunk_pages_overlap_does_not_emit_carried_text_only_chunks() -> None:
+    chunks = chunk_pages(
+        [PageText(page_number=1, text="Alpha paragraph text.\n\nBeta paragraph text.")],
+        target_chars=25,
+        overlap_chars=12,
+    )
+
+    contents = [chunk.content_text for chunk in chunks]
+    assert contents[0] == "Alpha paragraph text."
+    # The final chunk contains real content, never just the carried overlap tail.
+    assert all("paragraph" in content for content in contents)
+    assert len(chunks) == 2
+
+
+def test_chunk_pages_overlap_spans_page_boundaries() -> None:
+    chunks = chunk_pages(
+        [
+            PageText(page_number=1, text="Page one closing sentence."),
+            PageText(page_number=2, text="Page two opening sentence."),
+        ],
+        target_chars=30,
+        overlap_chars=12,
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].page_start == 1
+    assert chunks[1].content_text.startswith("sentence.")
+    assert "Page two opening sentence." in chunks[1].content_text
+    # The carried tail originates on page 1, so the second chunk spans pages 1-2.
+    assert (chunks[1].page_start, chunks[1].page_end) == (1, 2)
 
 
 def test_chunk_pages_preserves_stable_page_order() -> None:
@@ -128,3 +178,57 @@ def test_chunk_pages_emits_single_token_that_exceeds_target_without_looping() ->
     assert chunks[0].content_text == "supercalifragilistic"
     assert chunks[0].page_start == 9
     assert chunks[0].page_end == 9
+
+
+def test_chunk_pages_structured_records_merged_section_paths() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    chunks = chunk_pages_structured(
+        [
+            PageText(
+                page_number=1,
+                text="# Alpha\n\nShort alpha body.\n\n# Beta\n\nShort beta body.",
+            ),
+        ],
+        target_chars=200,
+    )
+
+    assert len(chunks) == 1
+    merged = chunks[0]
+    assert merged.section_title == "Alpha"
+    assert merged.metadata_json == {"section_paths": ["Alpha", "Beta"]}
+
+
+def test_chunk_pages_structured_keeps_single_titled_path_after_preamble_merge() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    chunks = chunk_pages_structured(
+        [
+            PageText(
+                page_number=1,
+                text="Intro preamble before any heading.\n\n# Alpha\n\nAlpha body.",
+            ),
+        ],
+        target_chars=300,
+    )
+
+    assert len(chunks) == 1
+    merged = chunks[0]
+    assert merged.section_title is None
+    assert merged.metadata_json == {"section_paths": ["Alpha"]}
+
+
+def test_chunk_pages_structured_preserves_overlong_single_path_in_metadata() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    long_heading = "SPECIFICATION " + "DETAIL " * 40  # single ALL-CAPS heading > 255
+    long_heading = long_heading.strip()[:300]
+    chunks = chunk_pages_structured(
+        [PageText(page_number=1, text=f"# {long_heading}\n\nBody under a deep heading.")],
+        target_chars=400,
+    )
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert len(chunk.section_title) > 255  # pre-insert value keeps the full path
+    assert chunk.metadata_json == {"section_paths": [chunk.section_title]}

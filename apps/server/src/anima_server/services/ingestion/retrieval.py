@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -18,10 +19,16 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.agent.bm25_index import BM25Index
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
-from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.agent.embeddings import (
+    _reciprocal_rank_fusion,
+    generate_embedding,
+)
 
 EmbeddingFn = Callable[[str], list[float] | None | Awaitable[list[float] | None]]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,12 +118,14 @@ def retrieve_knowledge(
     concept_hits = _concept_hits(
         db,
         user_id=user_id,
+        query=query,
         query_embedding=query_embedding,
         limit=limit_concepts,
     )
     evidence_hits = _span_hits(
         db,
         user_id=user_id,
+        query=query,
         query_embedding=query_embedding,
         limit=limit_spans,
     )
@@ -262,9 +271,21 @@ def _concept_hits(
     db: Session,
     *,
     user_id: int,
+    query: str,
     query_embedding: list[float],
     limit: int,
 ) -> list[KnowledgeConceptHit]:
+    # The lexical corpus covers every active concept — a concept ingested
+    # while embeddings were unavailable must stay keyword-searchable — while
+    # the dense arm naturally only ranks embedded rows.
+    all_concepts = list(
+        db.scalars(
+            select(RuntimeKnowledgeConcept).where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                RuntimeKnowledgeConcept.status == "active",
+            )
+        ).all()
+    )
     rows = list(
         db.execute(
             select(RuntimeKnowledgeConcept, RuntimeEmbedding)
@@ -281,35 +302,74 @@ def _concept_hits(
             )
         ).all()
     )
-    scored = [
+    concepts_by_id = {concept.id: concept for concept in all_concepts}
+    dense_ranked = sorted(
         (
-            _cosine(query_embedding, _vector_to_list(embedding.embedding)),
-            concept,
+            (
+                concept.id,
+                _cosine(query_embedding, _vector_to_list(embedding.embedding)),
+            )
+            for concept, embedding in rows
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    dense_ranked = [(item_id, score) for item_id, score in dense_ranked if score > 0]
+    dense_scores = dict(dense_ranked)
+    lexical_ranked = _lexical_ranking(
+        [
+            (concept.id, _concept_embedding_text(concept))
+            for concept in all_concepts
+        ],
+        query=query,
+        limit=limit * 4,
+    )
+    fused = (
+        _reciprocal_rank_fusion(dense_ranked, lexical_ranked)
+        if lexical_ranked
+        else dense_ranked
+    )
+    hits: list[KnowledgeConceptHit] = []
+    for concept_id, _fused_score in fused[:limit]:
+        concept = concepts_by_id.get(concept_id)
+        if concept is None:
+            continue
+        hits.append(
+            KnowledgeConceptHit(
+                concept_id=concept.id,
+                title=concept.title,
+                slug=concept.slug,
+                concept_type=concept.concept_type,
+                summary=concept.description or concept.body_markdown[:240],
+                score=dense_scores.get(concept_id, 0.0),
+            )
         )
-        for concept, embedding in rows
-    ]
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [
-        KnowledgeConceptHit(
-            concept_id=concept.id,
-            title=concept.title,
-            slug=concept.slug,
-            concept_type=concept.concept_type,
-            summary=concept.description or concept.body_markdown[:240],
-            score=score,
-        )
-        for score, concept in scored[:limit]
-        if score > 0
-    ]
+    return hits
 
 
 def _span_hits(
     db: Session,
     *,
     user_id: int,
+    query: str,
     query_embedding: list[float],
     limit: int,
 ) -> list[KnowledgeEvidenceSpanHit]:
+    # The lexical corpus covers every evidence span — a source ingested
+    # while embeddings were unavailable must stay keyword-searchable. Section
+    # spans are parent read units, not evidence, and stay excluded (they are
+    # deliberately never embedded either).
+    all_rows = list(
+        db.execute(
+            select(RuntimeSourceSpan, RuntimeSource)
+            .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
+            .where(
+                RuntimeSourceSpan.user_id == user_id,
+                RuntimeSource.user_id == user_id,
+                RuntimeSourceSpan.span_kind != "section",
+            )
+        ).all()
+    )
     rows = list(
         db.execute(
             select(RuntimeSourceSpan, RuntimeSource, RuntimeEmbedding)
@@ -327,28 +387,66 @@ def _span_hits(
             )
         ).all()
     )
-    scored = [
+    spans_by_id = {span.id: (span, source) for span, source in all_rows}
+    dense_ranked = sorted(
         (
-            _cosine(query_embedding, _vector_to_list(embedding.embedding)),
-            span,
-            source,
+            (
+                span.id,
+                _cosine(query_embedding, _vector_to_list(embedding.embedding)),
+            )
+            for span, _source, embedding in rows
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    dense_ranked = [(item_id, score) for item_id, score in dense_ranked if score > 0]
+    dense_scores = dict(dense_ranked)
+    lexical_ranked = _lexical_ranking(
+        [(span.id, span.content_text) for span, _source in all_rows],
+        query=query,
+        limit=limit * 4,
+    )
+    fused = (
+        _reciprocal_rank_fusion(dense_ranked, lexical_ranked)
+        if lexical_ranked
+        else dense_ranked
+    )
+    hits: list[KnowledgeEvidenceSpanHit] = []
+    for span_id, _fused_score in fused[:limit]:
+        pair = spans_by_id.get(span_id)
+        if pair is None:
+            continue
+        span, source = pair
+        hits.append(
+            KnowledgeEvidenceSpanHit(
+                span_id=span.id,
+                source_id=source.id,
+                source_uri=source.source_uri,
+                span_kind=span.span_kind,
+                locator=span.locator_json,
+                content_text=span.content_text,
+                score=dense_scores.get(span_id, 0.0),
+            )
         )
-        for span, source, embedding in rows
-    ]
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [
-        KnowledgeEvidenceSpanHit(
-            span_id=span.id,
-            source_id=source.id,
-            source_uri=source.source_uri,
-            span_kind=span.span_kind,
-            locator=span.locator_json,
-            content_text=span.content_text,
-            score=score,
-        )
-        for score, span, source in scored[:limit]
-        if score > 0
-    ]
+    return hits
+
+
+def _lexical_ranking(
+    documents: list[tuple[int, str]],
+    *,
+    query: str,
+    limit: int,
+) -> list[tuple[int, float]]:
+    """BM25 ranking over (id, text) pairs; degrades to [] so retrieval stays dense-only."""
+    if not documents or limit <= 0:
+        return []
+    try:
+        index = BM25Index()
+        index.build(documents)
+        return index.search(query, limit=limit)
+    except Exception:
+        logger.debug("Lexical knowledge ranking failed", exc_info=True)
+        return []
 
 
 def _text_concept_hits(
@@ -407,7 +505,13 @@ def _text_span_hits(
         db.execute(
             select(RuntimeSourceSpan, RuntimeSource)
             .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
-            .where(RuntimeSourceSpan.user_id == user_id, RuntimeSource.user_id == user_id)
+            .where(
+                RuntimeSourceSpan.user_id == user_id,
+                RuntimeSource.user_id == user_id,
+                # Section spans are parent read units, not evidence — the
+                # hybrid path excludes them and the fallback must match.
+                RuntimeSourceSpan.span_kind != "section",
+            )
             .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
         ).all()
     )

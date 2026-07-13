@@ -194,6 +194,48 @@ def test_legacy_soul_database_migration_creates_missing_new_tables(
     assert inspector.has_table("presence_configs")
 
 
+def test_legacy_soul_database_migration_repairs_diary_entry_columns(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.db.session import _run_alembic_upgrade
+
+    legacy_db = managed_tmp_path / "legacy-diary.db"
+    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE diary_entries (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    entry_date VARCHAR(10) NOT NULL,
+                    title TEXT,
+                    body TEXT NOT NULL,
+                    mood TEXT,
+                    source VARCHAR(24) NOT NULL DEFAULT 'user',
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+
+    _run_alembic_upgrade(engine)
+
+    diary_columns = {column["name"] for column in inspect(engine).get_columns("diary_entries")}
+    assert {"cover_attachment_id", "folder_id"}.issubset(diary_columns)
+
+
 def test_stamped_soul_database_migration_repairs_missing_new_tables(
     managed_tmp_path: Path,
 ) -> None:

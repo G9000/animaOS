@@ -19,7 +19,7 @@ from anima_server.models.runtime import (
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.candidate_ops import create_memory_candidate
 from anima_server.services.agent.embeddings import generate_embedding
-from anima_server.services.documents.chunking import chunk_pages
+from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import (
     embed_document_chunks,
     get_unembedded_chunks,
@@ -28,7 +28,8 @@ from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
-from anima_server.services.documents.pdf_text import PageText, extract_pdf_text
+from anima_server.services.documents.parsing import extract_document_text
+from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.documents.store import (
     get_document_for_user,
     list_document_chunks,
@@ -127,8 +128,8 @@ def default_pdf_ingestion_dependencies(
     embedding_fn: EmbeddingFn | None = None,
 ) -> PDFIngestionDependencies:
     return PDFIngestionDependencies(
-        extract_text=extract_pdf_text,
-        chunk_text=chunk_pages,
+        extract_text=extract_document_text,
+        chunk_text=chunk_pages_structured,
         embedding_fn=embedding_fn or generate_embedding,
         summarize=summarize,
         propose_facts=propose_facts,
@@ -382,6 +383,17 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "embedded":
             document = context.require_document()
+            # Contextual blurbs (flag-gated, default off) must land before
+            # embedding so the vectors and lexical index include them.
+            from anima_server.services.documents.contextual import (
+                generate_document_chunk_blurbs,
+            )
+
+            generate_document_chunk_blurbs(
+                db,
+                user_id=run.user_id,
+                document_id=document.id,
+            )
             embedded_count = embed_document_chunks(
                 db,
                 user_id=run.user_id,

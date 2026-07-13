@@ -1,17 +1,67 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models.runtime import RuntimeSource, RuntimeSourceSpan
-from anima_server.services.ingestion.compiler import CompileResult, compile_source_to_concepts
+from anima_server.config import settings
+from anima_server.models.runtime import (
+    RuntimeKnowledgeBundleRun,
+    RuntimeKnowledgeConceptSource,
+    RuntimeSource,
+    RuntimeSourceSpan,
+)
+from anima_server.services.ingestion.compiler import (
+    CompileMode,
+    CompileResult,
+    compile_source_to_concepts,
+)
 from anima_server.services.ingestion.retrieval import EmbeddingFn
+
+logger = logging.getLogger(__name__)
 
 _MAX_CONCEPT_SLUG_LENGTH = 255
 _MAX_CONCEPT_TITLE_LENGTH = 512
+
+_PROMPT_SPAN_LIMIT = 80
+_PROMPT_SPAN_CHARS = 700
+_PROMPT_RELATED_CONCEPTS = 8
+
+_COMPILER_SYSTEM_PROMPT = """You are the knowledge compiler for a personal wiki. You turn a raw ingested source into maintained, citable concept pages.
+
+Return ONE JSON object, nothing else:
+{
+  "concepts": [
+    {
+      "type": "topic" | "source_summary" | "entity" | "process",
+      "slug": "kebab-case-stable-identifier",
+      "title": "...",
+      "description": "one sentence",
+      "body_markdown": "# Title\\n\\nsynthesized page body",
+      "source_span_ids": [<int>, ...],
+      "tags": ["..."],
+      "merge_confidence": 0.0-1.0 (optional; only when updating an existing concept by title)
+    }
+  ],
+  "links": [
+    {"source_slug": "...", "target_slug": "...", "link_type": "supports" | "contradicts" | "updates" | "relates_to", "confidence": 0.0-1.0}
+  ],
+  "metadata": {"compiler": "llm_wiki"}
+}
+
+Rules:
+- Every concept MUST cite the span ids its claims come from in source_span_ids. Uncited concepts are discarded.
+- Synthesize: group related spans into coherent topic pages instead of one page per span. Include exactly one source_summary concept for the whole source.
+- Merge, do not duplicate: when a RELATED EXISTING CONCEPT covers the same subject, reuse its slug exactly (this updates that page and adds this source's citations) and integrate the new evidence into the body.
+- Cross-link: add supports/contradicts/updates links between your concepts and toward existing concept slugs when the evidence warrants it.
+- Slugs must be stable, lowercase, hyphenated, without slashes.
+- Write body_markdown as a readable wiki page, not a span dump."""
 
 
 def compile_source_knowledge(
@@ -20,15 +70,414 @@ def compile_source_knowledge(
     source: RuntimeSource,
     spans: Sequence[RuntimeSourceSpan],
     embedding_fn: EmbeddingFn | None = None,
+    mode: CompileMode = "initial",
 ) -> CompileResult:
+    """Deterministic compiler: one summary plus one topic per span (no-LLM fallback)."""
+    # Section spans duplicate their child chunk/paragraph content; compiling
+    # them too would double every topic. Evidence spans only.
+    evidence_spans = [span for span in spans if span.span_kind != "section"]
     return compile_source_to_concepts(
         db,
         user_id=source.user_id,
         source_id=source.id,
-        span_ids=[span.id for span in spans],
-        model=lambda _request: json.dumps(_source_payload(source, spans)),
+        span_ids=[span.id for span in evidence_spans],
+        model=lambda _request: json.dumps(_source_payload(source, evidence_spans)),
+        mode=mode,
         embedding_fn=embedding_fn,
     )
+
+
+async def compile_source_knowledge_auto(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+    embedding_fn: EmbeddingFn | None = None,
+    mode: CompileMode = "initial",
+    llm_client: Any | None = None,
+) -> CompileResult:
+    """Compile via the configured backend (ANIMA_KNOWLEDGE_COMPILER=llm|deterministic)."""
+    if settings.knowledge_compiler == "deterministic":
+        return compile_source_knowledge(
+            db, source=source, spans=spans, embedding_fn=embedding_fn, mode=mode
+        )
+    return await compile_source_knowledge_llm(
+        db,
+        source=source,
+        spans=spans,
+        embedding_fn=embedding_fn,
+        mode=mode,
+        llm_client=llm_client,
+    )
+
+
+async def compile_source_knowledge_llm(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+    embedding_fn: EmbeddingFn | None = None,
+    mode: CompileMode = "initial",
+    llm_client: Any | None = None,
+) -> CompileResult:
+    """Compile with the runtime's configured model.
+
+    The LLM is invoked first; its output is funneled through the sync
+    compiler contract so all persistence, merge, and failure bookkeeping
+    stay in ``compile_source_to_concepts``. Malformed output records a
+    failed bundle run (existing concepts untouched); an unavailable LLM
+    (network/configuration) falls back to the deterministic compiler so
+    ingestion never blocks on the model being up.
+    """
+    from anima_server.services.agent.json_utils import parse_json_object
+    from anima_server.services.agent.llm_json import call_llm_for_text
+
+    evidence_spans = [span for span in spans if span.span_kind != "section"]
+    # Every span must be visible to the model: long sources compile in
+    # batches instead of silently truncating at the prompt span cap (the
+    # autocompile cooldown would otherwise never revisit the tail).
+    batches = [
+        evidence_spans[start : start + _PROMPT_SPAN_LIMIT]
+        for start in range(0, len(evidence_spans), _PROMPT_SPAN_LIMIT)
+    ] or [[]]
+
+    combined: dict[str, Any] = {
+        "concepts": [],
+        "links": [],
+        "metadata": {"compiler": "llm_wiki", "batches": len(batches)},
+    }
+    for batch in batches:
+        system, prompt = _build_compile_prompt(db, source=source, spans=batch)
+        try:
+            raw = await call_llm_for_text(system, prompt, client=llm_client)
+        except Exception:
+            logger.warning(
+                "LLM compile unavailable for source %s; using deterministic compiler",
+                source.id,
+                exc_info=True,
+            )
+            return compile_source_knowledge(
+                db, source=source, spans=spans, embedding_fn=embedding_fn, mode=mode
+            )
+        payload = parse_json_object(raw)
+        if payload is None or not isinstance(payload.get("concepts"), list):
+            def _malformed(_request: Any, _raw: str = raw) -> str:
+                # Hand the raw output to the compiler so it records its own
+                # malformed-output failure (existing concepts untouched).
+                return _raw
+
+            return compile_source_to_concepts(
+                db,
+                user_id=source.user_id,
+                source_id=source.id,
+                span_ids=[span.id for span in evidence_spans],
+                model=_malformed,
+                mode=mode,
+                embedding_fn=embedding_fn,
+            )
+        combined["concepts"].extend(payload["concepts"])
+        links = payload.get("links")
+        if isinstance(links, list):
+            combined["links"].extend(links)
+
+    def _model(_request: Any) -> str:
+        # Citation enforcement raises inside the compiler so a
+        # parseable-but-uncited payload records a failed bundle run.
+        return _prepare_llm_payload(combined, evidence_spans)
+
+    return compile_source_to_concepts(
+        db,
+        user_id=source.user_id,
+        source_id=source.id,
+        span_ids=[span.id for span in evidence_spans],
+        model=_model,
+        mode=mode,
+        embedding_fn=embedding_fn,
+    )
+
+
+def _prepare_llm_payload(
+    payload: dict[str, Any], spans: Sequence[RuntimeSourceSpan]
+) -> str:
+    """Drop uncited concepts (and their links); coalesce duplicate slugs.
+
+    Batched compiles can emit the same slug from more than one batch. The
+    downstream compiler replaces a concept's citations per payload entry, so
+    duplicates must merge here — first occurrence keeps the content fields,
+    citations and tags are unioned — or later batches would silently
+    overwrite earlier-batch evidence.
+    """
+    valid_span_ids = {span.id for span in spans}
+    kept_by_slug: dict[str, dict[str, Any]] = {}
+    kept_order: list[str] = []
+    unsluggable: list[dict[str, Any]] = []
+    uncited_slugs: set[str] = set()
+    for concept in payload["concepts"]:
+        if not isinstance(concept, dict):
+            continue
+        cited = [
+            span_id
+            for span_id in (concept.get("source_span_ids") or [])
+            if isinstance(span_id, int) and span_id in valid_span_ids
+        ]
+        slug = concept.get("slug")
+        if isinstance(slug, str):
+            # Model output derived from long headings must fit the concept
+            # columns; the same bound applies to link slug references below.
+            slug = _limit_slug(slug)
+        if not cited:
+            if isinstance(slug, str):
+                uncited_slugs.add(slug)
+            continue
+        if not isinstance(slug, str) or not slug:
+            # Preserved so the compiler records its own missing-slug failure.
+            unsluggable.append({**concept, "source_span_ids": cited})
+            continue
+        concept = {**concept, "slug": slug, "source_span_ids": cited}
+        title = concept.get("title")
+        if isinstance(title, str):
+            concept["title"] = _limit_title(title)
+        existing = kept_by_slug.get(slug)
+        if existing is None:
+            kept_by_slug[slug] = concept
+            kept_order.append(slug)
+            continue
+        existing["source_span_ids"] = existing["source_span_ids"] + [
+            span_id
+            for span_id in cited
+            if span_id not in existing["source_span_ids"]
+        ]
+        existing_tags = (
+            existing.get("tags") if isinstance(existing.get("tags"), list) else []
+        )
+        new_tags = (
+            concept.get("tags") if isinstance(concept.get("tags"), list) else []
+        )
+        existing["tags"] = existing_tags + [
+            tag for tag in new_tags if tag not in existing_tags
+        ]
+        # The merged concept cites later-batch spans, so their evidence must
+        # reach the page body too — appending (minus a repeated heading)
+        # keeps every cited batch's content on the page.
+        existing["body_markdown"] = _merge_concept_bodies(
+            existing.get("body_markdown"), concept.get("body_markdown")
+        )
+    kept_concepts = [kept_by_slug[slug] for slug in kept_order] + unsluggable
+    dropped_slugs = uncited_slugs - set(kept_order)
+    if not kept_concepts:
+        raise ValueError(
+            "Compiler model output contained no concepts with valid span citations."
+        )
+
+    links = payload.get("links")
+    kept_links = []
+    for link in links if isinstance(links, list) else []:
+        if not isinstance(link, dict):
+            continue
+        required_link_fields = ("source_slug", "target_slug", "link_type")
+        if not all(
+            isinstance(link.get(key), str) and link[key].strip()
+            for key in required_link_fields
+        ):
+            continue
+        confidence = link.get("confidence")
+        if confidence is not None and not isinstance(confidence, int | float):
+            continue
+        link = {
+            **link,
+            **{
+                key: _limit_slug(value)
+                for key in ("source_slug", "target_slug")
+                if isinstance(value := link.get(key), str)
+            },
+        }
+        if (
+            link.get("source_slug") in dropped_slugs
+            or link.get("target_slug") in dropped_slugs
+        ):
+            continue
+        kept_links.append(link)
+    return json.dumps(
+        {**payload, "concepts": kept_concepts, "links": kept_links}
+    )
+
+
+def _build_compile_prompt(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+) -> tuple[str, str]:
+    lines = [
+        "SOURCE",
+        f"- id: {source.id}",
+        f"- kind: {source.kind}",
+        f"- title: {_source_title(source)}",
+        f"- uri: {source.source_uri}",
+        "",
+        f"SPANS ({len(spans)})",
+    ]
+    for span in spans:
+        section_path = _span_section_label(span.metadata_json or {})
+        section = f" [{section_path}]" if section_path else ""
+        location = _span_location(span)
+        lines.append(
+            f"- span {span.id}{section}{location}: "
+            f"{_compact_text(span.content_text, limit=_PROMPT_SPAN_CHARS)}"
+        )
+
+    related = _related_existing_concepts(db, source=source, spans=spans)
+    if related:
+        lines.append("")
+        lines.append("RELATED EXISTING CONCEPTS (reuse these slugs to update/merge)")
+        for concept in related:
+            lines.append(
+                f"- slug: {concept.slug} [{concept.concept_type}] {concept.title}: "
+                f"{_compact_text(concept.summary, limit=240)}"
+            )
+
+    lines.append("")
+    lines.append(
+        "Compile this source into concept pages now. Respond with the JSON object only."
+    )
+    return _COMPILER_SYSTEM_PROMPT, "\n".join(lines)
+
+
+def _merge_concept_bodies(existing: Any, incoming: Any) -> Any:
+    """Append a later batch's body to the merged concept page.
+
+    A repeated leading heading is dropped, and an incoming body already
+    contained in the page is not appended again.
+    """
+    if not isinstance(incoming, str) or not incoming.strip():
+        return existing
+    if not isinstance(existing, str) or not existing.strip():
+        return incoming
+    addition = incoming.strip()
+    if addition in existing:
+        return existing
+    existing_first_line = existing.strip().splitlines()[0].strip()
+    addition_lines = addition.splitlines()
+    if (
+        addition_lines
+        and addition_lines[0].strip().startswith("#")
+        and addition_lines[0].strip() == existing_first_line
+    ):
+        addition = "\n".join(addition_lines[1:]).strip()
+    if not addition:
+        return existing
+    return f"{existing.rstrip()}\n\n{addition}"
+
+
+def _span_section_label(metadata: dict[str, Any]) -> str:
+    """Section names for a prompt span across adapter metadata shapes.
+
+    Markdown/HTML spans carry ``section_path``/``heading``; PDF-bridge spans
+    carry ``section_title`` with the full (untruncated) merged paths under
+    ``source_metadata.section_paths``.
+    """
+    source_metadata = metadata.get("source_metadata")
+    if isinstance(source_metadata, dict):
+        paths = source_metadata.get("section_paths")
+        if isinstance(paths, list):
+            strings = [path for path in paths if isinstance(path, str) and path]
+            if strings:
+                return " | ".join(strings)
+    for key in ("section_path", "section_title", "heading"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _related_existing_concepts(
+    db: Session,
+    *,
+    source: RuntimeSource,
+    spans: Sequence[RuntimeSourceSpan],
+) -> list[Any]:
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge
+
+    query_parts = [_source_title(source)]
+    for span in list(spans)[:3]:
+        query_parts.append(_compact_text(span.content_text, limit=200))
+    try:
+        result = retrieve_knowledge(
+            db,
+            user_id=source.user_id,
+            query="\n".join(query_parts),
+            limit_concepts=_PROMPT_RELATED_CONCEPTS,
+            limit_spans=0,
+        )
+    except Exception:
+        logger.debug(
+            "Related-concept retrieval failed for source %s",
+            source.id,
+            exc_info=True,
+        )
+        return []
+    # Concepts previously compiled from this same source are not merge
+    # candidates — slug reuse already covers refresh.
+    return [
+        concept
+        for concept in result.concepts
+        if concept.slug and not concept.slug.startswith(f"source-{source.id}-")
+    ]
+
+
+def find_autocompile_candidates(
+    db: Session,
+    *,
+    user_id: int,
+    policy: str,
+    budget: int,
+    cooldown_hours: float,
+) -> list[RuntimeSource]:
+    """Sources with spans but no compiled concepts, honoring policy and cooldown.
+
+    Mirrors the ``orphan_source`` lint rule as a query. A source with any
+    compile bundle run inside the cooldown window (success or failure) is
+    skipped so the sleep agent doesn't hammer a failing source every cycle.
+    """
+    if policy == "off" or budget <= 0:
+        return []
+
+    has_spans = (
+        select(RuntimeSourceSpan.id)
+        .where(
+            RuntimeSourceSpan.source_id == RuntimeSource.id,
+            RuntimeSourceSpan.user_id == user_id,
+        )
+        .exists()
+    )
+    has_concept_citations = (
+        select(RuntimeKnowledgeConceptSource.id)
+        .where(
+            RuntimeKnowledgeConceptSource.source_id == RuntimeSource.id,
+            RuntimeKnowledgeConceptSource.user_id == user_id,
+        )
+        .exists()
+    )
+    cooldown_cutoff = datetime.now(UTC) - timedelta(hours=max(0.0, cooldown_hours))
+    recently_attempted = (
+        select(RuntimeKnowledgeBundleRun.id)
+        .where(
+            RuntimeKnowledgeBundleRun.source_id == RuntimeSource.id,
+            RuntimeKnowledgeBundleRun.user_id == user_id,
+            RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
+            RuntimeKnowledgeBundleRun.created_at >= cooldown_cutoff,
+        )
+        .exists()
+    )
+    stmt = select(RuntimeSource).where(
+        RuntimeSource.user_id == user_id,
+        has_spans,
+        ~has_concept_citations,
+        ~recently_attempted,
+    )
+    if policy == "markdown_only":
+        stmt = stmt.where(RuntimeSource.kind == "markdown")
+    return list(db.scalars(stmt.order_by(RuntimeSource.id).limit(budget)).all())
 
 
 def _source_payload(

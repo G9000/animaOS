@@ -31,7 +31,17 @@ dependencies = [
   "rank-bm25>=0.2.2",
   "json-repair>=0.30.0",
   "pypdf>=6.14.2",
+  "trafilatura>=2.0",
 ]
+
+[project.optional-dependencies]
+# Quality document-parsing tier: layout analysis, table structure, and OCR
+# for scanned PDFs. Heavy (PyTorch + models); install with
+# `uv sync --extra docling` or `pip install anima-server[docling]`.
+docling = ["docling>=2.0.0"]
+# Local cross-encoder rerank stage for document retrieval. Heavy (PyTorch);
+# install with `uv sync --extra reranker` or `pip install anima-server[reranker]`.
+reranker = ["sentence-transformers>=3.0.0"]
 
 [dependency-groups]
 postgres = ["psycopg[binary]>=3.2.9"]
@@ -49,4 +59,10 @@ anima-core = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-p no:cacheprovider"
+# retrieval_eval is excluded by default; run it explicitly with
+# `pytest -m retrieval_eval`.
+addopts = "-p no:cacheprovider -m 'not retrieval_eval'"
+markers = [
+  "retrieval_eval: retrieval quality eval harness (non-default; run with -m retrieval_eval)",
+  "integration: tests requiring external services (PostgreSQL, etc.)",
+]
