@@ -1080,7 +1080,7 @@ class TestRunSleeptimeAgents:
                 runtime_db_factory=rt_factory,
             )
 
-        assert len(run_ids) == 6
+        assert len(run_ids) == 7
         task_types = {r.split(":")[0] for r in run_ids}
         assert task_types == {
             "consolidation",
@@ -1089,11 +1089,12 @@ class TestRunSleeptimeAgents:
             "heat_decay",
             "foresight_lifecycle",
             "episode_gen",
+            "knowledge_autocompile",
         }
 
         with rt_factory() as db:
             runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
-            assert len(runs) == 6
+            assert len(runs) == 7
             assert all(r.status == "completed" for r in runs)
 
 

@@ -704,23 +704,45 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
     assert source.kind == "markdown"
     assert source.source_uri == "markdown://Architecture Notes.md"
     assert artifacts[0].artifact_kind == "markdown"
+    assert [artifact.artifact_kind for artifact in artifacts] == [
+        "markdown",
+        "structured_markdown",
+    ]
     assert [span.span_kind for span in spans] == [
         "heading",
         "paragraph",
         "heading",
         "paragraph",
+        "section",
+        "section",
     ]
     assert spans[1].metadata_json["heading"] == "Architecture"
+    assert spans[1].metadata_json["section_path"] == "Architecture"
     assert spans[2].metadata_json["heading_level"] == 2
-    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) >= 2
+    assert spans[3].metadata_json["section_path"] == "Architecture > Notes"
+    section_spans = [span for span in spans if span.span_kind == "section"]
+    assert [span.metadata_json["section_path"] for span in section_spans] == [
+        "Architecture",
+        "Architecture > Notes",
+    ]
+    # Paragraph spans link to their parent section via section_index.
     assert (
-        runtime_db.scalar(
-            select(func.count(RuntimeEmbedding.id)).where(
-                RuntimeEmbedding.source_type == "source_span"
-            )
-        )
-        == len(spans)
+        spans[3].metadata_json["section_index"]
+        == section_spans[1].locator_json["section_index"]
     )
+    outline = artifacts[1].metadata_json["outline"]
+    assert [entry["section_path"] for entry in outline] == [
+        "Architecture",
+        "Architecture > Notes",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) >= 2
+    embedded_span_count = runtime_db.scalar(
+        select(func.count(RuntimeEmbedding.id)).where(
+            RuntimeEmbedding.source_type == "source_span"
+        )
+    )
+    # Section spans are parent read units and are not embedded.
+    assert embedded_span_count == len(spans) - len(section_spans)
     assert (
         runtime_db.scalar(
             select(func.count(RuntimeEmbedding.id)).where(
@@ -755,10 +777,11 @@ def test_markdown_adapter_compiles_unique_topic_for_each_span(runtime_db) -> Non
         ).all()
     )
 
-    assert len(topic_concepts) == len(spans)
+    evidence_spans = [span for span in spans if span.span_kind != "section"]
+    assert len(topic_concepts) == len(evidence_spans)
     assert len({concept.slug for concept in concepts}) == len(concepts)
     assert sorted(citation.span_id for citation in topic_citations) == sorted(
-        span.id for span in spans
+        span.id for span in evidence_spans
     )
 
 

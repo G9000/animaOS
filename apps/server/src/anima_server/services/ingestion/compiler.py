@@ -83,6 +83,7 @@ def compile_source_to_concepts(
         payload = _parse_model_payload(model(request))
         with db.begin_nested():
             concept_payloads = _require_list(payload, "concepts")
+            link_payloads = _optional_list(payload, "links")
             concepts = _merge_concepts(
                 db,
                 user_id=user_id,
@@ -105,10 +106,13 @@ def compile_source_to_concepts(
                 db,
                 user_id=user_id,
                 concepts_by_slug=_concepts_by_payload_and_merged_slug(
-                    concepts,
-                    concept_payloads,
+                    db,
+                    user_id=user_id,
+                    concepts=concepts,
+                    concept_payloads=concept_payloads,
+                    link_payloads=link_payloads,
                 ),
-                link_payloads=_optional_list(payload, "links"),
+                link_payloads=link_payloads,
             )
             _embed_concepts(db, concepts=concepts, embedding_fn=embedding_fn)
     except Exception as exc:
@@ -303,13 +307,34 @@ def _clear_compiler_links(
 
 
 def _concepts_by_payload_and_merged_slug(
+    db: Session,
+    *,
+    user_id: int,
     concepts: list[RuntimeKnowledgeConcept],
     concept_payloads: list[Any],
+    link_payloads: list[Any],
 ) -> dict[str, RuntimeKnowledgeConcept]:
     concepts_by_slug = {concept.slug: concept for concept in concepts}
     for concept, payload in zip(concepts, concept_payloads, strict=True):
         if isinstance(payload, dict):
             concepts_by_slug[_required_str(payload, "slug")] = concept
+    referenced_slugs = {
+        value.strip()
+        for payload in link_payloads
+        if isinstance(payload, dict)
+        for key in ("source_slug", "target_slug")
+        if isinstance(value := payload.get(key), str) and value.strip()
+    }
+    missing_slugs = referenced_slugs - concepts_by_slug.keys()
+    if missing_slugs:
+        existing_concepts = db.scalars(
+            select(RuntimeKnowledgeConcept).where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                RuntimeKnowledgeConcept.slug.in_(missing_slugs),
+            )
+        ).all()
+        for concept in existing_concepts:
+            concepts_by_slug.setdefault(concept.slug, concept)
     return concepts_by_slug
 
 

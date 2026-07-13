@@ -124,6 +124,7 @@ from anima_server.services.agent.system_prompt import (
 from anima_server.services.agent.tool_context import (
     ToolContext,
     clear_tool_context,
+    peek_tool_context,
     set_tool_context,
 )
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
@@ -1770,6 +1771,32 @@ def _build_document_context_block(
     cleaned_document_ids = _dedupe_positive_ids(document_ids)
     if not cleaned_document_ids:
         return None
+    # Stale, deleted, or not-owned ids must not push the turn into document
+    # mode (which suppresses personal memory): validate ownership first and
+    # behave like no selection when nothing valid remains. Lookup failures
+    # fail open so a transient DB error does not silently drop a valid
+    # selection.
+    try:
+        owned_document_ids = [
+            document_id
+            for document_id in cleaned_document_ids
+            if get_document_for_user(
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+            is not None
+        ]
+    except Exception:
+        logger.debug(
+            "Selected document ownership check failed for user %s",
+            user_id,
+            exc_info=True,
+        )
+    else:
+        if not owned_document_ids:
+            return None
+        cleaned_document_ids = owned_document_ids
     query = user_message.strip() or _default_document_only_user_message(
         cleaned_document_ids
     )
@@ -1780,7 +1807,7 @@ def _build_document_context_block(
             user_id,
             query,
             document_ids=cleaned_document_ids,
-            limit=5,
+            limit=settings.document_context_chunk_limit,
         )
     except Exception:
         logger.debug(
@@ -1789,7 +1816,10 @@ def _build_document_context_block(
             cleaned_document_ids,
             exc_info=True,
         )
-        return None
+        # Fall through with no hits: the primer below still names the
+        # selected documents and the tools, so the turn can recover
+        # through get_document_outline / read_document_section.
+        results = []
 
     try:
         knowledge_hits = _document_knowledge_hits(
@@ -1808,12 +1838,19 @@ def _build_document_context_block(
         )
         knowledge_hits = []
 
-    if not results and not knowledge_hits:
-        return None
-
+    # Even with zero retrieval hits (embedding outage, query missing the
+    # index) the primer must still name the selected documents and the
+    # document tools — the block is the model's only signal that documents
+    # were selected for this turn.
     lines = [
         "Selected document context from indexed PDFs. Use this only when it is relevant.",
     ]
+    if not results and not knowledge_hits:
+        lines.append("")
+        lines.append(
+            "No excerpts were retrieved for this query. Use the document tools "
+            "below to investigate the selected documents directly."
+        )
     if knowledge_hits:
         lines.append("")
         lines.append("Compiled knowledge from selected PDFs:")
@@ -1840,7 +1877,38 @@ def _build_document_context_block(
                 f"[{index}] {result.filename}{location}{section} "
                 f"(document {result.document_id}, chunk {result.chunk_id}, relevance {result.similarity:.2f})"
             )
-            lines.append(_truncate_document_chunk(result.content))
+            lines.append(
+                _truncate_document_chunk(
+                    result.content,
+                    limit=settings.document_context_chunk_char_cap,
+                )
+            )
+
+    selected_lines = []
+    try:
+        for document_id in cleaned_document_ids:
+            document = get_document_for_user(
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+            if document is not None:
+                selected_lines.append(f"- doc:{document.id} {document.filename}")
+    except Exception:
+        logger.debug(
+            "Selected document listing failed for user %s", user_id, exc_info=True
+        )
+        selected_lines = []
+    if selected_lines:
+        lines.append("")
+        lines.append("Selected documents:")
+        lines.extend(selected_lines)
+    lines.append("")
+    lines.append(
+        "These excerpts are only an orientation sample. Use the search_documents, "
+        "get_document_outline, and read_document_section tools to investigate the "
+        "documents beyond what is shown here."
+    )
 
     return MemoryBlock(
         label="document_context",
@@ -1881,7 +1949,7 @@ def _raw_document_results_without_compiled_coverage(
             user_id,
             exc_info=True,
         )
-        return []
+        return list(results)
     return [
         result
         for result in results
@@ -2065,8 +2133,11 @@ def _build_document_turn_directive(
             "If the wording is ambiguous, such as 'what do you see' or 'what is this', "
             "interpret it as asking what is in the selected PDF. "
             "Do not substitute personal memory, relationship context, or stylistic inference "
-            "when the selected document can answer the question. If the document excerpts are "
-            "insufficient, say what is missing plainly."
+            "when the selected document can answer the question. The injected excerpts are only "
+            "an orientation sample: when they are insufficient, investigate with the "
+            "search_documents, get_document_outline, and read_document_section tools before "
+            "concluding anything is missing. If the document still cannot answer, say what is "
+            "missing plainly."
         ),
         description=(
             "Per-turn grounding rule for explicit PDF selections. Selected document evidence "
@@ -2099,7 +2170,7 @@ def _format_document_location(result: DocumentRagResult) -> str:
     return f", pages {result.page_start}-{result.page_end}"
 
 
-def _truncate_document_chunk(content: str, limit: int = 900) -> str:
+def _truncate_document_chunk(content: str, *, limit: int) -> str:
     cleaned = " ".join(content.split())
     if len(cleaned) <= limit:
         return cleaned
@@ -2330,7 +2401,33 @@ async def _invoke_turn_runtime(
         runtime_db.commit()
         raise
     finally:
+        _capture_document_tool_citations(turn_ctx)
         clear_tool_context()
+
+
+def _capture_document_tool_citations(turn_ctx: _TurnContext) -> None:
+    """Fold documents cited by the document tools into the turn's source pills.
+
+    Runs before the tool context is cleared so tool-driven citations keep the
+    document_source provenance UX working even when the turn started without
+    an injected document context block.
+    """
+    ctx = peek_tool_context()
+    if ctx is None or not ctx.document_tool_citations:
+        return
+    existing_refs = {pill.get("ref") for pill in turn_ctx.document_source_pills}
+    new_pills = tuple(
+        {
+            "kind": "document_source",
+            "label": _truncate_pill_label(filename),
+            "ref": document_id,
+        }
+        for document_id, filename in ctx.document_tool_citations.items()
+        if document_id not in existing_refs
+    )
+    if new_pills:
+        turn_ctx.document_source_pills = (*turn_ctx.document_source_pills, *new_pills)
+        turn_ctx.has_document_context = True
 
 
 async def _proactive_compact_if_needed(

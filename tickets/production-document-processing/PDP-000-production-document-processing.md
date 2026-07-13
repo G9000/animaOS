@@ -1,0 +1,117 @@
+# PDP-000 - Production Document Processing Parent Tracker
+
+- Status: todo
+- Priority: P1
+- Scope: `apps/server`, `packages/api-client`, `apps/desktop`, `docs/architecture`
+- Parent: none
+- Depends on: none
+- Owner: unassigned
+- Model: none
+- PRD: none
+- Plan: none
+- Created: 2026-07-10
+- Updated: 2026-07-10
+
+## Goal
+
+Upgrade document processing (PDF, markdown, HTML, plain text) to production grade across every pipeline layer — parsing, chunking, indexing, retrieval, and knowledge compilation — while keeping the existing sources → artifacts/spans → OKF concepts schema, checkpointed workflows, and memory boundary unchanged.
+
+## Background
+
+Diagnosis (2026-07-10) found the schema and workflow skeleton sound but every layer's internals weak:
+
+- Parsing: `pypdf` only, no OCR, HTML adapter expects caller-extracted text, scanned PDFs hard-fail.
+- Chunking: paragraph-blind 1800-char chunks, no overlap, no structure awareness (`services/documents/chunking.py`).
+- Retrieval: dense-only pgvector; `content_preview` stored "for BM25 support" but never used.
+- Prompt injection: `_build_document_context_block` retrieves 5 chunks and truncates each to 900 chars (`services/agent/service.py:1763`, `:2102`) — ~3% of a large PDF per turn, with no way for the agent to fetch more.
+- Compiler: `compile_source_knowledge` (`services/ingestion/document_compiler.py`) is a deterministic stub (one summary + one topic per span), opt-in only, never auto-triggered.
+
+External research (2025–2026 state of the art) confirmed the target stack: Docling for parsing (MIT; AGPL alternatives excluded), structure-aware chunking with parent-section retrieval and contextual blurbs, hybrid BM25+dense+RRF retrieval, agentic retrieval tools over one-shot injection, and compile-at-ingest knowledge pages (DeepWiki / GraphRAG-community-summary pattern) — which validates the existing OKF layer as the compilation target.
+
+## Architecture Decisions
+
+1. **Tiered parsing.** Fast path stays light (pypdf for born-digital PDFs, trafilatura for HTML, native markdown/text). Docling is an optional extra (`anima-server[docling]`), lazy-loaded, invoked when fast-path output fails quality checks or OCR is needed. Rejected on license: pymupdf4llm (AGPL), Marker (commercial), Chunkr (AGPL). Rejected on hosting: LlamaParse.
+2. **One normalized intermediate.** Every format parses to structured markdown + heading tree + locators before chunking; downstream layers are format-agnostic.
+3. **Hybrid retrieval in Postgres.** pgvector + `tsvector` + RRF (k=60) in SQL. No new infrastructure; AGPL Postgres extensions (pg_search, VectorChord-bm25) excluded.
+4. **Agentic document tools.** The agent searches/reads documents through tools in its loop; the fixed injection remains only as a first-turn cheap path with corrected limits.
+5. **OKF stays the compilation layer.** Real LLM wired into the existing `compile_source_to_concepts` contract; sleep-agent auto-compile; deterministic stub kept as no-LLM fallback. GraphRAG/RAPTOR/LightRAG rejected as heavier, less readable, less portable versions of the same goal.
+6. **Memory boundary unchanged.** No automatic promotion into SQLCipher memory; Soul Writer path untouched.
+
+## Child Tickets
+
+| Ticket | Title | Status | Depends on |
+| --- | --- | --- | --- |
+| `PDP-001` | Chat grounding quick wins: injection limits and chunk overlap | in_review | none |
+| `PDP-002` | Hybrid retrieval: BM25 + RRF fusion | in_review | none |
+| `PDP-003` | Structured markdown intermediate and structure-aware chunking | in_review | none |
+| `PDP-004` | Tiered parsing: Docling quality tier and OCR fallback | in_review | `PDP-003` |
+| `PDP-005` | HTML and web capture extraction | in_review | `PDP-003` |
+| `PDP-006` | Agentic document tools | in_review | `PDP-002` |
+| `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | in_review | `PDP-002`, `PDP-003` |
+| `PDP-008` | Contextual chunk blurbs and optional reranker | in_review | `PDP-002`, `PDP-003` |
+| `PDP-009` | Retrieval eval harness, docs, and final validation | in_review | `PDP-001` through `PDP-008` |
+
+Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), then PDP-003 → PDP-004/PDP-005 in parallel, then PDP-006/PDP-007, then PDP-008, PDP-009 last.
+
+## Deliverables
+
+- Corrected document context injection and overlapping chunks (immediate quality fix).
+- Hybrid dense+lexical retrieval for document chunks and source spans.
+- Format-agnostic structured-markdown intermediate with heading-aware chunking and parent-section retrieval.
+- Docling-backed quality parsing tier with OCR for scanned PDFs, behind an optional dependency.
+- Real HTML extraction (trafilatura) in the web adapter.
+- Agent tools for iterative document search and reading.
+- Real LLM compilation into OKF concepts with sleep-agent triggers and cross-source merge.
+- Optional contextual-retrieval blurbs and local reranker stage.
+- Retrieval eval harness with a gold query set; updated architecture docs.
+
+## Acceptance
+
+- Every child ticket completed with validation recorded.
+- Existing PDF RAG, image annotation, and OKF import/export behavior preserved (regression suites green).
+- A multi-page PDF question that previously failed from truncated context answers correctly using the new retrieval path.
+- Scanned PDFs ingest successfully when the Docling extra is installed, and fail with a clear message when it is not.
+- Compiled concepts carry span citations and merge across sources; lint stays green on the demo corpus.
+- Memory boundary regressions: no document content reaches `MemoryItem` without the existing approval path.
+
+## Activity Log
+
+- 2026-07-10 - Epic created from diagnosis + SOTA research + truememory comparison (session work, Claude).
+- 2026-07-10 - PDP-001 and PDP-002 implemented in worktree `production-doc-processing`; PDP-002 design revised to reuse the existing BM25Index/RRF memory-search stack instead of a tsvector migration.
+- 2026-07-11 - PDP-003 implemented: `services/ingestion/structured.py` intermediate + chunker, markdown adapter emits structured artifact/section spans; PDF workflow switch and section_title population deferred to PDP-004 as designed.
+- 2026-07-11 - PDP-004 implemented: tiered parsing (`services/documents/parsing.py`), docling optional extra, PDF workflow on structured chunker with section titles. Manual with-extra validation pending.
+- 2026-07-11 - PDP-001 follow-up: document context limits moved from module constants to config-backed settings per the ticket's wording.
+- 2026-07-11 - PDP-005 implemented: trafilatura extraction (raw HTML mode + `.html` upload + opt-in SSRF-guarded URL fetch, default off), raw_html artifact retained for idempotent re-extraction.
+- 2026-07-12 - PDP-006 implemented: search_documents / get_document_outline / read_document_section agent tools with per-turn text budget, ownership scoping, tool-citation document_source pills, and primer + directive updates.
+- 2026-07-12 - PDP-007 implemented: LLM wired into compile_source_to_concepts (merge-aware prompt, write-time citation enforcement, deterministic fallback), sleep-agent knowledge_autocompile task with policy/budget/cooldown.
+- 2026-07-12 - PDP-008 implemented: contextual chunk blurbs (flag-gated, embedding/lexical-only) and optional local cross-encoder reranker (flag + extra gated, degrades to fused order); eval gating deferred to PDP-009.
+- 2026-07-12 - PDP-009 implemented: retrieval eval harness (30-query gold corpus; hybrid ≥ dense recorded: recall@5 0.867 vs 0.833, nDCG@10 0.828 vs 0.817), architecture docs rewritten, changelog entry. Epic complete in code; closing the parent awaits the deferred manual items in PDP-009 (extras-config suite, desktop build, end-to-end scanned-PDF pass).
+- 2026-07-12 - Codex review (PR #87) addressed, all four findings fixed with regression tests: (P1) compiler prompts now batch so every evidence span is visible to the model instead of silently truncating at 80; (P2) RRF ties prefer the lexical exact-token hit (lexical list fuses first); (P2) merged sections keep every section path addressable via chunk metadata consumed by the outline/read tools; (P2) section titles bounded to the 255-char column at chunk insert.
+- 2026-07-12 - Codex round-2 findings fixed with regression tests: (P1) duplicate slugs across compile batches coalesce (citations/tags union) so later batches no longer overwrite earlier-batch evidence; (P2) an untitled preamble merged with a single titled section keeps that section addressable (metadata path + outline gate on merged paths); (P2) read_document_section continues inside oversized chunks via start_offset so atomic table/code chunk tails stay reachable.
+- 2026-07-12 - Codex round-3 findings fixed with regression tests: (P2) LLM concept slugs/titles bounded to their column lengths before persist (links rebind through the bounded slug); (P2) read_document_section reserves budget headroom for the header and continuation notice so the start_chunk/start_offset hint always survives the per-turn budget truncation.
+- 2026-07-12 - Codex round-4 finding fixed with a regression test: (P2) read_document_section charges the blank-line separators between chunks in its cap accounting, so a many-small-chunks read near the budget can no longer overrun the cap and lose its continuation hint to the budget truncation.
+- 2026-07-12 - Codex round-5 findings fixed with regression tests: (P2) section titles/merged paths now always join the chunk embedding and BM25 index text (heading-name queries work without the blurb flag; eval hybrid recall@5 rose 0.867 → 0.9); (P2) failed compile runs no longer short-circuit an explicit re-ingest compile=true — only pending/running/completed runs are reused.
+- 2026-07-12 - Codex round-6 findings fixed with regression tests: (P2) the document primer (selected docs + tool hint) now emits even when retrieval returns zero hits or raises, so document-selected turns can always recover through the tools; (P2) read_document_section on a parent heading includes descendant "Parent > Child" chunks via separator-aware prefix matching (name-prefix siblings excluded).
+- 2026-07-12 - Codex round-7 findings fixed with regression tests: (P2) the BM25 lexical arm now runs even when query embeddings are unavailable (scaffold provider, missing keys, cooldown), so exact-keyword document search survives embedding outages; (P2) selected document ids are ownership-validated before entering document mode — stale/foreign ids behave like no selection instead of suppressing personal memory (lookup failures fail open).
+- 2026-07-12 - Codex round-8 findings fixed with regression tests: (P2) lexical-only hits hydrate without requiring a current embedding row (the join only validates dense hits), so BM25 results survive an embedding-table reset during a provider outage; (P2) the web-fetch SSRF guard uses `is_global` so shared-address-space ranges (100.64.0.0/10) and other non-global ranges are refused.
+- 2026-07-12 - Codex round-9 findings fixed with regression tests: (P2) the fetch guard also rejects multicast targets (ipaddress reports some multicast ranges as global); (P2) a single section path longer than the 255-char column keeps its full copy in chunk metadata, so deep-heading terms stay addressable and searchable after title truncation.
+- 2026-07-12 - Codex round-10 findings fixed with regression tests: (P2) compile prompts resolve section names across adapter metadata shapes (section_path/heading for markdown-HTML spans, section_title + source_metadata.section_paths for PDF-bridge spans), so PDF compilation keeps its heading guidance; (P2) document search surfaces the full metadata section path (not the truncated column copy) and read_document_section also matches the stored truncated title, so search-hint follow-ups always resolve.
+- 2026-07-12 - Codex round-11 findings fixed with regression tests: (P2) re-extracting a compiled HTML source recompiles it (mode refresh) so concepts/citations track the fresh spans instead of going stale; (P2) knowledge concept/span lexical corpora cover all owned rows, not only embedding-joined ones, so mixed-coverage libraries stay keyword-searchable (two fallback-era tests updated: unembedded items now surface through the primary lexical arm).
+- 2026-07-12 - Codex round-12 findings fixed with regression tests: (P2) a failed refresh compile rolls the re-extraction back (502) so a source is never left with active concepts but cascaded-away citations; (P2) blurb generation deletes the affected chunks' embedding rows so the dense index re-embeds with the new contextual text (the raw content hash alone would never invalidate them).
+- 2026-07-12 - Codex round-13 findings fixed with regression tests: (P2) duplicate slugs coalesced across compile batches now merge their bodies too (repeated heading deduplicated), so cited later-batch evidence reaches the page instead of being cited-but-absent; (P2) the fetched final URL after redirects is revalidated against the 1024-char source_uri limit (controlled 422 instead of a DB length error).
+- 2026-07-12 - Codex round-14 finding fixed with regression tests: (P2) malformed fetch URLs (nonnumeric/out-of-range ports, bad authorities) raise UnsafeFetchUrlError from the guard instead of a bare ValueError, keeping the route response a controlled 422 rather than a 500.
+- 2026-07-12 - Codex round-15 findings fixed with regression tests: (P2) a bogus upstream charset declaration decodes as UTF-8 instead of raising LookupError (500); (P2) the text-search fallback excludes section spans so parent read units cannot displace paragraph evidence when embeddings are unavailable.
+- 2026-07-13 - Codex round-16 finding fixed with a regression test: (P2) the /api/knowledge/search route also excludes section spans from evidenceSpans, matching the retrieval paths.
+- 2026-07-13 - Codex round-17 finding fixed with regression tests: (P2) heading-only sections (e.g. an ALL-CAPS warning line the page-heading detector classified) keep their heading text as chunk content instead of vanishing from the index; a heading-only document now yields a chunk instead of zero.
+- 2026-07-13 - Codex round-18 finding fixed with a regression test: (P2) sections are now sized on the text actually emitted (heading text included), so heading-heavy documents split at the chunk-size cap instead of collapsing into one oversized chunk; the oversized-split path is guarded to only run for sections with splittable body content (keeping the round-17 fix intact for long headings).
+- 2026-07-13 - Codex round-19 findings fixed with regression tests: (P2) structured chunk sizing counts the "\n\n" separators between merged sections, so dense heading outlines respect the cap instead of overrunning by separator bytes; (P3) carried overlap is no longer prepended into atomic table/code parts, keeping those chunks verbatim and standalone.
+- 2026-07-13 - Codex round-20 finding fixed with a regression test: (P2) oversized-section splitting counts the "\n\n" paragraph separators in _SectionPart length and the fit check, so a section of many short paragraphs no longer emits parts over the target.
+
+## Validation
+
+- Commands:
+  - See `PDP-009` for final validation commands.
+- Changed paths:
+  - `tickets/production-document-processing`
+- Notes:
+  - Parent tracker only; child tickets define executable validation.

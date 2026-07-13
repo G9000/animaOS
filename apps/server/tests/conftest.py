@@ -27,6 +27,10 @@ from sqlalchemy.pool import StaticPool
 # Disable encryption requirement for tests (must be set before settings import).
 os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
 
+# Tests exercise the deterministic knowledge compiler by default; LLM-path
+# tests opt in explicitly with a scripted client.
+settings.knowledge_compiler = "deterministic"
+
 
 from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables
 from anima_server.models import runtime_consciousness as _runtime_consciousness_models  # noqa: F401

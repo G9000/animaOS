@@ -1,6 +1,6 @@
 ---
 title: Document Processing Architecture
-description: PDF upload, checkpointed ingestion, runtime document storage, pgvector RAG, and chat citation behavior
+description: PDF upload, tiered parsing, checkpointed ingestion, structured chunking, hybrid RAG, agentic document tools, and chat citation behavior
 category: architecture
 ---
 
@@ -148,25 +148,35 @@ The workflow deliberately reuses durable intermediate artifacts:
 - If document chunks changed, `replace_document_chunks()` deletes stale chunk rows and stale `document_chunk` embeddings before inserting replacements.
 - If a document is marked indexed but embeddings are missing after an embedding-table reset, document search and approval paths attempt to re-embed missing chunks.
 
-## Text Extraction And Chunking
+## Tiered Text Extraction And Structured Chunking
 
-`extract_pdf_text()` uses `pypdf.PdfReader`:
+Parsing is tiered (`services/documents/parsing.py`, `ANIMA_DOCUMENT_PARSER_TIER`):
 
-- It rejects unreadable PDFs.
-- It attempts empty-password decryption for encrypted PDFs.
-- It rejects password-protected encrypted PDFs that cannot be opened.
-- It extracts text page-by-page.
-- It normalizes text with the same PDF spacing cleanup used by memory text processing.
-- It rejects PDFs with no extractable text.
+- **fast** — `pypdf` only. Rejects unreadable PDFs, attempts empty-password
+  decryption, rejects locked PDFs, extracts page-by-page, and normalizes
+  spacing.
+- **quality** — Docling (optional `anima-server[docling]` extra, lazy-loaded):
+  layout analysis, table structure, and OCR for scanned pages, emitting
+  markdown per page.
+- **auto** (default) — fast path first, escalating to Docling when extraction
+  quality looks poor or pages are scanned. Without the extra installed,
+  scanned PDFs fail with a clear message naming the extra.
 
-`chunk_pages()` is paragraph-oriented:
+Chunking is structure-aware (`chunk_pages_structured()` over the
+`services/ingestion/structured.py` intermediate):
 
-- Default target chunk size is 1800 characters.
-- Chunk overlap is currently disabled.
-- Paragraphs larger than the target are split by words.
-- Each chunk records `chunk_index`, `content_text`, `page_start`, and `page_end`.
+- Page text (plain or Docling markdown) is parsed into heading/paragraph/
+  table/code blocks and grouped into heading-path sections.
+- Chunks follow section boundaries: small adjacent sections merge toward the
+  target size, oversized sections split at paragraph boundaries with a
+  200-character overlap carried between parts, and tables/code are atomic.
+- Each chunk records `chunk_index`, `content_text`, `page_start`, `page_end`,
+  and `section_title` (the heading path, e.g. `Guide > Inspection`).
 
-The current pipeline does not do OCR. Scanned PDFs without extractable text fail ingestion.
+With `ANIMA_CONTEXTUAL_CHUNKS=on` (default off), each chunk additionally gets
+an LLM-generated context blurb at the embed step, stored in chunk metadata
+and prepended to the embedding and lexical-index text only — evidence text
+shown to the model or user never includes it.
 
 ## Embedding And Indexing
 
@@ -197,16 +207,31 @@ their `document_chunk` embeddings.
 
 ## Document RAG Search
 
-`search_document_chunks()` retrieves indexed document chunks from pgvector.
+`search_document_chunks()` retrieves indexed document chunks with hybrid
+dense + lexical retrieval.
 
 The search path is:
 
 1. Resolve live chunk ids from `runtime_documents` joined to `runtime_document_chunks`.
 2. Generate an embedding for the user query.
 3. Repair indexed documents that are missing current vectors, when possible.
-4. Search pgvector through `PgVecStore.search_by_vector()`.
-5. Hydrate vector hits back into chunk and document rows.
-6. Return `DocumentRagResult` objects with filename, page range, section title, chunk text, and similarity.
+4. Dense arm: pgvector through `PgVecStore.search_by_vector()`.
+5. Lexical arm: BM25 over the same live chunks (reusing the memory-search
+   `BM25Index`); a lexical failure degrades to dense-only ordering, never to
+   empty results.
+6. Fuse both rankings with reciprocal-rank fusion (k=60).
+7. Optional rerank stage (`ANIMA_RETRIEVAL_RERANKER=local`, `reranker`
+   extra): over-fetch to `ANIMA_RETRIEVAL_RERANK_CANDIDATES` (50), score with
+   a local cross-encoder, return top-k. Flag off, extra absent, or any
+   failure keeps the fused order.
+8. Hydrate hits back into chunk and document rows.
+9. Return `DocumentRagResult` objects with filename, page range, section title, chunk text, and similarity.
+
+Retrieval quality is measured by the eval harness in
+`apps/server/tests/test_retrieval_eval.py` (marker `retrieval_eval`,
+non-default): a gold corpus plus ~30 queries reporting recall@5, recall@15,
+and nDCG@10 per configuration. Pipeline changes are gated on those aggregate
+numbers, not tuned against individual queries.
 
 When called with explicit `document_ids`, search is constrained to those documents. When called without document ids, the route-level document search API can search all indexed documents for the user. Chat prompt assembly uses explicit or active thread document ids rather than searching every document by default.
 
@@ -221,7 +246,11 @@ During turn preparation:
 3. `_assemble_turn_context()` resolves the effective document ids:
    - explicit ids from the current request win,
    - otherwise it reuses the latest visible document attachment/source pills in the same thread.
-4. `_build_document_context_block()` retrieves up to 5 relevant chunks for the effective document ids.
+4. `_build_document_context_block()` builds a first-turn primer: up to
+   `ANIMA_DOCUMENT_CONTEXT_CHUNK_LIMIT` (15) relevant chunks passed through
+   whole (bounded only by the `ANIMA_DOCUMENT_CONTEXT_CHUNK_CHAR_CAP` safety
+   cap, 2500), compiled-knowledge hits, the selected-document list, and a
+   hint that the document tools exist.
 5. If document context exists, the model receives only:
    - a per-turn `user_directive`,
    - the `document_context` block,
@@ -235,7 +264,32 @@ The document directive tells the model:
 - document context should be used first when relevant,
 - ambiguous wording should be interpreted as asking about the selected PDF,
 - personal memory and stylistic inference should not replace document evidence,
+- the injected excerpts are an orientation sample: investigate with the
+  document tools before concluding content is missing,
 - missing evidence should be reported plainly.
+
+## Agentic Document Tools
+
+The injected block is only a primer; the agent investigates documents
+iteratively through tools registered in the core tool set
+(`services/agent/document_tools.py`):
+
+| Tool | Behavior |
+| --- | --- |
+| `search_documents(query, document_ids, scope, limit)` | Hybrid retrieval over indexed chunks; defaults to the conversation's active documents, `scope="all"` searches the whole library |
+| `get_document_outline(document_id)` | Section tree (section paths, page ranges, sizes) from chunk `section_title`; per-chunk page outline for legacy documents without structure |
+| `read_document_section(document_id, section_path, page_start, page_end, start_chunk)` | Full section or page-range text, bounded per call by `ANIMA_DOCUMENT_TOOL_READ_CHAR_LIMIT` (6000) with `start_chunk` continuation |
+
+Guardrails:
+
+- Total tool-fetched document text per turn is capped by
+  `ANIMA_DOCUMENT_TOOL_TURN_CHAR_BUDGET` (40k chars); over-budget calls
+  return a truncation notice, never an error.
+- Every lookup is ownership-scoped: another user's documents read as
+  nonexistent.
+- Documents cited by tools fold into `document_source` pills on the
+  assistant message (deduplicated against the injected-context pills), so
+  provenance UX works even for turns that started without a document block.
 
 ## Active Document Follow-Ups
 
@@ -302,9 +356,25 @@ The default API dependency currently indexes and summarizes PDFs but does not pr
 | Invalid PDF header | 400 |
 | Unreadable PDF | resume returns an error |
 | Password-protected encrypted PDF | resume returns an error |
-| No extractable text | resume returns an error |
+| No extractable text (scanned PDF) | with the `docling` extra, OCR runs; without it, resume fails with a message naming the extra |
 | Embedding provider unavailable or returns no vector | document remains unindexed; callers can resume later |
 | Stale chunk embeddings | search and approval paths try to re-embed or reject incomplete indexing |
+
+## Flags And Extras
+
+| Setting / extra | Default | Effect |
+| --- | --- | --- |
+| `ANIMA_DOCUMENT_PARSER_TIER` | `auto` | `fast` (pypdf), `quality` (Docling), `auto` (escalate on poor quality/scans) |
+| `anima-server[docling]` extra | not installed | Enables the quality parsing tier and OCR |
+| `ANIMA_DOCUMENT_CONTEXT_CHUNK_LIMIT` | 15 | Chunks retrieved for the injected primer |
+| `ANIMA_DOCUMENT_CONTEXT_CHUNK_CHAR_CAP` | 2500 | Safety cap on primer chunk text (no routine truncation) |
+| `ANIMA_DOCUMENT_TOOL_TURN_CHAR_BUDGET` | 40000 | Per-turn cap on tool-fetched document text |
+| `ANIMA_DOCUMENT_TOOL_READ_CHAR_LIMIT` | 6000 | Per-call cap for `read_document_section` |
+| `ANIMA_CONTEXTUAL_CHUNKS` | `off` | LLM context blurbs prepended to embedding/lexical index text |
+| `ANIMA_RETRIEVAL_RERANKER` | `off` | `local` enables the cross-encoder rerank stage |
+| `anima-server[reranker]` extra | not installed | sentence-transformers for the local reranker |
+| `ANIMA_KNOWLEDGE_COMPILER` | `llm` | OKF concept compilation backend (`deterministic` forces the stub) |
+| `ANIMA_KNOWLEDGE_AUTOCOMPILE` | `markdown_only` | Sleep-agent auto-compile policy (`off`, `markdown_only`, `all`) |
 
 ## Test Coverage
 
@@ -314,22 +384,26 @@ Important regression coverage lives in:
 | --- | --- |
 | `apps/server/tests/test_documents_api.py` | document route validation and workflow API behavior |
 | `apps/server/tests/test_pdf_text.py` | PDF text extraction behavior |
-| `apps/server/tests/test_document_chunking.py` | paragraph and oversized paragraph chunking |
-| `apps/server/tests/test_document_rag.py` | embedding, pgvector source rows, search hydration, stale vector repair |
+| `apps/server/tests/test_document_parsing.py` | tiered parsing, quality escalation, Docling extra absence |
+| `apps/server/tests/test_document_chunking.py` | paragraph chunking, overlap, structured chunking |
+| `apps/server/tests/test_structured_document.py` | markdown/page structure parsing and section chunking |
+| `apps/server/tests/test_document_rag.py` | embedding, pgvector source rows, hybrid search, stale vector repair |
+| `apps/server/tests/test_contextual_rerank.py` | contextual blurbs and reranker gating/degradation |
 | `apps/server/tests/test_pdf_workflow_checkpoints.py` | checkpoint resume, idempotency, approvals, embedding reset repair |
 | `apps/server/tests/test_chat_document_context.py` | document context block construction |
+| `apps/server/tests/test_document_tools.py` | agentic document tools, budget, ownership, citation pills |
 | `apps/server/tests/test_agent_service.py` | chat document grounding, memory exclusion, source pills, active document follow-ups |
 | `apps/server/tests/test_agent_persistence.py` | persistence of message pills and retrieval metadata |
 | `apps/server/tests/test_prompt_budget.py` | document context priority in prompt budgeting |
+| `apps/server/tests/test_retrieval_eval.py` | retrieval quality eval harness (non-default marker) |
 
 ## Current Constraints
 
-- PDF is the only supported document format in the chat upload flow.
+- PDF is the chat upload format; HTML files and web captures ingest through the knowledge routes (`/api/knowledge/sources/html`, `/sources/web-capture`), and markdown/text through their source endpoints.
 - Chat images use the central image asset/indexing path, not the PDF document workflow.
-- OCR is not implemented.
-- Chunk overlap is not implemented.
+- OCR requires the `docling` extra; without it, scanned PDFs fail with a clear message.
 - Document chunks are runtime context, not encrypted soul memory.
 - The source-ingestion mirror is runtime evidence and compiled knowledge, not encrypted soul memory.
 - Citation pills identify the document, not exact chunk ids or page-level inline citations.
-- Chat document grounding is scoped to explicit or active thread documents, not a global search over every indexed PDF.
+- Chat document grounding starts from explicit or active thread documents; the agent can widen to the whole library only through `search_documents(scope="all")`.
 - Runtime pgvector availability and embedding provider availability determine whether indexing/search can complete.

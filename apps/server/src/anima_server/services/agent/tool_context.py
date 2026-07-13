@@ -8,7 +8,7 @@ mechanism to inject that context before each agent turn.
 from __future__ import annotations
 
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,11 @@ class ToolContext:
     run_id: int | None = None
     current_tool_call_id: str | None = None
     memory_modified: bool = False
+    # Per-turn accounting for the document tools: total characters of
+    # document text returned so far, and documents cited (id -> filename)
+    # so the turn's assistant message can carry document_source pills.
+    document_tool_chars_used: int = 0
+    document_tool_citations: dict[int, str] = field(default_factory=dict)
 
 
 _current_context: ContextVar[ToolContext | None] = ContextVar("agent_tool_context", default=None)
@@ -42,3 +47,8 @@ def get_tool_context() -> ToolContext:
             "No tool context set — tools requiring DB access cannot run outside an agent turn"
         )
     return ctx
+
+
+def peek_tool_context() -> ToolContext | None:
+    """Return the current tool context, or None outside an agent turn."""
+    return _current_context.get()

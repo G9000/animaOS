@@ -1,5 +1,10 @@
 # Docs Changelog
 
+## 2026-07-12
+
+- rewrote the document-processing architecture doc for the production document processing epic (PDP-001..009): tiered pypdf/Docling parsing with OCR, structured section-aware chunking with overlap, hybrid BM25+RRF retrieval with the optional local reranker, contextual chunk blurbs, config-backed primer limits, agentic document tools with per-turn budgets and citation pills, the flags/extras matrix, and the retrieval eval harness
+- updated the source-ingestion doc for the HTML/web-capture extraction adapters (trafilatura, raw_html re-extraction, SSRF-guarded opt-in URL fetch), the live LLM-wiki compiler with write-time citation enforcement and deterministic fallback, and sleep-agent knowledge auto-compile policy/budget/cooldown
+
 ## 2026-07-10
 
 - synchronized the agent runtime and memory architecture docs with conservative chars/3 prompt estimation, the fixed scaffolding/tool-schema reserve, transport-to-pump stream shutdown ownership, working-memory expiry during reflection, and the current sequential sleep-time orchestrator with heat and input-freshness gates

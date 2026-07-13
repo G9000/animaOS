@@ -47,7 +47,11 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
         payload = response.json()
         assert payload["source"]["kind"] == "markdown"
         assert payload["source"]["sourceUri"] == "markdown://notes.md"
-        assert [span["spanKind"] for span in payload["spans"]] == ["heading", "paragraph"]
+        assert [span["spanKind"] for span in payload["spans"]] == [
+            "heading",
+            "paragraph",
+            "section",
+        ]
         assert payload["compileRun"]["status"] == "completed"
         assert payload["compileRun"]["runType"] == "compile:initial"
 
@@ -98,7 +102,10 @@ def test_markdown_source_endpoint_compile_keeps_span_topics_active() -> None:
                 and concept.status == "active"
             ]
 
-        assert len(active_topics) == len(payload["spans"])
+        evidence_spans = [
+            span for span in payload["spans"] if span["spanKind"] != "section"
+        ]
+        assert len(active_topics) == len(evidence_spans)
         assert len(active_summaries) == 1
 
 
@@ -454,3 +461,390 @@ def _seed_source_concept(
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+_ARTICLE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><title>Relay Guide - Pump Site</title><meta name="author" content="Dana Fixit" /></head>
+<body>
+  <nav><ul><li><a href="/">Home</a></li><li><a href="/shop">Browse products</a></li></ul></nav>
+  <article>
+    <h1>Relay Guide</h1>
+    <p>Relays must be inspected before every checkpoint restart to avoid cascade faults.</p>
+    <h2>Inspection Steps</h2>
+    <p>Open the relay housing and check the contact pads for pitting or discoloration.</p>
+  </article>
+  <footer><p>Copyright 2026 Pump Site. Subscribe to our newsletter!</p></footer>
+</body>
+</html>"""
+
+
+def test_web_capture_endpoint_accepts_raw_html() -> None:
+    with managed_test_client("anima-knowledge-web-html-") as client:
+        user_id, headers = _register(client, username="knowledge-web-html")
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["source"]["kind"] == "web_capture"
+        assert payload["source"]["mediaType"] == "text/html"
+        assert payload["source"]["title"] == "Relay Guide"
+        assert [artifact["artifactKind"] for artifact in payload["artifacts"]] == [
+            "raw_html",
+            "structured_markdown",
+        ]
+        section_paths = {
+            span["metadata"].get("section_path")
+            for span in payload["spans"]
+            if span["spanKind"] == "section"
+        }
+        assert "Relay Guide > Inspection Steps" in section_paths
+        combined = "\n".join(span["contentText"] for span in payload["spans"])
+        assert "Browse products" not in combined
+        assert "newsletter" not in combined
+
+
+def test_web_capture_endpoint_rejects_ambiguous_input_modes() -> None:
+    with managed_test_client("anima-knowledge-web-modes-") as client:
+        user_id, headers = _register(client, username="knowledge-web-modes")
+
+        both = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/page",
+                "readableText": "Text.",
+                "html": "<html><body><p>Text.</p></body></html>",
+            },
+        )
+        neither = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/page",
+            },
+        )
+
+        assert both.status_code == 422
+        assert neither.status_code == 422
+
+
+def test_web_capture_endpoint_fetch_mode_forbidden_when_disabled() -> None:
+    with managed_test_client("anima-knowledge-web-fetch-") as client:
+        user_id, headers = _register(client, username="knowledge-web-fetch")
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/page",
+                "fetch": True,
+            },
+        )
+
+        assert response.status_code == 403
+
+
+def test_html_upload_endpoint_validates_and_ingests() -> None:
+    with managed_test_client("anima-knowledge-html-upload-") as client:
+        user_id, headers = _register(client, username="knowledge-html-upload")
+
+        response = client.post(
+            "/api/knowledge/sources/html",
+            headers=headers,
+            data={"userId": str(user_id)},
+            files={"file": ("saved article.html", _ARTICLE_HTML.encode(), "text/html")},
+        )
+
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["source"]["kind"] == "html"
+        assert payload["source"]["sourceUri"] == "html://saved article.html"
+        assert [artifact["artifactKind"] for artifact in payload["artifacts"]] == [
+            "raw_html",
+            "structured_markdown",
+        ]
+
+        rejected = client.post(
+            "/api/knowledge/sources/html",
+            headers=headers,
+            data={"userId": str(user_id)},
+            files={"file": ("doc.pdf", b"%PDF-1.7", "application/pdf")},
+        )
+        assert rejected.status_code == 400
+
+
+def test_reextract_endpoint_replaces_spans_idempotently() -> None:
+    with managed_test_client("anima-knowledge-reextract-") as client:
+        user_id, headers = _register(client, username="knowledge-reextract")
+
+        created = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+        original_span_ids = [span["id"] for span in created.json()["spans"]]
+
+        reextracted = client.post(
+            f"/api/knowledge/sources/{source_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+        assert reextracted.status_code == 200
+        assert [span["id"] for span in reextracted.json()["spans"]] == original_span_ids
+
+        text_capture = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/text-only",
+                "readableText": "Pre-extracted capture.",
+            },
+        )
+        assert text_capture.status_code == 201
+        no_raw_html = client.post(
+            f"/api/knowledge/sources/{text_capture.json()['source']['id']}/reextract?userId={user_id}",
+            headers=headers,
+        )
+        assert no_raw_html.status_code == 422
+
+
+def test_reingest_with_compile_retries_failed_compile_run() -> None:
+    with managed_test_client("anima-knowledge-compile-retry-") as client:
+        user_id, headers = _register(client, username="knowledge-compile-retry")
+
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retry.md",
+                "title": "Retry",
+                "content": "# Retry\n\nBody.",
+                "compile": False,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+
+        # Simulate a transient compiler failure recorded for this source.
+        with get_runtime_session_factory()() as runtime_db:
+            runtime_db.add(
+                RuntimeKnowledgeBundleRun(
+                    user_id=user_id,
+                    run_type="compile:initial",
+                    status="failed",
+                    source_id=source_id,
+                )
+            )
+            runtime_db.commit()
+
+        retried = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retry.md",
+                "title": "Retry",
+                "content": "# Retry\n\nBody.",
+                "compile": True,
+            },
+        )
+
+        assert retried.status_code == 201
+        payload = retried.json()
+        # The failed run must not short-circuit the explicit compile request.
+        assert payload["compileRun"]["status"] == "completed"
+
+        # A completed run does short-circuit the next request (no duplicate).
+        again = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retry.md",
+                "title": "Retry",
+                "content": "# Retry\n\nBody.",
+                "compile": True,
+            },
+        )
+        assert again.json()["compileRun"]["id"] == payload["compileRun"]["id"]
+
+
+def test_reextract_recompiles_when_source_had_concepts() -> None:
+    with managed_test_client("anima-knowledge-reextract-compile-") as client:
+        user_id, headers = _register(client, username="knowledge-reextract-compile")
+
+        created = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+        assert created.json()["compileRun"]["status"] == "completed"
+
+        reextracted = client.post(
+            f"/api/knowledge/sources/{source_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+
+        assert reextracted.status_code == 200
+        payload = reextracted.json()
+        # A compiled source recompiles after re-extraction so concepts and
+        # citations track the fresh spans.
+        assert payload["compileRun"]["runType"] == "compile:refresh"
+        assert payload["compileRun"]["status"] == "completed"
+
+        with get_runtime_session_factory()() as runtime_db:
+            citations = list(
+                runtime_db.scalars(
+                    select(RuntimeKnowledgeConceptSource).where(
+                        RuntimeKnowledgeConceptSource.source_id == source_id
+                    )
+                ).all()
+            )
+        assert citations
+
+
+def test_reextract_rolls_back_when_refresh_compile_fails(monkeypatch) -> None:
+    from anima_server.api.routes import knowledge as knowledge_routes
+    from anima_server.services.ingestion.compiler import CompileResult
+
+    with managed_test_client("anima-knowledge-reextract-rollback-") as client:
+        user_id, headers = _register(client, username="knowledge-reextract-rollback")
+
+        created = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/relay-guide",
+                "html": _ARTICLE_HTML,
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["source"]["id"]
+
+        with get_runtime_session_factory()() as runtime_db:
+            citations_before = len(
+                list(
+                    runtime_db.scalars(
+                        select(RuntimeKnowledgeConceptSource).where(
+                            RuntimeKnowledgeConceptSource.source_id == source_id
+                        )
+                    ).all()
+                )
+            )
+        assert citations_before > 0
+
+        async def failing_compile(*args, **kwargs):
+            return CompileResult(status="failed", run_id=1)
+
+        monkeypatch.setattr(
+            knowledge_routes, "compile_source_knowledge_auto", failing_compile
+        )
+
+        response = client.post(
+            f"/api/knowledge/sources/{source_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+
+        # The re-extraction rolled back: no half-state with concepts but no
+        # citations.
+        assert response.status_code == 502
+        with get_runtime_session_factory()() as runtime_db:
+            citations_after = len(
+                list(
+                    runtime_db.scalars(
+                        select(RuntimeKnowledgeConceptSource).where(
+                            RuntimeKnowledgeConceptSource.source_id == source_id
+                        )
+                    ).all()
+                )
+            )
+        assert citations_after == citations_before
+
+
+def test_web_capture_fetch_rejects_overlong_redirect_url(monkeypatch) -> None:
+    from anima_server.api.routes import knowledge as knowledge_routes
+
+    with managed_test_client("anima-knowledge-fetch-longurl-") as client:
+        user_id, headers = _register(client, username="knowledge-fetch-longurl")
+
+        def fake_fetch(url: str):
+            return "https://example.com/" + "a" * 1200, "<html><body><article><h1>T</h1><p>Body.</p></article></body></html>"
+
+        monkeypatch.setattr(knowledge_routes, "fetch_capture_html", fake_fetch)
+
+        response = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.com/start",
+                "fetch": True,
+            },
+        )
+
+        # A redirect landing on an overlong URL is a controlled 422, not a
+        # database length error.
+        assert response.status_code == 422
+        assert "longer than" in response.json()["error"]
+
+
+def test_knowledge_search_excludes_section_spans() -> None:
+    with managed_test_client("anima-knowledge-search-sections-") as client:
+        user_id, headers = _register(client, username="knowledge-search-sections")
+
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "sections.md",
+                "title": "Sections",
+                "content": "# Relay Guide\n\nUnique zephyrblade paragraph body.",
+                "compile": False,
+            },
+        )
+        assert created.status_code == 201
+        assert any(
+            span["spanKind"] == "section" for span in created.json()["spans"]
+        )
+
+        response = client.get(
+            f"/api/knowledge/search?userId={user_id}&q=zephyrblade",
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        kinds = {span["spanKind"] for span in response.json()["evidenceSpans"]}
+        # The paragraph evidence matches; the parent section span (which
+        # duplicates the same text) must not appear or displace it.
+        assert "paragraph" in kinds
+        assert "section" not in kinds

@@ -537,6 +537,9 @@ async def test_run_agent_adds_document_priority_block_for_mixed_pdf_turn(
 
     monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
 
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
             user = User(
@@ -547,12 +550,24 @@ async def test_run_agent_adds_document_priority_block_for_mixed_pdf_turn(
             soul_session.add(user)
             soul_session.commit()
 
+            registered = register_document(
+                runtime_session,
+                DocumentRegistration(
+                    user_id=user.id,
+                    filename="manual.pdf",
+                    mime_type="application/pdf",
+                    storage_path=f".anima/documents/{user.id}/manual.pdf",
+                    sha256="4" * 64,
+                    size_bytes=100,
+                ),
+            )
+
             await run_agent(
                 "so what inside",
                 user.id,
                 soul_session,
                 runtime_session,
-                document_ids=[4],
+                document_ids=[registered.id],
             )
     finally:
         agent_service.invalidate_agent_runtime_cache()
@@ -615,6 +630,9 @@ async def test_run_agent_omits_personal_memory_blocks_when_pdf_is_selected(
     monkeypatch.setattr(agent_service, "build_turn_memory_blocks", fake_turn_memory_blocks)
     monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
 
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
             user = User(
@@ -625,12 +643,24 @@ async def test_run_agent_omits_personal_memory_blocks_when_pdf_is_selected(
             soul_session.add(user)
             soul_session.commit()
 
+            registered = register_document(
+                runtime_session,
+                DocumentRegistration(
+                    user_id=user.id,
+                    filename="CHCC 2026 Price List updated March.pdf",
+                    mime_type="application/pdf",
+                    storage_path=f".anima/documents/{user.id}/prices.pdf",
+                    sha256="5" * 64,
+                    size_bytes=100,
+                ),
+            )
+
             await run_agent(
                 "so what do you see",
                 user.id,
                 soul_session,
                 runtime_session,
-                document_ids=[4],
+                document_ids=[registered.id],
             )
     finally:
         agent_service.invalidate_agent_runtime_cache()

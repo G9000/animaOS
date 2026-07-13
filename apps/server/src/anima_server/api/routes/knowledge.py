@@ -10,17 +10,19 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Request,
     UploadFile,
     status,
 )
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.config import settings
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
     RuntimeKnowledgeBundleRun,
@@ -36,10 +38,22 @@ from anima_server.services.ingestion.adapters.text import (
     ingest_markdown_content,
     ingest_text_content,
 )
-from anima_server.services.ingestion.adapters.web import ingest_web_capture
-from anima_server.services.ingestion.document_compiler import compile_source_knowledge
+from anima_server.services.ingestion.adapters.web import (
+    ingest_html_content,
+    ingest_web_capture,
+    reextract_source_html,
+)
+from anima_server.services.ingestion.document_compiler import (
+    compile_source_knowledge_auto,
+)
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
+from anima_server.services.ingestion.web_fetch import (
+    UnsafeFetchUrlError,
+    WebFetchDisabledError,
+    WebFetchError,
+    fetch_capture_html,
+)
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 SOURCE_URI_MAX_LENGTH = 1024
@@ -63,17 +77,26 @@ class TextSourceRequest(BaseModel):
 class WebCaptureRequest(BaseModel):
     userId: int = Field(ge=0)
     url: str = Field(min_length=1, max_length=SOURCE_URI_MAX_LENGTH)
-    readableText: str = Field(min_length=1)
+    readableText: str | None = Field(default=None)
+    html: str | None = Field(default=None)
+    fetch: bool = False
     title: str | None = Field(default=None, max_length=512)
     canonicalUrl: str | None = Field(default=None, max_length=2048)
     compile: bool = False
 
-    @field_validator("readableText")
-    @classmethod
-    def require_readable_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("content must not be empty")
-        return value
+    @model_validator(mode="after")
+    def require_exactly_one_input(self) -> WebCaptureRequest:
+        provided = sum(
+            (self.readableText is not None, self.html is not None, self.fetch)
+        )
+        if provided != 1:
+            raise ValueError(
+                "provide exactly one of readableText, html, or fetch=true"
+            )
+        for value in (self.readableText, self.html):
+            if value is not None and not value.strip():
+                raise ValueError("content must not be empty")
+        return self
 
 
 class KnowledgeLintRequest(BaseModel):
@@ -117,12 +140,12 @@ async def ingest_text_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
-            compile_knowledge=payload.compile,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -145,12 +168,12 @@ async def ingest_markdown_source(
             filename=payload.filename,
             title=payload.title,
             embedding_fn=generate_embedding,
-            compile_knowledge=payload.compile,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
@@ -165,24 +188,180 @@ async def ingest_web_capture_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     require_unlocked_user(request, payload.userId)
+    url = payload.url
+    html = payload.html
+    if payload.fetch:
+        try:
+            url, html = fetch_capture_html(payload.url)
+        except WebFetchDisabledError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
+        except (UnsafeFetchUrlError, WebFetchError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        # Redirects can land on a URL longer than the request model (and
+        # the source_uri column) allow; revalidate so this stays a 422
+        # instead of a database length error.
+        if len(url) > SOURCE_URI_MAX_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "The fetched page redirected to a URL longer than "
+                    f"{SOURCE_URI_MAX_LENGTH} characters."
+                ),
+            )
+    if html is not None and len(html.encode("utf-8")) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "HTML content is too large. "
+                f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
+            ),
+        )
     try:
         source, artifacts, spans = ingest_web_capture(
             runtime_db,
             user_id=payload.userId,
-            url=payload.url,
+            url=url,
             readable_text=payload.readableText,
+            html=html,
             title=payload.title,
             canonical_url=payload.canonicalUrl,
             embedding_fn=generate_embedding,
-            compile_knowledge=payload.compile,
+            compile_knowledge=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     compile_run = (
-        _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
         if payload.compile
         else None
     )
+    runtime_db.commit()
+    return _source_response(source, artifacts, spans, compile_run=compile_run)
+
+
+_HTML_UPLOAD_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+_HTML_UPLOAD_FALLBACK_CONTENT_TYPES = frozenset({"", "application/octet-stream"})
+
+
+@router.post("/sources/html", status_code=status.HTTP_201_CREATED)
+async def ingest_html_source(
+    request: Request,
+    userId: int = Form(..., ge=0),
+    title: str | None = Form(default=None, max_length=512),
+    compileKnowledge: bool = Form(default=False, alias="compile"),
+    file: UploadFile = File(...),
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    filename = file.filename or "page.html"
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    has_html_extension = filename.lower().endswith((".html", ".htm"))
+    if content_type not in _HTML_UPLOAD_CONTENT_TYPES and not (
+        content_type in _HTML_UPLOAD_FALLBACK_CONTENT_TYPES and has_html_extension
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only HTML uploads are supported.",
+        )
+
+    data = await file.read()
+    if not data.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HTML file must not be empty.",
+        )
+    if len(data) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "HTML file is too large. "
+                f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
+            ),
+        )
+
+    try:
+        source, artifacts, spans = ingest_html_content(
+            runtime_db,
+            user_id=userId,
+            html=data.decode("utf-8", errors="replace"),
+            filename=filename,
+            title=title,
+            embedding_fn=generate_embedding,
+            compile_knowledge=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    compile_run = (
+        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
+        if compileKnowledge
+        else None
+    )
+    runtime_db.commit()
+    return _source_response(source, artifacts, spans, compile_run=compile_run)
+
+
+@router.post("/sources/{source_id}/reextract")
+async def reextract_source(
+    request: Request,
+    source_id: int,
+    userId: int,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    require_unlocked_user(request, userId)
+    # Checked before re-extraction: replacing spans cascades citation rows,
+    # so an already-compiled source must be recompiled afterwards or its
+    # concepts would go stale/orphaned until a manual compile.
+    had_compiled_concepts = (
+        runtime_db.scalar(
+            select(RuntimeKnowledgeConceptSource.id)
+            .where(
+                RuntimeKnowledgeConceptSource.user_id == userId,
+                RuntimeKnowledgeConceptSource.source_id == source_id,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+    try:
+        source, artifacts, spans = reextract_source_html(
+            runtime_db,
+            user_id=userId,
+            source_id=source_id,
+            embedding_fn=generate_embedding,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    compile_run = None
+    if had_compiled_concepts:
+        result = await compile_source_knowledge_auto(
+            runtime_db,
+            source=source,
+            spans=spans,
+            embedding_fn=generate_embedding,
+            mode="refresh",
+        )
+        if result.status != "completed":
+            # Replacing spans cascaded the old citations; committing now
+            # would leave active concepts with no citations. Keep the
+            # previous span/citation state instead.
+            runtime_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Re-extraction was rolled back: the refresh compile "
+                    "failed, so the previous spans and citations were kept. "
+                    "Retry when the compiler model is available."
+                ),
+            )
+        compile_run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
     runtime_db.commit()
     return _source_response(source, artifacts, spans, compile_run=compile_run)
 
@@ -270,7 +449,7 @@ async def compile_source(
 ) -> dict[str, Any]:
     require_unlocked_user(request, userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
-    run = _compile_source_now(
+    run = await _compile_source_now(
         runtime_db,
         source=source,
         spans=_source_spans(runtime_db, source_id=source.id),
@@ -320,7 +499,13 @@ async def search_knowledge(
         for span, source in runtime_db.execute(
             select(RuntimeSourceSpan, RuntimeSource)
             .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
-            .where(RuntimeSourceSpan.user_id == userId, RuntimeSource.user_id == userId)
+            .where(
+                RuntimeSourceSpan.user_id == userId,
+                RuntimeSource.user_id == userId,
+                # Section spans are parent read units, not evidence — the
+                # retrieval paths exclude them and search must match.
+                RuntimeSourceSpan.span_kind != "section",
+            )
             .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
         ).all()
         if _contains_text(
@@ -423,13 +608,13 @@ async def lint_knowledge(
     }
 
 
-def _compile_source_now(
+async def _compile_source_now(
     runtime_db: Session,
     *,
     source: RuntimeSource,
     spans: list[RuntimeSourceSpan],
 ) -> RuntimeKnowledgeBundleRun:
-    result = compile_source_knowledge(
+    result = await compile_source_knowledge_auto(
         runtime_db,
         source=source,
         spans=spans,
@@ -444,13 +629,16 @@ def _compile_source_now(
     return run
 
 
-def _existing_or_new_compile_run(
+async def _existing_or_new_compile_run(
     runtime_db: Session,
     *,
     source: RuntimeSource,
     spans: list[RuntimeSourceSpan],
 ) -> RuntimeKnowledgeBundleRun:
-    return _latest_source_compile_run(runtime_db, source=source) or _compile_source_now(
+    existing = _latest_source_compile_run(runtime_db, source=source)
+    if existing is not None:
+        return existing
+    return await _compile_source_now(
         runtime_db,
         source=source,
         spans=spans,
@@ -462,12 +650,16 @@ def _latest_source_compile_run(
     *,
     source: RuntimeSource,
 ) -> RuntimeKnowledgeBundleRun | None:
+    # Only successful or in-flight runs short-circuit a compile request;
+    # a failed run must not make transient compiler failures sticky when
+    # the user explicitly re-ingests with compile=true.
     return runtime_db.scalar(
         select(RuntimeKnowledgeBundleRun)
         .where(
             RuntimeKnowledgeBundleRun.user_id == source.user_id,
             RuntimeKnowledgeBundleRun.source_id == source.id,
             RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
+            RuntimeKnowledgeBundleRun.status.in_(("pending", "running", "completed")),
         )
         .order_by(RuntimeKnowledgeBundleRun.id.desc())
     )

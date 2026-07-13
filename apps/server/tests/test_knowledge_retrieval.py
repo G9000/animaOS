@@ -103,9 +103,12 @@ def test_retrieve_knowledge_fills_missing_span_hits_from_text(runtime_db) -> Non
         embedding_fn=_embedding_for,
     )
 
-    assert [item.concept_id for item in result.concepts] == [concept.id]
+    # The hybrid lexical arm now also surfaces the (unembedded) compiled
+    # concepts of the ingested source; the embedded concept still ranks first.
+    assert result.concepts[0].concept_id == concept.id
+    # The unembedded span now surfaces through the hybrid lexical arm
+    # directly (dense score 0.0) rather than the text-search fallback.
     assert [item.span_id for item in result.evidence_spans] == [spans[0].id]
-    assert result.evidence_spans[0].score == 1.0
 
 
 def test_retrieve_knowledge_fills_missing_concept_hits_from_text(runtime_db) -> None:
@@ -136,8 +139,9 @@ def test_retrieve_knowledge_fills_missing_concept_hits_from_text(runtime_db) -> 
         embedding_fn=_embedding_for,
     )
 
-    concept_hit = next(item for item in result.concepts if item.concept_id == concept.id)
-    assert concept_hit.score == 1.0
+    # The unembedded concept now surfaces through the hybrid lexical arm
+    # directly (dense score 0.0) rather than the text-search fallback.
+    assert any(item.concept_id == concept.id for item in result.concepts)
     assert [item.span_id for item in result.evidence_spans] == [spans[0].id]
 
 
@@ -175,3 +179,156 @@ def test_retrieve_knowledge_is_user_scoped(runtime_db) -> None:
     assert runtime_db.scalar(
         select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.id == other.id)
     )
+
+def test_retrieve_knowledge_lexical_arm_promotes_exact_token_span(runtime_db) -> None:
+    from anima_server.services.ingestion.retrieval import (
+        retrieve_knowledge,
+        upsert_source_span_embedding,
+    )
+
+    _source, _artifacts, spans = ingest_text_content(
+        runtime_db,
+        user_id=1,
+        content=(
+            "General portable continuity discussion without specifics."
+            "\n\n"
+            "The relay reports error code XK-9931 during boot."
+        ),
+        filename="hybrid-evidence.txt",
+    )
+    for span in spans:
+        upsert_source_span_embedding(runtime_db, span=span, embedding_fn=_embedding_for)
+
+    result = retrieve_knowledge(
+        runtime_db,
+        user_id=1,
+        query="portable XK-9931",
+        embedding_fn=_embedding_for,
+    )
+
+    # The query embeds onto the "portable" vector (see _embedding_for), so the
+    # dense arm gives the exact-token span zero cosine and would drop it
+    # entirely; only the lexical arm can surface it.
+    span_ids = [item.span_id for item in result.evidence_spans]
+    token_span = next(span for span in spans if "XK-9931" in span.content_text)
+    generic_span = next(span for span in spans if "portable" in span.content_text)
+    assert token_span.id in span_ids
+    assert generic_span.id in span_ids
+
+
+def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
+    import hashlib
+
+    from anima_server.models.runtime import (
+        RuntimeSource,
+        RuntimeSourceArtifact,
+        RuntimeSourceSpan,
+    )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent.embedding_integrity import (
+        compute_embedding_checksum,
+    )
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge
+
+    def _sha(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    source = RuntimeSource(
+        user_id=7,
+        kind="markdown",
+        source_uri="markdown://mixed.md",
+        content_hash=_sha("mixed"),
+        title="Mixed Coverage",
+        media_type="text/markdown",
+        status="indexed",
+    )
+    runtime_db.add(source)
+    runtime_db.flush()
+    artifact = RuntimeSourceArtifact(
+        user_id=7,
+        source_id=source.id,
+        artifact_kind="markdown",
+        content_text="Embedded body.\n\nE-17 fault body.",
+        content_hash=_sha("artifact"),
+    )
+    runtime_db.add(artifact)
+    runtime_db.flush()
+    embedded_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="paragraph",
+        locator_json={"paragraph_index": 0},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 0}),
+        content_text="Embedded body about gardens.",
+        content_hash=_sha("embedded"),
+    )
+    unembedded_span = RuntimeSourceSpan(
+        user_id=7,
+        source_id=source.id,
+        artifact_id=artifact.id,
+        span_kind="paragraph",
+        locator_json={"paragraph_index": 1},
+        locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 1}),
+        content_text="The E-17 fault body ingested during an embedding outage.",
+        content_hash=_sha("unembedded"),
+    )
+    runtime_db.add_all([embedded_span, unembedded_span])
+    runtime_db.flush()
+    vector = [1.0] + [0.0] * 767
+    runtime_db.add(
+        RuntimeEmbedding(
+            user_id=7,
+            source_type="source_span",
+            source_id=embedded_span.id,
+            content_hash=embedded_span.content_hash,
+            embedding_checksum=compute_embedding_checksum(vector),
+            embedding=vector,
+            content_preview=embedded_span.content_text[:200],
+            category="knowledge",
+            importance=3,
+        )
+    )
+    runtime_db.flush()
+
+    result = retrieve_knowledge(
+        runtime_db,
+        user_id=7,
+        query="E-17",
+        embedding_fn=lambda text: [1.0] + [0.0] * 767,
+        limit_concepts=0,
+        limit_spans=5,
+    )
+
+    # Dense succeeded (the embedded span ranks), but the exact-token match
+    # in the unembedded span must still surface through the lexical arm.
+    hit_ids = {hit.span_id for hit in result.evidence_spans}
+    assert unembedded_span.id in hit_ids
+
+
+def test_text_fallback_excludes_section_spans(runtime_db) -> None:
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+    from anima_server.services.ingestion.retrieval import retrieve_knowledge_text
+
+    _source, _artifacts, spans = ingest_markdown_content(
+        runtime_db,
+        user_id=1,
+        content="# Relay Guide\n\nUnique zephyrblade paragraph body.",
+        filename="sections.md",
+        compile_knowledge=False,
+    )
+    assert any(span.span_kind == "section" for span in spans)
+
+    result = retrieve_knowledge_text(
+        runtime_db,
+        user_id=1,
+        query="zephyrblade",
+        limit_concepts=0,
+        limit_spans=5,
+    )
+
+    # The paragraph evidence span matches; the parent section span (which
+    # duplicates the same text) must not displace it.
+    kinds = {hit.span_kind for hit in result.evidence_spans}
+    assert "paragraph" in kinds
+    assert "section" not in kinds
