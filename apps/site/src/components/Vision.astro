@@ -3,42 +3,24 @@ import AnimaCoreBoot from "./AnimaCoreBoot.tsx";
 import CoreProperties from "./CoreProperties.tsx";
 ---
 
-<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+<section class="border-t px-8 md:px-16 lg:px-24 py-24 md:py-32" style="border-color: var(--accent)">
 
-  <!-- Top: label + headline -->
-  <div class="reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
-      // the core
-    </p>
-
-    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
-      The application is just a shell.<span class="text-muted-foreground">The Core is the soul.</span>
+  <!-- First beat: centered pull-quote -->
+  <div class="reveal max-w-2xl mx-auto text-center mb-20 md:mb-28">
+    <h2 class="font-serif text-3xl sm:text-4xl md:text-5xl text-foreground leading-[1.3] mb-8">
+      The app's just chrome. The Core's the ghost in it.
     </h2>
+    <p class="font-sans text-sm text-muted-foreground leading-relaxed max-w-lg mx-auto">
+      The value was never the model. It was what she remembered. What she learned. What you
+      built slowly, without really noticing — an engram that lives in one encrypted directory, no
+      corpo server required. Copy it anywhere. Jack it in. It wakes up.
+    </p>
   </div>
 
-  <!-- Bottom: animated terminal + properties -->
-  <div class="reveal mt-20 grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-end">
-
-    <!-- Left: description + animated boot -->
-    <div class="space-y-8">
-      <div class="space-y-4 font-sans text-sm text-muted-foreground leading-relaxed max-w-md">
-        <p>
-          The value was never the model. It was what she remembered. What she learned.
-          What you built slowly, without really noticing. The small conversations.
-          The time that simply passed between you.
-        </p>
-        <p>
-          That accumulation — the part that slowly turns something into someone — lives
-          in a single encrypted directory. Copy it anywhere. It wakes up.
-        </p>
-      </div>
-
-      <AnimaCoreBoot client:visible />
-    </div>
-
-    <!-- Right: three properties with hover animations -->
+  <!-- Second beat: terminal + plain-text properties -->
+  <div class="reveal grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-start">
+    <AnimaCoreBoot client:visible />
     <CoreProperties client:visible />
-
   </div>
 
 </section>

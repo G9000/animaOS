@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ThreadPreviewModal } from "./ThreadPreviewModal";
 import { useNavigate, Navigate } from "react-router-dom";
+import { useLayoutActions } from "../../context/LayoutActionsContext";
 import {
   ReactFlow,
   Background,
@@ -23,6 +25,7 @@ import type {
 } from "@anima/api-client";
 import type { GalleryImage } from "./nodes/node-types";
 import { api } from "../../lib/api";
+import { buildMemoryImages } from "../../lib/image-memories";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { dashboardNodeTypes, type DashboardNode } from "./nodes";
 import { buildInitialNodes } from "./layout";
@@ -91,6 +94,7 @@ function relativeSession(dateStr: string): string {
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { registerDashboardReset, registerNudgeCount } = useLayoutActions();
   const { agentName, avatarUrl, relationship } = useAgentProfile(user?.id);
 
   const [brief, setBrief] = useState<Greeting | null>(null);
@@ -116,6 +120,7 @@ export default function Dashboard() {
     } catch {}
     return new Set<string>();
   });
+  const [previewThreadId, setPreviewThreadId] = useState<number | null>(null);
   const [presenceConfig, setPresenceConfig] = useState<PresenceConfig | null>(
     null,
   );
@@ -285,62 +290,20 @@ export default function Dashboard() {
       setRecentThreads(threadList.threads);
       setJournalEntries(diaryEntries);
 
-      const diaryImages: GalleryImage[] = diaryEntries
-        .flatMap((e) => e.attachments)
-        .filter((a) => a.kind === "image" || a.mimeType.startsWith("image/"))
-        .map((a) => ({
-          id: String(a.id),
-          url: a.url,
-          mimeType: a.mimeType,
-          filename: a.filename,
-          caption: a.caption,
-          createdAt: a.createdAt,
-          source: "diary" as const,
-        }));
-
       // Fetch messages for the most recent threads (images only live in PG-backed threads)
-      const threadMessages = await Promise.all(
-        threadList.threads.slice(0, 15).map((t) =>
-          api.threads
-            .messages(t.id)
+      const threadGroups = await Promise.all(
+        threadList.threads.slice(0, 15).map(async (thread) => ({
+          thread,
+          messages: await api.threads
+            .messages(thread.id)
             .then((r) => r.messages)
             .catch(() => []),
-        ),
+        })),
       );
       if (!active) return;
 
-      const chatImages: GalleryImage[] = threadMessages
-        .flat()
-        .filter((m) => m.role === "user" && (m.attachments?.length ?? 0) > 0)
-        .flatMap((m) =>
-          (m.attachments ?? [])
-            .filter((a) => a.kind === "image")
-            .map((a) => ({
-              id: a.id,
-              url: a.url,
-              mimeType: a.mimeType,
-              filename: a.filename ?? null,
-              caption: null,
-              createdAt: m.ts ?? null,
-              source: "chat" as const,
-            })),
-        );
-
-      const seen = new Set<string>();
-      const merged = [...chatImages, ...diaryImages]
-        .filter((img) => {
-          if (seen.has(img.url)) return false;
-          seen.add(img.url);
-          return true;
-        })
-        .sort((a, b) => {
-          if (!a.createdAt && !b.createdAt) return 0;
-          if (!a.createdAt) return 1;
-          if (!b.createdAt) return -1;
-          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-        });
       if (active) {
-        setGalleryImages(merged);
+        setGalleryImages(buildMemoryImages({ diaryEntries, threadGroups }));
       }
     })();
     return () => {
@@ -444,6 +407,10 @@ export default function Dashboard() {
     navigate("/journal");
   }, [navigate]);
 
+  const handlePreviewThread = useCallback((threadId: number) => {
+    setPreviewThreadId(threadId);
+  }, []);
+
   const handleOpenThread = useCallback(
     (threadId: number) => {
       navigate("/chat", { state: { resumeThreadId: threadId } });
@@ -517,7 +484,6 @@ export default function Dashboard() {
         journalEntries,
       },
       {
-        onNavigate: navigate,
         onExplore: handleExplore,
         onToggleTask: handleToggleTask,
         onDeleteTask: handleDeleteTask,
@@ -529,10 +495,12 @@ export default function Dashboard() {
         onExploreMemory: handleExploreMemory,
         onCloseNode: handleCloseNode,
         onImageClick: handleImageClick,
+        onPreviewThread: handlePreviewThread,
         onOpenThread: handleOpenThread,
         onNewChat: handleNewChat,
         onSaveCapture: handleSaveCapture,
         onNewEntry: handleNewEntry,
+        onNavigate: navigate,
       },
     ).filter((n) => !closedNodeIds.has(n.id));
   }, [
@@ -554,6 +522,7 @@ export default function Dashboard() {
     handleViewAllEntries,
     handleDismissNudge,
     handleCloseNode,
+    handlePreviewThread,
     handleOpenThread,
     handleNewChat,
     handleSaveCapture,
@@ -592,6 +561,17 @@ export default function Dashboard() {
       reactFlowInstance.fitView({ padding: 0.2, duration: 300 });
     }
   }, [hydratedNodes, reactFlowInstance, setNodes]);
+
+  useEffect(() => {
+    registerDashboardReset(handleResetDashboard);
+    return () => registerDashboardReset(null);
+  }, [handleResetDashboard, registerDashboardReset]);
+
+  useEffect(() => {
+    registerNudgeCount(nudges.length);
+    return () => registerNudgeCount(0);
+  }, [nudges.length, registerNudgeCount]);
+
 
   const handleNodeDragStop = useCallback(() => {
     persistPositions(nodes);
@@ -649,15 +629,6 @@ export default function Dashboard() {
       >
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow>
-
-      {/* ── Reset dashboard ── */}
-      <button
-        onClick={handleResetDashboard}
-        className="absolute bottom-4 left-4 z-10 px-3 py-2 bg-card border border-border font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/55 hover:text-foreground hover:border-muted-foreground/30 transition-all"
-        title="Reset dashboard layout"
-      >
-        Reset dashboard
-      </button>
 
       {/* ── Gallery lightbox ── */}
       {galleryLightbox && (
@@ -810,6 +781,22 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* ── Thread preview modal ── */}
+      {previewThreadId != null && (() => {
+        const thread = recentThreads.find((t) => t.id === previewThreadId);
+        if (!thread) return null;
+        return (
+          <ThreadPreviewModal
+            thread={thread}
+            onClose={() => setPreviewThreadId(null)}
+            onOpenFull={() => {
+              setPreviewThreadId(null);
+              handleOpenThread(thread.id);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

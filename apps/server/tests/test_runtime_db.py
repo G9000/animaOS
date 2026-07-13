@@ -489,15 +489,75 @@ def test_embedded_pg_recovers_stale_lockfile(managed_tmp_path: Path) -> None:
     assert pid_file.exists() is False
 
 
-def test_embedded_pg_keeps_valid_lockfile(managed_tmp_path: Path) -> None:
+def test_embedded_pg_keeps_valid_lockfile(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
     pg.data_dir.mkdir(parents=True, exist_ok=True)
     pid_file = pg.data_dir / "postmaster.pid"
-    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    pid_file.write_text("42\n", encoding="utf-8")
+    target = str(pg.data_dir.expanduser().resolve())
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.info = {
+                "pid": 42,
+                "name": "postgres.exe",
+                "cmdline": ["postgres.exe", "-D", target],
+            }
+
+    fake_psutil = SimpleNamespace(
+        NoSuchProcess=RuntimeError,
+        AccessDenied=PermissionError,
+        Error=RuntimeError,
+        Process=lambda _pid: FakeProcess(),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        EmbeddedPG,
+        "_probe_pid",
+        staticmethod(lambda _pid: (True, False)),
+    )
 
     pg._recover_stale_lockfile()
 
     assert pid_file.exists() is True
+
+
+def test_embedded_pg_recovers_lockfile_when_pid_reused_by_non_postgres(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+    pg.data_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = pg.data_dir / "postmaster.pid"
+    pid_file.write_text("42\n", encoding="utf-8")
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.info = {
+                "pid": 42,
+                "name": "python.exe",
+                "cmdline": ["python", "lsp_server.py"],
+            }
+
+    fake_psutil = SimpleNamespace(
+        NoSuchProcess=RuntimeError,
+        AccessDenied=PermissionError,
+        Error=RuntimeError,
+        Process=lambda _pid: FakeProcess(),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        EmbeddedPG,
+        "_probe_pid",
+        staticmethod(lambda _pid: (True, False)),
+    )
+
+    pg._recover_stale_lockfile()
+
+    assert pid_file.exists() is False
 
 
 def test_embedded_pg_keeps_lockfile_on_permission_error(

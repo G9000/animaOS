@@ -345,7 +345,7 @@ class EmbeddedPG:
         return True, False
 
     def _recover_stale_lockfile(self) -> bool:
-        """Remove a stale postmaster.pid whose process no longer exists."""
+        """Remove a stale postmaster.pid whose postmaster is no longer valid."""
         pid_file = self._data_dir / "postmaster.pid"
         if not pid_file.exists():
             return False
@@ -380,7 +380,71 @@ class EmbeddedPG:
             pid_file.unlink(missing_ok=True)
             return True
 
+        # Windows can reuse a dead postmaster PID for an unrelated process.
+        # Keep the lockfile only when that PID is still the postgres
+        # postmaster for this exact PGDATA directory.
+        pid_matches_pgdata = self._pid_matches_pgdata(pid)
+        if pid_matches_pgdata is False:
+            logger.warning(
+                "Stale postmaster.pid found (PID %d belongs to another process), removing",
+                pid,
+            )
+            pid_file.unlink(missing_ok=True)
+            return True
+
         return False
+
+    def _pid_matches_pgdata(self, pid: int) -> bool | None:
+        """Return whether ``pid`` is the postgres postmaster for this PGDATA.
+
+        ``None`` means the process could not be inspected, so callers should
+        preserve the lockfile rather than risk disrupting a live database.
+        """
+        try:
+            import psutil
+        except ImportError:
+            return None
+
+        try:
+            process = psutil.Process(pid)
+            info = getattr(process, "info", None)
+            if isinstance(info, dict):
+                name = str(info.get("name") or "")
+                cmdline = info.get("cmdline") or []
+            else:
+                name = str(process.name())
+                cmdline = process.cmdline()
+        except self._psutil_exceptions(psutil, "NoSuchProcess", ProcessLookupError):
+            return False
+        except self._psutil_exceptions(psutil, "AccessDenied", PermissionError):
+            return None
+        except self._psutil_exceptions(psutil, "Error", OSError):
+            logger.debug(
+                "Could not inspect process %s while checking postmaster.pid",
+                pid,
+                exc_info=True,
+            )
+            return None
+
+        if "postgres" not in name.lower():
+            return False
+
+        data_dir = self._normalise_process_text(str(self._data_dir.expanduser().resolve()))
+        cmdline_text = self._normalise_process_text(" ".join(str(part) for part in cmdline))
+        return data_dir in cmdline_text
+
+    @staticmethod
+    def _psutil_exceptions(
+        psutil_module: Any, name: str, fallback: type[BaseException]
+    ) -> tuple[type[BaseException], ...]:
+        exc = getattr(psutil_module, name, fallback)
+        if isinstance(exc, type) and issubclass(exc, BaseException):
+            return (exc,)
+        return (fallback,)
+
+    @staticmethod
+    def _normalise_process_text(value: str) -> str:
+        return value.replace("\\", "/").lower()
 
     def _clear_stale_log(self) -> None:
         """Truncate or remove stale PG bootstrap logs before restart."""

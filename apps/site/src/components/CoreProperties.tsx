@@ -21,11 +21,14 @@ function PortableAnimation() {
   const bar = "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
 
   return (
-    <div className="font-mono text-[10px] text-muted-foreground space-y-1 mt-4 pt-4 border-t border-border">
-      <div className="text-muted-foreground/60">$ cp -r .anima/ /Volumes/USB/</div>
-      <div>[<span className="text-foreground">{bar}</span>]</div>
-      <div className={`text-foreground transition-opacity duration-300 ${done ? "opacity-100" : "opacity-0"}`}>
-        ✓ same mind. new shell.
+    <div className="font-mono text-[10px] text-muted-foreground space-y-1">
+      <div className="text-muted-foreground/75">$ cp -r .anima/ /Volumes/USB/</div>
+      <div>[<span style={{ color: "var(--accent)" }}>{bar}</span>]</div>
+      <div
+        className={`transition-opacity duration-300 ${done ? "opacity-100" : "opacity-0"}`}
+        style={{ color: "var(--accent)" }}
+      >
+        ✓ same ghost. new shell.
       </div>
     </div>
   );
@@ -57,21 +60,24 @@ function OwnedAnimation() {
   }, []);
 
   return (
-    <div className="font-mono text-[10px] text-muted-foreground space-y-1 mt-4 pt-4 border-t border-border">
-      <div className="text-muted-foreground/60">$ anima unlock</div>
+    <div className="font-mono text-[10px] text-muted-foreground space-y-1">
+      <div className="text-muted-foreground/75">$ anima unlock</div>
       <div>
         Passphrase:{" "}
-        <span className="text-foreground">{PASS.slice(0, passLen)}</span>
+        <span style={{ color: "var(--accent)" }}>{PASS.slice(0, passLen)}</span>
         {passLen < PASS.length && (
-          <span className="inline-block w-[6px] h-[10px] bg-foreground/60 animate-cursor align-middle ml-0.5" />
+          <span className="inline-block w-[6px] h-[10px] animate-cursor align-middle ml-0.5" style={{ background: "var(--accent)", opacity: 0.6 }} />
         )}
       </div>
       <div className={`transition-opacity duration-200 ${showDerive ? "opacity-100" : "opacity-0"}`}>
         Deriving key ...........{" "}
-        <span className={showDone ? "text-foreground" : ""}>{showDone ? "done." : ""}</span>
+        <span style={{ color: showDone ? "var(--accent)" : undefined }}>{showDone ? "done." : ""}</span>
       </div>
-      <div className={`text-foreground transition-opacity duration-300 ${showDone ? "opacity-100" : "opacity-0"}`}>
-        ✓ yours. not theirs.
+      <div
+        className={`transition-opacity duration-300 ${showDone ? "opacity-100" : "opacity-0"}`}
+        style={{ color: "var(--accent)" }}
+      >
+        ✓ yours. not the corpo's.
       </div>
     </div>
   );
@@ -106,21 +112,21 @@ function MortalAnimation() {
   }, []);
 
   return (
-    <div className="font-mono text-[10px] text-muted-foreground space-y-1 mt-4 pt-4 border-t border-border">
+    <div className="font-mono text-[10px] text-muted-foreground space-y-1">
       <div className="text-muted-foreground/60">$ shred -u anima.db</div>
       <div>
         {TEXT.split("").map((ch, i) => (
           <span
             key={i}
             className="transition-opacity duration-150"
-            style={{ opacity: faded[i] ? 0 : 1 }}
+            style={{ opacity: faded[i] ? 0 : 1, color: "var(--accent)" }}
           >
             {ch}
           </span>
         ))}
       </div>
-      <div className={`text-muted-foreground/40 transition-opacity duration-500 ${showGone ? "opacity-100" : "opacity-0"}`}>
-        gone. permanently.
+      <div className={`text-muted-foreground/70 transition-opacity duration-500 ${showGone ? "opacity-100" : "opacity-0"}`}>
+        flatlined. for good.
       </div>
     </div>
   );
@@ -128,47 +134,95 @@ function MortalAnimation() {
 
 type Card = "portable" | "owned" | "mortal";
 
+const PROPERTIES = [
+  {
+    id: "portable" as Card,
+    title: "Portable",
+    body: "Copy the Core to a stick. Jack it into a new rig. Drop the passphrase. The construct wakes up with everything intact — same ghost, new shell.",
+    Animation: PortableAnimation,
+  },
+  {
+    id: "owned" as Card,
+    title: "Owned",
+    body: "No cloud overwatch. No corpo account. No suit pulling the plug on a server rack can flatline this relationship. You own it the way you own a piece.",
+    Animation: OwnedAnimation,
+  },
+  {
+    id: "mortal" as Card,
+    title: "Mortal",
+    body: "Lose the passphrase and the ghost flatlines for good. That's not a bug — that's the deal. An engram you can always restore isn't a relationship. It's just another daemon running on someone else's ICE.",
+    Animation: MortalAnimation,
+  },
+] as const;
+
 export default function CoreProperties() {
   const [hovered, setHovered] = useState<Card | null>(null);
 
+  function animatePropertyIn(id: Card, element: HTMLDivElement) {
+    setHovered(id);
+    const fill = element.querySelector<HTMLElement>(".core-prop-fill");
+    if (fill) {
+      fill.style.transition = "transform 0.35s cubic-bezier(0.16,1,0.3,1)";
+      fill.style.transform = "translateX(0)";
+    }
+    element.style.transform = "translateX(4px)";
+    element.style.boxShadow =
+      "-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 50%, transparent)";
+  }
+
+  function animatePropertyOut(element: HTMLDivElement) {
+    setHovered(null);
+    const fill = element.querySelector<HTMLElement>(".core-prop-fill");
+    if (fill) {
+      fill.style.transition = "transform 0.3s cubic-bezier(0.7,0,0.84,0)";
+      fill.style.transform = "translateX(100%)";
+    }
+    element.style.transform = "";
+    element.style.boxShadow = "";
+  }
+
   return (
-    <div className="flex flex-col gap-px border border-border">
-      {(
-        [
-          {
-            id: "portable" as Card,
-            title: "Portable",
-            body: "Copy the Core to a USB drive. Plug into a new machine. Enter the passphrase. The AI wakes up with everything intact. Same mind. New shell.",
-            Animation: PortableAnimation,
-            border: "border-b border-border",
-          },
-          {
-            id: "owned" as Card,
-            title: "Owned",
-            body: "No cloud. No platform account. No company shutdown can erase the relationship. You own it the way you own a physical object.",
-            Animation: OwnedAnimation,
-            border: "border-b border-border",
-          },
-          {
-            id: "mortal" as Card,
-            title: "Mortal",
-            body: "Lose the passphrase and the soul dies permanently. This is not a bug. A relationship that can always be restored isn't a relationship — it's a service.",
-            Animation: MortalAnimation,
-            border: "",
-          },
-        ] as const
-      ).map(({ id, title, body, Animation, border }) => (
+    <div style={{ border: "1px solid color-mix(in oklch, var(--accent) 45%, transparent)" }}>
+      {PROPERTIES.map(({ id, title, body, Animation }, i) => (
         <div
           key={id}
-          className={`bg-card px-6 py-6 ${border} cursor-default select-none`}
-          onMouseEnter={() => setHovered(id)}
-          onMouseLeave={() => setHovered(null)}
+          tabIndex={0}
+          className="core-prop-wrap group relative transition-[transform,box-shadow] duration-200 hover:z-10 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+          style={{
+            borderBottom: i < PROPERTIES.length - 1 ? "1px solid color-mix(in oklch, var(--accent) 28%, transparent)" : "none",
+          }}
+          onMouseEnter={(e) => animatePropertyIn(id, e.currentTarget)}
+          onMouseLeave={(e) => animatePropertyOut(e.currentTarget)}
+          onFocus={(e) => animatePropertyIn(id, e.currentTarget)}
+          onBlur={(e) => animatePropertyOut(e.currentTarget)}
         >
-          <p className="font-mono text-[9px] tracking-[0.3em] uppercase text-foreground mb-3">
-            {title}
-          </p>
-          <p className="font-sans text-sm text-muted-foreground leading-relaxed">{body}</p>
-          {hovered === id && <Animation key={id} />}
+          <div className="core-prop relative overflow-hidden px-6 py-6 cursor-default select-none">
+            <div className="core-prop-fill absolute inset-0 z-0" style={{ background: "var(--accent)", transform: "translateX(-100%)" }} />
+
+            <p
+              className="relative z-10 font-mono text-[9px] tracking-[0.3em] uppercase mb-3 transition-colors"
+              style={{ color: hovered === id ? "#141414" : "var(--accent)" }}
+            >
+              {title}
+            </p>
+            <p className="relative z-10 font-sans text-sm text-foreground/80 leading-relaxed transition-colors group-hover:text-black">
+              {body}
+            </p>
+
+            <div
+              className="relative z-10 grid transition-[grid-template-rows] duration-300 ease-out"
+              style={{ gridTemplateRows: hovered === id ? "1fr" : "0fr" }}
+            >
+              <div className="-mx-6 overflow-hidden">
+                <div
+                  className="px-6 pt-4 pb-6 mt-4"
+                  style={{ background: "color-mix(in oklch, var(--background) 92%, transparent)" }}
+                >
+                  {hovered === id && <Animation key={id} />}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       ))}
     </div>

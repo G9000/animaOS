@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
-import { NodeShell, type NodeAction } from "../../dashboard/nodes/NodeShell";
+import { NodeShell, type NodeAction } from "@anima/standard-templates";
 import type { AvatarNode } from "./types";
 import { UserIcon } from "@anima/standard-templates";
 

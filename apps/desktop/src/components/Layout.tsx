@@ -1,17 +1,20 @@
 import type { ReactNode } from "react";
-import { LayoutHUD } from "./layout/LayoutHUD";
+import { LayoutHUD } from "../features/hud";
 import BackgroundLayer from "./BackgroundLayer";
+import { LayoutActionsProvider } from "../context/LayoutActionsContext";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
-    <div className="relative h-screen text-foreground overflow-hidden">
-      <BackgroundLayer />
-      {/* Nav floats above everything */}
-      <div className="absolute z-30 w-full">
-        <LayoutHUD />
+    <LayoutActionsProvider>
+      <div className="relative h-screen text-foreground overflow-hidden">
+        <BackgroundLayer />
+        {/* Nav floats above everything */}
+        <div className="absolute z-30 w-full pointer-events-none">
+          <LayoutHUD />
+        </div>
+        {/* Content fills full height */}
+        <main className="h-full overflow-hidden min-w-0">{children}</main>
       </div>
-      {/* Content fills full height */}
-      <main className="h-full overflow-hidden min-w-0">{children}</main>
-    </div>
+    </LayoutActionsProvider>
   );
 }

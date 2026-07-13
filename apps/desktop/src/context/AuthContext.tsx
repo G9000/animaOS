@@ -6,7 +6,12 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@anima/api-client";
-import { api, clearUnlockToken, getUnlockToken } from "../lib/api";
+import {
+  api,
+  clearUnlockToken,
+  getUnlockToken,
+  UNLOCK_SESSION_LOCKED_EVENT,
+} from "../lib/api";
 import { getDaemonStatus, refreshDaemonRuntimeNonce, startDaemon } from "../lib/daemon";
 
 interface AuthContextType {
@@ -110,6 +115,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleLockedSession = () => {
+      setUser(null);
+    };
+
+    globalThis.addEventListener(UNLOCK_SESSION_LOCKED_EVENT, handleLockedSession);
+    return () => {
+      globalThis.removeEventListener(UNLOCK_SESSION_LOCKED_EVENT, handleLockedSession);
     };
   }, []);
 

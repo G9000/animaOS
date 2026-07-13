@@ -666,6 +666,8 @@ export interface DiaryEntryData {
   body: string;
   mood: string | null;
   source: string;
+  coverAttachmentId: number | null;
+  folderId: number | null;
   attachments: DiaryAttachmentData[];
   createdAt: string | null;
   updatedAt: string | null;
@@ -676,6 +678,28 @@ export interface DiaryEntryCreateData {
   title?: string | null;
   body: string;
   mood?: string | null;
+  folderId?: number | null;
+}
+
+export interface DiaryFolderData {
+  id: number;
+  userId: number;
+  name: string;
+  entryCount: number;
+  createdAt: string | null;
+}
+
+export interface DiaryEntryUpdateData {
+  entryDate?: string;
+  title?: string | null;
+  body?: string;
+  mood?: string | null;
+  coverAttachmentId?: number | null;
+  folderId?: number | null;
+  clearTitle?: boolean;
+  clearMood?: boolean;
+  clearFolder?: boolean;
+  clearCover?: boolean;
 }
 
 export interface MemorySearchResult {

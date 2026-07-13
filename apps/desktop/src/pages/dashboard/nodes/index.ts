@@ -10,6 +10,8 @@ import { GalleryViewerNode } from "./GalleryViewerNode";
 import { RecentChatsNode } from "./RecentChatsNode";
 import { QuickCaptureNode } from "./QuickCaptureNode";
 import { JournalNode } from "./JournalNode";
+import { SystemMonitorNode } from "./SystemMonitorNode";
+import { NetworkNode } from "./NetworkNode";
 
 export const dashboardNodeTypes = {
   profile: ProfileNode,
@@ -23,7 +25,9 @@ export const dashboardNodeTypes = {
   recentChats: RecentChatsNode,
   quickCapture: QuickCaptureNode,
   journal: JournalNode,
+  systemMonitor: SystemMonitorNode,
+  network: NetworkNode,
 } satisfies NodeTypes;
 
 export * from "./node-types";
-export { NodeShell, type NodeAction } from "./NodeShell";
+export { NodeShell, type NodeAction } from "@anima/standard-templates";

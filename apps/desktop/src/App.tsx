@@ -8,6 +8,7 @@ import Profile from "./pages/Profile";
 import Chat from "./pages/chat/Chat";
 import Memory from "./pages/memory/Memory";
 import KnowledgeLibrary from "./pages/knowledge/KnowledgeLibrary";
+import MemoryImages from "./pages/memory/MemoryImages";
 import Presence from "./pages/Presence";
 import Settings from "./pages/settings/Settings";
 import AiSettings from "./pages/settings/AiSettings";
@@ -108,6 +109,7 @@ function AppRoutes() {
       <Route path="/chat" element={withLayout(<Chat />)} />
       <Route path="/memory" element={withLayout(<Memory />)} />
       <Route path="/knowledge" element={withLayout(<KnowledgeLibrary />)} />
+      <Route path="/memory/images" element={withLayout(<MemoryImages />)} />
       <Route path="/presence" element={withLayout(<Presence />)} />
       <Route path="/profile" element={withLayout(<Profile />)} />
       <Route path="/settings" element={withLayout(<Settings />)}>

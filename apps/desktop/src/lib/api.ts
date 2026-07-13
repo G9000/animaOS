@@ -3,6 +3,7 @@ import { API_BASE } from "./runtime";
 import { getRuntimeNonce, refreshDaemonRuntimeNonce } from "./daemon";
 
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
+export const UNLOCK_SESSION_LOCKED_EVENT = "anima-unlock-session-locked";
 let unlockTokenCache: string | null = null;
 
 export function getUnlockToken(): string | null {
@@ -57,9 +58,34 @@ function extractRuntimeErrorMessage(payload: unknown): string | null {
   return null;
 }
 
+async function readResponsePayload(response: Response): Promise<unknown> {
+  try {
+    return await response.clone().json();
+  } catch {
+    try {
+      return await response.clone().text();
+    } catch {
+      return null;
+    }
+  }
+}
+
 function isInvalidSidecarNonceResponse(payload: unknown): boolean {
   const message = extractRuntimeErrorMessage(payload)?.toLowerCase() ?? "";
   return message.includes("sidecar nonce");
+}
+
+function isLockedSessionResponse(payload: unknown): boolean {
+  const message = extractRuntimeErrorMessage(payload)?.toLowerCase() ?? "";
+  return message.includes("session locked");
+}
+
+function emitUnlockSessionLocked(): void {
+  try {
+    globalThis.dispatchEvent(new CustomEvent(UNLOCK_SESSION_LOCKED_EVENT));
+  } catch {
+    // Ignore event dispatch failures outside browser-like runtimes.
+  }
 }
 
 function setRuntimeNonceHeader(headers: Headers, nonce: string | null): void {
@@ -76,21 +102,20 @@ export async function fetchRuntimeWithNonceRefresh(
   allowRetry = true,
 ): Promise<Response> {
   const response = await fetch(input, init);
+  if (response.status === 401) {
+    const payload = await readResponsePayload(response);
+    if (isLockedSessionResponse(payload)) {
+      clearUnlockToken();
+      emitUnlockSessionLocked();
+    }
+    return response;
+  }
+
   if (!allowRetry || response.status !== 403) {
     return response;
   }
 
-  let payload: unknown = null;
-  try {
-    payload = await response.clone().json();
-  } catch {
-    try {
-      payload = await response.clone().text();
-    } catch {
-      payload = null;
-    }
-  }
-
+  const payload = await readResponsePayload(response);
   if (!isInvalidSidecarNonceResponse(payload)) {
     return response;
   }

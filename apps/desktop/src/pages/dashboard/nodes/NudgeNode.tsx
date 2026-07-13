@@ -1,6 +1,6 @@
 import type { NodeProps } from "@xyflow/react";
 import type { NudgeNode } from "./node-types";
-import { NodeShell } from "./NodeShell";
+import { NodeShell } from "@anima/standard-templates";
 
 export function NudgeNode({ data }: NodeProps<NudgeNode>) {
   const { nudges, onDismiss, onClose } = data;

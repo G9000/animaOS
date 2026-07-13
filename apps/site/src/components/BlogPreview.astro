@@ -5,67 +5,121 @@ import { cloudinaryUrl } from "../lib/cloudinary";
 const posts = (await getCollection("blog", ({ data }) => !data.draft))
   .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime())
   .slice(0, 3);
+
+const [featured, ...rest] = posts;
+const featuredThumb = featured?.data.bannerCloudinaryId
+  ? cloudinaryUrl(featured.data.bannerCloudinaryId, { width: 900, quality: 80 })
+  : featured?.data.featuredImage;
 ---
 
-<section class="border-t border-border px-8 md:px-16 lg:px-24 py-20">
+<section class="border-t px-8 md:px-16 lg:px-24 py-20" style="border-color: var(--accent)">
 
-  <div class="reveal flex items-end justify-between mb-16">
+  <div class="reveal flex items-end justify-between mb-10">
     <div>
-      <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground mb-4">
-        // from the blog
-      </p>
-      <h2 class="font-serif italic text-3xl sm:text-4xl text-foreground leading-tight">
-        Dispatches from the build.
-      </h2>
+      <h2 class="font-mono font-bold text-3xl sm:text-4xl tracking-tight text-foreground">DISPATCHES.</h2>
     </div>
-    <a
-      href="/blog"
-      class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 hover:text-foreground transition-colors shrink-0 ml-8"
-    >
+    <a href="/blog" class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 hover:text-foreground transition-colors shrink-0 ml-8">
       all posts ↗
     </a>
   </div>
 
-  <div class="reveal grid grid-cols-1 md:grid-cols-3 gap-px border border-border">
-    {posts.map((post) => {
-      const thumb = post.data.bannerCloudinaryId
-        ? cloudinaryUrl(post.data.bannerCloudinaryId, { width: 600, quality: 80 })
-        : post.data.featuredImage;
-      return (
-      <a
-        href={`/blog/${post.id}`}
-        class="group bg-card hover:bg-muted transition-colors flex flex-col"
-      >
-        {thumb && (
-          <div class="w-full h-48 overflow-hidden shrink-0">
-            <img src={thumb} alt={post.data.title} class="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500" />
-          </div>
-        )}
-        <div class="px-6 py-6 flex flex-col justify-between flex-1">
-          <div>
-            <p class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 mb-4">
-              {new Date(post.data.date).toLocaleDateString("en-US", {
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-              })}
-            </p>
-            <h3 class="font-serif italic text-lg sm:text-xl text-foreground leading-snug mb-3">
-              {post.data.title}
-            </h3>
-            <p class="font-sans text-sm text-muted-foreground leading-relaxed">
-              {post.data.excerpt ?? post.data.description}
-            </p>
-          </div>
-          <div class="mt-6">
-            <span class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 group-hover:text-foreground transition-colors">
+  <div class="reveal grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
+
+    {featured && (
+      <div tabindex="0" class="post-card-wrap group relative transition-[transform,box-shadow] duration-200 hover:z-10" style="border: 1px solid color-mix(in oklch, var(--accent) 45%, transparent)">
+        <a href={`/blog/${featured.id}`} class="post-card relative overflow-hidden flex flex-col md:flex-row h-full">
+          <div class="post-fill absolute inset-0 z-0" style="background: var(--accent); transform: translateX(-100%)"></div>
+          {featuredThumb && (
+            <div class="relative z-10 w-full md:w-1/2 h-56 md:h-auto overflow-hidden shrink-0">
+              <img src={featuredThumb} alt={featured.data.title} class="w-full h-full object-cover opacity-50 group-hover:opacity-20 transition-opacity duration-500" />
+              <div class="absolute inset-0 md:hidden" style="background: linear-gradient(to bottom, transparent 40%, var(--background) 100%)"></div>
+            </div>
+          )}
+          <div class="relative z-10 px-8 py-8 flex flex-col justify-between flex-1">
+            <div>
+              <p class="post-meta font-mono text-[8px] tracking-[0.2em] uppercase text-muted-foreground/40 mb-3 transition-colors">
+                latest — {new Date(featured.data.date).toLocaleDateString("en-US", { year: "numeric", month: "short" })}
+              </p>
+              <h3 class="post-title font-mono font-bold text-xl text-foreground leading-snug mb-4 transition-colors">
+                {featured.data.title}
+              </h3>
+              <p class="post-excerpt font-mono text-[11px] text-foreground/80 leading-relaxed transition-colors line-clamp-4">
+                {featured.data.excerpt ?? featured.data.description}
+              </p>
+            </div>
+            <span class="post-read mt-6 font-mono text-[8px] tracking-[0.2em] uppercase text-muted-foreground/30 transition-colors">
               read ↗
             </span>
           </div>
+        </a>
+      </div>
+    )}
+
+    <div class="flex flex-col gap-2">
+      {rest.map((post) => (
+        <div tabindex="0" class="post-card-wrap group relative transition-[transform,box-shadow] duration-200 hover:z-10 flex-1" style="border: 1px solid color-mix(in oklch, var(--accent) 45%, transparent)">
+          <a href={`/blog/${post.id}`} class="post-card relative overflow-hidden flex flex-col justify-center h-full px-6 py-6">
+            <div class="post-fill absolute inset-0 z-0" style="background: var(--accent); transform: translateX(-100%)"></div>
+            <p class="post-meta relative z-10 font-mono text-[8px] tracking-[0.2em] uppercase text-muted-foreground/40 mb-2 transition-colors">
+              {new Date(post.data.date).toLocaleDateString("en-US", { year: "numeric", month: "short" })}
+            </p>
+            <h3 class="post-title relative z-10 font-mono font-bold text-sm text-foreground leading-snug transition-colors">
+              {post.data.title}
+            </h3>
+          </a>
         </div>
-      </a>
-      );
-    })}
+      ))}
+    </div>
+
   </div>
 
 </section>
+
+<script>
+  document.querySelectorAll<HTMLElement>('.post-card-wrap').forEach(wrap => {
+    const fill = wrap.querySelector<HTMLElement>('.post-fill');
+    const enter = () => {
+      if (fill) {
+        fill.style.transition = 'transform 0.35s cubic-bezier(0.16,1,0.3,1)';
+        fill.style.transform = 'translateX(0)';
+      }
+      wrap.style.transform = 'translateX(4px)';
+      wrap.style.boxShadow = '-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 50%, transparent)';
+    };
+    const leave = () => {
+      if (fill) {
+        fill.style.transition = 'transform 0.3s cubic-bezier(0.7,0,0.84,0)';
+        fill.style.transform = 'translateX(100%)';
+      }
+      wrap.style.transform = '';
+      wrap.style.boxShadow = '';
+    };
+    wrap.addEventListener('mouseenter', enter);
+    wrap.addEventListener('mouseleave', leave);
+    wrap.addEventListener('focus', enter);
+    wrap.addEventListener('blur', leave);
+  });
+</script>
+
+<style>
+  .post-card-wrap {
+    overflow: hidden;
+    background: color-mix(in oklch, var(--background) 96%, var(--foreground));
+  }
+
+  .post-card-wrap:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .post-card-wrap:hover .post-meta,
+  .post-card-wrap:focus .post-meta,
+  .post-card-wrap:hover .post-title,
+  .post-card-wrap:focus .post-title,
+  .post-card-wrap:hover .post-excerpt,
+  .post-card-wrap:focus .post-excerpt,
+  .post-card-wrap:hover .post-read,
+  .post-card-wrap:focus .post-read {
+    color: #141414;
+  }
+</style>

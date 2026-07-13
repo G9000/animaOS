@@ -66,6 +66,7 @@ export {
   SunsetIcon,
   UserIcon,
   LinkIcon,
+  BookIcon,
   SparkleIcon,
   CompassIcon,
   GearIcon,
@@ -75,6 +76,7 @@ export {
   TargetIcon,
   SpeakerOnIcon,
   SpeakerOffIcon,
+  ResetIcon,
 } from "./icons";
 export {
   HomeIcon,
@@ -87,6 +89,11 @@ export {
   ConfigIcon,
   DatabaseIcon,
 } from "./icons/nav";
+
+// ── Canvas ──────────────────────────────────────────────────────────────────
+export { NodeShell, type NodeShellProps, type NodeAction } from "./canvas/NodeShell";
+export { ListShell, type ListShellProps } from "./canvas/ListShell";
+export { ListShellItem, type ListShellItemProps } from "./canvas/ListShellItem";
 
 // ── ASCII Art ───────────────────────────────────────────────────────────────
 export {

@@ -1005,7 +1005,7 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
             annotation = RuntimeImageAnnotation(
                 user_id=user.id,
                 image_asset_id=asset.id,
-                annotation_kind="upload_context",
+                annotation_kind="vision_caption",
                 content_text=annotation_text,
                 content_hash=RuntimeImageAnnotation.compute_content_hash(
                     annotation_text
@@ -1059,6 +1059,287 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
             "messageId": source_message.id,
             "threadId": thread.id,
             "attachmentId": "img_talia",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_surfaces_upload_context_only_recalled_image_pill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+    from anima_server.services.agent.state import extract_stored_pills
+
+    async def fake_generate_embedding(_text: str) -> list[float]:
+        return _embedding(1.0, 0.0)
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(embeddings, "generate_embedding", fake_generate_embedding)
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="upload-context-image-pills",
+                password_hash="not-used",
+                display_name="Upload Context Image Pills",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            thread = RuntimeThread(user_id=user.id, status="active")
+            runtime_session.add(thread)
+            runtime_session.flush()
+            asset = RuntimeImageAsset(
+                user_id=user.id,
+                filename="context-only.png",
+                mime_type="image/png",
+                storage_path="users/1/media/images/context-only.png",
+                sha256="e" * 64,
+                size_bytes=len(PNG_BYTES),
+                status="indexed",
+            )
+            runtime_session.add(asset)
+            runtime_session.flush()
+            source_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user.id,
+                sequence_id=1,
+                role="user",
+                content_text="Context-only image share.",
+                content_json={
+                    "attachments": [
+                        {
+                            "id": "img_context_only",
+                            "kind": "image",
+                            "mimeType": "image/png",
+                            "filename": "context-only.png",
+                            "assetId": asset.id,
+                            "storagePath": asset.storage_path,
+                            "sizeBytes": asset.size_bytes,
+                            "sha256": asset.sha256,
+                        }
+                    ]
+                },
+            )
+            runtime_session.add(source_message)
+            runtime_session.flush()
+            runtime_session.add(
+                RuntimeImageMessageLink(
+                    user_id=user.id,
+                    message_id=source_message.id,
+                    image_asset_id=asset.id,
+                    attachment_id="img_context_only",
+                )
+            )
+            annotation_text = "Context-only image share."
+            annotation = RuntimeImageAnnotation(
+                user_id=user.id,
+                image_asset_id=asset.id,
+                annotation_kind="upload_context",
+                content_text=annotation_text,
+                content_hash=RuntimeImageAnnotation.compute_content_hash(
+                    annotation_text
+                ),
+                status="active",
+            )
+            runtime_session.add(annotation)
+            runtime_session.flush()
+            annotation_embedding = _embedding(1.0, 0.0)
+            runtime_session.add(
+                RuntimeEmbedding(
+                    user_id=user.id,
+                    source_type="image_annotation",
+                    source_id=annotation.id,
+                    content_hash=annotation.content_hash,
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
+                        annotation_embedding
+                    ),
+                    embedding=annotation_embedding,
+                    content_preview=annotation_text,
+                )
+            )
+            thread.next_message_sequence = 2
+
+            await run_agent(
+                "remember that context-only image?",
+                user.id,
+                soul_session,
+                runtime_session,
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    labels = [label for label, _value in runner.requests[0]["memory_blocks"]]
+    assert "relevant_images" in labels
+    assert extract_stored_pills(messages[-1].content_json) == [
+        {
+            "kind": "image_source",
+            "label": "context-only.png",
+            "ref": f"image:{asset.id}",
+            "assetId": asset.id,
+            "mimeType": "image/png",
+            "url": f"/api/chat/messages/{source_message.id}/attachments/img_context_only",
+            "messageId": source_message.id,
+            "threadId": thread.id,
+            "attachmentId": "img_context_only",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_uses_current_image_source_pill_when_uploading_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+    from anima_server.services.agent.state import (
+        deserialize_stored_attachments,
+        extract_stored_pills,
+    )
+
+    async def fake_generate_embedding(_text: str) -> list[float]:
+        return _embedding(1.0, 0.0)
+
+    agent_service.invalidate_agent_runtime_cache()
+    runner = RecordingRunner()
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
+    monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
+    monkeypatch.setattr(embeddings, "generate_embedding", fake_generate_embedding)
+
+    attachment = ChatRequestAttachment(
+        kind="image",
+        filename="new-look.png",
+        mimeType="image/png",
+        data=_b64(PNG_BYTES),
+    )
+
+    try:
+        with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+            user = User(
+                username="current-image-pills",
+                password_hash="not-used",
+                display_name="Current Image Pills",
+            )
+            soul_session.add(user)
+            soul_session.commit()
+
+            thread = RuntimeThread(user_id=user.id, status="active")
+            runtime_session.add(thread)
+            runtime_session.flush()
+            old_asset = RuntimeImageAsset(
+                user_id=user.id,
+                filename="old-look.png",
+                mime_type="image/png",
+                storage_path=f"users/{user.id}/media/images/old-look.png",
+                sha256="d" * 64,
+                size_bytes=len(PNG_BYTES),
+                status="indexed",
+            )
+            runtime_session.add(old_asset)
+            runtime_session.flush()
+            old_source_message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user.id,
+                sequence_id=1,
+                role="user",
+                content_text="Old pink hair and makeup reference.",
+                content_json={
+                    "attachments": [
+                        {
+                            "id": "img_old_look",
+                            "kind": "image",
+                            "mimeType": "image/png",
+                            "filename": "old-look.png",
+                            "assetId": old_asset.id,
+                            "storagePath": old_asset.storage_path,
+                            "sizeBytes": old_asset.size_bytes,
+                            "sha256": old_asset.sha256,
+                        }
+                    ]
+                },
+            )
+            runtime_session.add(old_source_message)
+            runtime_session.flush()
+            runtime_session.add(
+                RuntimeImageMessageLink(
+                    user_id=user.id,
+                    message_id=old_source_message.id,
+                    image_asset_id=old_asset.id,
+                    attachment_id="img_old_look",
+                )
+            )
+            annotation_text = "Old pink hair and makeup reference image."
+            annotation = RuntimeImageAnnotation(
+                user_id=user.id,
+                image_asset_id=old_asset.id,
+                annotation_kind="upload_context",
+                content_text=annotation_text,
+                content_hash=RuntimeImageAnnotation.compute_content_hash(
+                    annotation_text
+                ),
+                status="active",
+            )
+            runtime_session.add(annotation)
+            runtime_session.flush()
+            annotation_embedding = _embedding(1.0, 0.0)
+            runtime_session.add(
+                RuntimeEmbedding(
+                    user_id=user.id,
+                    source_type="image_annotation",
+                    source_id=annotation.id,
+                    content_hash=annotation.content_hash,
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
+                        annotation_embedding
+                    ),
+                    embedding=annotation_embedding,
+                    content_preview=annotation_text,
+                )
+            )
+            thread.next_message_sequence = 2
+
+            await run_agent(
+                "how is my new look and makeup?",
+                user.id,
+                soul_session,
+                runtime_session,
+                attachments=[attachment],
+            )
+
+            messages = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .all()
+            )
+    finally:
+        agent_service.invalidate_agent_runtime_cache()
+
+    user_message = messages[-2]
+    assistant_message = messages[-1]
+    current_attachment = deserialize_stored_attachments(user_message.content_json)[0]
+    pills = extract_stored_pills(assistant_message.content_json)
+    assert pills == [
+        {
+            "kind": "image_source",
+            "label": "new-look.png",
+            "ref": current_attachment.id,
+            "assetId": current_attachment.asset_id,
+            "mimeType": "image/png",
+            "url": f"/api/chat/messages/{user_message.id}/attachments/{current_attachment.id}",
+            "messageId": user_message.id,
+            "threadId": thread.id,
+            "attachmentId": current_attachment.id,
         }
     ]
 

@@ -2,7 +2,7 @@ import type { NodeProps } from "@xyflow/react";
 import { TodayContextPanel } from "../../../components/TodayContextPanel";
 import type { TodayContextNode } from "./node-types";
 import type { TodayContextDraft } from "../../../lib/today-context";
-import { NodeShell } from "./NodeShell";
+import { NodeShell } from "@anima/standard-templates";
 
 export function TodayContextNode({ data }: NodeProps<TodayContextNode>) {
   const { context, greeting, onSave, onClear, onClose } = data;

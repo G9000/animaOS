@@ -513,6 +513,27 @@ class AgentSkill(Base):
     )
 
 
+class DiaryFolder(Base):
+    """User-defined grouping ("notebook") for diary entries."""
+
+    __tablename__ = "diary_folders"
+    __table_args__ = (
+        Index("ix_diary_folders_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class DiaryEntry(Base):
     """User-authored private daily diary/log entry."""
 
@@ -537,6 +558,14 @@ class DiaryEntry(Base):
         default="user",
         server_default=text("'user'"),
     )
+    cover_attachment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("diary_attachments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    folder_id: Mapped[int | None] = mapped_column(
+        ForeignKey("diary_folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -550,6 +579,7 @@ class DiaryEntry(Base):
 
     attachments: Mapped[list[DiaryAttachment]] = relationship(
         back_populates="entry",
+        foreign_keys="[DiaryAttachment.entry_id]",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="DiaryAttachment.created_at",
@@ -586,7 +616,7 @@ class DiaryAttachment(Base):
         server_default=func.now(),
     )
 
-    entry: Mapped[DiaryEntry] = relationship(back_populates="attachments")
+    entry: Mapped[DiaryEntry] = relationship(back_populates="attachments", foreign_keys=[entry_id])
 
 
 class MemoryItemTag(Base):

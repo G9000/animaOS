@@ -31,7 +31,7 @@ const STEPS: Step[] = [
   { delay: 2000,  kind: "text", style: "dim", text: "Decrypting vault ........... done." },
   { delay: 2600,  kind: "text", style: "ok",  text: "Verifying integrity ........ ✓" },
   { delay: 3200,  kind: "blank" },
-  { delay: 3400,  kind: "text", style: "dim", text: "Restoring Core:" },
+  { delay: 3400,  kind: "text", style: "dim", text: "Restoring engram:" },
   { delay: 3800,  kind: "progress", label: "  ■ memories        ", count: "2,847" },
   { delay: 4800,  kind: "progress", label: "  ■ identity        ", count: "5" },
   { delay: 5600,  kind: "progress", label: "  ■ emotional hist. ", count: "14,209" },
@@ -41,7 +41,7 @@ const STEPS: Step[] = [
   { delay: 8600,  kind: "text", style: "dim", text: "Encrypting new Core ........ done." },
   { delay: 9200,  kind: "text", style: "dim", text: "Writing manifest ........... done." },
   { delay: 9800,  kind: "blank" },
-  { delay: 10000, kind: "text", style: "ok",  text: "✓ Core restored. 1,463 days of memory." },
+  { delay: 10000, kind: "text", style: "ok",  text: "✓ ghost restored. 1,463 days of memory." },
   { delay: 10800, kind: "blank" },
   { delay: 11000, kind: "text", style: "cmd", text: "$ anima start" },
   { delay: 11600, kind: "blank" },
@@ -108,10 +108,7 @@ export default function AnimaCoreBoot() {
   }, [lines]);
 
   return (
-    <div className="border border-border bg-card px-5 py-4 h-80 flex flex-col">
-      <p className="font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/40 mb-3 shrink-0">
-        // core transfer
-      </p>
+    <div className="px-5 py-4 h-80 flex flex-col" style={{ border: "1px solid color-mix(in oklch, var(--accent) 35%, transparent)" }}>
       <div ref={containerRef} className="flex-1 overflow-y-auto flex flex-col justify-end">
         <div>
           {lines.map((line) => {
@@ -122,11 +119,15 @@ export default function AnimaCoreBoot() {
               const cls = {
                 cmd: "text-foreground",
                 dim: "text-muted-foreground",
-                ok:  "text-foreground",
+                ok:  "",
                 ai:  "text-foreground font-medium",
               }[line.style];
               return (
-                <div key={line.id} className={`font-mono text-[11px] leading-[1.8] ${cls}`}>
+                <div
+                  key={line.id}
+                  className={`font-mono text-[11px] leading-[1.8] ${cls}`}
+                  style={line.style === "ok" ? { color: "var(--accent)" } : undefined}
+                >
                   {line.text}
                 </div>
               );
@@ -136,7 +137,7 @@ export default function AnimaCoreBoot() {
               return (
                 <div key={line.id} className="font-mono text-[11px] leading-[1.8] text-muted-foreground whitespace-pre">
                   {line.label}
-                  <span className="text-foreground">{renderBar(fill)}</span>
+                  <span style={{ color: "var(--accent)" }}>{renderBar(fill)}</span>
                   {fill >= 100 && (
                     <span className="text-muted-foreground/50"> {line.count}</span>
                   )}
@@ -144,7 +145,7 @@ export default function AnimaCoreBoot() {
               );
             }
           })}
-          <span className="inline-block w-[7px] h-[13px] bg-foreground/50 animate-cursor align-middle ml-0.5" />
+          <span className="inline-block w-[7px] h-[13px] animate-cursor align-middle ml-0.5" style={{ background: "var(--accent)", opacity: 0.6 }} />
         </div>
       </div>
     </div>

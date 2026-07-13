@@ -39,7 +39,7 @@
     "dev:site": "cd apps/site && bun run dev"
   },
   "devDependencies": {
-    "nx": "^21.6.11",
-    "typescript": "^5.9.3"
+    "nx": "^23.0.1",
+    "typescript": "^6.0.3"
   }
 }

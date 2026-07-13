@@ -45,5 +45,6 @@
         "^default"
       ]
     }
-  }
+  },
+  "analytics": false
 }

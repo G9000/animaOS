@@ -29,6 +29,15 @@ def get_manifest_path() -> Path:
     return get_core_dir() / "manifest.json"
 
 
+def _coerce_engine_name(
+    value: object, allowed: tuple[str, ...], fallback: str
+) -> str:
+    if not isinstance(value, str):
+        return fallback
+    candidate = value.strip().lower()
+    return candidate if candidate in allowed else fallback
+
+
 def ensure_core_manifest() -> dict[str, object]:
     with _manifest_lock:
         now = datetime.now(UTC).isoformat()
@@ -40,6 +49,25 @@ def ensure_core_manifest() -> dict[str, object]:
         )
         manifest["encryption_mode"] = _detect_encryption_mode()
         manifest["encryption_version"] = 1
+        manifest.setdefault(
+            "runtime_database_engine",
+            _coerce_engine_name(
+                settings.runtime_database_engine,
+                ("postgres", "turso"),
+                "postgres",
+            ),
+        )
+        manifest.setdefault(
+            "soul_database_engine",
+            _coerce_engine_name(
+                settings.soul_database_engine,
+                ("sqlcipher", "turso"),
+                "sqlcipher",
+            ),
+        )
+        manifest.setdefault("runtime_database_engine_previous", "")
+        manifest.setdefault("runtime_database_engine_target", "")
+        manifest.setdefault("runtime_migration_state", "")
         _write_manifest(manifest)
         return manifest
 
@@ -243,6 +271,82 @@ def get_owner_user_id() -> int | None:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     raw = manifest.get("owner_user_id")
     return int(raw) if raw is not None else None
+
+
+def get_runtime_database_engine() -> str:
+    """Return the currently selected runtime database engine from manifest/settings."""
+    manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+    return _coerce_engine_name(
+        manifest.get("runtime_database_engine"),
+        ("postgres", "turso"),
+        _coerce_engine_name(
+            settings.runtime_database_engine,
+            ("postgres", "turso"),
+            "postgres",
+        ),
+    )
+
+
+def get_soul_database_engine() -> str:
+    """Return the currently selected Soul engine from manifest/settings."""
+    manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+    return _coerce_engine_name(
+        manifest.get("soul_database_engine"),
+        ("sqlcipher", "turso"),
+        _coerce_engine_name(
+            settings.soul_database_engine,
+            ("sqlcipher", "turso"),
+            "sqlcipher",
+        ),
+    )
+
+
+def set_runtime_database_engine(
+    engine: str,
+    *,
+    requested_by: str | None = None,
+) -> str:
+    """Record a requested runtime engine change and keep prior value for rollback."""
+    normalized = _coerce_engine_name(
+        engine,
+        ("postgres", "turso"),
+        "postgres",
+    )
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        previous = manifest.get("runtime_database_engine")
+        manifest["runtime_database_engine_previous"] = (
+            previous if isinstance(previous, str) else ""
+        )
+        manifest["runtime_database_engine"] = normalized
+        manifest["runtime_database_engine_target"] = normalized
+        if requested_by:
+            manifest["runtime_database_engine_requested_by"] = requested_by
+        _write_manifest(manifest)
+    return normalized
+
+
+def mark_runtime_migration_state(state: str) -> None:
+    """Persist an ad-hoc migration state value for diagnostics."""
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        manifest["runtime_migration_state"] = state
+        _write_manifest(manifest)
+
+
+def rollback_runtime_database_engine() -> str:
+    """Restore the previous runtime engine if a rollback marker exists."""
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        previous = manifest.get("runtime_database_engine_previous")
+        if isinstance(previous, str) and previous:
+            manifest["runtime_database_engine"] = previous
+            manifest["runtime_database_engine_target"] = ""
+            manifest["runtime_migration_state"] = "rollback_complete"
+            _write_manifest(manifest)
+            return previous
+
+    return get_runtime_database_engine()
 
 
 def set_next_user_id(next_user_id: int) -> None:
