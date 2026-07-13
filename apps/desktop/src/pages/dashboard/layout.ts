@@ -300,7 +300,7 @@ export function buildInitialNodes(
     network: 90,
     memory: 340,
     gallery: galleryImages.length === 0 ? 90 : Math.min(3, Math.ceil(galleryImages.length / 3)) * 108 + 56,
-    recentChats: 280,
+    recentChats: recentChatsNode.height ?? 335,
     journal: 340,
   };
 
