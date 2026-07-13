@@ -134,6 +134,147 @@ def test_diary_attachment_upload_stores_encrypted_blob_and_downloads_for_owner()
         assert locked_response.status_code == 401
 
 
+def test_diary_cover_attachment_must_be_own_image() -> None:
+    with managed_test_client("anima-diary-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        create_response = client.post(
+            "/api/diary",
+            headers=headers,
+            json={"userId": user_id, "entryDate": "2026-07-01", "body": "Photos from today."},
+        )
+        entry_id = int(create_response.json()["id"])
+        assert create_response.json()["coverAttachmentId"] is None
+
+        other_entry_response = client.post(
+            "/api/diary",
+            headers=headers,
+            json={"userId": user_id, "entryDate": "2026-07-02", "body": "Different entry."},
+        )
+        other_entry_id = int(other_entry_response.json()["id"])
+
+        image_upload = client.post(
+            f"/api/diary/{entry_id}/attachments",
+            headers=headers,
+            files={"file": ("photo.png", b"fake-png-bytes", "image/png")},
+        )
+        image_attachment_id = int(image_upload.json()["id"])
+
+        audio_upload = client.post(
+            f"/api/diary/{entry_id}/attachments",
+            headers=headers,
+            files={"file": ("clip.wav", b"fake-audio-bytes", "audio/wav")},
+        )
+        audio_attachment_id = int(audio_upload.json()["id"])
+
+        foreign_image_upload = client.post(
+            f"/api/diary/{other_entry_id}/attachments",
+            headers=headers,
+            files={"file": ("other.png", b"other-png-bytes", "image/png")},
+        )
+        foreign_attachment_id = int(foreign_image_upload.json()["id"])
+
+        # Non-image attachment can't become the cover.
+        audio_cover_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"coverAttachmentId": audio_attachment_id},
+        )
+        assert audio_cover_response.status_code == 400
+
+        # Attachment belonging to a different entry can't become the cover.
+        foreign_cover_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"coverAttachmentId": foreign_attachment_id},
+        )
+        assert foreign_cover_response.status_code == 400
+
+        # A same-entry image attachment is accepted.
+        set_cover_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"coverAttachmentId": image_attachment_id},
+        )
+        assert set_cover_response.status_code == 200
+        assert set_cover_response.json()["coverAttachmentId"] == image_attachment_id
+
+        clear_cover_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"clearCover": True},
+        )
+        assert clear_cover_response.status_code == 200
+        assert clear_cover_response.json()["coverAttachmentId"] is None
+
+
+def test_diary_update_edits_fields_and_reencrypts() -> None:
+    with managed_test_client("anima-diary-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        create_response = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-06-05",
+                "title": "Original title",
+                "body": "Original body.",
+                "mood": "calm",
+            },
+        )
+        assert create_response.status_code == 201
+        entry_id = int(create_response.json()["id"])
+
+        update_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={
+                "entryDate": "2026-06-06",
+                "title": "Updated title",
+                "body": "Updated body.",
+                "mood": "reflective",
+            },
+        )
+        assert update_response.status_code == 200
+        updated = update_response.json()
+        assert updated["entryDate"] == "2026-06-06"
+        assert updated["title"] == "Updated title"
+        assert updated["body"] == "Updated body."
+        assert updated["mood"] == "reflective"
+
+        with get_user_session_factory(user_id)() as db:
+            raw = db.execute(
+                text("select title, body, mood from diary_entries where id = :entry_id"),
+                {"entry_id": entry_id},
+            ).mappings().one()
+        assert raw["title"].startswith("enc2:")
+        assert raw["body"].startswith("enc2:")
+        assert raw["mood"].startswith("enc2:")
+
+        clear_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"clearTitle": True, "clearMood": True},
+        )
+        assert clear_response.status_code == 200
+        cleared = clear_response.json()
+        assert cleared["title"] is None
+        assert cleared["mood"] is None
+        assert cleared["body"] == "Updated body."
+
+        missing_response = client.patch(
+            f"/api/diary/{entry_id + 999}",
+            headers=headers,
+            json={"title": "Nope"},
+        )
+        assert missing_response.status_code == 404
+
+
 def test_diary_rejects_cross_user_access() -> None:
     with managed_test_client("anima-diary-test-") as client:
         owner = _register_user(client, username="diary-owner", name="Diary Owner")
@@ -156,3 +297,108 @@ def test_diary_rejects_cross_user_access() -> None:
 
         delete_response = client.delete(f"/api/diary/{entry_id + 999}", headers=owner_headers)
         assert delete_response.status_code == 404
+
+
+def test_diary_folders_crud_and_filing() -> None:
+    with managed_test_client("anima-diary-test-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        empty_list_response = client.get(f"/api/diary/folders?userId={user_id}", headers=headers)
+        assert empty_list_response.status_code == 200
+        assert empty_list_response.json() == []
+
+        create_folder_response = client.post(
+            "/api/diary/folders",
+            headers=headers,
+            json={"userId": user_id, "name": "Travel"},
+        )
+        assert create_folder_response.status_code == 201
+        folder = create_folder_response.json()
+        assert folder["name"] == "Travel"
+        assert folder["entryCount"] == 0
+        folder_id = int(folder["id"])
+
+        with get_user_session_factory(user_id)() as db:
+            raw = db.execute(
+                text("select name from diary_folders where id = :folder_id"),
+                {"folder_id": folder_id},
+            ).mappings().one()
+        assert raw["name"].startswith("enc2:")
+
+        # Entry can be filed into the folder at creation time.
+        create_entry_response = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-07-01",
+                "body": "Landed in Tokyo.",
+                "folderId": folder_id,
+            },
+        )
+        assert create_entry_response.status_code == 201
+        entry = create_entry_response.json()
+        assert entry["folderId"] == folder_id
+        entry_id = int(entry["id"])
+
+        list_after_create = client.get(f"/api/diary/folders?userId={user_id}", headers=headers)
+        assert list_after_create.json()[0]["entryCount"] == 1
+
+        # Rename the folder.
+        rename_response = client.patch(
+            f"/api/diary/folders/{folder_id}",
+            headers=headers,
+            json={"name": "Travel 2026"},
+        )
+        assert rename_response.status_code == 200
+        assert rename_response.json()["name"] == "Travel 2026"
+
+        # An entry can also be filed/unfiled via update.
+        second_entry_response = client.post(
+            "/api/diary",
+            headers=headers,
+            json={"userId": user_id, "entryDate": "2026-07-02", "body": "Unfiled for now."},
+        )
+        second_entry_id = int(second_entry_response.json()["id"])
+        assert second_entry_response.json()["folderId"] is None
+
+        file_response = client.patch(
+            f"/api/diary/{second_entry_id}",
+            headers=headers,
+            json={"folderId": folder_id},
+        )
+        assert file_response.status_code == 200
+        assert file_response.json()["folderId"] == folder_id
+
+        unfile_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"clearFolder": True},
+        )
+        assert unfile_response.status_code == 200
+        assert unfile_response.json()["folderId"] is None
+
+        # Filing into a folder that doesn't belong to the user fails.
+        bad_folder_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"folderId": folder_id + 999},
+        )
+        assert bad_folder_response.status_code == 400
+
+        # Deleting a folder unfiles its entries rather than deleting them.
+        delete_folder_response = client.delete(f"/api/diary/folders/{folder_id}", headers=headers)
+        assert delete_folder_response.status_code == 200
+
+        surviving_entry_response = client.get(f"/api/diary?userId={user_id}&limit=10", headers=headers)
+        surviving = {e["id"]: e for e in surviving_entry_response.json()}
+        assert surviving[second_entry_id]["folderId"] is None
+
+        missing_folder_response = client.patch(
+            f"/api/diary/folders/{folder_id + 999}",
+            headers=headers,
+            json={"name": "Nope"},
+        )
+        assert missing_folder_response.status_code == 404

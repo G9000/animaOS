@@ -268,17 +268,17 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
             </div>
           )}
 
-          {/* ── Footer — when capped ── */}
-          {images.length > MAX_IMAGES && (
+          {/* Footer */}
+          {images.length > 0 && (
             <div className="shrink-0 px-3 h-7 border-t border-foreground/[0.05] flex items-center justify-between">
               <span className="font-mono text-[7px] tracking-wider text-foreground/18">
-                showing {MAX_IMAGES} of {images.length}
+                {images.length > MAX_IMAGES ? `showing ${MAX_IMAGES} of ${images.length}` : `${images.length} image${images.length === 1 ? "" : "s"}`}
               </span>
               <button
-                onClick={() => onNavigate("/journal")}
+                onClick={() => onNavigate("/memory/images")}
                 className="font-mono text-[7px] tracking-wider text-foreground/25 hover:text-foreground/55 transition-colors"
               >
-                see all →
+                open
               </button>
             </div>
           )}

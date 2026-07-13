@@ -10,7 +10,7 @@ import {
   PlusIcon,
   XIcon,
 } from "@anima/standard-templates";
-import { NodeShell, type NodeAction } from "../../dashboard/nodes/NodeShell";
+import { NodeShell, type NodeAction } from "@anima/standard-templates";
 import { TA, type TextNode } from "./types";
 
 const IC = "text-foreground/25";

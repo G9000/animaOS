@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { buildTargetSpec, startDevStack } from "./dev-root-lib.mjs";
+import { buildTargetSpec, getServerRestartCandidate, startDevStack } from "./dev-root-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -107,8 +107,9 @@ function watchServerForRestart() {
   let restartTimer = null;
   let restarting = false;
 
-  const watcher = fs.watch(watchRoot, { recursive: true }, (_, filename) => {
-    if (exiting || restarting || !shouldRestartServer(filename)) {
+  const watcher = fs.watch(watchRoot, { recursive: true }, (eventType, filename) => {
+    const restartCandidate = getServerRestartCandidate(filename);
+    if (exiting || restarting || !restartCandidate) {
       return;
     }
 
@@ -120,6 +121,9 @@ function watchServerForRestart() {
       restartTimer = null;
       restarting = true;
       try {
+        console.log(
+          `[dev-root] restarting server after ${eventType} on apps/server/${restartCandidate}`,
+        );
         await restartServerChild();
       } finally {
         restarting = false;
@@ -134,17 +138,6 @@ function watchServerForRestart() {
     }
     watcher.close();
   };
-}
-
-function shouldRestartServer(filename) {
-  if (!filename) {
-    return false;
-  }
-  const normalized = String(filename).replaceAll("\\", "/").toLowerCase();
-  if (normalized.includes("/__pycache__/")) {
-    return false;
-  }
-  return normalized.endsWith(".py") || normalized.endsWith(".toml") || normalized.endsWith(".ini");
 }
 
 async function restartServerChild() {

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildTargetSpec, startDevStack } from "../scripts/dev-root-lib.mjs";
+import {
+  buildTargetSpec,
+  getServerRestartCandidate,
+  startDevStack,
+} from "../scripts/dev-root-lib.mjs";
 
 type ChildStub = {
   readonly pid: number;
@@ -46,6 +50,9 @@ describe("startDevStack", () => {
     const children: ChildStub[] = [];
 
     const stack = await startDevStack({
+      ensureServerPortAvailable: async (url) => {
+        events.push(`port:${url}`);
+      },
       spawn: ({ name }) => {
         events.push(`spawn:${name}`);
         const child = makeChild(children.length + 1);
@@ -58,6 +65,7 @@ describe("startDevStack", () => {
     });
 
     expect(events).toEqual([
+      "port:http://127.0.0.1:3031/health",
       "spawn:server",
       "health:http://127.0.0.1:3031/health",
       "spawn:desktop",
@@ -76,6 +84,7 @@ describe("startDevStack", () => {
 
     await expect(
       startDevStack({
+        ensureServerPortAvailable: async () => {},
         spawn: ({ name }) => {
           events.push(`spawn:${name}`);
           const child = makeChild(children.length + 1);
@@ -93,10 +102,30 @@ describe("startDevStack", () => {
     expect(children[0]?.killed).toBe(true);
   });
 
+  test("does not start dev children when the runtime port is already occupied", async () => {
+    const events: string[] = [];
+
+    await expect(
+      startDevStack({
+        ensureServerPortAvailable: async (url) => {
+          events.push(`port:${url}`);
+          throw new Error("Runtime port 3031 is already in use");
+        },
+        spawn: ({ name }) => {
+          events.push(`spawn:${name}`);
+          return makeChild(1);
+        },
+      }),
+    ).rejects.toThrow("Runtime port 3031 is already in use");
+
+    expect(events).toEqual(["port:http://127.0.0.1:3031/health"]);
+  });
+
   test("exposes a completion promise that resolves when a child exits", async () => {
     const children: ChildStub[] = [];
 
     const stack = await startDevStack({
+      ensureServerPortAvailable: async () => {},
       spawn: () => {
         const child = makeChild(children.length + 1);
         children.push(child);
@@ -112,5 +141,28 @@ describe("startDevStack", () => {
       name: "desktop",
       signal: null,
     });
+  });
+});
+
+describe("getServerRestartCandidate", () => {
+  test("returns the normalized source path for restartable server files", () => {
+    expect(getServerRestartCandidate("src\\anima_server\\main.py")).toBe(
+      "src/anima_server/main.py",
+    );
+    expect(getServerRestartCandidate("pyproject.toml")).toBe("pyproject.toml");
+    expect(getServerRestartCandidate("alembic.ini")).toBe("alembic.ini");
+  });
+
+  test("ignores generated Python cache files", () => {
+    expect(getServerRestartCandidate("__pycache__\\main.cpython-312.pyc")).toBeNull();
+    expect(
+      getServerRestartCandidate("src\\anima_server\\__pycache__\\main.py"),
+    ).toBeNull();
+  });
+
+  test("ignores unrelated paths", () => {
+    expect(getServerRestartCandidate(null)).toBeNull();
+    expect(getServerRestartCandidate("src/anima_server/main.pyc")).toBeNull();
+    expect(getServerRestartCandidate("README.md")).toBeNull();
   });
 });

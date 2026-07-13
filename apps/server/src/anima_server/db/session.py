@@ -175,6 +175,27 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
     )
 
 
+def _repair_legacy_diary_schema(connection: Connection) -> None:
+    """Add current diary columns to legacy SQLite tables stamped past migrations."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    diary_columns = _sqlite_column_names(connection, "diary_entries")
+    if not diary_columns:
+        return
+
+    for column_name, ddl in (
+        (
+            "cover_attachment_id",
+            "ALTER TABLE diary_entries ADD COLUMN cover_attachment_id INTEGER",
+        ),
+        ("folder_id", "ALTER TABLE diary_entries ADD COLUMN folder_id INTEGER"),
+    ):
+        if column_name not in diary_columns:
+            connection.exec_driver_sql(ddl)
+            diary_columns.add(column_name)
+
+
 def _make_engine(database_url: str | None = None) -> Engine:
     url = database_url or settings.database_url
     ensure_database_directory(url)
@@ -407,6 +428,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             # considers it up-to-date (columns were already added manually).
             _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
+            _repair_legacy_diary_schema(connection)
             command.stamp(cfg, "head")
             logger.info("Stamped legacy database at Alembic head.")
         else:
@@ -424,6 +446,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             Base.metadata.create_all(bind=connection)
             _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
+            _repair_legacy_diary_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 

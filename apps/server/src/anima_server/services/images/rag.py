@@ -18,7 +18,7 @@ from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.indexing import EmbeddingFn
 
-MIN_RELEVANT_IMAGE_ANNOTATION_SIMILARITY = 0.0
+MIN_RELEVANT_IMAGE_ANNOTATION_SIMILARITY = 0.85
 
 
 @dataclass(frozen=True, slots=True)

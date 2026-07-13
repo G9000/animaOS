@@ -8,6 +8,8 @@ category: prd
 
 **Master PRD**: [Advanced Memory Architecture](./memory-architecture.md) -- umbrella document linking all features, workstreams, and dependencies.
 
+**ANIMA CORE / Core Filesystem**: [Portable Core Filesystem v1](./portable-core-filesystem-v1.md) -- animaOS's portable encrypted Soul-plus-CoreFS subsystem, customizable stable-role folders, shared Rust file tooling for Animus/CoreFS, local streaming full/Soul/CoreFS recovery, and machine-local rebuildable PostgreSQL Runtime.
+
 **Implementation Plan**: [Memory Implementation Plan](../architecture/memory/memory-implementation-plan.md) -- detailed engineering spec with function signatures, schemas, and test plans.
 
 ---

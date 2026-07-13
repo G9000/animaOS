@@ -25,3 +25,4 @@ tauri-plugin-fs = "2"
 dirs = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
+sysinfo = { version = "0.33", default-features = false, features = ["system", "component", "network"] }

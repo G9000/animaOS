@@ -194,6 +194,48 @@ def test_legacy_soul_database_migration_creates_missing_new_tables(
     assert inspector.has_table("presence_configs")
 
 
+def test_legacy_soul_database_migration_repairs_diary_entry_columns(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.db.session import _run_alembic_upgrade
+
+    legacy_db = managed_tmp_path / "legacy-diary.db"
+    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE diary_entries (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    entry_date VARCHAR(10) NOT NULL,
+                    title TEXT,
+                    body TEXT NOT NULL,
+                    mood TEXT,
+                    source VARCHAR(24) NOT NULL DEFAULT 'user',
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+
+    _run_alembic_upgrade(engine)
+
+    diary_columns = {column["name"] for column in inspect(engine).get_columns("diary_entries")}
+    assert {"cover_attachment_id", "folder_id"}.issubset(diary_columns)
+
+
 def test_stamped_soul_database_migration_repairs_missing_new_tables(
     managed_tmp_path: Path,
 ) -> None:
@@ -489,15 +531,75 @@ def test_embedded_pg_recovers_stale_lockfile(managed_tmp_path: Path) -> None:
     assert pid_file.exists() is False
 
 
-def test_embedded_pg_keeps_valid_lockfile(managed_tmp_path: Path) -> None:
+def test_embedded_pg_keeps_valid_lockfile(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
     pg.data_dir.mkdir(parents=True, exist_ok=True)
     pid_file = pg.data_dir / "postmaster.pid"
-    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    pid_file.write_text("42\n", encoding="utf-8")
+    target = str(pg.data_dir.expanduser().resolve())
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.info = {
+                "pid": 42,
+                "name": "postgres.exe",
+                "cmdline": ["postgres.exe", "-D", target],
+            }
+
+    fake_psutil = SimpleNamespace(
+        NoSuchProcess=RuntimeError,
+        AccessDenied=PermissionError,
+        Error=RuntimeError,
+        Process=lambda _pid: FakeProcess(),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        EmbeddedPG,
+        "_probe_pid",
+        staticmethod(lambda _pid: (True, False)),
+    )
 
     pg._recover_stale_lockfile()
 
     assert pid_file.exists() is True
+
+
+def test_embedded_pg_recovers_lockfile_when_pid_reused_by_non_postgres(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
+    pg.data_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = pg.data_dir / "postmaster.pid"
+    pid_file.write_text("42\n", encoding="utf-8")
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.info = {
+                "pid": 42,
+                "name": "python.exe",
+                "cmdline": ["python", "lsp_server.py"],
+            }
+
+    fake_psutil = SimpleNamespace(
+        NoSuchProcess=RuntimeError,
+        AccessDenied=PermissionError,
+        Error=RuntimeError,
+        Process=lambda _pid: FakeProcess(),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        EmbeddedPG,
+        "_probe_pid",
+        staticmethod(lambda _pid: (True, False)),
+    )
+
+    pg._recover_stale_lockfile()
+
+    assert pid_file.exists() is False
 
 
 def test_embedded_pg_keeps_lockfile_on_permission_error(

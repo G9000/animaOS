@@ -1,8 +1,10 @@
+import net from "node:net";
 import path from "node:path";
 
 const DEFAULT_HEALTH_URL = "http://127.0.0.1:3031/health";
 const DEFAULT_HEALTH_TIMEOUT_MS = 30000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
+const SERVER_RESTART_EXTENSIONS = [".py", ".toml", ".ini"];
 
 export function buildTargetSpec(name, repoRoot, nodeExecutable = process.execPath) {
   if (name === "server") {
@@ -83,7 +85,60 @@ export async function waitForHealth(
   throw new Error(`Timed out waiting for runtime health at ${url}`);
 }
 
+export async function ensurePortAvailable(url = DEFAULT_HEALTH_URL) {
+  const target = new URL(url);
+  const host = target.hostname || "127.0.0.1";
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
+
+  await new Promise((resolve, reject) => {
+    const server = net.createServer();
+
+    server.once("error", (error) => {
+      if (error?.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `Runtime port ${host}:${port} is already in use. Stop the existing server before running root bun dev.`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    });
+
+    server.once("listening", () => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+
+    server.listen(port, host);
+  });
+}
+
+export function getServerRestartCandidate(filename) {
+  if (!filename) {
+    return null;
+  }
+
+  const normalized = String(filename).replaceAll("\\", "/").toLowerCase();
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.includes("__pycache__")) {
+    return null;
+  }
+
+  if (SERVER_RESTART_EXTENSIONS.some((extension) => normalized.endsWith(extension))) {
+    return normalized;
+  }
+
+  return null;
+}
+
 export async function startDevStack({
+  ensureServerPortAvailable = ensurePortAvailable,
   spawn,
   waitForHealth: waitForHealthImpl = waitForHealth,
   healthUrl = DEFAULT_HEALTH_URL,
@@ -91,6 +146,8 @@ export async function startDevStack({
   if (typeof spawn !== "function") {
     throw new Error("startDevStack requires a spawn function");
   }
+
+  await ensureServerPortAvailable(healthUrl);
 
   const children = [];
   const server = spawn({ name: "server" });

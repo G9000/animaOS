@@ -37,6 +37,7 @@ export { SunriseIcon } from "./SunriseIcon";
 export { SunsetIcon } from "./SunsetIcon";
 
 // Agent / content
+export { BookIcon } from "./BookIcon";
 export { InfoIcon } from "./InfoIcon";
 export { UserIcon } from "./UserIcon";
 export { LinkIcon } from "./LinkIcon";
@@ -50,3 +51,6 @@ export { TargetIcon } from "./TargetIcon";
 // Audio
 export { SpeakerOnIcon } from "./SpeakerOnIcon";
 export { SpeakerOffIcon } from "./SpeakerOffIcon";
+
+// Actions
+export { ResetIcon } from "./ResetIcon";

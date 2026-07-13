@@ -22,6 +22,8 @@ import type {
   RecentChatsNode,
   QuickCaptureNode,
   JournalNode,
+  SystemMonitorNode,
+  NetworkNode,
   ProfileNodeData,
   GreetingNodeData,
   TasksNodeData,
@@ -32,6 +34,8 @@ import type {
   RecentChatsNodeData,
   QuickCaptureNodeData,
   JournalNodeData,
+  SystemMonitorNodeData,
+  NetworkNodeData,
   GalleryImage,
 } from "./nodes/node-types";
 
@@ -51,6 +55,7 @@ export interface DashboardCallbacks {
   onExploreMemory: (episodeId: number) => void;
   onCloseNode: (id: string) => void;
   onImageClick: (images: GalleryImage[], index: number) => void;
+  onPreviewThread: (threadId: number) => void;
   onOpenThread: (threadId: number) => void;
   onNewChat: () => void;
   onSaveCapture: (text: string) => Promise<void>;
@@ -198,6 +203,20 @@ export function buildInitialNodes(
   captureNode.height = 200;
   nodes.push(captureNode);
 
+  nodes.push(
+    makeNode<SystemMonitorNodeData>("systemMonitor", "systemMonitor", {
+      type: "systemMonitor",
+      onClose: () => callbacks.onCloseNode("systemMonitor"),
+    }) as SystemMonitorNode,
+  );
+
+  nodes.push(
+    makeNode<NetworkNodeData>("network", "network", {
+      type: "network",
+      onClose: () => callbacks.onCloseNode("network"),
+    }) as NetworkNode,
+  );
+
   // Column 3 — memories + gallery
   if (episodes.length > 0) {
     const memoryNode = makeNode<MemoryNodeData>("memory", "memory", {
@@ -230,12 +249,14 @@ export function buildInitialNodes(
   const recentChatsNode = makeNode<RecentChatsNodeData>("recentChats", "recentChats", {
     type: "recentChats",
     threads,
+    onPreviewThread: callbacks.onPreviewThread,
     onOpenThread: callbacks.onOpenThread,
     onNewChat: callbacks.onNewChat,
+    onNavigate: callbacks.onNavigate,
     onClose: () => callbacks.onCloseNode("recentChats"),
   }) as RecentChatsNode;
   recentChatsNode.width = COLUMN_WIDTH - 20;
-  recentChatsNode.height = 280;
+  recentChatsNode.height = 335;
   nodes.push(recentChatsNode);
 
   if (journalEntries.length > 0) {
@@ -260,6 +281,8 @@ export function buildInitialNodes(
     reflection: 1,
     tasks: 2,
     quickCapture: 2,
+    systemMonitor: 2,
+    network: 2,
     memory: 3,
     gallery: 3,
     recentChats: 4,
@@ -273,9 +296,11 @@ export function buildInitialNodes(
     reflection: 130,
     tasks: 320,
     quickCapture: 200,
+    systemMonitor: 180,
+    network: 90,
     memory: 340,
     gallery: galleryImages.length === 0 ? 90 : Math.min(3, Math.ceil(galleryImages.length / 3)) * 108 + 56,
-    recentChats: 280,
+    recentChats: recentChatsNode.height ?? 335,
     journal: 340,
   };
 

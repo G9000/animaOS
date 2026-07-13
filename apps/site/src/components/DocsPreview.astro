@@ -9,54 +9,101 @@ const docs = order
   .filter(Boolean);
 ---
 
-<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+<section class="border-t px-8 md:px-16 lg:px-24 py-20" style="border-color: var(--accent)">
 
-  <!-- Top: label + headline -->
-  <div class="reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/60 dark:text-muted-foreground/40 mb-16">
-      // the ideas
-    </p>
-
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 max-w-4xl">
-      <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1]">
-        What ANIMA thinks<br />
-        <span class="text-muted-foreground">and why.</span>
-      </h2>
-      <a
-        href="/docs/whitepaper"
-        class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 dark:text-muted-foreground/40 hover:text-foreground transition-colors shrink-0 mb-2"
-      >
-        anima paper ↗
-      </a>
+  <div class="reveal flex items-end justify-between mb-10">
+    <div>
+      <h2 class="font-mono font-bold text-3xl sm:text-4xl tracking-tight text-foreground">WHAT ANIMA THINKS.</h2>
     </div>
+    <a
+      href="/docs/whitepaper"
+      class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 hover:text-foreground transition-colors shrink-0 ml-8"
+    >
+      anima paper ↗
+    </a>
   </div>
 
-  <!-- Bottom: doc list -->
-  <div class="reveal border border-border mt-20">
+  <div
+    class="reveal grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-px"
+    style={{
+      border: "1px solid color-mix(in oklch, var(--accent) 45%, transparent)",
+      background: "color-mix(in oklch, var(--accent) 28%, transparent)",
+    }}
+  >
     {docs.map((doc, i) => (
-      <a
-        href={`/docs/${doc.id}`}
-        class="group relative overflow-hidden flex items-start gap-8 px-8 py-7 border-b border-border last:border-b-0 transition-colors
-          before:absolute before:inset-0 before:bg-foreground before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-500 before:ease-[cubic-bezier(0.16,1,0.3,1)]"
+      <div
+        tabindex="0"
+        class={`doc-row-wrap group relative transition-[transform,box-shadow] duration-200 hover:z-10 ${i === docs.length - 1 ? "md:col-span-2" : ""} ${i < 3 ? "lg:col-span-2" : "lg:col-span-3"}`}
       >
-        <span class="relative z-10 font-mono text-[9px] text-muted-foreground/60 dark:text-muted-foreground/30 group-hover:text-background/50 shrink-0 mt-0.5 w-6 transition-colors">
-          {String(i + 1).padStart(2, "0")}
-        </span>
-        <div class="relative z-10 flex-1 min-w-0">
-          <h3 class="font-serif italic text-xl sm:text-2xl text-foreground leading-snug mb-2 group-hover:text-background transition-colors">
-            {doc.data.title}
-          </h3>
-          {doc.data.description && (
-            <p class="font-sans text-sm text-muted-foreground leading-relaxed max-w-2xl group-hover:text-background/70 transition-colors">
-              {doc.data.description}
-            </p>
-          )}
-        </div>
-        <span class="relative z-10 font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 dark:text-muted-foreground/30 group-hover:text-background transition-colors shrink-0 mt-1">
-          read ↗
-        </span>
-      </a>
+        <a href={`/docs/${doc.id}`} class="doc-row relative overflow-hidden flex items-start gap-6 px-6 py-7 h-full">
+          <div class="doc-fill absolute inset-0 z-0" style="background: var(--accent); transform: translateX(-100%)"></div>
+          <span class="doc-index relative z-10 font-mono text-[9px] shrink-0 mt-0.5 w-6 transition-colors">
+            {String(i + 1).padStart(2, "0")}
+          </span>
+          <div class="relative z-10 flex-1 min-w-0">
+            <h3 class="doc-title font-mono font-bold text-sm text-foreground leading-snug mb-2 transition-colors">
+              {doc.data.title}
+            </h3>
+            {doc.data.description && (
+              <p class="doc-description font-mono text-[10px] text-foreground/80 leading-relaxed transition-colors">
+                {doc.data.description}
+              </p>
+            )}
+          </div>
+        </a>
+      </div>
     ))}
   </div>
 
 </section>
+
+<script>
+  document.querySelectorAll<HTMLElement>('.doc-row-wrap').forEach(wrap => {
+    const fill = wrap.querySelector<HTMLElement>('.doc-fill');
+    const enter = () => {
+      if (fill) {
+        fill.style.transition = 'transform 0.35s cubic-bezier(0.16,1,0.3,1)';
+        fill.style.transform = 'translateX(0)';
+      }
+      wrap.style.transform = 'translateX(4px)';
+      wrap.style.boxShadow = '-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 50%, transparent)';
+    };
+    const leave = () => {
+      if (fill) {
+        fill.style.transition = 'transform 0.3s cubic-bezier(0.7,0,0.84,0)';
+        fill.style.transform = 'translateX(100%)';
+      }
+      wrap.style.transform = '';
+      wrap.style.boxShadow = '';
+    };
+    wrap.addEventListener('mouseenter', enter);
+    wrap.addEventListener('mouseleave', leave);
+    wrap.addEventListener('focus', enter);
+    wrap.addEventListener('blur', leave);
+  });
+</script>
+
+<style>
+  .doc-row-wrap {
+    background: color-mix(in oklch, var(--background) 96%, var(--foreground));
+  }
+
+  .doc-row-wrap:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .doc-row-wrap .doc-index {
+    color: var(--accent);
+    opacity: 0.6;
+  }
+
+  .doc-row-wrap:hover .doc-index,
+  .doc-row-wrap:focus .doc-index,
+  .doc-row-wrap:hover .doc-title,
+  .doc-row-wrap:focus .doc-title,
+  .doc-row-wrap:hover .doc-description,
+  .doc-row-wrap:focus .doc-description {
+    color: #141414;
+  }
+</style>

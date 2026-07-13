@@ -5,7 +5,7 @@ import {
   useUpdateNodeInternals,
   type NodeProps,
 } from "@xyflow/react";
-import { NodeShell } from "../../dashboard/nodes/NodeShell";
+import { NodeShell } from "@anima/standard-templates";
 import type { BiographyPreviewNode } from "./types";
 import { DocumentIcon } from "@anima/standard-templates";
 

@@ -11,16 +11,9 @@ import type {
   Thread,
   DiaryEntryData,
 } from "@anima/api-client";
+import type { MemoryImage } from "../../../lib/image-memories";
 
-export interface GalleryImage {
-  id: string;
-  url: string;
-  mimeType: string;
-  filename: string | null;
-  caption: string | null;
-  createdAt: string | null;
-  source: "chat" | "diary";
-}
+export type GalleryImage = MemoryImage;
 
 export type NodeType =
   | "profile"
@@ -34,7 +27,9 @@ export type NodeType =
   | "gallery"
   | "recentChats"
   | "quickCapture"
-  | "journal";
+  | "journal"
+  | "systemMonitor"
+  | "network";
 
 export interface BaseNodeData extends Record<string, unknown> {
   type: NodeType;
@@ -129,8 +124,10 @@ export type GalleryViewerNode = Node<GalleryViewerNodeData, "gallery">;
 export interface RecentChatsNodeData extends BaseNodeData {
   type: "recentChats";
   threads: Thread[];
+  onPreviewThread: (threadId: number) => void;
   onOpenThread: (threadId: number) => void;
   onNewChat: () => void;
+  onNavigate: (path: string) => void;
 }
 
 export interface QuickCaptureNodeData extends BaseNodeData {
@@ -149,6 +146,18 @@ export type RecentChatsNode = Node<RecentChatsNodeData, "recentChats">;
 export type QuickCaptureNode = Node<QuickCaptureNodeData, "quickCapture">;
 export type JournalNode = Node<JournalNodeData, "journal">;
 
+export interface SystemMonitorNodeData extends BaseNodeData {
+  type: "systemMonitor";
+}
+
+export type SystemMonitorNode = Node<SystemMonitorNodeData, "systemMonitor">;
+
+export interface NetworkNodeData extends BaseNodeData {
+  type: "network";
+}
+
+export type NetworkNode = Node<NetworkNodeData, "network">;
+
 export type DashboardNode =
   | ProfileNode
   | GreetingNode
@@ -160,4 +169,6 @@ export type DashboardNode =
   | GalleryViewerNode
   | RecentChatsNode
   | QuickCaptureNode
-  | JournalNode;
+  | JournalNode
+  | SystemMonitorNode
+  | NetworkNode;

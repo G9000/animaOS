@@ -336,6 +336,33 @@ def test_search_image_annotations_by_embedding_skips_non_positive_matches(
     assert negative_similarity_results == []
 
 
+def test_search_image_annotations_by_embedding_skips_weak_positive_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.images.rag import search_image_annotations_by_embedding
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    with runtime_db_session() as runtime_db:
+        _create_indexed_image(
+            runtime_db,
+            tmp_path,
+            user_id=7,
+            upload_context="Alpha invoice screenshot with the final total.",
+            filename="alpha-invoice.png",
+            byte_suffix=b"alpha",
+        )
+
+        results = search_image_annotations_by_embedding(
+            runtime_db,
+            user_id=7,
+            query_embedding=_embedding(0.7, 0.7),
+            limit=5,
+        )
+
+    assert results == []
+
+
 def test_turn_memory_blocks_include_bounded_relevant_images_and_skip_deleted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

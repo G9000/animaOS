@@ -18,6 +18,8 @@ import type {
   DiaryAttachmentData,
   DiaryEntryCreateData,
   DiaryEntryData,
+  DiaryEntryUpdateData,
+  DiaryFolderData,
   DocumentWorkflow,
   DocumentWorkflowActionResponse,
   EmotionalContextData,
@@ -840,6 +842,11 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { userId, ...data },
         }),
+      update: (entryId: number, data: DiaryEntryUpdateData) =>
+        request<DiaryEntryData>(`/diary/${entryId}`, {
+          method: "PATCH",
+          body: data,
+        }),
       uploadAttachment: (entryId: number, file: File | Blob, caption?: string) =>
         uploadFile<DiaryAttachmentData>(
           `/diary/${entryId}/attachments`,
@@ -853,6 +860,24 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ deleted: boolean }>(`/diary/${entryId}`, {
           method: "DELETE",
         }),
+      folders: {
+        list: (userId: number) =>
+          request<DiaryFolderData[]>(`/diary/folders?userId=${userId}`),
+        create: (userId: number, name: string) =>
+          request<DiaryFolderData>("/diary/folders", {
+            method: "POST",
+            body: { userId, name },
+          }),
+        rename: (folderId: number, name: string) =>
+          request<DiaryFolderData>(`/diary/folders/${folderId}`, {
+            method: "PATCH",
+            body: { name },
+          }),
+        delete: (folderId: number) =>
+          request<{ deleted: boolean }>(`/diary/folders/${folderId}`, {
+            method: "DELETE",
+          }),
+      },
     },
     memory: {
       overview: (userId: number) =>

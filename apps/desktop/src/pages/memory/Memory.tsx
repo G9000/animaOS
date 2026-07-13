@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
+import { ImageIcon } from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
 import type { MemoryItemData, MemoryEpisodeData, MemoryOverviewData, MemorySearchResult } from "@anima/api-client";
 import { api } from "../../lib/api";
@@ -166,6 +168,13 @@ export default function Memory() {
             )}
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to="/memory/images"
+              className="inline-flex items-center gap-1.5 border border-foreground/[0.10] bg-foreground/[0.04] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.08]"
+            >
+              <ImageIcon size="sm" />
+              Images
+            </Link>
             {overview?.currentFocus && (
               <div className="font-mono text-[9px] text-muted-foreground/50">
                 <span className="text-muted-foreground/30 tracking-wider mr-1.5">FOCUS:</span>

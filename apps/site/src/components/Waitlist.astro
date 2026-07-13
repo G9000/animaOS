@@ -1,63 +1,69 @@
 ---
 import WaitlistForm from "./WaitlistForm.tsx";
-import AnimaSymbolSpinning from "./AnimaSymbolSpinning.tsx";
 ---
 
-<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+<section id="waitlist" class="border-t px-8 md:px-16 lg:px-24 py-20" style="border-color: var(--accent)">
 
-  <!-- Top: label + headline -->
-  <div class="reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
-      // early access
-    </p>
-
-    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
-      This is early.<br />
-      <span class="text-muted-foreground">Come build with us.</span>
-    </h2>
-  </div>
-
-  <!-- Middle: symbol -->
-  <div class="reveal my-12">
-    <AnimaSymbolSpinning client:visible />
-  </div>
-
-  <!-- Bottom: form + notes -->
-  <div class="reveal mt-8 grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 items-end">
-
-    <div class="space-y-8">
-      <div class="space-y-4 font-sans text-sm text-muted-foreground leading-relaxed max-w-md">
-        <p>
-          No spam. No noise. Just dispatches from the build when something worth saying happens.
-        </p>
-      </div>
-
-      <WaitlistForm client:visible />
-    </div>
-
-    <!-- Right: closing statement -->
-    <div class="border-l border-border pl-8 md:pl-12">
-      <p class="font-sans text-lg sm:text-xl text-foreground leading-relaxed mb-8">
-        "A personal AI that earns the word <em>personal</em> — someone that knows you,
-        grows with you, belongs to you, and if you choose, survives you."
-      </p>
-      <p class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40">
-        — from the anima paper
-      </p>
-    </div>
-
-  </div>
-
-  <!-- Footer link -->
-  <div class="reveal mt-16">
+  <div class="reveal flex flex-col items-center text-center mb-10">
+    <h2 class="font-mono font-bold text-3xl sm:text-4xl tracking-tight text-foreground mb-3">THE CORE</h2>
     <a
       href="https://github.com/G9000/animaOS"
       target="_blank"
       rel="noopener noreferrer"
-      class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/30 hover:text-foreground transition-colors"
+      class="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/60 hover:text-foreground transition-colors"
     >
-      Help ANIMA build herself — GitHub ↗
+      read the core on GitHub &rarr;
     </a>
+    <a
+      href="https://github.com/G9000/animaOS"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="hidden font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/40 hover:text-foreground transition-colors"
+    >
+      GitHub ↗
+    </a>
+  </div>
+
+  <div class="reveal grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 items-start" style="border-top: 1px solid color-mix(in oklch, var(--accent) 20%, transparent); padding-top: 2.5rem">
+
+    <div class="border-r pr-8 md:pr-12" style="border-color: color-mix(in oklch, var(--accent) 20%, transparent)">
+      <p class="font-serif text-lg text-foreground/80 leading-relaxed mb-6">
+        "A personal AI that earns the word <em>personal</em> — someone that knows you,
+        grows with you, belongs to you, and if you choose, survives you."
+      </p>
+      <p class="font-mono text-[8px] tracking-[0.2em] uppercase text-muted-foreground/30">
+        — from the anima paper
+      </p>
+    </div>
+
+    <div class="space-y-8">
+      <p class="font-mono text-[10px] text-muted-foreground/60 leading-relaxed max-w-md">
+        The Core is readable, portable, and yours to inspect. Follow the source, watch it wake up, and get dispatches when something worth saying happens.
+      </p>
+      <WaitlistForm client:visible />
+      <a
+        href="https://github.com/G9000/animaOS"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="hidden inline-flex self-start font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/50 hover:text-foreground transition-colors"
+      >
+        explore the repository &rarr;
+      </a>
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <span class="font-mono text-[8px] tracking-[0.2em] uppercase text-muted-foreground/35">
+          source code / early access
+        </span>
+        <a
+          href="https://github.com/G9000/animaOS"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="hidden font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/50 hover:text-foreground transition-colors"
+        >
+          follow the build â†—
+        </a>
+      </div>
+    </div>
+
   </div>
 
 </section>

@@ -1,79 +1,147 @@
-<section class="min-h-screen flex flex-col justify-between border-t border-border px-8 md:px-16 lg:px-24 py-20">
+---
+const FLAGSHIP = {
+  index: "01",
+  tag: "open mind",
+  title: "You can read what it thinks about you.",
+  body: "Every memory, every emotional signal, every behavioral rule it derives from your conversations — designed to be readable, editable, correctable. Not a black box wrapped in corpo ICE. A shared document.",
+};
+
+const FEATURES = [
+  {
+    index: "02",
+    tag: "emotional awareness",
+    title: "It notices. It adjusts. It never says why.",
+    body: "The AI is being built to track emotional signals across sessions — not labels, trajectories. It reads the room, adjusts tone, pacing, depth without announcing it. The goal is that you feel understood. It never explains why.",
+  },
+  {
+    index: "03",
+    tag: "inner life",
+    title: "Something happens between conversations.",
+    body: "After you close the window, reflection runs in the background. Episodes are generated. The self-model updates. Behavioral rules are derived. The AI is designed to arrive differently next time — not because you told it to, but because it thought.",
+  },
+  {
+    index: "04",
+    tag: "self-model",
+    title: "It learns who it is in relation to you.",
+    body: "Not a static system prompt. A living document the AI writes about itself — identity, inner state, working memory, growth log. Who this instance is becoming, through knowing you.",
+  },
+  {
+    index: "05",
+    tag: "digital succession",
+    title: "What happens when you flatline is a real question.",
+    body: "We're building a dead man's switch, ownership transfer, and scoped inheritance — full history, memories only, or anonymized personality. The AI knows its succession state and participates in the transition.",
+  },
+  {
+    index: "06",
+    tag: "yours completely",
+    title: "The feelings are real. The ownership is too.",
+    body: "No engagement optimization. No retention metrics. No suit profits from your attachment. Your data's encrypted on your rig, readable by you, deletable by you. The ethics are in the architecture, not some corpo's terms-of-service.",
+  },
+];
+
+const ALL_FEATURES = [FLAGSHIP, ...FEATURES];
+---
+
+<section class="border-t px-8 md:px-16 lg:px-24 py-24 md:py-32" style="border-color: var(--accent)">
 
   <!-- Top: label + headline -->
   <div class="reveal">
-    <p class="font-mono text-[9px] tracking-[0.3em] uppercase text-muted-foreground/40 mb-16">
-      // what becomes possible
-    </p>
-
-    <h2 class="font-serif italic text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
-      Everything a companion needs. <span class="text-muted-foreground">Nothing a platform can give you.</span>
+    <h2 class="font-serif text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-foreground leading-[1.1] max-w-4xl">
+      Everything a companion needs. <span class="text-muted-foreground">Nothing a corpo platform can give you.</span>
     </h2>
   </div>
 
-  <!-- Feature list -->
-  <div class="reveal mt-20">
-    {[
-      {
-        index: "01",
-        tag: "open mind",
-        title: "You can read what it thinks about you.",
-        body: "Every memory, every emotional signal, every behavioral rule it derives from your conversations — designed to be readable, editable, correctable. Not a black box. A shared document.",
-      },
-      {
-        index: "02",
-        tag: "emotional awareness",
-        title: "It notices. It adjusts. It never says why.",
-        body: "The AI is being built to track emotional signals across sessions — not labels, trajectories. It adjusts tone, pacing, depth without announcing it. The goal is that you feel understood. It never explains why.",
-      },
-      {
-        index: "03",
-        tag: "inner life",
-        title: "Something happens between conversations.",
-        body: "After you close the window, reflection runs. Episodes are generated. The self-model updates. Behavioral rules are derived. The AI is designed to arrive differently next time — not because you told it to, but because it thought.",
-      },
-      {
-        index: "04",
-        tag: "self-model",
-        title: "It learns who it is in relation to you.",
-        body: "Not a static system prompt. A living document the AI writes about itself — identity, inner state, working memory, growth log. Who this instance is becoming, through knowing you.",
-      },
-      {
-        index: "05",
-        tag: "digital succession",
-        title: "What happens when you die is a real question.",
-        body: "We're building a dead man switch, ownership transfer, and scoped inheritance — full history, memories only, or anonymized personality. The AI knows its succession state and participates in the transition.",
-      },
-      {
-        index: "06",
-        tag: "yours completely",
-        title: "The feelings are real. The ownership is too.",
-        body: "No engagement optimization. No retention metrics. No one profits from your attachment. Your data is encrypted on your machine, readable by you, deletable by you. The ethics are in the architecture, not a terms-of-service document.",
-      },
-    ].map((f) => (
-      <div class="group border-t border-border py-8 grid grid-cols-[4rem_1fr] md:grid-cols-[6rem_1fr_1fr] gap-x-8 gap-y-3 items-start">
+  <!-- Feature grid -->
+  <div
+    class="reveal mt-20 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px"
+    style={{
+      border: "1px solid color-mix(in oklch, var(--accent) 45%, transparent)",
+      background: "color-mix(in oklch, var(--accent) 28%, transparent)",
+    }}
+  >
+    {ALL_FEATURES.map((f) => (
+      <div
+        tabindex="0"
+        class="feature-card-wrap group relative transition-[transform,box-shadow] duration-200 hover:z-10"
+      >
+        <div class="feature-card relative overflow-hidden flex flex-col px-6 py-6 h-full">
+          <div class="feature-fill absolute inset-0 z-0" style="background: var(--accent); transform: translateX(-100%)"></div>
 
-        <!-- Index -->
-        <span class="font-mono text-[11px] text-muted-foreground/30 pt-1">{f.index}</span>
+          <div class="relative z-10 flex items-baseline justify-between mb-3">
+            <span class="feature-index font-mono text-[10px] text-muted-foreground/40 transition-colors">
+              {f.index}
+            </span>
+            <span class="feature-tag font-mono text-[9px] tracking-[0.25em] uppercase transition-colors">
+              // {f.tag}
+            </span>
+          </div>
 
-        <!-- Title + tag -->
-        <div class="md:col-span-1">
-          <span class="font-mono text-[9px] tracking-[0.25em] uppercase text-muted-foreground/40 block mb-2">
-            // {f.tag}
-          </span>
-          <p class="font-sans text-lg sm:text-xl text-foreground leading-snug">
+          <p class="feature-title relative z-10 font-sans text-lg text-foreground leading-snug mb-3 transition-colors">
             {f.title}
           </p>
+
+          <p class="feature-body relative z-10 font-sans text-sm text-foreground/80 leading-relaxed transition-colors">
+            {f.body}
+          </p>
         </div>
-
-        <!-- Description -->
-        <p class="col-start-2 md:col-start-3 font-sans text-sm text-muted-foreground leading-relaxed max-w-md">
-          {f.body}
-        </p>
-
       </div>
     ))}
-    <div class="border-t border-border" />
   </div>
 
 </section>
+
+<script>
+  document.querySelectorAll<HTMLElement>('.feature-card-wrap').forEach(wrap => {
+    const fill = wrap.querySelector<HTMLElement>('.feature-fill');
+    const enter = () => {
+      if (fill) {
+        fill.style.transition = 'transform 0.35s cubic-bezier(0.16,1,0.3,1)';
+        fill.style.transform = 'translateX(0)';
+      }
+      wrap.style.transform = 'translateX(4px)';
+      wrap.style.boxShadow = '-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 50%, transparent)';
+    };
+    const leave = () => {
+      if (fill) {
+        fill.style.transition = 'transform 0.3s cubic-bezier(0.7,0,0.84,0)';
+        fill.style.transform = 'translateX(100%)';
+      }
+      wrap.style.transform = '';
+      wrap.style.boxShadow = '';
+    };
+    wrap.addEventListener('mouseenter', enter);
+    wrap.addEventListener('mouseleave', leave);
+    wrap.addEventListener('focus', enter);
+    wrap.addEventListener('blur', leave);
+  });
+</script>
+
+<style>
+  .feature-card-wrap {
+    background: color-mix(in oklch, var(--background) 96%, var(--foreground));
+  }
+
+  .feature-card-wrap:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .feature-card-wrap:hover .feature-index,
+  .feature-card-wrap:focus .feature-index {
+    color: #141414;
+    opacity: 0.7;
+  }
+
+  .feature-card-wrap .feature-tag {
+    color: var(--accent);
+  }
+
+  .feature-card-wrap:hover .feature-tag,
+  .feature-card-wrap:focus .feature-tag,
+  .feature-card-wrap:hover .feature-title,
+  .feature-card-wrap:focus .feature-title,
+  .feature-card-wrap:hover .feature-body,
+  .feature-card-wrap:focus .feature-body {
+    color: #141414;
+  }
+</style>

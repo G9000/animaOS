@@ -7,6 +7,10 @@
 @import "@fontsource/space-grotesk/700.css";
 @import "@fontsource/space-mono/400.css";
 @import "@fontsource/space-mono/700.css";
+@import "@fontsource/playfair-display/400.css";
+@import "@fontsource/playfair-display/500.css";
+@import "@fontsource/playfair-display/600.css";
+@import "@fontsource/playfair-display/400-italic.css";
 @source "../../../packages/standard-templates/src";
 @plugin "@tailwindcss/typography";
 
@@ -22,6 +26,7 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   box-shadow: none !important;
   outline: none !important;
   padding: 0 !important;
+  overflow: visible !important;
 }
 
 .react-flow__node:focus,

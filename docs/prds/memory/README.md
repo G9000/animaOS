@@ -170,4 +170,5 @@ F11 (Experience Extraction) ─────────────────�
 | [Competitor Audit: Letta & Mem0](competitor-audit-letta-mem0.md) | Analysis of competitor memory architectures |
 | [Competitor Audit: PRD Corrections Summary](competitor-audit-prd-corrections-summary-2026-03-19.md) | Summary of corrections applied from the competitor audit |
 | [Single-User Temporal Memory v2](single-user-temporal-memory-v2.md) | Umbrella PRD for local-first temporal cognitive memory optimized for one long-lived user |
+| [Social Memory Identity Discovery v1](social-memory-identity-discovery-v1.md) | Identity discovery, duplicate-name resolution, and audience-safe memory boundaries for future multi-person conversations |
 | [Visual Memory Image Assets v1](visual-memory-image-assets-v1.md) | First-class local image assets with indexing, proactive visual recall, and deletion controls |

@@ -18,6 +18,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Directory Structure](system/directory-structure.md) | Top-level folder layout and purpose of each directory |
+| [ANIMA CORE Filesystem Target Architecture](system/anima-core-filesystem.md) | Planned end-to-end topology and flows for Soul, CoreFS, Runtime, tools, permissions, indexing, and local transfer |
 | [Gateway + Runtime Boundary](system/gateway-runtime-boundary.md) | Product boundary for single-user local-first, gateway-auth split, and future multi-device extensions |
 | [External Integration Boundary](system/external-integration-boundary.md) | Difference between server-side capability modules and `apps/anima-mod` integrations |
 | [Local Runtime Daemon](system/local-runtime-daemon.md) | Background runtime supervisor so Anima can keep running after the desktop UI closes |

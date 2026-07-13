@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
-import { NodeShell, type NodeAction } from "../../dashboard/nodes/NodeShell";
+import { NodeShell, type NodeAction } from "@anima/standard-templates";
 import type { BirthdayNode } from "./types";
 import { SparkleIcon } from "@anima/standard-templates";
 
