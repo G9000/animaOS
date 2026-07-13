@@ -155,6 +155,20 @@ def search_document_chunks(
         # row would drop all results during an outage after a vector reset.
         require_current_embedding=bool(query_embedding),
     )
+    if query_embedding and lexical_ranking:
+        # Lexical matches are independently supported by the chunk text and
+        # may legitimately lack a vector after a partial re-embed or a
+        # per-chunk embedding failure. Dense-only hits remain protected by
+        # the current-embedding join above.
+        hydrated.update(
+            _load_document_chunks(
+                runtime_db,
+                user_id=user_id,
+                chunk_ids=[chunk_id for chunk_id, _score in lexical_ranking],
+                document_ids=allowed_document_ids,
+                require_current_embedding=False,
+            )
+        )
 
     if settings.retrieval_reranker != "off":
         from anima_server.services.documents.reranker import rerank_chunk_ids

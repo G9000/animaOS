@@ -841,6 +841,13 @@ def test_search_document_chunks_discards_partial_lazy_repair_vectors(
         "search_by_vector",
         fake_search_by_vector,
     )
+    from anima_server.services.documents import rag as rag_module
+
+    monkeypatch.setattr(
+        rag_module,
+        "_lexical_document_chunk_ranking",
+        lambda *_args, **_kwargs: [],
+    )
 
     assert (
         search_document_chunks(
@@ -1515,6 +1522,56 @@ def test_search_document_chunks_lexical_arm_promotes_exact_token_match(
     assert results[0].content == "the relay reports error code XK-9931 during boot"
     # Similarity still reports the dense score for transparency.
     assert results[0].similarity == 0.30
+
+
+def test_search_document_chunks_hydrates_lexical_only_hit_without_embedding(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    document, chunks = _document_with_chunks(
+        runtime_db,
+        chunks=[
+            "general notes with a current vector",
+            "the relay reports error code XK-9931 during boot",
+        ],
+    )
+    _add_document_embedding(runtime_db, chunks[0])
+    _mark_document_indexed(runtime_db, document)
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="general notes",
+                category="document",
+                importance=3,
+                similarity=0.91,
+                source_type="document_chunk",
+            )
+        ],
+    )
+    from anima_server.services.documents import rag as rag_module
+
+    monkeypatch.setattr(
+        rag_module,
+        "_lexical_document_chunk_ranking",
+        lambda *_args, **_kwargs: [(chunks[1].id, 9.0)],
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="XK-9931",
+        document_ids=[document.id],
+        limit=1,
+        embedding_fn=lambda _text: _embedding(1.0),
+    )
+
+    assert [result.chunk_id for result in results] == [chunks[1].id]
+    assert results[0].content == "the relay reports error code XK-9931 during boot"
+    assert results[0].similarity == 0.0
 
 
 def test_search_document_chunks_degrades_to_dense_when_lexical_arm_fails(
