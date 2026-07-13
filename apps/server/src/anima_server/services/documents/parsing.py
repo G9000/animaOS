@@ -144,6 +144,7 @@ def _convert_with_docling(path: str) -> str:
     result = converter.convert(path)
     return result.document.export_to_markdown(
         page_break_placeholder=_DOCLING_PAGE_BREAK,
+        traverse_pictures=True,
     )
 
 

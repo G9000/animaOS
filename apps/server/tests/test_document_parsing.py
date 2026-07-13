@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -93,6 +95,63 @@ def test_auto_tier_escalates_scanned_pdf_to_docling(monkeypatch: Any) -> None:
 
     assert outcome.tier == "quality"
     assert outcome.pages[0].text == "OCR recovered this scanned page."
+
+
+def test_docling_markdown_export_includes_picture_ocr_text(
+    monkeypatch: Any,
+) -> None:
+    export_kwargs: dict[str, Any] = {}
+
+    class FakePdfPipelineOptions:
+        def __init__(self, *, do_ocr: bool) -> None:
+            assert do_ocr is True
+
+    class FakePdfFormatOption:
+        def __init__(self, *, pipeline_options: Any) -> None:
+            assert isinstance(pipeline_options, FakePdfPipelineOptions)
+
+    class FakeDocument:
+        def export_to_markdown(self, **kwargs: Any) -> str:
+            export_kwargs.update(kwargs)
+            return "OCR recovered from a picture item."
+
+    class FakeDocumentConverter:
+        def __init__(self, *, format_options: dict[Any, Any]) -> None:
+            assert "pdf" in format_options
+
+        def convert(self, path: str) -> Any:
+            assert path == "scan.pdf"
+            return SimpleNamespace(document=FakeDocument())
+
+    docling = ModuleType("docling")
+    docling.__path__ = []  # type: ignore[attr-defined]
+    datamodel = ModuleType("docling.datamodel")
+    datamodel.__path__ = []  # type: ignore[attr-defined]
+    base_models = ModuleType("docling.datamodel.base_models")
+    base_models.InputFormat = SimpleNamespace(PDF="pdf")  # type: ignore[attr-defined]
+    pipeline_options = ModuleType("docling.datamodel.pipeline_options")
+    pipeline_options.PdfPipelineOptions = FakePdfPipelineOptions  # type: ignore[attr-defined]
+    document_converter = ModuleType("docling.document_converter")
+    document_converter.DocumentConverter = FakeDocumentConverter  # type: ignore[attr-defined]
+    document_converter.PdfFormatOption = FakePdfFormatOption  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "docling", docling)
+    monkeypatch.setitem(sys.modules, "docling.datamodel", datamodel)
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
+    monkeypatch.setitem(
+        sys.modules,
+        "docling.datamodel.pipeline_options",
+        pipeline_options,
+    )
+    monkeypatch.setitem(sys.modules, "docling.document_converter", document_converter)
+
+    markdown = parsing._convert_with_docling("scan.pdf")
+
+    assert markdown == "OCR recovered from a picture item."
+    assert export_kwargs == {
+        "page_break_placeholder": parsing._DOCLING_PAGE_BREAK,
+        "traverse_pictures": True,
+    }
 
 
 def test_scanned_pdf_without_docling_reports_actionable_error(monkeypatch: Any) -> None:
