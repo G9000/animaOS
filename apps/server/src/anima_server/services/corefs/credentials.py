@@ -29,11 +29,13 @@ from anima_server.services.corefs.keyslots import (
     _manifest_slots,
     _record_from_payload,
     _record_to_payload,
+    _required_frk_versions_from_manifest,
     _soul_row_record,
     _unwrap_manifest_slot,
     get_active_manifest_scope,
     unlock_key_hierarchy,
     unlock_manifest_key_hierarchy,
+    validate_scope_completeness,
     verify_legacy_soul_keys,
 )
 from anima_server.services.corefs.types import (
@@ -43,6 +45,7 @@ from anima_server.services.corefs.types import (
     WrappingPath,
 )
 from anima_server.services.crypto import derive_sqlcipher_key, unwrap_dek, wrap_dek
+from anima_server.services.data_crypto import ALL_DOMAINS
 from anima_server.services.recovery import RECOVERY_DOMAIN_PREFIX, generate_recovery_phrase
 
 
@@ -75,6 +78,7 @@ def _verify_pending_password_generation(
     password: str,
     generation: int,
     scope: PayloadScope,
+    required_frk_versions: set[int],
     expected_sqlcipher: bytes | None,
     expected_frks: dict[int, object],
     expected_domains: dict[str, bytes],
@@ -90,9 +94,22 @@ def _verify_pending_password_generation(
         and slot.status is KeyslotStatus.PENDING
         and slot.scope is scope
     ]
-    expected_root_count = len(expected_frks) + (1 if expected_sqlcipher is not None else 0)
-    if len(slots) != expected_root_count:
+    if len({(slot.purpose, slot.key_version) for slot in slots}) != len(slots):
+        raise ValueError("duplicate pending manifest password keyslots")
+    required_frks = (
+        set(required_frk_versions) if scope in {PayloadScope.FULL, PayloadScope.FS} else set()
+    )
+    if set(expected_frks) != required_frks:
+        raise ValueError("source filesystem password generation is incomplete")
+    slot_frks = {
+        int(slot.frk_version)
+        for slot in slots
+        if slot.purpose is KeyPurpose.FILESYSTEM_ROOT and slot.frk_version is not None
+    }
+    expected_root_count = len(required_frks) + (1 if expected_sqlcipher is not None else 0)
+    if len(slots) != expected_root_count or slot_frks != required_frks:
         raise ValueError("pending manifest password generation is incomplete")
+    purposes: set[KeyPurpose] = set()
     for slot in slots:
         aad = manifest_keyslot_aad(
             core_id=core_id,
@@ -102,6 +119,7 @@ def _verify_pending_password_generation(
             wrapping_path=WrappingPath.PASSWORD,
         )
         secret = _unwrap_manifest_slot(password, slot, aad)
+        purposes.add(slot.purpose)
         expected = (
             expected_sqlcipher
             if slot.purpose is KeyPurpose.SOUL
@@ -139,6 +157,16 @@ def _verify_pending_password_generation(
             != expected_domains[row.domain]
         ):
             raise ValueError("pending Soul password verification mismatch")
+    validate_scope_completeness(
+        scope,
+        purposes=purposes,
+        soul_domains={row.domain for row in rows},
+        required_soul_domains=(
+            set(ALL_DOMAINS) if scope in {PayloadScope.FULL, PayloadScope.SOUL} else set()
+        ),
+        frk_versions=slot_frks,
+        required_frk_versions=required_frks,
+    )
 
 
 def _rewrap_legacy_password_rows(
@@ -202,6 +230,11 @@ def change_password_credential_generation(
     owner_id = str(manifest["owner_id"])
     previous_generation = int(manifest["active_password_credential_generation"])
     generation = previous_generation + 1
+    required_frk_versions = (
+        _required_frk_versions_from_manifest(manifest)
+        if scope in {PayloadScope.FULL, PayloadScope.FS}
+        else set()
+    )
 
     stale_pending = list(
         db.scalars(
@@ -299,6 +332,7 @@ def change_password_credential_generation(
         password=new_password,
         generation=generation,
         scope=scope,
+        required_frk_versions=required_frk_versions,
         expected_sqlcipher=unlocked.sqlcipher_key,
         expected_frks=unlocked.frks,
         expected_domains=unlocked.soul_domains,
@@ -842,10 +876,8 @@ def _unlock_recovery_generation(
     generation: int,
     scope: PayloadScope,
     manifest_status: KeyslotStatus,
+    required_frk_versions: set[int],
 ) -> UnlockedKeyHierarchy:
-    from anima_server.services.corefs.keyslots import validate_scope_completeness
-    from anima_server.services.data_crypto import ALL_DOMAINS
-
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     core_id = str(manifest["core_id"])
     owner_id = str(manifest["owner_id"])
@@ -917,7 +949,7 @@ def _unlock_recovery_generation(
         soul_domains=set(soul_domains),
         required_soul_domains=set(ALL_DOMAINS) if scope is not PayloadScope.FS else set(),
         frk_versions=set(frks),
-        required_frk_versions=set(frks),
+        required_frk_versions=required_frk_versions,
     )
     return UnlockedKeyHierarchy(
         scope=scope,
@@ -978,6 +1010,15 @@ def prepare_recovery_credential(
         )
 
     generation = active_generation + 1
+    required_frk_versions = (
+        {1}
+        if upgrading_legacy
+        else (
+            _required_frk_versions_from_manifest(manifest)
+            if scope in {PayloadScope.FULL, PayloadScope.FS}
+            else set()
+        )
+    )
     manifest = _discard_pending_recovery(
         db,
         owner_id=owner_id,
@@ -1054,6 +1095,7 @@ def prepare_recovery_credential(
         generation=generation,
         scope=scope,
         manifest_status=KeyslotStatus.PENDING,
+        required_frk_versions=required_frk_versions,
     )
     if (
         reopened.sqlcipher_key != unlocked.sqlcipher_key
@@ -1069,6 +1111,7 @@ def prepare_recovery_credential(
             password=current_password,
             generation=generation,
             scope=PayloadScope.FULL,
+            required_frk_versions=required_frk_versions,
             expected_sqlcipher=unlocked.sqlcipher_key,
             expected_frks=unlocked.frks,
             expected_domains=unlocked.soul_domains,
@@ -1090,6 +1133,15 @@ def confirm_recovery_credential(
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     active_generation = int(manifest.get("active_recovery_credential_generation", 0))
     upgrading_legacy = active_generation == 0
+    required_frk_versions = (
+        {1}
+        if upgrading_legacy
+        else (
+            _required_frk_versions_from_manifest(manifest)
+            if scope in {PayloadScope.FULL, PayloadScope.FS}
+            else set()
+        )
+    )
     if active_generation not in {pending_generation - 1, pending_generation}:
         raise ValueError("pending recovery generation is stale")
     status = (
@@ -1101,6 +1153,7 @@ def confirm_recovery_credential(
         generation=pending_generation,
         scope=scope,
         manifest_status=status,
+        required_frk_versions=required_frk_versions,
     )
     _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
 

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Generator
 from uuid import UUID
 
+import anima_core
 import pytest
+from anima_server.api.routes import auth as auth_routes
 from anima_server.config import settings
 from anima_server.db import dispose_all_user_engines
 from anima_server.db.session import get_user_session_factory
@@ -19,6 +22,7 @@ from anima_server.services.core import (
 )
 from anima_server.services.corefs.credentials import (
     CredentialBoundary,
+    change_filesystem_password_credential,
     change_password_credential_generation,
 )
 from anima_server.services.corefs.crypto import (
@@ -28,9 +32,11 @@ from anima_server.services.corefs.crypto import (
     wrap_keyslot_secret,
 )
 from anima_server.services.corefs.keyslots import (
+    _manifest_slot,
     _record_from_payload,
     _record_to_payload,
     unlock_key_hierarchy,
+    unlock_manifest_key_hierarchy,
     validate_scope_completeness,
 )
 from anima_server.services.corefs.types import (
@@ -49,6 +55,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 
+@pytest.fixture(autouse=True)
+def _reset_failed_login_attempts() -> Generator[None, None, None]:
+    auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    yield
+    auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+
+
 def _wrapped_record() -> dict[str, object]:
     return {
         "user_id": 7,
@@ -61,6 +74,55 @@ def _wrapped_record() -> dict[str, object]:
         "wrap_tag": "dGFn",
         "wrapped_key": "Y2lwaGVydGV4dA==",
     }
+
+
+def _provision_retained_frk(
+    *,
+    password: str,
+    recovery_phrase: str,
+    scope: PayloadScope,
+) -> None:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    active_frk = anima_core.corefs_generate_root_key()
+    active_slots = [
+        _manifest_slot(
+            credential,
+            active_frk,
+            core_id=str(manifest["core_id"]),
+            owner_id=str(manifest["owner_id"]),
+            purpose=KeyPurpose.FILESYSTEM_ROOT,
+            wrapping_path=wrapping_path,
+            status=KeyslotStatus.ACTIVE,
+            scope=scope,
+            key_version=2,
+            credential_generation=1,
+            frk_version=2,
+            object_key_epoch=2,
+        ).to_dict()
+        for credential, wrapping_path in (
+            (password, WrappingPath.PASSWORD),
+            (recovery_phrase, WrappingPath.RECOVERY),
+        )
+    ]
+
+    def retain_previous_frk(value: dict[str, object]) -> None:
+        retained_slots = [
+            {**slot, "scope": scope.value}
+            for slot in value["keyslots"]
+            if scope is PayloadScope.FULL or slot["purpose"] == KeyPurpose.FILESYSTEM_ROOT.value
+        ]
+        value["keyslots"] = [*retained_slots, *active_slots]
+        value["frk_rotation"] = {
+            "active_version": 2,
+            "pending_version": None,
+            "decrypt_only_versions": [1],
+            "phase": "idle",
+            "object_key_epoch": 2,
+        }
+        if scope is PayloadScope.FS:
+            value["degraded_state"] = "recovery_only"
+
+    update_core_manifest(retain_previous_frk)
 
 
 def test_legacy_manifest_gets_one_stable_opaque_owner_before_keyslots(
@@ -656,6 +718,56 @@ def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() ->
         assert not user_dir.exists()
 
 
+def test_filesystem_password_rejects_missing_retained_frk_before_activation() -> None:
+    with managed_test_client("anima-fs-password-retained-frk-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        _provision_retained_frk(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+            scope=PayloadScope.FS,
+        )
+        boundaries: list[CredentialBoundary] = []
+
+        def remove_retained_pending_slot(boundary: CredentialBoundary) -> None:
+            boundaries.append(boundary)
+            if boundary is not CredentialBoundary.MANIFEST_PENDING_DURABLE:
+                return
+
+            def remove_slot(value: dict[str, object]) -> None:
+                value["keyslots"] = [
+                    slot
+                    for slot in value["keyslots"]
+                    if not (
+                        slot["wrapping_path"] == WrappingPath.PASSWORD.value
+                        and slot["credential_generation"] == 2
+                        and slot["status"] == KeyslotStatus.PENDING.value
+                        and slot["frk_version"] == 1
+                    )
+                ]
+
+            update_core_manifest(remove_slot)
+
+        with pytest.raises(ValueError, match="incomplete Filesystem Root key set"):
+            change_filesystem_password_credential(
+                current_password="password-123",
+                new_password="new-password-123",
+                failure_injector=remove_retained_pending_slot,
+            )
+
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert boundaries == [CredentialBoundary.MANIFEST_PENDING_DURABLE]
+        assert manifest["active_password_credential_generation"] == 1
+        old_roots = unlock_manifest_key_hierarchy(
+            credential="password-123",
+            wrapping_path=WrappingPath.PASSWORD,
+            expected_scope=PayloadScope.FS,
+        )
+        assert set(old_roots.frks) == {1, 2}
+
+
 def test_general_recover_rejects_fs_agent_startup() -> None:
     with managed_test_client("anima-fs-recover-reject-") as client:
         response = client.post(
@@ -735,6 +847,85 @@ def test_change_password_uses_cross_store_generation_and_retains_old_slots() -> 
             ).status_code
             == 200
         )
+
+
+def test_change_password_rejects_duplicate_for_missing_retained_frk_before_activation() -> None:
+    with managed_test_client("anima-password-retained-frk-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        recovery_phrase = str(registered["recoveryPhrase"])
+        _provision_retained_frk(
+            password="password-123",
+            recovery_phrase=recovery_phrase,
+            scope=PayloadScope.FULL,
+        )
+        session = unlock_session_store.resolve(registered["unlockToken"])
+        assert session is not None
+        boundaries: list[CredentialBoundary] = []
+
+        def replace_retained_pending_slot(boundary: CredentialBoundary) -> None:
+            boundaries.append(boundary)
+            if boundary is not CredentialBoundary.MANIFEST_PENDING_DURABLE:
+                return
+
+            def duplicate_active_pending_slot(value: dict[str, object]) -> None:
+                slots = list(value["keyslots"])
+                active_pending = next(
+                    slot
+                    for slot in slots
+                    if slot["wrapping_path"] == WrappingPath.PASSWORD.value
+                    and slot["credential_generation"] == 2
+                    and slot["status"] == KeyslotStatus.PENDING.value
+                    and slot["frk_version"] == 2
+                )
+                value["keyslots"] = [
+                    slot
+                    for slot in slots
+                    if not (
+                        slot["wrapping_path"] == WrappingPath.PASSWORD.value
+                        and slot["credential_generation"] == 2
+                        and slot["status"] == KeyslotStatus.PENDING.value
+                        and slot["frk_version"] == 1
+                    )
+                ]
+                value["keyslots"].append(dict(active_pending))
+
+            update_core_manifest(duplicate_active_pending_slot)
+
+        with get_user_session_factory(0)() as db:
+            user = db.get(User, 0)
+            assert user is not None
+            with pytest.raises(ValueError):
+                change_password_credential_generation(
+                    db,
+                    user,
+                    old_password="password-123",
+                    new_password="new-password-123",
+                    current_deks=session.deks,
+                    failure_injector=replace_retained_pending_slot,
+                )
+
+            manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+            assert boundaries == [
+                CredentialBoundary.SOUL_PENDING_DURABLE,
+                CredentialBoundary.MANIFEST_PENDING_DURABLE,
+            ]
+            assert manifest["active_password_credential_generation"] == 1
+            assert {
+                (row.credential_generation, row.status)
+                for row in db.query(SoulKeyslot).filter_by(
+                    wrapping_path=WrappingPath.PASSWORD.value
+                )
+            } == {(1, KeyslotStatus.ACTIVE.value), (2, KeyslotStatus.PENDING.value)}
+            old_roots = unlock_key_hierarchy(
+                db,
+                credential="password-123",
+                wrapping_path=WrappingPath.PASSWORD,
+                scope=PayloadScope.FULL,
+            )
+            assert set(old_roots.frks) == {1, 2}
 
 
 @pytest.mark.parametrize(

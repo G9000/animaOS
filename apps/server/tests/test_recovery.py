@@ -1,21 +1,42 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
 
+import anima_core
 import pytest
+from anima_server.api.routes import auth as auth_routes
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import SoulKeyslot, User
 from anima_server.services.core import get_manifest_path, update_core_manifest
 from anima_server.services.corefs.credentials import (
     CredentialBoundary,
+    confirm_filesystem_recovery_credential,
     confirm_recovery_credential,
+    prepare_filesystem_recovery_credential,
     prepare_recovery_credential,
 )
-from anima_server.services.corefs.keyslots import unlock_key_hierarchy
-from anima_server.services.corefs.types import PayloadScope, WrappingPath
+from anima_server.services.corefs.keyslots import (
+    _manifest_slot,
+    unlock_key_hierarchy,
+    unlock_manifest_key_hierarchy,
+)
+from anima_server.services.corefs.types import (
+    KeyPurpose,
+    KeyslotStatus,
+    PayloadScope,
+    WrappingPath,
+)
 from conftest import managed_test_client
 from cryptography.exceptions import InvalidTag
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _reset_failed_login_attempts() -> Generator[None, None, None]:
+    auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    yield
+    auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
 
 
 def _register_user(
@@ -31,6 +52,55 @@ def _register_user(
     )
     assert response.status_code == 201
     return response.json()
+
+
+def _provision_retained_frk(
+    *,
+    password: str,
+    recovery_phrase: str,
+    scope: PayloadScope = PayloadScope.FULL,
+) -> None:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    active_frk = anima_core.corefs_generate_root_key()
+    active_slots = [
+        _manifest_slot(
+            credential,
+            active_frk,
+            core_id=str(manifest["core_id"]),
+            owner_id=str(manifest["owner_id"]),
+            purpose=KeyPurpose.FILESYSTEM_ROOT,
+            wrapping_path=wrapping_path,
+            status=KeyslotStatus.ACTIVE,
+            scope=scope,
+            key_version=2,
+            credential_generation=1,
+            frk_version=2,
+            object_key_epoch=2,
+        ).to_dict()
+        for credential, wrapping_path in (
+            (password, WrappingPath.PASSWORD),
+            (recovery_phrase, WrappingPath.RECOVERY),
+        )
+    ]
+
+    def retain_previous_frk(value: dict[str, object]) -> None:
+        retained_slots = [
+            {**slot, "scope": scope.value}
+            for slot in value["keyslots"]
+            if scope is PayloadScope.FULL or slot["purpose"] == KeyPurpose.FILESYSTEM_ROOT.value
+        ]
+        value["keyslots"] = [*retained_slots, *active_slots]
+        value["frk_rotation"] = {
+            "active_version": 2,
+            "pending_version": None,
+            "decrypt_only_versions": [1],
+            "phase": "idle",
+            "object_key_epoch": 2,
+        }
+        if scope is PayloadScope.FS:
+            value["degraded_state"] = "recovery_only"
+
+    update_core_manifest(retain_previous_frk)
 
 
 def test_register_returns_recovery_phrase() -> None:
@@ -244,6 +314,124 @@ def test_recovery_confirmation_is_retryable_after_manifest_activation_crash(monk
                 scope=PayloadScope.FULL,
             )
             assert unlocked.frks
+
+
+def test_recovery_confirmation_rejects_missing_retained_frk_before_activation() -> None:
+    with managed_test_client("anima-recovery-retained-frk-") as client:
+        registered = _register_user(client, password="password-123")
+        old_phrase = str(registered["recoveryPhrase"])
+        _provision_retained_frk(
+            password="password-123",
+            recovery_phrase=old_phrase,
+        )
+
+        with get_user_session_factory(0)() as db:
+            user = db.get(User, 0)
+            assert user is not None
+            prepared = prepare_recovery_credential(
+                db,
+                user,
+                current_recovery_phrase=old_phrase,
+                current_password="password-123",
+            )
+
+            def remove_retained_pending_slot(value: dict[str, object]) -> None:
+                value["keyslots"] = [
+                    slot
+                    for slot in value["keyslots"]
+                    if not (
+                        slot["wrapping_path"] == WrappingPath.RECOVERY.value
+                        and slot["credential_generation"] == prepared.pending_generation
+                        and slot["status"] == KeyslotStatus.PENDING.value
+                        and slot["frk_version"] == 1
+                    )
+                ]
+
+            update_core_manifest(remove_retained_pending_slot)
+            boundaries: list[CredentialBoundary] = []
+            with pytest.raises(ValueError, match="incomplete Filesystem Root key set"):
+                confirm_recovery_credential(
+                    db,
+                    user,
+                    recovery_phrase=prepared.recovery_phrase,
+                    pending_generation=prepared.pending_generation,
+                    scope=prepared.scope,
+                    failure_injector=boundaries.append,
+                )
+
+            manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+            assert boundaries == []
+            assert manifest["active_recovery_credential_generation"] == 1
+            assert {
+                (slot["credential_generation"], slot["status"])
+                for slot in manifest["keyslots"]
+                if slot["wrapping_path"] == WrappingPath.RECOVERY.value
+            } == {(1, KeyslotStatus.ACTIVE.value), (2, KeyslotStatus.PENDING.value)}
+            assert {
+                (row.credential_generation, row.status)
+                for row in db.query(SoulKeyslot).filter_by(
+                    wrapping_path=WrappingPath.RECOVERY.value
+                )
+            } == {(1, KeyslotStatus.ACTIVE.value), (2, KeyslotStatus.PENDING.value)}
+
+            old_roots = unlock_key_hierarchy(
+                db,
+                credential=old_phrase,
+                wrapping_path=WrappingPath.RECOVERY,
+                scope=PayloadScope.FULL,
+            )
+            assert set(old_roots.frks) == {1, 2}
+
+
+def test_filesystem_recovery_confirmation_rejects_missing_retained_frk_before_activation() -> None:
+    with managed_test_client("anima-fs-recovery-retained-frk-") as client:
+        registered = _register_user(client, password="password-123")
+        old_phrase = str(registered["recoveryPhrase"])
+        _provision_retained_frk(
+            password="password-123",
+            recovery_phrase=old_phrase,
+            scope=PayloadScope.FS,
+        )
+        prepared = prepare_filesystem_recovery_credential(
+            current_password="password-123",
+            current_recovery_phrase=old_phrase,
+        )
+
+        def remove_retained_pending_slot(value: dict[str, object]) -> None:
+            value["keyslots"] = [
+                slot
+                for slot in value["keyslots"]
+                if not (
+                    slot["wrapping_path"] == WrappingPath.RECOVERY.value
+                    and slot["credential_generation"] == prepared.pending_generation
+                    and slot["status"] == KeyslotStatus.PENDING.value
+                    and slot["frk_version"] == 1
+                )
+            ]
+
+        update_core_manifest(remove_retained_pending_slot)
+        boundaries: list[CredentialBoundary] = []
+        with pytest.raises(ValueError, match="incomplete Filesystem Root key set"):
+            confirm_filesystem_recovery_credential(
+                recovery_phrase=prepared.recovery_phrase,
+                pending_generation=prepared.pending_generation,
+                failure_injector=boundaries.append,
+            )
+
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert boundaries == []
+        assert manifest["active_recovery_credential_generation"] == 1
+        assert {
+            (slot["credential_generation"], slot["status"])
+            for slot in manifest["keyslots"]
+            if slot["wrapping_path"] == WrappingPath.RECOVERY.value
+        } == {(1, KeyslotStatus.ACTIVE.value), (2, KeyslotStatus.PENDING.value)}
+        old_roots = unlock_manifest_key_hierarchy(
+            credential=old_phrase,
+            wrapping_path=WrappingPath.RECOVERY,
+            expected_scope=PayloadScope.FS,
+        )
+        assert set(old_roots.frks) == {1, 2}
 
 
 def test_recovery_prepare_explicitly_upgrades_complete_legacy_account() -> None:

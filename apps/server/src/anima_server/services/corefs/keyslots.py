@@ -100,6 +100,22 @@ def validate_scope_completeness(
         raise ValueError("incomplete Filesystem Root key set")
 
 
+def _required_frk_versions_from_manifest(manifest: dict[str, object]) -> set[int]:
+    rotation = manifest.get("frk_rotation", {})
+    if not isinstance(rotation, dict):
+        raise ValueError("invalid FRK rotation state")
+    try:
+        required = {
+            int(rotation["active_version"]),
+            *(int(version) for version in rotation.get("decrypt_only_versions", [])),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid FRK rotation state") from exc
+    if any(version <= 0 for version in required):
+        raise ValueError("invalid FRK rotation state")
+    return required
+
+
 def _record_to_payload(record: WrappedDekRecord) -> dict[str, object]:
     return {
         "kdf_salt": record.kdf_salt,
@@ -621,15 +637,9 @@ def unlock_manifest_key_hierarchy(
                 raise ValueError("Filesystem Root keyslot is missing its FRK version")
             frks[slot.frk_version] = secret
 
-    rotation = manifest.get("frk_rotation", {})
-    if not isinstance(rotation, dict):
-        raise ValueError("invalid FRK rotation state")
     required_frks: set[int] = set()
     if scope in {PayloadScope.FULL, PayloadScope.FS}:
-        required_frks = {
-            int(rotation["active_version"]),
-            *(int(version) for version in rotation.get("decrypt_only_versions", [])),
-        }
+        required_frks = _required_frk_versions_from_manifest(manifest)
     validate_scope_completeness(
         scope,
         purposes=purposes,
@@ -703,7 +713,11 @@ def unlock_key_hierarchy(
         soul_domains=set(soul_domains),
         required_soul_domains=set(ALL_DOMAINS) if scope is not PayloadScope.FS else set(),
         frk_versions=set(roots.frks),
-        required_frk_versions=set(roots.frks),
+        required_frk_versions=(
+            _required_frk_versions_from_manifest(manifest)
+            if scope in {PayloadScope.FULL, PayloadScope.FS}
+            else set()
+        ),
     )
     return UnlockedKeyHierarchy(
         scope=scope,

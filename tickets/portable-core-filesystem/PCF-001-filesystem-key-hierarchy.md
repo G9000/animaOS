@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 01:09 MYT
+- Updated: 2026-07-14 02:11 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -45,10 +45,13 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-13 21:27 MYT - Implementation started on `codex/pcf-001-key-hierarchy`; isolated worktree dependencies installed and baseline Rust/crypto/recovery tests verified.
 - 2026-07-13 23:13 MYT - Implemented the native opaque FRK/Object-DEK boundary, owner-bound password/recovery generations, typed CoreFS AAD, two-phase recovery confirmation, scoped credential rotation, strict legacy backfill, migration compatibility coverage, and Security UI/API flow; validation is green and the ticket remains `in_progress` pending supervising-agent review.
 - 2026-07-14 01:09 MYT - Addressed follow-up security review findings: active versioned roots now gate login/recovery before SQLCipher, Soul crash finalization derives the active scope, genuine CoreFS-only credential replacement is manifest-only, persisted unwrap profiles are bounded, manifest publication is native and durable, and the closed object/FRK/password contracts are enforced. Ticket remains `in_progress` for re-review.
+- 2026-07-14 02:11 MYT - Addressed retained-FRK review findings: pending password and recovery generations now verify against the authoritative pre-activation FRK catalog, legacy upgrade uses its protocol-defined v1 catalog without publishing active markers early, and full/FS tamper tests prove failure before activation while the old credential generation remains usable. Ticket remains `in_progress` for re-review.
 
 ## Validation
 
 - Commands:
+  - Retained-FRK follow-up: targeted legacy-upgrade plus full/FS password/recovery tamper matrix - 5 passed; full `test_corefs_keyslots.py` - 31 passed; full `test_recovery.py` - 18 passed.
+  - Retained-FRK follow-up: scoped Ruff, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server`, and `git diff --check` passed.
   - Follow-up: `.venv\Scripts\maturin.exe develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt the editable extension and exported `corefs_atomic_publish`.
   - Follow-up: `cargo test -p anima-corefs` - 9 passed; `cargo test -p anima-core` - 218 passed; total Rust coverage 227 passed.
   - Follow-up: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_crypto.py apps/server/tests/test_corefs_crypto.py apps/server/tests/test_corefs_keyslots.py apps/server/tests/test_recovery.py apps/server/tests/test_auth.py -q` - 69 passed.
