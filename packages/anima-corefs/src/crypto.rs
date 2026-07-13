@@ -23,6 +23,87 @@ pub const CREDENTIAL_TIME_COST: u32 = 3;
 pub const CREDENTIAL_MEMORY_COST_KIB: u32 = 64 * 1024;
 pub const CREDENTIAL_PARALLELISM: u32 = 4;
 
+#[allow(clippy::too_many_arguments)]
+pub fn manifest_keyslot_aad(
+    core_id: &str,
+    owner_id: &str,
+    purpose: &str,
+    key_version: u32,
+    credential_generation: u32,
+    scope: &str,
+    frk_version: Option<u32>,
+    object_key_epoch: Option<u32>,
+    wrapping_path: &str,
+) -> Result<Vec<u8>, CryptoError> {
+    if core_id.is_empty()
+        || owner_id.is_empty()
+        || core_id.contains(':')
+        || owner_id.contains(':')
+        || key_version == 0
+        || credential_generation == 0
+        || !matches!(scope, "full" | "soul" | "fs")
+        || !matches!(wrapping_path, "password" | "recovery")
+    {
+        return Err(CryptoError::InvalidAad("invalid manifest keyslot metadata"));
+    }
+    match purpose {
+        "filesystem-root"
+            if frk_version == Some(key_version)
+                && object_key_epoch.is_some_and(|epoch| epoch > 0) => {}
+        "soul" if frk_version.is_none() && object_key_epoch.is_none() => {}
+        "filesystem-root" => {
+            return Err(CryptoError::InvalidAad(
+                "FRK keyslot metadata is incomplete",
+            ));
+        }
+        "soul" => {
+            return Err(CryptoError::InvalidAad(
+                "Soul keyslot declares filesystem metadata",
+            ));
+        }
+        _ => return Err(CryptoError::InvalidAad("invalid manifest keyslot purpose")),
+    }
+    let frk_version = frk_version
+        .map(|version| version.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let object_key_epoch = object_key_epoch
+        .map(|epoch| epoch.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    Ok(format!(
+        "anima-keyslot-v1:core={core_id}:owner={owner_id}:purpose={purpose}:\
+         version={key_version}:generation={credential_generation}:scope={scope}:\
+         frk-version={frk_version}:object-key-epoch={object_key_epoch}:path={wrapping_path}"
+    )
+    .into_bytes())
+}
+
+pub fn soul_keyslot_aad(
+    core_id: &str,
+    owner_id: &str,
+    domain: &str,
+    key_version: u32,
+    credential_generation: u32,
+    wrapping_path: &str,
+) -> Result<Vec<u8>, CryptoError> {
+    if core_id.is_empty()
+        || owner_id.is_empty()
+        || domain.is_empty()
+        || core_id.contains(':')
+        || owner_id.contains(':')
+        || domain.contains(':')
+        || key_version == 0
+        || credential_generation == 0
+        || !matches!(wrapping_path, "password" | "recovery")
+    {
+        return Err(CryptoError::InvalidAad("invalid Soul keyslot metadata"));
+    }
+    Ok(format!(
+        "anima-soul-keyslot-v1:core={core_id}:owner={owner_id}:domain={domain}:\
+         version={key_version}:generation={credential_generation}:path={wrapping_path}"
+    )
+    .into_bytes())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
     #[error("secret must be exactly 32 bytes")]
@@ -595,7 +676,7 @@ impl BodyFrameAad {
         }
         if plaintext_offset
             .checked_add(plaintext_length)
-            .is_none_or(|end| end > total_body_length)
+            .map_or(true, |end| end > total_body_length)
         {
             return Err(CryptoError::InvalidAad("invalid body chunk bounds"));
         }
@@ -751,6 +832,33 @@ mod tests {
 
     fn aad(kind: ObjectKind) -> ObjectKeyAad {
         ObjectKeyAad::new("019f-core", "019f-object", 7, kind, 1, 2, 3).unwrap()
+    }
+
+    #[test]
+    fn keyslot_aad_vectors_bind_immutable_metadata() {
+        assert_eq!(
+            manifest_keyslot_aad(
+                "019f-core",
+                "019f-owner",
+                "filesystem-root",
+                1,
+                2,
+                "full",
+                Some(1),
+                Some(3),
+                "password",
+            )
+            .unwrap(),
+            b"anima-keyslot-v1:core=019f-core:owner=019f-owner:purpose=filesystem-root:\
+              version=1:generation=2:scope=full:frk-version=1:object-key-epoch=3:path=password"
+                .to_vec(),
+        );
+        assert_eq!(
+            soul_keyslot_aad("019f-core", "019f-owner", "memories", 1, 2, "password",).unwrap(),
+            b"anima-soul-keyslot-v1:core=019f-core:owner=019f-owner:domain=memories:\
+              version=1:generation=2:path=password"
+                .to_vec(),
+        );
     }
 
     #[test]

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from threading import Event, Lock
 from uuid import UUID
 
 import anima_core
@@ -16,6 +19,8 @@ from anima_server.services.core import (
     ensure_core_manifest,
     get_manifest_path,
     get_owner_id,
+    get_recovery_sqlcipher_key,
+    get_user_id_from_index,
     get_wrapped_sqlcipher_key,
     store_user_index_entry,
     update_core_manifest,
@@ -35,6 +40,7 @@ from anima_server.services.corefs.keyslots import (
     _manifest_slot,
     _record_from_payload,
     _record_to_payload,
+    _unwrap_manifest_slot,
     manifest_has_versioned_key_hierarchy,
     unlock_key_hierarchy,
     unlock_manifest_key_hierarchy,
@@ -59,8 +65,13 @@ from sqlalchemy.orm import Session
 @pytest.fixture(autouse=True)
 def _reset_failed_login_attempts() -> Generator[None, None, None]:
     auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    admission = getattr(auth_routes, "_FS_CREDENTIAL_ADMISSION", None)
+    if admission is not None:
+        admission.reset()
     yield
     auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    if admission is not None:
+        admission.reset()
 
 
 def _wrapped_record() -> dict[str, object]:
@@ -83,6 +94,8 @@ def _provision_retained_frk(
     recovery_phrase: str,
     scope: PayloadScope,
 ) -> None:
+    if scope is PayloadScope.FS:
+        _make_filesystem_only(password=password, recovery_phrase=recovery_phrase)
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     active_frk = anima_core.corefs_generate_root_key()
     active_slots = [
@@ -108,7 +121,7 @@ def _provision_retained_frk(
 
     def retain_previous_frk(value: dict[str, object]) -> None:
         retained_slots = [
-            {**slot, "scope": scope.value}
+            slot
             for slot in value["keyslots"]
             if scope is PayloadScope.FULL or slot["purpose"] == KeyPurpose.FILESYSTEM_ROOT.value
         ]
@@ -124,6 +137,94 @@ def _provision_retained_frk(
             value["degraded_state"] = "recovery_only"
 
     update_core_manifest(retain_previous_frk)
+
+
+def _make_filesystem_only(*, password: str, recovery_phrase: str) -> None:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    converted: list[dict[str, object]] = []
+    for credential, path in (
+        (password, WrappingPath.PASSWORD),
+        (recovery_phrase, WrappingPath.RECOVERY),
+    ):
+        unlocked = unlock_manifest_key_hierarchy(
+            credential=credential,
+            wrapping_path=path,
+            expected_scope=PayloadScope.FULL,
+        )
+        for slot in manifest["keyslots"]:
+            if (
+                slot["purpose"] != KeyPurpose.FILESYSTEM_ROOT.value
+                or slot["wrapping_path"] != path.value
+                or slot["status"] != KeyslotStatus.ACTIVE.value
+                or slot["credential_generation"] != unlocked.credential_generation
+            ):
+                continue
+            version = int(slot["frk_version"])
+            converted.append(
+                _manifest_slot(
+                    credential,
+                    unlocked.frks[version],
+                    core_id=str(manifest["core_id"]),
+                    owner_id=unlocked.owner_id,
+                    purpose=KeyPurpose.FILESYSTEM_ROOT,
+                    wrapping_path=path,
+                    status=KeyslotStatus.ACTIVE,
+                    scope=PayloadScope.FS,
+                    key_version=int(slot["key_version"]),
+                    credential_generation=unlocked.credential_generation,
+                    frk_version=version,
+                    object_key_epoch=int(slot["object_key_epoch"]),
+                ).to_dict()
+            )
+
+    def publish(value: dict[str, object]) -> None:
+        value["keyslots"] = converted
+        value["degraded_state"] = "recovery_only"
+
+    update_core_manifest(publish)
+
+
+def _make_soul_only(*, password: str, recovery_phrase: str) -> None:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    converted: list[dict[str, object]] = []
+    for credential, path in (
+        (password, WrappingPath.PASSWORD),
+        (recovery_phrase, WrappingPath.RECOVERY),
+    ):
+        unlocked = unlock_manifest_key_hierarchy(
+            credential=credential,
+            wrapping_path=path,
+            expected_scope=PayloadScope.FULL,
+        )
+        assert unlocked.sqlcipher_key is not None
+        source = next(
+            slot
+            for slot in manifest["keyslots"]
+            if slot["purpose"] == KeyPurpose.SOUL.value
+            and slot["wrapping_path"] == path.value
+            and slot["status"] == KeyslotStatus.ACTIVE.value
+            and slot["credential_generation"] == unlocked.credential_generation
+        )
+        converted.append(
+            _manifest_slot(
+                credential,
+                unlocked.sqlcipher_key,
+                core_id=str(manifest["core_id"]),
+                owner_id=unlocked.owner_id,
+                purpose=KeyPurpose.SOUL,
+                wrapping_path=path,
+                status=KeyslotStatus.ACTIVE,
+                scope=PayloadScope.SOUL,
+                key_version=int(source["key_version"]),
+                credential_generation=unlocked.credential_generation,
+            ).to_dict()
+        )
+
+    def publish(value: dict[str, object]) -> None:
+        value["keyslots"] = converted
+        value["degraded_state"] = "filesystem_missing"
+
+    update_core_manifest(publish)
 
 
 def test_legacy_manifest_gets_one_stable_opaque_owner_before_keyslots(
@@ -331,7 +432,7 @@ def test_scoped_key_completeness_forbids_cross_compartment_material() -> None:
         )
 
 
-def test_soul_keyslots_are_owner_scoped_and_keep_credential_status_history() -> None:
+def test_soul_keyslot_identity_excludes_mutable_status() -> None:
     engine = create_engine("sqlite://")
     SoulKeyslot.__table__.create(engine)
     common = {
@@ -353,11 +454,14 @@ def test_soul_keyslots_are_owner_scoped_and_keep_credential_status_history() -> 
         "wrapped_dek": "ciphertext",
     }
     with Session(engine) as db:
-        db.add(SoulKeyslot(**common, status="active"))
-        db.add(SoulKeyslot(**common, status="decrypt-only"))
+        row = SoulKeyslot(**common, status="active")
+        db.add(row)
         db.commit()
 
-        db.add(SoulKeyslot(**common, status="active"))
+        row.status = "decrypt-only"
+        db.commit()
+
+        db.add(SoulKeyslot(**common, status="pending"))
         with pytest.raises(IntegrityError):
             db.commit()
 
@@ -368,6 +472,10 @@ def test_keyslot_wrapping_uses_distinct_exact_aad_contracts() -> None:
         owner_id="019f-owner",
         purpose=KeyPurpose.FILESYSTEM_ROOT,
         key_version=1,
+        credential_generation=2,
+        scope=PayloadScope.FULL,
+        frk_version=1,
+        object_key_epoch=3,
         wrapping_path=WrappingPath.PASSWORD,
     )
     soul_aad = soul_keyslot_aad(
@@ -375,16 +483,18 @@ def test_keyslot_wrapping_uses_distinct_exact_aad_contracts() -> None:
         owner_id="019f-owner",
         domain="memories",
         key_version=1,
+        credential_generation=2,
         wrapping_path=WrappingPath.PASSWORD,
     )
 
     assert manifest_aad == (
         b"anima-keyslot-v1:core=019f-core:owner=019f-owner:"
-        b"purpose=filesystem-root:version=1:path=password"
+        b"purpose=filesystem-root:version=1:generation=2:scope=full:"
+        b"frk-version=1:object-key-epoch=3:path=password"
     )
     assert soul_aad == (
         b"anima-soul-keyslot-v1:core=019f-core:owner=019f-owner:"
-        b"domain=memories:version=1:path=password"
+        b"domain=memories:version=1:generation=2:path=password"
     )
     assert manifest_aad != soul_aad
 
@@ -393,6 +503,73 @@ def test_keyslot_wrapping_uses_distinct_exact_aad_contracts() -> None:
     assert unwrap_keyslot_secret("password-123", wrapped, manifest_aad) == secret
     with pytest.raises(InvalidTag):
         unwrap_keyslot_secret("password-123", wrapped, soul_aad)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("credential_generation", 3),
+        ("scope", PayloadScope.FS),
+        ("object_key_epoch", 4),
+    ],
+)
+def test_manifest_keyslot_immutable_metadata_relabels_fail_authentication(
+    field: str,
+    replacement: object,
+) -> None:
+    root = anima_core.corefs_generate_root_key()
+    slot = _manifest_slot(
+        "password-123",
+        root,
+        core_id="019f-core",
+        owner_id="019f-owner",
+        purpose=KeyPurpose.FILESYSTEM_ROOT,
+        wrapping_path=WrappingPath.PASSWORD,
+        status=KeyslotStatus.ACTIVE,
+        scope=PayloadScope.FULL,
+        key_version=1,
+        credential_generation=2,
+        frk_version=1,
+        object_key_epoch=3,
+    )
+    relabeled = replace(slot, **{field: replacement})
+    relabeled_aad = manifest_keyslot_aad(
+        core_id="019f-core",
+        owner_id="019f-owner",
+        purpose=relabeled.purpose,
+        key_version=relabeled.key_version,
+        credential_generation=relabeled.credential_generation,
+        scope=relabeled.scope,
+        frk_version=relabeled.frk_version,
+        object_key_epoch=relabeled.object_key_epoch,
+        wrapping_path=relabeled.wrapping_path,
+    )
+
+    with pytest.raises(ValueError):
+        _unwrap_manifest_slot("password-123", relabeled, relabeled_aad)
+
+
+def test_soul_keyslot_generation_relabel_fails_authentication() -> None:
+    original_aad = soul_keyslot_aad(
+        core_id="019f-core",
+        owner_id="019f-owner",
+        domain="memories",
+        key_version=1,
+        credential_generation=2,
+        wrapping_path=WrappingPath.PASSWORD,
+    )
+    relabeled_aad = soul_keyslot_aad(
+        core_id="019f-core",
+        owner_id="019f-owner",
+        domain="memories",
+        key_version=1,
+        credential_generation=3,
+        wrapping_path=WrappingPath.PASSWORD,
+    )
+    wrapped = wrap_keyslot_secret("password-123", bytes([0x37]) * 32, original_aad)
+
+    with pytest.raises(InvalidTag):
+        unwrap_keyslot_secret("password-123", wrapped, relabeled_aad)
 
 
 def test_persisted_keyslot_argon2_profile_is_bounded_before_derivation() -> None:
@@ -454,6 +631,68 @@ def test_registration_provisions_complete_password_and_recovery_hierarchy() -> N
         assert manifest["active_recovery_credential_generation"] == 1
         assert manifest["frk_rotation"]["active_version"] == 1
         assert all("raw" not in key for key in manifest["keyslots"] for key in key)
+
+
+def test_registration_publishes_legacy_locators_before_hierarchy_activation(
+    monkeypatch,
+) -> None:
+    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    monkeypatch.setattr(
+        "anima_server.services.recovery.generate_recovery_phrase",
+        lambda: phrase,
+    )
+    monkeypatch.setattr(
+        "anima_server.services.corefs.keyslots.provision_initial_key_hierarchy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("before activation")),
+    )
+
+    with managed_test_client("anima-registration-before-activation-") as client:
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        assert response.status_code == 503
+        assert get_user_id_from_index("alice") == 0
+        assert get_recovery_sqlcipher_key() is not None
+
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "password-123"},
+        )
+        assert login.status_code == 200
+        recovery = client.post(
+            "/api/auth/recover",
+            json={
+                "recoveryPhrase": phrase,
+                "newPassword": "recovered-password-123",
+                "scope": "full",
+            },
+        )
+        assert recovery.status_code == 200
+
+
+def test_registration_crash_after_hierarchy_activation_keeps_account_locator(
+    monkeypatch,
+) -> None:
+    from anima_server.services.corefs import keyslots
+
+    original = keyslots.provision_initial_key_hierarchy
+
+    def activate_then_crash(*args, **kwargs) -> None:
+        original(*args, **kwargs)
+        raise RuntimeError("after activation")
+
+    monkeypatch.setattr(keyslots, "provision_initial_key_hierarchy", activate_then_crash)
+    with managed_test_client("anima-registration-after-activation-") as client:
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        assert response.status_code == 503
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert manifest["active_password_credential_generation"] == 1
+        assert get_user_id_from_index("alice") == 0
+        assert get_recovery_sqlcipher_key() is not None
 
 
 def test_versioned_login_never_falls_back_to_legacy_wrappers() -> None:
@@ -525,10 +764,13 @@ def test_activated_versioned_slots_block_legacy_login_and_recovery_without_marke
 
 def test_versioned_login_rejects_corrupt_active_manifest_soul_root() -> None:
     with managed_test_client("anima-versioned-root-corrupt-") as client:
-        assert client.post(
-            "/api/auth/register",
-            json={"username": "alice", "password": "password-123", "name": "Alice"},
-        ).status_code == 201
+        assert (
+            client.post(
+                "/api/auth/register",
+                json={"username": "alice", "password": "password-123", "name": "Alice"},
+            ).status_code
+            == 201
+        )
 
         def corrupt_active_soul_root(manifest: dict[str, object]) -> None:
             slots = list(manifest["keyslots"])
@@ -669,15 +911,10 @@ def test_soul_scoped_manifest_activation_crash_finalizes_during_login() -> None:
         )
         assert registered.status_code == 201
 
-        def make_soul_only(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = [
-                {**slot, "scope": "soul"}
-                for slot in manifest["keyslots"]
-                if slot["purpose"] == "soul"
-            ]
-            manifest["degraded_state"] = "filesystem_missing"
-
-        update_core_manifest(make_soul_only)
+        _make_soul_only(
+            password="password-123",
+            recovery_phrase=str(registered.json()["recoveryPhrase"]),
+        )
         with get_user_session_factory(0)() as db:
             user = db.get(User, 0)
             assert user is not None
@@ -716,15 +953,10 @@ def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() ->
         assert registered.status_code == 201
         recovery_phrase = registered.json()["recoveryPhrase"]
 
-        def make_fs_only(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = [
-                {**slot, "scope": "fs"}
-                for slot in manifest["keyslots"]
-                if slot["purpose"] == "filesystem-root"
-            ]
-            manifest["degraded_state"] = "recovery_only"
-
-        update_core_manifest(make_fs_only)
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(recovery_phrase),
+        )
         unlock_session_store.clear()
         clear_sqlcipher_key()
         dispose_all_user_engines()
@@ -760,6 +992,138 @@ def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() ->
         assert confirmed.status_code == 200
         assert confirmed.json() == {"success": True, "scope": "fs"}
         assert not user_dir.exists()
+
+
+def test_fs_credential_endpoints_share_precharged_client_limit(monkeypatch) -> None:
+    derived: list[str] = []
+
+    def reject_change(**_kwargs) -> None:
+        derived.append("change")
+        raise ValueError("invalid")
+
+    def reject_prepare(**_kwargs) -> None:
+        derived.append("prepare")
+        raise ValueError("invalid")
+
+    def reject_confirm(**_kwargs) -> None:
+        derived.append("confirm")
+        raise ValueError("invalid")
+
+    monkeypatch.setattr(auth_routes, "change_filesystem_password_credential", reject_change)
+    monkeypatch.setattr(auth_routes, "prepare_filesystem_recovery_credential", reject_prepare)
+    monkeypatch.setattr(auth_routes, "confirm_filesystem_recovery_credential", reject_confirm)
+
+    requests = [
+        (
+            "/api/auth/corefs/change-password",
+            {"currentPassword": "current-password", "newPassword": "new-password"},
+        ),
+        (
+            "/api/auth/corefs/recovery-credential/prepare",
+            {
+                "currentPassword": "current-password",
+                "currentRecoveryPhrase": "old recovery phrase",
+            },
+        ),
+        (
+            "/api/auth/corefs/recovery-credential/confirm",
+            {"recoveryPhrase": "new recovery phrase", "pendingGeneration": 2},
+        ),
+    ]
+    with managed_test_client("anima-fs-admission-rate-") as client:
+        responses = [
+            client.post(path, json=payload) for _ in range(2) for path, payload in requests
+        ]
+
+    assert [response.status_code for response in responses[:5]] == [401] * 5
+    assert responses[5].status_code == 429
+    assert len(derived) == 5
+
+
+def test_fs_credential_busy_rejection_happens_before_native_kdf(monkeypatch) -> None:
+    entered_kdf = Event()
+    release_kdf = Event()
+    call_lock = Lock()
+    kdf_calls = 0
+    original_unwrap = anima_core.corefs_unwrap_root_key
+
+    def blocking_unwrap(*args, **kwargs):
+        nonlocal kdf_calls
+        with call_lock:
+            kdf_calls += 1
+            call_number = kdf_calls
+        if call_number == 1:
+            entered_kdf.set()
+            if not release_kdf.wait(timeout=10):
+                raise RuntimeError("timed out waiting to release test KDF")
+        return original_unwrap(*args, **kwargs)
+
+    with managed_test_client("anima-fs-admission-busy-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        assert registered.status_code == 201
+
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered.json()["recoveryPhrase"]),
+        )
+        monkeypatch.setattr(anima_core, "corefs_unwrap_root_key", blocking_unwrap)
+        request = {
+            "currentPassword": "password-123",
+            "newPassword": "new-password-123",
+        }
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                client.post,
+                "/api/auth/corefs/change-password",
+                json=request,
+            )
+            assert entered_kdf.wait(timeout=10)
+            second = executor.submit(
+                client.post,
+                "/api/auth/corefs/change-password",
+                json=request,
+            )
+            second_response = second.result(timeout=30)
+            with call_lock:
+                calls_before_release = kdf_calls
+            release_kdf.set()
+            first_response = first.result(timeout=30)
+
+    assert second_response.status_code == 429
+    assert calls_before_release == 1
+    assert first_response.status_code == 200
+
+
+def test_filesystem_password_activation_rejects_stale_expected_generation() -> None:
+    with managed_test_client("anima-fs-password-stale-generation-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        assert registered.status_code == 201
+
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered.json()["recoveryPhrase"]),
+        )
+
+        def replace_active_generation(boundary: CredentialBoundary) -> None:
+            if boundary is CredentialBoundary.PENDING_REOPEN_VERIFIED:
+                update_core_manifest(
+                    lambda manifest: manifest.update(active_password_credential_generation=7)
+                )
+
+        with pytest.raises(ValueError, match="active password credential generation changed"):
+            change_filesystem_password_credential(
+                current_password="password-123",
+                new_password="new-password-123",
+                failure_injector=replace_active_generation,
+            )
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert manifest["active_password_credential_generation"] == 7
 
 
 def test_filesystem_password_rejects_missing_retained_frk_before_activation() -> None:
@@ -972,28 +1336,19 @@ def test_change_password_rejects_duplicate_for_missing_retained_frk_before_activ
             assert set(old_roots.frks) == {1, 2}
 
 
-@pytest.mark.parametrize(
-    ("scope", "retained_purpose"),
-    [
-        (PayloadScope.SOUL, "soul"),
-        (PayloadScope.FS, "filesystem-root"),
-    ],
-)
-def test_change_password_respects_degraded_compartment_scope(scope, retained_purpose) -> None:
+@pytest.mark.parametrize("scope", [PayloadScope.SOUL, PayloadScope.FS])
+def test_change_password_respects_degraded_compartment_scope(scope) -> None:
     with managed_test_client(f"anima-password-scope-{scope.value}-") as client:
         registered = client.post(
             "/api/auth/register",
             json={"username": "alice", "password": "password-123", "name": "Alice"},
         ).json()
 
-        def make_scoped(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = [
-                {**slot, "scope": scope.value}
-                for slot in manifest["keyslots"]
-                if slot["purpose"] == retained_purpose
-            ]
-
-        update_core_manifest(make_scoped)
+        make_scoped = _make_soul_only if scope is PayloadScope.SOUL else _make_filesystem_only
+        make_scoped(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
         session = unlock_session_store.resolve(registered["unlockToken"])
         assert session is not None
         with get_user_session_factory(0)() as db:

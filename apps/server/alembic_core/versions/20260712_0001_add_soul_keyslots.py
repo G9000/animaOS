@@ -37,8 +37,12 @@ def upgrade() -> None:
         sa.Column("wrap_iv", sa.String(255), nullable=False),
         sa.Column("wrap_tag", sa.String(255), nullable=False),
         sa.Column("wrapped_dek", sa.String(1024), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.CheckConstraint(
             "wrapping_path IN ('password', 'recovery')",
             name="ck_soul_keyslots_wrapping_path",
@@ -58,8 +62,7 @@ def upgrade() -> None:
             "wrapping_path",
             "key_version",
             "credential_generation",
-            "status",
-            name="uq_soul_keyslots_identity_status",
+            name="uq_soul_keyslots_identity",
         ),
     )
     op.create_index("ix_soul_keyslots_owner_id", "soul_keyslots", ["owner_id"])

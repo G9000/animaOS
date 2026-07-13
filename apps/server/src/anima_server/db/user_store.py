@@ -185,6 +185,18 @@ def register_account(
         # At this boundary the complete legacy account remains independently usable.
         set_owner_user_id(user_id)
 
+        # Publish every legacy account locator before versioned slots become
+        # authoritative. A crash before hierarchy activation must still leave
+        # both password login and recovery able to locate/open the account.
+        store_user_index_entry(normalized, user_id)
+        if sqlcipher_raw_key is not None:
+            from anima_server.services.core import store_recovery_sqlcipher_key
+
+            recovery_wrapped = wrap_sqlcipher_key_for_recovery(
+                recovery_phrase, sqlcipher_raw_key, user_id
+            )
+            store_recovery_sqlcipher_key(recovery_wrapped)
+
         if sqlcipher_raw_key is not None:
             from anima_server.services.corefs.keyslots import provision_initial_key_hierarchy
 
@@ -197,16 +209,6 @@ def register_account(
                 deks=deks,
             )
 
-    # Store recovery-wrapped SQLCipher key in manifest
-    if sqlcipher_raw_key is not None:
-        from anima_server.services.core import store_recovery_sqlcipher_key
-
-        recovery_wrapped = wrap_sqlcipher_key_for_recovery(
-            recovery_phrase, sqlcipher_raw_key, user_id
-        )
-        store_recovery_sqlcipher_key(recovery_wrapped)
-
-    store_user_index_entry(normalized, user_id)
     return serialize_user(user), deks, recovery_phrase
 
 

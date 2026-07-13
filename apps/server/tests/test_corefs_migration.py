@@ -28,7 +28,19 @@ def test_soul_keyslot_migration_roundtrips_without_touching_legacy_keys(
     engine = create_engine(f"sqlite:///{database.as_posix()}", future=True)
 
     _migrate(engine, "head")
-    assert inspect(engine).has_table("soul_keyslots")
+    head_inspector = inspect(engine)
+    assert head_inspector.has_table("soul_keyslots")
+    unique_constraints = {
+        constraint["name"]: constraint["column_names"]
+        for constraint in head_inspector.get_unique_constraints("soul_keyslots")
+    }
+    assert unique_constraints["uq_soul_keyslots_identity"] == [
+        "owner_id",
+        "domain",
+        "wrapping_path",
+        "key_version",
+        "credential_generation",
+    ]
     with engine.begin() as connection:
         connection.execute(
             text(

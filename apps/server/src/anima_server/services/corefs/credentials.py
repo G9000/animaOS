@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from uuid import uuid4
 
 import anima_core
 from sqlalchemy import select
@@ -38,6 +39,7 @@ from anima_server.services.corefs.keyslots import (
     validate_scope_completeness,
     verify_legacy_soul_keys,
 )
+from anima_server.services.corefs.transactions import serialized_credential_transaction
 from anima_server.services.corefs.types import (
     KeyPurpose,
     KeyslotStatus,
@@ -59,11 +61,74 @@ class CredentialBoundary(StrEnum):
 
 
 FailureInjector = Callable[[CredentialBoundary], None]
+_PENDING_RECOVERY_CREDENTIAL = "pending_recovery_credential"
+_COORDINATOR_ID = uuid4().hex
 
 
 def _inject(injector: FailureInjector | None, boundary: CredentialBoundary) -> None:
     if injector is not None:
         injector(boundary)
+
+
+def _require_active_generation(
+    manifest: dict[str, object],
+    path: WrappingPath,
+    expected: int,
+) -> None:
+    field = f"active_{path.value}_credential_generation"
+    if int(manifest.get(field, 0)) != expected:
+        raise ValueError(f"active {path.value} credential generation changed")
+
+
+def _reject_live_pending_recovery(manifest: dict[str, object]) -> None:
+    marker = manifest.get(_PENDING_RECOVERY_CREDENTIAL)
+    if (
+        isinstance(marker, dict)
+        and marker.get("phase") == "ready"
+        and marker.get("coordinator_id") == _COORDINATOR_ID
+    ):
+        raise ValueError("recovery credential preparation is in progress")
+
+
+def _set_pending_recovery_marker(
+    manifest: dict[str, object],
+    *,
+    generation: int,
+    scope: PayloadScope,
+    phase: str,
+) -> None:
+    manifest[_PENDING_RECOVERY_CREDENTIAL] = {
+        "generation": generation,
+        "scope": scope.value,
+        "phase": phase,
+        "coordinator_id": _COORDINATOR_ID,
+    }
+
+
+def _mark_pending_recovery_ready(
+    *,
+    generation: int,
+    scope: PayloadScope,
+    expected_active_generation: int,
+) -> None:
+    def mark_ready(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.RECOVERY, expected_active_generation)
+        marker = value.get(_PENDING_RECOVERY_CREDENTIAL)
+        if not isinstance(marker, dict) or (
+            marker.get("generation") != generation
+            or marker.get("scope") != scope.value
+            or marker.get("phase") != "preparing"
+            or marker.get("coordinator_id") != _COORDINATOR_ID
+        ):
+            raise ValueError("pending recovery credential marker changed")
+        _set_pending_recovery_marker(
+            value,
+            generation=generation,
+            scope=scope,
+            phase="ready",
+        )
+
+    update_core_manifest(mark_ready)
 
 
 def _legacy_manifest_payload(record: object, user_id: int) -> dict[str, object]:
@@ -117,6 +182,10 @@ def _verify_pending_password_generation(
             owner_id=owner_id,
             purpose=slot.purpose,
             key_version=slot.key_version,
+            credential_generation=slot.credential_generation,
+            scope=slot.scope,
+            frk_version=slot.frk_version,
+            object_key_epoch=slot.object_key_epoch,
             wrapping_path=WrappingPath.PASSWORD,
         )
         secret = _unwrap_manifest_slot(password, slot, aad)
@@ -155,6 +224,7 @@ def _verify_pending_password_generation(
             owner_id=owner_id,
             domain=row.domain,
             key_version=row.key_version,
+            credential_generation=row.credential_generation,
             wrapping_path=WrappingPath.PASSWORD,
         )
         if (
@@ -203,6 +273,7 @@ def _rewrap_legacy_password_rows(
         row.wrapped_dek = wrapped.wrapped_dek
 
 
+@serialized_credential_transaction
 def change_password_credential_generation(
     db: Session,
     user: User,
@@ -264,6 +335,7 @@ def change_password_credential_generation(
     ):
 
         def _discard_stale_pending(value: dict[str, object]) -> None:
+            _require_active_generation(value, WrappingPath.PASSWORD, previous_generation)
             value["keyslots"] = [
                 slot.to_dict()
                 for slot in _manifest_slots(value)
@@ -326,6 +398,7 @@ def change_password_credential_generation(
     ]
 
     def _write_pending(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.PASSWORD, previous_generation)
         value["keyslots"] = [*_manifest_slots(value), *pending_slots]
         value["keyslots"] = [slot.to_dict() for slot in value["keyslots"]]
 
@@ -351,6 +424,7 @@ def change_password_credential_generation(
     )
 
     def _activate_manifest(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.PASSWORD, previous_generation)
         activated = []
         for slot in _manifest_slots(value):
             if slot.wrapping_path is WrappingPath.PASSWORD and slot.scope is scope:
@@ -416,6 +490,7 @@ def change_password_credential_generation(
     _inject(failure_injector, CredentialBoundary.ACTIVE_REOPEN_VERIFIED)
 
 
+@serialized_credential_transaction
 def recover_password_credential_generation(
     db: Session,
     user: User,
@@ -444,6 +519,7 @@ def recover_password_credential_generation(
     return source.soul_domains
 
 
+@serialized_credential_transaction
 def finalize_pending_password_generation(
     db: Session,
     user: User,
@@ -552,6 +628,7 @@ def _filesystem_roots_match(
     )
 
 
+@serialized_credential_transaction
 def change_filesystem_password_credential(
     *,
     current_password: str,
@@ -588,6 +665,7 @@ def change_filesystem_password_credential(
     ]
 
     def write_pending(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.PASSWORD, previous_generation)
         retained = [
             slot
             for slot in _manifest_slots(value)
@@ -616,6 +694,7 @@ def change_filesystem_password_credential(
     _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
 
     def activate(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.PASSWORD, previous_generation)
         activated: list[dict[str, object]] = []
         for slot in _manifest_slots(value):
             if slot.wrapping_path is WrappingPath.PASSWORD and slot.scope is PayloadScope.FS:
@@ -645,6 +724,7 @@ def change_filesystem_password_credential(
     _inject(failure_injector, CredentialBoundary.ACTIVE_REOPEN_VERIFIED)
 
 
+@serialized_credential_transaction
 def prepare_filesystem_recovery_credential(
     *,
     current_password: str,
@@ -652,6 +732,10 @@ def prepare_filesystem_recovery_credential(
     failure_injector: FailureInjector | None = None,
 ) -> PreparedRecoveryCredential:
     """Prepare a replacement FS-only recovery phrase using manifest roots only."""
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    active_generation = int(manifest["active_recovery_credential_generation"])
+    generation = active_generation + 1
+    _reject_live_pending_recovery(manifest)
     password_roots = unlock_manifest_key_hierarchy(
         credential=current_password,
         wrapping_path=WrappingPath.PASSWORD,
@@ -666,10 +750,10 @@ def prepare_filesystem_recovery_credential(
         password_roots.frks, recovery_roots.frks
     ):
         raise ValueError("filesystem password and recovery roots do not match")
+    if recovery_roots.credential_generation != active_generation:
+        raise ValueError("active recovery credential generation changed")
 
-    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     core_id = str(manifest["core_id"])
-    generation = recovery_roots.credential_generation + 1
     object_key_epoch = int(dict(manifest["frk_rotation"]).get("object_key_epoch", 1))
     phrase = generate_recovery_phrase()
     pending_slots = [
@@ -691,6 +775,7 @@ def prepare_filesystem_recovery_credential(
     ]
 
     def write_pending(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.RECOVERY, active_generation)
         retained = [
             slot
             for slot in _manifest_slots(value)
@@ -704,6 +789,12 @@ def prepare_filesystem_recovery_credential(
             *(slot.to_dict() for slot in retained),
             *(slot.to_dict() for slot in pending_slots),
         ]
+        _set_pending_recovery_marker(
+            value,
+            generation=generation,
+            scope=PayloadScope.FS,
+            phase="preparing",
+        )
 
     update_core_manifest(write_pending)
     _inject(failure_injector, CredentialBoundary.MANIFEST_PENDING_DURABLE)
@@ -717,9 +808,15 @@ def prepare_filesystem_recovery_credential(
     if not _filesystem_roots_match(pending.frks, recovery_roots.frks):
         raise ValueError("pending filesystem recovery generation verification failed")
     _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
+    _mark_pending_recovery_ready(
+        generation=generation,
+        scope=PayloadScope.FS,
+        expected_active_generation=active_generation,
+    )
     return PreparedRecoveryCredential(phrase, generation, PayloadScope.FS)
 
 
+@serialized_credential_transaction
 def confirm_filesystem_recovery_credential(
     *,
     recovery_phrase: str,
@@ -746,6 +843,7 @@ def confirm_filesystem_recovery_credential(
     if active_generation < pending_generation:
 
         def activate(value: dict[str, object]) -> None:
+            _require_active_generation(value, WrappingPath.RECOVERY, active_generation)
             activated: list[dict[str, object]] = []
             for slot in _manifest_slots(value):
                 if slot.wrapping_path is WrappingPath.RECOVERY and slot.scope is PayloadScope.FS:
@@ -762,6 +860,7 @@ def confirm_filesystem_recovery_credential(
                 activated.append(slot.to_dict())
             value["keyslots"] = activated
             value["active_recovery_credential_generation"] = pending_generation
+            value.pop(_PENDING_RECOVERY_CREDENTIAL, None)
 
         update_core_manifest(activate)
         _inject(failure_injector, CredentialBoundary.MANIFEST_ACTIVATED)
@@ -841,6 +940,7 @@ def _discard_pending_recovery(
     owner_id: str,
     generation: int,
     include_password: bool,
+    expected_active_generation: int,
 ) -> dict[str, object]:
     paths = [WrappingPath.RECOVERY.value]
     if include_password:
@@ -861,6 +961,7 @@ def _discard_pending_recovery(
         db.commit()
 
     def discard(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.RECOVERY, expected_active_generation)
         value["keyslots"] = [
             slot.to_dict()
             for slot in _manifest_slots(value)
@@ -870,6 +971,9 @@ def _discard_pending_recovery(
                 and slot.status is KeyslotStatus.PENDING
             )
         ]
+        marker = value.get(_PENDING_RECOVERY_CREDENTIAL)
+        if isinstance(marker, dict) and marker.get("generation") == generation:
+            value.pop(_PENDING_RECOVERY_CREDENTIAL, None)
 
     return update_core_manifest(discard)
 
@@ -905,6 +1009,10 @@ def _unlock_recovery_generation(
             owner_id=owner_id,
             purpose=slot.purpose,
             key_version=slot.key_version,
+            credential_generation=slot.credential_generation,
+            scope=slot.scope,
+            frk_version=slot.frk_version,
+            object_key_epoch=slot.object_key_epoch,
             wrapping_path=WrappingPath.RECOVERY,
         )
         secret = _unwrap_manifest_slot(credential, slot, aad)
@@ -940,6 +1048,7 @@ def _unlock_recovery_generation(
                 owner_id=owner_id,
                 domain=row.domain,
                 key_version=row.key_version,
+                credential_generation=row.credential_generation,
                 wrapping_path=WrappingPath.RECOVERY,
             )
             soul_domains[row.domain] = unwrap_keyslot_secret(
@@ -966,6 +1075,7 @@ def _unlock_recovery_generation(
     )
 
 
+@serialized_credential_transaction
 def prepare_recovery_credential(
     db: Session,
     user: User,
@@ -982,6 +1092,7 @@ def prepare_recovery_credential(
     core_id = str(manifest["core_id"])
     owner_id = str(manifest["owner_id"])
     active_generation = int(manifest.get("active_recovery_credential_generation", 0))
+    _reject_live_pending_recovery(manifest)
     upgrading_legacy = active_generation == 0
     if upgrading_legacy and scope is not PayloadScope.FULL:
         raise ValueError("legacy hierarchy upgrade requires full scope")
@@ -1029,7 +1140,19 @@ def prepare_recovery_credential(
         owner_id=owner_id,
         generation=generation,
         include_password=upgrading_legacy,
+        expected_active_generation=active_generation,
     )
+
+    def mark_preparing(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.RECOVERY, active_generation)
+        _set_pending_recovery_marker(
+            value,
+            generation=generation,
+            scope=scope,
+            phase="preparing",
+        )
+
+    manifest = update_core_manifest(mark_preparing)
     new_phrase = generate_recovery_phrase()
     soul_credentials = [(new_phrase, WrappingPath.RECOVERY)]
     if upgrading_legacy:
@@ -1087,6 +1210,7 @@ def prepare_recovery_credential(
     ]
 
     def write_pending(value: dict[str, object]) -> None:
+        _require_active_generation(value, WrappingPath.RECOVERY, active_generation)
         value["keyslots"] = [
             *(slot.to_dict() for slot in _manifest_slots(value)),
             *(slot.to_dict() for slot in pending_slots),
@@ -1122,9 +1246,15 @@ def prepare_recovery_credential(
             expected_domains=unlocked.soul_domains,
         )
     _inject(failure_injector, CredentialBoundary.PENDING_REOPEN_VERIFIED)
+    _mark_pending_recovery_ready(
+        generation=generation,
+        scope=scope,
+        expected_active_generation=active_generation,
+    )
     return PreparedRecoveryCredential(new_phrase, generation, scope)
 
 
+@serialized_credential_transaction
 def confirm_recovery_credential(
     db: Session,
     user: User,
@@ -1185,6 +1315,7 @@ def confirm_recovery_credential(
         )
 
         def activate(value: dict[str, object]) -> None:
+            _require_active_generation(value, WrappingPath.RECOVERY, active_generation)
             activated = []
             for slot in _manifest_slots(value):
                 selected_recovery = (
@@ -1209,6 +1340,7 @@ def confirm_recovery_credential(
                 activated.append(slot.to_dict())
             value["keyslots"] = activated
             value["active_recovery_credential_generation"] = pending_generation
+            value.pop(_PENDING_RECOVERY_CREDENTIAL, None)
             if upgrading_legacy:
                 value["active_password_credential_generation"] = pending_generation
                 value["frk_rotation"] = {

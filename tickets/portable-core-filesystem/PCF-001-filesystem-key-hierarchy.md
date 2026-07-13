@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 02:49 MYT
+- Updated: 2026-07-14 04:05 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -47,10 +47,17 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-14 01:09 MYT - Addressed follow-up security review findings: active versioned roots now gate login/recovery before SQLCipher, Soul crash finalization derives the active scope, genuine CoreFS-only credential replacement is manifest-only, persisted unwrap profiles are bounded, manifest publication is native and durable, and the closed object/FRK/password contracts are enforced. Ticket remains `in_progress` for re-review.
 - 2026-07-14 02:11 MYT - Addressed retained-FRK review findings: pending password and recovery generations now verify against the authoritative pre-activation FRK catalog, legacy upgrade uses its protocol-defined v1 catalog without publishing active markers early, and full/FS tamper tests prove failure before activation while the old credential generation remains usable. Ticket remains `in_progress` for re-review.
 - 2026-07-14 02:49 MYT - Addressed the fourth follow-up: activated keyslot evidence now prevents legacy fallback when generation markers are removed while PENDING-only legacy-upgrade slots remain non-authoritative; legacy confirmation revalidates both password and recovery generations immediately before activation and reopens both afterward; the desktop supplies the current password only from ephemeral review state. Clarified that PCF-001 preserves legacy manifest compatibility fields for PCF-007. Ticket remains `in_progress` for re-review.
+- 2026-07-14 04:05 MYT - Addressed the fifth quality review: registration now publishes legacy login/recovery locators before activating versioned authority; native AAD binds immutable generation/scope/FRK/object-epoch metadata while status transitions in place; unauthenticated CoreFS credential routes share pre-KDF rate/concurrency admission; credential coordinators serialize complete transactions with active-generation CAS; and a live prepared recovery phrase cannot be replaced by a second prepare. Ticket remains `in_progress` for supervising-agent re-review.
 
 ## Validation
 
 - Commands:
+  - Fifth follow-up TDD: the combined review regression command passed 15 tests after implementation; focused red runs previously failed 9 AAD/schema/registration tests and 6 admission/concurrency tests before implementation.
+  - Fifth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest -q apps/server/tests/test_corefs_keyslots.py` - 42 passed; the equivalent `test_recovery.py` run - 24 passed.
+  - Fifth follow-up crypto/migration bundle: `test_corefs_crypto.py test_corefs_migration.py test_crypto.py test_data_crypto.py` - 26 passed.
+  - Fifth follow-up native verification: `cargo test -p anima-corefs` - 10 passed; `cargo test -p anima-core --features python` - 274 passed after adding the uv Python DLL directory to `PATH`; `cargo build -p anima-core --features python` passed. `rg is_none_or packages apps/server/src apps/server/tests` returned no matches for Rust 1.75 source compatibility.
+  - Fifth follow-up application verification: `bun run lint:desktop`, `bun run build:desktop`, `bun run lint:server`, and `bun run build:server` passed; `bun run db:server:heads` reported exactly `20260712_0001 (head)`.
+  - Fifth follow-up full desktop tests: 55 passed, with 2 unrelated existing navigation failures plus one missing `LayoutTopNav` module-load error; the three recovery-credential replacement tests passed. Whole-workspace `cargo fmt --check` also remains baseline-dirty in unrelated Rust files, which were not modified.
   - Fourth follow-up TDD: the focused backend regression set failed 5 tests before implementation and passed 5 tests afterward; the desktop recovery test failed 2 of 3 tests before implementation and passed 3 of 3 afterward.
   - Fourth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 33 passed; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_recovery.py -q` - 21 passed.
   - Fourth follow-up: `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 3 passed; `bun run build:desktop`, `bun run lint:server`, and `bun run build:server` passed.

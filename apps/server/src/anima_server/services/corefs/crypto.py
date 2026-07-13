@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from anima_server.services.corefs.types import KeyPurpose, WrappingPath
+import anima_core
+
+from anima_server.services.corefs.types import KeyPurpose, PayloadScope, WrappingPath
 from anima_server.services.crypto import (
     WrappedDekRecord,
     unwrap_secret_with_aad,
@@ -14,14 +16,25 @@ def manifest_keyslot_aad(
     owner_id: str,
     purpose: KeyPurpose,
     key_version: int,
+    credential_generation: int,
+    scope: PayloadScope,
+    frk_version: int | None,
+    object_key_epoch: int | None,
     wrapping_path: WrappingPath,
 ) -> bytes:
-    if not core_id or not owner_id or key_version <= 0:
-        raise ValueError("invalid manifest keyslot AAD")
-    return (
-        f"anima-keyslot-v1:core={core_id}:owner={owner_id}:"
-        f"purpose={purpose.value}:version={key_version}:path={wrapping_path.value}"
-    ).encode()
+    return bytes(
+        anima_core.corefs_manifest_keyslot_aad(
+            core_id,
+            owner_id,
+            purpose.value,
+            key_version,
+            credential_generation,
+            scope.value,
+            frk_version,
+            object_key_epoch,
+            wrapping_path.value,
+        )
+    )
 
 
 def soul_keyslot_aad(
@@ -30,14 +43,19 @@ def soul_keyslot_aad(
     owner_id: str,
     domain: str,
     key_version: int,
+    credential_generation: int,
     wrapping_path: WrappingPath,
 ) -> bytes:
-    if not core_id or not owner_id or not domain or key_version <= 0:
-        raise ValueError("invalid Soul keyslot AAD")
-    return (
-        f"anima-soul-keyslot-v1:core={core_id}:owner={owner_id}:"
-        f"domain={domain}:version={key_version}:path={wrapping_path.value}"
-    ).encode()
+    return bytes(
+        anima_core.corefs_soul_keyslot_aad(
+            core_id,
+            owner_id,
+            domain,
+            key_version,
+            credential_generation,
+            wrapping_path.value,
+        )
+    )
 
 
 def wrap_keyslot_secret(

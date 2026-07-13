@@ -191,6 +191,68 @@ mod python {
     }
 
     #[pyfunction]
+    #[pyo3(signature = (
+        core_id,
+        owner_id,
+        purpose,
+        key_version,
+        credential_generation,
+        scope,
+        frk_version,
+        object_key_epoch,
+        wrapping_path
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_manifest_keyslot_aad(
+        py: Python<'_>,
+        core_id: &str,
+        owner_id: &str,
+        purpose: &str,
+        key_version: u32,
+        credential_generation: u32,
+        scope: &str,
+        frk_version: Option<u32>,
+        object_key_epoch: Option<u32>,
+        wrapping_path: &str,
+    ) -> PyResult<PyObject> {
+        let aad = anima_corefs::crypto::manifest_keyslot_aad(
+            core_id,
+            owner_id,
+            purpose,
+            key_version,
+            credential_generation,
+            scope,
+            frk_version,
+            object_key_epoch,
+            wrapping_path,
+        )
+        .map_err(corefs_value_error)?;
+        Ok(PyBytes::new_bound(py, &aad).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_soul_keyslot_aad(
+        py: Python<'_>,
+        core_id: &str,
+        owner_id: &str,
+        domain: &str,
+        key_version: u32,
+        credential_generation: u32,
+        wrapping_path: &str,
+    ) -> PyResult<PyObject> {
+        let aad = anima_corefs::crypto::soul_keyslot_aad(
+            core_id,
+            owner_id,
+            domain,
+            key_version,
+            credential_generation,
+            wrapping_path,
+        )
+        .map_err(corefs_value_error)?;
+        Ok(PyBytes::new_bound(py, &aad).into_py(py))
+    }
+
+    #[pyfunction]
     fn corefs_wrap_root_key(
         credential: &str,
         root: &PyCorefsRootKey,
@@ -1867,6 +1929,8 @@ mod python {
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
         m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_manifest_keyslot_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_soul_keyslot_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_generate_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_wrap_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_unwrap_root_key, m)?)?;

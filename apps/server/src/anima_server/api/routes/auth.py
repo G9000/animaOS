@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -43,6 +45,10 @@ from anima_server.services.auth import (
     normalize_username,
     serialize_user,
 )
+from anima_server.services.corefs.admission import (
+    FsCredentialAdmission,
+    FsCredentialAdmissionRejected,
+)
 from anima_server.services.corefs.credentials import (
     change_filesystem_password_credential,
     change_password_credential_generation,
@@ -60,6 +66,7 @@ logger = logging.getLogger(__name__)
 _FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_FS_CREDENTIAL_ADMISSION = FsCredentialAdmission()
 
 
 def _prune_failed_login_attempts(now: float) -> None:
@@ -93,6 +100,20 @@ def _rate_limited_login_response(retry_after: int) -> JSONResponse:
         content={"error": "Too many failed login attempts. Try again later."},
         headers={"Retry-After": str(retry_after)},
     )
+
+
+@contextmanager
+def _admit_fs_credential_work(request: Request) -> Iterator[None]:
+    client_id = request.client.host if request.client is not None else "unknown"
+    try:
+        with _FS_CREDENTIAL_ADMISSION.admit(client_id):
+            yield
+    except FsCredentialAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many filesystem credential attempts. Try again later.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
 
 
 @router.post("/create-ai/chat", response_model=CreateAIChatResponse)
@@ -245,14 +266,18 @@ def change_password(
 
 
 @router.post("/corefs/change-password", response_model=CorefsCredentialResponse)
-def change_corefs_password(payload: CorefsChangePasswordRequest) -> dict[str, object]:
-    try:
-        change_filesystem_password_credential(
-            current_password=payload.currentPassword,
-            new_password=payload.newPassword,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from None
+def change_corefs_password(
+    payload: CorefsChangePasswordRequest,
+    request: Request,
+) -> dict[str, object]:
+    with _admit_fs_credential_work(request):
+        try:
+            change_filesystem_password_credential(
+                current_password=payload.currentPassword,
+                new_password=payload.newPassword,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from None
     return {"success": True, "scope": "fs"}
 
 
@@ -262,14 +287,16 @@ def change_corefs_password(payload: CorefsChangePasswordRequest) -> dict[str, ob
 )
 def prepare_corefs_recovery(
     payload: PrepareCorefsRecoveryCredentialRequest,
+    request: Request,
 ) -> dict[str, object]:
-    try:
-        prepared = prepare_filesystem_recovery_credential(
-            current_password=payload.currentPassword,
-            current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from None
+    with _admit_fs_credential_work(request):
+        try:
+            prepared = prepare_filesystem_recovery_credential(
+                current_password=payload.currentPassword,
+                current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from None
     return {
         "success": True,
         "recoveryPhrase": prepared.recovery_phrase,
@@ -284,14 +311,16 @@ def prepare_corefs_recovery(
 )
 def confirm_corefs_recovery(
     payload: ConfirmCorefsRecoveryCredentialRequest,
+    request: Request,
 ) -> dict[str, object]:
-    try:
-        confirm_filesystem_recovery_credential(
-            recovery_phrase=payload.recoveryPhrase.strip().lower(),
-            pending_generation=payload.pendingGeneration,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from None
+    with _admit_fs_credential_work(request):
+        try:
+            confirm_filesystem_recovery_credential(
+                recovery_phrase=payload.recoveryPhrase.strip().lower(),
+                pending_generation=payload.pendingGeneration,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from None
     return {"success": True, "scope": "fs"}
 
 

@@ -236,6 +236,10 @@ def _manifest_slot(
         owner_id=owner_id,
         purpose=purpose,
         key_version=key_version,
+        credential_generation=credential_generation,
+        scope=scope,
+        frk_version=frk_version,
+        object_key_epoch=object_key_epoch,
         wrapping_path=wrapping_path,
     )
     if purpose is KeyPurpose.FILESYSTEM_ROOT:
@@ -302,6 +306,7 @@ def _build_soul_row(
         owner_id=owner_id,
         domain=domain,
         key_version=key_version,
+        credential_generation=credential_generation,
         wrapping_path=wrapping_path,
     )
     wrapped = wrap_keyslot_secret(credential, secret, aad)
@@ -374,6 +379,7 @@ def backfill_legacy_soul_keyslots(
                 owner_id=owner_id,
                 domain=row.domain,
                 key_version=row.key_version,
+                credential_generation=row.credential_generation,
                 wrapping_path=WrappingPath(row.wrapping_path),
             )
             if (
@@ -639,6 +645,10 @@ def unlock_manifest_key_hierarchy(
             owner_id=owner_id,
             purpose=slot.purpose,
             key_version=slot.key_version,
+            credential_generation=slot.credential_generation,
+            scope=slot.scope,
+            frk_version=slot.frk_version,
+            object_key_epoch=slot.object_key_epoch,
             wrapping_path=wrapping_path,
         )
         secret = _unwrap_manifest_slot(credential, slot, aad)
@@ -711,6 +721,7 @@ def unlock_key_hierarchy(
                 owner_id=owner_id,
                 domain=row.domain,
                 key_version=row.key_version,
+                credential_generation=row.credential_generation,
                 wrapping_path=wrapping_path,
             )
             soul_domains[row.domain] = unwrap_keyslot_secret(

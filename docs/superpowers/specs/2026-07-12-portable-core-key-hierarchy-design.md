@@ -29,7 +29,7 @@ Exact serialization is an implementation detail; key roles, separation, associat
 4. Catalogs and content objects never use the same derived encryption key.
 5. Every content object has a random object DEK; large attachments do not share a global payload DEK.
 6. AES-GCM nonce reuse under the same key is forbidden and tested.
-7. Keyslot AAD binds Core ID, opaque owner ID, domain, purpose, and key version.
+7. Keyslot AAD binds Core ID, opaque owner ID, domain/purpose, key version, credential generation, scope, FRK version, object-key epoch, and wrapping path as applicable. Mutable activation status is excluded.
 8. Object base AAD binds Core ID, object ID, revision, kind, envelope version, and object-key epoch; metadata/body frame AAD additionally binds the framing contract below.
 9. A new key version is decryptable through both passphrase and recovery paths before it can become active.
 10. Old key material remains decrypt-only until every retained catalog/object that needs it is either rewrapped, re-encrypted, or intentionally pruned.
@@ -69,7 +69,7 @@ The current `wrap_dek` implementation derives one KEK per wrapped record using a
 The plaintext manifest contains no raw key or private profile data. It may contain:
 
 - Core ID and opaque owner ID
-- keyslot purpose/domain/version/status
+- keyslot purpose/domain/version/generation/scope/status
 - Argon2id salt and cost parameters
 - AES-GCM wrapping nonce/tag/ciphertext
 - cipher/KDF identifiers
@@ -83,7 +83,7 @@ Required keyslot purposes:
 | active Filesystem Root Key | yes | yes | derives catalog/object-wrap/search subkeys |
 | decrypt-only Filesystem Root Key | yes while retained | yes while retained | opens retained old catalogs/key wraps during rotation |
 
-Existing field-level Soul domain DEKs migrate from application-coupled `user_keys` rows into a Soul-internal `soul_keyslots` table keyed by opaque owner ID, domain, wrapping path, and version. They remain inside SQLCipher because they protect Soul fields, but no longer depend on the application `users` table. Every active domain has both password- and recovery-wrapped rows. Unlock first opens SQLCipher through the manifest Soul keyslot, then unwraps these internal domain DEKs. Normal `full` recovery is incomplete unless every active Soul domain and required Filesystem Root Key can be opened; intentionally scoped `soul` and `fs` artifacts use the completeness rules in Section 7.5.
+Existing field-level Soul domain DEKs migrate from application-coupled `user_keys` rows into a Soul-internal `soul_keyslots` table keyed by opaque owner ID, domain, wrapping path, key version, and credential generation. Mutable status is not part of that unique identity; activation changes the existing row in place. They remain inside SQLCipher because they protect Soul fields, but no longer depend on the application `users` table. Every active domain has both password- and recovery-wrapped rows. Unlock first opens SQLCipher through the manifest Soul keyslot, then unwraps these internal domain DEKs. Normal `full` recovery is incomplete unless every active Soul domain and required Filesystem Root Key can be opened; intentionally scoped `soul` and `fs` artifacts use the completeness rules in Section 7.5.
 
 Keyslot wrapping AAD:
 
@@ -93,10 +93,26 @@ anima-keyslot-v1:
   owner=<opaque-owner-id>:
   purpose=<soul|filesystem-root>:
   version=<n>:
+  generation=<credential-generation>:
+  scope=<full|soul|fs>:
+  frk-version=<n|none>:
+  object-key-epoch=<n|none>:
   path=<password|recovery>
 ```
 
-Soul-internal domain-keyslot AAD uses a separate versioned label and binds Core ID, opaque owner ID, Soul domain, key version, and password/recovery path. Reusing the manifest keyslot AAD label for Soul field-domain keys is forbidden.
+Soul-internal domain-keyslot AAD uses a separate versioned label and binds Core ID, opaque owner ID, Soul domain, key version, credential generation, and password/recovery path:
+
+```text
+anima-soul-keyslot-v1:
+  core=<core-id>:
+  owner=<opaque-owner-id>:
+  domain=<soul-domain>:
+  version=<n>:
+  generation=<credential-generation>:
+  path=<password|recovery>
+```
+
+Reusing the manifest keyslot AAD label for Soul field-domain keys is forbidden. Status is deliberately excluded from both AAD contracts because `pending` to `active` to `decrypt-only` transitions mutate the same authenticated wrapper identity. Binding immutable metadata prevents relabeling a wrapper into another generation or scope, but it does not eliminate intentional offline rollback to a complete older authenticated manifest/keyslot snapshot while the corresponding decrypt-only wrappers are retained.
 
 ## 5. Content Subkeys and Object Keys
 

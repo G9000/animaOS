@@ -17,8 +17,7 @@ class SoulKeyslot(Base):
             "wrapping_path",
             "key_version",
             "credential_generation",
-            "status",
-            name="uq_soul_keyslots_identity_status",
+            name="uq_soul_keyslots_identity",
         ),
         CheckConstraint(
             "wrapping_path IN ('password', 'recovery')",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import anima_core
 import pytest
@@ -36,8 +38,13 @@ from fastapi.testclient import TestClient
 @pytest.fixture(autouse=True)
 def _reset_failed_login_attempts() -> Generator[None, None, None]:
     auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    admission = getattr(auth_routes, "_FS_CREDENTIAL_ADMISSION", None)
+    if admission is not None:
+        admission.reset()
     yield
     auth_routes._FAILED_LOGIN_ATTEMPTS.clear()
+    if admission is not None:
+        admission.reset()
 
 
 def _register_user(
@@ -61,6 +68,8 @@ def _provision_retained_frk(
     recovery_phrase: str,
     scope: PayloadScope = PayloadScope.FULL,
 ) -> None:
+    if scope is PayloadScope.FS:
+        _make_filesystem_only(password=password, recovery_phrase=recovery_phrase)
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     active_frk = anima_core.corefs_generate_root_key()
     active_slots = [
@@ -86,7 +95,7 @@ def _provision_retained_frk(
 
     def retain_previous_frk(value: dict[str, object]) -> None:
         retained_slots = [
-            {**slot, "scope": scope.value}
+            slot
             for slot in value["keyslots"]
             if scope is PayloadScope.FULL or slot["purpose"] == KeyPurpose.FILESYSTEM_ROOT.value
         ]
@@ -102,6 +111,94 @@ def _provision_retained_frk(
             value["degraded_state"] = "recovery_only"
 
     update_core_manifest(retain_previous_frk)
+
+
+def _make_filesystem_only(*, password: str, recovery_phrase: str) -> None:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    converted: list[dict[str, object]] = []
+    for credential, path in (
+        (password, WrappingPath.PASSWORD),
+        (recovery_phrase, WrappingPath.RECOVERY),
+    ):
+        unlocked = unlock_manifest_key_hierarchy(
+            credential=credential,
+            wrapping_path=path,
+            expected_scope=PayloadScope.FULL,
+        )
+        for slot in manifest["keyslots"]:
+            if (
+                slot["purpose"] != KeyPurpose.FILESYSTEM_ROOT.value
+                or slot["wrapping_path"] != path.value
+                or slot["status"] != KeyslotStatus.ACTIVE.value
+                or slot["credential_generation"] != unlocked.credential_generation
+            ):
+                continue
+            version = int(slot["frk_version"])
+            converted.append(
+                _manifest_slot(
+                    credential,
+                    unlocked.frks[version],
+                    core_id=str(manifest["core_id"]),
+                    owner_id=unlocked.owner_id,
+                    purpose=KeyPurpose.FILESYSTEM_ROOT,
+                    wrapping_path=path,
+                    status=KeyslotStatus.ACTIVE,
+                    scope=PayloadScope.FS,
+                    key_version=int(slot["key_version"]),
+                    credential_generation=unlocked.credential_generation,
+                    frk_version=version,
+                    object_key_epoch=int(slot["object_key_epoch"]),
+                ).to_dict()
+            )
+
+    def publish(value: dict[str, object]) -> None:
+        value["keyslots"] = converted
+        value["degraded_state"] = "recovery_only"
+
+    update_core_manifest(publish)
+
+
+def _make_soul_only(*, password: str, recovery_phrase: str) -> None:
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    converted: list[dict[str, object]] = []
+    for credential, path in (
+        (password, WrappingPath.PASSWORD),
+        (recovery_phrase, WrappingPath.RECOVERY),
+    ):
+        unlocked = unlock_manifest_key_hierarchy(
+            credential=credential,
+            wrapping_path=path,
+            expected_scope=PayloadScope.FULL,
+        )
+        assert unlocked.sqlcipher_key is not None
+        source = next(
+            slot
+            for slot in manifest["keyslots"]
+            if slot["purpose"] == KeyPurpose.SOUL.value
+            and slot["wrapping_path"] == path.value
+            and slot["status"] == KeyslotStatus.ACTIVE.value
+            and slot["credential_generation"] == unlocked.credential_generation
+        )
+        converted.append(
+            _manifest_slot(
+                credential,
+                unlocked.sqlcipher_key,
+                core_id=str(manifest["core_id"]),
+                owner_id=unlocked.owner_id,
+                purpose=KeyPurpose.SOUL,
+                wrapping_path=path,
+                status=KeyslotStatus.ACTIVE,
+                scope=PayloadScope.SOUL,
+                key_version=int(source["key_version"]),
+                credential_generation=unlocked.credential_generation,
+            ).to_dict()
+        )
+
+    def publish(value: dict[str, object]) -> None:
+        value["keyslots"] = converted
+        value["degraded_state"] = "filesystem_missing"
+
+    update_core_manifest(publish)
 
 
 def test_register_returns_recovery_phrase() -> None:
@@ -346,6 +443,102 @@ def test_recovery_confirmation_is_retryable_after_manifest_activation_crash(monk
             assert unlocked.frks
 
 
+def test_full_recovery_prepare_preserves_live_pending_phrase() -> None:
+    with managed_test_client("anima-recovery-live-pending-") as client:
+        registered = _register_user(client, password="password-123")
+        with get_user_session_factory(0)() as db:
+            user = db.get(User, 0)
+            assert user is not None
+            first = prepare_recovery_credential(
+                db,
+                user,
+                current_recovery_phrase=str(registered["recoveryPhrase"]),
+                current_password="password-123",
+            )
+            with pytest.raises(ValueError, match="recovery credential preparation is in progress"):
+                prepare_recovery_credential(
+                    db,
+                    user,
+                    current_recovery_phrase=str(registered["recoveryPhrase"]),
+                    current_password="password-123",
+                )
+            confirm_recovery_credential(
+                db,
+                user,
+                recovery_phrase=first.recovery_phrase,
+                pending_generation=first.pending_generation,
+                scope=first.scope,
+                current_password="password-123",
+            )
+
+
+def test_filesystem_recovery_prepare_preserves_live_pending_phrase() -> None:
+    with managed_test_client("anima-fs-recovery-live-pending-") as client:
+        registered = _register_user(client, password="password-123")
+
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+        first = prepare_filesystem_recovery_credential(
+            current_password="password-123",
+            current_recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+        with pytest.raises(ValueError, match="recovery credential preparation is in progress"):
+            prepare_filesystem_recovery_credential(
+                current_password="password-123",
+                current_recovery_phrase=str(registered["recoveryPhrase"]),
+            )
+        confirm_filesystem_recovery_credential(
+            recovery_phrase=first.recovery_phrase,
+            pending_generation=first.pending_generation,
+        )
+
+
+def test_filesystem_recovery_prepare_serializes_overlapping_requests() -> None:
+    first_pending = Event()
+    release_first = Event()
+    second_pending = Event()
+
+    with managed_test_client("anima-fs-recovery-serialized-") as client:
+        registered = _register_user(client, password="password-123")
+
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+
+        def hold_first(boundary: CredentialBoundary) -> None:
+            if boundary is CredentialBoundary.MANIFEST_PENDING_DURABLE:
+                first_pending.set()
+                if not release_first.wait(timeout=10):
+                    raise RuntimeError("timed out waiting to release first prepare")
+
+        def observe_second(boundary: CredentialBoundary) -> None:
+            if boundary is CredentialBoundary.MANIFEST_PENDING_DURABLE:
+                second_pending.set()
+
+        def prepare(injector):
+            return prepare_filesystem_recovery_credential(
+                current_password="password-123",
+                current_recovery_phrase=str(registered["recoveryPhrase"]),
+                failure_injector=injector,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(prepare, hold_first)
+            assert first_pending.wait(timeout=10)
+            second = executor.submit(prepare, observe_second)
+            second_entered_while_first_active = second_pending.wait(timeout=0.5)
+            release_first.set()
+            first_result = first.result(timeout=30)
+            with pytest.raises(ValueError, match="recovery credential preparation is in progress"):
+                second.result(timeout=30)
+
+        assert not second_entered_while_first_active
+        assert first_result.pending_generation == 2
+
+
 def test_recovery_confirmation_rejects_missing_retained_frk_before_activation() -> None:
     with managed_test_client("anima-recovery-retained-frk-") as client:
         registered = _register_user(client, password="password-123")
@@ -588,9 +781,7 @@ def test_legacy_confirm_rejects_missing_pending_password_root_before_activation(
         assert "active_password_credential_generation" not in manifest
         assert "active_recovery_credential_generation" not in manifest
         assert "frk_rotation" not in manifest
-        assert {slot["status"] for slot in manifest["keyslots"]} == {
-            KeyslotStatus.PENDING.value
-        }
+        assert {slot["status"] for slot in manifest["keyslots"]} == {KeyslotStatus.PENDING.value}
         old_login = client.post(
             "/api/auth/login",
             json={"username": "alice", "password": "password-123"},
@@ -740,31 +931,22 @@ def test_recovery_replacement_recovers_at_every_durable_boundary(
                 )
 
 
-@pytest.mark.parametrize(
-    ("scope", "retained_purpose", "degraded_state"),
-    [
-        (PayloadScope.SOUL, "soul", "filesystem_missing"),
-        (PayloadScope.FS, "filesystem-root", "recovery_only"),
-    ],
-)
+@pytest.mark.parametrize("scope", [PayloadScope.SOUL, PayloadScope.FS])
 def test_scoped_recovery_replacement_preserves_degraded_compartment(
     scope,
-    retained_purpose,
-    degraded_state,
 ) -> None:
     with managed_test_client(f"anima-recovery-scoped-{scope.value}-") as client:
         registered = _register_user(client, password="password-123")
         current = str(registered["recoveryPhrase"])
+        degraded_state = "filesystem_missing" if scope is PayloadScope.SOUL else "recovery_only"
+        retained_purpose = (
+            KeyPurpose.SOUL.value
+            if scope is PayloadScope.SOUL
+            else KeyPurpose.FILESYSTEM_ROOT.value
+        )
 
-        def make_scoped(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = [
-                {**slot, "scope": scope.value}
-                for slot in manifest["keyslots"]
-                if slot["purpose"] == retained_purpose
-            ]
-            manifest["degraded_state"] = degraded_state
-
-        update_core_manifest(make_scoped)
+        make_scoped = _make_soul_only if scope is PayloadScope.SOUL else _make_filesystem_only
+        make_scoped(password="password-123", recovery_phrase=current)
         with get_user_session_factory(0)() as db:
             user = db.get(User, 0)
             assert user is not None
