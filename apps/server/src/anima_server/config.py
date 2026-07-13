@@ -22,11 +22,7 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     database_echo: bool = False
     data_dir: Path = DEFAULT_DATA_DIR
-    runtime_database_engine: Literal["postgres", "turso"] = "postgres"
     runtime_database_url: str = ""
-    runtime_turso_db_path: str = ""
-    soul_database_engine: Literal["sqlcipher", "turso"] = "sqlcipher"
-    soul_turso_db_path: str = ""
     runtime_pg_data_dir: str = ""
     runtime_pool_size: int = 5
     runtime_pool_max_overflow: int = 10
