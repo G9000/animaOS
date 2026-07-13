@@ -32,6 +32,7 @@
     "@tiptap/react": "^3.27.1",
     "@tiptap/starter-kit": "^3.27.1",
     "@xyflow/react": "^12.11.1",
+    "dompurify": "^3.4.12",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.5",
     "react": "^19.2.7",
@@ -43,9 +44,11 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
+    "@types/jsdom": "^28.0.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "jsdom": "^29.1.1",
     "typescript": "~6.0.3",
     "vite": "^8.1.3"
   }

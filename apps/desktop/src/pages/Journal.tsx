@@ -24,6 +24,7 @@ import {
   getSpeechRecognitionConstructor,
   type SpeechRecognitionLike,
 } from "./journal/speech";
+import { createDiaryHtmlSanitizer } from "./journal/html";
 
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
@@ -43,6 +44,7 @@ const DIARY_PROSE_CLASS = cn(
   "prose-hr:border-border",
   "prose-li:my-1",
 );
+const sanitizeDiaryHtml = createDiaryHtmlSanitizer(window);
 
 function todayISODate(): string {
   const now = new Date();
@@ -1727,9 +1729,7 @@ export default function Journal() {
               {isHtmlBody(selectedEntry.body) ? (
                 <div
                   className={cn(DIARY_PROSE_CLASS, "mt-5 text-base leading-loose")}
-                  // Diary bodies are authored locally in the Tiptap editor and
-                  // stored encrypted; schema-constrained HTML, own content only.
-                  dangerouslySetInnerHTML={{ __html: selectedEntry.body }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeDiaryHtml(selectedEntry.body) }}
                 />
               ) : (
                 <p className="mt-5 whitespace-pre-wrap text-base leading-loose text-foreground">
