@@ -671,6 +671,66 @@ def test_registration_publishes_legacy_locators_before_hierarchy_activation(
         assert recovery.status_code == 200
 
 
+def test_registration_backfill_crash_can_retry_legacy_recovery_upgrade(monkeypatch) -> None:
+    from anima_server.services.corefs import keyslots
+
+    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    monkeypatch.setattr(
+        "anima_server.services.recovery.generate_recovery_phrase",
+        lambda: phrase,
+    )
+    publish_manifest = keyslots.update_core_manifest
+
+    def crash_after_soul_backfill(_mutator) -> None:
+        raise RuntimeError("crash after Soul backfill")
+
+    monkeypatch.setattr(keyslots, "update_core_manifest", crash_after_soul_backfill)
+    with managed_test_client("anima-registration-backfill-crash-") as client:
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        assert response.status_code == 503
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert manifest["keyslots"] == []
+        assert "active_recovery_credential_generation" not in manifest
+
+        with get_user_session_factory(0)() as db:
+            stranded = db.query(SoulKeyslot).all()
+            assert len(stranded) == len(ALL_DOMAINS) * 2
+            assert {row.status for row in stranded} == {"active"}
+
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "password-123"},
+        )
+        assert login.status_code == 200
+        monkeypatch.setattr(keyslots, "update_core_manifest", publish_manifest)
+
+        prepared = client.post(
+            "/api/auth/recovery-credential/prepare",
+            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            json={
+                "currentRecoveryPhrase": phrase,
+                "currentPassword": "password-123",
+                "scope": "full",
+            },
+        )
+        assert prepared.status_code == 200
+        payload = prepared.json()
+        confirmed = client.post(
+            "/api/auth/recovery-credential/confirm",
+            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            json={
+                "recoveryPhrase": payload["recoveryPhrase"],
+                "pendingGeneration": payload["pendingGeneration"],
+                "scope": payload["scope"],
+                "currentPassword": "password-123",
+            },
+        )
+        assert confirmed.status_code == 200
+
+
 def test_registration_crash_after_hierarchy_activation_keeps_account_locator(
     monkeypatch,
 ) -> None:

@@ -995,6 +995,63 @@ def _legacy_sqlcipher_root(
     return password_root
 
 
+def _discard_orphaned_initial_soul_backfill(
+    db: Session,
+    *,
+    core_id: str,
+    owner_id: str,
+    password: str,
+    recovery_phrase: str,
+    expected_domains: dict[str, bytes],
+) -> None:
+    rows = list(
+        db.scalars(select(SoulKeyslot).where(SoulKeyslot.owner_id == owner_id)).all()
+    )
+    if not any(row.status == KeyslotStatus.ACTIVE.value for row in rows):
+        return
+
+    expected_identities = {
+        (domain, path.value, 1, 1, KeyslotStatus.ACTIVE.value)
+        for domain in ALL_DOMAINS
+        for path in (WrappingPath.PASSWORD, WrappingPath.RECOVERY)
+    }
+    identities = {
+        (
+            row.domain,
+            row.wrapping_path,
+            row.key_version,
+            row.credential_generation,
+            row.status,
+        )
+        for row in rows
+    }
+    if identities != expected_identities or len(rows) != len(expected_identities):
+        raise ValueError("legacy Core has incompatible versioned Soul keyslots")
+
+    credentials = {
+        WrappingPath.PASSWORD.value: password,
+        WrappingPath.RECOVERY.value: recovery_phrase,
+    }
+    for row in rows:
+        aad = soul_keyslot_aad(
+            core_id=core_id,
+            owner_id=owner_id,
+            domain=row.domain,
+            key_version=row.key_version,
+            credential_generation=row.credential_generation,
+            wrapping_path=WrappingPath(row.wrapping_path),
+        )
+        if (
+            unwrap_keyslot_secret(credentials[row.wrapping_path], _soul_row_record(row), aad)
+            != expected_domains[row.domain]
+        ):
+            raise ValueError(f"orphaned Soul keyslot mismatch for domain: {row.domain}")
+
+    for row in rows:
+        db.delete(row)
+    db.commit()
+
+
 def _discard_pending_recovery(
     db: Session,
     *,
@@ -1185,6 +1242,16 @@ def prepare_recovery_credential(
             credential=current_recovery_phrase,
             wrapping_path=WrappingPath.RECOVERY,
             scope=scope,
+        )
+
+    if upgrading_legacy:
+        _discard_orphaned_initial_soul_backfill(
+            db,
+            core_id=core_id,
+            owner_id=owner_id,
+            password=current_password,
+            recovery_phrase=current_recovery_phrase,
+            expected_domains=unlocked.soul_domains,
         )
 
     generation = active_generation + 1
