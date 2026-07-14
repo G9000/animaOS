@@ -126,7 +126,6 @@ fn read_line(
 ) -> Result<Option<BoundedLine>, FileToolError> {
     let mut bytes = Vec::new();
     let mut consumed = 0usize;
-    let mut too_long = false;
     loop {
         control.check()?;
         let available = reader.fill_buf().map_err(|error| FileToolError::Backend {
@@ -138,23 +137,28 @@ fn read_line(
             return if consumed == 0 {
                 Ok(None)
             } else {
-                Ok(Some(BoundedLine { bytes, too_long }))
+                Ok(Some(BoundedLine {
+                    bytes,
+                    too_long: false,
+                }))
             };
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let take = newline.map_or(available.len(), |index| index + 1);
-        if !too_long {
-            if bytes.len().saturating_add(take) > maximum {
-                bytes.clear();
-                too_long = true;
-            } else {
-                bytes.extend_from_slice(&available[..take]);
-            }
+        if bytes.len().saturating_add(take) > maximum {
+            return Ok(Some(BoundedLine {
+                bytes: Vec::new(),
+                too_long: true,
+            }));
         }
+        bytes.extend_from_slice(&available[..take]);
         reader.consume(take);
         consumed = consumed.saturating_add(take);
         if newline.is_some() {
-            return Ok(Some(BoundedLine { bytes, too_long }));
+            return Ok(Some(BoundedLine {
+                bytes,
+                too_long: false,
+            }));
         }
     }
 }

@@ -202,7 +202,7 @@ pub fn grep(
                         reason: SkipReason::LineTooLong,
                     });
                 }
-                continue;
+                break;
             }
             if line.bytes.contains(&0) {
                 invalid_file = Some(SkipReason::BinaryContent);
@@ -253,6 +253,10 @@ pub fn grep(
                         excerpt: text.to_string(),
                     });
                 }
+            }
+            if file_truncated {
+                invalid_file = probe_remainder(&mut reader, limits.read_chunk_bytes(), &control)?;
+                break;
             }
         }
 
@@ -371,7 +375,6 @@ fn read_bounded_line(
 ) -> Result<Option<BoundedLine>, FileToolError> {
     let mut bytes = Vec::new();
     let mut consumed = 0usize;
-    let mut too_long = false;
     loop {
         control.check()?;
         let available = reader.fill_buf().map_err(|error| FileToolError::Backend {
@@ -386,28 +389,58 @@ fn read_bounded_line(
                 Ok(Some(BoundedLine {
                     bytes,
                     consumed,
-                    too_long,
+                    too_long: false,
                 }))
             };
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let take = newline.map_or(available.len(), |index| index + 1);
-        if !too_long {
-            if bytes.len().saturating_add(take) > maximum {
-                bytes.clear();
-                too_long = true;
-            } else {
-                bytes.extend_from_slice(&available[..take]);
-            }
+        if bytes.len().saturating_add(take) > maximum {
+            return Ok(Some(BoundedLine {
+                bytes: Vec::new(),
+                consumed,
+                too_long: true,
+            }));
         }
+        bytes.extend_from_slice(&available[..take]);
         reader.consume(take);
         consumed = consumed.saturating_add(take);
         if newline.is_some() {
             return Ok(Some(BoundedLine {
                 bytes,
                 consumed,
-                too_long,
+                too_long: false,
             }));
         }
+    }
+}
+
+fn probe_remainder(
+    reader: &mut impl BufRead,
+    maximum: usize,
+    control: &OperationControl,
+) -> Result<Option<SkipReason>, FileToolError> {
+    let mut bytes = Vec::new();
+    while bytes.len() < maximum {
+        control.check()?;
+        let available = reader.fill_buf().map_err(|error| FileToolError::Backend {
+            operation: "grep_read",
+            path: "<stream>".to_string(),
+            message: error.to_string(),
+        })?;
+        if available.is_empty() {
+            break;
+        }
+        let take = available.len().min(maximum - bytes.len());
+        if available[..take].contains(&0) {
+            return Ok(Some(SkipReason::BinaryContent));
+        }
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+    }
+    match std::str::from_utf8(&bytes) {
+        Ok(_) => Ok(None),
+        Err(error) if error.error_len().is_none() => Ok(None),
+        Err(_) => Ok(Some(SkipReason::InvalidUtf8)),
     }
 }

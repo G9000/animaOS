@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use anima_file_tools::{
     grep, BackendCapabilities, BackendKind, BackendPath, DirectoryEntry, DirectoryListing,
@@ -14,6 +18,30 @@ struct SearchBackend {
 }
 
 struct UntouchedCoreBackend;
+
+struct CountingSearchBackend {
+    bytes: Vec<u8>,
+    bytes_read: Arc<AtomicUsize>,
+}
+
+struct CountingReader {
+    inner: Cursor<Vec<u8>>,
+    bytes_read: Arc<AtomicUsize>,
+}
+
+impl Read for CountingReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.bytes_read.fetch_add(read, Ordering::Relaxed);
+        Ok(read)
+    }
+}
+
+impl Seek for CountingReader {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
 
 impl FileBackend for UntouchedCoreBackend {
     fn capabilities(&self) -> BackendCapabilities {
@@ -38,6 +66,35 @@ impl WalkBackend for UntouchedCoreBackend {
 
     fn read_directory(&self, _path: &str) -> Result<DirectoryListing, FileToolError> {
         panic!("backend storage must not be touched for a mismatched path")
+    }
+}
+
+impl FileBackend for CountingSearchBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(
+            BackendKind::CoreFs,
+            PathSemantics::PortableNfcCaseSensitive,
+            MutationAtomicity::CatalogGeneration,
+        )
+    }
+}
+
+impl ReadBackend for CountingSearchBackend {
+    fn open_read(&self, _path: &str) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        Ok(Box::new(CountingReader {
+            inner: Cursor::new(self.bytes.clone()),
+            bytes_read: self.bytes_read.clone(),
+        }))
+    }
+}
+
+impl WalkBackend for CountingSearchBackend {
+    fn metadata(&self, _path: &str) -> Result<EntryMetadata, FileToolError> {
+        Ok(EntryMetadata::file(self.bytes.len() as u64))
+    }
+
+    fn read_directory(&self, path: &str) -> Result<DirectoryListing, FileToolError> {
+        Err(backend_error("read_directory", path, "not a directory"))
     }
 }
 
@@ -338,6 +395,62 @@ fn match_limit_returns_a_cursor_and_resumes_without_duplicate_matches() {
     assert_eq!(second.matches.len(), 1);
     assert_eq!(second.matches[0].line_number, 3);
     assert!(!second.truncated);
+}
+
+#[test]
+fn grep_stops_reading_after_the_match_page_and_bounded_validation_probe() {
+    let bytes = "needle\n".repeat(200_000).into_bytes();
+    let total_bytes = bytes.len();
+    let bytes_read = Arc::new(AtomicUsize::new(0));
+    let backend = CountingSearchBackend {
+        bytes,
+        bytes_read: bytes_read.clone(),
+    };
+    let mut limited = request("needle", GrepMode::Literal);
+    limited.root = BackendPath::new(BackendKind::CoreFs, "root/large.log").unwrap();
+    limited.max_matches = 1;
+    let operation_limits = OperationLimits {
+        read_chunk_bytes: 64,
+        ..OperationLimits::default()
+    };
+
+    let page = grep(
+        &backend,
+        limited,
+        operation_limits.validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(page.matches.len(), 1);
+    assert!(page.truncated);
+    assert!(bytes_read.load(Ordering::Relaxed) < total_bytes);
+}
+
+#[test]
+fn grep_stops_reading_when_a_line_exceeds_its_cap() {
+    let bytes = vec![b'x'; 1024 * 1024];
+    let total_bytes = bytes.len();
+    let bytes_read = Arc::new(AtomicUsize::new(0));
+    let backend = CountingSearchBackend {
+        bytes,
+        bytes_read: bytes_read.clone(),
+    };
+    let mut bounded = request("needle", GrepMode::Literal);
+    bounded.root = BackendPath::new(BackendKind::CoreFs, "root/minified.txt").unwrap();
+    bounded.max_line_bytes = 32;
+
+    let page = grep(
+        &backend,
+        bounded,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(page.skipped.len(), 1);
+    assert_eq!(page.skipped[0].reason, SkipReason::LineTooLong);
+    assert!(bytes_read.load(Ordering::Relaxed) < total_bytes);
 }
 
 #[test]

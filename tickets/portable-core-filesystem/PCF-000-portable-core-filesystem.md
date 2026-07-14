@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 23:24 MYT
+- Updated: 2026-07-15 01:36 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -86,6 +86,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-14 22:52 MYT - Addressed PR #91's fifth Codex review pass by removing the redundant lexicographic glob cursor filter, and stabilized the failing Linux provenance test by removing an undefined ordering assertion across independent UI/server observer channels while preserving both protocol outcome checks; 100 focused repetitions and all full gates passed.
 - 2026-07-14 23:08 MYT - Addressed PR #91's sixth Codex review pass by rejecting file/descendant patch plans before mutation and making HostFS symlink deletion/removal operate on the named entry without corrupting its target; entry-vs-target planner state is covered separately, and the full shared/Animus suites passed before final gates.
 - 2026-07-14 23:24 MYT - Addressed PR #91's seventh Codex review pass by separating delete-entry metadata preflight from text snapshots: binary and dangling-symlink entries can be deleted without reading targets, while directory deletes fail before any prior best-effort mutation. Focused red/green regressions cover all three cases.
+- 2026-07-15 01:36 MYT - Addressed PR #91's eighth Codex review pass by bounding grep work after the page fills and returning immediately on overlong text/grep lines; instrumented readers prove large inputs are not streamed to EOF, while the existing late-binary guard remains covered.
 
 ## Validation
 
