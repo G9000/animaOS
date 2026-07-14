@@ -437,6 +437,16 @@ def test_create_llm_uses_anthropic_client() -> None:
     assert anthropic_base_url == "https://api.anthropic.com/v1"
 
 
+def test_resolve_base_url_scopes_override_to_primary_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_base_url", "http://127.0.0.1:11434")
+
+    assert resolve_base_url("ollama") == "http://127.0.0.1:11434/v1"
+    assert resolve_base_url("anthropic") == "https://api.anthropic.com/v1"
+
+
 def test_create_llm_uses_configured_temperature() -> None:
     from anima_server.services.agent.anthropic_client import AnthropicChatClient
 

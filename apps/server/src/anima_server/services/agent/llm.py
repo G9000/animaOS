@@ -187,7 +187,7 @@ def create_provider_chat_client(
 def resolve_base_url(provider: str) -> str:
     validate_provider(provider)
     configured_base_url = settings.agent_base_url.strip()
-    if configured_base_url:
+    if configured_base_url and provider == settings.agent_provider.strip():
         if provider == "ollama" and not configured_base_url.rstrip("/").endswith("/v1"):
             return configured_base_url.rstrip("/") + "/v1"
         return configured_base_url
