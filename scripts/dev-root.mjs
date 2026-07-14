@@ -3,7 +3,15 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { buildTargetSpec, getServerRestartCandidate, startDevStack } from "./dev-root-lib.mjs";
+import {
+  buildTargetEnvironment,
+  buildTargetSpec,
+  createDevSessionContinuity,
+  createServerReloadScheduler,
+  getServerRestartCandidate,
+  startDevStack,
+  waitForHealth,
+} from "./dev-root-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -15,20 +23,23 @@ const env = {
 };
 
 let activeStack = null;
+let devSessionContinuity = null;
 let exiting = false;
 let stopWatchingServer = null;
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
+  cleanupDevSessionContinuity();
   process.exit(1);
 });
 
 async function main() {
+  devSessionContinuity = createDevSessionContinuity();
   activeStack = await startDevStack({
     spawn: ({ name }) => spawnNxDevTarget(name),
   });
 
-  registerProcessHandlers(activeStack);
+  registerProcessHandlers();
   stopWatchingServer = watchServerForRestart();
   const keepAlive = setInterval(() => {}, 1 << 30);
   const result = await createRootCompletion(activeStack).finally(() => {
@@ -42,6 +53,7 @@ async function main() {
   exiting = true;
   stopWatchingServer?.();
   activeStack.stop();
+  cleanupDevSessionContinuity();
   process.exit(normalizeExitCode(result.code, result.signal));
 }
 
@@ -49,26 +61,32 @@ function spawnNxDevTarget(name) {
   const spec = buildTargetSpec(name, repoRoot, process.execPath);
   const child = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
-    env,
+    env: buildTargetEnvironment(name, env, devSessionContinuity?.serverEnv ?? {}),
     stdio: "inherit",
   });
 
   return child;
 }
 
-function registerProcessHandlers(stack) {
-  const stopAndExit = (exitCode) => {
-    if (exiting) {
-      return;
-    }
-    exiting = true;
-    stopWatchingServer?.();
-    stack.stop();
-    process.exit(exitCode);
-  };
-
+function registerProcessHandlers() {
   process.on("SIGINT", () => stopAndExit(130));
   process.on("SIGTERM", () => stopAndExit(143));
+}
+
+function stopAndExit(exitCode) {
+  if (exiting) {
+    return;
+  }
+  exiting = true;
+  stopWatchingServer?.();
+  activeStack?.stop();
+  cleanupDevSessionContinuity();
+  process.exit(exitCode);
+}
+
+function cleanupDevSessionContinuity() {
+  devSessionContinuity?.cleanup();
+  devSessionContinuity = null;
 }
 
 function normalizeExitCode(code, signal) {
@@ -104,38 +122,40 @@ function waitForChildExit(child, name) {
 
 function watchServerForRestart() {
   const watchRoot = path.join(repoRoot, "apps", "server");
-  let restartTimer = null;
-  let restarting = false;
+  let latestTrigger = null;
+
+  const scheduler = createServerReloadScheduler({
+    restart: async () => {
+      const trigger = latestTrigger;
+      latestTrigger = null;
+      console.log(
+        `[dev-root] restarting server after ${trigger?.eventType ?? "change"} on apps/server/${trigger?.path ?? "unknown"}`,
+      );
+      await restartServerChild();
+    },
+    waitForReady: async () => {
+      await waitForHealth();
+      console.log("[dev-root] server reload ready at http://127.0.0.1:3031/health");
+    },
+    onError: (error) => {
+      console.error(
+        `[dev-root] server reload failed: ${error instanceof Error ? error.message : error}`,
+      );
+      stopAndExit(1);
+    },
+  });
 
   const watcher = fs.watch(watchRoot, { recursive: true }, (eventType, filename) => {
     const restartCandidate = getServerRestartCandidate(filename);
-    if (exiting || restarting || !restartCandidate) {
+    if (exiting || !restartCandidate) {
       return;
     }
-
-    if (restartTimer) {
-      clearTimeout(restartTimer);
-    }
-
-    restartTimer = setTimeout(async () => {
-      restartTimer = null;
-      restarting = true;
-      try {
-        console.log(
-          `[dev-root] restarting server after ${eventType} on apps/server/${restartCandidate}`,
-        );
-        await restartServerChild();
-      } finally {
-        restarting = false;
-      }
-    }, 250);
+    latestTrigger = { eventType, path: restartCandidate };
+    scheduler.schedule();
   });
 
   return () => {
-    if (restartTimer) {
-      clearTimeout(restartTimer);
-      restartTimer = null;
-    }
+    scheduler.stop();
     watcher.close();
   };
 }
