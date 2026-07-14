@@ -214,23 +214,28 @@ pub fn parse_patch(input: &str) -> Result<Patch, PatchError> {
                     if line.starts_with("@@") || line.starts_with("*** ") {
                         break;
                     }
-                    let Some(prefix) = line.as_bytes().first().copied() else {
+                    let (prefix, value) = if let Some(value) = line.strip_prefix(' ') {
+                        (' ', value.to_string())
+                    } else if let Some(value) = line.strip_prefix('+') {
+                        ('+', value.to_string())
+                    } else if let Some(value) = line.strip_prefix('-') {
+                        ('-', value.to_string())
+                    } else {
                         return Err(parse_error(
                             index + 1,
                             "update lines require ' ', '+', or '-'",
                         ));
                     };
-                    let value = line[1..].to_string();
                     match prefix {
-                        b' ' => {
+                        ' ' => {
                             old_lines.push(value.clone());
                             new_lines.push(value);
                         }
-                        b'+' => {
+                        '+' => {
                             changed = true;
                             new_lines.push(value);
                         }
-                        b'-' => {
+                        '-' => {
                             changed = true;
                             old_lines.push(value);
                         }

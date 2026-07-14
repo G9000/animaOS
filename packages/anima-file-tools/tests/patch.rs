@@ -71,6 +71,20 @@ fn parser_rejects_empty_absolute_parent_and_malformed_patches() {
 }
 
 #[test]
+fn parser_rejects_a_multibyte_update_prefix_without_panicking() {
+    let error = parse_patch(
+        "*** Begin Patch\n\
+         *** Update File: file.txt\n\
+         @@\n\
+         éinvalid\n\
+         *** End Patch",
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, PatchError::Parse { .. }));
+}
+
+#[test]
 fn planner_applies_ordered_chunks_and_reports_backend_atomicity() {
     let snapshot = MemorySnapshot::new(&[("src/lib.rs", "one\ntwo\ntail\n")]);
     let patch = parse_patch(

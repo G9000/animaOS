@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 21:51 MYT
+- Updated: 2026-07-14 22:02 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -81,6 +81,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-14 21:22 MYT - Opened PCF-002 slice-one PR #91 and requested substantive Codex review; the parent remains in progress pending review/merge and later PCF-002 slices.
 - 2026-07-14 21:34 MYT - Addressed PR #91's first Codex review pass with file-root grep and preorder-safe walk/grep cursor regressions; full shared/Animus tests, clippy, build, and diff checks passed before the follow-up push.
 - 2026-07-14 21:51 MYT - Addressed PR #91's second Codex review pass by preventing reusable wildcard patch approvals, honoring case-insensitive HostFS volumes beyond Windows, and preserving missing final newlines during patch updates; all focused and full validation gates passed before the follow-up push.
+- 2026-07-14 22:02 MYT - Addressed PR #91's third Codex review pass by making malformed multi-byte update-line prefixes fail with a typed parse error instead of panicking; the focused regression plus full shared/Animus, clippy, build, and diff gates passed.
 
 ## Validation
 
