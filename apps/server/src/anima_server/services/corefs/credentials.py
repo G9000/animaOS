@@ -11,10 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import SoulKeyslot, User, UserKey
-from anima_server.services.auth import hash_password, verify_password
+from anima_server.services.auth import change_user_password, hash_password, verify_password
 from anima_server.services.core import (
     get_manifest_path,
     get_sqlcipher_kdf_salt,
+    get_wrapped_sqlcipher_key,
+    store_wrapped_sqlcipher_key,
     update_core_manifest,
 )
 from anima_server.services.corefs.crypto import (
@@ -34,6 +36,7 @@ from anima_server.services.corefs.keyslots import (
     _soul_row_record,
     _unwrap_manifest_slot,
     get_active_manifest_scope,
+    manifest_has_versioned_key_hierarchy,
     unlock_key_hierarchy,
     unlock_manifest_key_hierarchy,
     validate_scope_completeness,
@@ -267,6 +270,59 @@ def _rewrap_legacy_password_rows(
         row.wrap_iv = wrapped.wrap_iv
         row.wrap_tag = wrapped.wrap_tag
         row.wrapped_dek = wrapped.wrapped_dek
+
+
+def _rewrap_legacy_sqlcipher_root(new_password: str, user_id: int) -> None:
+    from anima_server.config import settings
+    from anima_server.services.sessions import get_sqlcipher_key
+
+    if settings.core_passphrase.strip():
+        return
+    raw_key = get_sqlcipher_key()
+    wrapped_data = get_wrapped_sqlcipher_key()
+    if raw_key is None or wrapped_data is None:
+        return
+    store_wrapped_sqlcipher_key(
+        _legacy_manifest_payload(
+            wrap_dek(new_password, raw_key, user_id, "sqlcipher"),
+            user_id,
+        )
+    )
+
+
+@serialized_credential_transaction
+def change_account_password_credential(
+    db: Session,
+    user: User,
+    *,
+    old_password: str,
+    new_password: str,
+    current_deks: dict[str, bytes],
+    scope: PayloadScope = PayloadScope.FULL,
+) -> None:
+    """Rotate a versioned credential, retaining legacy compatibility pre-activation."""
+    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    if manifest_has_versioned_key_hierarchy(manifest):
+        change_password_credential_generation(
+            db,
+            user,
+            old_password=old_password,
+            new_password=new_password,
+            current_deks=current_deks,
+            scope=scope,
+        )
+        return
+
+    if scope is not PayloadScope.FULL:
+        raise ValueError("legacy password change requires full scope")
+    change_user_password(
+        db,
+        user,
+        old_password=old_password,
+        new_password=new_password,
+        current_deks=current_deks,
+    )
+    _rewrap_legacy_sqlcipher_root(new_password, user.id)
 
 
 @serialized_credential_transaction

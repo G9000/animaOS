@@ -50,8 +50,8 @@ from anima_server.services.corefs.admission import (
     FsCredentialAdmissionRejected,
 )
 from anima_server.services.corefs.credentials import (
+    change_account_password_credential,
     change_filesystem_password_credential,
-    change_password_credential_generation,
     confirm_filesystem_recovery_credential,
     confirm_recovery_credential,
     prepare_filesystem_recovery_credential,
@@ -249,7 +249,7 @@ def change_password(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        change_password_credential_generation(
+        change_account_password_credential(
             db,
             user,
             old_password=payload.oldPassword,
