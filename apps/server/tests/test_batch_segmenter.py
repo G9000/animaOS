@@ -307,6 +307,44 @@ async def test_call_llm_for_segmentation_falls_back_after_permanent_provider_err
 
 
 @pytest.mark.asyncio
+async def test_call_llm_for_segmentation_falls_back_when_client_creation_fails() -> None:
+    from anima_server.services.agent.batch_segmenter import _call_llm_for_segmentation
+
+    primary_client = AsyncMock()
+    primary_client.ainvoke = AsyncMock(return_value=SimpleNamespace(content="[[1]]"))
+    primary_client.aclose = AsyncMock()
+    prompt_loader = MagicMock()
+    prompt_loader.batch_segmentation.return_value = "prompt"
+
+    with (
+        patch("anima_server.services.agent.batch_segmenter.settings") as mock_settings,
+        patch(
+            "anima_server.services.agent.prompt_loader.PromptLoader",
+            return_value=prompt_loader,
+        ),
+        patch(
+            "anima_server.services.agent.batch_segmenter.create_provider_chat_client",
+            side_effect=[RuntimeError("missing extraction API key"), primary_client],
+        ) as mock_client_cls,
+    ):
+        mock_settings.agent_provider = "openai"
+        mock_settings.agent_model = "gpt-5-mini"
+        mock_settings.agent_extraction_provider = "anthropic"
+        mock_settings.agent_extraction_model = "claude-haiku"
+        mock_settings.agent_llm_timeout = 120.0
+        mock_settings.agent_max_tokens = 4096
+
+        groups = await _call_llm_for_segmentation([("hello", "hi")])
+
+    assert groups == [[1]]
+    assert [call.kwargs["provider"] for call in mock_client_cls.call_args_list] == [
+        "anthropic",
+        "openai",
+    ]
+    primary_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_segment_messages_batch_non_contiguous() -> None:
     """Non-contiguous indices are valid when properly covering all messages."""
     messages = [(f"User message {i}", f"Response {i}") for i in range(1, 10)]

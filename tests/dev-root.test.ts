@@ -167,17 +167,25 @@ describe("dev session continuity", () => {
       );
       expect(existsSync(continuity.directory)).toBe(true);
 
-      const baseEnv = { PATH: "test-path" };
+      const baseEnv = {
+        PATH: "test-path",
+        ANIMA_DEV_SESSION_STATE_PATH: "stale-state",
+        ANIMA_DEV_SESSION_KEY: "stale-key",
+      };
       expect(
         buildTargetEnvironment("server", baseEnv, continuity.serverEnv),
-      ).toEqual({ ...baseEnv, ...continuity.serverEnv });
+      ).toEqual({ PATH: "test-path", ...continuity.serverEnv });
       expect(
         buildTargetEnvironment("desktop", baseEnv, continuity.serverEnv),
-      ).toEqual(baseEnv);
+      ).toEqual({ PATH: "test-path" });
       expect(
         buildTargetEnvironment("anima-mod", baseEnv, continuity.serverEnv),
-      ).toEqual(baseEnv);
-      expect(baseEnv).toEqual({ PATH: "test-path" });
+      ).toEqual({ PATH: "test-path" });
+      expect(baseEnv).toEqual({
+        PATH: "test-path",
+        ANIMA_DEV_SESSION_STATE_PATH: "stale-state",
+        ANIMA_DEV_SESSION_KEY: "stale-key",
+      });
 
       continuity.cleanup();
       continuity.cleanup();

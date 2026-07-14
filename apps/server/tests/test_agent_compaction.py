@@ -556,6 +556,7 @@ async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
     degraded = [r for r in caplog.records if r.name == "anima.runtime.degraded"]
     assert degraded, "expected a WARNING on anima.runtime.degraded"
     assert "falling back" in degraded[0].getMessage()
+    assert degraded[-1].exc_info is not None
 
 
 @pytest.mark.asyncio

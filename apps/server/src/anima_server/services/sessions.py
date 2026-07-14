@@ -284,7 +284,7 @@ class UnlockSessionStore:
                         for domain, dek in sorted(session.deks.items())
                     },
                 }
-                for token, session in sorted(sessions.items())
+                for token, session in sessions.items()
             ],
             "sqlcipherKey": (
                 None

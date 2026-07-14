@@ -34,10 +34,20 @@ export function createDevSessionContinuity({
 }
 
 export function buildTargetEnvironment(name, baseEnv, serverEnv) {
-  if (name === "server") {
-    return { ...baseEnv, ...serverEnv };
+  const sanitizedBaseEnv = { ...baseEnv };
+  for (const key of Object.keys(sanitizedBaseEnv)) {
+    const normalizedKey = key.toUpperCase();
+    if (
+      normalizedKey === "ANIMA_DEV_SESSION_STATE_PATH" ||
+      normalizedKey === "ANIMA_DEV_SESSION_KEY"
+    ) {
+      delete sanitizedBaseEnv[key];
+    }
   }
-  return { ...baseEnv };
+  if (name === "server") {
+    return { ...sanitizedBaseEnv, ...serverEnv };
+  }
+  return sanitizedBaseEnv;
 }
 
 export function createServerReloadScheduler({

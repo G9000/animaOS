@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass
 from math import ceil
 
@@ -342,6 +343,7 @@ async def summarize_with_llm(
     from anima_server.services.agent.llm_json import call_llm_for_text
 
     last_error: Exception | None = None
+    last_exc_info = None
     for index, target in enumerate(targets):
         client = None
         try:
@@ -363,8 +365,10 @@ async def summarize_with_llm(
             if summary:
                 return summary
             last_error = ValueError("empty response")
+            last_exc_info = None
         except Exception as exc:
             last_error = exc
+            last_exc_info = sys.exc_info()
         finally:
             if client is not None:
                 aclose = getattr(client, "aclose", None)
@@ -390,6 +394,7 @@ async def summarize_with_llm(
         final_target.provider,
         final_target.model,
         type(last_error).__name__ if last_error is not None else "unknown",
+        exc_info=last_exc_info,
     )
 
     return None

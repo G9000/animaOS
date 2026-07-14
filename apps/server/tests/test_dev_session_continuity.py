@@ -266,6 +266,24 @@ def test_concurrent_session_and_key_mutations_restore_coherently() -> None:
     assert restored.get_sqlcipher_key() in {bytes([index + 1]) * 32 for index in range(10)}
 
 
+def test_restore_preserves_latest_session_deks_for_each_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import anima_server.services.sessions as sessions_module
+
+    tokens = iter(["zzz-older-token", "aaa-newer-token"])
+    monkeypatch.setattr(sessions_module.secrets, "token_urlsafe", lambda _size: next(tokens))
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    store = UnlockSessionStore(snapshot=snapshot)
+
+    store.create(9, {"memories": b"o" * 32})
+    store.create(9, {"memories": b"n" * 32})
+
+    assert store.get_active_dek(9) == b"n" * 32
+    assert UnlockSessionStore(snapshot=snapshot).get_active_dek(9) == b"n" * 32
+
+
 def test_session_store_without_snapshot_remains_process_local() -> None:
     store = UnlockSessionStore()
     token = store.create(1, {"memories": b"m" * 32})

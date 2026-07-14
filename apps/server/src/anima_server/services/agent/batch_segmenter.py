@@ -7,6 +7,7 @@ sequential chunking.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime
 
@@ -154,16 +155,16 @@ async def _call_llm_for_segmentation(
     last_error: Exception | None = None
 
     for target_index, target in enumerate(targets):
-        # Segmentation is a small extraction task, so keep it on the faster path.
-        client = create_provider_chat_client(
-            provider=target.provider,
-            model=target.model,
-            timeout=timeout,
-            max_tokens=max_tokens,
-            temperature=0.2,
-        )
-
+        client = None
         try:
+            # Segmentation is a small extraction task, so keep it on the faster path.
+            client = create_provider_chat_client(
+                provider=target.provider,
+                model=target.model,
+                timeout=timeout,
+                max_tokens=max_tokens,
+                temperature=0.2,
+            )
             for attempt in range(1, _BATCH_SEGMENTATION_EMPTY_RESPONSE_RETRIES + 2):
                 content = await call_llm_for_text(system, prompt, client=client)
 
@@ -187,9 +188,11 @@ async def _call_llm_for_segmentation(
         except Exception as exc:
             last_error = exc
         finally:
-            close = getattr(client, "aclose", None)
-            if close is not None:
-                await close()
+            if client is not None:
+                close = getattr(client, "aclose", None)
+                if callable(close):
+                    with contextlib.suppress(Exception):
+                        await close()
 
         if target_index < len(targets) - 1:
             fallback = targets[target_index + 1]

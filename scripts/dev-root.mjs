@@ -35,11 +35,11 @@ main().catch((error) => {
 
 async function main() {
   devSessionContinuity = createDevSessionContinuity();
+  registerProcessHandlers();
   activeStack = await startDevStack({
     spawn: ({ name }) => spawnNxDevTarget(name),
   });
 
-  registerProcessHandlers();
   stopWatchingServer = watchServerForRestart();
   const keepAlive = setInterval(() => {}, 1 << 30);
   const result = await createRootCompletion(activeStack).finally(() => {
