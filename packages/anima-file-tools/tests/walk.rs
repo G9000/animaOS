@@ -85,6 +85,48 @@ fn walk_pages_are_deterministic_and_resume_after_the_cursor() {
 }
 
 #[test]
+fn cursor_resumes_preorder_instead_of_filtering_paths_lexicographically() {
+    let mut children = BTreeMap::new();
+    children.insert(
+        "root".to_string(),
+        vec![directory("root/a"), file("root/a.txt")],
+    );
+    children.insert("root/a".to_string(), vec![file("root/a/z")]);
+    let tree = MemoryTree { children };
+    let limits = OperationLimits::default().validate().unwrap();
+    let root = BackendPath::new(BackendKind::CoreFs, "root").unwrap();
+
+    let first = walk_page(
+        &tree,
+        root.clone(),
+        WalkOptions {
+            page_size: 1,
+            cursor: None,
+            include_directories: false,
+        },
+        limits,
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(paths(&first.entries), vec!["root/a/z"]);
+
+    let second = walk_page(
+        &tree,
+        root,
+        WalkOptions {
+            page_size: 1,
+            cursor: first.next_cursor,
+            include_directories: false,
+        },
+        limits,
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(paths(&second.entries), vec!["root/a.txt"]);
+    assert!(!second.truncated);
+}
+
+#[test]
 fn entry_ceiling_truncates_before_examining_unbounded_trees() {
     let tree = sample_tree();
     let limits = OperationLimits {

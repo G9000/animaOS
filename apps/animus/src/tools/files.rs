@@ -300,6 +300,18 @@ mod tests {
     }
 
     #[test]
+    fn grep_accepts_an_explicit_single_file_path() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root.clone());
+        std::fs::write(root.join("notes.txt"), "needle in one file\n").unwrap();
+
+        let result = grep(&json!({"pattern": "needle", "path": "notes.txt"}), &policy);
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("notes.txt:1:needle in one file"));
+    }
+
+    #[test]
     fn grep_supports_explicit_regex_mode_and_rejects_invalid_regex() {
         let root = test_workspace();
         let policy = PermissionPolicy::read_only(root.clone());

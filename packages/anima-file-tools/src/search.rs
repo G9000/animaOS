@@ -8,7 +8,7 @@ use regex::Regex;
 
 use crate::{
     walk_page, BackendPath, EntryKind, FileToolError, OperationControl, SearchableBackend,
-    ValidatedLimits, WalkCursor, WalkOptions, MAX_PATTERN_BYTES,
+    ValidatedLimits, WalkCursor, WalkEntry, WalkOptions, WalkPage, MAX_PATTERN_BYTES,
 };
 
 const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 96;
@@ -119,28 +119,54 @@ pub fn grep(
             .is_none()
             .then(|| WalkCursor::after(cursor.path.clone()))
     });
-    let walk = walk_page(
-        backend,
-        request.root,
-        WalkOptions {
-            page_size: request.max_files,
-            cursor: walk_cursor,
-            include_directories: false,
-        },
-        limits,
-        control.clone(),
-    )?;
+    let root_metadata = backend.metadata(request.root.as_str())?;
+    let walk = if root_metadata.kind == EntryKind::File {
+        WalkPage {
+            entries: vec![WalkEntry {
+                path: request.root.clone(),
+                kind: root_metadata.kind,
+                is_symlink: root_metadata.is_symlink,
+                size: root_metadata.size,
+                depth: 0,
+            }],
+            ..WalkPage::default()
+        }
+    } else {
+        walk_page(
+            backend,
+            request.root.clone(),
+            WalkOptions {
+                page_size: request.max_files,
+                cursor: walk_cursor,
+                include_directories: false,
+            },
+            limits,
+            control.clone(),
+        )?
+    };
     let walk_truncated = walk.truncated;
     let walk_limit_reached = walk.limit_reached;
     let walk_next_cursor = walk.next_cursor;
     let mut page = GrepPage::default();
     let mut response_bytes = 0usize;
     let mut output_truncated = false;
+    let offset_cursor = request
+        .cursor
+        .as_ref()
+        .filter(|cursor| cursor.byte_offset.is_some());
+    let mut offset_cursor_reached = offset_cursor.is_none();
 
     'files: for entry in walk.entries {
         control.check()?;
         if entry.kind != EntryKind::File {
             continue;
+        }
+        if !offset_cursor_reached {
+            if offset_cursor.is_some_and(|cursor| cursor.path == entry.path.as_str()) {
+                offset_cursor_reached = true;
+            } else {
+                continue;
+            }
         }
         let mut reader = BufReader::new(backend.open_read(entry.path.as_str())?);
         let mut line_number = 0usize;
@@ -319,11 +345,8 @@ fn is_after_cursor(cursor: Option<&GrepCursor>, path: &str, byte_offset: u64) ->
     match cursor {
         None => true,
         Some(cursor) => match cursor.byte_offset {
-            Some(cursor_offset) => {
-                path > cursor.path.as_str()
-                    || (path == cursor.path.as_str() && byte_offset > cursor_offset)
-            }
-            None => path > cursor.path.as_str(),
+            Some(cursor_offset) if path == cursor.path => byte_offset > cursor_offset,
+            _ => true,
         },
     }
 }

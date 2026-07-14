@@ -101,6 +101,7 @@ pub fn walk_page<B: WalkBackend + ?Sized>(
         resumable = false;
     }
     let cursor = options.cursor.as_ref().map(|cursor| cursor.after.as_str());
+    let mut cursor_reached = cursor.is_none();
 
     while let Some(pending) = stack.pop() {
         control.check()?;
@@ -147,9 +148,15 @@ pub fn walk_page<B: WalkBackend + ?Sized>(
             resumable = false;
         }
 
+        if !cursor_reached {
+            if cursor == Some(pending.entry.path.as_str()) {
+                cursor_reached = true;
+            }
+            continue;
+        }
+
         let visible = metadata.kind != EntryKind::Directory || options.include_directories;
-        let after_cursor = cursor.map_or(true, |cursor| pending.entry.path.as_str() > cursor);
-        if !visible || !after_cursor {
+        if !visible {
             continue;
         }
 

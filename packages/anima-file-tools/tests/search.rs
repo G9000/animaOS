@@ -76,6 +76,25 @@ fn literal_grep_reports_stable_line_and_utf8_byte_offsets() {
 }
 
 #[test]
+fn grep_searches_a_file_root_without_requiring_a_directory_walk() {
+    let backend = backend_with_files(&[("root/notes.md", b"needle in one file\n")]);
+    let mut single_file = request("needle", GrepMode::Literal);
+    single_file.root = BackendPath::new(BackendKind::CoreFs, "root/notes.md").unwrap();
+
+    let page = grep(
+        &backend,
+        single_file,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(page.matches.len(), 1);
+    assert_eq!(page.matches[0].path.as_str(), "root/notes.md");
+    assert_eq!(page.matches[0].line_number, 1);
+}
+
+#[test]
 fn regex_mode_uses_rust_linear_time_syntax_and_rejects_lookaround() {
     let backend = backend_with_files(&[("root/notes.md", b"alpha 123\nbeta\n")]);
     let mut valid = request(r"alpha\s+\d+", GrepMode::Regex);
@@ -269,6 +288,62 @@ fn match_limit_returns_a_cursor_and_resumes_without_duplicate_matches() {
     assert_eq!(second.matches.len(), 1);
     assert_eq!(second.matches[0].line_number, 3);
     assert!(!second.truncated);
+}
+
+#[test]
+fn match_cursor_resumes_file_preorder_instead_of_comparing_paths_lexicographically() {
+    let nested_path = "root/a/z";
+    let sibling_path = "root/a.txt";
+    let mut files = BTreeMap::new();
+    files.insert(nested_path.to_string(), b"needle nested\n".to_vec());
+    files.insert(sibling_path.to_string(), b"needle sibling\n".to_vec());
+    let mut children = BTreeMap::new();
+    children.insert(
+        "root".to_string(),
+        vec![
+            DirectoryEntry::new(
+                BackendPath::new(BackendKind::CoreFs, "root/a").unwrap(),
+                EntryMetadata::directory(false),
+            ),
+            DirectoryEntry::new(
+                BackendPath::new(BackendKind::CoreFs, sibling_path).unwrap(),
+                EntryMetadata::file(15),
+            ),
+        ],
+    );
+    children.insert(
+        "root/a".to_string(),
+        vec![DirectoryEntry::new(
+            BackendPath::new(BackendKind::CoreFs, nested_path).unwrap(),
+            EntryMetadata::file(14),
+        )],
+    );
+    let backend = SearchBackend { children, files };
+    let mut first_request = request("needle", GrepMode::Literal);
+    first_request.max_matches = 1;
+
+    let first = grep(
+        &backend,
+        first_request,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(first.matches[0].path.as_str(), nested_path);
+
+    let mut second_request = request("needle", GrepMode::Literal);
+    second_request.max_matches = 1;
+    second_request.cursor = first.next_cursor;
+    let second = grep(
+        &backend,
+        second_request,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(second.matches.len(), 1);
+    assert_eq!(second.matches[0].path.as_str(), sibling_path);
 }
 
 fn request(query: &str, mode: GrepMode) -> GrepRequest {
