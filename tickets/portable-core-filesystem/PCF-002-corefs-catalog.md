@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 21:12 MYT
+- Updated: 2026-07-14 21:22 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -57,6 +57,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-13 20:47 MYT - Expanded scope metadata to every owned provenance/release surface and locked the benchmark fixture matrix so tombstones cannot consume the advertised live-entry capacity.
 - 2026-07-14 19:45 MYT - Claimed PCF-002 from merged `main` on `codex/pcf-002-file-tools`. Began the first reviewable slice: shared bounded Rust file-operation contracts and the Animus HostFS adapter; encrypted CoreFS objects/catalogs remain sequenced behind this foundation.
 - 2026-07-14 21:12 MYT - Completed the first PCF-002 implementation slice: added the MSRV-compatible `anima-file-tools` crate, bounded backend-neutral read/walk/glob/grep/text/patch engines, migrated Animus HostFS tools onto the shared contracts, added explicit HostFS best-effort patch atomicity, and established pinned Codex attribution plus standalone release-notice CI. PCF-002 remains `in_progress` for encrypted CoreFS objects/catalogs and later slices.
+- 2026-07-14 21:22 MYT - Published the first slice as PR #91 (`codex/pcf-002-file-tools`) and requested a substantive Codex review focused on backend separation, path containment, boundedness, patch semantics, atomicity reporting, and provenance.
 
 ## Validation
 
@@ -90,3 +91,4 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-001 is complete. PCF-002 is being delivered through reviewable PR slices while retaining this ticket as the milestone tracker.
   - The normal parallel Animus run initially exposed a pre-existing shared secrets-fixture race. A red/green test-only fixture consolidation removed the race; the unchanged single-thread suite had already passed all 116 tests.
   - Tauri already maps `resources/.anima/` into the bundle, so staging `.anima/legal` required no `tauri.conf.json` change.
+  - Review: https://github.com/G9000/animaOS/pull/91
