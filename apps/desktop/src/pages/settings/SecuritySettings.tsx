@@ -25,6 +25,7 @@ export default function SecuritySettings() {
   const [recoveryConfirmation, setRecoveryConfirmation] = useState("");
   const [recoveryStatus, setRecoveryStatus] = useState("");
   const [recoveryError, setRecoveryError] = useState("");
+  const [canReplacePendingRecovery, setCanReplacePendingRecovery] = useState(false);
 
   const handleChangePassword = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -46,20 +47,22 @@ export default function SecuritySettings() {
     }
   };
 
-  const handleReplaceRecovery = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const prepareRecoveryReplacement = async (replacePending: boolean) => {
     setRecoveryStatus("");
     setRecoveryError("");
+    setCanReplacePendingRecovery(false);
     if (!currentRecoveryPhrase.trim() || !currentRecoveryPassword) {
       setRecoveryError("Current password and recovery phrase are required.");
       return;
     }
+    const confirmationPassword = currentRecoveryPassword;
     setReplacingRecovery(true);
     try {
       const result = await api.auth.prepareRecoveryCredential(
         currentRecoveryPhrase,
         currentRecoveryPassword,
         "full",
+        replacePending,
       );
       setCurrentRecoveryPhrase("");
       setCurrentRecoveryPassword("");
@@ -69,16 +72,25 @@ export default function SecuritySettings() {
           result.recoveryPhrase,
           result.pendingGeneration,
           result.scope,
-          currentRecoveryPassword,
+          confirmationPassword,
         ),
       );
     } catch (err) {
-      setRecoveryError(
-        err instanceof Error ? err.message : "Recovery credential replacement failed.",
+      const message = err instanceof Error
+        ? err.message
+        : "Recovery credential replacement failed.";
+      setRecoveryError(message);
+      setCanReplacePendingRecovery(
+        message.includes("recovery credential preparation is in progress"),
       );
     } finally {
       setReplacingRecovery(false);
     }
+  };
+
+  const handleReplaceRecovery = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await prepareRecoveryReplacement(false);
   };
 
   const handleConfirmRecovery = async () => {
@@ -222,6 +234,16 @@ export default function SecuritySettings() {
             >
               {replacingRecovery ? "Replacing..." : "Replace Recovery Phrase"}
             </button>
+            {canReplacePendingRecovery && (
+              <button
+                type="button"
+                disabled={replacingRecovery}
+                onClick={() => void prepareRecoveryReplacement(true)}
+                className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-destructive/30 text-destructive/70 hover:border-destructive/60 hover:text-destructive disabled:opacity-30 transition-all"
+              >
+                Discard Pending Phrase and Generate Again
+              </button>
+            )}
           </form>
         )}
         {recoveryStatus && (

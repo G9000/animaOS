@@ -294,6 +294,7 @@ def prepare_corefs_recovery(
             prepared = prepare_filesystem_recovery_credential(
                 current_password=payload.currentPassword,
                 current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
+                replace_pending=payload.replacePending,
             )
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from None
@@ -373,6 +374,7 @@ def prepare_recovery(
             current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
             current_password=payload.currentPassword,
             scope=PayloadScope(payload.scope),
+            replace_pending=payload.replacePending,
         )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None

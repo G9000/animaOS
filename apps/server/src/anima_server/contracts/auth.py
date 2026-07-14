@@ -99,6 +99,7 @@ class CorefsCredentialResponse(BaseModel):
 class PrepareCorefsRecoveryCredentialRequest(BaseModel):
     currentRecoveryPhrase: str = Field(min_length=1)
     currentPassword: str = Field(min_length=1)
+    replacePending: bool = False
 
 
 class ConfirmCorefsRecoveryCredentialRequest(BaseModel):
@@ -110,6 +111,7 @@ class PrepareRecoveryCredentialRequest(BaseModel):
     currentRecoveryPhrase: str = Field(min_length=1)
     currentPassword: str = Field(min_length=1)
     scope: Literal["full", "soul", "fs"] = "full"
+    replacePending: bool = False
 
 
 class PrepareRecoveryCredentialResponse(BaseModel):

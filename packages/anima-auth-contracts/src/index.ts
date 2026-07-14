@@ -91,6 +91,7 @@ export interface CorefsCredentialResponse {
 export interface PrepareCorefsRecoveryCredentialRequest {
   currentRecoveryPhrase: string;
   currentPassword: string;
+  replacePending?: boolean;
 }
 
 export interface PrepareCorefsRecoveryCredentialResponse {
@@ -111,6 +112,7 @@ export interface PrepareRecoveryCredentialRequest {
   currentRecoveryPhrase: string;
   currentPassword: string;
   scope: RecoveryCredentialScope;
+  replacePending?: boolean;
 }
 
 export interface PrepareRecoveryCredentialResponse {

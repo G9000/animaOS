@@ -522,6 +522,101 @@ def test_filesystem_recovery_prepare_preserves_live_pending_phrase() -> None:
         )
 
 
+def test_full_recovery_ready_phrase_can_be_explicitly_discarded_and_reissued(
+    monkeypatch,
+) -> None:
+    phrases = iter(
+        [
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        ]
+    )
+    monkeypatch.setattr(
+        "anima_server.services.corefs.credentials.generate_recovery_phrase",
+        lambda: next(phrases),
+    )
+    with managed_test_client("anima-recovery-ready-reissue-") as client:
+        registered = _register_user(client, password="password-123")
+        request = {
+            "currentRecoveryPhrase": registered["recoveryPhrase"],
+            "currentPassword": "password-123",
+            "scope": "full",
+        }
+        first = client.post(
+            "/api/auth/recovery-credential/prepare",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json=request,
+        )
+        assert first.status_code == 200
+
+        replacement = client.post(
+            "/api/auth/recovery-credential/prepare",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={**request, "replacePending": True},
+        )
+
+        assert replacement.status_code == 200
+        payload = replacement.json()
+        assert payload["recoveryPhrase"].startswith("legal winner")
+        assert payload["pendingGeneration"] == first.json()["pendingGeneration"]
+        confirmed = client.post(
+            "/api/auth/recovery-credential/confirm",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={
+                "recoveryPhrase": payload["recoveryPhrase"],
+                "pendingGeneration": payload["pendingGeneration"],
+                "scope": payload["scope"],
+                "currentPassword": "password-123",
+            },
+        )
+        assert confirmed.status_code == 200
+
+
+def test_filesystem_recovery_ready_phrase_can_be_explicitly_discarded_and_reissued(
+    monkeypatch,
+) -> None:
+    phrases = iter(
+        [
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        ]
+    )
+    monkeypatch.setattr(
+        "anima_server.services.corefs.credentials.generate_recovery_phrase",
+        lambda: next(phrases),
+    )
+    with managed_test_client("anima-fs-recovery-ready-reissue-") as client:
+        registered = _register_user(client, password="password-123")
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+        request = {
+            "currentRecoveryPhrase": registered["recoveryPhrase"],
+            "currentPassword": "password-123",
+        }
+        first = client.post("/api/auth/corefs/recovery-credential/prepare", json=request)
+        assert first.status_code == 200
+
+        replacement = client.post(
+            "/api/auth/corefs/recovery-credential/prepare",
+            json={**request, "replacePending": True},
+        )
+
+        assert replacement.status_code == 200
+        payload = replacement.json()
+        assert payload["recoveryPhrase"].startswith("legal winner")
+        assert payload["pendingGeneration"] == first.json()["pendingGeneration"]
+        confirmed = client.post(
+            "/api/auth/corefs/recovery-credential/confirm",
+            json={
+                "recoveryPhrase": payload["recoveryPhrase"],
+                "pendingGeneration": payload["pendingGeneration"],
+            },
+        )
+        assert confirmed.status_code == 200
+
+
 def test_full_recovery_ready_marker_survives_coordinator_restart(monkeypatch) -> None:
     with managed_test_client("anima-recovery-ready-restart-") as client:
         registered = _register_user(client, password="password-123")

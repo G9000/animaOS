@@ -83,9 +83,17 @@ def _require_active_generation(
         raise ValueError(f"active {path.value} credential generation changed")
 
 
-def _reject_live_pending_recovery(manifest: dict[str, object]) -> None:
+def _reject_live_pending_recovery(
+    manifest: dict[str, object],
+    *,
+    replace_pending: bool = False,
+) -> None:
     marker = manifest.get(_PENDING_RECOVERY_CREDENTIAL)
-    if isinstance(marker, dict) and marker.get("phase") == "ready":
+    if (
+        isinstance(marker, dict)
+        and marker.get("phase") == "ready"
+        and not replace_pending
+    ):
         raise ValueError("recovery credential preparation is in progress")
 
 
@@ -781,13 +789,14 @@ def prepare_filesystem_recovery_credential(
     *,
     current_password: str,
     current_recovery_phrase: str,
+    replace_pending: bool = False,
     failure_injector: FailureInjector | None = None,
 ) -> PreparedRecoveryCredential:
     """Prepare a replacement FS-only recovery phrase using manifest roots only."""
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
     active_generation = int(manifest["active_recovery_credential_generation"])
     generation = active_generation + 1
-    _reject_live_pending_recovery(manifest)
+    _reject_live_pending_recovery(manifest, replace_pending=replace_pending)
     password_roots = unlock_manifest_key_hierarchy(
         credential=current_password,
         wrapping_path=WrappingPath.PASSWORD,
@@ -1135,6 +1144,7 @@ def prepare_recovery_credential(
     current_recovery_phrase: str,
     current_password: str,
     scope: PayloadScope = PayloadScope.FULL,
+    replace_pending: bool = False,
     failure_injector: FailureInjector | None = None,
 ) -> PreparedRecoveryCredential:
     """Write and verify pending recovery material without activating it."""
@@ -1144,7 +1154,7 @@ def prepare_recovery_credential(
     core_id = str(manifest["core_id"])
     owner_id = str(manifest["owner_id"])
     active_generation = int(manifest.get("active_recovery_credential_generation", 0))
-    _reject_live_pending_recovery(manifest)
+    _reject_live_pending_recovery(manifest, replace_pending=replace_pending)
     upgrading_legacy = active_generation == 0
     if upgrading_legacy and scope is not PayloadScope.FULL:
         raise ValueError("legacy hierarchy upgrade requires full scope")

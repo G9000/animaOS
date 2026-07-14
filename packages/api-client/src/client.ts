@@ -594,23 +594,25 @@ export function createApiClient(options: ApiClientOptions) {
         currentRecoveryPhrase: string,
         currentPassword: string,
         scope: "full" | "soul" | "fs" = "full",
+        replacePending = false,
       ) =>
         request<PrepareRecoveryCredentialResponse>(
           "/auth/recovery-credential/prepare",
           {
             method: "POST",
-            body: { currentRecoveryPhrase, currentPassword, scope },
+            body: { currentRecoveryPhrase, currentPassword, scope, replacePending },
           },
         ),
       prepareCorefsRecoveryCredential: (
         currentRecoveryPhrase: string,
         currentPassword: string,
+        replacePending = false,
       ) =>
         request<PrepareCorefsRecoveryCredentialResponse>(
           "/auth/corefs/recovery-credential/prepare",
           {
             method: "POST",
-            body: { currentRecoveryPhrase, currentPassword },
+            body: { currentRecoveryPhrase, currentPassword, replacePending },
           },
         ),
       confirmRecoveryCredential: (
