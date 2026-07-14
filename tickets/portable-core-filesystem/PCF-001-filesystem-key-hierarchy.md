@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 18:02 MYT
+- Updated: 2026-07-14 18:27 MYT
 - Started: 2026-07-13 21:27 MYT
-- Completed: 2026-07-14 18:02 MYT
+- Completed: 2026-07-14 18:27 MYT
 
 ## Goal
 
@@ -56,10 +56,16 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-14 17:12 MYT - Completed the destination-account rebinding follow-up: authenticated cross-Core imports retain the destination user ID, username, password hash, account creation identity, manifest index, UserKey wrappers, and Soul keyslots while restoring portable profile fields and remapping imported user-owned rows. Different-username login, password rotation, and recovery now pass end to end.
 - 2026-07-14 17:25 MYT - Reopened PCF-001 for a current-head legacy-rotation review regression: a password change after registration crashes with an orphaned initial Soul backfill must not strand recovery upgrade behind the previous password.
 - 2026-07-14 18:02 MYT - Completed the orphaned-backfill rotation follow-up: the legacy password path verifies orphaned initial password keyslots against the authenticated active Soul domains and deletes the complete non-authoritative password/recovery set in the same SQL transaction as password rotation. Recovery upgrade remains available with the new password.
+- 2026-07-14 18:15 MYT - Reopened PCF-001 for a current-head startup compatibility review regression: manifest writes must retain native-first durability while tolerating an installed `anima_core` extension that predates `corefs_atomic_publish`.
+- 2026-07-14 18:27 MYT - Completed the startup compatibility follow-up: manifest publication uses the native durability primitive when available and a same-directory, fsync-before-replace Python fallback only when the installed extension lacks that binding. Native failures still propagate and preserve the previous generation.
 
 ## Validation
 
 - Commands:
+  - Stale-extension manifest-publication TDD: deleting `corefs_atomic_publish` first reproduced the startup `AttributeError`; after implementation the fallback, native-durability, and failure-preservation regression set passed 3 tests.
+  - After rebuilding the editable Rust extension, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 48 passed with one known Starlette deprecation warning.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_anima_core_bindings.py apps/server/tests/test_core_permissions.py -q` - 10 passed, 1 skipped.
+  - Scoped Ruff, `bun run lint:server`, `bun run build:server`, local native-extension restoration, and `git diff --check` - passed.
   - Registration-crash legacy-rotation TDD: the new crash -> login -> password change -> recovery upgrade regression first failed with HTTP 401 at recovery prepare; after implementation it passed with the new password.
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 47 passed with one known Starlette deprecation warning.
   - Isolated-root `test_auth.py` and `test_recovery.py` runs - 14 passed and 30 passed respectively, each with the same known warning.

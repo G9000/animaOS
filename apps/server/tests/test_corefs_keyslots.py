@@ -352,6 +352,23 @@ def test_manifest_publication_returns_only_after_native_durability(
         settings.data_dir = original
 
 
+def test_manifest_publication_falls_back_when_native_binding_is_missing(
+    managed_tmp_path,
+    monkeypatch,
+) -> None:
+    original = settings.data_dir
+    settings.data_dir = managed_tmp_path
+    monkeypatch.delattr(anima_core, "corefs_atomic_publish", raising=False)
+    try:
+        update_core_manifest(lambda manifest: manifest.__setitem__("marker", "fallback"))
+
+        manifest_path = get_manifest_path()
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["marker"] == "fallback"
+        assert list(managed_tmp_path.glob(f".{manifest_path.name}.*.tmp")) == []
+    finally:
+        settings.data_dir = original
+
+
 def test_manifest_publication_failure_keeps_previous_generation(
     managed_tmp_path,
     monkeypatch,

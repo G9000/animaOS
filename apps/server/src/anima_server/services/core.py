@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from threading import Lock
 import uuid_utils as uuid
 
 from anima_server.config import settings
+from anima_server.services import anima_core_bindings
 
 logger = logging.getLogger(__name__)
 
@@ -313,12 +315,47 @@ def _load_manifest(*, now: str) -> dict[str, object]:
 
 
 def _write_manifest(manifest: dict[str, object]) -> None:
-    import anima_core
-
     path = get_manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(manifest, indent=2).encode("utf-8")
-    anima_core.corefs_atomic_publish(str(path), payload)
+    native_publish = anima_core_bindings.get_binding("corefs_atomic_publish")
+    if native_publish is not None:
+        native_publish(str(path), payload)
+        return
+    _atomic_publish_manifest_fallback(path, payload)
+
+
+def _atomic_publish_manifest_fallback(path: Path, payload: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        handle = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary_path, path)
+        if os.name == "nt":
+            with path.open("rb+") as published:
+                os.fsync(published.fileno())
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            parent_descriptor = os.open(path.parent, flags)
+            try:
+                os.fsync(parent_descriptor)
+            finally:
+                os.close(parent_descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _detect_next_user_id() -> int:
