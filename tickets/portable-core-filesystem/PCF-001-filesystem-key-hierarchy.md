@@ -1,6 +1,6 @@
 # PCF-001 - Filesystem key hierarchy and credential generations
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: `packages/anima-corefs`, `packages/anima-core`, `apps/server`, `apps/desktop`, and `packages/api-client` crypto, manifest, Soul keyslots, credential UI/API
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 04:28 MYT
+- Updated: 2026-07-14 12:00 MYT
 - Started: 2026-07-13 21:27 MYT
-- Completed:
+- Completed: 2026-07-14 12:00 MYT
 
 ## Goal
 
@@ -49,10 +49,15 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-14 02:49 MYT - Addressed the fourth follow-up: activated keyslot evidence now prevents legacy fallback when generation markers are removed while PENDING-only legacy-upgrade slots remain non-authoritative; legacy confirmation revalidates both password and recovery generations immediately before activation and reopens both afterward; the desktop supplies the current password only from ephemeral review state. Clarified that PCF-001 preserves legacy manifest compatibility fields for PCF-007. Ticket remains `in_progress` for re-review.
 - 2026-07-14 04:05 MYT - Addressed the fifth quality review: registration now publishes legacy login/recovery locators before activating versioned authority; native AAD binds immutable generation/scope/FRK/object-epoch metadata while status transitions in place; unauthenticated CoreFS credential routes share pre-KDF rate/concurrency admission; credential coordinators serialize complete transactions with active-generation CAS; and a live prepared recovery phrase cannot be replaced by a second prepare. Ticket remains `in_progress` for supervising-agent re-review.
 - 2026-07-14 04:28 MYT - Addressed the sixth restart-correctness review: persisted `ready` recovery preparation now blocks replacement independently of process/coordinator identity, while a stale `preparing` transaction remains reclaimable after restart. Full and CoreFS-only restart tests prove the original returned phrase and all pending rows survive a rejected second prepare and still confirm. Ticket remains `in_progress` for supervising-agent re-review.
+- 2026-07-14 12:00 MYT - Completed PCF-001 after clean requirements and quality re-reviews at `e538bb73`. Final hardening added crash-safe registration locator ordering, immutable native keyslot AAD, pre-KDF CoreFS admission, serialized credential transactions with generation CAS, status-independent Soul keyslot identity, Rust 1.75 compatibility, and cross-restart preservation of returned recovery phrases.
 
 ## Validation
 
 - Commands:
+  - Final independent review: requirements review and quality/security-conscious code review reported no remaining findings at `e538bb73806e64771e9e0ebc7f84242a497815f9`.
+  - Final independent native verification: `cargo test -p anima-corefs -p anima-core` - 227 passed; `uvx maturin develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt and installed the current extension.
+  - Final independent fifth/sixth hardening regressions under an external `ANIMA_TEST_TEMP_ROOT`: restart matrix - 3 passed; admission/concurrency/CAS/pending-preservation matrix - 6 passed; AAD/schema/registration/migration matrix - 8 passed.
+  - Final independent application verification: latest legacy-activation backend regressions - 5 passed; desktop recovery tests - 3 passed; server and desktop builds, server lint, migration round-trip, Alembic head, and `git diff --check` passed.
   - Sixth follow-up TDD: after restoring the editable PyO3 extension, the restart matrix failed 2 ready-marker tests and passed the stale-preparing retry test before implementation; after the one-line authority fix, all 3 passed.
   - Sixth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest -q apps/server/tests/test_recovery.py` - 26 passed; the equivalent `test_corefs_keyslots.py` run - 42 passed.
   - Sixth follow-up quality checks: focused Ruff check/format and `bun run build:server` passed; `git diff --check` passed before staging.
@@ -97,3 +102,4 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
   - PCF-001 adds versioned owner/keyslot authority without deleting legacy manifest compatibility fields. `user_index` and the remaining legacy compatibility surface are intentionally retained until the PCF-007 cutover.
   - Portability tests must set `ANIMA_TEST_TEMP_ROOT` outside the OneDrive-synchronized checkout on Windows; the same isolated test failed only when OneDrive held the directory and passed immediately under `%TEMP%`.
   - FRK generation/wrapping/unwrapping and Object-DEK generation/wrapping/unwrapping remain opaque native handles. Python retains only existing Soul/SQLCipher and legacy UserKey byte handling.
+  - Full desktop tests still have unrelated baseline navigation drift (two assertion failures and one missing `LayoutTopNav` module); all PCF desktop tests and the production desktop build pass. Whole-workspace Rust formatting also remains baseline-dirty outside PCF-owned files.
