@@ -7,6 +7,10 @@ import type {
   AgentStateData,
   AuthResponse,
   ChangePasswordResponse,
+  CorefsCredentialResponse,
+  ConfirmRecoveryCredentialResponse,
+  PrepareRecoveryCredentialResponse,
+  PrepareCorefsRecoveryCredentialResponse,
   ChatMessage,
   ChatContextMessage,
   ChatRequestAttachment,
@@ -563,16 +567,78 @@ export function createApiClient(options: ApiClientOptions) {
       me: () => request<User>("/auth/me"),
       logout: () =>
         request<{ success: boolean }>("/auth/logout", { method: "POST" }),
-      changePassword: (oldPassword: string, newPassword: string) =>
+      changePassword: (
+        oldPassword: string,
+        newPassword: string,
+        scope: "full" | "soul" | "fs" = "full",
+      ) =>
         request<ChangePasswordResponse>("/auth/change-password", {
           method: "POST",
-          body: { oldPassword, newPassword },
+          body: { oldPassword, newPassword, scope },
         }),
-      recover: (recoveryPhrase: string, newPassword: string) =>
+      changeCorefsPassword: (currentPassword: string, newPassword: string) =>
+        request<CorefsCredentialResponse>("/auth/corefs/change-password", {
+          method: "POST",
+          body: { currentPassword, newPassword },
+        }),
+      recover: (
+        recoveryPhrase: string,
+        newPassword: string,
+        scope: "full" | "soul" | "fs" = "full",
+      ) =>
         request<LoginResponse>("/auth/recover", {
           method: "POST",
-          body: { recoveryPhrase, newPassword },
+          body: { recoveryPhrase, newPassword, scope },
         }),
+      prepareRecoveryCredential: (
+        currentRecoveryPhrase: string,
+        currentPassword: string,
+        scope: "full" | "soul" | "fs" = "full",
+        replacePending = false,
+      ) =>
+        request<PrepareRecoveryCredentialResponse>(
+          "/auth/recovery-credential/prepare",
+          {
+            method: "POST",
+            body: { currentRecoveryPhrase, currentPassword, scope, replacePending },
+          },
+        ),
+      prepareCorefsRecoveryCredential: (
+        currentRecoveryPhrase: string,
+        currentPassword: string,
+        replacePending = false,
+      ) =>
+        request<PrepareCorefsRecoveryCredentialResponse>(
+          "/auth/corefs/recovery-credential/prepare",
+          {
+            method: "POST",
+            body: { currentRecoveryPhrase, currentPassword, replacePending },
+          },
+        ),
+      confirmRecoveryCredential: (
+        recoveryPhrase: string,
+        pendingGeneration: number,
+        scope: "full" | "soul" | "fs",
+        currentPassword: string,
+      ) =>
+        request<ConfirmRecoveryCredentialResponse>(
+          "/auth/recovery-credential/confirm",
+          {
+            method: "POST",
+            body: { recoveryPhrase, pendingGeneration, scope, currentPassword },
+          },
+        ),
+      confirmCorefsRecoveryCredential: (
+        recoveryPhrase: string,
+        pendingGeneration: number,
+      ) =>
+        request<CorefsCredentialResponse>(
+          "/auth/corefs/recovery-credential/confirm",
+          {
+            method: "POST",
+            body: { recoveryPhrase, pendingGeneration },
+          },
+        ),
     },
     users: {
       me: (id: number) => request<User>(`/users/${id}`),

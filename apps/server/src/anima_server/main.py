@@ -252,8 +252,9 @@ def create_app() -> FastAPI:
     if not settings.sidecar_nonce and settings.app_env != "development":
         logger.warning(
             "Sidecar nonce is not configured in non-development environment")
+    if not acquire_core_lock():
+        raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
-    acquire_core_lock()
     load_persisted_runtime_settings()
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)

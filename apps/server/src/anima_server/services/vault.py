@@ -33,6 +33,7 @@ from anima_server.models import (
     MemoryItem,
     MemoryItemEvidence,
     SelfModelBlock,
+    SoulKeyslot,
     Task,
     User,
     UserKey,
@@ -40,6 +41,7 @@ from anima_server.models import (
     UserProfileFieldEvidence,
 )
 from anima_server.services import anima_core_bindings
+from anima_server.services.core import update_core_manifest
 from anima_server.services.crypto import (
     AUTH_TAG_LENGTH,
     IV_LENGTH,
@@ -79,6 +81,37 @@ VAULT_FORMAT_CAPSULE = "anima_capsule"
 _MAX_VAULT_TIME_COST = 10
 _MAX_VAULT_MEMORY_COST_KIB = 2_097_152
 _MAX_VAULT_PARALLELISM = 8
+
+_PORTABLE_MANIFEST_AUTHORITY_FIELDS = (
+    "version",
+    "schema_version",
+    "core_id",
+    "created_at",
+    "next_user_id",
+    "owner_id",
+    "owner_user_id",
+    "owner_binding",
+    "user_index",
+    "sqlcipher_kdf_salt",
+    "wrapped_sqlcipher_key",
+    "recovery_sqlcipher_key",
+    "keyslots_version",
+    "keyslots",
+    "active_password_credential_generation",
+    "active_recovery_credential_generation",
+    "pending_recovery_credential",
+    "frk_rotation",
+)
+_VERSIONED_KEY_HIERARCHY_FIELDS = (
+    "core_id",
+    "owner_id",
+    "keyslots_version",
+    "keyslots",
+    "active_password_credential_generation",
+    "active_recovery_credential_generation",
+    "pending_recovery_credential",
+    "frk_rotation",
+)
 
 # ---------------------------------------------------------------------------
 # Vault version migration
@@ -135,6 +168,7 @@ _MEMORY_TABLES = frozenset(
 
 _IDENTITY_TABLES = frozenset(
     {
+        "soulKeyslots",
         "users",
         "userKeys",
     }
@@ -157,6 +191,7 @@ _CONVERSATION_TABLES = frozenset(
 
 _CAPSULE_CARD_TABLES = frozenset(
     {
+        "soulKeyslots",
         "users",
         "userKeys",
         "memoryItems",
@@ -504,6 +539,23 @@ def import_vault(
 
     vault_scope = payload.get("scope", "full")
 
+    vault_manifest = payload.get("manifest")
+    current_manifest = _read_manifest_snapshot()
+    rebind_to_current_hierarchy = (
+        user_id is not None
+        and (
+            not isinstance(vault_manifest, dict)
+            or not _manifest_key_hierarchy_matches(current_manifest, vault_manifest)
+        )
+    )
+    if rebind_to_current_hierarchy:
+        _rebind_snapshot_key_hierarchy(
+            db,
+            database,
+            user_id=user_id,
+            current_manifest=current_manifest,
+        )
+
     # Re-encrypt plaintext fields with importing user's DEK before restoring
     if user_id is not None:
         _re_encrypt_snapshot_fields(database, user_id)
@@ -511,9 +563,10 @@ def import_vault(
     restore_database_snapshot(db, database, scope=vault_scope)
     write_data_snapshot(user_files, user_id=user_id)
 
-    # Restore manifest identity (core_id, created_at) from vault if present
-    vault_manifest = payload.get("manifest")
-    if isinstance(vault_manifest, dict):
+    # Cold transfers and exact same-hierarchy restores carry the exported
+    # manifest authority. Authenticated imports into another hierarchy keep
+    # the destination authority that was used to re-encrypt the snapshot.
+    if isinstance(vault_manifest, dict) and not rebind_to_current_hierarchy:
         _restore_manifest_identity(vault_manifest)
 
     # Rebuild vector index from imported embeddings
@@ -729,6 +782,10 @@ def export_database_snapshot(
         serialize_user_key_record(user_key)
         for user_key in db.scalars(_scoped(select(UserKey), UserKey)).all()
     ]
+    soul_keyslots = [
+        serialize_soul_keyslot_record(keyslot)
+        for keyslot in db.scalars(select(SoulKeyslot)).all()
+    ]
     memory_items = [
         serialize_memory_item_record(item, deks=deks)
         for item in db.scalars(_scoped(select(MemoryItem), MemoryItem)).all()
@@ -828,6 +885,7 @@ def export_database_snapshot(
     return {
         "users": users,
         "userKeys": user_keys,
+        "soulKeyslots": soul_keyslots,
         "memoryItems": memory_items,
         "memoryItemEvidence": memory_item_evidence,
         "userProfileFields": user_profile_fields,
@@ -859,6 +917,10 @@ def restore_database_snapshot(
     user_keys_payload = snapshot.get("userKeys")
     if not isinstance(users_payload, list) or not isinstance(user_keys_payload, list):
         raise ValueError("Vault database snapshot is missing users or userKeys.")
+    soul_keyslots_payload = snapshot.get("soulKeyslots", [])
+    if not isinstance(soul_keyslots_payload, list):
+        raise ValueError("Vault Soul keyslot snapshot is invalid.")
+    restores_soul_keyslots = "soulKeyslots" in snapshot
 
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_item_evidence_payload = snapshot.get("memoryItemEvidence", [])
@@ -902,6 +964,8 @@ def restore_database_snapshot(
             db.query(Task).delete()
         db.query(MemoryEpisode).delete()
         db.query(MemoryItem).delete()
+        if restores_soul_keyslots:
+            db.query(SoulKeyslot).delete()
         db.query(UserKey).delete()
         db.query(User).delete()
 
@@ -930,6 +994,34 @@ def restore_database_snapshot(
                     id=int(record["id"]),
                     user_id=int(record["user_id"]),
                     domain=str(record.get("domain", "memories")),
+                    kdf_salt=str(record["kdf_salt"]),
+                    kdf_time_cost=int(record["kdf_time_cost"]),
+                    kdf_memory_cost_kib=int(record["kdf_memory_cost_kib"]),
+                    kdf_parallelism=int(record["kdf_parallelism"]),
+                    kdf_key_length=int(record["kdf_key_length"]),
+                    wrap_iv=str(record["wrap_iv"]),
+                    wrap_tag=str(record["wrap_tag"]),
+                    wrapped_dek=str(record["wrapped_dek"]),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        for record in soul_keyslots_payload:
+            if not isinstance(record, dict):
+                raise ValueError("Vault Soul keyslot record is invalid.")
+            db.add(
+                SoulKeyslot(
+                    id=int(record["id"]),
+                    owner_id=str(record["owner_id"]),
+                    domain=str(record["domain"]),
+                    wrapping_path=str(record["wrapping_path"]),
+                    key_version=int(record["key_version"]),
+                    credential_generation=int(record["credential_generation"]),
+                    status=str(record["status"]),
+                    kdf_algorithm=str(record["kdf_algorithm"]),
+                    wrap_algorithm=str(record["wrap_algorithm"]),
+                    envelope_version=int(record["envelope_version"]),
                     kdf_salt=str(record["kdf_salt"]),
                     kdf_time_cost=int(record["kdf_time_cost"]),
                     kdf_memory_cost_kib=int(record["kdf_memory_cost_kib"]),
@@ -1556,6 +1648,31 @@ def serialize_user_key_record(user_key: UserKey) -> dict[str, Any]:
     }
 
 
+def serialize_soul_keyslot_record(keyslot: SoulKeyslot) -> dict[str, Any]:
+    return {
+        "id": keyslot.id,
+        "owner_id": keyslot.owner_id,
+        "domain": keyslot.domain,
+        "wrapping_path": keyslot.wrapping_path,
+        "key_version": keyslot.key_version,
+        "credential_generation": keyslot.credential_generation,
+        "status": keyslot.status,
+        "kdf_algorithm": keyslot.kdf_algorithm,
+        "wrap_algorithm": keyslot.wrap_algorithm,
+        "envelope_version": keyslot.envelope_version,
+        "kdf_salt": keyslot.kdf_salt,
+        "kdf_time_cost": keyslot.kdf_time_cost,
+        "kdf_memory_cost_kib": keyslot.kdf_memory_cost_kib,
+        "kdf_parallelism": keyslot.kdf_parallelism,
+        "kdf_key_length": keyslot.kdf_key_length,
+        "wrap_iv": keyslot.wrap_iv,
+        "wrap_tag": keyslot.wrap_tag,
+        "wrapped_dek": keyslot.wrapped_dek,
+        "created_at": serialize_optional_datetime(keyslot.created_at),
+        "updated_at": serialize_optional_datetime(keyslot.updated_at),
+    }
+
+
 def serialize_memory_item_record(
     item: MemoryItem,
     *,
@@ -2157,20 +2274,89 @@ def _read_manifest_snapshot() -> dict[str, Any]:
     return {}
 
 
+def _manifest_key_hierarchy_matches(
+    current_manifest: dict[str, Any],
+    vault_manifest: dict[str, Any],
+) -> bool:
+    required_fields = (
+        "core_id",
+        "owner_id",
+        "keyslots",
+        "active_password_credential_generation",
+        "active_recovery_credential_generation",
+        "frk_rotation",
+    )
+    if any(
+        field not in current_manifest or field not in vault_manifest for field in required_fields
+    ):
+        return False
+    return all(
+        current_manifest.get(field) == vault_manifest.get(field)
+        for field in _VERSIONED_KEY_HIERARCHY_FIELDS
+    )
+
+
+def _rebind_snapshot_key_hierarchy(
+    db: Session,
+    snapshot: dict[str, Any],
+    *,
+    user_id: int,
+    current_manifest: dict[str, Any],
+) -> None:
+    """Keep the authenticated Core's account and credentials on cross-Core import."""
+    owner_id = current_manifest.get("owner_id")
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ValueError("Current Core manifest is missing its owner identity.")
+
+    current_user = db.get(User, user_id)
+    if current_user is None:
+        raise ValueError("Authenticated Core user is missing.")
+    users_payload = snapshot.get("users")
+    if (
+        not isinstance(users_payload, list)
+        or len(users_payload) != 1
+        or not isinstance(users_payload[0], dict)
+    ):
+        raise ValueError("Vault database snapshot must contain one user.")
+
+    rebound_user = dict(users_payload[0])
+    rebound_user.update(
+        {
+            "id": current_user.id,
+            "username": current_user.username,
+            "password_hash": current_user.password_hash,
+            "created_at": serialize_optional_datetime(current_user.created_at),
+        }
+    )
+    snapshot["users"] = [rebound_user]
+    for records in snapshot.values():
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict) and "user_id" in record:
+                record["user_id"] = current_user.id
+
+    current_user_keys = list(db.scalars(select(UserKey).where(UserKey.user_id == user_id)).all())
+    current_soul_keyslots = list(
+        db.scalars(select(SoulKeyslot).where(SoulKeyslot.owner_id == owner_id)).all()
+    )
+    snapshot["userKeys"] = [serialize_user_key_record(user_key) for user_key in current_user_keys]
+    snapshot["soulKeyslots"] = [
+        serialize_soul_keyslot_record(keyslot) for keyslot in current_soul_keyslots
+    ]
+
+
 def _restore_manifest_identity(vault_manifest: dict[str, Any]) -> None:
-    """Restore core_id and created_at from vault manifest, preserving Core identity."""
-    manifest_path = settings.data_dir / "manifest.json"
-    if not manifest_path.is_file():
-        return
-    current = json.loads(manifest_path.read_text(encoding="utf-8"))
+    """Atomically restore portable identity and its matching keyslot authority."""
 
-    # Preserve the Core's birth identity from the vault
-    if "core_id" in vault_manifest:
-        current["core_id"] = vault_manifest["core_id"]
-    if "created_at" in vault_manifest:
-        current["created_at"] = vault_manifest["created_at"]
+    def restore_authority(current: dict[str, object]) -> None:
+        for field in _PORTABLE_MANIFEST_AUTHORITY_FIELDS:
+            if field in vault_manifest:
+                current[field] = vault_manifest[field]
+            else:
+                current.pop(field, None)
 
-    manifest_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    update_core_manifest(restore_authority)
 
 
 def _re_encrypt_snapshot_fields(

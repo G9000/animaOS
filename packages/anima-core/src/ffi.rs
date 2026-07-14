@@ -6,7 +6,7 @@
 #[cfg(feature = "python")]
 mod python {
     use pyo3::prelude::*;
-    use pyo3::types::{PyDict, PyList};
+    use pyo3::types::{PyBytes, PyDict, PyList};
     use pyo3::IntoPy;
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -23,6 +23,490 @@ mod python {
     };
     use crate::search::{HeatMeta, HeatParams};
     use crate::temporal::TemporalIndex;
+
+    fn corefs_value_error(error: anima_corefs::crypto::CryptoError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    #[pyclass(name = "CorefsSubkeys")]
+    struct PyCorefsSubkeys {
+        inner: anima_corefs::crypto::FrkSubkeys,
+    }
+
+    #[pymethods]
+    impl PyCorefsSubkeys {
+        #[getter]
+        fn frk_version(&self) -> u32 {
+            self.inner.frk_version()
+        }
+    }
+
+    #[pyclass(name = "CorefsRootKey")]
+    struct PyCorefsRootKey {
+        inner: anima_corefs::crypto::SecretBytes,
+    }
+
+    #[pymethods]
+    impl PyCorefsRootKey {
+        fn matches(&self, other: &PyCorefsRootKey) -> bool {
+            self.inner.as_slice() == other.inner.as_slice()
+        }
+
+        fn __eq__(&self, other: &PyCorefsRootKey) -> bool {
+            self.matches(other)
+        }
+    }
+
+    #[pyclass(name = "CorefsObjectDek")]
+    struct PyCorefsObjectDek {
+        inner: anima_corefs::crypto::SecretBytes,
+    }
+
+    #[pymethods]
+    impl PyCorefsObjectDek {
+        fn matches(&self, other: &PyCorefsObjectDek) -> bool {
+            self.inner.as_slice() == other.inner.as_slice()
+        }
+    }
+
+    #[pyclass(name = "CorefsWrappedRootKey")]
+    struct PyCorefsWrappedRootKey {
+        inner: anima_corefs::crypto::WrappedFilesystemRootKey,
+    }
+
+    #[pymethods]
+    impl PyCorefsWrappedRootKey {
+        #[new]
+        fn new(salt: &str, nonce: &str, tag: &str, ciphertext: &str) -> PyResult<Self> {
+            Ok(Self {
+                inner: anima_corefs::crypto::WrappedFilesystemRootKey::from_base64_parts(
+                    salt, nonce, tag, ciphertext,
+                )
+                .map_err(corefs_value_error)?,
+            })
+        }
+
+        #[getter]
+        fn kdf_salt(&self) -> String {
+            self.inner.salt_base64()
+        }
+
+        #[getter]
+        fn wrap_iv(&self) -> String {
+            self.inner.nonce_base64()
+        }
+
+        #[getter]
+        fn wrap_tag(&self) -> String {
+            self.inner.tag_base64()
+        }
+
+        #[getter]
+        fn wrapped_key(&self) -> String {
+            self.inner.ciphertext_base64()
+        }
+    }
+
+    #[pyclass(name = "CorefsWrappedObjectDek")]
+    struct PyCorefsWrappedObjectDek {
+        inner: anima_corefs::crypto::WrappedObjectDek,
+    }
+
+    #[pymethods]
+    impl PyCorefsWrappedObjectDek {
+        #[new]
+        fn new(
+            algorithm: &str,
+            envelope_version: u16,
+            nonce: &[u8],
+            ciphertext: &[u8],
+        ) -> PyResult<Self> {
+            Ok(Self {
+                inner: anima_corefs::crypto::WrappedObjectDek::from_parts(
+                    algorithm,
+                    envelope_version,
+                    nonce,
+                    ciphertext.to_vec(),
+                )
+                .map_err(corefs_value_error)?,
+            })
+        }
+
+        #[getter]
+        fn algorithm(&self) -> &'static str {
+            self.inner.algorithm()
+        }
+
+        #[getter]
+        fn envelope_version(&self) -> u16 {
+            self.inner.envelope_version()
+        }
+
+        #[getter]
+        fn nonce(&self, py: Python<'_>) -> PyObject {
+            PyBytes::new_bound(py, self.inner.nonce()).into_py(py)
+        }
+
+        #[getter]
+        fn ciphertext(&self, py: Python<'_>) -> PyObject {
+            PyBytes::new_bound(py, self.inner.ciphertext()).into_py(py)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_aad(
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+        frk_version: u32,
+    ) -> PyResult<anima_corefs::crypto::ObjectKeyAad> {
+        let kind = anima_corefs::crypto::ObjectKind::parse(kind).map_err(corefs_value_error)?;
+        anima_corefs::crypto::ObjectKeyAad::new(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+            frk_version,
+        )
+        .map_err(corefs_value_error)
+    }
+
+    #[pyfunction]
+    fn corefs_generate_root_key() -> PyResult<PyCorefsRootKey> {
+        Ok(PyCorefsRootKey {
+            inner: anima_corefs::crypto::generate_filesystem_root_key()
+                .map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    fn corefs_atomic_publish(path: &str, payload: &[u8]) -> PyResult<()> {
+        anima_corefs::publication::atomic_publish(Path::new(path), payload)
+            .map_err(pyo3::exceptions::PyOSError::new_err)
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (
+        core_id,
+        owner_id,
+        purpose,
+        key_version,
+        credential_generation,
+        scope,
+        frk_version,
+        object_key_epoch,
+        wrapping_path
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_manifest_keyslot_aad(
+        py: Python<'_>,
+        core_id: &str,
+        owner_id: &str,
+        purpose: &str,
+        key_version: u32,
+        credential_generation: u32,
+        scope: &str,
+        frk_version: Option<u32>,
+        object_key_epoch: Option<u32>,
+        wrapping_path: &str,
+    ) -> PyResult<PyObject> {
+        let aad = anima_corefs::crypto::manifest_keyslot_aad(
+            core_id,
+            owner_id,
+            purpose,
+            key_version,
+            credential_generation,
+            scope,
+            frk_version,
+            object_key_epoch,
+            wrapping_path,
+        )
+        .map_err(corefs_value_error)?;
+        Ok(PyBytes::new_bound(py, &aad).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_soul_keyslot_aad(
+        py: Python<'_>,
+        core_id: &str,
+        owner_id: &str,
+        domain: &str,
+        key_version: u32,
+        credential_generation: u32,
+        wrapping_path: &str,
+    ) -> PyResult<PyObject> {
+        let aad = anima_corefs::crypto::soul_keyslot_aad(
+            core_id,
+            owner_id,
+            domain,
+            key_version,
+            credential_generation,
+            wrapping_path,
+        )
+        .map_err(corefs_value_error)?;
+        Ok(PyBytes::new_bound(py, &aad).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_wrap_root_key(
+        credential: &str,
+        root: &PyCorefsRootKey,
+        aad: &[u8],
+    ) -> PyResult<PyCorefsWrappedRootKey> {
+        Ok(PyCorefsWrappedRootKey {
+            inner: anima_corefs::crypto::wrap_filesystem_root_key(credential, &root.inner, aad)
+                .map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    fn corefs_unwrap_root_key(
+        credential: &str,
+        wrapped: &PyCorefsWrappedRootKey,
+        aad: &[u8],
+    ) -> PyResult<PyCorefsRootKey> {
+        Ok(PyCorefsRootKey {
+            inner: anima_corefs::crypto::unwrap_filesystem_root_key(
+                credential,
+                &wrapped.inner,
+                aad,
+            )
+            .map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    fn corefs_derive_subkeys(frk: &PyCorefsRootKey, frk_version: u32) -> PyResult<PyCorefsSubkeys> {
+        Ok(PyCorefsSubkeys {
+            inner: anima_corefs::crypto::derive_corefs_subkeys(&frk.inner, frk_version)
+                .map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    fn corefs_generate_object_dek() -> PyResult<PyCorefsObjectDek> {
+        Ok(PyCorefsObjectDek {
+            inner: anima_corefs::crypto::generate_object_dek().map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (keys, object_dek, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch, frk_version))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_wrap_object_dek(
+        keys: &PyCorefsSubkeys,
+        object_dek: &PyCorefsObjectDek,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+        frk_version: u32,
+    ) -> PyResult<PyCorefsWrappedObjectDek> {
+        let aad = corefs_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+            frk_version,
+        )?;
+        Ok(PyCorefsWrappedObjectDek {
+            inner: anima_corefs::crypto::wrap_object_dek(&object_dek.inner, &keys.inner, &aad)
+                .map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (keys, wrapped, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch, frk_version))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_unwrap_object_dek(
+        keys: &PyCorefsSubkeys,
+        wrapped: &PyCorefsWrappedObjectDek,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+        frk_version: u32,
+    ) -> PyResult<PyCorefsObjectDek> {
+        let aad = corefs_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+            frk_version,
+        )?;
+        Ok(PyCorefsObjectDek {
+            inner: anima_corefs::crypto::unwrap_object_dek(&keys.inner, &wrapped.inner, &aad)
+                .map_err(corefs_value_error)?,
+        })
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*, core_id, object_id, revision, kind, envelope_version, object_key_epoch, frk_version))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_object_key_aad(
+        py: Python<'_>,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+        frk_version: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+            frk_version,
+        )?;
+        Ok(PyBytes::new_bound(py, &aad.to_bytes()).into_py(py))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_base_aad(
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<anima_corefs::crypto::ObjectBaseAad> {
+        let kind = anima_corefs::crypto::ObjectKind::parse(kind).map_err(corefs_value_error)?;
+        anima_corefs::crypto::ObjectBaseAad::new(
+            core_id,
+            object_id,
+            kind,
+            envelope_version,
+            object_key_epoch,
+            revision,
+        )
+        .map_err(corefs_value_error)
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_object_base_aad(
+        py: Python<'_>,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        Ok(PyBytes::new_bound(py, &aad.to_bytes()).into_py(py))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*, core_id, object_id, revision, kind, envelope_version, object_key_epoch, chunking_version))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_metadata_frame_aad(
+        py: Python<'_>,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+        chunking_version: u16,
+    ) -> PyResult<PyObject> {
+        let base = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let aad = anima_corefs::crypto::MetadataFrameAad::new(base, chunking_version)
+            .map_err(corefs_value_error)?;
+        Ok(PyBytes::new_bound(py, &aad.to_bytes()).into_py(py))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*, core_id, object_id, revision, kind, envelope_version, object_key_epoch, metadata_frame_sha256, chunk_index, chunk_count, plaintext_offset, plaintext_length, total_body_length, final_chunk))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_body_frame_aad(
+        py: Python<'_>,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+        metadata_frame_sha256: &[u8],
+        chunk_index: u32,
+        chunk_count: u32,
+        plaintext_offset: u64,
+        plaintext_length: u64,
+        total_body_length: u64,
+        final_chunk: bool,
+    ) -> PyResult<PyObject> {
+        let base = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let hash = metadata_frame_sha256.try_into().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("metadata hash must be 32 bytes")
+        })?;
+        let aad = anima_corefs::crypto::BodyFrameAad::new(
+            base,
+            hash,
+            chunk_index,
+            chunk_count,
+            plaintext_offset,
+            plaintext_length,
+            total_body_length,
+            final_chunk,
+        )
+        .map_err(corefs_value_error)?;
+        Ok(PyBytes::new_bound(py, &aad.to_bytes()).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_fixed_subkey_test_vector(py: Python<'_>) -> PyResult<PyObject> {
+        let root =
+            anima_corefs::crypto::SecretBytes::new(vec![0x42; 32]).map_err(corefs_value_error)?;
+        let keys =
+            anima_corefs::crypto::derive_corefs_subkeys(&root, 3).map_err(corefs_value_error)?;
+        let values = PyDict::new_bound(py);
+        values.set_item(
+            "object_wrap",
+            PyBytes::new_bound(py, keys.object_wrap().as_slice()),
+        )?;
+        values.set_item("catalog", PyBytes::new_bound(py, keys.catalog().as_slice()))?;
+        values.set_item("search", PyBytes::new_bound(py, keys.search().as_slice()))?;
+        Ok(values.into_py(py))
+    }
 
     fn json_value_to_py(py: Python<'_>, value: Value) -> PyResult<PyObject> {
         match value {
@@ -1439,6 +1923,26 @@ mod python {
         m.add_class::<PyFrameStore>()?;
         m.add_class::<PyTemporalIndex>()?;
         m.add_class::<PyAnimaEngine>()?;
+        m.add_class::<PyCorefsSubkeys>()?;
+        m.add_class::<PyCorefsRootKey>()?;
+        m.add_class::<PyCorefsObjectDek>()?;
+        m.add_class::<PyCorefsWrappedRootKey>()?;
+        m.add_class::<PyCorefsWrappedObjectDek>()?;
+        m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_manifest_keyslot_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_soul_keyslot_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_generate_root_key, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_wrap_root_key, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_unwrap_root_key, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_derive_subkeys, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_generate_object_dek, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_wrap_object_dek, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_unwrap_object_dek, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_object_key_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_object_base_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_metadata_frame_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_body_frame_aad, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_fixed_subkey_test_vector, m)?)?;
 
         // SIMD functions
         m.add_function(wrap_pyfunction!(l2_distance, m)?)?;

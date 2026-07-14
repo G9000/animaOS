@@ -369,7 +369,7 @@ def test_plaintext_soul_that_looks_encrypted_is_returned_verbatim(
         }
 
 
-def test_corrupt_wrapped_sqlcipher_metadata_surfaces_server_error(
+def test_corrupt_legacy_sqlcipher_wrapper_cannot_override_versioned_login(
     isolated_runtime_root: Path,
     encrypted_core_supported: bool,
 ) -> None:
@@ -399,4 +399,5 @@ def test_corrupt_wrapped_sqlcipher_metadata_surfaces_server_error(
             "/api/auth/login",
             json={"username": "corrupt-wrap", "password": "correct-password"},
         )
-        assert response.status_code == 500
+        assert response.status_code == 200
+        assert response.json()["username"] == "corrupt-wrap"

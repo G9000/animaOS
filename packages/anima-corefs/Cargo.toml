@@ -1,0 +1,25 @@
+[package]
+name = "anima-corefs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Canonical cryptographic and filesystem primitives for ANIMA CORE."
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+getrandom = "0.2"
+hkdf = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+thiserror.workspace = true
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+hex = "0.4"

@@ -42,6 +42,7 @@ class LoginRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     oldPassword: str = Field(min_length=1)
     newPassword: str = Field(min_length=8)
+    scope: Literal["full", "soul", "fs"] = "full"
 
 
 class UserResponse(BaseModel):
@@ -72,6 +73,7 @@ class LogoutResponse(BaseModel):
 class RecoverRequest(BaseModel):
     recoveryPhrase: str = Field(min_length=1)
     newPassword: str = Field(min_length=8)
+    scope: Literal["full", "soul", "fs"] = "full"
 
 
 class RecoverResponse(UserResponse):
@@ -82,3 +84,49 @@ class RecoverResponse(UserResponse):
 class ChangePasswordResponse(BaseModel):
     success: bool
     unlockToken: str
+
+
+class CorefsChangePasswordRequest(BaseModel):
+    currentPassword: str = Field(min_length=1)
+    newPassword: str = Field(min_length=8)
+
+
+class CorefsCredentialResponse(BaseModel):
+    success: bool
+    scope: Literal["fs"]
+
+
+class PrepareCorefsRecoveryCredentialRequest(BaseModel):
+    currentRecoveryPhrase: str = Field(min_length=1)
+    currentPassword: str = Field(min_length=1)
+    replacePending: bool = False
+
+
+class ConfirmCorefsRecoveryCredentialRequest(BaseModel):
+    recoveryPhrase: str = Field(min_length=1)
+    pendingGeneration: int = Field(gt=0)
+
+
+class PrepareRecoveryCredentialRequest(BaseModel):
+    currentRecoveryPhrase: str = Field(min_length=1)
+    currentPassword: str = Field(min_length=1)
+    scope: Literal["full", "soul", "fs"] = "full"
+    replacePending: bool = False
+
+
+class PrepareRecoveryCredentialResponse(BaseModel):
+    success: bool
+    recoveryPhrase: str
+    pendingGeneration: int = Field(gt=0)
+    scope: Literal["full", "soul", "fs"]
+
+
+class ConfirmRecoveryCredentialRequest(BaseModel):
+    recoveryPhrase: str = Field(min_length=1)
+    pendingGeneration: int = Field(gt=0)
+    scope: Literal["full", "soul", "fs"]
+    currentPassword: str = Field(min_length=1)
+
+
+class ConfirmRecoveryCredentialResponse(BaseModel):
+    success: bool

@@ -16,11 +16,14 @@ from anima_server.models import (
     KGRelation,
     MemoryItem,
     MemoryItemEvidence,
+    SoulKeyslot,
     User,
     UserProfileField,
     UserProfileFieldEvidence,
 )
+from anima_server.services import core as core_service
 from anima_server.services import vault as vault_module
+from anima_server.services.corefs import keyslots as keyslots_service
 from anima_server.services.data_crypto import df, ef
 from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import decrypt_string, encrypt_string
@@ -117,6 +120,187 @@ def test_export_and_import_vault_restores_auth_and_files() -> None:
             json={"username": "alice", "password": "pw123456"},
         )
         assert login_response.status_code == 200
+
+
+def test_export_and_import_vault_restores_versioned_soul_keyslots(monkeypatch) -> None:
+    monkeypatch.setattr(
+        keyslots_service,
+        "ensure_core_manifest",
+        core_service.ensure_core_manifest,
+    )
+
+    with managed_test_client("anima-vault-keyslots-") as client:
+        alice = _register_user(client)
+        user_id = int(alice["id"])
+        headers = {"x-anima-unlock": alice["unlockToken"]}
+
+        with get_user_session_factory(user_id)() as db:
+            original = {
+                (
+                    row.owner_id,
+                    row.domain,
+                    row.wrapping_path,
+                    row.key_version,
+                    row.credential_generation,
+                    row.status,
+                    row.wrapped_dek,
+                )
+                for row in db.query(SoulKeyslot).all()
+            }
+        assert original
+
+        exported = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass"},
+        )
+        assert exported.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            db.query(SoulKeyslot).delete()
+            db.commit()
+            assert db.query(SoulKeyslot).count() == 0
+
+        imported = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={"passphrase": "vault-pass", "vault": exported.json()["vault"]},
+        )
+        assert imported.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            restored = {
+                (
+                    row.owner_id,
+                    row.domain,
+                    row.wrapping_path,
+                    row.key_version,
+                    row.credential_generation,
+                    row.status,
+                    row.wrapped_dek,
+                )
+                for row in db.query(SoulKeyslot).all()
+            }
+        assert restored == original
+
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "pw123456"},
+        )
+        assert login.status_code == 200
+
+
+def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        keyslots_service,
+        "ensure_core_manifest",
+        core_service.ensure_core_manifest,
+    )
+
+    with managed_test_client("anima-vault-source-core-") as source_client:
+        source = _register_user(
+            source_client,
+            username="source-user",
+            password="source-password",
+            name="Portable Source",
+        )
+        exported = source_client.post(
+            "/api/vault/export",
+            headers={"x-anima-unlock": source["unlockToken"]},
+            json={"passphrase": "vault-pass"},
+        )
+        assert exported.status_code == 200
+        exported_vault = exported.json()["vault"]
+
+    with managed_test_client("anima-vault-destination-core-") as destination_client:
+        destination = _register_user(
+            destination_client,
+            username="destination-user",
+            password="destination-password",
+            name="Portable Destination",
+        )
+        destination_user_id = int(destination["id"])
+        destination_recovery_phrase = str(destination["recoveryPhrase"])
+        destination_manifest = json.loads(
+            core_service.get_manifest_path().read_text(encoding="utf-8")
+        )
+
+        with get_user_session_factory(destination_user_id)() as db:
+            destination_user = db.get(User, destination_user_id)
+            assert destination_user is not None
+            destination_password_hash = destination_user.password_hash
+            destination_keyslots = {
+                (
+                    row.owner_id,
+                    row.domain,
+                    row.wrapping_path,
+                    row.key_version,
+                    row.credential_generation,
+                    row.status,
+                    row.wrapped_dek,
+                )
+                for row in db.query(SoulKeyslot).all()
+            }
+        assert destination_keyslots
+
+        imported = destination_client.post(
+            "/api/vault/import",
+            headers={"x-anima-unlock": destination["unlockToken"]},
+            json={"passphrase": "vault-pass", "vault": exported_vault},
+        )
+        assert imported.status_code == 200
+
+        restored_manifest = json.loads(core_service.get_manifest_path().read_text(encoding="utf-8"))
+        assert restored_manifest["core_id"] == destination_manifest["core_id"]
+        assert restored_manifest["owner_id"] == destination_manifest["owner_id"]
+        assert restored_manifest["keyslots"] == destination_manifest["keyslots"]
+
+        with get_user_session_factory(destination_user_id)() as db:
+            restored_user = db.get(User, destination_user_id)
+            assert restored_user is not None
+            assert restored_user.username == "destination-user"
+            assert restored_user.password_hash == destination_password_hash
+            assert restored_user.display_name == "Portable Source"
+            restored_keyslots = {
+                (
+                    row.owner_id,
+                    row.domain,
+                    row.wrapping_path,
+                    row.key_version,
+                    row.credential_generation,
+                    row.status,
+                    row.wrapped_dek,
+                )
+                for row in db.query(SoulKeyslot).all()
+            }
+        assert restored_keyslots == destination_keyslots
+
+        login = destination_client.post(
+            "/api/auth/login",
+            json={"username": "destination-user", "password": "destination-password"},
+        )
+        assert login.status_code == 200
+
+        changed = destination_client.post(
+            "/api/auth/change-password",
+            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            json={
+                "oldPassword": "destination-password",
+                "newPassword": "rotated-destination-password",
+            },
+        )
+        assert changed.status_code == 200
+
+        recovered = destination_client.post(
+            "/api/auth/recover",
+            json={
+                "recoveryPhrase": destination_recovery_phrase,
+                "newPassword": "recovered-destination-password",
+            },
+        )
+        assert recovered.status_code == 200
 
 
 def test_import_vault_rejects_wrong_passphrase() -> None:
@@ -948,6 +1132,28 @@ def test_capsule_sections_include_knowledge_graph_tables() -> None:
     assert restored["database"]["kgEntities"] == [{"id": 1, "name": "Ari"}]
     assert restored["database"]["kgRelations"] == [
         {"id": 2, "relation_type": "collaborates_on"}
+    ]
+
+
+def test_capsule_sections_include_soul_keyslots() -> None:
+    payload = {
+        "version": 2,
+        "createdAt": "2026-07-14T00:00:00+00:00",
+        "scope": "full",
+        "database": {
+            "users": [],
+            "userKeys": [],
+            "soulKeyslots": [{"id": 1, "owner_id": "019f-owner"}],
+        },
+        "manifest": {},
+        "userFiles": {},
+    }
+
+    sections = vault_module._payload_to_capsule_sections(payload)
+    restored = vault_module._capsule_sections_to_payload(sections)
+
+    assert restored["database"]["soulKeyslots"] == [
+        {"id": 1, "owner_id": "019f-owner"}
     ]
 
 

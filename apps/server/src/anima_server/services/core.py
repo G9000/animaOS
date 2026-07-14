@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import platform
+import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -13,6 +15,7 @@ from threading import Lock
 import uuid_utils as uuid
 
 from anima_server.config import settings
+from anima_server.services import anima_core_bindings
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,17 @@ def ensure_core_manifest() -> dict[str, object]:
         )
         manifest["encryption_mode"] = _detect_encryption_mode()
         manifest["encryption_version"] = 1
+        _write_manifest(manifest)
+        return manifest
+
+
+def update_core_manifest(
+    update: Callable[[dict[str, object]], None],
+) -> dict[str, object]:
+    """Apply one in-process atomic manifest mutation under the writer lock."""
+    with _manifest_lock:
+        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        update(manifest)
         _write_manifest(manifest)
         return manifest
 
@@ -216,7 +230,13 @@ def set_owner_user_id(user_id: int) -> None:
     """Stamp the manifest with the owner after first provisioning."""
     with _manifest_lock:
         manifest = _load_manifest(now=datetime.now(UTC).isoformat())
+        binding = manifest.get("owner_binding")
+        if isinstance(binding, dict):
+            bound_user_id = binding.get("legacy_user_id")
+            if bound_user_id is not None and int(bound_user_id) != user_id:
+                raise ValueError("opaque owner ID is already bound to another local user")
         manifest["owner_user_id"] = user_id
+        manifest["owner_binding"] = {"legacy_user_id": user_id}
         _write_manifest(manifest)
 
 
@@ -245,6 +265,16 @@ def get_owner_user_id() -> int | None:
     return int(raw) if raw is not None else None
 
 
+def get_owner_id() -> str | None:
+    """Return the stable opaque Core owner UUID without profile data."""
+    path = get_manifest_path()
+    if not path.is_file():
+        return None
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    raw = manifest.get("owner_id")
+    return str(raw) if raw is not None else None
+
+
 def set_next_user_id(next_user_id: int) -> None:
     with _manifest_lock:
         manifest = _load_manifest(now=datetime.now(UTC).isoformat())
@@ -271,15 +301,61 @@ def _load_manifest(*, now: str) -> dict[str, object]:
     manifest.setdefault("created_at", now)
     manifest.setdefault("last_opened_at", now)
     manifest.setdefault("next_user_id", _detect_next_user_id())
+    manifest.setdefault("owner_id", str(uuid.uuid7()))
+    legacy_owner = manifest.get("owner_user_id")
+    if legacy_owner is not None:
+        binding = manifest.setdefault("owner_binding", {"legacy_user_id": int(legacy_owner)})
+        if not isinstance(binding, dict) or int(binding.get("legacy_user_id", -1)) != int(
+            legacy_owner
+        ):
+            raise ValueError("opaque owner ID has an ambiguous local owner binding")
+    manifest.setdefault("keyslots_version", 1)
+    manifest.setdefault("keyslots", [])
     return manifest
 
 
 def _write_manifest(manifest: dict[str, object]) -> None:
     path = get_manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    if os.name != "nt":
-        os.chmod(path, 0o600)
+    payload = json.dumps(manifest, indent=2).encode("utf-8")
+    native_publish = anima_core_bindings.get_binding("corefs_atomic_publish")
+    if native_publish is not None:
+        native_publish(str(path), payload)
+        return
+    _atomic_publish_manifest_fallback(path, payload)
+
+
+def _atomic_publish_manifest_fallback(path: Path, payload: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        handle = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary_path, path)
+        if os.name == "nt":
+            with path.open("rb+") as published:
+                os.fsync(published.fileno())
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            parent_descriptor = os.open(path.parent, flags)
+            try:
+                os.fsync(parent_descriptor)
+            finally:
+                os.close(parent_descriptor)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _detect_next_user_id() -> int:

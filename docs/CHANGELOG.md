@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-07-13
+
+- reconciled the approved Portable Core Filesystem PRD, design, plan, and tickets with merged main: retained the Journal's sanitized rich HTML contract while extracting inline media into encrypted CoreFS objects, classified the new document parsing/tool/context/compiler plaintext boundaries, added the current ingestion/retrieval tests and architecture docs to migration scope, and replaced the ambiguous catalog benchmark with explicit live/tombstone/max-size fixtures
+
 ## 2026-07-12
 
 - standardized the initiative as **Portable Core Filesystem**, the public layer as **Core Filesystem**, and its implementation/API as **CoreFS**, including `PCF-*` planning tickets, `corefs` module and tool names, the `.anima/fs/` catalog layout, and Filesystem Root Key terminology; V1 remains virtual and unmounted while preserving a future authenticated mount-adapter path

@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
+from cryptography.exceptions import InvalidTag
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -12,11 +15,19 @@ from anima_server.api.deps.unlock import read_unlock_token
 from anima_server.contracts.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
+    ConfirmCorefsRecoveryCredentialRequest,
+    ConfirmRecoveryCredentialRequest,
+    ConfirmRecoveryCredentialResponse,
+    CorefsChangePasswordRequest,
+    CorefsCredentialResponse,
     CreateAIChatRequest,
     CreateAIChatResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
+    PrepareCorefsRecoveryCredentialRequest,
+    PrepareRecoveryCredentialRequest,
+    PrepareRecoveryCredentialResponse,
     RecoverRequest,
     RecoverResponse,
     RegisterRequest,
@@ -31,11 +42,23 @@ from anima_server.db.user_store import (
     register_account,
 )
 from anima_server.services.auth import (
-    change_user_password,
     get_user_by_id,
     normalize_username,
     serialize_user,
 )
+from anima_server.services.corefs.admission import (
+    FsCredentialAdmission,
+    FsCredentialAdmissionRejected,
+)
+from anima_server.services.corefs.credentials import (
+    change_account_password_credential,
+    change_filesystem_password_credential,
+    confirm_filesystem_recovery_credential,
+    confirm_recovery_credential,
+    prepare_filesystem_recovery_credential,
+    prepare_recovery_credential,
+)
+from anima_server.services.corefs.types import PayloadScope
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -44,6 +67,7 @@ logger = logging.getLogger(__name__)
 _FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_FS_CREDENTIAL_ADMISSION = FsCredentialAdmission()
 
 
 def _prune_failed_login_attempts(now: float) -> None:
@@ -77,6 +101,20 @@ def _rate_limited_login_response(retry_after: int) -> JSONResponse:
         content={"error": "Too many failed login attempts. Try again later."},
         headers={"Retry-After": str(retry_after)},
     )
+
+
+@contextmanager
+def _admit_fs_credential_work(request: Request) -> Iterator[None]:
+    client_id = request.client.host if request.client is not None else "unknown"
+    try:
+        with _FS_CREDENTIAL_ADMISSION.admit(client_id):
+            yield
+    except FsCredentialAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many filesystem credential attempts. Try again later.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
 
 
 @router.post("/create-ai/chat", response_model=CreateAIChatResponse)
@@ -212,32 +250,99 @@ def change_password(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        change_user_password(
+        change_account_password_credential(
             db,
             user,
             old_password=payload.oldPassword,
             new_password=payload.newPassword,
             current_deks=session.deks,
+            scope=PayloadScope(payload.scope),
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials") from None
-
-    # Re-wrap SQLCipher key with new password (unified passphrase mode)
-    _rewrap_sqlcipher_key_if_unified(payload.newPassword)
 
     unlock_session_store.revoke_user(user.id)
     new_unlock_token = unlock_session_store.create(user.id, session.deks)
     return {"success": True, "unlockToken": new_unlock_token}
 
 
+@router.post("/corefs/change-password", response_model=CorefsCredentialResponse)
+def change_corefs_password(
+    payload: CorefsChangePasswordRequest,
+    request: Request,
+) -> dict[str, object]:
+    with _admit_fs_credential_work(request):
+        try:
+            change_filesystem_password_credential(
+                current_password=payload.currentPassword,
+                new_password=payload.newPassword,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {"success": True, "scope": "fs"}
+
+
+@router.post(
+    "/corefs/recovery-credential/prepare",
+    response_model=PrepareRecoveryCredentialResponse,
+)
+def prepare_corefs_recovery(
+    payload: PrepareCorefsRecoveryCredentialRequest,
+    request: Request,
+) -> dict[str, object]:
+    with _admit_fs_credential_work(request):
+        try:
+            prepared = prepare_filesystem_recovery_credential(
+                current_password=payload.currentPassword,
+                current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
+                replace_pending=payload.replacePending,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {
+        "success": True,
+        "recoveryPhrase": prepared.recovery_phrase,
+        "pendingGeneration": prepared.pending_generation,
+        "scope": "fs",
+    }
+
+
+@router.post(
+    "/corefs/recovery-credential/confirm",
+    response_model=CorefsCredentialResponse,
+)
+def confirm_corefs_recovery(
+    payload: ConfirmCorefsRecoveryCredentialRequest,
+    request: Request,
+) -> dict[str, object]:
+    with _admit_fs_credential_work(request):
+        try:
+            confirm_filesystem_recovery_credential(
+                recovery_phrase=payload.recoveryPhrase.strip().lower(),
+                pending_generation=payload.pendingGeneration,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {"success": True, "scope": "fs"}
+
+
 @router.post("/recover", response_model=RecoverResponse)
 def recover(payload: RecoverRequest) -> dict[str, object]:
+    if PayloadScope(payload.scope) is PayloadScope.FS:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "CoreFS-only recovery cannot start an agent session"},
+        )
     phrase = payload.recoveryPhrase.strip().lower()
     if not phrase:
         raise HTTPException(status_code=422, detail="Recovery phrase is required")
 
     try:
-        response, deks = recover_account_with_phrase(phrase, payload.newPassword)
+        response, deks = recover_account_with_phrase(
+            phrase,
+            payload.newPassword,
+            scope=PayloadScope(payload.scope),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
 
@@ -248,42 +353,68 @@ def recover(payload: RecoverRequest) -> dict[str, object]:
     }
 
 
-def _rewrap_sqlcipher_key_if_unified(new_password: str) -> None:
-    """Re-wrap the SQLCipher key with a new password in unified mode."""
-    from anima_server.config import settings
+@router.post(
+    "/recovery-credential/prepare",
+    response_model=PrepareRecoveryCredentialResponse,
+)
+def prepare_recovery(
+    payload: PrepareRecoveryCredentialRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    session = unlock_session_store.resolve(read_unlock_token(request))
+    if session is None:
+        raise HTTPException(status_code=401, detail="Session locked. Please sign in again.")
+    user = get_user_by_id(db, session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        prepared = prepare_recovery_credential(
+            db,
+            user,
+            current_recovery_phrase=payload.currentRecoveryPhrase.strip().lower(),
+            current_password=payload.currentPassword,
+            scope=PayloadScope(payload.scope),
+            replace_pending=payload.replacePending,
+        )
+    except InvalidTag:
+        raise HTTPException(status_code=401, detail="Invalid recovery phrase") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {
+        "success": True,
+        "recoveryPhrase": prepared.recovery_phrase,
+        "pendingGeneration": prepared.pending_generation,
+        "scope": prepared.scope.value,
+    }
 
-    if settings.core_passphrase.strip():
-        return
 
-    from anima_server.services.core import (
-        get_owner_user_id,
-        get_wrapped_sqlcipher_key,
-        store_wrapped_sqlcipher_key,
-    )
-    from anima_server.services.sessions import get_sqlcipher_key
-
-    raw_key = get_sqlcipher_key()
-    if raw_key is None:
-        return
-
-    wrapped_data = get_wrapped_sqlcipher_key()
-    if wrapped_data is None:
-        return
-
-    from anima_server.services.crypto import wrap_dek
-
-    owner_user_id = get_owner_user_id() or 0
-    wrapped = wrap_dek(new_password, raw_key, owner_user_id, "sqlcipher")
-    store_wrapped_sqlcipher_key(
-        {
-            "user_id": owner_user_id,
-            "kdf_salt": wrapped.kdf_salt,
-            "kdf_time_cost": wrapped.kdf_time_cost,
-            "kdf_memory_cost_kib": wrapped.kdf_memory_cost_kib,
-            "kdf_parallelism": wrapped.kdf_parallelism,
-            "kdf_key_length": wrapped.kdf_key_length,
-            "wrap_iv": wrapped.wrap_iv,
-            "wrap_tag": wrapped.wrap_tag,
-            "wrapped_key": wrapped.wrapped_dek,
-        }
-    )
+@router.post(
+    "/recovery-credential/confirm",
+    response_model=ConfirmRecoveryCredentialResponse,
+)
+def confirm_recovery(
+    payload: ConfirmRecoveryCredentialRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    session = unlock_session_store.resolve(read_unlock_token(request))
+    if session is None:
+        raise HTTPException(status_code=401, detail="Session locked. Please sign in again.")
+    user = get_user_by_id(db, session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        confirm_recovery_credential(
+            db,
+            user,
+            recovery_phrase=payload.recoveryPhrase.strip().lower(),
+            pending_generation=payload.pendingGeneration,
+            scope=PayloadScope(payload.scope),
+            current_password=payload.currentPassword,
+        )
+    except InvalidTag:
+        raise HTTPException(status_code=401, detail="Invalid recovery phrase") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    return {"success": True}

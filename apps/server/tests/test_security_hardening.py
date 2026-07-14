@@ -12,7 +12,10 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
 import shutil
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -429,6 +432,34 @@ def test_create_app_refuses_to_start_when_encryption_required_without_nonce() ->
         settings.sidecar_nonce = original_nonce
         settings.app_env = original_env
         settings.core_require_encryption = original_require_encryption
+
+
+def test_create_app_refuses_to_bootstrap_when_core_lock_is_unavailable(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services.core import release_core_lock
+
+    original_data_dir = settings.data_dir
+    settings.data_dir = managed_tmp_path / "locked-core"
+    sys.modules.pop("anima_server.main", None)
+    try:
+        main_module = importlib.import_module("anima_server.main")
+        release_core_lock()
+        ensure_manifest = patch.object(main_module, "ensure_core_manifest")
+        with (
+            ensure_manifest as ensure_manifest_mock,
+            patch.object(main_module, "acquire_core_lock", return_value=False),
+            patch.object(main_module, "load_persisted_runtime_settings"),
+            patch.object(main_module, "ensure_per_user_databases_ready"),
+            pytest.raises(RuntimeError, match="Core is already open in another process"),
+        ):
+            main_module.create_app()
+
+        ensure_manifest_mock.assert_not_called()
+    finally:
+        release_core_lock()
+        settings.data_dir = original_data_dir
+        sys.modules.pop("anima_server.main", None)
 
 
 def test_create_app_limits_localhost_cors_origins_outside_development() -> None:

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import anima_server.api.routes.auth as auth_routes
+from anima_server.config import settings
 from anima_server.db import session as db_session
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import SoulKeyslot
 from anima_server.services.agent.llm import LLMInvocationError
+from anima_server.services.core import get_manifest_path, update_core_manifest
+from anima_server.services.corefs.keyslots import manifest_has_versioned_key_hierarchy
 from anima_server.services.sessions import get_active_dek, get_sqlcipher_key, set_sqlcipher_key
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
@@ -267,6 +273,94 @@ def test_change_password_rewraps_existing_dek_and_rotates_unlock_token() -> None
             json={"username": "change-me", "password": "new-password"},
         )
         assert new_login.status_code == 200
+
+
+def test_change_password_preserves_unversioned_env_passphrase_core(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "core_passphrase", "agent-managed-core-passphrase")
+
+    with managed_test_client("anima-auth-legacy-password-change-") as client:
+        registered = _register_user(
+            client,
+            username="legacy-change-me",
+            password="old-password",
+            name="Legacy Change Me",
+        )
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert not manifest_has_versioned_key_hierarchy(manifest)
+
+        changed = client.post(
+            "/api/auth/change-password",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={
+                "oldPassword": "old-password",
+                "newPassword": "new-password",
+                "scope": "full",
+            },
+        )
+
+        assert changed.status_code == 200
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "legacy-change-me", "password": "old-password"},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "legacy-change-me", "password": "new-password"},
+            ).status_code
+            == 200
+        )
+
+
+def test_change_password_rewraps_unversioned_unified_core_root() -> None:
+    with managed_test_client("anima-auth-legacy-unified-password-change-") as client:
+        registered = _register_user(
+            client,
+            username="legacy-unified-change",
+            password="old-password",
+            name="Legacy Unified Change",
+        )
+        user_id = int(registered["id"])
+
+        def remove_versioned_authority(manifest: dict[str, object]) -> None:
+            manifest["keyslots"] = []
+            manifest.pop("active_password_credential_generation", None)
+            manifest.pop("active_recovery_credential_generation", None)
+            manifest.pop("frk_rotation", None)
+
+        update_core_manifest(remove_versioned_authority)
+        with get_user_session_factory(user_id)() as db:
+            db.query(SoulKeyslot).delete()
+            db.commit()
+
+        changed = client.post(
+            "/api/auth/change-password",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={
+                "oldPassword": "old-password",
+                "newPassword": "new-password",
+                "scope": "full",
+            },
+        )
+
+        assert changed.status_code == 200
+        assert (
+            client.post(
+                "/api/auth/logout",
+                headers={"x-anima-unlock": str(changed.json()["unlockToken"])},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "legacy-unified-change", "password": "new-password"},
+            ).status_code
+            == 200
+        )
 
 
 def test_change_password_rejects_wrong_old_password() -> None:

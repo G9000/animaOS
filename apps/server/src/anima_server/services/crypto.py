@@ -159,11 +159,16 @@ def create_wrapped_deks_for_domains(
 
 
 def wrap_dek(passphrase: str, dek: bytes, user_id: int, domain: str) -> WrappedDekRecord:
+    return wrap_secret_with_aad(passphrase, dek, _build_dek_wrap_aad(user_id, domain))
+
+
+def wrap_secret_with_aad(passphrase: str, secret: bytes, aad: bytes) -> WrappedDekRecord:
+    if len(secret) != KEY_LENGTH:
+        raise ValueError("wrapped secret must be exactly 32 bytes")
     salt = os.urandom(SALT_LENGTH)
     iv = os.urandom(IV_LENGTH)
     kek = derive_argon2id_key(passphrase, salt)
-    aad = _build_dek_wrap_aad(user_id, domain)
-    encrypted = AESGCM(kek).encrypt(iv, dek, aad)
+    encrypted = AESGCM(kek).encrypt(iv, secret, aad)
     ciphertext, tag = encrypted[:-AUTH_TAG_LENGTH], encrypted[-AUTH_TAG_LENGTH:]
 
     return WrappedDekRecord(
@@ -184,10 +189,47 @@ def unwrap_dek(
     user_id: int,
     domain: str,
 ) -> bytes:
-    salt = base64.b64decode(record.kdf_salt, validate=True)
-    iv = base64.b64decode(record.wrap_iv, validate=True)
-    tag = base64.b64decode(record.wrap_tag, validate=True)
-    ciphertext = base64.b64decode(record.wrapped_dek, validate=True)
+    return unwrap_secret_with_aad(
+        passphrase,
+        record,
+        _build_dek_wrap_aad(user_id, domain),
+    )
+
+
+def unwrap_secret_with_aad(
+    passphrase: str,
+    record: WrappedDekRecord,
+    aad: bytes,
+) -> bytes:
+    profile = (
+        record.kdf_time_cost,
+        record.kdf_memory_cost_kib,
+        record.kdf_parallelism,
+        record.kdf_key_length,
+    )
+    supported_profile = (
+        ARGON2_TIME_COST,
+        ARGON2_MEMORY_COST_KIB,
+        ARGON2_PARALLELISM,
+        KEY_LENGTH,
+    )
+    if profile != supported_profile:
+        raise ValueError("unsupported wrapped-key profile")
+
+    try:
+        salt = base64.b64decode(record.kdf_salt, validate=True)
+        iv = base64.b64decode(record.wrap_iv, validate=True)
+        tag = base64.b64decode(record.wrap_tag, validate=True)
+        ciphertext = base64.b64decode(record.wrapped_dek, validate=True)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid wrapped-key envelope encoding") from exc
+    if (
+        len(salt) != SALT_LENGTH
+        or len(iv) != IV_LENGTH
+        or len(tag) != AUTH_TAG_LENGTH
+        or len(ciphertext) != KEY_LENGTH
+    ):
+        raise ValueError("invalid wrapped-key envelope size")
     kek = derive_argon2id_key(
         passphrase,
         salt,
@@ -196,7 +238,6 @@ def unwrap_dek(
         parallelism=record.kdf_parallelism,
         key_length=record.kdf_key_length,
     )
-    aad = _build_dek_wrap_aad(user_id, domain)
     return AESGCM(kek).decrypt(iv, ciphertext + tag, aad)
 
 

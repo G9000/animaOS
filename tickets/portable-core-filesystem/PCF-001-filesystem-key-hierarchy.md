@@ -1,6 +1,6 @@
 # PCF-001 - Filesystem key hierarchy and credential generations
 
-- Status: backlog
+- Status: done
 - Priority: P0
 - Scope: `packages/anima-corefs`, `packages/anima-core`, `apps/server`, `apps/desktop`, and `packages/api-client` crypto, manifest, Soul keyslots, credential UI/API
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 17:34 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-14 18:27 MYT
+- Started: 2026-07-13 21:27 MYT
+- Completed: 2026-07-14 18:27 MYT
 
 ## Goal
 
@@ -31,7 +31,7 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 ## Acceptance
 
 - Password and recovery paths unlock every required root and Soul-domain key.
-- No raw key or private profile field appears in the manifest.
+- No raw key or private profile field is added to the new versioned owner/keyslot structures; legacy manifest compatibility fields, including `user_index`, remain until PCF-007.
 - Cross-store interruption tests pass at every durable boundary.
 - No live password/recovery endpoint can bypass the active manifest/Soul/FRK credential generation.
 - Soul-only completeness requires every Soul root/domain key but forbids FRK slots; CoreFS-only completeness requires every retained FRK but forbids SQLCipher/Soul-domain slots.
@@ -42,12 +42,90 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-12 15:45 MYT - Added scoped recovery/keyslot completeness and credential-generation requirements for independently recoverable Soul and CoreFS artifacts.
 - 2026-07-12 16:01 MYT - Closed review conflict between full-Core recovery and intentional Soul-only/CoreFS-only credential scopes.
 - 2026-07-12 17:34 MYT - Assigned CoreFS crypto ownership to Rust and the existing `anima-core` Python extension boundary.
+- 2026-07-13 21:27 MYT - Implementation started on `codex/pcf-001-key-hierarchy`; isolated worktree dependencies installed and baseline Rust/crypto/recovery tests verified.
+- 2026-07-13 23:13 MYT - Implemented the native opaque FRK/Object-DEK boundary, owner-bound password/recovery generations, typed CoreFS AAD, two-phase recovery confirmation, scoped credential rotation, strict legacy backfill, migration compatibility coverage, and Security UI/API flow; validation is green and the ticket remains `in_progress` pending supervising-agent review.
+- 2026-07-14 01:09 MYT - Addressed follow-up security review findings: active versioned roots now gate login/recovery before SQLCipher, Soul crash finalization derives the active scope, genuine CoreFS-only credential replacement is manifest-only, persisted unwrap profiles are bounded, manifest publication is native and durable, and the closed object/FRK/password contracts are enforced. Ticket remains `in_progress` for re-review.
+- 2026-07-14 02:11 MYT - Addressed retained-FRK review findings: pending password and recovery generations now verify against the authoritative pre-activation FRK catalog, legacy upgrade uses its protocol-defined v1 catalog without publishing active markers early, and full/FS tamper tests prove failure before activation while the old credential generation remains usable. Ticket remains `in_progress` for re-review.
+- 2026-07-14 02:49 MYT - Addressed the fourth follow-up: activated keyslot evidence now prevents legacy fallback when generation markers are removed while PENDING-only legacy-upgrade slots remain non-authoritative; legacy confirmation revalidates both password and recovery generations immediately before activation and reopens both afterward; the desktop supplies the current password only from ephemeral review state. Clarified that PCF-001 preserves legacy manifest compatibility fields for PCF-007. Ticket remains `in_progress` for re-review.
+- 2026-07-14 04:05 MYT - Addressed the fifth quality review: registration now publishes legacy login/recovery locators before activating versioned authority; native AAD binds immutable generation/scope/FRK/object-epoch metadata while status transitions in place; unauthenticated CoreFS credential routes share pre-KDF rate/concurrency admission; credential coordinators serialize complete transactions with active-generation CAS; and a live prepared recovery phrase cannot be replaced by a second prepare. Ticket remains `in_progress` for supervising-agent re-review.
+- 2026-07-14 04:28 MYT - Addressed the sixth restart-correctness review: persisted `ready` recovery preparation now blocks replacement independently of process/coordinator identity, while a stale `preparing` transaction remains reclaimable after restart. Full and CoreFS-only restart tests prove the original returned phrase and all pending rows survive a rejected second prepare and still confirm. Ticket remains `in_progress` for supervising-agent re-review.
+- 2026-07-14 12:00 MYT - Completed PCF-001 after clean requirements and quality re-reviews at `e538bb73`. Final hardening added crash-safe registration locator ordering, immutable native keyslot AAD, pre-KDF CoreFS admission, serialized credential transactions with generation CAS, status-independent Soul keyslot identity, Rust 1.75 compatibility, and cross-restart preservation of returned recovery phrases.
+- 2026-07-14 15:45 MYT - Reopened PCF-001 for current-head PR review: cross-Core vault import must preserve the authenticated destination manifest and credential rows instead of restoring source-AAD-bound Soul keyslots verbatim. Added a password/recovery regression before implementation.
+- 2026-07-14 16:03 MYT - Completed the cross-Core vault follow-up: authenticated imports now retain the destination manifest, UserKey wrappers, and Soul keyslots when the exported hierarchy differs; exact same-hierarchy and cold restores atomically publish matching portable manifest authority. Password login and recovery remain usable after import.
+- 2026-07-14 17:09 MYT - Reopened PCF-001 for a current-head review regression: cross-Core authenticated import must rebind the restored user identity and user-owned rows to the destination manifest index and credentials when source and destination usernames differ.
+- 2026-07-14 17:12 MYT - Completed the destination-account rebinding follow-up: authenticated cross-Core imports retain the destination user ID, username, password hash, account creation identity, manifest index, UserKey wrappers, and Soul keyslots while restoring portable profile fields and remapping imported user-owned rows. Different-username login, password rotation, and recovery now pass end to end.
+- 2026-07-14 17:25 MYT - Reopened PCF-001 for a current-head legacy-rotation review regression: a password change after registration crashes with an orphaned initial Soul backfill must not strand recovery upgrade behind the previous password.
+- 2026-07-14 18:02 MYT - Completed the orphaned-backfill rotation follow-up: the legacy password path verifies orphaned initial password keyslots against the authenticated active Soul domains and deletes the complete non-authoritative password/recovery set in the same SQL transaction as password rotation. Recovery upgrade remains available with the new password.
+- 2026-07-14 18:15 MYT - Reopened PCF-001 for a current-head startup compatibility review regression: manifest writes must retain native-first durability while tolerating an installed `anima_core` extension that predates `corefs_atomic_publish`.
+- 2026-07-14 18:27 MYT - Completed the startup compatibility follow-up: manifest publication uses the native durability primitive when available and a same-directory, fsync-before-replace Python fallback only when the installed extension lacks that binding. Native failures still propagate and preserve the previous generation.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - Stale-extension manifest-publication TDD: deleting `corefs_atomic_publish` first reproduced the startup `AttributeError`; after implementation the fallback, native-durability, and failure-preservation regression set passed 3 tests.
+  - After rebuilding the editable Rust extension, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 48 passed with one known Starlette deprecation warning.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_anima_core_bindings.py apps/server/tests/test_core_permissions.py -q` - 10 passed, 1 skipped.
+  - Scoped Ruff, `bun run lint:server`, `bun run build:server`, local native-extension restoration, and `git diff --check` - passed.
+  - Registration-crash legacy-rotation TDD: the new crash -> login -> password change -> recovery upgrade regression first failed with HTTP 401 at recovery prepare; after implementation it passed with the new password.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 47 passed with one known Starlette deprecation warning.
+  - Isolated-root `test_auth.py` and `test_recovery.py` runs - 14 passed and 30 passed respectively, each with the same known warning.
+  - Scoped Ruff, `bun run lint:server`, `bun run build:server`, and `git diff --check` - passed.
+  - Cross-Core destination-account TDD: the expanded regression failed because import restored `source-user` beneath the preserved `destination-user` manifest index; after implementation it passed while proving destination username/hash, source portable display name, password login/rotation, and recovery.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_vault.py -q` - 25 passed with one known Starlette deprecation warning.
+  - `.venv\Scripts\ruff.exe check apps/server/src/anima_server/services/vault.py apps/server/tests/test_vault.py`, `bun run lint:server`, `bun run build:server`, and `git diff --check` - passed.
+  - Cross-Core vault TDD: the new regression first failed because import replaced the destination `core_id`; after implementation it passed while proving destination owner/keyslots, password login, and recovery phrase all remain usable.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_vault.py -q` - 25 passed with one known Starlette deprecation warning.
+  - Focused final same-Core/cross-Core matrix - 2 passed; final cross-Core rerun after all edits - 1 passed.
+  - `.venv\Scripts\ruff.exe check apps/server/src/anima_server/services/vault.py apps/server/tests/test_vault.py`, `bun run lint:server`, uncached `bun run build:server`, and `git diff --check` - passed.
+  - `uv run maturin develop --manifest-path packages/anima-core/Cargo.toml` - restored the editable native extension before final backend regressions.
+  - Final independent review: requirements review and quality/security-conscious code review reported no remaining findings at `e538bb73806e64771e9e0ebc7f84242a497815f9`.
+  - Final independent native verification: `cargo test -p anima-corefs -p anima-core` - 227 passed; `uvx maturin develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt and installed the current extension.
+  - Final independent fifth/sixth hardening regressions under an external `ANIMA_TEST_TEMP_ROOT`: restart matrix - 3 passed; admission/concurrency/CAS/pending-preservation matrix - 6 passed; AAD/schema/registration/migration matrix - 8 passed.
+  - Final independent application verification: latest legacy-activation backend regressions - 5 passed; desktop recovery tests - 3 passed; server and desktop builds, server lint, migration round-trip, Alembic head, and `git diff --check` passed.
+  - Sixth follow-up TDD: after restoring the editable PyO3 extension, the restart matrix failed 2 ready-marker tests and passed the stale-preparing retry test before implementation; after the one-line authority fix, all 3 passed.
+  - Sixth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest -q apps/server/tests/test_recovery.py` - 26 passed; the equivalent `test_corefs_keyslots.py` run - 42 passed.
+  - Sixth follow-up quality checks: focused Ruff check/format and `bun run build:server` passed; `git diff --check` passed before staging.
+  - Fifth follow-up TDD: the combined review regression command passed 15 tests after implementation; focused red runs previously failed 9 AAD/schema/registration tests and 6 admission/concurrency tests before implementation.
+  - Fifth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest -q apps/server/tests/test_corefs_keyslots.py` - 42 passed; the equivalent `test_recovery.py` run - 24 passed.
+  - Fifth follow-up crypto/migration bundle: `test_corefs_crypto.py test_corefs_migration.py test_crypto.py test_data_crypto.py` - 26 passed.
+  - Fifth follow-up native verification: `cargo test -p anima-corefs` - 10 passed; `cargo test -p anima-core --features python` - 274 passed after adding the uv Python DLL directory to `PATH`; `cargo build -p anima-core --features python` passed. `rg is_none_or packages apps/server/src apps/server/tests` returned no matches for Rust 1.75 source compatibility.
+  - Fifth follow-up application verification: `bun run lint:desktop`, `bun run build:desktop`, `bun run lint:server`, and `bun run build:server` passed; `bun run db:server:heads` reported exactly `20260712_0001 (head)`.
+  - Fifth follow-up full desktop tests: 55 passed, with 2 unrelated existing navigation failures plus one missing `LayoutTopNav` module-load error; the three recovery-credential replacement tests passed. Whole-workspace `cargo fmt --check` also remains baseline-dirty in unrelated Rust files, which were not modified.
+  - Fourth follow-up TDD: the focused backend regression set failed 5 tests before implementation and passed 5 tests afterward; the desktop recovery test failed 2 of 3 tests before implementation and passed 3 of 3 afterward.
+  - Fourth follow-up full suites: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 33 passed; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_recovery.py -q` - 21 passed.
+  - Fourth follow-up: `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 3 passed; `bun run build:desktop`, `bun run lint:server`, and `bun run build:server` passed.
+  - Retained-FRK follow-up: targeted legacy-upgrade plus full/FS password/recovery tamper matrix - 5 passed; full `test_corefs_keyslots.py` - 31 passed; full `test_recovery.py` - 18 passed.
+  - Retained-FRK follow-up: scoped Ruff, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server`, and `git diff --check` passed.
+  - Follow-up: `.venv\Scripts\maturin.exe develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt the editable extension and exported `corefs_atomic_publish`.
+  - Follow-up: `cargo test -p anima-corefs` - 9 passed; `cargo test -p anima-core` - 218 passed; total Rust coverage 227 passed.
+  - Follow-up: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_crypto.py apps/server/tests/test_corefs_crypto.py apps/server/tests/test_corefs_keyslots.py apps/server/tests/test_recovery.py apps/server/tests/test_auth.py -q` - 69 passed.
+  - Follow-up under a unique `%TEMP%` `ANIMA_TEST_TEMP_ROOT`: `test_corefs_migration.py` - 1 passed; `test_encrypted_core_regression.py` - 6 passed; `test_crypto.py` - 6 passed. The precedence pair proves a corrupt legacy SQLCipher wrapper cannot override valid versioned roots, while a corrupt active manifest Soul root fails login.
+  - Follow-up: `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 3 passed; `bun run build:desktop`, `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server`, scoped Ruff, and `bun run lint:server` passed.
+  - Follow-up: `.venv\Scripts\alembic.exe -c apps/server/alembic_core.ini heads` - exactly `20260712_0001 (head)`; `git diff --check` passed.
+  - `uvx maturin develop --manifest-path packages/anima-core/Cargo.toml --features python` - built and installed the editable PyO3 extension.
+  - `cargo test -p anima-corefs -p anima-core` - 226 Rust tests passed.
+  - `cargo check -p anima-core --features python` and `rustfmt --edition 2021 --check packages/anima-corefs/src/crypto.rs` - passed (existing Rust warnings only); a whole-file check of the pre-existing `anima-core/src/ffi.rs` reports formatting outside the three PCF hunks, which was deliberately left untouched.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_crypto.py -q` - 7 passed.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_keyslots.py -q` - 19 passed.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_migration.py -q` - 1 passed; fresh upgrade/downgrade/re-upgrade preserved legacy key rows.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_recovery.py -q` - 16 passed after removal of the obsolete one-phase helper.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; $env:ANIMA_TEST_TEMP_ROOT=Join-Path $env:TEMP 'animaos-pcf-tests'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_crypto.py apps/server/tests/test_encrypted_core_regression.py -q` - 11 passed.
+  - `bun test apps/desktop/tests/recovery-credential-replacement.test.ts` - 2 passed.
+  - `bun run build:desktop` and `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run build:server` - passed.
+  - scoped `.venv\Scripts\ruff.exe check ...` - passed.
+  - `.venv\Scripts\alembic.exe -c apps/server/alembic_core.ini heads` - exactly `20260712_0001 (head)`.
+  - `git diff --check` - passed.
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/vault.py`, `apps/server/tests/test_vault.py`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`, `tickets/portable-core-filesystem/PCF-001-filesystem-key-hierarchy.md`
+  - `packages/anima-corefs/`, `packages/anima-core/`, root Cargo workspace/lock
+  - `apps/server/src/anima_server/services/corefs/`, auth routes/contracts/user-store, Core manifest/crypto, Soul keyslot model/migration
+  - `apps/server/tests/test_corefs_*.py`, `apps/server/tests/test_recovery.py`
+  - `apps/desktop/src/pages/settings/`, `apps/desktop/tests/recovery-credential-replacement.test.ts`
+  - `packages/anima-auth-contracts/`, `packages/api-client/`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`, `tickets/portable-core-filesystem/PCF-001-filesystem-key-hierarchy.md`
 - Notes:
-  - Claim before implementation.
+  - PCF-001 adds versioned owner/keyslot authority without deleting legacy manifest compatibility fields. `user_index` and the remaining legacy compatibility surface are intentionally retained until the PCF-007 cutover.
+  - Portability tests must set `ANIMA_TEST_TEMP_ROOT` outside the OneDrive-synchronized checkout on Windows; the same isolated test failed only when OneDrive held the directory and passed immediately under `%TEMP%`.
+  - FRK generation/wrapping/unwrapping and Object-DEK generation/wrapping/unwrapping remain opaque native handles. Python retains only existing Soul/SQLCipher and legacy UserKey byte handling.
+  - Full desktop tests still have unrelated baseline navigation drift (two assertion failures and one missing `LayoutTopNav` module); all PCF desktop tests and the production desktop build pass. Whole-workspace Rust formatting also remains baseline-dirty outside PCF-owned files.

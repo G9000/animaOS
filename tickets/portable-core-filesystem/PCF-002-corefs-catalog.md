@@ -2,14 +2,14 @@
 
 - Status: backlog
 - Priority: P0
-- Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, and `apps/server` Core Filesystem/API/agent tools
+- Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
 - Depends on: `PCF-001`
 - Owner: unassigned
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 18:58 MYT
+- Updated: 2026-07-13 20:47 MYT
 - Started:
 - Completed:
 
@@ -38,7 +38,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - Crash injection never exposes a partial mutation.
 - Path/revision/security contract tests pass.
 - Multi-process OS-lock tests exclude simultaneous open/commit and survive crash/PID reuse; chunk truncation/reordering/range-read/size-bound tests pass.
-- Catalog benchmark meets the documented gates or the design is revised before cutover.
+- Catalog benchmark records live/tombstone/total counts and serialized size, meets p95 <= 100 ms for 5,000 live plus 500 tombstones, keeps 25,000 live plus 2,500 tombstones at or below 16 MiB and p95 <= 250 ms, and meets p95 <= 250 ms for a separate 16-MiB fixture when the maximum-live fixture is smaller; otherwise the design is revised before cutover.
 - Host and CoreFS tools never auto-route; cross-backend paths/URIs fail closed.
 - CoreFS multi-file patches preflight all paths/policy/revisions/formats and publish one catalog generation or none.
 - Shared limits enforce 1-MiB read chunks, depth 64, 10,000 directories, 50,000 entries, and 4-MiB model-visible responses.
@@ -54,6 +54,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-12 06:07 MYT - Ticket created.
 - 2026-07-12 17:34 MYT - Added the shared Rust file-tool/CoreFS architecture, customizable folder policy, client grants, trash, Codex provenance, and atomic multi-file patch requirement.
 - 2026-07-12 18:58 MYT - Assigned clean-checkout CI, desktop legal-resource packaging, and distinct Core-session principal authorization to this ticket.
+- 2026-07-13 20:47 MYT - Expanded scope metadata to every owned provenance/release surface and locked the benchmark fixture matrix so tombstones cannot consume the advertised live-entry capacity.
 
 ## Validation
 
