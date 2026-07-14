@@ -13,6 +13,34 @@ struct SearchBackend {
     files: BTreeMap<String, Vec<u8>>,
 }
 
+struct UntouchedCoreBackend;
+
+impl FileBackend for UntouchedCoreBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(
+            BackendKind::CoreFs,
+            PathSemantics::PortableNfcCaseSensitive,
+            MutationAtomicity::CatalogGeneration,
+        )
+    }
+}
+
+impl ReadBackend for UntouchedCoreBackend {
+    fn open_read(&self, _path: &str) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        panic!("backend storage must not be touched for a mismatched path")
+    }
+}
+
+impl WalkBackend for UntouchedCoreBackend {
+    fn metadata(&self, _path: &str) -> Result<EntryMetadata, FileToolError> {
+        panic!("backend storage must not be touched for a mismatched path")
+    }
+
+    fn read_directory(&self, _path: &str) -> Result<DirectoryListing, FileToolError> {
+        panic!("backend storage must not be touched for a mismatched path")
+    }
+}
+
 impl FileBackend for SearchBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::new(
@@ -92,6 +120,28 @@ fn grep_searches_a_file_root_without_requiring_a_directory_walk() {
     assert_eq!(page.matches.len(), 1);
     assert_eq!(page.matches[0].path.as_str(), "root/notes.md");
     assert_eq!(page.matches[0].line_number, 1);
+}
+
+#[test]
+fn grep_rejects_a_cross_backend_root_before_touching_storage() {
+    let mut mismatched = request("needle", GrepMode::Literal);
+    mismatched.root = BackendPath::new(BackendKind::HostFs, "root/notes.md").unwrap();
+
+    let error = grep(
+        &UntouchedCoreBackend,
+        mismatched,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        FileToolError::BackendMismatch {
+            path_backend: BackendKind::HostFs,
+            selected_backend: BackendKind::CoreFs,
+        }
+    ));
 }
 
 #[test]

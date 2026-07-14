@@ -111,6 +111,13 @@ pub fn grep(
     control: OperationControl,
 ) -> Result<GrepPage, FileToolError> {
     control.check()?;
+    let selected_backend = backend.capabilities().backend();
+    if request.root.backend() != selected_backend {
+        return Err(FileToolError::BackendMismatch {
+            path_backend: request.root.backend(),
+            selected_backend,
+        });
+    }
     validate_request(&request, limits)?;
     let matcher = Matcher::new(&request.query, request.mode)?;
     let walk_cursor = request.cursor.as_ref().and_then(|cursor| {
