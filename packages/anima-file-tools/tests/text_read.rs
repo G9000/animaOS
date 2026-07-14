@@ -94,6 +94,43 @@ fn reads_only_the_requested_line_window_with_stable_line_numbers() {
 }
 
 #[test]
+fn requested_window_stops_before_validating_the_next_line() {
+    let backend = MemoryBackend(b"ok\ntext\0binary\n".to_vec());
+    let page = read_text_lines(
+        &backend,
+        request(0, 1),
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        page.lines
+            .iter()
+            .map(|line| (line.number, line.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, "ok")]
+    );
+    assert!(page.truncated);
+    assert_eq!(page.next_line_offset, Some(1));
+}
+
+#[test]
+fn requested_window_at_end_of_file_is_not_marked_truncated() {
+    let backend = MemoryBackend(b"only\n".to_vec());
+    let page = read_text_lines(
+        &backend,
+        request(0, 1),
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert!(!page.truncated);
+    assert_eq!(page.next_line_offset, None);
+}
+
+#[test]
 fn rejects_binary_and_invalid_utf8_instead_of_returning_lossy_text() {
     for (bytes, issue) in [
         (b"text\0binary".to_vec(), TextReadIssue::BinaryContent),

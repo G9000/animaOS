@@ -209,6 +209,31 @@ fn planner_tracks_a_deleted_symlink_entry_separately_from_its_target() {
 }
 
 #[test]
+fn planner_recreates_a_deleted_symlink_path_as_a_regular_file() {
+    let snapshot = SymlinkSnapshot;
+    let patch = parse_patch(
+        "*** Begin Patch\n\
+         *** Delete File: link.txt\n\
+         *** Add File: link.txt\n\
+         +replacement\n\
+         *** Update File: link.txt\n\
+         @@\n\
+         -replacement\n\
+         +updated\n\
+         *** End Patch",
+    )
+    .unwrap();
+
+    let plan = plan_patch(&snapshot, &patch, MutationAtomicity::BestEffort).unwrap();
+
+    assert_eq!(plan.mutations.len(), 3);
+    let PlannedMutation::Write { content, .. } = &plan.mutations[2] else {
+        panic!("expected final write");
+    };
+    assert_eq!(content, "updated\n");
+}
+
+#[test]
 fn parser_keeps_marker_like_text_when_it_is_a_prefixed_context_line() {
     let patch = parse_patch(concat!(
         "*** Begin Patch\n",

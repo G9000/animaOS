@@ -65,7 +65,17 @@ pub fn read_text_lines<B: ReadBackend + ?Sized>(
     let mut line_index = 0usize;
     let mut response_bytes = 0usize;
 
-    while let Some(line) = read_line(&mut reader, request.max_line_bytes, &control)? {
+    loop {
+        if line_index >= request.offset_lines && page.lines.len() == request.max_lines {
+            if has_remaining_data(&mut reader, &request.path, &control)? {
+                page.truncated = true;
+                page.next_line_offset = Some(line_index);
+            }
+            break;
+        }
+        let Some(line) = read_line(&mut reader, request.max_line_bytes, &control)? else {
+            break;
+        };
         if line.too_long {
             return Err(invalid_text(&request.path, TextReadIssue::LineTooLong));
         }
@@ -77,11 +87,6 @@ pub fn read_text_lines<B: ReadBackend + ?Sized>(
             .trim_end_matches(['\r', '\n']);
 
         if line_index >= request.offset_lines {
-            if page.lines.len() == request.max_lines {
-                page.truncated = true;
-                page.next_line_offset = Some(line_index);
-                break;
-            }
             let item_bytes = text
                 .len()
                 .checked_add(RESPONSE_ITEM_OVERHEAD_BYTES)
@@ -105,6 +110,22 @@ pub fn read_text_lines<B: ReadBackend + ?Sized>(
     }
 
     Ok(page)
+}
+
+fn has_remaining_data(
+    reader: &mut impl BufRead,
+    path: &BackendPath,
+    control: &OperationControl,
+) -> Result<bool, FileToolError> {
+    control.check()?;
+    reader
+        .fill_buf()
+        .map(|available| !available.is_empty())
+        .map_err(|error| FileToolError::Backend {
+            operation: "read_text",
+            path: path.as_str().to_string(),
+            message: error.to_string(),
+        })
 }
 
 fn invalid_text(path: &BackendPath, reason: TextReadIssue) -> FileToolError {

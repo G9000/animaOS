@@ -125,7 +125,7 @@ fn load<S: PatchSnapshot + ?Sized>(
     virtual_files: &mut BTreeMap<String, Option<String>>,
     path: &PatchPath,
 ) -> Result<Option<String>, PatchError> {
-    let key = snapshot.canonical_key(path.as_str())?;
+    let key = active_key(snapshot, virtual_files, path)?;
     if let Some(content) = virtual_files.get(&key) {
         return Ok(content.clone());
     }
@@ -152,8 +152,21 @@ fn store<S: PatchSnapshot + ?Sized>(
     path: &PatchPath,
     content: Option<String>,
 ) -> Result<(), PatchError> {
-    let key = snapshot.canonical_key(path.as_str())?;
+    let key = active_key(snapshot, virtual_files, path)?;
     store_key(virtual_files, path, key, content)
+}
+
+fn active_key<S: PatchSnapshot + ?Sized>(
+    snapshot: &S,
+    virtual_files: &BTreeMap<String, Option<String>>,
+    path: &PatchPath,
+) -> Result<String, PatchError> {
+    let entry_key = snapshot.canonical_entry_key(path.as_str())?;
+    if virtual_files.contains_key(&entry_key) {
+        Ok(entry_key)
+    } else {
+        snapshot.canonical_key(path.as_str())
+    }
 }
 
 fn store_entry<S: PatchSnapshot + ?Sized>(
