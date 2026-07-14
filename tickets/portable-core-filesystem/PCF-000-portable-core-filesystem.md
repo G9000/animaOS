@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 01:51 MYT
+- Updated: 2026-07-15 02:16 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -88,6 +88,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-14 23:24 MYT - Addressed PR #91's seventh Codex review pass by separating delete-entry metadata preflight from text snapshots: binary and dangling-symlink entries can be deleted without reading targets, while directory deletes fail before any prior best-effort mutation. Focused red/green regressions cover all three cases.
 - 2026-07-15 01:36 MYT - Addressed PR #91's eighth Codex review pass by bounding grep work after the page fills and returning immediately on overlong text/grep lines; instrumented readers prove large inputs are not streamed to EOF, while the existing late-binary guard remains covered.
 - 2026-07-15 01:51 MYT - Addressed PR #91's ninth Codex review pass by stopping text validation at the requested line boundary without falsely marking exact EOF as truncated, and by preserving virtual entry identity when a symlink is deleted then recreated as a regular file within one patch. All focused regressions and full shared/Animus quality gates passed.
+- 2026-07-15 02:16 MYT - Addressed PR #91's tenth Codex review pass by preflighting HostFS write-parent shape across the full ordered mutation plan before applying any best-effort write. Confirmed dangling symlinks are already skipped before metadata lookup while readable siblings remain available, and added focused coverage for both behaviors; full shared/Animus quality gates passed.
 
 ## Validation
 

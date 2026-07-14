@@ -432,6 +432,25 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_preflights_an_existing_file_used_as_a_parent() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::write(root.join("existing.txt"), "file").unwrap();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: should-not-exist.txt\n\
+                     +created\n\
+                     *** Add File: existing.txt/child.txt\n\
+                     +child\n\
+                     *** End Patch";
+
+        let result = apply_patch(&json!({"patch": patch}), &policy);
+
+        assert!(result.is_error);
+        assert!(!root.join("should-not-exist.txt").exists());
+        assert!(root.join("existing.txt").is_file());
+    }
+
+    #[test]
     fn apply_patch_deletes_binary_files_without_decoding_their_contents() {
         let root = test_workspace();
         let policy = PermissionPolicy::workspace_write(root.clone());

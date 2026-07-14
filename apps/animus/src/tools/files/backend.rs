@@ -119,6 +119,7 @@ impl HostFsBackend {
             .iter()
             .map(|mutation| self.resolve_mutation(mutation))
             .collect::<Result<Vec<_>, _>>()?;
+        self.preflight_mutation_parents(&resolved)?;
 
         for mutation in resolved {
             match mutation {
@@ -145,6 +146,73 @@ impl HostFsBackend {
             }
         }
         Ok(())
+    }
+
+    fn preflight_mutation_parents(
+        &self,
+        mutations: &[ResolvedMutation],
+    ) -> Result<(), FileToolError> {
+        let mut virtual_entries = BTreeMap::<String, VirtualEntryState>::new();
+        for mutation in mutations {
+            match mutation {
+                ResolvedMutation::Write {
+                    path,
+                    remove_source,
+                    ..
+                } => {
+                    self.validate_write_parent(path, &virtual_entries)?;
+                    virtual_entries.insert(self.host_path_key(path), VirtualEntryState::File);
+                    if let Some(source) = remove_source {
+                        virtual_entries
+                            .insert(self.host_path_key(source), VirtualEntryState::Removed);
+                    }
+                }
+                ResolvedMutation::Delete { path } => {
+                    virtual_entries.insert(self.host_path_key(path), VirtualEntryState::Removed);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_write_parent(
+        &self,
+        path: &Path,
+        virtual_entries: &BTreeMap<String, VirtualEntryState>,
+    ) -> Result<(), FileToolError> {
+        for parent in path.parent().into_iter().flat_map(Path::ancestors) {
+            match virtual_entries.get(&self.host_path_key(parent)) {
+                Some(VirtualEntryState::File) => {
+                    return Err(non_directory_parent(path, parent));
+                }
+                Some(VirtualEntryState::Removed) => continue,
+                None => {}
+            }
+            match fs::metadata(parent) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return Err(non_directory_parent(path, parent)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match fs::symlink_metadata(parent) {
+                        Ok(_) => return Err(non_directory_parent(path, parent)),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(backend_error("patch_preflight", parent, error));
+                        }
+                    }
+                }
+                Err(error) => return Err(backend_error("patch_preflight", parent, error)),
+            }
+        }
+        Ok(())
+    }
+
+    fn host_path_key(&self, path: &Path) -> String {
+        let key = path.to_string_lossy().into_owned();
+        if self.case_sensitive_paths {
+            key
+        } else {
+            key.to_lowercase()
+        }
     }
 
     pub(super) fn read_directory_page(
@@ -248,6 +316,12 @@ enum ResolvedMutation {
     Delete {
         path: PathBuf,
     },
+}
+
+#[derive(Clone, Copy)]
+enum VirtualEntryState {
+    File,
+    Removed,
 }
 
 impl FileBackend for HostFsBackend {
@@ -467,6 +541,13 @@ fn backend_error(operation: &'static str, path: &Path, error: std::io::Error) ->
     }
 }
 
+fn non_directory_parent(path: &Path, parent: &Path) -> FileToolError {
+    FileToolError::InvalidPath {
+        path: path.to_string_lossy().into_owned(),
+        reason: format!("write parent {} is not a directory", parent.display()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anima_file_tools::{
@@ -568,6 +649,34 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.path.as_str().contains("link\\secret.txt")));
+    }
+
+    #[test]
+    fn directory_listing_skips_dangling_symlinks_without_aborting() {
+        let root = test_workspace();
+        let target = root
+            .parent()
+            .unwrap()
+            .join(format!("missing-{}.txt", uuid::Uuid::new_v4()));
+        let link = root.join("dangling.txt");
+        std::fs::write(root.join("note.txt"), "visible").unwrap();
+        if create_dangling_file_symlink(&target, &link).is_err() {
+            return;
+        }
+        let backend = HostFsBackend::new(PermissionPolicy::read_only(root.clone()));
+
+        let listing = backend
+            .read_directory_page(root.to_str().unwrap(), 100)
+            .unwrap();
+
+        assert!(listing
+            .entries
+            .iter()
+            .any(|entry| entry.path.as_str().ends_with("note.txt")));
+        assert!(!listing
+            .entries
+            .iter()
+            .any(|entry| entry.path.as_str().ends_with("dangling.txt")));
     }
 
     #[test]
