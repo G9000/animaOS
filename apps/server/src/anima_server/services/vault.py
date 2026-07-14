@@ -2303,10 +2303,38 @@ def _rebind_snapshot_key_hierarchy(
     user_id: int,
     current_manifest: dict[str, Any],
 ) -> None:
-    """Keep the authenticated Core's credential rows on cross-Core import."""
+    """Keep the authenticated Core's account and credentials on cross-Core import."""
     owner_id = current_manifest.get("owner_id")
     if not isinstance(owner_id, str) or not owner_id:
         raise ValueError("Current Core manifest is missing its owner identity.")
+
+    current_user = db.get(User, user_id)
+    if current_user is None:
+        raise ValueError("Authenticated Core user is missing.")
+    users_payload = snapshot.get("users")
+    if (
+        not isinstance(users_payload, list)
+        or len(users_payload) != 1
+        or not isinstance(users_payload[0], dict)
+    ):
+        raise ValueError("Vault database snapshot must contain one user.")
+
+    rebound_user = dict(users_payload[0])
+    rebound_user.update(
+        {
+            "id": current_user.id,
+            "username": current_user.username,
+            "password_hash": current_user.password_hash,
+            "created_at": serialize_optional_datetime(current_user.created_at),
+        }
+    )
+    snapshot["users"] = [rebound_user]
+    for records in snapshot.values():
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict) and "user_id" in record:
+                record["user_id"] = current_user.id
 
     current_user_keys = list(db.scalars(select(UserKey).where(UserKey.user_id == user_id)).all())
     current_soul_keyslots = list(

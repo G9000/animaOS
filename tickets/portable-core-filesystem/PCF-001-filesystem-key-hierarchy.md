@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 16:03 MYT
+- Updated: 2026-07-14 17:12 MYT
 - Started: 2026-07-13 21:27 MYT
-- Completed: 2026-07-14 16:03 MYT
+- Completed: 2026-07-14 17:12 MYT
 
 ## Goal
 
@@ -52,10 +52,15 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-14 12:00 MYT - Completed PCF-001 after clean requirements and quality re-reviews at `e538bb73`. Final hardening added crash-safe registration locator ordering, immutable native keyslot AAD, pre-KDF CoreFS admission, serialized credential transactions with generation CAS, status-independent Soul keyslot identity, Rust 1.75 compatibility, and cross-restart preservation of returned recovery phrases.
 - 2026-07-14 15:45 MYT - Reopened PCF-001 for current-head PR review: cross-Core vault import must preserve the authenticated destination manifest and credential rows instead of restoring source-AAD-bound Soul keyslots verbatim. Added a password/recovery regression before implementation.
 - 2026-07-14 16:03 MYT - Completed the cross-Core vault follow-up: authenticated imports now retain the destination manifest, UserKey wrappers, and Soul keyslots when the exported hierarchy differs; exact same-hierarchy and cold restores atomically publish matching portable manifest authority. Password login and recovery remain usable after import.
+- 2026-07-14 17:09 MYT - Reopened PCF-001 for a current-head review regression: cross-Core authenticated import must rebind the restored user identity and user-owned rows to the destination manifest index and credentials when source and destination usernames differ.
+- 2026-07-14 17:12 MYT - Completed the destination-account rebinding follow-up: authenticated cross-Core imports retain the destination user ID, username, password hash, account creation identity, manifest index, UserKey wrappers, and Soul keyslots while restoring portable profile fields and remapping imported user-owned rows. Different-username login, password rotation, and recovery now pass end to end.
 
 ## Validation
 
 - Commands:
+  - Cross-Core destination-account TDD: the expanded regression failed because import restored `source-user` beneath the preserved `destination-user` manifest index; after implementation it passed while proving destination username/hash, source portable display name, password login/rotation, and recovery.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_vault.py -q` - 25 passed with one known Starlette deprecation warning.
+  - `.venv\Scripts\ruff.exe check apps/server/src/anima_server/services/vault.py apps/server/tests/test_vault.py`, `bun run lint:server`, `bun run build:server`, and `git diff --check` - passed.
   - Cross-Core vault TDD: the new regression first failed because import replaced the destination `core_id`; after implementation it passed while proving destination owner/keyslots, password login, and recovery phrase all remain usable.
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_vault.py -q` - 25 passed with one known Starlette deprecation warning.
   - Focused final same-Core/cross-Core matrix - 2 passed; final cross-Core rerun after all edits - 1 passed.

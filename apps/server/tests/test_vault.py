@@ -202,7 +202,7 @@ def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
     with managed_test_client("anima-vault-source-core-") as source_client:
         source = _register_user(
             source_client,
-            username="portable-user",
+            username="source-user",
             password="source-password",
             name="Portable Source",
         )
@@ -217,7 +217,7 @@ def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
     with managed_test_client("anima-vault-destination-core-") as destination_client:
         destination = _register_user(
             destination_client,
-            username="portable-user",
+            username="destination-user",
             password="destination-password",
             name="Portable Destination",
         )
@@ -228,6 +228,9 @@ def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
         )
 
         with get_user_session_factory(destination_user_id)() as db:
+            destination_user = db.get(User, destination_user_id)
+            assert destination_user is not None
+            destination_password_hash = destination_user.password_hash
             destination_keyslots = {
                 (
                     row.owner_id,
@@ -255,6 +258,11 @@ def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
         assert restored_manifest["keyslots"] == destination_manifest["keyslots"]
 
         with get_user_session_factory(destination_user_id)() as db:
+            restored_user = db.get(User, destination_user_id)
+            assert restored_user is not None
+            assert restored_user.username == "destination-user"
+            assert restored_user.password_hash == destination_password_hash
+            assert restored_user.display_name == "Portable Source"
             restored_keyslots = {
                 (
                     row.owner_id,
@@ -271,9 +279,19 @@ def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
 
         login = destination_client.post(
             "/api/auth/login",
-            json={"username": "portable-user", "password": "destination-password"},
+            json={"username": "destination-user", "password": "destination-password"},
         )
         assert login.status_code == 200
+
+        changed = destination_client.post(
+            "/api/auth/change-password",
+            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            json={
+                "oldPassword": "destination-password",
+                "newPassword": "rotated-destination-password",
+            },
+        )
+        assert changed.status_code == 200
 
         recovered = destination_client.post(
             "/api/auth/recover",
