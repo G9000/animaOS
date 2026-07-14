@@ -2028,3 +2028,92 @@ async def test_failed_candidate_retried_then_permanent() -> None:
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 4 (emotional-pattern promotion) dual-write ordering — A-6
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_phase4_runtime_commit_failure_does_not_lose_soul_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A-6: if the runtime commit fails after the soul commit, the promoted
+    patterns stay in the soul store and no exception escapes run_soul_writer
+    (Phase 4 errors are logged and swallowed by design)."""
+    from anima_server.models.soul_consciousness import CoreEmotionalPattern
+    from anima_server.services.agent.emotional_intelligence import record_emotional_signal
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_soul_factory(soul_engine)
+    base_runtime_factory = _make_runtime_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(
+            username="phase4-commit-fail", password_hash="x", display_name="Phase4"
+        )
+        soul_db.add(user)
+        soul_db.commit()
+        user_id = user.id
+
+    # Seed enough emotional signals of one emotion to clear both the
+    # should_promote_emotional_patterns gate and the promotion threshold
+    # (MIN_SIGNALS_FOR_PATTERN = 3), mirroring
+    # TestEmotionalPatternPromotion.test_promote_from_signals in
+    # test_p3_self_model_split.py.
+    with base_runtime_factory() as runtime_db:
+        for _ in range(5):
+            record_emotional_signal(
+                runtime_db,
+                user_id=user_id,
+                emotion="frustrated",
+                confidence=0.7,
+                evidence="Deadline talk",
+                topic="work",
+            )
+        runtime_db.commit()
+
+    # Soul Writer opens exactly one runtime session per phase (1, 1.5, 2, 2.5,
+    # 3, 4) in that fixed order regardless of dual_session_scope migration —
+    # Phase 4 is always the 6th runtime session opened. Fail only that
+    # session's commit, simulating a runtime-commit failure strictly on the
+    # dual-write (Phase 4) site without touching earlier phases.
+    call_count = {"n": 0}
+
+    def failing_runtime_factory():
+        call_count["n"] += 1
+        session = base_runtime_factory()
+        if call_count["n"] == 6:
+            def _raise_on_commit() -> None:
+                raise RuntimeError("simulated runtime commit failure (Phase 4)")
+
+            session.commit = _raise_on_commit
+        return session
+
+    result = await run_soul_writer(
+        user_id,
+        soul_db_factory=soul_factory,
+        runtime_db_factory=failing_runtime_factory,
+    )
+
+    # 1. run_soul_writer completes without raising, and the swallowed Phase 4
+    #    failure is not surfaced in result.errors (Phase 4 errors are logged
+    #    at debug level and swallowed by the enclosing except, by design).
+    assert isinstance(result, SoulWriterResult)
+    assert result.errors == []
+
+    # 2. The promoted pattern persisted in the soul store despite the
+    #    runtime commit failure, because soul commits before runtime.
+    with soul_factory() as soul_db:
+        patterns = soul_db.scalars(
+            select(CoreEmotionalPattern).where(
+                CoreEmotionalPattern.user_id == user_id
+            )
+        ).all()
+        assert len(patterns) >= 1
+        assert any(p.dominant_emotion == "frustrated" for p in patterns)
+
+    soul_engine.dispose()
+    runtime_engine.dispose()

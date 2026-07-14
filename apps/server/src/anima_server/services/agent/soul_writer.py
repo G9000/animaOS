@@ -251,6 +251,7 @@ def _run_soul_writer_inner(
     ops_only: bool = False,
 ) -> None:
     """Inner pipeline — called under lock via asyncio.to_thread."""
+    from anima_server.db.helpers import dual_session_scope
     from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.db.session import SessionLocal, get_user_session_factory, is_sqlite_mode
 
@@ -493,7 +494,7 @@ def _run_soul_writer_inner(
             should_promote_emotional_patterns,
         )
 
-        with rt_factory() as runtime_db, soul_factory() as soul_db:
+        with dual_session_scope(soul_factory, rt_factory) as (soul_db, runtime_db):
             if should_promote_emotional_patterns(
                 soul_db=soul_db,
                 pg_db=runtime_db,
@@ -505,8 +506,6 @@ def _run_soul_writer_inner(
                     user_id=user_id,
                 )
                 if promoted > 0:
-                    soul_db.commit()
-                    runtime_db.commit()
                     logger.info(
                         "Soul Writer promoted %d emotional patterns for user %s",
                         promoted,

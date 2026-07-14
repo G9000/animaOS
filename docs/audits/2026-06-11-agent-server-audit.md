@@ -278,8 +278,8 @@ importance floor.
 - REMAINING (deliberately deferred): P-1 async-DB migration (requires
   re-architecting session ownership across the turn pipeline — a
   half-measure with to_thread + shared sync sessions would be unsafe);
-  A-3 companion class split (cosmetic once P-4 landed); A-4/A-5/A-6
-  import-cycle and session-scope cleanups; A-7 direct tests for
+  A-3 companion class split (cosmetic once P-4 landed); A-4/A-5
+  import-cycle and session-scope cleanups; A-6: helpers landed + 9 sites migrated (ASR-001, 2026-07-14); inner_monologue/consolidation/service.py sites remain; A-7 direct tests for
   inner_monologue.py and self_model.py (the A-1 injection seam now makes
   these cheap to write).
 
