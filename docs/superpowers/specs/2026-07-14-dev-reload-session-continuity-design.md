@@ -47,9 +47,13 @@ The encrypted payload contains only the state required for reload continuity:
 
 The derived latest-DEK cache is rebuilt from restored sessions. DB-viewer verification timestamps are deliberately not restored, so sensitive database inspection still requires re-verification after a reload.
 
-`UnlockSessionStore.create`, `revoke`, `revoke_user`, expiry purging, and `clear`, plus `set_sqlcipher_key` and `clear_sqlcipher_key`, synchronously persist the resulting snapshot while dev continuity is enabled. State changes are infrequent and the file is small, so synchronous persistence avoids a force-kill racing an unfinished async write.
+The runtime session store owns both unlock sessions and the active SQLCipher key behind one re-entrant state lock; the existing module-level SQLCipher helpers delegate to that store. This removes cross-lock snapshot races and gives every snapshot one coherent view of both kinds of secret state.
 
-On server import/startup, a fresh store attempts one restore. Missing, malformed, expired, tampered, wrong-key, or unsupported-version snapshots are ignored with a concise warning and the runtime remains locked. Restored expired sessions are discarded and the cleaned state is persisted. Snapshot failures must never make server startup fail.
+`UnlockSessionStore.create`, `revoke`, `revoke_user`, expiry purging, and `clear`, plus the delegated SQLCipher set/clear methods, synchronously persist state while dev continuity is enabled. Each mutation computes its prospective state under the shared lock. Security-reducing operations such as revoke, clear, and key clear atomically replace the encrypted snapshot with that prospective state before committing the same state in memory or reporting success. If persistence fails, the operation raises and leaves the previous in-memory state consistent with the previous snapshot; it must not claim a successful logout or revocation that a reload could undo. Session creation and key installation use the same serialized transaction so a force-kill cannot capture a partially updated combination. State changes are infrequent and the file is small, so synchronous persistence is acceptable.
+
+Expiry remains fail-closed even if cleanup persistence fails: every resolve and restore validates the signed expiry timestamp independently, so stale ciphertext cannot make an expired token valid. A cleanup write failure may leave expired ciphertext on disk, but a later child discards it again rather than restoring it.
+
+On server import/startup, a fresh store attempts one restore. Missing, malformed, expired, tampered, wrong-key, or unsupported-version snapshots are ignored with a concise warning and the runtime remains locked. Restored expired sessions are discarded and the cleaned state is persisted when possible. Restore and cleanup failures must never make server startup fail; mutation persistence failures after startup do fail the affected operation so stale durable state is never reported as successfully revoked.
 
 ### 3. Stable reload controller
 
@@ -89,6 +93,7 @@ Runtime fallback remains necessary for existing persisted configuration, models 
 - Snapshot ciphertext is authenticated; tampering or using a snapshot from another parent fails closed.
 - A full root-dev stop destroys continuity and requires login next launch.
 - Logout and user revocation update the encrypted snapshot immediately, so revoked tokens do not reappear after a child reload.
+- A logout or revocation is reported successful only after its prospective encrypted state is durable; failed persistence cannot leave memory and the reload snapshot claiming different security state.
 - Production behavior is opt-in by environment presence and remains unchanged by default.
 
 ## Error Handling and Observability
@@ -114,6 +119,8 @@ Runtime fallback remains necessary for existing persisted configuration, models 
 - A created session and SQLCipher key round-trip through an encrypted snapshot into fresh process-like state.
 - Expired sessions are not restored.
 - Revoke, revoke-user, clear, and SQLCipher clear survive restoration.
+- Fault-injected persistence failures during revoke, revoke-user, clear, and SQLCipher clear do not commit divergent in-memory state or report success.
+- Concurrent session and SQLCipher mutations serialize into coherent snapshots without deadlock or mixed generations.
 - Tampered ciphertext, wrong keys, malformed payloads, and missing environment fail closed without breaking startup.
 - DB-viewer verification timestamps are not restored.
 - Snapshot behavior is disabled when either environment value is absent.
@@ -132,4 +139,3 @@ Runtime fallback remains necessary for existing persisted configuration, models 
 - Focused Python auth, config, compaction, and segmentation suites with `ANIMA_CORE_REQUIRE_ENCRYPTION=false` where required.
 - `bun run lint`, `bun run test`, and `bun run build`.
 - Manual root `bun dev` smoke test: log in, edit two backend Python files, observe one health-gated reload, confirm authenticated `/api/auth/me` and chat continue, stop and relaunch root dev, confirm a fresh login is required, and verify `GET /health` returns `200`.
-
