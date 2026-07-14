@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -269,3 +272,29 @@ def test_session_store_without_snapshot_remains_process_local() -> None:
 
     assert store.resolve(token) is not None
     assert UnlockSessionStore().resolve(token) is None
+
+
+def test_global_store_restores_snapshot_during_module_import(tmp_path: Path) -> None:
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    snapshot.write(_payload(token="import-token"))
+    environment = os.environ.copy()
+    environment[DEV_SESSION_STATE_PATH_ENV] = str(snapshot.path)
+    environment[DEV_SESSION_KEY_ENV] = base64.b64encode(b"s" * 32).decode("ascii")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from anima_server.services.sessions import unlock_session_store; "
+                "assert unlock_session_store.resolve('import-token') is not None"
+            ),
+        ],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

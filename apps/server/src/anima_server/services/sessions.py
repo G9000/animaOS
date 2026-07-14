@@ -303,31 +303,6 @@ class UnlockSessionStore:
         return datetime.now(UTC)
 
 
-unlock_session_store = UnlockSessionStore(
-    snapshot=DevSessionSnapshot.from_environment()
-)
-
-
-def get_active_dek(user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
-    return unlock_session_store.get_active_dek(user_id, domain)
-
-
-def get_active_deks(user_id: int) -> dict[str, bytes] | None:
-    return unlock_session_store.get_active_deks(user_id)
-
-
-def set_sqlcipher_key(key: bytes) -> None:
-    unlock_session_store.set_sqlcipher_key(key)
-
-
-def get_sqlcipher_key() -> bytes | None:
-    return unlock_session_store.get_sqlcipher_key()
-
-
-def clear_sqlcipher_key() -> None:
-    unlock_session_store.clear_sqlcipher_key()
-
-
 def _format_expiry(value: datetime) -> str:
     return (
         value.astimezone(UTC)
@@ -372,3 +347,30 @@ def _zero_dek(dek: bytes) -> None:
     """
     with contextlib.suppress(Exception):
         ctypes.memset(id(dek) + bytes.__basicsize__ - 1, 0, len(dek))
+
+
+# Initialize the process-global store only after every restore helper above is
+# defined. Dev reloads import this module with a snapshot already present.
+unlock_session_store = UnlockSessionStore(
+    snapshot=DevSessionSnapshot.from_environment()
+)
+
+
+def get_active_dek(user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
+    return unlock_session_store.get_active_dek(user_id, domain)
+
+
+def get_active_deks(user_id: int) -> dict[str, bytes] | None:
+    return unlock_session_store.get_active_deks(user_id)
+
+
+def set_sqlcipher_key(key: bytes) -> None:
+    unlock_session_store.set_sqlcipher_key(key)
+
+
+def get_sqlcipher_key() -> bytes | None:
+    return unlock_session_store.get_sqlcipher_key()
+
+
+def clear_sqlcipher_key() -> None:
+    unlock_session_store.clear_sqlcipher_key()
