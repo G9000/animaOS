@@ -11,6 +11,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
+from anima_server.db.helpers import session_scope
 from anima_server.models.agent_runtime import MemoryEpisode
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services import anima_core_retrieval
@@ -88,50 +89,46 @@ async def on_thread_close(
             exc_info=True,
         )
 
-    db = resolved_runtime_db_factory()
     try:
-        messages = list_transcript_messages(db, thread_id=thread_id)
-        dek = get_active_dek(user_id, "conversations")
-        episode_ids = _episode_ids(episode)
-        sidecar_summary = _episode_summary(episode, user_id=user_id)
+        with session_scope(resolved_runtime_db_factory) as db:
+            messages = list_transcript_messages(db, thread_id=thread_id)
+            dek = get_active_dek(user_id, "conversations")
+            episode_ids = _episode_ids(episode)
+            sidecar_summary = _episode_summary(episode, user_id=user_id)
 
-        if messages:
-            export_result = export_transcript(
-                messages=messages_to_transcript_dicts(messages),
-                thread_id=thread_id,
-                user_id=user_id,
-                dek=dek,
-                transcripts_dir=_get_transcripts_dir(),
-                episode_ids=episode_ids,
-                summary=sidecar_summary,
-            )
-            if episode is not None and episode.id is not None:
-                _link_episode_to_transcript(
-                    episode_id=episode.id,
-                    transcript_ref=export_result.enc_path.name,
-                    soul_db_factory=resolved_soul_db_factory,
+            if messages:
+                export_result = export_transcript(
+                    messages=messages_to_transcript_dicts(messages),
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    dek=dek,
+                    transcripts_dir=_get_transcripts_dir(),
+                    episode_ids=episode_ids,
+                    summary=sidecar_summary,
                 )
-            if dek is None:
-                logger.warning(
-                    "Exported plaintext transcript for thread %d because no conversations DEK is active",
-                    thread_id,
-                )
-            else:
-                logger.info(
-                    "Exported transcript for thread %d (%d messages)",
-                    thread_id,
-                    len(messages),
-                )
+                if episode is not None and episode.id is not None:
+                    _link_episode_to_transcript(
+                        episode_id=episode.id,
+                        transcript_ref=export_result.enc_path.name,
+                        soul_db_factory=resolved_soul_db_factory,
+                    )
+                if dek is None:
+                    logger.warning(
+                        "Exported plaintext transcript for thread %d because no conversations DEK is active",
+                        thread_id,
+                    )
+                else:
+                    logger.info(
+                        "Exported transcript for thread %d (%d messages)",
+                        thread_id,
+                        len(messages),
+                    )
 
-        thread = db.get(RuntimeThread, thread_id)
-        if thread is not None:
-            thread.is_archived = True
-            db.commit()
+            thread = db.get(RuntimeThread, thread_id)
+            if thread is not None:
+                thread.is_archived = True
     except Exception:
         logger.exception("Thread close archival failed for thread %d", thread_id)
-        db.rollback()
-    finally:
-        db.close()
 
 
 def _episode_ids(episode: MemoryEpisode | None) -> list[str]:
@@ -153,14 +150,13 @@ def _link_episode_to_transcript(
     transcript_ref: str,
     soul_db_factory: Callable[..., object],
 ) -> None:
-    with soul_db_factory() as db:
+    with session_scope(soul_db_factory) as db:
         if not isinstance(db, Session):
             raise TypeError("Expected SQLAlchemy Session from soul_db_factory")
         episode = db.get(MemoryEpisode, episode_id)
         if episode is None:
             return
         episode.transcript_ref = transcript_ref
-        db.commit()
 
 
 async def inactivity_sweep(
@@ -175,49 +171,44 @@ async def inactivity_sweep(
 
     stale_threads: list[tuple[int, int]] = []
     retry_threads: list[tuple[int, int]] = []
-    db = resolved_runtime_db_factory()
     try:
-        stale_threads = [
-            (int(thread_id), int(user_id))
-            for thread_id, user_id in db.execute(
-                select(RuntimeThread.id, RuntimeThread.user_id).where(
-                    RuntimeThread.status == "active",
-                    RuntimeThread.last_message_at.isnot(None),
-                    RuntimeThread.last_message_at < cutoff,
-                )
-            ).all()
-        ]
-        now = datetime.now(UTC)
-        retry_threads = [
-            (int(thread_id), int(user_id))
-            for thread_id, user_id in db.execute(
-                select(RuntimeThread.id, RuntimeThread.user_id).where(
-                    RuntimeThread.status == "closed",
-                    RuntimeThread.is_archived.is_(False),
-                    RuntimeThread.archive_failed.is_(False),
-                    or_(
-                        RuntimeThread.archive_next_retry_at.is_(None),
-                        RuntimeThread.archive_next_retry_at <= now,
-                    ),
-                )
-            ).all()
-        ]
+        with session_scope(resolved_runtime_db_factory) as db:
+            stale_threads = [
+                (int(thread_id), int(user_id))
+                for thread_id, user_id in db.execute(
+                    select(RuntimeThread.id, RuntimeThread.user_id).where(
+                        RuntimeThread.status == "active",
+                        RuntimeThread.last_message_at.isnot(None),
+                        RuntimeThread.last_message_at < cutoff,
+                    )
+                ).all()
+            ]
+            now = datetime.now(UTC)
+            retry_threads = [
+                (int(thread_id), int(user_id))
+                for thread_id, user_id in db.execute(
+                    select(RuntimeThread.id, RuntimeThread.user_id).where(
+                        RuntimeThread.status == "closed",
+                        RuntimeThread.is_archived.is_(False),
+                        RuntimeThread.archive_failed.is_(False),
+                        or_(
+                            RuntimeThread.archive_next_retry_at.is_(None),
+                            RuntimeThread.archive_next_retry_at <= now,
+                        ),
+                    )
+                ).all()
+            ]
 
-        closed_at = datetime.now(UTC)
-        for thread_id, _user_id in stale_threads:
-            thread = db.get(RuntimeThread, thread_id)
-            if thread is None:
-                continue
-            thread.status = "closed"
-            thread.closed_at = closed_at
-
-        db.commit()
+            closed_at = datetime.now(UTC)
+            for thread_id, _user_id in stale_threads:
+                thread = db.get(RuntimeThread, thread_id)
+                if thread is None:
+                    continue
+                thread.status = "closed"
+                thread.closed_at = closed_at
     except Exception:
         logger.exception("Inactivity sweep failed")
-        db.rollback()
         return 0
-    finally:
-        db.close()
 
     for thread_id, user_id in stale_threads + retry_threads:
         try:
@@ -255,44 +246,39 @@ def _update_archival_retry_state(
     next attempt with exponential backoff and, at the cap, marks the thread
     terminally `archive_failed` so the sweep stops retrying it every minute.
     """
-    db = runtime_db_factory()
     try:
-        thread = db.get(RuntimeThread, thread_id)
-        if thread is None:
-            return
-        if thread.is_archived or thread.status != "closed":
-            if thread.archive_retry_count or thread.archive_next_retry_at:
-                thread.archive_retry_count = 0
-                thread.archive_next_retry_at = None
-                db.commit()
-            return
+        with session_scope(runtime_db_factory) as db:
+            thread = db.get(RuntimeThread, thread_id)
+            if thread is None:
+                return
+            if thread.is_archived or thread.status != "closed":
+                if thread.archive_retry_count or thread.archive_next_retry_at:
+                    thread.archive_retry_count = 0
+                    thread.archive_next_retry_at = None
+                return
 
-        thread.archive_retry_count = (thread.archive_retry_count or 0) + 1
-        if thread.archive_retry_count >= _ARCHIVE_MAX_RETRIES:
-            thread.archive_failed = True
-            thread.archive_next_retry_at = None
-            degraded_logger.warning(
-                "Thread %d archival permanently failed after %d attempts; "
-                "giving up (clear archive_failed to retry manually)",
-                thread_id,
-                thread.archive_retry_count,
-            )
-        else:
-            delay_minutes = min(
-                _ARCHIVE_BACKOFF_BASE_MINUTES * 2 ** (thread.archive_retry_count - 1),
-                _ARCHIVE_BACKOFF_CAP_MINUTES,
-            )
-            thread.archive_next_retry_at = datetime.now(UTC) + timedelta(
-                minutes=delay_minutes
-            )
-        db.commit()
+            thread.archive_retry_count = (thread.archive_retry_count or 0) + 1
+            if thread.archive_retry_count >= _ARCHIVE_MAX_RETRIES:
+                thread.archive_failed = True
+                thread.archive_next_retry_at = None
+                degraded_logger.warning(
+                    "Thread %d archival permanently failed after %d attempts; "
+                    "giving up (clear archive_failed to retry manually)",
+                    thread_id,
+                    thread.archive_retry_count,
+                )
+            else:
+                delay_minutes = min(
+                    _ARCHIVE_BACKOFF_BASE_MINUTES * 2 ** (thread.archive_retry_count - 1),
+                    _ARCHIVE_BACKOFF_CAP_MINUTES,
+                )
+                thread.archive_next_retry_at = datetime.now(UTC) + timedelta(
+                    minutes=delay_minutes
+                )
     except Exception:
         logger.exception(
             "Failed to update archival retry state for thread %d", thread_id
         )
-        db.rollback()
-    finally:
-        db.close()
 
 
 async def prune_expired_messages(
@@ -305,32 +291,28 @@ async def prune_expired_messages(
 
     resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
     cutoff = datetime.now(UTC) - timedelta(days=settings.message_ttl_days)
-    db = resolved_runtime_db_factory()
 
     try:
-        archived_thread_ids = db.scalars(
-            select(RuntimeThread.id).where(RuntimeThread.is_archived.is_(True))
-        ).all()
-        if not archived_thread_ids:
-            return 0
+        with session_scope(resolved_runtime_db_factory) as db:
+            archived_thread_ids = db.scalars(
+                select(RuntimeThread.id).where(RuntimeThread.is_archived.is_(True))
+            ).all()
+            if not archived_thread_ids:
+                return 0
 
-        result = db.execute(
-            delete(RuntimeMessage).where(
-                RuntimeMessage.created_at < cutoff,
-                RuntimeMessage.thread_id.in_(archived_thread_ids),
+            result = db.execute(
+                delete(RuntimeMessage).where(
+                    RuntimeMessage.created_at < cutoff,
+                    RuntimeMessage.thread_id.in_(archived_thread_ids),
+                )
             )
-        )
-        db.commit()
-        deleted = int(result.rowcount or 0)
+            deleted = int(result.rowcount or 0)
         if deleted:
             logger.info("Pruned %d expired archived runtime messages", deleted)
         return deleted
     except Exception:
         logger.exception("Message pruning failed")
-        db.rollback()
         return 0
-    finally:
-        db.close()
 
 
 async def prune_old_background_task_runs(
@@ -354,25 +336,21 @@ async def prune_old_background_task_runs(
     cutoff = datetime.now(UTC) - timedelta(
         days=settings.background_task_run_retention_days
     )
-    db = resolved_runtime_db_factory()
     try:
-        result = db.execute(
-            delete(RuntimeBackgroundTaskRun).where(
-                RuntimeBackgroundTaskRun.status.in_(["completed", "failed"]),
-                RuntimeBackgroundTaskRun.created_at < cutoff,
+        with session_scope(resolved_runtime_db_factory) as db:
+            result = db.execute(
+                delete(RuntimeBackgroundTaskRun).where(
+                    RuntimeBackgroundTaskRun.status.in_(["completed", "failed"]),
+                    RuntimeBackgroundTaskRun.created_at < cutoff,
+                )
             )
-        )
-        db.commit()
-        deleted = int(result.rowcount or 0)
+            deleted = int(result.rowcount or 0)
         if deleted:
             logger.info("Pruned %d expired background task-run rows", deleted)
         return deleted
     except Exception:
         logger.exception("Background task-run pruning failed")
-        db.rollback()
         return 0
-    finally:
-        db.close()
 
 
 async def prune_expired_transcripts() -> int:
