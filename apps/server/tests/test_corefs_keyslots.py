@@ -1105,6 +1105,52 @@ def test_fs_recovery_confirm_maps_invalid_pending_phrase_to_unauthorized() -> No
         assert response.status_code == 401
 
 
+def test_fs_recovery_prepare_rejects_unversioned_manifest(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "core_passphrase", "agent-managed-core-passphrase")
+
+    with managed_test_client("anima-fs-prepare-unversioned-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert not manifest_has_versioned_key_hierarchy(manifest)
+
+        response = client.post(
+            "/api/auth/corefs/recovery-credential/prepare",
+            json={
+                "currentPassword": "password-123",
+                "currentRecoveryPhrase": registered["recoveryPhrase"],
+            },
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"error": "versioned key hierarchy is absent"}
+
+
+def test_fs_recovery_confirm_rejects_unversioned_manifest(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "core_passphrase", "agent-managed-core-passphrase")
+
+    with managed_test_client("anima-fs-confirm-unversioned-") as client:
+        client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        )
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert not manifest_has_versioned_key_hierarchy(manifest)
+
+        response = client.post(
+            "/api/auth/corefs/recovery-credential/confirm",
+            json={
+                "recoveryPhrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                "pendingGeneration": 1,
+            },
+        )
+
+        assert response.status_code == 401
+        assert response.json() == {"error": "versioned key hierarchy is absent"}
+
+
 def test_fs_credential_endpoints_share_precharged_client_limit(monkeypatch) -> None:
     derived: list[str] = []
 

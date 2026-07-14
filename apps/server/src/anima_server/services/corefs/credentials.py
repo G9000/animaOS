@@ -83,6 +83,19 @@ def _require_active_generation(
         raise ValueError(f"active {path.value} credential generation changed")
 
 
+def _active_recovery_generation(manifest: dict[str, object]) -> int:
+    raw_generation = manifest.get("active_recovery_credential_generation")
+    if raw_generation is None:
+        raise ValueError("versioned key hierarchy is absent")
+    try:
+        generation = int(raw_generation)
+    except (TypeError, ValueError):
+        raise ValueError("active recovery credential generation is invalid") from None
+    if generation <= 0:
+        raise ValueError("active recovery credential generation must be positive")
+    return generation
+
+
 def _reject_live_pending_recovery(
     manifest: dict[str, object],
     *,
@@ -794,7 +807,7 @@ def prepare_filesystem_recovery_credential(
 ) -> PreparedRecoveryCredential:
     """Prepare a replacement FS-only recovery phrase using manifest roots only."""
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-    active_generation = int(manifest["active_recovery_credential_generation"])
+    active_generation = _active_recovery_generation(manifest)
     generation = active_generation + 1
     _reject_live_pending_recovery(manifest, replace_pending=replace_pending)
     password_roots = unlock_manifest_key_hierarchy(
@@ -886,7 +899,7 @@ def confirm_filesystem_recovery_credential(
 ) -> None:
     """Activate a prepared FS-only recovery phrase without Soul state."""
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-    active_generation = int(manifest["active_recovery_credential_generation"])
+    active_generation = _active_recovery_generation(manifest)
     if active_generation not in {pending_generation - 1, pending_generation}:
         raise ValueError("pending filesystem recovery generation is stale")
     status = (
