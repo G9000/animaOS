@@ -6,6 +6,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from cryptography.exceptions import InvalidTag
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -376,6 +377,8 @@ def prepare_recovery(
             scope=PayloadScope(payload.scope),
             replace_pending=payload.replacePending,
         )
+    except InvalidTag:
+        raise HTTPException(status_code=401, detail="Invalid recovery phrase") from None
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
     return {
@@ -410,6 +413,8 @@ def confirm_recovery(
             scope=PayloadScope(payload.scope),
             current_password=payload.currentPassword,
         )
+    except InvalidTag:
+        raise HTTPException(status_code=401, detail="Invalid recovery phrase") from None
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
     return {"success": True}

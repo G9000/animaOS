@@ -422,6 +422,50 @@ def test_recovery_confirmation_requires_current_password() -> None:
         assert response.status_code == 422
 
 
+def test_recovery_prepare_maps_invalid_current_phrase_to_unauthorized() -> None:
+    with managed_test_client("anima-recovery-prepare-invalid-phrase-") as client:
+        registered = _register_user(client, password="password-123")
+
+        response = client.post(
+            "/api/auth/recovery-credential/prepare",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={
+                "currentRecoveryPhrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                "currentPassword": "password-123",
+                "scope": "full",
+            },
+        )
+
+        assert response.status_code == 401
+
+
+def test_recovery_confirm_maps_invalid_pending_phrase_to_unauthorized() -> None:
+    with managed_test_client("anima-recovery-confirm-invalid-phrase-") as client:
+        registered = _register_user(client, password="password-123")
+        prepared = client.post(
+            "/api/auth/recovery-credential/prepare",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={
+                "currentRecoveryPhrase": registered["recoveryPhrase"],
+                "currentPassword": "password-123",
+                "scope": "full",
+            },
+        ).json()
+
+        response = client.post(
+            "/api/auth/recovery-credential/confirm",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+            json={
+                "recoveryPhrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                "pendingGeneration": prepared["pendingGeneration"],
+                "scope": prepared["scope"],
+                "currentPassword": "password-123",
+            },
+        )
+
+        assert response.status_code == 401
+
+
 def test_recovery_confirmation_is_retryable_after_manifest_activation_crash(monkeypatch) -> None:
     replacement = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
     monkeypatch.setattr(

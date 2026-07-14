@@ -1054,6 +1054,57 @@ def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() ->
         assert not user_dir.exists()
 
 
+def test_fs_recovery_prepare_maps_invalid_current_phrase_to_unauthorized() -> None:
+    with managed_test_client("anima-fs-prepare-invalid-phrase-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+
+        response = client.post(
+            "/api/auth/corefs/recovery-credential/prepare",
+            json={
+                "currentPassword": "password-123",
+                "currentRecoveryPhrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            },
+        )
+
+        assert response.status_code == 401
+
+
+def test_fs_recovery_confirm_maps_invalid_pending_phrase_to_unauthorized() -> None:
+    with managed_test_client("anima-fs-confirm-invalid-phrase-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        _make_filesystem_only(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+        prepared = client.post(
+            "/api/auth/corefs/recovery-credential/prepare",
+            json={
+                "currentPassword": "password-123",
+                "currentRecoveryPhrase": registered["recoveryPhrase"],
+            },
+        ).json()
+
+        response = client.post(
+            "/api/auth/corefs/recovery-credential/confirm",
+            json={
+                "recoveryPhrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                "pendingGeneration": prepared["pendingGeneration"],
+            },
+        )
+
+        assert response.status_code == 401
+
+
 def test_fs_credential_endpoints_share_precharged_client_limit(monkeypatch) -> None:
     derived: list[str] = []
 
