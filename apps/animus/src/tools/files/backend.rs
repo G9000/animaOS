@@ -75,6 +75,35 @@ impl HostFsBackend {
         }
     }
 
+    fn resolve_read_entry(&self, path: &str) -> Result<PathBuf, FileToolError> {
+        let resolved = self.resolve_read(path)?;
+        let raw = PathBuf::from(path);
+        let requested = if raw.is_absolute() {
+            raw
+        } else {
+            self.policy.workspace().join(raw)
+        };
+        let requested_metadata = fs::symlink_metadata(&requested)
+            .map_err(|error| backend_error("metadata", &requested, error))?;
+        if !requested_metadata.file_type().is_symlink() {
+            return Ok(resolved);
+        }
+        let name = requested
+            .file_name()
+            .ok_or_else(|| FileToolError::InvalidPath {
+                path: path.to_string(),
+                reason: "path must name a workspace entry".to_string(),
+            })?;
+        let parent = requested.parent().unwrap_or_else(|| Path::new(""));
+        self.policy
+            .normalize_workspace_path(parent)
+            .map(|resolved_parent| resolved_parent.join(name))
+            .map_err(|reason| FileToolError::InvalidPath {
+                path: path.to_string(),
+                reason,
+            })
+    }
+
     fn resolve_entry_write(&self, path: &str) -> Result<PathBuf, FileToolError> {
         reject_cross_backend_path(path)?;
         let raw = PathBuf::from(path);
@@ -344,7 +373,7 @@ impl ReadBackend for HostFsBackend {
 
 impl WalkBackend for HostFsBackend {
     fn metadata(&self, path: &str) -> Result<EntryMetadata, FileToolError> {
-        let resolved = self.resolve_read(path)?;
+        let resolved = self.resolve_read_entry(path)?;
         metadata_for_path(&resolved)
     }
 
@@ -651,6 +680,34 @@ mod tests {
     }
 
     #[test]
+    fn shared_walk_never_traverses_a_directory_symlink_used_as_the_root() {
+        let root = test_workspace();
+        let target = root.join("target");
+        let link = root.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("secret.txt"), "hidden through root link").unwrap();
+        if create_directory_symlink(&target, &link).is_err() {
+            return;
+        }
+        let backend = HostFsBackend::new(PermissionPolicy::read_only(root));
+
+        let page = walk_page(
+            &backend,
+            BackendPath::new(BackendKind::HostFs, link.to_string_lossy()).unwrap(),
+            WalkOptions {
+                page_size: 100,
+                cursor: None,
+                include_directories: true,
+            },
+            OperationLimits::default().validate().unwrap(),
+            OperationControl::default(),
+        )
+        .unwrap();
+
+        assert!(page.entries.is_empty());
+    }
+
+    #[test]
     fn directory_listing_skips_dangling_symlinks_without_aborting() {
         let root = test_workspace();
         let target = root
@@ -763,7 +820,30 @@ mod tests {
         target: &std::path::Path,
         link: &std::path::Path,
     ) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_dir(target, link)
+        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+            return Ok(());
+        }
+        if create_directory_junction(target, link).is_ok() {
+            return Ok(());
+        }
+        create_wsl_symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_directory_junction(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("mklink /J failed"))
+        }
     }
 
     #[cfg(unix)]
@@ -798,14 +878,11 @@ mod tests {
         if create_file_symlink(target, link).is_ok() {
             return Ok(());
         }
-        create_wsl_file_symlink(target, link)
+        create_wsl_symlink(target, link)
     }
 
     #[cfg(windows)]
-    fn create_wsl_file_symlink(
-        target: &std::path::Path,
-        link: &std::path::Path,
-    ) -> std::io::Result<()> {
+    fn create_wsl_symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
         use std::process::Command;
 
         fn wsl_path(path: &std::path::Path) -> std::io::Result<String> {

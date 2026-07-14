@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 02:31 MYT
+- Updated: 2026-07-15 02:54 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -90,6 +90,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 01:51 MYT - Addressed PR #91's ninth Codex review pass by stopping text validation at the requested line boundary without falsely marking exact EOF as truncated, and by preserving virtual entry identity when a symlink is deleted then recreated as a regular file within one patch. All focused regressions and full shared/Animus quality gates passed.
 - 2026-07-15 02:16 MYT - Addressed PR #91's tenth Codex review pass by preflighting HostFS write-parent shape across the full ordered mutation plan before applying any best-effort write. Confirmed dangling symlinks are already skipped before metadata lookup while readable siblings remain available, and added focused coverage for both behaviors; full shared/Animus quality gates passed.
 - 2026-07-15 02:31 MYT - Addressed PR #91's eleventh Codex review pass by exposing `read_file` continuation offsets whenever output is truncated and skipping non-UTF-8 directory entries on Unix without dropping readable siblings. Focused platform coverage and the full local shared/Animus quality gates passed before standalone Linux CI.
+- 2026-07-15 02:54 MYT - Addressed PR #91's twelfth Codex review pass by preserving final symlink identity for HostFS walk/search roots after containment authorization, preventing a root directory symlink from being traversed. Added cross-platform red/green coverage and revalidated the full shared/Animus quality gates.
 
 ## Validation
 

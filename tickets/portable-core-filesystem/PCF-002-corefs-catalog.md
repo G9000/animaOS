@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 02:31 MYT
+- Updated: 2026-07-15 02:54 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -69,6 +69,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 01:51 MYT - Addressed the ninth current-head Codex review pass with red/green boundary regressions: text reads stop before validating content beyond the requested window while preserving exact-EOF truncation semantics, and patch preflight tracks a deleted symlink entry through regular-file recreation and later same-patch updates. Revalidated 56 shared tests, 125 Animus tests, formatting, clippy, build, and diff checks.
 - 2026-07-15 02:16 MYT - Addressed the tenth current-head Codex review pass: reproduced and fixed HostFS partial patch application by preflighting every ordered write parent against filesystem and virtual mutation state before the first write. Verified the separate dangling-symlink listing comment already follows the requested skip behavior at the permission boundary and added a regression documenting readable-sibling continuity. Revalidated 56 shared tests, 127 Animus tests, formatting, clippy, build, and diff checks.
 - 2026-07-15 02:31 MYT - Addressed the eleventh current-head Codex review pass: `read_file` now reports truncation with the exact next offset, and HostFS directory enumeration skips non-UTF-8 Unix entries instead of aborting sibling listing/search. Added a red/green truncation regression plus a Unix-specific filename regression; revalidated 56 shared tests, 128 local Animus tests, formatting, clippy, build, and diff checks before standalone Linux CI.
+- 2026-07-15 02:54 MYT - Addressed the twelfth current-head Codex review pass with a red/green HostFS traversal regression: walk/search metadata now preserves a requested root symlink's identity after canonical containment authorization, so a directory symlink used as the root is never descended. Added a Windows junction fallback so the traversal regression exercises the behavior without elevated symlink privileges; revalidated 56 shared tests, 129 Animus tests, formatting, clippy, build, and diff checks.
 
 ## Validation
 
