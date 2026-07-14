@@ -75,6 +75,32 @@ impl HostFsBackend {
         }
     }
 
+    fn resolve_entry_write(&self, path: &str) -> Result<PathBuf, FileToolError> {
+        reject_cross_backend_path(path)?;
+        let raw = PathBuf::from(path);
+        let name = raw.file_name().ok_or_else(|| FileToolError::InvalidPath {
+            path: path.to_string(),
+            reason: "path must name a workspace entry".to_string(),
+        })?;
+        let parent = raw.parent().unwrap_or_else(|| Path::new(""));
+        match self.policy.check_file_write(parent) {
+            PermissionDecision::Allow => self
+                .policy
+                .normalize_workspace_path(parent)
+                .map(|resolved_parent| resolved_parent.join(name))
+                .map_err(|reason| FileToolError::InvalidPath {
+                    path: path.to_string(),
+                    reason,
+                }),
+            PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
+                Err(FileToolError::InvalidPath {
+                    path: path.to_string(),
+                    reason,
+                })
+            }
+        }
+    }
+
     pub(super) fn write_text(&self, path: &str, content: &str) -> Result<PathBuf, FileToolError> {
         validate_write_size(content)?;
         let resolved = self.resolve_write(path)?;
@@ -192,12 +218,12 @@ impl HostFsBackend {
                     content: content.clone(),
                     remove_source: remove_source
                         .as_ref()
-                        .map(|source| self.resolve_write(source.as_str()))
+                        .map(|source| self.resolve_entry_write(source.as_str()))
                         .transpose()?,
                 })
             }
             PlannedMutation::Delete { path } => Ok(ResolvedMutation::Delete {
-                path: self.resolve_write(path.as_str())?,
+                path: self.resolve_entry_write(path.as_str())?,
             }),
         }
     }
@@ -258,6 +284,21 @@ impl PatchSnapshot for HostFsBackend {
     fn canonical_key(&self, path: &str) -> Result<String, PatchError> {
         let resolved = self
             .resolve_read(path)
+            .map_err(|error| PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            })?;
+        let key = resolved.to_string_lossy().into_owned();
+        if self.case_sensitive_paths {
+            Ok(key)
+        } else {
+            Ok(key.to_lowercase())
+        }
+    }
+
+    fn canonical_entry_key(&self, path: &str) -> Result<String, PatchError> {
+        let resolved = self
+            .resolve_entry_write(path)
             .map_err(|error| PatchError::Snapshot {
                 path: path.to_string(),
                 message: error.to_string(),
@@ -412,8 +453,9 @@ fn backend_error(operation: &'static str, path: &Path, error: std::io::Error) ->
 #[cfg(test)]
 mod tests {
     use anima_file_tools::{
-        walk_page, BackendKind, BackendPath, FileBackend, FileToolError, OperationControl,
-        OperationLimits, PatchSnapshot, ReadBackend, WalkOptions,
+        parse_patch, plan_patch, walk_page, BackendKind, BackendPath, FileBackend, FileToolError,
+        MutationAtomicity, OperationControl, OperationLimits, PatchSnapshot, ReadBackend,
+        WalkOptions,
     };
 
     use super::{toggle_ascii_case, HostFsBackend};
@@ -511,6 +553,26 @@ mod tests {
             .any(|entry| entry.path.as_str().contains("link\\secret.txt")));
     }
 
+    #[test]
+    fn patch_delete_removes_the_named_symlink_instead_of_its_target() {
+        let root = test_workspace();
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        std::fs::write(&target, "keep me").unwrap();
+        if create_file_symlink(&target, &link).is_err() {
+            return;
+        }
+        let backend = HostFsBackend::new(PermissionPolicy::workspace_write(root));
+        let patch =
+            parse_patch("*** Begin Patch\n*** Delete File: link.txt\n*** End Patch").unwrap();
+        let plan = plan_patch(&backend, &patch, MutationAtomicity::BestEffort).unwrap();
+
+        backend.apply_plan(&plan).unwrap();
+
+        assert!(!link.exists());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "keep me");
+    }
+
     fn test_workspace() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("animus-hostfs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -531,5 +593,21 @@ mod tests {
         link: &std::path::Path,
     ) -> std::io::Result<()> {
         std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
     }
 }

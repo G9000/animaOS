@@ -4,6 +4,7 @@
 // 9e552e9d15ba52bed7077d5357f3e18e330f8f38.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::MutationAtomicity;
 
@@ -14,6 +15,10 @@ pub trait PatchSnapshot {
 
     fn canonical_key(&self, path: &str) -> Result<String, PatchError> {
         Ok(path.to_string())
+    }
+
+    fn canonical_entry_key(&self, path: &str) -> Result<String, PatchError> {
+        self.canonical_key(path)
     }
 }
 
@@ -59,12 +64,12 @@ pub fn plan_patch<S: PatchSnapshot + ?Sized>(
                 });
             }
             PatchOperation::Delete { path } => {
-                if load(snapshot, &mut virtual_files, path)?.is_none() {
+                if load_entry(snapshot, &mut virtual_files, path)?.is_none() {
                     return Err(PatchError::MissingPath {
                         path: path.as_str().to_string(),
                     });
                 }
-                store(snapshot, &mut virtual_files, path, None)?;
+                store_entry(snapshot, &mut virtual_files, path, None)?;
                 mutations.push(PlannedMutation::Delete { path: path.clone() });
             }
             PatchOperation::Update {
@@ -89,12 +94,13 @@ pub fn plan_patch<S: PatchSnapshot + ?Sized>(
                             path: target.as_str().to_string(),
                         });
                     }
-                    store(snapshot, &mut virtual_files, source, None)?;
+                    store(snapshot, &mut virtual_files, target, Some(content.clone()))?;
+                    store_entry(snapshot, &mut virtual_files, source, None)?;
                     Some(source.clone())
                 } else {
+                    store(snapshot, &mut virtual_files, target, Some(content.clone()))?;
                     None
                 };
-                store(snapshot, &mut virtual_files, target, Some(content.clone()))?;
                 mutations.push(PlannedMutation::Write {
                     path: target.clone(),
                     content,
@@ -124,13 +130,59 @@ fn load<S: PatchSnapshot + ?Sized>(
     Ok(content)
 }
 
+fn load_entry<S: PatchSnapshot + ?Sized>(
+    snapshot: &S,
+    virtual_files: &mut BTreeMap<String, Option<String>>,
+    path: &PatchPath,
+) -> Result<Option<String>, PatchError> {
+    let key = snapshot.canonical_entry_key(path.as_str())?;
+    if let Some(content) = virtual_files.get(&key) {
+        return Ok(content.clone());
+    }
+    let content = snapshot.read_text(path.as_str())?;
+    virtual_files.insert(key, content.clone());
+    Ok(content)
+}
+
 fn store<S: PatchSnapshot + ?Sized>(
     snapshot: &S,
     virtual_files: &mut BTreeMap<String, Option<String>>,
     path: &PatchPath,
     content: Option<String>,
 ) -> Result<(), PatchError> {
-    virtual_files.insert(snapshot.canonical_key(path.as_str())?, content);
+    let key = snapshot.canonical_key(path.as_str())?;
+    store_key(virtual_files, path, key, content)
+}
+
+fn store_entry<S: PatchSnapshot + ?Sized>(
+    snapshot: &S,
+    virtual_files: &mut BTreeMap<String, Option<String>>,
+    path: &PatchPath,
+    content: Option<String>,
+) -> Result<(), PatchError> {
+    let key = snapshot.canonical_entry_key(path.as_str())?;
+    store_key(virtual_files, path, key, content)
+}
+
+fn store_key(
+    virtual_files: &mut BTreeMap<String, Option<String>>,
+    path: &PatchPath,
+    key: String,
+    content: Option<String>,
+) -> Result<(), PatchError> {
+    if content.is_some()
+        && virtual_files.iter().any(|(existing, existing_content)| {
+            existing_content.is_some()
+                && existing != &key
+                && (Path::new(existing).starts_with(Path::new(&key))
+                    || Path::new(&key).starts_with(Path::new(existing)))
+        })
+    {
+        return Err(PatchError::PathAlreadyExists {
+            path: path.as_str().to_string(),
+        });
+    }
+    virtual_files.insert(key, content);
     Ok(())
 }
 

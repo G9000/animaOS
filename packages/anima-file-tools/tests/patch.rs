@@ -149,6 +149,66 @@ fn planner_rejects_destination_collisions_before_a_move() {
 }
 
 #[test]
+fn planner_rejects_virtual_file_and_descendant_collisions_in_either_order() {
+    let snapshot = MemorySnapshot::new(&[]);
+
+    for patch in [
+        "*** Begin Patch\n\
+         *** Add File: parent\n\
+         +file\n\
+         *** Add File: parent/child.txt\n\
+         +child\n\
+         *** End Patch",
+        "*** Begin Patch\n\
+         *** Add File: parent/child.txt\n\
+         +child\n\
+         *** Add File: parent\n\
+         +file\n\
+         *** End Patch",
+    ] {
+        let patch = parse_patch(patch).unwrap();
+        let error = plan_patch(&snapshot, &patch, MutationAtomicity::BestEffort).unwrap_err();
+
+        assert!(matches!(error, PatchError::PathAlreadyExists { .. }));
+    }
+}
+
+#[test]
+fn planner_rejects_moving_a_file_beneath_itself_before_apply() {
+    let snapshot = MemorySnapshot::new(&[("parent", "file\n")]);
+    let patch = parse_patch(
+        "*** Begin Patch\n\
+         *** Update File: parent\n\
+         *** Move to: parent/child.txt\n\
+         *** End Patch",
+    )
+    .unwrap();
+
+    let error = plan_patch(&snapshot, &patch, MutationAtomicity::BestEffort).unwrap_err();
+
+    assert!(matches!(error, PatchError::PathAlreadyExists { .. }));
+}
+
+#[test]
+fn planner_tracks_a_deleted_symlink_entry_separately_from_its_target() {
+    let snapshot = SymlinkSnapshot;
+    let patch = parse_patch(
+        "*** Begin Patch\n\
+         *** Delete File: link.txt\n\
+         *** Update File: target.txt\n\
+         @@\n\
+         -old\n\
+         +new\n\
+         *** End Patch",
+    )
+    .unwrap();
+
+    let plan = plan_patch(&snapshot, &patch, MutationAtomicity::BestEffort).unwrap();
+
+    assert_eq!(plan.mutations.len(), 2);
+}
+
+#[test]
 fn parser_keeps_marker_like_text_when_it_is_a_prefixed_context_line() {
     let patch = parse_patch(concat!(
         "*** Begin Patch\n",
@@ -222,5 +282,25 @@ impl MemorySnapshot {
 impl PatchSnapshot for MemorySnapshot {
     fn read_text(&self, path: &str) -> Result<Option<String>, PatchError> {
         Ok(self.0.get(path).cloned())
+    }
+}
+
+struct SymlinkSnapshot;
+
+impl PatchSnapshot for SymlinkSnapshot {
+    fn read_text(&self, path: &str) -> Result<Option<String>, PatchError> {
+        Ok(matches!(path, "link.txt" | "target.txt").then(|| "old\n".to_string()))
+    }
+
+    fn canonical_key(&self, path: &str) -> Result<String, PatchError> {
+        Ok(if path == "link.txt" {
+            "target.txt".to_string()
+        } else {
+            path.to_string()
+        })
+    }
+
+    fn canonical_entry_key(&self, path: &str) -> Result<String, PatchError> {
+        Ok(path.to_string())
     }
 }
