@@ -176,4 +176,3 @@ def _parse_utc_expiry(value: Any) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise DevSessionSnapshotError("Snapshot expiry must be UTC RFC3339")
     return parsed.astimezone(UTC)
-
