@@ -281,6 +281,23 @@ impl WalkBackend for HostFsBackend {
 }
 
 impl PatchSnapshot for HostFsBackend {
+    fn file_entry_exists(&self, path: &str) -> Result<bool, PatchError> {
+        let resolved = self
+            .resolve_entry_write(path)
+            .map_err(|error| PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            })?;
+        match fs::symlink_metadata(&resolved) {
+            Ok(metadata) => Ok(metadata.file_type().is_symlink() || metadata.is_file()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
     fn canonical_key(&self, path: &str) -> Result<String, PatchError> {
         let resolved = self
             .resolve_read(path)
@@ -573,6 +590,29 @@ mod tests {
         assert_eq!(std::fs::read_to_string(target).unwrap(), "keep me");
     }
 
+    #[test]
+    fn patch_delete_removes_a_dangling_symlink_without_reading_its_target() {
+        let root = test_workspace();
+        let target = root
+            .parent()
+            .unwrap()
+            .join(format!("missing-{}.txt", uuid::Uuid::new_v4()));
+        let link = root.join("link.txt");
+        if create_dangling_file_symlink(&target, &link).is_err() {
+            return;
+        }
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        let backend = HostFsBackend::new(PermissionPolicy::workspace_write(root));
+        let patch =
+            parse_patch("*** Begin Patch\n*** Delete File: link.txt\n*** End Patch").unwrap();
+
+        let plan = plan_patch(&backend, &patch, MutationAtomicity::BestEffort).unwrap();
+        backend.apply_plan(&plan).unwrap();
+
+        assert!(std::fs::symlink_metadata(link).is_err());
+        assert!(!target.exists());
+    }
+
     fn test_workspace() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("animus-hostfs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -609,5 +649,59 @@ mod tests {
         link: &std::path::Path,
     ) -> std::io::Result<()> {
         std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_dangling_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        create_file_symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_dangling_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        if create_file_symlink(target, link).is_ok() {
+            return Ok(());
+        }
+        create_wsl_file_symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_wsl_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        use std::process::Command;
+
+        fn wsl_path(path: &std::path::Path) -> std::io::Result<String> {
+            let output = Command::new("wsl.exe")
+                .arg("wslpath")
+                .arg("-a")
+                .arg(path.to_string_lossy().replace('\\', "/"))
+                .output()?;
+            if !output.status.success() {
+                return Err(std::io::Error::other("wslpath failed"));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+
+        let target = wsl_path(target)?;
+        let link = wsl_path(link)?;
+        let output = Command::new("wsl.exe")
+            .arg("-e")
+            .arg("ln")
+            .arg("-s")
+            .arg(target)
+            .arg(link)
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("wsl ln failed"))
+        }
     }
 }

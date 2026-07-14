@@ -13,6 +13,10 @@ use super::{Patch, PatchChunk, PatchError, PatchOperation, PatchPath};
 pub trait PatchSnapshot {
     fn read_text(&self, path: &str) -> Result<Option<String>, PatchError>;
 
+    fn file_entry_exists(&self, path: &str) -> Result<bool, PatchError> {
+        Ok(self.read_text(path)?.is_some())
+    }
+
     fn canonical_key(&self, path: &str) -> Result<String, PatchError> {
         Ok(path.to_string())
     }
@@ -64,7 +68,7 @@ pub fn plan_patch<S: PatchSnapshot + ?Sized>(
                 });
             }
             PatchOperation::Delete { path } => {
-                if load_entry(snapshot, &mut virtual_files, path)?.is_none() {
+                if !file_entry_exists(snapshot, &virtual_files, path)? {
                     return Err(PatchError::MissingPath {
                         path: path.as_str().to_string(),
                     });
@@ -130,18 +134,16 @@ fn load<S: PatchSnapshot + ?Sized>(
     Ok(content)
 }
 
-fn load_entry<S: PatchSnapshot + ?Sized>(
+fn file_entry_exists<S: PatchSnapshot + ?Sized>(
     snapshot: &S,
-    virtual_files: &mut BTreeMap<String, Option<String>>,
+    virtual_files: &BTreeMap<String, Option<String>>,
     path: &PatchPath,
-) -> Result<Option<String>, PatchError> {
+) -> Result<bool, PatchError> {
     let key = snapshot.canonical_entry_key(path.as_str())?;
     if let Some(content) = virtual_files.get(&key) {
-        return Ok(content.clone());
+        return Ok(content.is_some());
     }
-    let content = snapshot.read_text(path.as_str())?;
-    virtual_files.insert(key, content.clone());
-    Ok(content)
+    snapshot.file_entry_exists(path.as_str())
 }
 
 fn store<S: PatchSnapshot + ?Sized>(

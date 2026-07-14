@@ -431,6 +431,37 @@ mod tests {
         assert!(!root.join("should-not-exist.txt").exists());
     }
 
+    #[test]
+    fn apply_patch_deletes_binary_files_without_decoding_their_contents() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::write(root.join("binary.bin"), [0, 1, 2, 3]).unwrap();
+        let patch = "*** Begin Patch\n*** Delete File: binary.bin\n*** End Patch";
+
+        let result = apply_patch(&json!({"patch": patch}), &policy);
+
+        assert!(!result.is_error, "{}", result.content);
+        assert!(!root.join("binary.bin").exists());
+    }
+
+    #[test]
+    fn apply_patch_rejects_directory_deletes_before_prior_mutations_apply() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::create_dir(root.join("directory")).unwrap();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: should-not-exist.txt\n\
+                     +created\n\
+                     *** Delete File: directory\n\
+                     *** End Patch";
+
+        let result = apply_patch(&json!({"patch": patch}), &policy);
+
+        assert!(result.is_error);
+        assert!(!root.join("should-not-exist.txt").exists());
+        assert!(root.join("directory").is_dir());
+    }
+
     #[cfg(windows)]
     #[test]
     fn apply_patch_preflights_case_insensitive_host_path_collisions() {
