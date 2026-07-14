@@ -8,14 +8,44 @@ import pytest
 from anima_server.config import settings
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.agent.llm import (
+    ChatTarget,
     LLMConfigError,
     build_provider_headers,
     create_llm,
     create_provider_chat_client,
     invalidate_llm_cache,
+    resolve_background_chat_targets,
     resolve_base_url,
     resolve_provider_api_key,
 )
+
+
+def test_resolve_background_chat_targets_orders_and_deduplicates() -> None:
+    assert resolve_background_chat_targets(
+        extraction_provider="ollama",
+        extraction_model="all-minilm:latest",
+        primary_provider="openai",
+        primary_model="gpt-5-mini",
+    ) == [
+        ChatTarget(provider="ollama", model="all-minilm:latest"),
+        ChatTarget(provider="openai", model="gpt-5-mini"),
+    ]
+
+    assert resolve_background_chat_targets(
+        extraction_provider="",
+        extraction_model="gpt-5-mini",
+        primary_provider="openai",
+        primary_model="gpt-5-mini",
+    ) == [ChatTarget(provider="openai", model="gpt-5-mini")]
+
+
+def test_resolve_background_chat_targets_filters_empty_and_scaffold() -> None:
+    assert resolve_background_chat_targets(
+        extraction_provider="ollama",
+        extraction_model="",
+        primary_provider="scaffold",
+        primary_model="unused",
+    ) == []
 
 
 @pytest.mark.asyncio

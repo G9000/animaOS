@@ -489,6 +489,49 @@ async def test_summarize_with_llm_prefers_extraction_model(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_summarize_with_llm_falls_back_from_extraction_provider(monkeypatch) -> None:
+    import anima_server.services.agent.llm as llm_module
+    from anima_server.config import settings
+    from anima_server.services.agent.compaction import summarize_with_llm
+
+    monkeypatch.setattr(settings, "agent_provider", "openai")
+    monkeypatch.setattr(settings, "agent_model", "gpt-5-mini")
+    monkeypatch.setattr(settings, "agent_extraction_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_extraction_model", "all-minilm:latest")
+
+    extraction = _FakeChatClient(error=RuntimeError("ollama returned 400"))
+    primary = _FakeChatClient(content="Primary summary")
+    extraction.closed = False
+    primary.closed = False
+
+    async def _close_extraction():
+        extraction.closed = True
+
+    async def _close_primary():
+        primary.closed = True
+
+    extraction.aclose = _close_extraction
+    primary.aclose = _close_primary
+    calls: list[tuple[str, str]] = []
+
+    def _factory(**kwargs):
+        calls.append((kwargs["provider"], kwargs["model"]))
+        return extraction if len(calls) == 1 else primary
+
+    monkeypatch.setattr(llm_module, "create_provider_chat_client", _factory)
+
+    result = await summarize_with_llm([], transcript_override="User: hi")
+
+    assert result == "Primary summary"
+    assert calls == [
+        ("ollama", "all-minilm:latest"),
+        ("openai", "gpt-5-mini"),
+    ]
+    assert extraction.closed is True
+    assert primary.closed is True
+
+
+@pytest.mark.asyncio
 async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
     monkeypatch, caplog
 ) -> None:

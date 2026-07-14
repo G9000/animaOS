@@ -192,6 +192,7 @@ async def test_call_llm_for_segmentation_prefers_extraction_model_and_caps_reque
     ):
         mock_settings.agent_provider = "openai"
         mock_settings.agent_model = "primary-model"
+        mock_settings.agent_extraction_provider = ""
         mock_settings.agent_extraction_model = "cheap-model"
         mock_settings.agent_llm_timeout = 120.0
         mock_settings.agent_max_tokens = 4096
@@ -241,6 +242,7 @@ async def test_call_llm_for_segmentation_falls_back_to_primary_model_after_empty
     ):
         mock_settings.agent_provider = "openai"
         mock_settings.agent_model = "primary-model"
+        mock_settings.agent_extraction_provider = ""
         mock_settings.agent_extraction_model = "cheap-model"
         mock_settings.agent_llm_timeout = 120.0
         mock_settings.agent_max_tokens = 4096
@@ -254,6 +256,52 @@ async def test_call_llm_for_segmentation_falls_back_to_primary_model_after_empty
     ]
     assert extraction_client.ainvoke.await_count == 2
     primary_client.ainvoke.assert_awaited_once()
+    extraction_client.aclose.assert_awaited_once()
+    primary_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_segmentation_falls_back_after_permanent_provider_error() -> None:
+    from anima_server.services.agent.batch_segmenter import _call_llm_for_segmentation
+
+    messages = [("User message 1", "Response 1")]
+    extraction_client = AsyncMock()
+    extraction_client.ainvoke = AsyncMock(side_effect=RuntimeError("ollama returned 400"))
+    extraction_client.aclose = AsyncMock()
+    primary_client = AsyncMock()
+    primary_client.ainvoke = AsyncMock(return_value=SimpleNamespace(content="[[1]]"))
+    primary_client.aclose = AsyncMock()
+    prompt_loader = MagicMock()
+    prompt_loader.batch_segmentation.return_value = "prompt"
+
+    with (
+        patch("anima_server.services.agent.batch_segmenter.settings") as mock_settings,
+        patch(
+            "anima_server.services.agent.prompt_loader.PromptLoader",
+            return_value=prompt_loader,
+        ),
+        patch(
+            "anima_server.services.agent.batch_segmenter.create_provider_chat_client",
+            side_effect=[extraction_client, primary_client],
+        ) as mock_client_cls,
+    ):
+        mock_settings.agent_provider = "openai"
+        mock_settings.agent_model = "gpt-5-mini"
+        mock_settings.agent_extraction_provider = "ollama"
+        mock_settings.agent_extraction_model = "all-minilm:latest"
+        mock_settings.agent_llm_timeout = 120.0
+        mock_settings.agent_max_tokens = 4096
+
+        groups = await _call_llm_for_segmentation(messages)
+
+    assert groups == [[1]]
+    assert [
+        (call.kwargs["provider"], call.kwargs["model"])
+        for call in mock_client_cls.call_args_list
+    ] == [
+        ("ollama", "all-minilm:latest"),
+        ("openai", "gpt-5-mini"),
+    ]
     extraction_client.aclose.assert_awaited_once()
     primary_client.aclose.assert_awaited_once()
 

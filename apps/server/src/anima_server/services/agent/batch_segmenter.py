@@ -15,7 +15,10 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models import MemoryEpisode
 from anima_server.services.agent.json_utils import parse_json_array
-from anima_server.services.agent.llm import create_provider_chat_client
+from anima_server.services.agent.llm import (
+    create_provider_chat_client,
+    resolve_background_chat_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +145,19 @@ async def _call_llm_for_segmentation(
         "You group conversation messages by topic. "
         "Respond only with a JSON array of arrays."
     )
-    models = _segmentation_models()
+    targets = resolve_background_chat_targets(
+        extraction_provider=settings.agent_extraction_provider,
+        extraction_model=settings.agent_extraction_model,
+        primary_provider=settings.agent_provider,
+        primary_model=settings.agent_model,
+    )
     last_error: Exception | None = None
 
-    for model_index, model in enumerate(models):
+    for target_index, target in enumerate(targets):
         # Segmentation is a small extraction task, so keep it on the faster path.
         client = create_provider_chat_client(
-            provider=settings.agent_provider,
-            model=model,
+            provider=target.provider,
+            model=target.model,
             timeout=timeout,
             max_tokens=max_tokens,
             temperature=0.2,
@@ -161,11 +169,11 @@ async def _call_llm_for_segmentation(
 
                 if not content.strip():
                     last_error = ValueError(
-                        f"Empty response from segmentation model {model}")
+                        f"Empty response from segmentation model {target.model}")
                     logger.warning(
                         "LLM batch segmentation returned empty content (provider=%s, model=%s, attempt=%d/%d)",
-                        settings.agent_provider,
-                        model,
+                        target.provider,
+                        target.model,
                         attempt,
                         _BATCH_SEGMENTATION_EMPTY_RESPONSE_RETRIES + 1,
                     )
@@ -176,34 +184,27 @@ async def _call_llm_for_segmentation(
                 except ValueError as exc:
                     last_error = exc
                     break
+        except Exception as exc:
+            last_error = exc
         finally:
             close = getattr(client, "aclose", None)
             if close is not None:
                 await close()
 
-        if model_index < len(models) - 1:
+        if target_index < len(targets) - 1:
+            fallback = targets[target_index + 1]
             logger.warning(
-                "LLM batch segmentation output unusable with model %s; retrying with fallback model %s",
-                model,
-                models[model_index + 1],
+                "LLM batch segmentation target failed (%s/%s: %s); retrying with %s/%s",
+                target.provider,
+                target.model,
+                type(last_error).__name__,
+                fallback.provider,
+                fallback.model,
             )
 
     if last_error is not None:
         raise last_error
     raise ValueError("Batch segmentation produced no usable output")
-
-
-def _segmentation_models() -> list[str]:
-    models: list[str] = []
-    for candidate in (
-        settings.agent_extraction_model.strip(),
-        settings.agent_model.strip(),
-    ):
-        if candidate and candidate not in models:
-            models.append(candidate)
-    if models:
-        return models
-    return [settings.agent_model]
 
 
 def _parse_json_array(text: str) -> list[list[int]]:
