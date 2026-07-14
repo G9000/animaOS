@@ -342,6 +342,18 @@ mod tests {
     }
 
     #[test]
+    fn read_file_reports_truncation_and_next_offset() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root.clone());
+        std::fs::write(root.join("notes.txt"), "zero\none\ntwo\n").unwrap();
+
+        let result = read_file(&json!({"file_path": "notes.txt", "limit": 1}), &policy);
+
+        assert!(!result.is_error);
+        assert_eq!(result.content, "1: zero\n... truncated; next offset: 1");
+    }
+
+    #[test]
     fn grep_reports_non_text_files_as_explicit_skips() {
         let root = test_workspace();
         let policy = PermissionPolicy::read_only(root.clone());

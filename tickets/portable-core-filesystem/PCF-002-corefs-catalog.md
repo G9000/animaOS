@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 02:16 MYT
+- Updated: 2026-07-15 02:31 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -68,12 +68,13 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 01:36 MYT - Addressed the eighth current-head Codex review pass with instrumented-reader red/green regressions: grep stops scanning after an output cap plus one bounded validation probe, while text reads and grep both stop immediately when a line exceeds its byte ceiling. Preserved bounded late-binary detection and added explicit read-count assertions for large inputs before the full quality gates.
 - 2026-07-15 01:51 MYT - Addressed the ninth current-head Codex review pass with red/green boundary regressions: text reads stop before validating content beyond the requested window while preserving exact-EOF truncation semantics, and patch preflight tracks a deleted symlink entry through regular-file recreation and later same-patch updates. Revalidated 56 shared tests, 125 Animus tests, formatting, clippy, build, and diff checks.
 - 2026-07-15 02:16 MYT - Addressed the tenth current-head Codex review pass: reproduced and fixed HostFS partial patch application by preflighting every ordered write parent against filesystem and virtual mutation state before the first write. Verified the separate dangling-symlink listing comment already follows the requested skip behavior at the permission boundary and added a regression documenting readable-sibling continuity. Revalidated 56 shared tests, 127 Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-15 02:31 MYT - Addressed the eleventh current-head Codex review pass: `read_file` now reports truncation with the exact next offset, and HostFS directory enumeration skips non-UTF-8 Unix entries instead of aborting sibling listing/search. Added a red/green truncation regression plus a Unix-specific filename regression; revalidated 56 shared tests, 128 local Animus tests, formatting, clippy, build, and diff checks before standalone Linux CI.
 
 ## Validation
 
 - Commands:
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
-  - `cargo test --locked -p animus` (127 tests)
+  - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
   - `cargo fmt -p anima-file-tools -p animus -- --check`
   - `cargo clippy --locked -p anima-file-tools --all-targets -- -D warnings`

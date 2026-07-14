@@ -240,10 +240,9 @@ impl HostFsBackend {
             ) {
                 continue;
             }
-            let path = child.to_str().ok_or_else(|| FileToolError::InvalidPath {
-                path: child.to_string_lossy().into_owned(),
-                reason: "host path is not valid Unicode".to_string(),
-            })?;
+            let Some(path) = child.to_str() else {
+                continue;
+            };
             if visible.len() == maximum_entries
                 && visible
                     .last_key_value()
@@ -677,6 +676,29 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.path.as_str().ends_with("dangling.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_listing_skips_non_utf8_entries_without_aborting() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = test_workspace();
+        std::fs::write(root.join("note.txt"), "visible").unwrap();
+        std::fs::write(
+            root.join(OsString::from_vec(b"invalid-\xff.txt".to_vec())),
+            "skip me",
+        )
+        .unwrap();
+        let backend = HostFsBackend::new(PermissionPolicy::read_only(root.clone()));
+
+        let listing = backend
+            .read_directory_page(root.to_str().unwrap(), 100)
+            .unwrap();
+
+        assert_eq!(listing.entries.len(), 1);
+        assert!(listing.entries[0].path.as_str().ends_with("note.txt"));
     }
 
     #[test]

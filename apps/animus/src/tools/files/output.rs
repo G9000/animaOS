@@ -7,11 +7,18 @@ use anima_file_tools::{
 use crate::permissions::PermissionPolicy;
 
 pub(super) fn text(page: TextReadPage) -> String {
-    page.lines
+    let mut lines = page
+        .lines
         .into_iter()
         .map(|line| format!("{}: {}", line.number, line.text))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Vec<_>>();
+    if page.truncated {
+        lines.push(match page.next_line_offset {
+            Some(offset) => format!("... truncated; next offset: {offset}"),
+            None => "... truncated".to_string(),
+        });
+    }
+    lines.join("\n")
 }
 
 pub(super) fn grep(page: GrepPage, policy: &PermissionPolicy, limit: usize) -> String {
