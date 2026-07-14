@@ -423,6 +423,76 @@ async def test_config_update_validates_ollama_completion_targets_once(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_config_update_validates_cleared_ollama_url_against_default(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    calls: list[str] = []
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"capabilities": ["completion"]}
+
+    class _Client:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, json: dict[str, str]) -> _Response:
+            calls.append(url)
+            return _Response()
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_extraction_provider,
+        settings.agent_extraction_model,
+        settings.agent_base_url,
+    )
+    monkeypatch.setattr(config_route.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user", lambda request, user_id: None)
+
+    try:
+        settings.agent_provider = "ollama"
+        settings.agent_base_url = "http://old-ollama.local:11434"
+
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="ollama",
+                model="qwen3:14b",
+                ollamaUrl="",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert calls == ["http://127.0.0.1:11434/api/show"]
+        assert settings.agent_base_url == ""
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_extraction_provider,
+            settings.agent_extraction_model,
+            settings.agent_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_config_update_rejects_embedding_only_ollama_without_mutation(monkeypatch) -> None:
     from anima_server.api.routes import config as config_route
     from fastapi import HTTPException

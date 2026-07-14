@@ -96,9 +96,13 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
 VALID_PROVIDERS = {"scaffold"} | set(SUPPORTED_PROVIDERS)
 
 
-def _normalize_ollama_base_url(base_url: str | None) -> str:
+def _normalize_ollama_base_url(
+    base_url: str | None,
+    *,
+    fallback_to_current: bool = True,
+) -> str:
     configured = (base_url or "").strip()
-    if not configured and settings.agent_provider == "ollama":
+    if not configured and fallback_to_current and settings.agent_provider == "ollama":
         configured = settings.agent_base_url.strip()
     if not configured:
         configured = "http://127.0.0.1:11434"
@@ -220,7 +224,10 @@ async def _validate_prospective_ollama_targets(
         (payload.provider, payload.model.strip()),
         (extraction_provider, (payload.extractionModel or "").strip()),
     )
-    base_url = _normalize_ollama_base_url(payload.ollamaUrl)
+    base_url = _normalize_ollama_base_url(
+        payload.ollamaUrl,
+        fallback_to_current=False,
+    )
     validated: set[str] = set()
     for provider, model in candidates:
         if provider != "ollama" or not model or model in validated:
