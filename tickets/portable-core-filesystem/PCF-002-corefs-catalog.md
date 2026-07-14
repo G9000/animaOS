@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -9,8 +9,8 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-13 20:47 MYT
-- Started:
+- Updated: 2026-07-14 21:12 MYT
+- Started: 2026-07-14 19:45 MYT
 - Completed:
 
 ## Goal
@@ -55,12 +55,38 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-12 17:34 MYT - Added the shared Rust file-tool/CoreFS architecture, customizable folder policy, client grants, trash, Codex provenance, and atomic multi-file patch requirement.
 - 2026-07-12 18:58 MYT - Assigned clean-checkout CI, desktop legal-resource packaging, and distinct Core-session principal authorization to this ticket.
 - 2026-07-13 20:47 MYT - Expanded scope metadata to every owned provenance/release surface and locked the benchmark fixture matrix so tombstones cannot consume the advertised live-entry capacity.
+- 2026-07-14 19:45 MYT - Claimed PCF-002 from merged `main` on `codex/pcf-002-file-tools`. Began the first reviewable slice: shared bounded Rust file-operation contracts and the Animus HostFS adapter; encrypted CoreFS objects/catalogs remain sequenced behind this foundation.
+- 2026-07-14 21:12 MYT - Completed the first PCF-002 implementation slice: added the MSRV-compatible `anima-file-tools` crate, bounded backend-neutral read/walk/glob/grep/text/patch engines, migrated Animus HostFS tools onto the shared contracts, added explicit HostFS best-effort patch atomicity, and established pinned Codex attribution plus standalone release-notice CI. PCF-002 remains `in_progress` for encrypted CoreFS objects/catalogs and later slices.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `cargo +1.75.0 test --locked -p anima-file-tools` (40 tests)
+  - `cargo test --locked -p animus` (117 tests)
+  - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
+  - `cargo fmt -p anima-file-tools -p animus -- --check`
+  - `cargo clippy --locked -p anima-file-tools --all-targets -- -D warnings`
+  - `cargo clippy --locked -p animus --bin animus -- -D warnings`
+  - `bun run build`
+  - `uv run ruff check scripts/check_codex_attribution.py scripts/check_corefs_release_notices.py`
+  - `uv run python scripts/check_codex_attribution.py`
+  - `bun run scripts/prepare-desktop-release.ts --legal-only`
+  - `uv run python scripts/check_corefs_release_notices.py`
+  - `cargo metadata --locked --no-deps --format-version 1`
+  - workflow YAML parse and `git diff --check`
 - Changed paths:
-  - none
+  - `packages/anima-file-tools/`
+  - `apps/animus/src/tools/files.rs`
+  - `apps/animus/src/tools/files/`
+  - `apps/animus/src/tools/{mod.rs,process.rs,secrets.rs,shell.rs}`
+  - `apps/animus/src/approvals.rs`
+  - `Cargo.toml`, `Cargo.lock`, and `apps/animus/Cargo.toml`
+  - `THIRD_PARTY_NOTICES.md` and `third_party/`
+  - `scripts/check_codex_attribution.py`, `scripts/check_corefs_release_notices.py`, and `scripts/prepare-desktop-release.ts`
+  - `.github/workflows/corefs-provenance.yml`
+  - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
+  - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-002-corefs-catalog.md}`
 - Notes:
-  - Claim after PCF-001 is done.
+  - PCF-001 is complete. PCF-002 is being delivered through reviewable PR slices while retaining this ticket as the milestone tracker.
+  - The normal parallel Animus run initially exposed a pre-existing shared secrets-fixture race. A red/green test-only fixture consolidation removed the race; the unchanged single-thread suite had already passed all 116 tests.
+  - Tauri already maps `resources/.anima/` into the bundle, so staging `.anima/legal` required no `tauri.conf.json` change.

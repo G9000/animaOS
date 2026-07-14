@@ -21,6 +21,7 @@ pub const ACTION_TOOL_NAMES: &[&str] = &[
     "glob",
     "list_dir",
     "multi_edit",
+    "apply_patch",
     "todo_write",
     "todo_read",
     "bg_start",
@@ -118,7 +119,8 @@ fn tool_parameters(name: &str) -> Value {
         "grep" => json!({
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Literal text pattern to search for."},
+                "pattern": {"type": "string", "description": "Text or Rust regex pattern to search for."},
+                "mode": {"type": "string", "enum": ["literal", "regex"], "default": "literal"},
                 "path": {"type": "string", "description": "Workspace-relative directory or file to search."},
                 "limit": {"type": "integer", "minimum": 1}
             },
@@ -128,7 +130,7 @@ fn tool_parameters(name: &str) -> Value {
         "glob" => json!({
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Simple glob pattern such as *.rs or src/*.ts."},
+                "pattern": {"type": "string", "description": "Glob pattern such as *.rs, src/*.ts, or **/*.md."},
                 "path": {"type": "string", "description": "Workspace-relative directory to search."},
                 "limit": {"type": "integer", "minimum": 1}
             },
@@ -138,7 +140,8 @@ fn tool_parameters(name: &str) -> Value {
         "list_dir" => json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Workspace-relative or absolute directory path."}
+                "path": {"type": "string", "description": "Workspace-relative or absolute directory path."},
+                "limit": {"type": "integer", "minimum": 1}
             },
             "required": ["path"],
             "additionalProperties": false
@@ -162,6 +165,17 @@ fn tool_parameters(name: &str) -> Value {
                 }
             },
             "required": ["file_path", "edits"],
+            "additionalProperties": false
+        }),
+        "apply_patch" => json!({
+            "type": "object",
+            "properties": {
+                "patch": {
+                    "type": "string",
+                    "description": "Typed multi-file patch bounded by *** Begin Patch and *** End Patch."
+                }
+            },
+            "required": ["patch"],
             "additionalProperties": false
         }),
         "ask_user" => json!({
@@ -226,9 +240,10 @@ fn tool_description(name: &str) -> &'static str {
         "write_file" => "Write content to a file inside the workspace.",
         "edit_file" => "Replace an exact string in a workspace file.",
         "grep" => "Search file contents under a workspace path.",
-        "glob" => "Find files matching a simple glob under a workspace path.",
+        "glob" => "Find files matching a glob under a workspace path.",
         "list_dir" => "List directory contents.",
         "multi_edit" => "Apply multiple exact string replacements atomically.",
+        "apply_patch" => "Preflight and apply a typed multi-file workspace patch.",
         "ask_user" => "Ask the user a question.",
         "todo_write" => "Replace the current local todo snapshot.",
         "todo_read" => "Read the current local todo snapshot.",
@@ -308,6 +323,7 @@ impl ToolExecutor {
             "glob" => files::glob(args, &self.policy),
             "list_dir" => files::list_dir(args, &self.policy),
             "multi_edit" => files::multi_edit(args, &self.policy),
+            "apply_patch" => files::apply_patch(args, &self.policy),
             "ask_user" => ToolOutput::error("ask_user requires interactive UI support"),
             "todo_write" => {
                 self.todos = args.get("todos").cloned().unwrap_or_else(|| json!([]));
@@ -349,6 +365,7 @@ mod tests {
                 "glob",
                 "list_dir",
                 "multi_edit",
+                "apply_patch",
                 "todo_write",
                 "todo_read",
                 "bg_start",
@@ -381,6 +398,14 @@ mod tests {
         assert_eq!(
             schema("multi_edit").parameters["properties"]["edits"]["items"]["required"],
             json!(["old_string", "new_string"])
+        );
+        assert_eq!(
+            schema("apply_patch").parameters["required"],
+            json!(["patch"])
+        );
+        assert_eq!(
+            schema("grep").parameters["properties"]["mode"]["enum"],
+            json!(["literal", "regex"])
         );
         assert_eq!(
             schema("bg_start").parameters["required"],

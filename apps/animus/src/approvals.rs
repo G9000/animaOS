@@ -151,14 +151,20 @@ fn classify_approval(tool_name: &str, args: &Value) -> ApprovalKind {
                 .to_string(),
         };
     }
-    if matches!(tool_name, "write_file" | "edit_file" | "multi_edit") {
+    if matches!(
+        tool_name,
+        "write_file" | "edit_file" | "multi_edit" | "apply_patch"
+    ) {
         return ApprovalKind::FileChange {
-            path: args
-                .get("file_path")
-                .or_else(|| args.get("path"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
+            path: if tool_name == "apply_patch" {
+                "multiple workspace files".to_string()
+            } else {
+                args.get("file_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            },
         };
     }
     ApprovalKind::Generic
@@ -206,6 +212,18 @@ mod tests {
             .kind,
             ApprovalKind::FileChange {
                 path: "src/main.rs".to_string()
+            }
+        );
+        assert_eq!(
+            PendingApproval::new(
+                1,
+                "call-patch".to_string(),
+                "apply_patch".to_string(),
+                json!({"patch":"*** Begin Patch\n*** End Patch"}),
+            )
+            .kind,
+            ApprovalKind::FileChange {
+                path: "multiple workspace files".to_string()
             }
         );
         assert!(matches!(

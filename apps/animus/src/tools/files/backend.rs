@@ -1,0 +1,451 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use anima_file_tools::{
+    BackendCapabilities, BackendKind, BackendPath, DirectoryEntry, DirectoryListing, EntryKind,
+    EntryMetadata, FileBackend, FileToolError, MutationAtomicity, PatchError, PatchPlan,
+    PatchSnapshot, PathSemantics, PlannedMutation, ReadBackend, ReadSeek, WalkBackend,
+    MAX_RESPONSE_BYTES, MAX_WALK_ENTRIES,
+};
+
+use crate::permissions::{PermissionDecision, PermissionPolicy};
+
+#[derive(Clone)]
+pub(super) struct HostFsBackend {
+    policy: PermissionPolicy,
+}
+
+impl HostFsBackend {
+    pub(super) const fn new(policy: PermissionPolicy) -> Self {
+        Self { policy }
+    }
+
+    pub(super) fn resolve_read(&self, path: &str) -> Result<PathBuf, FileToolError> {
+        reject_cross_backend_path(path)?;
+        match self.policy.check_file_read(PathBuf::from(path)) {
+            PermissionDecision::Allow => {
+                self.policy
+                    .normalize_workspace_path(path)
+                    .map_err(|reason| FileToolError::InvalidPath {
+                        path: path.to_string(),
+                        reason,
+                    })
+            }
+            PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
+                Err(FileToolError::InvalidPath {
+                    path: path.to_string(),
+                    reason,
+                })
+            }
+        }
+    }
+
+    pub(super) fn resolve_write(&self, path: &str) -> Result<PathBuf, FileToolError> {
+        reject_cross_backend_path(path)?;
+        match self.policy.check_file_write(PathBuf::from(path)) {
+            PermissionDecision::Allow => {
+                self.policy
+                    .normalize_workspace_path(path)
+                    .map_err(|reason| FileToolError::InvalidPath {
+                        path: path.to_string(),
+                        reason,
+                    })
+            }
+            PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
+                Err(FileToolError::InvalidPath {
+                    path: path.to_string(),
+                    reason,
+                })
+            }
+        }
+    }
+
+    pub(super) fn write_text(&self, path: &str, content: &str) -> Result<PathBuf, FileToolError> {
+        validate_write_size(content)?;
+        let resolved = self.resolve_write(path)?;
+        if let Some(parent) = resolved.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| backend_error("create_directory", parent, error))?;
+        }
+        fs::write(&resolved, content)
+            .map_err(|error| backend_error("write_text", &resolved, error))?;
+        Ok(resolved)
+    }
+
+    pub(super) fn apply_plan(&self, plan: &PatchPlan) -> Result<(), FileToolError> {
+        let resolved = plan
+            .mutations
+            .iter()
+            .map(|mutation| self.resolve_mutation(mutation))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for mutation in resolved {
+            match mutation {
+                ResolvedMutation::Write {
+                    path,
+                    content,
+                    remove_source,
+                } => {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|error| backend_error("create_directory", parent, error))?;
+                    }
+                    fs::write(&path, content)
+                        .map_err(|error| backend_error("patch_write", &path, error))?;
+                    if let Some(source) = remove_source {
+                        fs::remove_file(&source)
+                            .map_err(|error| backend_error("patch_move_remove", &source, error))?;
+                    }
+                }
+                ResolvedMutation::Delete { path } => {
+                    fs::remove_file(&path)
+                        .map_err(|error| backend_error("patch_delete", &path, error))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_directory_page(
+        &self,
+        path: &str,
+        maximum_entries: usize,
+    ) -> Result<DirectoryListing, FileToolError> {
+        if maximum_entries == 0 || maximum_entries > MAX_WALK_ENTRIES {
+            return Err(FileToolError::InvalidPattern {
+                mode: "directory_limit",
+                message: format!("limit must be between 1 and {MAX_WALK_ENTRIES}"),
+            });
+        }
+        let resolved = self.resolve_read(path)?;
+        let entries = fs::read_dir(&resolved)
+            .map_err(|error| backend_error("read_directory", &resolved, error))?;
+        let mut visible: BTreeMap<String, DirectoryEntry> = BTreeMap::new();
+        let mut truncated = false;
+        for entry in entries {
+            let entry = entry.map_err(|error| backend_error("read_directory", &resolved, error))?;
+            let child = entry.path();
+            if !matches!(
+                self.policy.check_file_read(&child),
+                PermissionDecision::Allow
+            ) {
+                continue;
+            }
+            let path = child.to_str().ok_or_else(|| FileToolError::InvalidPath {
+                path: child.to_string_lossy().into_owned(),
+                reason: "host path is not valid Unicode".to_string(),
+            })?;
+            if visible.len() == maximum_entries
+                && visible
+                    .last_key_value()
+                    .is_some_and(|(last, _)| path >= last.as_str())
+            {
+                truncated = true;
+                continue;
+            }
+            visible.insert(
+                path.to_string(),
+                DirectoryEntry::new(
+                    BackendPath::new(BackendKind::HostFs, path)?,
+                    metadata_for_path(&child)?,
+                ),
+            );
+            if visible.len() > maximum_entries {
+                visible.pop_last();
+                truncated = true;
+            }
+        }
+        Ok(DirectoryListing {
+            entries: visible.into_values().collect(),
+            truncated,
+        })
+    }
+
+    fn resolve_mutation(
+        &self,
+        mutation: &PlannedMutation,
+    ) -> Result<ResolvedMutation, FileToolError> {
+        match mutation {
+            PlannedMutation::Write {
+                path,
+                content,
+                remove_source,
+            } => {
+                validate_write_size(content)?;
+                Ok(ResolvedMutation::Write {
+                    path: self.resolve_write(path.as_str())?,
+                    content: content.clone(),
+                    remove_source: remove_source
+                        .as_ref()
+                        .map(|source| self.resolve_write(source.as_str()))
+                        .transpose()?,
+                })
+            }
+            PlannedMutation::Delete { path } => Ok(ResolvedMutation::Delete {
+                path: self.resolve_write(path.as_str())?,
+            }),
+        }
+    }
+}
+
+fn validate_write_size(content: &str) -> Result<(), FileToolError> {
+    if content.len() > MAX_RESPONSE_BYTES {
+        return Err(FileToolError::ResponseLimitExceeded {
+            requested: content.len(),
+            maximum: MAX_RESPONSE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+enum ResolvedMutation {
+    Write {
+        path: PathBuf,
+        content: String,
+        remove_source: Option<PathBuf>,
+    },
+    Delete {
+        path: PathBuf,
+    },
+}
+
+impl FileBackend for HostFsBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(
+            BackendKind::HostFs,
+            PathSemantics::HostNative,
+            MutationAtomicity::BestEffort,
+        )
+    }
+}
+
+impl ReadBackend for HostFsBackend {
+    fn open_read(&self, path: &str) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        let resolved = self.resolve_read(path)?;
+        fs::File::open(&resolved)
+            .map(|file| Box::new(file) as Box<dyn ReadSeek + Send>)
+            .map_err(|error| backend_error("open_read", &resolved, error))
+    }
+}
+
+impl WalkBackend for HostFsBackend {
+    fn metadata(&self, path: &str) -> Result<EntryMetadata, FileToolError> {
+        let resolved = self.resolve_read(path)?;
+        metadata_for_path(&resolved)
+    }
+
+    fn read_directory(&self, path: &str) -> Result<DirectoryListing, FileToolError> {
+        self.read_directory_page(path, MAX_WALK_ENTRIES)
+    }
+}
+
+impl PatchSnapshot for HostFsBackend {
+    fn canonical_key(&self, path: &str) -> Result<String, PatchError> {
+        let resolved = self
+            .resolve_read(path)
+            .map_err(|error| PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            })?;
+        let key = resolved.to_string_lossy().into_owned();
+        #[cfg(windows)]
+        return Ok(key.to_lowercase());
+        #[cfg(not(windows))]
+        Ok(key)
+    }
+
+    fn read_text(&self, path: &str) -> Result<Option<String>, PatchError> {
+        const MAX_PATCH_FILE_BYTES: u64 = MAX_RESPONSE_BYTES as u64;
+
+        let resolved = self
+            .resolve_read(path)
+            .map_err(|error| PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            })?;
+        let file = match fs::File::open(&resolved) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(PatchError::Snapshot {
+                    path: path.to_string(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_PATCH_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            })?;
+        if bytes.len() as u64 > MAX_PATCH_FILE_BYTES {
+            return Err(PatchError::Snapshot {
+                path: path.to_string(),
+                message: format!("file exceeds the {MAX_PATCH_FILE_BYTES}-byte patch limit"),
+            });
+        }
+        if bytes.contains(&0) {
+            return Err(PatchError::Snapshot {
+                path: path.to_string(),
+                message: "binary content cannot be patched".to_string(),
+            });
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|error| PatchError::Snapshot {
+                path: path.to_string(),
+                message: error.to_string(),
+            })
+    }
+}
+
+fn reject_cross_backend_path(path: &str) -> Result<(), FileToolError> {
+    if path
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("corefs:"))
+    {
+        return Err(FileToolError::InvalidPath {
+            path: path.to_string(),
+            reason: "CoreFS paths are not accepted by HostFS tools".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn metadata_for_path(path: &Path) -> Result<EntryMetadata, FileToolError> {
+    let link_metadata =
+        fs::symlink_metadata(path).map_err(|error| backend_error("metadata", path, error))?;
+    let is_symlink = link_metadata.file_type().is_symlink();
+    let metadata = if is_symlink {
+        fs::metadata(path).map_err(|error| backend_error("metadata", path, error))?
+    } else {
+        link_metadata
+    };
+    let kind = if metadata.is_dir() {
+        EntryKind::Directory
+    } else if metadata.is_file() {
+        EntryKind::File
+    } else {
+        EntryKind::Other
+    };
+    Ok(EntryMetadata {
+        kind,
+        is_symlink,
+        size: metadata.len(),
+    })
+}
+
+fn backend_error(operation: &'static str, path: &Path, error: std::io::Error) -> FileToolError {
+    FileToolError::Backend {
+        operation,
+        path: path.to_string_lossy().into_owned(),
+        message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anima_file_tools::{
+        walk_page, BackendKind, BackendPath, FileBackend, FileToolError, OperationControl,
+        OperationLimits, ReadBackend, WalkOptions,
+    };
+
+    use super::HostFsBackend;
+    use crate::permissions::PermissionPolicy;
+
+    #[test]
+    fn host_backend_reads_authorized_workspace_files() {
+        let root = test_workspace();
+        std::fs::write(root.join("note.txt"), "hello").unwrap();
+        let backend = HostFsBackend::new(PermissionPolicy::read_only(root.clone()));
+
+        let mut reader = backend
+            .open_read(root.join("note.txt").to_str().unwrap())
+            .unwrap();
+        let mut contents = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut contents).unwrap();
+
+        assert_eq!(contents, "hello");
+        assert_eq!(backend.capabilities().backend(), BackendKind::HostFs);
+    }
+
+    #[test]
+    fn host_backend_rejects_corefs_uris_without_path_inference() {
+        let root = test_workspace();
+        let backend = HostFsBackend::new(PermissionPolicy::read_only(root));
+
+        for path in [
+            "corefs://object/123",
+            "corefs:/notes/today.md",
+            "corefs:notes",
+        ] {
+            let Err(error) = backend.open_read(path) else {
+                panic!("HostFS must reject CoreFS path form: {path}");
+            };
+            assert!(matches!(error, FileToolError::InvalidPath { .. }));
+        }
+    }
+
+    #[test]
+    fn shared_walk_over_host_backend_never_traverses_directory_symlinks() {
+        let root = test_workspace();
+        let target = root.join("target");
+        let link = root.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("secret.txt"), "hidden through link").unwrap();
+        if create_directory_symlink(&target, &link).is_err() {
+            return;
+        }
+        let backend = HostFsBackend::new(PermissionPolicy::read_only(root.clone()));
+
+        let page = walk_page(
+            &backend,
+            BackendPath::new(BackendKind::HostFs, root.to_string_lossy()).unwrap(),
+            WalkOptions {
+                page_size: 100,
+                cursor: None,
+                include_directories: true,
+            },
+            OperationLimits::default().validate().unwrap(),
+            OperationControl::default(),
+        )
+        .unwrap();
+
+        let link_entry = page
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str().ends_with("link"))
+            .unwrap();
+        assert!(link_entry.is_symlink);
+        assert!(!page
+            .entries
+            .iter()
+            .any(|entry| entry.path.as_str().contains("link\\secret.txt")));
+    }
+
+    fn test_workspace() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("animus-hostfs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(unix)]
+    fn create_directory_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+}

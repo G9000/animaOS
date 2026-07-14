@@ -291,7 +291,7 @@ Cover raw-byte privacy, tamper/wrong-AAD rejection, immutable revisions, catalog
 
 Cover absolute paths, `..`, NUL, Unicode normalization collisions, reserved names, symlink/junction escape, output limits, optimistic revisions, explicit full `write(...)`, HTML sanitization boundaries, the per-principal operation matrix, owner/access inheritance, explicit-deny precedence, user-owned non-escalation, client-descendant policy inheritance, client-ID spoofing, manifest/payload substitution, unsigned digest mismatch, signature/publisher mismatch, package-ID collision, stale capability replay, update without reapproval, destination-machine reapproval, reserved-role collisions, lock-time handle revocation, and a real OS-backed interprocess Core/catalog lock. Spawn competing processes to prove simultaneous open/commit exclusion, safe crash recovery, and PID-reuse resistance using process-start identity rather than PID alone.
 
-- [ ] **Step 3: Extract the shared production file-tool library**
+- [x] **Step 3: Extract the shared production file-tool library**
 
 Create `anima-file-tools` with an explicit backend/capability trait, typed errors, stable pagination, cancellation/deadlines, bounded stream reads, lazy directory walking, glob/grep result shaping, and a typed apply-patch parser/planner. Set V1 defaults to 1-MiB read chunks, depth 64, 10,000 visited directories, 50,000 entries, and 4 MiB per model-visible response. Grep streams declared text, supports literal plus Rust linear-time regex modes, reports stable line/byte offsets, and bounds files/matches/line bytes before accumulation; binary/invalid-text behavior is explicit. Backend capabilities declare path/case semantics and mutation atomicity. Keep tool spec, handler, backend/runtime, and result shaping separate.
 
@@ -301,7 +301,7 @@ Add `scripts/check_codex_attribution.py` to fail if an Apache-marked adapted fil
 
 Create `.github/workflows/corefs-provenance.yml` for pull requests touching the shared file/CoreFS crates or provenance files. Its checkout must contain only the animaOS repository, explicitly assert that no sibling Codex directory is present, and run the attribution checker, release-notice staging/checker, `cargo metadata --locked`, and the relevant build/tests. This workflow is the executable clean-standalone-checkout gate; a successful developer checkout with a sibling Codex directory is not release evidence.
 
-- [ ] **Step 4: Move Animus host-file mechanics onto the shared contracts**
+- [x] **Step 4: Move Animus host-file mechanics onto the shared contracts**
 
 Implement an explicit HostFS backend around Animus's existing workspace containment and Allow/Ask/Deny policy. Preserve host-facing tool names and behavior compatibility while replacing full-file `read_to_string`, eager recursive `Vec` accumulation, literal-only search internals, and ad hoc patching with bounded shared machinery. Host multi-file mutation reports its actual atomicity/capabilities; it must not claim CoreFS transaction semantics.
 

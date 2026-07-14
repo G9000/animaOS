@@ -227,12 +227,6 @@ mod tests {
     use super::*;
     use crate::permissions::{PermissionPolicy, ShellPermissionMode};
 
-    fn install_saved_secret_placeholders() {
-        let path = std::env::temp_dir().join("animus-saved-secret-substitution.json");
-        std::fs::write(&path, r#"{"ANIMUS_TEST_TOKEN":"saved-secret-value"}"#).unwrap();
-        std::env::set_var("ANIMUS_SECRETS_PATH", path);
-    }
-
     #[tokio::test]
     async fn background_process_registry_starts_lists_outputs_and_stops() {
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
@@ -266,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn background_process_substitutes_saved_secrets_before_spawning() {
-        install_saved_secret_placeholders();
+        crate::tools::secrets::install_test_saved_secrets();
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
             .with_shell_mode(ShellPermissionMode::Allow);
         let mut registry = ProcessRegistry::default();
@@ -299,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn background_process_redacts_saved_secrets_from_permission_denials() {
-        install_saved_secret_placeholders();
+        crate::tools::secrets::install_test_saved_secrets();
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir());
         let mut registry = ProcessRegistry::default();
 
@@ -319,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn background_process_list_redacts_substituted_command() {
-        install_saved_secret_placeholders();
+        crate::tools::secrets::install_test_saved_secrets();
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
             .with_shell_mode(ShellPermissionMode::Allow);
         let mut registry = ProcessRegistry::default();

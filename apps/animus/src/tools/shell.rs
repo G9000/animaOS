@@ -101,16 +101,6 @@ mod tests {
     use super::*;
     use crate::permissions::{PermissionPolicy, ShellPermissionMode};
 
-    fn install_saved_secret_placeholders() {
-        let path = std::env::temp_dir().join("animus-saved-secret-substitution.json");
-        std::fs::write(
-            &path,
-            r#"{"ANIMUS_TEST_TOKEN":"saved-secret-value","ANIMUS_DANGEROUS":"git push origin main"}"#,
-        )
-        .unwrap();
-        std::env::set_var("ANIMUS_SECRETS_PATH", path);
-    }
-
     #[tokio::test]
     async fn shell_exec_captures_stdout_and_stderr() {
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
@@ -125,7 +115,7 @@ mod tests {
 
     #[tokio::test]
     async fn shell_exec_substitutes_saved_secrets_before_spawning() {
-        install_saved_secret_placeholders();
+        crate::tools::secrets::install_test_saved_secrets();
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
             .with_shell_mode(ShellPermissionMode::Allow);
         let command = if cfg!(windows) {
@@ -145,7 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn shell_exec_checks_permissions_after_saved_secret_substitution() {
-        install_saved_secret_placeholders();
+        crate::tools::secrets::install_test_saved_secrets();
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir())
             .with_shell_mode(ShellPermissionMode::Allow);
 
@@ -159,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn shell_exec_redacts_saved_secrets_from_permission_denials() {
-        install_saved_secret_placeholders();
+        crate::tools::secrets::install_test_saved_secrets();
         let policy = PermissionPolicy::workspace_write(std::env::temp_dir());
 
         let result = run_shell(

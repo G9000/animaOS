@@ -54,6 +54,24 @@ const bundledWorkspaceCargoManifestPath = join(bundledResourcesDir, "Cargo.toml"
 const bundledWorkspaceCargoLockPath = join(bundledResourcesDir, "Cargo.lock");
 const bundledAnimaCoreDir = join(bundledResourcesDir, "packages", "anima-core");
 const bundledRuntimeArtifactDir = join(bundledResourcesDir, "runtime-artifacts");
+const bundledLegalDir = join(bundledResourcesDir, "legal");
+const legalResources = [
+  {
+    source: join(projectRoot, "THIRD_PARTY_NOTICES.md"),
+    destination: join(bundledLegalDir, "THIRD_PARTY_NOTICES.md"),
+    label: "third-party notices",
+  },
+  {
+    source: join(projectRoot, "third_party", "licenses", "Apache-2.0.txt"),
+    destination: join(bundledLegalDir, "licenses", "Apache-2.0.txt"),
+    label: "Apache-2.0 license",
+  },
+  {
+    source: join(projectRoot, "third_party", "notices", "openai-codex-NOTICE.txt"),
+    destination: join(bundledLegalDir, "notices", "openai-codex-NOTICE.txt"),
+    label: "OpenAI Codex NOTICE",
+  },
+];
 
 const localArtifacts = [
   join(projectRoot, "target", "release", "anima-local-runtime-daemon"),
@@ -239,6 +257,15 @@ function stageDaemonArtifacts(artifactCandidates: string[], destinationRoot: str
     copyFileSync(artifactPath, destinationPath);
     return relativePath.replace(/\\/g, "/");
   });
+}
+
+function stageLegalResources(): void {
+  rmSync(bundledLegalDir, { recursive: true, force: true });
+  for (const resource of legalResources) {
+    requireFile(resource.source, resource.label);
+    mkdirSync(dirname(resource.destination), { recursive: true });
+    copyFileSync(resource.source, resource.destination);
+  }
 }
 
 function shouldStageRuntimePath(sourcePath: string): boolean {
@@ -456,6 +483,7 @@ function main(): void {
     ? buildAnimaCoreWheel(bundledResourcesDir, uvLauncherSource)
     : null;
   stageRuntimeProject(bundledResourcesDir, { animaCoreWheel: bundledAnimaCoreWheel });
+  stageLegalResources();
   if (uvLauncherSource) {
     lockBundledRuntimeProject(uvLauncherSource);
   }
@@ -504,4 +532,9 @@ function main(): void {
   console.log(`[prepare-desktop-release] Runtime launch mode: ${bundledManifest.daemon.configDefault.runtimeLaunchMode}`);
 }
 
-main();
+if (process.argv.includes("--legal-only")) {
+  stageLegalResources();
+  console.log(`[prepare-desktop-release] Legal resources staged under ${bundledLegalDir}`);
+} else {
+  main();
+}

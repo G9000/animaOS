@@ -1,333 +1,44 @@
 #![allow(dead_code)]
 
-use std::fs;
-use std::path::{Path, PathBuf};
+mod backend;
+mod handlers;
+mod output;
 
 use serde_json::Value;
 
-use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::permissions::PermissionPolicy;
 use crate::tools::ToolOutput;
 
 pub fn read_file(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let path = match resolve_path(args, policy, &["file_path", "path"], false) {
-        Ok(path) => path,
-        Err(output) => return output,
-    };
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) => return ToolOutput::error(format!("failed to read {}: {err}", path.display())),
-    };
-    let offset = number_arg(args, "offset").unwrap_or(0);
-    let limit = number_arg(args, "limit").unwrap_or(2_000);
-    let lines = raw
-        .lines()
-        .enumerate()
-        .skip(offset)
-        .take(limit)
-        .map(|(index, line)| format!("{}: {line}", index + 1))
-        .collect::<Vec<_>>();
-    ToolOutput::success(lines.join("\n"))
+    handlers::read_file(args, policy)
 }
 
 pub fn write_file(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let path = match resolve_path(args, policy, &["file_path", "path"], true) {
-        Ok(path) => path,
-        Err(output) => return output,
-    };
-    let Some(content) = string_arg(args, "content") else {
-        return ToolOutput::error("write_file requires content");
-    };
-    if let Some(parent) = path.parent() {
-        if let Err(err) = fs::create_dir_all(parent) {
-            return ToolOutput::error(format!("failed to create {}: {err}", parent.display()));
-        }
-    }
-    match fs::write(&path, content) {
-        Ok(()) => ToolOutput::success(format!("wrote {}", display_workspace_path(policy, &path))),
-        Err(err) => ToolOutput::error(format!("failed to write {}: {err}", path.display())),
-    }
+    handlers::write_file(args, policy)
 }
 
 pub fn edit_file(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let path = match resolve_path(args, policy, &["file_path", "path"], true) {
-        Ok(path) => path,
-        Err(output) => return output,
-    };
-    let Some(old_string) = string_arg(args, "old_string") else {
-        return ToolOutput::error("edit_file requires old_string");
-    };
-    let Some(new_string) = string_arg(args, "new_string") else {
-        return ToolOutput::error("edit_file requires new_string");
-    };
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) => return ToolOutput::error(format!("failed to read {}: {err}", path.display())),
-    };
-    let old_string = normalize_edit_string_for_file(old_string, &raw);
-    let new_string = normalize_edit_string_for_file(new_string, &raw);
-    if let Err(output) = require_unique_match(&raw, &old_string) {
-        return output;
-    }
-    let edited = raw.replacen(&old_string, &new_string, 1);
-    match fs::write(&path, edited) {
-        Ok(()) => ToolOutput::success(format!("edited {}", display_workspace_path(policy, &path))),
-        Err(err) => ToolOutput::error(format!("failed to write {}: {err}", path.display())),
-    }
+    handlers::edit_file(args, policy)
 }
 
 pub fn multi_edit(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let path = match resolve_path(args, policy, &["file_path", "path"], true) {
-        Ok(path) => path,
-        Err(output) => return output,
-    };
-    let Some(edits) = args.get("edits").and_then(Value::as_array) else {
-        return ToolOutput::error("multi_edit requires edits");
-    };
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) => return ToolOutput::error(format!("failed to read {}: {err}", path.display())),
-    };
-    let mut edited = raw;
-    for edit in edits {
-        let Some(old_string) = string_arg(edit, "old_string") else {
-            return ToolOutput::error("each edit requires old_string");
-        };
-        let Some(new_string) = string_arg(edit, "new_string") else {
-            return ToolOutput::error("each edit requires new_string");
-        };
-        let old_string = normalize_edit_string_for_file(old_string, &edited);
-        let new_string = normalize_edit_string_for_file(new_string, &edited);
-        if let Err(output) = require_unique_match(&edited, &old_string) {
-            return output;
-        }
-        edited = edited.replacen(&old_string, &new_string, 1);
-    }
-    match fs::write(&path, edited) {
-        Ok(()) => ToolOutput::success(format!("edited {}", display_workspace_path(policy, &path))),
-        Err(err) => ToolOutput::error(format!("failed to write {}: {err}", path.display())),
-    }
+    handlers::multi_edit(args, policy)
 }
 
 pub fn list_dir(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let path = match resolve_path(args, policy, &["path", "file_path"], false) {
-        Ok(path) => path,
-        Err(output) => return output,
-    };
-    let entries = match fs::read_dir(&path) {
-        Ok(entries) => entries,
-        Err(err) => return ToolOutput::error(format!("failed to list {}: {err}", path.display())),
-    };
-    let mut lines = Vec::new();
-    for entry in entries.flatten() {
-        let marker = if entry.path().is_dir() { "/" } else { "" };
-        lines.push(format!("{}{}", entry.file_name().to_string_lossy(), marker));
-    }
-    lines.sort();
-    ToolOutput::success(lines.join("\n"))
+    handlers::list_dir(args, policy)
 }
 
 pub fn grep(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let Some(pattern) = string_arg(args, "pattern") else {
-        return ToolOutput::error("grep requires pattern");
-    };
-    let limit = number_arg(args, "limit").unwrap_or(200).max(1);
-    let path = match resolve_path(args, policy, &["path"], false) {
-        Ok(path) => path,
-        Err(output) if string_arg(args, "path").is_some() => return output,
-        Err(_) => policy.workspace().to_path_buf(),
-    };
-    let mut matches = Vec::new();
-    let mut truncated = false;
-    'files: for file in walk_files(&path) {
-        if !matches!(policy.check_file_read(&file), PermissionDecision::Allow) {
-            continue;
-        }
-        let Ok(raw) = fs::read_to_string(&file) else {
-            continue;
-        };
-        for (index, line) in raw.lines().enumerate() {
-            if line.contains(pattern) {
-                if matches.len() >= limit {
-                    truncated = true;
-                    break 'files;
-                }
-                matches.push(format!(
-                    "{}:{}:{}",
-                    display_workspace_path(policy, &file),
-                    index + 1,
-                    line
-                ));
-            }
-        }
-    }
-    if truncated {
-        matches.push(format!("... truncated after {limit} matches"));
-    }
-    ToolOutput::success(matches.join("\n"))
+    handlers::grep(args, policy)
 }
 
 pub fn glob(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
-    let Some(pattern) = string_arg(args, "pattern") else {
-        return ToolOutput::error("glob requires pattern");
-    };
-    let limit = number_arg(args, "limit").unwrap_or(200).max(1);
-    let path = match resolve_path(args, policy, &["path"], false) {
-        Ok(path) => path,
-        Err(output) if string_arg(args, "path").is_some() => return output,
-        Err(_) => policy.workspace().to_path_buf(),
-    };
-    let mut matches = walk_files(&path)
-        .into_iter()
-        .filter(|file| matches!(policy.check_file_read(file), PermissionDecision::Allow))
-        .filter_map(|file| {
-            let display_path = display_workspace_path(policy, &file);
-            matches_simple_glob(&display_path, pattern).then_some(display_path)
-        })
-        .collect::<Vec<_>>();
-    matches.sort();
-    let truncated = matches.len() > limit;
-    matches.truncate(limit);
-    if truncated {
-        matches.push(format!("... truncated after {limit} matches"));
-    }
-    ToolOutput::success(matches.join("\n"))
+    handlers::glob(args, policy)
 }
 
-fn resolve_path(
-    args: &Value,
-    policy: &PermissionPolicy,
-    keys: &[&str],
-    write: bool,
-) -> Result<PathBuf, ToolOutput> {
-    let raw = keys
-        .iter()
-        .find_map(|key| string_arg(args, key))
-        .ok_or_else(|| {
-            ToolOutput::error(format!("missing path argument: {}", keys.join(" or ")))
-        })?;
-    let decision = if write {
-        policy.check_file_write(PathBuf::from(raw))
-    } else {
-        policy.check_file_read(PathBuf::from(raw))
-    };
-    match decision {
-        PermissionDecision::Allow => policy
-            .normalize_workspace_path(raw)
-            .map_err(ToolOutput::error),
-        PermissionDecision::Ask { reason } | PermissionDecision::Deny { reason } => {
-            Err(ToolOutput::error(reason))
-        }
-    }
-}
-
-fn string_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(Value::as_str)
-}
-
-fn number_arg(args: &Value, key: &str) -> Option<usize> {
-    args.get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-}
-
-fn walk_files(path: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return files;
-    }
-    if path.is_file() {
-        files.push(path.to_path_buf());
-        return files;
-    }
-    let Ok(entries) = fs::read_dir(path) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            files.extend(walk_files(&path));
-        } else {
-            files.push(path);
-        }
-    }
-    files
-}
-
-fn require_unique_match(raw: &str, old_string: &str) -> Result<(), ToolOutput> {
-    if old_string.is_empty() {
-        return Err(ToolOutput::error("old_string must not be empty"));
-    }
-    let count = raw.matches(old_string).count();
-    match count {
-        0 => Err(ToolOutput::error(format!(
-            "old_string was not found: {old_string}"
-        ))),
-        1 => Ok(()),
-        _ => Err(ToolOutput::error(format!(
-            "old_string is not unique: {old_string}"
-        ))),
-    }
-}
-
-fn normalize_edit_string_for_file(value: &str, file_contents: &str) -> String {
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    if file_contents.contains("\r\n") {
-        normalized.replace('\n', "\r\n")
-    } else {
-        normalized
-    }
-}
-
-fn matches_simple_glob(path: &str, pattern: &str) -> bool {
-    let candidate = path.replace('\\', "/");
-    let pattern = pattern.replace('\\', "/");
-    let file_name = candidate.rsplit('/').next().unwrap_or("");
-    if pattern == "*" || pattern == "**/*" {
-        return true;
-    }
-    wildcard_match(&pattern, &candidate) || wildcard_match(&pattern, file_name)
-}
-
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let text = text.as_bytes();
-    let (mut pattern_index, mut text_index) = (0usize, 0usize);
-    let mut star_index = None;
-    let mut star_text_index = 0usize;
-
-    while text_index < text.len() {
-        if pattern_index < pattern.len()
-            && (pattern[pattern_index] == text[text_index] || pattern[pattern_index] == b'?')
-        {
-            pattern_index += 1;
-            text_index += 1;
-        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
-            star_index = Some(pattern_index);
-            star_text_index = text_index;
-            pattern_index += 1;
-        } else if let Some(index) = star_index {
-            pattern_index = index + 1;
-            star_text_index += 1;
-            text_index = star_text_index;
-        } else {
-            return false;
-        }
-    }
-
-    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
-        pattern_index += 1;
-    }
-    pattern_index == pattern.len()
-}
-
-fn display_workspace_path(policy: &PermissionPolicy, path: &Path) -> String {
-    path.strip_prefix(policy.workspace())
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+pub fn apply_patch(args: &Value, policy: &PermissionPolicy) -> ToolOutput {
+    handlers::apply_patch(args, policy)
 }
 
 #[cfg(test)]
@@ -541,10 +252,28 @@ mod tests {
 
         assert!(!result.is_error);
         assert_eq!(lines.len(), 3);
-        assert!(lines.iter().any(|line| *line == "src/file-0.rs"));
-        assert!(lines.iter().any(|line| *line == "src/file-1.rs"));
-        assert!(!lines.iter().any(|line| *line == "src/file-2.rs"));
+        assert!(lines.contains(&"src/file-0.rs"));
+        assert!(lines.contains(&"src/file-1.rs"));
+        assert!(!lines.contains(&"src/file-2.rs"));
         assert!(result.content.contains("truncated after 2 matches"));
+    }
+
+    #[test]
+    fn list_dir_honors_limit_and_reports_truncation() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root.clone());
+        for index in (0..5).rev() {
+            std::fs::write(root.join(format!("file-{index}.txt")), "").unwrap();
+        }
+
+        let result = list_dir(&json!({"path": ".", "limit": 2}), &policy);
+        let lines = result.content.lines().collect::<Vec<_>>();
+
+        assert!(!result.is_error);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "file-0.txt");
+        assert_eq!(lines[1], "file-1.txt");
+        assert_eq!(lines[2], "... truncated after 2 entries");
     }
 
     #[test]
@@ -568,6 +297,145 @@ mod tests {
         assert!(result.content.contains("src/lib.rs:2:needle two"));
         assert!(!result.content.contains("src/lib.rs:3:needle three"));
         assert!(result.content.contains("truncated after 2 matches"));
+    }
+
+    #[test]
+    fn grep_supports_explicit_regex_mode_and_rejects_invalid_regex() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root.clone());
+        std::fs::write(root.join("notes.txt"), "alpha 123\nbeta\n").unwrap();
+
+        let result = grep(
+            &json!({"pattern": r"alpha\s+\d+", "mode": "regex"}),
+            &policy,
+        );
+        assert!(!result.is_error);
+        assert!(result.content.contains("notes.txt:1:alpha 123"));
+
+        let invalid = grep(&json!({"pattern": "[", "mode": "regex"}), &policy);
+        assert!(invalid.is_error);
+        assert!(invalid.content.contains("invalid regex pattern"));
+    }
+
+    #[test]
+    fn read_file_rejects_binary_content_without_lossy_conversion() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root.clone());
+        std::fs::write(root.join("binary.bin"), b"text\0binary").unwrap();
+
+        let result = read_file(&json!({"file_path": "binary.bin"}), &policy);
+
+        assert!(result.is_error);
+        assert!(result.content.contains("binary content"));
+    }
+
+    #[test]
+    fn grep_reports_non_text_files_as_explicit_skips() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root.clone());
+        std::fs::write(root.join("binary.bin"), b"needle\0binary").unwrap();
+
+        let result = grep(&json!({"pattern": "needle"}), &policy);
+
+        assert!(!result.is_error);
+        assert!(result
+            .content
+            .contains("skipped binary.bin: binary content"));
+    }
+
+    #[test]
+    fn write_file_rejects_model_supplied_content_above_the_shared_response_ceiling() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        let oversized = "x".repeat(anima_file_tools::MAX_RESPONSE_BYTES + 1);
+
+        let result = write_file(
+            &json!({"file_path": "oversized.txt", "content": oversized}),
+            &policy,
+        );
+
+        assert!(result.is_error);
+        assert!(!root.join("oversized.txt").exists());
+    }
+
+    #[test]
+    fn glob_rejects_invalid_patterns() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::read_only(root);
+
+        let result = glob(&json!({"pattern": "["}), &policy);
+
+        assert!(result.is_error);
+        assert!(result.content.contains("invalid glob pattern"));
+    }
+
+    #[test]
+    fn apply_patch_preflights_then_applies_a_mixed_hostfs_patch() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        std::fs::write(root.join("update.txt"), "old\n").unwrap();
+        std::fs::write(root.join("delete.txt"), "delete\n").unwrap();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: added.txt\n\
+                     +added\n\
+                     *** Update File: update.txt\n\
+                     @@\n\
+                     -old\n\
+                     +new\n\
+                     *** Delete File: delete.txt\n\
+                     *** End Patch";
+
+        let result = apply_patch(&json!({"patch": patch}), &policy);
+
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("atomic: false"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("added.txt")).unwrap(),
+            "added\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("update.txt")).unwrap(),
+            "new\n"
+        );
+        assert!(!root.join("delete.txt").exists());
+    }
+
+    #[test]
+    fn apply_patch_does_not_write_when_later_preflight_fails() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        let patch = "*** Begin Patch\n\
+                     *** Add File: should-not-exist.txt\n\
+                     +created\n\
+                     *** Update File: missing.txt\n\
+                     @@\n\
+                     -old\n\
+                     +new\n\
+                     *** End Patch";
+
+        let result = apply_patch(&json!({"patch": patch}), &policy);
+
+        assert!(result.is_error);
+        assert!(!root.join("should-not-exist.txt").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn apply_patch_preflights_case_insensitive_host_path_collisions() {
+        let root = test_workspace();
+        let policy = PermissionPolicy::workspace_write(root.clone());
+        let patch = "*** Begin Patch\n\
+                     *** Add File: Case.txt\n\
+                     +one\n\
+                     *** Add File: case.txt\n\
+                     +two\n\
+                     *** End Patch";
+
+        let result = apply_patch(&json!({"patch": patch}), &policy);
+
+        assert!(result.is_error);
+        assert!(!root.join("Case.txt").exists());
+        assert!(!root.join("case.txt").exists());
     }
 
     fn test_workspace() -> std::path::PathBuf {

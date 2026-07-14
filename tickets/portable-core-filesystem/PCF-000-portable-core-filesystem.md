@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 18:27 MYT
+- Updated: 2026-07-14 21:12 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | backlog | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -76,6 +76,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-14 18:02 MYT - Completed and validated atomic orphaned-backfill cleanup during legacy password rotation with red/green crash recovery coverage, 91 credential tests, lint, build, and diff gates; PCF-002 is unblocked again.
 - 2026-07-14 18:15 MYT - Reopened PCF-001 for a current-head stale-native-extension startup compatibility follow-up; PCF-002 is blocked pending validation and re-review.
 - 2026-07-14 18:27 MYT - Completed and validated native-first manifest publication with a durable Python fallback for stale extensions: 48 CoreFS keyslot tests, 10 binding/permission tests, lint, build, and diff gates passed; PCF-002 is unblocked again.
+- 2026-07-14 19:45 MYT - Started PCF-002 from merged `main`; the first reviewable slice establishes shared bounded file-operation contracts and migrates Animus HostFS onto them before CoreFS catalog work.
+- 2026-07-14 21:12 MYT - Completed and validated PCF-002's first reviewable slice: shared bounded file tools, explicit Animus HostFS reuse, typed preflighted patch planning, and standalone Codex attribution/release gates. PCF-002 remains in progress for the CoreFS object/catalog implementation.
 
 ## Validation
 
