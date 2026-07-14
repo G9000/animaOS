@@ -336,6 +336,13 @@ def change_account_password_credential(
 
     if scope is not PayloadScope.FULL:
         raise ValueError("legacy password change requires full scope")
+    _discard_orphaned_initial_soul_backfill_before_password_change(
+        db,
+        core_id=str(manifest.get("core_id", "")),
+        owner_id=str(manifest.get("owner_id", "")),
+        password=old_password,
+        expected_domains=current_deks,
+    )
     change_user_password(
         db,
         user,
@@ -1017,29 +1024,9 @@ def _discard_orphaned_initial_soul_backfill(
     recovery_phrase: str,
     expected_domains: dict[str, bytes],
 ) -> None:
-    rows = list(
-        db.scalars(select(SoulKeyslot).where(SoulKeyslot.owner_id == owner_id)).all()
-    )
-    if not any(row.status == KeyslotStatus.ACTIVE.value for row in rows):
+    rows = _orphaned_initial_soul_backfill_rows(db, owner_id=owner_id)
+    if not rows:
         return
-
-    expected_identities = {
-        (domain, path.value, 1, 1, KeyslotStatus.ACTIVE.value)
-        for domain in ALL_DOMAINS
-        for path in (WrappingPath.PASSWORD, WrappingPath.RECOVERY)
-    }
-    identities = {
-        (
-            row.domain,
-            row.wrapping_path,
-            row.key_version,
-            row.credential_generation,
-            row.status,
-        )
-        for row in rows
-    }
-    if identities != expected_identities or len(rows) != len(expected_identities):
-        raise ValueError("legacy Core has incompatible versioned Soul keyslots")
 
     credentials = {
         WrappingPath.PASSWORD.value: password,
@@ -1063,6 +1050,76 @@ def _discard_orphaned_initial_soul_backfill(
     for row in rows:
         db.delete(row)
     db.commit()
+
+
+def _orphaned_initial_soul_backfill_rows(
+    db: Session,
+    *,
+    owner_id: str,
+) -> list[SoulKeyslot]:
+    if not owner_id:
+        return []
+    rows = list(
+        db.scalars(select(SoulKeyslot).where(SoulKeyslot.owner_id == owner_id)).all()
+    )
+    if not any(row.status == KeyslotStatus.ACTIVE.value for row in rows):
+        return
+
+    expected_identities = {
+        (domain, path.value, 1, 1, KeyslotStatus.ACTIVE.value)
+        for domain in ALL_DOMAINS
+        for path in (WrappingPath.PASSWORD, WrappingPath.RECOVERY)
+    }
+    identities = {
+        (
+            row.domain,
+            row.wrapping_path,
+            row.key_version,
+            row.credential_generation,
+            row.status,
+        )
+        for row in rows
+    }
+    if identities != expected_identities or len(rows) != len(expected_identities):
+        raise ValueError("legacy Core has incompatible versioned Soul keyslots")
+    return rows
+
+
+def _discard_orphaned_initial_soul_backfill_before_password_change(
+    db: Session,
+    *,
+    core_id: str,
+    owner_id: str,
+    password: str,
+    expected_domains: dict[str, bytes],
+) -> None:
+    rows = _orphaned_initial_soul_backfill_rows(db, owner_id=owner_id)
+    if not rows:
+        return
+    if not core_id or set(expected_domains) != set(ALL_DOMAINS):
+        raise ValueError("legacy Core Soul key material is incomplete")
+
+    password_rows = [
+        row for row in rows if row.wrapping_path == WrappingPath.PASSWORD.value
+    ]
+    for row in password_rows:
+        aad = soul_keyslot_aad(
+            core_id=core_id,
+            owner_id=owner_id,
+            domain=row.domain,
+            key_version=row.key_version,
+            credential_generation=row.credential_generation,
+            wrapping_path=WrappingPath(row.wrapping_path),
+        )
+        try:
+            secret = unwrap_keyslot_secret(password, _soul_row_record(row), aad)
+        except Exception as exc:
+            raise ValueError("Invalid credentials") from exc
+        if secret != expected_domains[row.domain]:
+            raise ValueError(f"orphaned Soul keyslot mismatch for domain: {row.domain}")
+
+    for row in rows:
+        db.delete(row)
 
 
 def _discard_pending_recovery(

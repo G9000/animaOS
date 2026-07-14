@@ -671,7 +671,9 @@ def test_registration_publishes_legacy_locators_before_hierarchy_activation(
         assert recovery.status_code == 200
 
 
-def test_registration_backfill_crash_can_retry_legacy_recovery_upgrade(monkeypatch) -> None:
+def test_registration_backfill_crash_allows_password_change_before_recovery_upgrade(
+    monkeypatch,
+) -> None:
     from anima_server.services.corefs import keyslots
 
     phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -707,12 +709,19 @@ def test_registration_backfill_crash_can_retry_legacy_recovery_upgrade(monkeypat
         assert login.status_code == 200
         monkeypatch.setattr(keyslots, "update_core_manifest", publish_manifest)
 
+        changed = client.post(
+            "/api/auth/change-password",
+            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            json={"oldPassword": "password-123", "newPassword": "password-456"},
+        )
+        assert changed.status_code == 200
+
         prepared = client.post(
             "/api/auth/recovery-credential/prepare",
-            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            headers={"x-anima-unlock": changed.json()["unlockToken"]},
             json={
                 "currentRecoveryPhrase": phrase,
-                "currentPassword": "password-123",
+                "currentPassword": "password-456",
                 "scope": "full",
             },
         )
@@ -720,12 +729,12 @@ def test_registration_backfill_crash_can_retry_legacy_recovery_upgrade(monkeypat
         payload = prepared.json()
         confirmed = client.post(
             "/api/auth/recovery-credential/confirm",
-            headers={"x-anima-unlock": login.json()["unlockToken"]},
+            headers={"x-anima-unlock": changed.json()["unlockToken"]},
             json={
                 "recoveryPhrase": payload["recoveryPhrase"],
                 "pendingGeneration": payload["pendingGeneration"],
                 "scope": payload["scope"],
-                "currentPassword": "password-123",
+                "currentPassword": "password-456",
             },
         )
         assert confirmed.status_code == 200

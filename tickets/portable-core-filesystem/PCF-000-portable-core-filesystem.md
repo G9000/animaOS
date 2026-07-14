@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 17:12 MYT
+- Updated: 2026-07-14 18:02 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -54,7 +54,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 
 ## Completed Tickets
 
-- PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 17:12 MYT).
+- PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:02 MYT).
 
 ## Activity Log
 
@@ -72,6 +72,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-14 16:03 MYT - Completed and validated the PCF-001 cross-Core vault follow-up with a 25-test vault suite plus lint/build gates; PCF-002 is unblocked again.
 - 2026-07-14 17:09 MYT - Reopened PCF-001 for a current-head cross-Core import review regression covering destination user identity, manifest-index consistency, and password-rotation safety; PCF-002 is blocked pending validation and re-review.
 - 2026-07-14 17:12 MYT - Completed and validated destination-account rebinding for cross-Core imports with a red/green different-username regression, all 25 vault tests, lint, build, and diff gates; PCF-002 is unblocked again.
+- 2026-07-14 17:25 MYT - Reopened PCF-001 for a current-head registration-crash follow-up covering orphaned Soul keyslots across legacy password rotation; PCF-002 is blocked pending validation and re-review.
+- 2026-07-14 18:02 MYT - Completed and validated atomic orphaned-backfill cleanup during legacy password rotation with red/green crash recovery coverage, 91 credential tests, lint, build, and diff gates; PCF-002 is unblocked again.
 
 ## Validation
 
