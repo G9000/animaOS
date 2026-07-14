@@ -172,6 +172,26 @@ fn move_only_patch_preserves_source_bytes_instead_of_normalizing_content() {
     assert_eq!(content, "no trailing newline");
 }
 
+#[test]
+fn update_preserves_a_missing_final_newline() {
+    let snapshot = MemorySnapshot::new(&[("config.txt", "one\ntwo")]);
+    let patch = parse_patch(
+        "*** Begin Patch\n\
+         *** Update File: config.txt\n\
+         @@\n\
+         -one\n\
+         +ONE\n\
+         *** End Patch",
+    )
+    .unwrap();
+
+    let plan = plan_patch(&snapshot, &patch, MutationAtomicity::BestEffort).unwrap();
+    let PlannedMutation::Write { content, .. } = &plan.mutations[0] else {
+        panic!("expected write");
+    };
+    assert_eq!(content, "ONE\ntwo");
+}
+
 struct MemorySnapshot(BTreeMap<String, String>);
 
 impl MemorySnapshot {

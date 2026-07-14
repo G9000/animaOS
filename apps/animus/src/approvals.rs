@@ -171,6 +171,12 @@ fn classify_approval(tool_name: &str, args: &Value) -> ApprovalKind {
 }
 
 fn session_rule_for(pending: &PendingApproval) -> Option<SessionApproval> {
+    // A patch may touch any number of unrelated workspace paths. Its synthetic
+    // display path is not a safe scope for session-wide approval reuse.
+    if pending.tool_name == "apply_patch" {
+        return None;
+    }
+
     match &pending.kind {
         ApprovalKind::Shell { command } => Some(SessionApproval::Shell(command.clone())),
         ApprovalKind::FileChange { path } => Some(SessionApproval::FileChange(path.clone())),
@@ -267,6 +273,33 @@ mod tests {
             Some(SessionApproval::Shell("git status".to_string()))
         );
         assert!(approvals.is_session_approved(&SessionApproval::Shell("git status".to_string())));
+    }
+
+    #[test]
+    fn apply_patch_approval_is_never_reused_for_the_session() {
+        let mut approvals = ApprovalState::default();
+        let first = PendingApproval::new(
+            42,
+            "patch-1".to_string(),
+            "apply_patch".to_string(),
+            json!({"patch":"*** Begin Patch\n*** Add File: safe.txt\n+safe\n*** End Patch"}),
+        );
+        approvals.set_pending(first);
+
+        let outcome = approvals
+            .decide(ApprovalDecision::ApproveForSession)
+            .unwrap();
+
+        assert!(outcome.remembered.is_none());
+        let unrelated = PendingApproval::new(
+            43,
+            "patch-2".to_string(),
+            "apply_patch".to_string(),
+            json!({"patch":"*** Begin Patch\n*** Delete File: unrelated.txt\n*** End Patch"}),
+        );
+        assert!(approvals
+            .approval_for_remembered_session(&unrelated)
+            .is_none());
     }
 
     #[test]

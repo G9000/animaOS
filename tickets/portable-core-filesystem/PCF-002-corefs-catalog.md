@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 21:34 MYT
+- Updated: 2026-07-14 21:51 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -59,12 +59,13 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-14 21:12 MYT - Completed the first PCF-002 implementation slice: added the MSRV-compatible `anima-file-tools` crate, bounded backend-neutral read/walk/glob/grep/text/patch engines, migrated Animus HostFS tools onto the shared contracts, added explicit HostFS best-effort patch atomicity, and established pinned Codex attribution plus standalone release-notice CI. PCF-002 remains `in_progress` for encrypted CoreFS objects/catalogs and later slices.
 - 2026-07-14 21:22 MYT - Published the first slice as PR #91 (`codex/pcf-002-file-tools`) and requested a substantive Codex review focused on backend separation, path containment, boundedness, patch semantics, atomicity reporting, and provenance.
 - 2026-07-14 21:34 MYT - Addressed both current-head Codex review findings with red/green regressions: explicit file-root grep now bypasses directory walking, and walk/grep cursors resume by deterministic preorder position rather than lexicographic path comparison. Added the derived nested-file match-cursor case and revalidated the full shared/Animus suites and build.
+- 2026-07-14 21:51 MYT - Addressed the second current-head Codex review pass with red/green regressions: `apply_patch` approval cannot leak into a session-wide wildcard, HostFS patch keys follow the workspace volume's detected case semantics including case-insensitive APFS, and update hunks preserve a missing final newline. Revalidated all shared and Animus tests, formatting, clippy, build, and diff checks.
 
 ## Validation
 
 - Commands:
-  - `cargo +1.75.0 test --locked -p anima-file-tools` (43 tests)
-  - `cargo test --locked -p animus` (118 tests)
+  - `cargo +1.75.0 test --locked -p anima-file-tools` (44 tests)
+  - `cargo test --locked -p animus` (121 tests)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
   - `cargo fmt -p anima-file-tools -p animus -- --check`
   - `cargo clippy --locked -p anima-file-tools --all-targets -- -D warnings`

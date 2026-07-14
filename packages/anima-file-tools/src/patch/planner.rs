@@ -139,6 +139,7 @@ fn apply_chunks(
     content: String,
     chunks: &[PatchChunk],
 ) -> Result<String, PatchError> {
+    let had_trailing_newline = content.ends_with('\n') || content.ends_with('\r');
     let newline = if content.contains("\r\n") {
         "\r\n"
     } else {
@@ -193,8 +194,10 @@ fn apply_chunks(
 
     if lines.is_empty() {
         Ok(String::new())
-    } else {
+    } else if had_trailing_newline {
         Ok(format!("{}{}", lines.join(newline), newline))
+    } else {
+        Ok(lines.join(newline))
     }
 }
 

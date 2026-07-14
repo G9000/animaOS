@@ -15,11 +15,24 @@ use crate::permissions::{PermissionDecision, PermissionPolicy};
 #[derive(Clone)]
 pub(super) struct HostFsBackend {
     policy: PermissionPolicy,
+    case_sensitive_paths: bool,
 }
 
 impl HostFsBackend {
-    pub(super) const fn new(policy: PermissionPolicy) -> Self {
-        Self { policy }
+    pub(super) fn new(policy: PermissionPolicy) -> Self {
+        let case_sensitive_paths = host_paths_are_case_sensitive(policy.workspace());
+        Self {
+            policy,
+            case_sensitive_paths,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_case_sensitivity(policy: PermissionPolicy, case_sensitive_paths: bool) -> Self {
+        Self {
+            policy,
+            case_sensitive_paths,
+        }
     }
 
     pub(super) fn resolve_read(&self, path: &str) -> Result<PathBuf, FileToolError> {
@@ -250,10 +263,11 @@ impl PatchSnapshot for HostFsBackend {
                 message: error.to_string(),
             })?;
         let key = resolved.to_string_lossy().into_owned();
-        #[cfg(windows)]
-        return Ok(key.to_lowercase());
-        #[cfg(not(windows))]
-        Ok(key)
+        if self.case_sensitive_paths {
+            Ok(key)
+        } else {
+            Ok(key.to_lowercase())
+        }
     }
 
     fn read_text(&self, path: &str) -> Result<Option<String>, PatchError> {
@@ -301,6 +315,54 @@ impl PatchSnapshot for HostFsBackend {
                 message: error.to_string(),
             })
     }
+}
+
+#[cfg(windows)]
+fn host_paths_are_case_sensitive(_root: &Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn host_paths_are_case_sensitive(root: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut current = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    loop {
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if let Some(alternate_name) = current
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(toggle_ascii_case)
+        {
+            let alternate = parent.join(alternate_name);
+            if let (Ok(actual), Ok(probe)) = (fs::metadata(&current), fs::metadata(alternate)) {
+                if actual.dev() == probe.dev() && actual.ino() == probe.ino() {
+                    return false;
+                }
+            }
+        }
+        current = parent.to_path_buf();
+    }
+    true
+}
+
+#[cfg(not(any(unix, windows)))]
+fn host_paths_are_case_sensitive(_root: &Path) -> bool {
+    true
+}
+
+#[cfg(any(unix, test))]
+fn toggle_ascii_case(value: &str) -> Option<String> {
+    let mut bytes = value.as_bytes().to_vec();
+    let byte = bytes.iter_mut().find(|byte| byte.is_ascii_alphabetic())?;
+    *byte = if byte.is_ascii_lowercase() {
+        byte.to_ascii_uppercase()
+    } else {
+        byte.to_ascii_lowercase()
+    };
+    String::from_utf8(bytes).ok()
 }
 
 fn reject_cross_backend_path(path: &str) -> Result<(), FileToolError> {
@@ -351,10 +413,10 @@ fn backend_error(operation: &'static str, path: &Path, error: std::io::Error) ->
 mod tests {
     use anima_file_tools::{
         walk_page, BackendKind, BackendPath, FileBackend, FileToolError, OperationControl,
-        OperationLimits, ReadBackend, WalkOptions,
+        OperationLimits, PatchSnapshot, ReadBackend, WalkOptions,
     };
 
-    use super::HostFsBackend;
+    use super::{toggle_ascii_case, HostFsBackend};
     use crate::permissions::PermissionPolicy;
 
     #[test]
@@ -388,6 +450,28 @@ mod tests {
             };
             assert!(matches!(error, FileToolError::InvalidPath { .. }));
         }
+    }
+
+    #[test]
+    fn case_insensitive_host_keys_fold_on_every_operating_system() {
+        let root = test_workspace();
+        let backend =
+            HostFsBackend::with_case_sensitivity(PermissionPolicy::read_only(root.clone()), false);
+
+        let upper = backend
+            .canonical_key(root.join("Case.txt").to_str().unwrap())
+            .unwrap();
+        let lower = backend
+            .canonical_key(root.join("case.txt").to_str().unwrap())
+            .unwrap();
+
+        assert_eq!(upper, lower);
+    }
+
+    #[test]
+    fn case_probe_changes_one_ascii_letter_without_touching_the_rest() {
+        assert_eq!(toggle_ascii_case("Project-123"), Some("project-123".into()));
+        assert_eq!(toggle_ascii_case("123"), None);
     }
 
     #[test]
