@@ -674,13 +674,16 @@ impl BodyFrameAad {
         if chunk_count == 0 || chunk_index >= chunk_count {
             return Err(CryptoError::InvalidAad("invalid body chunk index/count"));
         }
-        if plaintext_offset
+        let plaintext_end = plaintext_offset
             .checked_add(plaintext_length)
-            .map_or(true, |end| end > total_body_length)
+            .ok_or(CryptoError::InvalidAad("invalid body chunk bounds"))?;
+        let is_last_chunk = chunk_index + 1 == chunk_count;
+        if plaintext_end > total_body_length
+            || (is_last_chunk && plaintext_end != total_body_length)
         {
             return Err(CryptoError::InvalidAad("invalid body chunk bounds"));
         }
-        if final_chunk != (chunk_index + 1 == chunk_count) {
+        if final_chunk != is_last_chunk {
             return Err(CryptoError::InvalidAad("invalid final-chunk flag"));
         }
         Ok(Self {
@@ -985,6 +988,25 @@ mod tests {
             .to_bytes()
             .windows(11)
             .any(|window| window == b"frk-version"));
+    }
+
+    #[test]
+    fn final_body_chunk_must_reach_declared_total_length() {
+        let base = ObjectBaseAad::new(
+            "019f-core",
+            "019f-object",
+            ObjectKind::KnowledgeSource,
+            1,
+            2,
+            7,
+        )
+        .unwrap();
+        let result = BodyFrameAad::new(base, [0xAB; 32], 1, 2, 5, 4, 10, true);
+
+        assert!(matches!(
+            result,
+            Err(CryptoError::InvalidAad("invalid body chunk bounds"))
+        ));
     }
 
     #[test]

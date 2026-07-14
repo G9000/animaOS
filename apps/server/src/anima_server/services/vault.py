@@ -33,6 +33,7 @@ from anima_server.models import (
     MemoryItem,
     MemoryItemEvidence,
     SelfModelBlock,
+    SoulKeyslot,
     Task,
     User,
     UserKey,
@@ -135,6 +136,7 @@ _MEMORY_TABLES = frozenset(
 
 _IDENTITY_TABLES = frozenset(
     {
+        "soulKeyslots",
         "users",
         "userKeys",
     }
@@ -157,6 +159,7 @@ _CONVERSATION_TABLES = frozenset(
 
 _CAPSULE_CARD_TABLES = frozenset(
     {
+        "soulKeyslots",
         "users",
         "userKeys",
         "memoryItems",
@@ -729,6 +732,10 @@ def export_database_snapshot(
         serialize_user_key_record(user_key)
         for user_key in db.scalars(_scoped(select(UserKey), UserKey)).all()
     ]
+    soul_keyslots = [
+        serialize_soul_keyslot_record(keyslot)
+        for keyslot in db.scalars(select(SoulKeyslot)).all()
+    ]
     memory_items = [
         serialize_memory_item_record(item, deks=deks)
         for item in db.scalars(_scoped(select(MemoryItem), MemoryItem)).all()
@@ -828,6 +835,7 @@ def export_database_snapshot(
     return {
         "users": users,
         "userKeys": user_keys,
+        "soulKeyslots": soul_keyslots,
         "memoryItems": memory_items,
         "memoryItemEvidence": memory_item_evidence,
         "userProfileFields": user_profile_fields,
@@ -859,6 +867,10 @@ def restore_database_snapshot(
     user_keys_payload = snapshot.get("userKeys")
     if not isinstance(users_payload, list) or not isinstance(user_keys_payload, list):
         raise ValueError("Vault database snapshot is missing users or userKeys.")
+    soul_keyslots_payload = snapshot.get("soulKeyslots", [])
+    if not isinstance(soul_keyslots_payload, list):
+        raise ValueError("Vault Soul keyslot snapshot is invalid.")
+    restores_soul_keyslots = "soulKeyslots" in snapshot
 
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_item_evidence_payload = snapshot.get("memoryItemEvidence", [])
@@ -902,6 +914,8 @@ def restore_database_snapshot(
             db.query(Task).delete()
         db.query(MemoryEpisode).delete()
         db.query(MemoryItem).delete()
+        if restores_soul_keyslots:
+            db.query(SoulKeyslot).delete()
         db.query(UserKey).delete()
         db.query(User).delete()
 
@@ -930,6 +944,34 @@ def restore_database_snapshot(
                     id=int(record["id"]),
                     user_id=int(record["user_id"]),
                     domain=str(record.get("domain", "memories")),
+                    kdf_salt=str(record["kdf_salt"]),
+                    kdf_time_cost=int(record["kdf_time_cost"]),
+                    kdf_memory_cost_kib=int(record["kdf_memory_cost_kib"]),
+                    kdf_parallelism=int(record["kdf_parallelism"]),
+                    kdf_key_length=int(record["kdf_key_length"]),
+                    wrap_iv=str(record["wrap_iv"]),
+                    wrap_tag=str(record["wrap_tag"]),
+                    wrapped_dek=str(record["wrapped_dek"]),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        for record in soul_keyslots_payload:
+            if not isinstance(record, dict):
+                raise ValueError("Vault Soul keyslot record is invalid.")
+            db.add(
+                SoulKeyslot(
+                    id=int(record["id"]),
+                    owner_id=str(record["owner_id"]),
+                    domain=str(record["domain"]),
+                    wrapping_path=str(record["wrapping_path"]),
+                    key_version=int(record["key_version"]),
+                    credential_generation=int(record["credential_generation"]),
+                    status=str(record["status"]),
+                    kdf_algorithm=str(record["kdf_algorithm"]),
+                    wrap_algorithm=str(record["wrap_algorithm"]),
+                    envelope_version=int(record["envelope_version"]),
                     kdf_salt=str(record["kdf_salt"]),
                     kdf_time_cost=int(record["kdf_time_cost"]),
                     kdf_memory_cost_kib=int(record["kdf_memory_cost_kib"]),
@@ -1553,6 +1595,31 @@ def serialize_user_key_record(user_key: UserKey) -> dict[str, Any]:
         "wrapped_dek": user_key.wrapped_dek,
         "created_at": serialize_optional_datetime(user_key.created_at),
         "updated_at": serialize_optional_datetime(user_key.updated_at),
+    }
+
+
+def serialize_soul_keyslot_record(keyslot: SoulKeyslot) -> dict[str, Any]:
+    return {
+        "id": keyslot.id,
+        "owner_id": keyslot.owner_id,
+        "domain": keyslot.domain,
+        "wrapping_path": keyslot.wrapping_path,
+        "key_version": keyslot.key_version,
+        "credential_generation": keyslot.credential_generation,
+        "status": keyslot.status,
+        "kdf_algorithm": keyslot.kdf_algorithm,
+        "wrap_algorithm": keyslot.wrap_algorithm,
+        "envelope_version": keyslot.envelope_version,
+        "kdf_salt": keyslot.kdf_salt,
+        "kdf_time_cost": keyslot.kdf_time_cost,
+        "kdf_memory_cost_kib": keyslot.kdf_memory_cost_kib,
+        "kdf_parallelism": keyslot.kdf_parallelism,
+        "kdf_key_length": keyslot.kdf_key_length,
+        "wrap_iv": keyslot.wrap_iv,
+        "wrap_tag": keyslot.wrap_tag,
+        "wrapped_dek": keyslot.wrapped_dek,
+        "created_at": serialize_optional_datetime(keyslot.created_at),
+        "updated_at": serialize_optional_datetime(keyslot.updated_at),
     }
 
 
