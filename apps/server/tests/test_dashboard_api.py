@@ -354,6 +354,199 @@ async def test_list_ollama_models_reads_payload_before_client_close(monkeypatch)
     assert [model.name for model in models] == ["gemma4:31b"]
 
 
+@pytest.mark.asyncio
+async def test_config_update_validates_ollama_completion_targets_once(monkeypatch) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"capabilities": ["completion", "tools"]}
+
+    class _Client:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, json: dict[str, str]) -> _Response:
+            calls.append((url, json))
+            return _Response()
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_extraction_provider,
+        settings.agent_extraction_model,
+        settings.agent_base_url,
+    )
+    monkeypatch.setattr(config_route.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user", lambda request, user_id: None)
+
+    try:
+        settings.agent_extraction_provider = ""
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="ollama",
+                model="qwen3:14b",
+                extractionModel="qwen3:14b",
+                ollamaUrl="http://localhost:11434/v1",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert calls == [
+            ("http://localhost:11434/api/show", {"model": "qwen3:14b"})
+        ]
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_extraction_provider,
+            settings.agent_extraction_model,
+            settings.agent_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_config_update_rejects_embedding_only_ollama_without_mutation(monkeypatch) -> None:
+    from anima_server.api.routes import config as config_route
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"capabilities": ["embedding"]}
+
+    class _Client:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, json: dict[str, str]) -> _Response:
+            return _Response()
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_extraction_provider,
+        settings.agent_extraction_model,
+        settings.agent_api_key,
+        settings.agent_api_keys_json,
+        settings.agent_base_url,
+    )
+    monkeypatch.setattr(config_route.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user", lambda request, user_id: None)
+
+    try:
+        with pytest.raises(HTTPException) as rejected:
+            await config_route.update_config(
+                1,
+                config_route.AgentConfigUpdateRequest(
+                    provider="ollama",
+                    model="all-minilm:latest",
+                    extractionModel="all-minilm:latest",
+                    apiKey="must-not-stick",
+                    ollamaUrl="http://localhost:11434/v1",
+                ),
+                Request({"type": "http", "method": "PUT", "path": "/"}),
+                _mode=None,
+                db=None,
+            )
+
+        assert rejected.value.status_code == 422
+        assert "completion" in str(rejected.value.detail).lower()
+        assert (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_extraction_provider,
+            settings.agent_extraction_model,
+            settings.agent_api_key,
+            settings.agent_api_keys_json,
+            settings.agent_base_url,
+        ) == original
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_extraction_provider,
+            settings.agent_extraction_model,
+            settings.agent_api_key,
+            settings.agent_api_keys_json,
+            settings.agent_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_validate_ollama_completion_model_maps_unreachable_and_malformed(
+    monkeypatch,
+) -> None:
+    import httpx
+    from anima_server.api.routes import config as config_route
+    from fastapi import HTTPException
+
+    class _UnreachableClient:
+        def __init__(self, *, timeout: float) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, json: dict[str, str]):
+            raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(config_route.httpx, "AsyncClient", _UnreachableClient)
+    with pytest.raises(HTTPException) as unreachable:
+        await config_route._validate_ollama_completion_model(
+            "http://localhost:11434", "qwen3:14b"
+        )
+    assert unreachable.value.status_code == 503
+
+    class _MalformedResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[object]:
+            return []
+
+    class _MalformedClient(_UnreachableClient):
+        async def post(self, url: str, *, json: dict[str, str]):
+            return _MalformedResponse()
+
+    monkeypatch.setattr(config_route.httpx, "AsyncClient", _MalformedClient)
+    with pytest.raises(HTTPException) as malformed:
+        await config_route._validate_ollama_completion_model(
+            "http://localhost:11434", "qwen3:14b"
+        )
+    assert malformed.value.status_code == 422
+
+
 def test_config_get_update() -> None:
     original_provider = settings.agent_provider
     original_model = settings.agent_model
