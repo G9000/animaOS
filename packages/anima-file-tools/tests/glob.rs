@@ -104,6 +104,38 @@ fn result_limit_returns_a_stable_cursor_without_duplicates() {
 }
 
 #[test]
+fn cursor_resumes_file_preorder_without_lexicographic_filtering() {
+    let mut children = BTreeMap::new();
+    children.insert(
+        "root".to_string(),
+        vec![directory("root/a"), file("root/a.txt")],
+    );
+    children.insert("root/a".to_string(), vec![file("root/a/z.txt")]);
+    let tree = MemoryTree { children };
+
+    let first = glob(
+        &tree,
+        request("**/*.txt", 1),
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(first.matches[0].as_str(), "root/a/z.txt");
+
+    let mut second_request = request("**/*.txt", 1);
+    second_request.cursor = first.next_cursor;
+    let second = glob(
+        &tree,
+        second_request,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(second.matches[0].as_str(), "root/a.txt");
+}
+
+#[test]
 fn hard_walk_ceiling_is_terminal_instead_of_returning_a_repeating_cursor() {
     let limits = OperationLimits {
         walk_entries: 1,

@@ -90,13 +90,11 @@ pub fn glob<B: WalkBackend + ?Sized>(
     let walk_next_cursor = walk.next_cursor;
     let mut page = GlobPage::default();
     let mut response_bytes = 0usize;
-    let cursor = request.cursor.as_ref().map(GlobCursor::as_str);
     let mut output_truncated = false;
 
     for entry in walk.entries {
         control.check()?;
         if entry.kind != EntryKind::File
-            || cursor.is_some_and(|cursor| entry.path.as_str() <= cursor)
             || !matcher.is_match(relative_path(root.as_str(), entry.path.as_str()))
         {
             continue;

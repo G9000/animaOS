@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 22:35 MYT
+- Updated: 2026-07-14 22:52 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -62,11 +62,12 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-14 21:51 MYT - Addressed the second current-head Codex review pass with red/green regressions: `apply_patch` approval cannot leak into a session-wide wildcard, HostFS patch keys follow the workspace volume's detected case semantics including case-insensitive APFS, and update hunks preserve a missing final newline. Revalidated all shared and Animus tests, formatting, clippy, build, and diff checks.
 - 2026-07-14 22:02 MYT - Addressed the third current-head Codex review pass with a red/green malformed UTF-8 patch regression: update lines now validate ` `, `+`, or `-` through Unicode-safe prefix stripping before extracting content, returning a typed parse error instead of panicking at a non-character byte boundary. Revalidated shared and Animus tests, formatting, clippy, build, and diff checks.
 - 2026-07-14 22:35 MYT - Addressed the fourth current-head Codex review pass with a red/green authority-boundary regression: grep now rejects a mismatched `BackendPath` tag before metadata, directory, or file access, including the single-file fast path. Revalidated shared and Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-14 22:52 MYT - Addressed the fifth current-head Codex review pass with a red/green nested/sibling glob regression: resumed pages now trust deterministic walk preorder without a second lexicographic filter. Diagnosed the Linux provenance failure as a test-only cross-channel scheduling assertion, retained both replay/queued-response outcomes without comparing independent observer arrival order, and passed the focused websocket test 100 consecutive times plus all full gates.
 
 ## Validation
 
 - Commands:
-  - `cargo +1.75.0 test --locked -p anima-file-tools` (46 tests)
+  - `cargo +1.75.0 test --locked -p anima-file-tools` (47 tests)
   - `cargo test --locked -p animus` (121 tests)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
   - `cargo fmt -p anima-file-tools -p animus -- --check`

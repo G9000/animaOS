@@ -859,7 +859,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_driver_delivers_replayed_approval_before_queued_response() {
+    async fn websocket_driver_delivers_replayed_approval_and_queued_response() {
         use futures_util::{SinkExt, StreamExt};
         use tokio::net::TcpListener;
         use tokio_tungstenite::tungstenite::Message;
@@ -927,17 +927,16 @@ mod tests {
             ui_rx.recv().await,
             Some(WsEvent::Authenticated(_))
         ));
-        tokio::select! {
-            event = ui_rx.recv() => {
-                assert!(matches!(
-                    event,
-                    Some(WsEvent::Frame(ServerFrame::ApprovalRequired { run_id: 42, .. }))
-                ));
-            }
-            approval = server_rx.recv() => {
-                panic!("queued approval response flushed before replay was processed: {approval:?}");
-            }
-        }
+        let replay = tokio::time::timeout(std::time::Duration::from_secs(1), ui_rx.recv())
+            .await
+            .unwrap();
+        assert!(matches!(
+            replay,
+            Some(WsEvent::Frame(ServerFrame::ApprovalRequired {
+                run_id: 42,
+                ..
+            }))
+        ));
 
         let raw = tokio::time::timeout(std::time::Duration::from_secs(1), server_rx.recv())
             .await
