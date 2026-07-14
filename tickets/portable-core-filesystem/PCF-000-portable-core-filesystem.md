@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 12:00 MYT
+- Updated: 2026-07-14 16:03 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -68,6 +68,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-13 20:47 MYT - Reconciled the initiative with merged main: preserved current rich Journal HTML/media behavior, inventoried new document parsing/tool/context/compiler persistence boundaries, expanded migration tests/docs, and made catalog benchmark fixtures unambiguous.
 - 2026-07-13 21:27 MYT - Began PCF-001 implementation in an isolated worktree after a green Rust and crypto/recovery baseline.
 - 2026-07-14 12:00 MYT - Completed PCF-001 after six implementation/review hardening commits, clean requirements and quality re-reviews, full credential/recovery regressions, native crypto verification, migration/build/lint checks, and independent final hardening tests. PCF-002 is now unblocked.
+- 2026-07-14 15:45 MYT - Reopened PCF-001 for a current-head review fix covering cross-Core vault import key-hierarchy rebinding; PCF-002 remains blocked until the follow-up is validated and reviewed.
+- 2026-07-14 16:03 MYT - Completed and validated the PCF-001 cross-Core vault follow-up with a 25-test vault suite plus lint/build gates; PCF-002 is unblocked again.
 
 ## Validation
 

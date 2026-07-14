@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-1-filesystem-key-hierarchy-and-credential-generations`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 12:00 MYT
+- Updated: 2026-07-14 16:03 MYT
 - Started: 2026-07-13 21:27 MYT
-- Completed: 2026-07-14 12:00 MYT
+- Completed: 2026-07-14 16:03 MYT
 
 ## Goal
 
@@ -50,10 +50,17 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
 - 2026-07-14 04:05 MYT - Addressed the fifth quality review: registration now publishes legacy login/recovery locators before activating versioned authority; native AAD binds immutable generation/scope/FRK/object-epoch metadata while status transitions in place; unauthenticated CoreFS credential routes share pre-KDF rate/concurrency admission; credential coordinators serialize complete transactions with active-generation CAS; and a live prepared recovery phrase cannot be replaced by a second prepare. Ticket remains `in_progress` for supervising-agent re-review.
 - 2026-07-14 04:28 MYT - Addressed the sixth restart-correctness review: persisted `ready` recovery preparation now blocks replacement independently of process/coordinator identity, while a stale `preparing` transaction remains reclaimable after restart. Full and CoreFS-only restart tests prove the original returned phrase and all pending rows survive a rejected second prepare and still confirm. Ticket remains `in_progress` for supervising-agent re-review.
 - 2026-07-14 12:00 MYT - Completed PCF-001 after clean requirements and quality re-reviews at `e538bb73`. Final hardening added crash-safe registration locator ordering, immutable native keyslot AAD, pre-KDF CoreFS admission, serialized credential transactions with generation CAS, status-independent Soul keyslot identity, Rust 1.75 compatibility, and cross-restart preservation of returned recovery phrases.
+- 2026-07-14 15:45 MYT - Reopened PCF-001 for current-head PR review: cross-Core vault import must preserve the authenticated destination manifest and credential rows instead of restoring source-AAD-bound Soul keyslots verbatim. Added a password/recovery regression before implementation.
+- 2026-07-14 16:03 MYT - Completed the cross-Core vault follow-up: authenticated imports now retain the destination manifest, UserKey wrappers, and Soul keyslots when the exported hierarchy differs; exact same-hierarchy and cold restores atomically publish matching portable manifest authority. Password login and recovery remain usable after import.
 
 ## Validation
 
 - Commands:
+  - Cross-Core vault TDD: the new regression first failed because import replaced the destination `core_id`; after implementation it passed while proving destination owner/keyslots, password login, and recovery phrase all remain usable.
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv\Scripts\python.exe -m pytest apps/server/tests/test_vault.py -q` - 25 passed with one known Starlette deprecation warning.
+  - Focused final same-Core/cross-Core matrix - 2 passed; final cross-Core rerun after all edits - 1 passed.
+  - `.venv\Scripts\ruff.exe check apps/server/src/anima_server/services/vault.py apps/server/tests/test_vault.py`, `bun run lint:server`, uncached `bun run build:server`, and `git diff --check` - passed.
+  - `uv run maturin develop --manifest-path packages/anima-core/Cargo.toml` - restored the editable native extension before final backend regressions.
   - Final independent review: requirements review and quality/security-conscious code review reported no remaining findings at `e538bb73806e64771e9e0ebc7f84242a497815f9`.
   - Final independent native verification: `cargo test -p anima-corefs -p anima-core` - 227 passed; `uvx maturin develop --manifest-path packages/anima-core/Cargo.toml --features python` rebuilt and installed the current extension.
   - Final independent fifth/sixth hardening regressions under an external `ANIMA_TEST_TEMP_ROOT`: restart matrix - 3 passed; admission/concurrency/CAS/pending-preservation matrix - 6 passed; AAD/schema/registration/migration matrix - 8 passed.
@@ -92,6 +99,8 @@ Add password/recovery keyslots, Filesystem Root Key subkeys, per-object DEKs, an
   - `.venv\Scripts\alembic.exe -c apps/server/alembic_core.ini heads` - exactly `20260712_0001 (head)`.
   - `git diff --check` - passed.
 - Changed paths:
+  - `apps/server/src/anima_server/services/vault.py`, `apps/server/tests/test_vault.py`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`, `tickets/portable-core-filesystem/PCF-001-filesystem-key-hierarchy.md`
   - `packages/anima-corefs/`, `packages/anima-core/`, root Cargo workspace/lock
   - `apps/server/src/anima_server/services/corefs/`, auth routes/contracts/user-store, Core manifest/crypto, Soul keyslot model/migration
   - `apps/server/tests/test_corefs_*.py`, `apps/server/tests/test_recovery.py`

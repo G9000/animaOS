@@ -190,6 +190,101 @@ def test_export_and_import_vault_restores_versioned_soul_keyslots(monkeypatch) -
         assert login.status_code == 200
 
 
+def test_import_vault_into_different_core_preserves_destination_key_hierarchy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        keyslots_service,
+        "ensure_core_manifest",
+        core_service.ensure_core_manifest,
+    )
+
+    with managed_test_client("anima-vault-source-core-") as source_client:
+        source = _register_user(
+            source_client,
+            username="portable-user",
+            password="source-password",
+            name="Portable Source",
+        )
+        exported = source_client.post(
+            "/api/vault/export",
+            headers={"x-anima-unlock": source["unlockToken"]},
+            json={"passphrase": "vault-pass"},
+        )
+        assert exported.status_code == 200
+        exported_vault = exported.json()["vault"]
+
+    with managed_test_client("anima-vault-destination-core-") as destination_client:
+        destination = _register_user(
+            destination_client,
+            username="portable-user",
+            password="destination-password",
+            name="Portable Destination",
+        )
+        destination_user_id = int(destination["id"])
+        destination_recovery_phrase = str(destination["recoveryPhrase"])
+        destination_manifest = json.loads(
+            core_service.get_manifest_path().read_text(encoding="utf-8")
+        )
+
+        with get_user_session_factory(destination_user_id)() as db:
+            destination_keyslots = {
+                (
+                    row.owner_id,
+                    row.domain,
+                    row.wrapping_path,
+                    row.key_version,
+                    row.credential_generation,
+                    row.status,
+                    row.wrapped_dek,
+                )
+                for row in db.query(SoulKeyslot).all()
+            }
+        assert destination_keyslots
+
+        imported = destination_client.post(
+            "/api/vault/import",
+            headers={"x-anima-unlock": destination["unlockToken"]},
+            json={"passphrase": "vault-pass", "vault": exported_vault},
+        )
+        assert imported.status_code == 200
+
+        restored_manifest = json.loads(core_service.get_manifest_path().read_text(encoding="utf-8"))
+        assert restored_manifest["core_id"] == destination_manifest["core_id"]
+        assert restored_manifest["owner_id"] == destination_manifest["owner_id"]
+        assert restored_manifest["keyslots"] == destination_manifest["keyslots"]
+
+        with get_user_session_factory(destination_user_id)() as db:
+            restored_keyslots = {
+                (
+                    row.owner_id,
+                    row.domain,
+                    row.wrapping_path,
+                    row.key_version,
+                    row.credential_generation,
+                    row.status,
+                    row.wrapped_dek,
+                )
+                for row in db.query(SoulKeyslot).all()
+            }
+        assert restored_keyslots == destination_keyslots
+
+        login = destination_client.post(
+            "/api/auth/login",
+            json={"username": "portable-user", "password": "destination-password"},
+        )
+        assert login.status_code == 200
+
+        recovered = destination_client.post(
+            "/api/auth/recover",
+            json={
+                "recoveryPhrase": destination_recovery_phrase,
+                "newPassword": "recovered-destination-password",
+            },
+        )
+        assert recovered.status_code == 200
+
+
 def test_import_vault_rejects_wrong_passphrase() -> None:
     with managed_test_client("anima-vault-test-") as client:
         user = _register_user(client)
