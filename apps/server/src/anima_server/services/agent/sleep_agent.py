@@ -903,13 +903,13 @@ async def _task_heat_decay(
     db_factory: Callable[..., object] | None = None,
 ) -> dict:
     """Decay heat scores for all items (F2)."""
+    from anima_server.db.helpers import session_scope
     from anima_server.db.session import SessionLocal
     from anima_server.services.agent.heat_scoring import decay_all_heat
 
     factory = db_factory or SessionLocal
-    with factory() as db:
+    with session_scope(factory) as db:
         count = decay_all_heat(db, user_id=user_id)
-        db.commit()
 
     return {"items_decayed": count}
 
@@ -981,14 +981,13 @@ async def _task_foresight_lifecycle(
     db_factory: Callable[..., object] | None = None,
 ) -> dict:
     """Advance due/occurred/stale foresight states during scheduled sleep."""
+    from anima_server.db.helpers import session_scope
     from anima_server.db.session import SessionLocal
     from anima_server.services.agent.foresight import sweep_foresight_lifecycle
 
     factory = db_factory or SessionLocal
-    with factory() as db:
+    with session_scope(factory) as db:
         transitions = sweep_foresight_lifecycle(db, user_id=user_id)
-        if any(transitions.values()):
-            db.commit()
     return transitions
 
 
