@@ -1,10 +1,13 @@
-use getrandom::getrandom;
-use std::fs::{File, OpenOptions};
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path};
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, File, OpenOptions};
+use getrandom::getrandom;
+
+#[cfg(windows)]
+use cap_std::fs::OpenOptionsExt as _;
 
 /// Atomically publish `payload` and return only after its directory entry is durable.
 pub fn atomic_publish(target: &Path, payload: &[u8]) -> io::Result<()> {
@@ -14,96 +17,350 @@ pub fn atomic_publish(target: &Path, payload: &[u8]) -> io::Result<()> {
             "publication target has no parent",
         )
     })?;
-    let (mut temporary, temporary_path) = create_temporary(target)?;
-
-    let result = (|| {
-        temporary.write_all(payload)?;
-        temporary.sync_all()?;
-        drop(temporary);
-
-        replace_durably(&temporary_path, target)?;
-        sync_parent(parent)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary_path);
-    }
-    result
+    let name = target.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "publication target has no file name",
+        )
+    })?;
+    let dir = Dir::open_ambient_dir(parent, ambient_authority())?;
+    atomic_publish_in(&dir, name, payload)
 }
 
-fn create_temporary(target: &Path) -> io::Result<(File, PathBuf)> {
+/// Durably publish a new immutable file without replacing an existing revision.
+pub fn publish_immutable(target: &Path, payload: &[u8]) -> io::Result<()> {
     let parent = target.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "publication target has no parent",
         )
     })?;
-    let target_name = target.file_name().ok_or_else(|| {
+    let name = target.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "publication target has no file name",
         )
     })?;
+    let dir = Dir::open_ambient_dir(parent, ambient_authority())?;
+    publish_immutable_in(&dir, name, payload)
+}
 
+pub(crate) fn atomic_publish_in(dir: &Dir, target: &OsStr, payload: &[u8]) -> io::Result<()> {
+    validate_file_name(target)?;
+    let (mut temporary, temporary_name) = create_temporary_in(dir, target)?;
+    let result = (|| {
+        temporary.write_all(payload)?;
+        temporary.sync_all()?;
+        replace_staged_in(dir, &temporary, &temporary_name, target)
+    })();
+    drop(temporary);
+    if result.is_err() {
+        let _ = dir.remove_file(&temporary_name);
+    }
+    result
+}
+
+pub(crate) fn publish_immutable_in(dir: &Dir, target: &OsStr, payload: &[u8]) -> io::Result<()> {
+    let (mut temporary, temporary_name) = create_temporary_in(dir, target)?;
+    let result = (|| {
+        temporary.write_all(payload)?;
+        temporary.sync_all()?;
+        publish_staged_immutable_in(dir, &temporary, &temporary_name, target)
+    })();
+    drop(temporary);
+    if result.is_err() {
+        let _ = dir.remove_file(&temporary_name);
+    }
+    result
+}
+
+pub(crate) fn create_temporary_in(dir: &Dir, target: &OsStr) -> io::Result<(File, OsString)> {
+    validate_file_name(target)?;
     for _ in 0..16 {
         let mut random = [0_u8; 8];
         getrandom(&mut random).map_err(io::Error::other)?;
         let suffix = u64::from_ne_bytes(random);
-        let temporary_path =
-            parent.join(format!(".{}.{}.tmp", target_name.to_string_lossy(), suffix));
+        let temporary_name =
+            OsString::from(format!(".{}.{}.tmp", target.to_string_lossy(), suffix));
         let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        match options.open(&temporary_path) {
-            Ok(file) => return Ok((file, temporary_path)),
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        options
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_WRITE
+                    | windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Storage::FileSystem::DELETE,
+            )
+            .share_mode(
+                windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
+                    | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+            );
+        match dir.open_with(&temporary_name, &options) {
+            Ok(file) => return Ok((file, temporary_name)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
     }
-
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
         "could not allocate a unique publication file",
     ))
 }
 
+pub(crate) fn publish_staged_immutable_in(
+    dir: &Dir,
+    temporary: &File,
+    temporary_name: &OsStr,
+    target: &OsStr,
+) -> io::Result<()> {
+    validate_file_name(temporary_name)?;
+    validate_file_name(target)?;
+
+    publish_staged_immutable_platform(dir, temporary, temporary_name, target)
+}
+
 #[cfg(not(windows))]
-fn replace_durably(temporary: &Path, target: &Path) -> io::Result<()> {
-    std::fs::rename(temporary, target)
+pub(crate) fn sync_directory(dir: &Dir) -> io::Result<()> {
+    dir.try_clone()?.into_std_file().sync_all()
+}
+
+pub(crate) fn durable_create_directory_in(dir: &Dir, target: &OsStr) -> io::Result<()> {
+    validate_file_name(target)?;
+    durable_create_directory_platform(dir, target)
+}
+
+fn validate_file_name(value: &OsStr) -> io::Result<()> {
+    let mut components = Path::new(value).components();
+    if matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "publication name must be one relative file component",
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_staged_in(
+    dir: &Dir,
+    _temporary: &File,
+    temporary_name: &OsStr,
+    target: &OsStr,
+) -> io::Result<()> {
+    dir.rename(temporary_name, dir, target)?;
+    sync_directory(dir)
 }
 
 #[cfg(windows)]
-fn replace_durably(temporary: &Path, target: &Path) -> io::Result<()> {
+fn replace_staged_in(
+    dir: &Dir,
+    temporary: &File,
+    _temporary_name: &OsStr,
+    target: &OsStr,
+) -> io::Result<()> {
+    rename_file_by_handle(temporary, dir, target, true)?;
+    temporary.sync_all()
+}
+
+#[cfg(not(windows))]
+fn publish_staged_immutable_platform(
+    dir: &Dir,
+    _temporary: &File,
+    temporary_name: &OsStr,
+    target: &OsStr,
+) -> io::Result<()> {
+    // Creating a hard link is an atomic no-replace publication primitive on
+    // the same filesystem. It cannot overwrite a substituted destination, and
+    // cleanup removes only the private staging entry.
+    dir.hard_link(temporary_name, dir, target)?;
+    sync_directory(dir)?;
+    dir.remove_file(temporary_name)?;
+    sync_directory(dir)
+}
+
+#[cfg(windows)]
+fn publish_staged_immutable_platform(
+    dir: &Dir,
+    temporary: &File,
+    _temporary_name: &OsStr,
+    target: &OsStr,
+) -> io::Result<()> {
+    rename_file_by_handle(temporary, dir, target, false)?;
+    temporary.sync_all()
+}
+
+#[cfg(not(windows))]
+fn durable_create_directory_platform(dir: &Dir, target: &OsStr) -> io::Result<()> {
+    dir.create_dir(target)?;
+    sync_directory(dir)
+}
+
+#[cfg(windows)]
+fn durable_create_directory_platform(dir: &Dir, target: &OsStr) -> io::Result<()> {
+    for _ in 0..16 {
+        let mut random = [0_u8; 16];
+        getrandom(&mut random).map_err(io::Error::other)?;
+        let temporary = OsString::from(format!(".dir-{}.tmp", hex_bytes(&random)));
+        match dir.create_dir(&temporary) {
+            Ok(()) => {
+                let result = move_path_write_through(dir, &temporary, target, false);
+                if result.is_err() {
+                    let _ = dir.remove_dir(&temporary);
+                }
+                return result;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique directory staging name",
+    ))
+}
+
+#[cfg(windows)]
+fn rename_file_by_handle(
+    source: &File,
+    target_dir: &Dir,
+    target: &OsStr,
+    replace: bool,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO, FILE_RENAME_INFO_0,
+    };
+
+    let name: Vec<u16> = directory_path(target_dir)?
+        .join(target)
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    let header_size = std::mem::size_of::<FILE_RENAME_INFO>() - std::mem::size_of::<u16>();
+    let total_size = header_size
+        .checked_add(name.len() * std::mem::size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename target too long"))?;
+    let mut buffer = vec![0_u8; total_size];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous = FILE_RENAME_INFO_0 {
+            ReplaceIfExists: u8::from(replace),
+        };
+        (*info).RootDirectory = std::ptr::null_mut();
+        (*info).FileNameLength = u32::try_from(name.len() * std::mem::size_of::<u16>())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename target too long"))?;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+            name.len(),
+        );
+    }
+    let renamed = unsafe {
+        SetFileInformationByHandle(
+            source.as_raw_handle(),
+            FileRenameInfo,
+            buffer.as_ptr().cast(),
+            u32::try_from(buffer.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer too large")
+            })?,
+        )
+    };
+    if renamed == 0 {
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(80) | Some(183)) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, error));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn move_path_write_through(
+    dir: &Dir,
+    source: &OsStr,
+    target: &OsStr,
+    replace: bool,
+) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    let replaced = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        return Err(io::Error::last_os_error());
+    let parent = directory_path(dir)?;
+    let source: Vec<u16> = parent
+        .join(source)
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let target: Vec<u16> = parent
+        .join(target)
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), flags) } == 0 {
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(80) | Some(183)) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, error));
+        }
+        return Err(error);
     }
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn sync_parent(parent: &Path) -> io::Result<()> {
-    File::open(parent)?.sync_all()
+#[cfg(windows)]
+fn directory_path(dir: &Dir) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED,
+    };
+
+    let required = unsafe {
+        GetFinalPathNameByHandleW(
+            dir.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            FILE_NAME_NORMALIZED,
+        )
+    };
+    if required == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buffer = vec![0_u16; required as usize + 1];
+    let written = unsafe {
+        GetFinalPathNameByHandleW(
+            dir.as_raw_handle(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            FILE_NAME_NORMALIZED,
+        )
+    };
+    if written == 0 || written as usize >= buffer.len() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(std::path::PathBuf::from(OsString::from_wide(
+        &buffer[..written as usize],
+    )))
 }
 
 #[cfg(windows)]
-fn sync_parent(_parent: &Path) -> io::Result<()> {
-    // Windows does not support fsync on directory handles. MOVEFILE_WRITE_THROUGH
-    // above is its documented durability primitive for the completed replacement.
-    Ok(())
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }

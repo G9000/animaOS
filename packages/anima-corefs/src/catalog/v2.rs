@@ -113,6 +113,33 @@ impl ContentHash {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ObjectPhysicalName(String);
+
+impl ObjectPhysicalName {
+    pub fn parse(value: &str) -> Result<Self, CatalogError> {
+        let Some(random) = value
+            .strip_prefix("object-")
+            .and_then(|value| value.strip_suffix(".acore"))
+        else {
+            return Err(CatalogError::InvalidFormat("opaque object physical name"));
+        };
+        if random.len() != 32
+            || !random
+                .as_bytes()
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(CatalogError::InvalidFormat("opaque object physical name"));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrappedObjectDekRecord {
     frk_version: u32,
@@ -250,6 +277,7 @@ impl CatalogCutoverMarker {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogObject {
     revision: u64,
+    physical_name: ObjectPhysicalName,
     content_hash: ContentHash,
     kind: ObjectKind,
     wrapped_dek: WrappedObjectDekRecord,
@@ -259,6 +287,7 @@ pub struct CatalogObject {
 impl CatalogObject {
     pub fn new(
         revision: u64,
+        physical_name: ObjectPhysicalName,
         content_hash: ContentHash,
         kind: ObjectKind,
         wrapped_dek: WrappedObjectDekRecord,
@@ -291,11 +320,36 @@ impl CatalogObject {
         }
         Ok(Self {
             revision,
+            physical_name,
             content_hash,
             kind,
             wrapped_dek,
             lifecycle,
         })
+    }
+
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn physical_name(&self) -> &ObjectPhysicalName {
+        &self.physical_name
+    }
+
+    pub fn content_hash(&self) -> &ContentHash {
+        &self.content_hash
+    }
+
+    pub const fn kind(&self) -> ObjectKind {
+        self.kind
+    }
+
+    pub const fn object_key_epoch(&self) -> u32 {
+        self.wrapped_dek.object_key_epoch
+    }
+
+    pub fn wrapped_dek(&self) -> &WrappedObjectDekRecord {
+        &self.wrapped_dek
     }
 }
 
@@ -348,6 +402,10 @@ impl CatalogEntryCommon {
     pub fn parent_id(&self) -> Option<&OpaqueId> {
         self.parent_id.as_ref()
     }
+
+    pub fn name(&self) -> &PortableName {
+        &self.name
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -374,6 +432,18 @@ impl CatalogGenerationEntry {
             Self::Folder(_) => None,
             Self::Object(_, object) => Some(object.as_ref()),
         }
+    }
+
+    pub fn stable_id(&self) -> &OpaqueId {
+        self.common().stable_id()
+    }
+
+    pub fn parent_id(&self) -> Option<&OpaqueId> {
+        self.common().parent_id()
+    }
+
+    pub fn name(&self) -> &PortableName {
+        self.common().name()
     }
 
     fn common(&self) -> &CatalogEntryCommon {
@@ -441,6 +511,7 @@ impl CatalogGeneration {
         let mut by_id = HashMap::new();
         let mut roles = HashSet::new();
         let mut siblings = HashSet::new();
+        let mut physical_names = HashSet::new();
         for entry in &self.entries {
             let common = entry.common();
             if !ids.insert(common.stable_id.as_str()) {
@@ -462,6 +533,13 @@ impl CatalogGeneration {
                 return Err(CatalogError::InvalidFormat(
                     "duplicate sibling catalog name",
                 ));
+            }
+            if let Some(object) = entry.object_payload() {
+                if !physical_names.insert(object.physical_name.as_str()) {
+                    return Err(CatalogError::InvalidFormat(
+                        "duplicate object physical name",
+                    ));
+                }
             }
         }
 
@@ -733,6 +811,7 @@ enum WirePayload {
     Folder,
     Object {
         revision: u64,
+        physical_name: String,
         content_hash: String,
         object_kind: String,
         wrapped_dek: Box<WireWrappedDek>,
@@ -1070,9 +1149,10 @@ impl Serialize for WirePayloadRef<'_> {
                 state.end()
             }
             CatalogGenerationEntry::Object(_, object) => {
-                let mut state = serializer.serialize_struct("WirePayload", 6)?;
+                let mut state = serializer.serialize_struct("WirePayload", 7)?;
                 state.serialize_field("kind", "object")?;
                 state.serialize_field("revision", &object.revision)?;
+                state.serialize_field("physical_name", object.physical_name.as_str())?;
                 state.serialize_field("content_hash", object.content_hash.as_str())?;
                 state.serialize_field("object_kind", object.kind.as_str())?;
                 state.serialize_field(
@@ -1208,6 +1288,7 @@ fn from_wire(wire: WireCatalogGeneration) -> Result<CatalogGeneration, CatalogEr
             WirePayload::Folder => CatalogGenerationEntry::folder(common),
             WirePayload::Object {
                 revision,
+                physical_name,
                 content_hash,
                 object_kind,
                 wrapped_dek,
@@ -1229,6 +1310,7 @@ fn from_wire(wire: WireCatalogGeneration) -> Result<CatalogGeneration, CatalogEr
                     common,
                     CatalogObject::new(
                         revision,
+                        ObjectPhysicalName::parse(&physical_name)?,
                         ContentHash::parse(&content_hash)?,
                         ObjectKind::parse(&object_kind)?,
                         wrapped_dek,

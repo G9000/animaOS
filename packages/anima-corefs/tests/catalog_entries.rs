@@ -3,8 +3,8 @@ use anima_corefs::catalog::{
     encrypt_catalog_generation, inspect_catalog_generation_envelope,
     validate_catalog_generation_encoding, CatalogClientMetadata, CatalogEntry, CatalogEntryCommon,
     CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject, CatalogPayload,
-    ContentHash, ObjectLifecycle, TrashMetadata, WrappedObjectDekRecord, MAX_CATALOG_DEPTH,
-    MAX_CATALOG_ENTRIES,
+    ContentHash, ObjectLifecycle, ObjectPhysicalName, TrashMetadata, WrappedObjectDekRecord,
+    MAX_CATALOG_DEPTH, MAX_CATALOG_ENTRIES,
 };
 use anima_corefs::crypto::{
     derive_corefs_subkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
@@ -30,9 +30,14 @@ fn common(id: &str, parent_id: Option<&str>, name: &str) -> CatalogEntryCommon {
     )
 }
 
+fn physical_name() -> ObjectPhysicalName {
+    ObjectPhysicalName::parse("object-0123456789abcdef0123456789abcdef.acore").unwrap()
+}
+
 fn object() -> CatalogObject {
     CatalogObject::new(
         1,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Note,
         WrappedObjectDekRecord::from_parts(
@@ -111,6 +116,7 @@ fn typed_object_entry_roundtrips_with_all_authoritative_state() {
     );
     let object = CatalogObject::new(
         4,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Note,
         wrapped,
@@ -167,6 +173,7 @@ fn typed_object_fields_reject_noncanonical_or_zero_values() {
     .is_err());
     assert!(CatalogObject::new(
         0,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Note,
         WrappedObjectDekRecord::from_parts(
@@ -183,6 +190,7 @@ fn typed_object_fields_reject_noncanonical_or_zero_values() {
     .is_err());
     assert!(CatalogObject::new(
         1,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Folder,
         WrappedObjectDekRecord::from_parts(
@@ -200,6 +208,24 @@ fn typed_object_fields_reject_noncanonical_or_zero_values() {
 }
 
 #[test]
+fn object_physical_names_are_opaque_strict_and_unique_per_catalog() {
+    assert!(ObjectPhysicalName::parse("Entry.md").is_err());
+    assert!(ObjectPhysicalName::parse("object-ABCDEF0123456789abcdef0123456789.acore").is_err());
+    assert!(ObjectPhysicalName::parse("../object-0123456789abcdef0123456789abcdef.acore").is_err());
+    assert!(ObjectPhysicalName::parse("object-0123456789abcdef.acore").is_err());
+
+    assert!(CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::object(common(OBJECT_ID, Some(ROOT_ID), "One.md"), object(),),
+            CatalogGenerationEntry::object(common(OTHER_ID, Some(ROOT_ID), "Two.md"), object(),),
+        ],
+    )
+    .is_err());
+}
+
+#[test]
 fn lifecycle_state_is_unambiguous_and_positive() {
     assert!(TrashMetadata::new(
         OpaqueId::parse(TRASH_ID).unwrap(),
@@ -211,6 +237,7 @@ fn lifecycle_state_is_unambiguous_and_positive() {
     assert!(ObjectLifecycle::tombstone(OpaqueId::parse(TRASH_ID).unwrap(), 0).is_err());
     assert!(CatalogObject::new(
         1,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Note,
         WrappedObjectDekRecord::from_parts(
@@ -260,6 +287,7 @@ fn catalog_rejects_entry_count_and_depth_before_expensive_graph_work() {
 fn trash_and_tombstone_references_must_resolve_to_current_folders() {
     let trashed = CatalogObject::new(
         1,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Note,
         WrappedObjectDekRecord::from_parts(
@@ -293,6 +321,7 @@ fn trash_and_tombstone_references_must_resolve_to_current_folders() {
 
     let tombstone = CatalogObject::new(
         1,
+        physical_name(),
         ContentHash::parse(&"ab".repeat(32)).unwrap(),
         ObjectKind::Note,
         WrappedObjectDekRecord::from_parts(

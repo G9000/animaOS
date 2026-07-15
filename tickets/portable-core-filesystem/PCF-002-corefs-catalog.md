@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 17:58 MYT
+- Updated: 2026-07-15 20:55 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -79,6 +79,8 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 15:44 MYT - Claimed PCF-002 Step 6 from merged `main` in isolated worktree `codex/pcf-002-catalog-head`. Scope is first-class folders, inherited policy validation, complete typed immutable catalog entries, and the authenticated `fs/HEAD` record; the Core-wide commit coordinator, failure injection, rotation, logical operations/APIs, grants, and benchmarks remain later steps. Dependency setup and the merged native baseline passed 254 tests before implementation.
 - 2026-07-15 17:50 MYT - Completed PCF-002 Step 6 with first-class portable folders, closed ownership/access and role namespaces, sticky-deny policy inheritance, strict complete V2 catalogs, bounded linear graph validation, lifecycle reference invariants, V2-specific key derivation, and authenticated canonical `fs/HEAD`. Review hardening made principal/role issuance fail closed until the capability broker exists, denied clients without device-local grants, kept privileged plaintext promotion and irreversible cutover issuance crate-private, and added allocation-free catalog-size preflight. Step 6 passed independent requirements and code-quality review; PCF-002 remains `in_progress` for the Step 7 commit coordinator and later slices.
 - 2026-07-15 17:58 MYT - Published the Step 6 catalog/HEAD slice as draft PR #96 (`codex/pcf-002-catalog-head`) against `main`. The PR description records the completed Step 6 boundary, 86 Rust 1.75 CoreFS tests, 304 combined native tests, workspace build, and the explicitly deferred Step 7+ work.
+- 2026-07-15 19:29 MYT - Began PCF-002 Step 7 in isolated worktree `codex/pcf-002-commit-coordinator` from merged `origin/main` at `408d9b64`. Scope is the Core-wide commit coordinator: prepared immutable revisions, kernel-backed exclusive locking with PID/process-start ownership metadata, authenticated HEAD/catalog reload, typed path/revision revalidation, ordered catalog-to-HEAD publication, and post-commit invalidation. Step 8 crash-boundary injection remains deferred. Dependency setup completed and the Rust 1.75 CoreFS baseline passed all 86 tests.
+- 2026-07-15 20:55 MYT - Completed PCF-002 Step 7 after two requirements and production/security review passes. The coordinator now prepares bounded authenticated object revisions and their exact wrapped DEKs outside the lock; anchors interprocess exclusion to non-replaceable handles; validates pinned Core layout identity; reloads authenticated state; requires complete source/destination precondition coverage; keeps converter output on `VALIDATION_HEAD`; publishes catalog, cutover receipt, then authoritative `HEAD`; preserves irreversible marker continuity; and emits invalidation only after unlock. Adversarial tests cover PID reuse, lock/path replacement, wrapper mismatch, stale paths, omitted preconditions, replayed validation HEAD, and invalidation failure. Step 8 failure injection remains separate, so PCF-002 stays `in_progress`.
 
 ## Validation
 
@@ -112,6 +114,12 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 Step 6: `cargo test --locked -p anima-corefs -p anima-core` (304 tests; existing `anima-core` warnings only)
   - PCF-002 Step 6: `cargo check --locked -p anima-core --features python --tests` (passed; existing unrelated warnings only)
   - PCF-002 Step 6: `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
+  - PCF-002 Step 7: `cargo +1.75.0 test --locked -p anima-corefs` (104 test entries including compile-fail authority coverage)
+  - PCF-002 Step 7: `cargo test --locked -p anima-corefs -p anima-core` (passed; existing unrelated `anima-core` warnings only)
+  - PCF-002 Step 7: `cargo check --locked -p anima-core --features python --tests` (passed; existing unrelated warnings only)
+  - PCF-002 Step 7: `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
+  - PCF-002 Step 7: `bun run build`; Codex attribution; staged legal resources; CoreFS release-notice hashes; locked Cargo metadata
+  - PCF-002 Step 7: independent requirements and production/security re-reviews returned clean after all actionable findings were covered by regressions
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -131,6 +139,8 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/anima-corefs/src/{lib.rs,crypto.rs,id.rs,bounded.rs}` and `packages/anima-corefs/Cargo.toml`
   - `packages/anima-corefs/src/{folders.rs,policy.rs,head.rs}` and `packages/anima-corefs/src/catalog/v2.rs`
   - `packages/anima-corefs/tests/{folders.rs,policy.rs,catalog_entries.rs,head.rs}`
+  - `packages/anima-corefs/src/{transaction.rs,publication.rs,envelope.rs,lib.rs}`
+  - `packages/anima-corefs/tests/{transaction.rs,publication.rs}`
   - `packages/anima-corefs/tests/opaque_id.rs`
   - `packages/anima-core/src/ffi.rs`
   - `apps/server/tests/test_corefs_crypto.py`
