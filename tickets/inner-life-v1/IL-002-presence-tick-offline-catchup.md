@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 17:55 MYT
+- Updated: 2026-07-15 19:20 MYT
 - Started:
 - Completed:
 
@@ -19,7 +19,7 @@ Run inner-life dynamics on a 60 s background tick and apply the entire offline g
 
 ## Deliverables
 
-- `_periodic_presence_tick()` co-scheduled with existing sweeps: affect relaxation, pressure accumulation, idle counters, dream eligibility check.
+- `_periodic_presence_tick()` co-scheduled with existing sweeps: affect relaxation, allostatic accumulation (`update_allostatic_shift` from IL-001 — implemented and tested there but deliberately unwired until this tick exists), pressure accumulation, idle counters, dream eligibility check.
 - Startup catch-up: O(1) closed-form application of the gap (affect, pressures), no tick replay and no inline dream passes; if the gap held ≥ 1 eligible night window, schedule at most one deferred catch-up dream for the next idle window.
 - `presence_catchup` audit row per catch-up (gap length, components applied, dream deferred yes/no).
 
@@ -34,6 +34,7 @@ Run inner-life dynamics on a 60 s background tick and apply the entire offline g
 
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:55 MYT - Catch-up no longer evaluates dream windows inline per review (O(1) conflict); defers at most one catch-up dream.
+- 2026-07-15 19:20 MYT - IL-001 review: allostatic update is implemented in inner_life/affect.py but unwired by design; this tick is its caller.
 
 ## Validation
 
