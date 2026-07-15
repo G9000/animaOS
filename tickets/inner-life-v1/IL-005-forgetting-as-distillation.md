@@ -20,7 +20,7 @@ Make passive forgetting distill instead of delete: decayed casual/transient/emot
 ## Deliverables
 
 - Distillation step in the F7 decay path: affective/topical signature → `tendency` namespace claim, `origin: distilled`.
-- `tendency_contributions` ledger (tombstone_id, tendency_claim_id, contribution_vector — numeric only, no content); tendency values recomputable from surviving ledger rows.
+- `tendency_contributions` ledger (tombstone_id, tendency_claim_id, contribution_vector — numeric only, no content); tendency values recomputable from surviving ledger rows. Ledger and tombstones are soul-store scoped and included in vault export/import (they cannot be rebuilt after content deletion).
 - Tombstone rows retaining only memory class, affect label, and time range; content/embeddings/evidence cryptographically deleted.
 - `forget_audit_log` mode `distilled`.
 - User-initiated deletion of a distilled item deletes its ledger rows and recomputes affected tendencies (right-to-forget precedence).

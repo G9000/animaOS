@@ -49,7 +49,7 @@ Purpose: land the state primitive everything else reads.
 ### Phase 1: Continuity — presence tick and offline catch-up (IL-002)
 
 - [ ] Add `_periodic_presence_tick()` (60 s) co-scheduled with existing sweeps; skip cleanly while a turn is in flight.
-- [ ] Implement `catchup.py`: O(1) gap application (affect, pressures, retroactive dream windows) + `presence_catchup` audit row.
+- [ ] Implement `catchup.py`: O(1) gap application (affect, pressures) + `presence_catchup` audit row; no inline dream passes — defer at most one catch-up dream to the next idle window.
 - [ ] Equivalence test: 3-week gap == 30,240 ticks within float tolerance; catch-up < 50 ms; no behavioral output during catch-up.
 
 ### Phase 2: Memory dynamics (IL-004, IL-005, IL-006 — parallelizable, standalone)
@@ -87,6 +87,6 @@ Purpose: the first user-visible behavior; lands only after continuity exists.
 
 ## Migration Notes
 
-- Soul-store (alembic_core): `latent_traces`, `dream_journal`, tendency-claim namespace — all included in vault export/import from day one.
+- Soul-store (alembic_core): `latent_traces`, `dream_journal`, tendency-claim namespace, distillation tombstones, `tendency_contributions` ledger — all included in vault export/import from day one (ledger/tombstones are unrebuildable and right-to-forget depends on them).
 - Runtime (alembic_runtime): affect state, pressure state, `presence_catchup` + initiative provenance — rebuildable, excluded from vault.
 - Order: runtime migrations may land per-phase; soul migrations must land with the feature that writes them (Phases 2 and 4).

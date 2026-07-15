@@ -109,10 +109,10 @@ A persisted vector `A = (valence v ∈ [−1,1], arousal a ∈ [0,1], energy e �
 ### IL2 — Presence Tick and Offline Catch-Up
 
 - A `_periodic_presence_tick()` loop (60 s cadence, co-scheduled with the existing inactivity sweep in `main.py`) that: applies IL1 relaxation, advances IL3 pressure accumulators, increments idle counters, and checks IL7 dream eligibility.
-- **Offline catch-up on startup**: because IL1 relaxation and IL3 accumulation are closed-form in Δt, a restart after a gap applies the entire gap in O(1) — no tick replay. The companion's state on wake reflects the absence: affect settled toward baseline, relational pressure grown, dream cycle possibly having fired during eligible windows (evaluated retroactively against the gap's night windows).
+- **Offline catch-up on startup**: because IL1 relaxation and IL3 accumulation are closed-form in Δt, a restart after a gap applies the entire gap in O(1) — no tick replay. The companion's state on wake reflects the absence: affect settled toward baseline, relational pressure grown. Catch-up itself is pure arithmetic — it never runs dream passes inline. Instead, if the gap contained ≥ 1 eligible night window, it schedules at most **one** deferred catch-up dream (over the gap's most significant material) for the next idle window, regardless of gap length — a 3-week absence yields one wake-up dream, not 21 backfilled ones.
 - Catch-up writes one `presence_catchup` audit row (gap length, components applied) for inspectability.
 
-**Acceptance**: a simulated 3-week gap produces the same state as 30,240 individual ticks (within float tolerance); startup catch-up completes < 50 ms; no behavioral output is generated during catch-up itself (deferred to normal gating).
+**Acceptance**: a simulated 3-week gap produces the same closed-form state (affect, pressures) as 30,240 individual ticks within float tolerance — dream effects excluded from the equivalence, since catch-up intentionally defers to a single dream; startup catch-up completes < 50 ms with zero LLM calls; no behavioral output is generated during catch-up itself (deferred to normal gating).
 
 ### IL3 — Drive Accumulators and Push Initiative
 
@@ -202,7 +202,7 @@ Surfacing is gated by `presence_config` (`dream_sharing: off | on_ask | ambient`
 - All state updates are pure functions `(state, event, Δt) → state` in a new `services/agent/inner_life/` package; side effects (DB writes, notifications) live at the edges.
 - All scalars bounded and clamped at write time; all thresholds/taus in config with the defaults above.
 - Nothing in this PRD calls an LLM except: initiative message generation (IL3, on fire) and dream narrative generation (IL7, ≤ 1/night). Everything else is arithmetic.
-- All new state lives in the runtime store and is rebuildable except `dream_journal`, `latent_traces`, and tendency claims, which are soul-store (portable, encrypted).
+- All new state lives in the runtime store and is rebuildable except `dream_journal`, `latent_traces`, tendency claims, distillation tombstones, and the `tendency_contributions` ledger, which are soul-store (portable, encrypted, included in vault export/import). The ledger and tombstones cannot be rebuilt — their source content is deleted — and right-to-forget for already-distilled items depends on them surviving rebuilds and export/import.
 - Every user-visible behavior (initiative message, dream mention) must be traceable to logged pressures/sources — no unexplainable outputs.
 
 ## 6. Success Metrics
