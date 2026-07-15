@@ -26,7 +26,8 @@ Implements PRD `docs/prds/presence/inner-life-v1.md` (IL1–IL7). Docs-only arti
 | Area | Main files |
 | --- | --- |
 | Dynamics core | new `apps/server/src/anima_server/services/agent/inner_life/` (`affect.py`, `pressures.py`, `catchup.py`, `dream.py`, `__init__.py`) |
-| Durable models | `apps/server/src/anima_server/models/agent_runtime.py`, `models/presence.py`, new inner-life tables |
+| Soul models (durable, SQLCipher `Base`) | `apps/server/src/anima_server/models/agent_runtime.py` (despite its name), `models/presence.py` — only latent_traces, dream_journal, tendency claims, tombstones, contribution ledger, presence config |
+| Runtime models (rebuildable, `RuntimeBase`) | `apps/server/src/anima_server/models/runtime_consciousness.py` (affect state), `models/runtime*.py` (pressures, catch-up audit, initiative log) |
 | Migrations | `apps/server/alembic_core/versions/` (soul: latent_traces, dream_journal, tendency claims), `apps/server/alembic_runtime/versions/` (runtime: affect state, pressures, audit rows) |
 | Background loops | `apps/server/src/anima_server/main.py` (`_periodic_presence_tick`), `services/agent/sleep_agent.py`, `sleep_tasks.py` |
 | Initiative | new `inner_life/initiative.py`, `services/agent/proactive.py`, `presence_config.py`, desktop notification bridge under `apps/desktop` |
