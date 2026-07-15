@@ -1,10 +1,150 @@
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 const DEFAULT_HEALTH_URL = "http://127.0.0.1:3031/health";
 const DEFAULT_HEALTH_TIMEOUT_MS = 30000;
 const DEFAULT_HEALTH_INTERVAL_MS = 500;
 const SERVER_RESTART_EXTENSIONS = [".py", ".toml", ".ini"];
+
+export function createDevSessionContinuity({
+  tempRoot = os.tmpdir(),
+  randomBytesImpl = randomBytes,
+} = {}) {
+  const directory = mkdtempSync(path.join(tempRoot, "anima-dev-session-"));
+  const serverEnv = Object.freeze({
+    ANIMA_DEV_SESSION_STATE_PATH: path.join(directory, "session-state.bin"),
+    ANIMA_DEV_SESSION_KEY: randomBytesImpl(32).toString("base64"),
+  });
+  let cleaned = false;
+
+  return Object.freeze({
+    directory,
+    serverEnv,
+    cleanup() {
+      if (cleaned) {
+        return;
+      }
+      cleaned = true;
+      rmSync(directory, { recursive: true, force: true });
+    },
+  });
+}
+
+export function buildTargetEnvironment(name, baseEnv, serverEnv) {
+  const sanitizedBaseEnv = { ...baseEnv };
+  for (const key of Object.keys(sanitizedBaseEnv)) {
+    const normalizedKey = key.toUpperCase();
+    if (
+      normalizedKey === "ANIMA_DEV_SESSION_STATE_PATH" ||
+      normalizedKey === "ANIMA_DEV_SESSION_KEY"
+    ) {
+      delete sanitizedBaseEnv[key];
+    }
+  }
+  if (name === "server") {
+    return { ...sanitizedBaseEnv, ...serverEnv };
+  }
+  return sanitizedBaseEnv;
+}
+
+export function createServerReloadScheduler({
+  restart,
+  waitForReady,
+  onError,
+  quietMs = 750,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (typeof restart !== "function" || typeof waitForReady !== "function") {
+    throw new Error("Server reload scheduler requires restart and waitForReady callbacks");
+  }
+
+  let timer = null;
+  let running = false;
+  let pending = false;
+  let stopped = false;
+  const idleWaiters = new Set();
+
+  const isIdle = () => timer === null && !running && !pending;
+  const resolveIdleWaiters = () => {
+    if (!isIdle()) {
+      return;
+    }
+    for (const resolve of idleWaiters) {
+      resolve();
+    }
+    idleWaiters.clear();
+  };
+
+  const arm = () => {
+    if (stopped || running) {
+      return;
+    }
+    if (timer !== null) {
+      clearTimer(timer);
+    }
+    timer = setTimer(() => {
+      timer = null;
+      void run();
+    }, quietMs);
+  };
+
+  const run = async () => {
+    if (stopped) {
+      pending = false;
+      resolveIdleWaiters();
+      return;
+    }
+
+    pending = false;
+    running = true;
+    try {
+      await restart();
+      await waitForReady();
+    } catch (error) {
+      pending = false;
+      onError?.(error);
+    } finally {
+      running = false;
+      if (!stopped && pending) {
+        arm();
+      }
+      resolveIdleWaiters();
+    }
+  };
+
+  return {
+    schedule() {
+      if (stopped) {
+        return;
+      }
+      pending = true;
+      if (!running) {
+        arm();
+      }
+    },
+    stop() {
+      stopped = true;
+      pending = false;
+      if (timer !== null) {
+        clearTimer(timer);
+        timer = null;
+      }
+      resolveIdleWaiters();
+    },
+    whenIdle() {
+      if (isIdle()) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        idleWaiters.add(resolve);
+      });
+    },
+  };
+}
 
 export function buildTargetSpec(name, repoRoot, nodeExecutable = process.execPath) {
   if (name === "server") {

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
@@ -66,6 +67,49 @@ class LLMInvocationError(RuntimeError):
 
 class ContextWindowOverflowError(LLMInvocationError):
     """Raised when the LLM reports that the input exceeds the context window."""
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTarget:
+    provider: str
+    model: str
+
+
+def resolve_background_chat_targets(
+    *,
+    extraction_provider: str | None = None,
+    extraction_model: str | None = None,
+    primary_provider: str | None = None,
+    primary_model: str | None = None,
+) -> list[ChatTarget]:
+    """Return ordered, unique chat-capable targets for background work."""
+    resolved_primary_provider = (
+        settings.agent_provider if primary_provider is None else primary_provider
+    ).strip()
+    resolved_primary_model = (
+        settings.agent_model if primary_model is None else primary_model
+    ).strip()
+    resolved_extraction_provider = (
+        settings.agent_extraction_provider
+        if extraction_provider is None
+        else extraction_provider
+    ).strip() or resolved_primary_provider
+    resolved_extraction_model = (
+        settings.agent_extraction_model
+        if extraction_model is None
+        else extraction_model
+    ).strip()
+
+    targets: list[ChatTarget] = []
+    for provider, model in (
+        (resolved_extraction_provider, resolved_extraction_model),
+        (resolved_primary_provider, resolved_primary_model),
+    ):
+        target = ChatTarget(provider=provider, model=model)
+        if provider == "scaffold" or not provider or not model or target in targets:
+            continue
+        targets.append(target)
+    return targets
 
 
 class ChatClient(Protocol):
@@ -143,7 +187,7 @@ def create_provider_chat_client(
 def resolve_base_url(provider: str) -> str:
     validate_provider(provider)
     configured_base_url = settings.agent_base_url.strip()
-    if configured_base_url:
+    if configured_base_url and provider == settings.agent_provider.strip():
         if provider == "ollama" and not configured_base_url.rstrip("/").endswith("/v1"):
             return configured_base_url.rstrip("/") + "/v1"
         return configured_base_url

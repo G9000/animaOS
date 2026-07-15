@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass
 from math import ceil
 
@@ -317,10 +318,10 @@ async def summarize_with_llm(
     fresh transcript from *rows* (used by the Level-2 cascade to pass a
     tool-content-clamped version).
     """
-    from anima_server.config import settings
+    from anima_server.services.agent.llm import resolve_background_chat_targets
 
-    provider = settings.agent_provider
-    if provider == "scaffold":
+    targets = resolve_background_chat_targets()
+    if not targets:
         return None
 
     transcript = transcript_override or _build_transcript(rows)
@@ -336,54 +337,65 @@ async def summarize_with_llm(
     prompt_loader = PromptLoader(agent_name="Anima")
     prompt_text = prompt_loader.summarization(transcript=transcript)
 
-    # Prefer extraction model (cheaper) if configured, else use primary.
-    model = settings.agent_extraction_model.strip() or settings.agent_model
-
     import contextlib
 
     from anima_server.services.agent.llm import create_provider_chat_client
     from anima_server.services.agent.llm_json import call_llm_for_text
 
-    # Temperature is intentionally omitted: some current Anthropic models
-    # reject it, and the summarizer works fine at the default.
-    client = create_provider_chat_client(
-        provider=provider,
-        model=model,
-        timeout=60.0,
-        max_tokens=500,
-    )
-    try:
-        summary = (
-            await call_llm_for_text(
-                "You are a concise conversation summarizer.",
-                prompt_text,
-                client=client,
+    last_error: Exception | None = None
+    last_exc_info = None
+    for index, target in enumerate(targets):
+        client = None
+        try:
+            # Temperature is intentionally omitted: some current Anthropic
+            # models reject it, and the summarizer works at the default.
+            client = create_provider_chat_client(
+                provider=target.provider,
+                model=target.model,
+                timeout=60.0,
+                max_tokens=500,
             )
-        ).strip()
-        if summary:
-            return summary
-        degraded_logger.warning(
-            "LLM summarization returned empty output (provider=%s model=%s); "
-            "falling back to text summary",
-            provider,
-            model,
-        )
-    except Exception:
-        degraded_logger.warning(
-            "LLM summarization failed (provider=%s model=%s); "
-            "falling back to text summary",
-            provider,
-            model,
-            exc_info=True,
-        )
-    finally:
-        # The provider client owns an httpx.AsyncClient; unlike the old
-        # `async with httpx.AsyncClient(...)` path it must be closed
-        # explicitly or repeated compactions leak sockets/connections.
-        aclose = getattr(client, "aclose", None)
-        if callable(aclose):
-            with contextlib.suppress(Exception):
-                await aclose()
+            summary = (
+                await call_llm_for_text(
+                    "You are a concise conversation summarizer.",
+                    prompt_text,
+                    client=client,
+                )
+            ).strip()
+            if summary:
+                return summary
+            last_error = ValueError("empty response")
+            last_exc_info = None
+        except Exception as exc:
+            last_error = exc
+            last_exc_info = sys.exc_info()
+        finally:
+            if client is not None:
+                aclose = getattr(client, "aclose", None)
+                if callable(aclose):
+                    with contextlib.suppress(Exception):
+                        await aclose()
+
+        if index < len(targets) - 1:
+            fallback = targets[index + 1]
+            degraded_logger.warning(
+                "LLM summarization target failed (%s/%s: %s); retrying with %s/%s",
+                target.provider,
+                target.model,
+                type(last_error).__name__,
+                fallback.provider,
+                fallback.model,
+            )
+
+    final_target = targets[-1]
+    degraded_logger.warning(
+        "LLM summarization failed for all targets (last=%s/%s: %s); "
+        "falling back to text summary",
+        final_target.provider,
+        final_target.model,
+        type(last_error).__name__ if last_error is not None else "unknown",
+        exc_info=last_exc_info,
+    )
 
     return None
 

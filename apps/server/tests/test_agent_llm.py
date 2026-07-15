@@ -8,14 +8,44 @@ import pytest
 from anima_server.config import settings
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.agent.llm import (
+    ChatTarget,
     LLMConfigError,
     build_provider_headers,
     create_llm,
     create_provider_chat_client,
     invalidate_llm_cache,
+    resolve_background_chat_targets,
     resolve_base_url,
     resolve_provider_api_key,
 )
+
+
+def test_resolve_background_chat_targets_orders_and_deduplicates() -> None:
+    assert resolve_background_chat_targets(
+        extraction_provider="ollama",
+        extraction_model="all-minilm:latest",
+        primary_provider="openai",
+        primary_model="gpt-5-mini",
+    ) == [
+        ChatTarget(provider="ollama", model="all-minilm:latest"),
+        ChatTarget(provider="openai", model="gpt-5-mini"),
+    ]
+
+    assert resolve_background_chat_targets(
+        extraction_provider="",
+        extraction_model="gpt-5-mini",
+        primary_provider="openai",
+        primary_model="gpt-5-mini",
+    ) == [ChatTarget(provider="openai", model="gpt-5-mini")]
+
+
+def test_resolve_background_chat_targets_filters_empty_and_scaffold() -> None:
+    assert resolve_background_chat_targets(
+        extraction_provider="ollama",
+        extraction_model="",
+        primary_provider="scaffold",
+        primary_model="unused",
+    ) == []
 
 
 @pytest.mark.asyncio
@@ -405,6 +435,16 @@ def test_create_llm_uses_anthropic_client() -> None:
     assert isinstance(client, AnthropicChatClient)
     assert client.model == "claude-haiku-4-5-20251001"
     assert anthropic_base_url == "https://api.anthropic.com/v1"
+
+
+def test_resolve_base_url_scopes_override_to_primary_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_base_url", "http://127.0.0.1:11434")
+
+    assert resolve_base_url("ollama") == "http://127.0.0.1:11434/v1"
+    assert resolve_base_url("anthropic") == "https://api.anthropic.com/v1"
 
 
 def test_create_llm_uses_configured_temperature() -> None:

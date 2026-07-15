@@ -96,9 +96,13 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
 VALID_PROVIDERS = {"scaffold"} | set(SUPPORTED_PROVIDERS)
 
 
-def _normalize_ollama_base_url(base_url: str | None) -> str:
+def _normalize_ollama_base_url(
+    base_url: str | None,
+    *,
+    fallback_to_current: bool = True,
+) -> str:
     configured = (base_url or "").strip()
-    if not configured and settings.agent_provider == "ollama":
+    if not configured and fallback_to_current and settings.agent_provider == "ollama":
         configured = settings.agent_base_url.strip()
     if not configured:
         configured = "http://127.0.0.1:11434"
@@ -165,6 +169,71 @@ async def _list_ollama_models(base_url: str) -> list[OllamaModelInfo]:
     models = [model for item in models_raw if (
         model := _parse_ollama_model(item)) is not None]
     return sorted(models, key=lambda item: item.name.lower())
+
+
+async def _validate_ollama_completion_model(base_url: str, model: str) -> None:
+    """Reject Ollama models that cannot service chat/completion requests."""
+    normalized_base_url = _normalize_ollama_base_url(base_url)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                f"{normalized_base_url}/api/show",
+                json={"model": model},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Ollama could not inspect model {model!r}.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to reach Ollama at {normalized_base_url}.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Ollama returned invalid metadata for model {model!r}.",
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Ollama returned invalid metadata for model {model!r}.",
+        )
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, list) or "completion" not in capabilities:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Ollama model {model!r} does not support completion/chat. "
+                "Choose a generative model instead of an embedding-only model."
+            ),
+        )
+
+
+async def _validate_prospective_ollama_targets(
+    payload: AgentConfigUpdateRequest,
+) -> None:
+    extraction_provider = (
+        settings.agent_extraction_provider.strip() or payload.provider
+    )
+    candidates = (
+        (payload.provider, payload.model.strip()),
+        (extraction_provider, (payload.extractionModel or "").strip()),
+    )
+    base_url = _normalize_ollama_base_url(
+        payload.ollamaUrl,
+        fallback_to_current=False,
+    )
+    validated: set[str] = set()
+    for provider, model in candidates:
+        if provider != "ollama" or not model or model in validated:
+            continue
+        await _validate_ollama_completion_model(base_url, model)
+        validated.add(model)
 
 
 @router.get("/providers", response_model=list[ProviderInfo])
@@ -257,6 +326,8 @@ async def update_config(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported provider: {payload.provider!r}. Valid: {', '.join(sorted(VALID_PROVIDERS))}",
         )
+
+    await _validate_prospective_ollama_targets(payload)
 
     settings.agent_provider = payload.provider
     settings.agent_model = payload.model

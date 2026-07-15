@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   buildTargetSpec,
+  buildTargetEnvironment,
+  createDevSessionContinuity,
+  createServerReloadScheduler,
   getServerRestartCandidate,
   startDevStack,
 } from "../scripts/dev-root-lib.mjs";
@@ -141,6 +147,159 @@ describe("startDevStack", () => {
       name: "desktop",
       signal: null,
     });
+  });
+});
+
+describe("dev session continuity", () => {
+  test("creates an ephemeral server-only environment and removes it on cleanup", () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "anima-continuity-test-"));
+    try {
+      const continuity = createDevSessionContinuity({
+        tempRoot,
+        randomBytesImpl: () => Buffer.alloc(32, 7),
+      });
+
+      expect(continuity.serverEnv.ANIMA_DEV_SESSION_STATE_PATH).toStartWith(
+        continuity.directory,
+      );
+      expect(continuity.serverEnv.ANIMA_DEV_SESSION_KEY).toBe(
+        Buffer.alloc(32, 7).toString("base64"),
+      );
+      expect(existsSync(continuity.directory)).toBe(true);
+
+      const baseEnv = {
+        PATH: "test-path",
+        ANIMA_DEV_SESSION_STATE_PATH: "stale-state",
+        ANIMA_DEV_SESSION_KEY: "stale-key",
+      };
+      expect(
+        buildTargetEnvironment("server", baseEnv, continuity.serverEnv),
+      ).toEqual({ PATH: "test-path", ...continuity.serverEnv });
+      expect(
+        buildTargetEnvironment("desktop", baseEnv, continuity.serverEnv),
+      ).toEqual({ PATH: "test-path" });
+      expect(
+        buildTargetEnvironment("anima-mod", baseEnv, continuity.serverEnv),
+      ).toEqual({ PATH: "test-path" });
+      expect(baseEnv).toEqual({
+        PATH: "test-path",
+        ANIMA_DEV_SESSION_STATE_PATH: "stale-state",
+        ANIMA_DEV_SESSION_KEY: "stale-key",
+      });
+
+      continuity.cleanup();
+      continuity.cleanup();
+      expect(existsSync(continuity.directory)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("server reload scheduler", () => {
+  test("coalesces rapid saves and waits for health readiness", async () => {
+    const events: string[] = [];
+    const scheduler = createServerReloadScheduler({
+      quietMs: 5,
+      restart: async () => {
+        events.push("restart");
+      },
+      waitForReady: async () => {
+        events.push("ready");
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+
+    scheduler.schedule();
+    scheduler.schedule();
+    await scheduler.whenIdle();
+
+    expect(events).toEqual(["restart", "ready"]);
+    scheduler.stop();
+  });
+
+  test("runs one later reload for saves received during an active reload", async () => {
+    const events: string[] = [];
+    let releaseFirstReload!: () => void;
+    const firstReloadGate = new Promise<void>((resolve) => {
+      releaseFirstReload = resolve;
+    });
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let restartCount = 0;
+    const scheduler = createServerReloadScheduler({
+      quietMs: 5,
+      restart: async () => {
+        restartCount += 1;
+        events.push(`restart:${restartCount}`);
+        if (restartCount === 1) {
+          markFirstStarted();
+          await firstReloadGate;
+        }
+      },
+      waitForReady: async () => {
+        events.push(`ready:${restartCount}`);
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+
+    scheduler.schedule();
+    await firstStarted;
+    scheduler.schedule();
+    scheduler.schedule();
+    releaseFirstReload();
+    await scheduler.whenIdle();
+
+    expect(events).toEqual([
+      "restart:1",
+      "ready:1",
+      "restart:2",
+      "ready:2",
+    ]);
+    scheduler.stop();
+  });
+
+  test("stop cancels queued work and reload errors reach the handler", async () => {
+    const cancelledEvents: string[] = [];
+    const cancelled = createServerReloadScheduler({
+      quietMs: 10,
+      restart: async () => {
+        cancelledEvents.push("restart");
+      },
+      waitForReady: async () => {},
+      onError: (error) => {
+        throw error;
+      },
+    });
+    cancelled.schedule();
+    cancelled.stop();
+    await cancelled.whenIdle();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(cancelledEvents).toEqual([]);
+
+    const failures: Error[] = [];
+    const failed = createServerReloadScheduler({
+      quietMs: 5,
+      restart: async () => {
+        throw new Error("reload failed");
+      },
+      waitForReady: async () => {
+        throw new Error("must not run");
+      },
+      onError: (error) => {
+        failures.push(error instanceof Error ? error : new Error(String(error)));
+      },
+    });
+    failed.schedule();
+    await failed.whenIdle();
+    expect(failures.map((error) => error.message)).toEqual(["reload failed"]);
+    failed.stop();
   });
 });
 
