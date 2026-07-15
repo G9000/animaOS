@@ -1,6 +1,6 @@
 # IL-001 - Affect state vector with decay-to-baseline dynamics
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/agent/inner_life`, `apps/server/src/anima_server/models/runtime_consciousness.py`
 - Parent: `IL-000`
@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 18:54 MYT
+- Updated: 2026-07-15 19:55 MYT
 - Started: 2026-07-15 18:54 MYT
-- Completed:
+- Completed: 2026-07-15 19:55 MYT
 
 ## Goal
 
@@ -35,12 +35,26 @@ Persist a deterministic affect vector (valence, arousal, energy) with closed-for
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 18:30 MYT - Rescoped affect model from agent_runtime.py (soul Base) to a RuntimeBase model per review — affect is rebuildable and must stay out of the vault.
 - 2026-07-15 18:54 MYT - Started implementation on branch feature/il-001-affect-state-vector.
+- 2026-07-15 19:55 MYT - Implemented affect vector (pure dynamics, RuntimeBase persistence, migration 027, consolidation/proactive wiring, 22 tests). Task review approved after one fix round (session isolation, energy rendering, allostatic recovery drain, first-read race).
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run --project apps/server pytest apps/server/tests/test_inner_life_affect.py` — 22/22 green
+  - `bun run test` (full suite) — 2411 passed, 1 failed (test_dev_session_continuity::test_global_store_restores_snapshot_during_module_import, verified pre-existing by stash)
+  - ruff clean
 - Changed paths:
-  - none
+  - apps/server/alembic_runtime/versions/027_affect_state.py
+  - apps/server/src/anima_server/config.py
+  - apps/server/src/anima_server/models/__init__.py
+  - apps/server/src/anima_server/models/runtime_consciousness.py
+  - apps/server/src/anima_server/services/agent/consolidation.py
+  - apps/server/src/anima_server/services/agent/inner_life/__init__.py
+  - apps/server/src/anima_server/services/agent/inner_life/affect.py
+  - apps/server/src/anima_server/services/agent/inner_life/store.py
+  - apps/server/src/anima_server/services/agent/proactive.py
+  - apps/server/tests/test_inner_life_affect.py
+  - tickets/inner-life-v1/IL-002-presence-tick-offline-catchup.md
 - Notes:
-  - none
+  - update_allostatic_shift deliberately unwired; IL-002 presence tick is its caller (recorded in IL-002).
+  - Circadian phase uses caller-supplied timezone (UTC at both wiring sites); true local-time resolution deferred to IL-002.
