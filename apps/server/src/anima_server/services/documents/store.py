@@ -121,6 +121,7 @@ def replace_document_chunks(
     *,
     document_id: int,
     chunks: Sequence[ExtractedDocumentChunk],
+    parse_quality: str,
 ) -> list[RuntimeDocumentChunk]:
     document = db.get(RuntimeDocument, document_id)
     if document is None:
@@ -128,6 +129,7 @@ def replace_document_chunks(
 
     now = datetime.now(UTC)
     document.status = "registered"
+    document.parse_quality = parse_quality
     document.indexed_at = None
     document.updated_at = now
 
@@ -166,6 +168,7 @@ def replace_document_chunks(
             page_end=chunk.page_end,
             section_title=_bounded_section_title(chunk.section_title),
             token_count=chunk.token_count,
+            parse_quality=parse_quality,
             metadata_json=_copy_metadata(chunk.metadata_json),
         )
         for chunk in chunks

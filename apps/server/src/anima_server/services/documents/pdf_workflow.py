@@ -366,6 +366,7 @@ def run_pdf_ingestion_until_wait_or_done(
                     db,
                     document_id=document.id,
                     chunks=extracted_chunks,
+                    parse_quality="docling",
                 )
             else:
                 chunks = reusable_chunks

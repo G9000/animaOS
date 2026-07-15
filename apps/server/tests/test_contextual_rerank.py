@@ -63,6 +63,7 @@ def _document_with_chunks(runtime_db, texts: list[str], *, indexed: bool = True)
             )
             for index, text in enumerate(texts)
         ],
+        parse_quality="docling",
     )
     if indexed:
         set_document_status(

@@ -615,6 +615,7 @@ def test_sync_document_source_preserves_chunks_and_writes_page_spans(runtime_db)
                 section_title="Details",
             ),
         ],
+        parse_quality="docling",
     )
 
     source, artifacts, spans = sync_document_source(runtime_db, document=document)

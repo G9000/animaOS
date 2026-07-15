@@ -174,6 +174,7 @@ def test_replace_document_chunks_replaces_existing_chunks_and_hashes_content(
         chunks=[
             ExtractedDocumentChunk(chunk_index=0, content_text="old text"),
         ],
+        parse_quality="docling",
     )
 
     chunks = replace_document_chunks(
@@ -191,6 +192,7 @@ def test_replace_document_chunks_replaces_existing_chunks_and_hashes_content(
             ),
             ExtractedDocumentChunk(chunk_index=1, content_text="second chunk"),
         ],
+        parse_quality="docling",
     )
 
     assert [chunk.chunk_index for chunk in chunks] == [1, 2]
@@ -217,6 +219,7 @@ def test_replace_document_chunks_deletes_stale_document_chunk_embeddings(
             ExtractedDocumentChunk(chunk_index=0, content_text="old first"),
             ExtractedDocumentChunk(chunk_index=1, content_text="old second"),
         ],
+        parse_quality="docling",
     )
     old_embedding = _embedding(1.0, 0.0)
     runtime_db.add_all(
@@ -256,6 +259,7 @@ def test_replace_document_chunks_deletes_stale_document_chunk_embeddings(
         chunks=[
             ExtractedDocumentChunk(chunk_index=0, content_text="new first"),
         ],
+        parse_quality="docling",
     )
 
     remaining = list(
@@ -289,6 +293,7 @@ def test_replace_document_chunks_resets_indexed_status(runtime_db) -> None:
         chunks=[
             ExtractedDocumentChunk(chunk_index=0, content_text="new text"),
         ],
+        parse_quality="docling",
     )
 
     assert document.status == "registered"
@@ -304,6 +309,7 @@ def test_replace_document_chunks_uses_document_user_id(runtime_db) -> None:
         chunks=[
             ExtractedDocumentChunk(chunk_index=0, content_text="owned chunk"),
         ],
+        parse_quality="docling",
     )
 
     assert chunks[0].document_id == document.id
@@ -320,6 +326,7 @@ def test_list_document_chunks_orders_by_chunk_index(runtime_db) -> None:
             ExtractedDocumentChunk(chunk_index=0, content_text="first"),
             ExtractedDocumentChunk(chunk_index=2, content_text="middle"),
         ],
+        parse_quality="docling",
     )
 
     chunks = list_document_chunks(runtime_db, document_id=document.id)
@@ -351,6 +358,24 @@ def test_set_document_status_can_mark_indexed(runtime_db) -> None:
     assert updated is not None
     assert updated.status == "stale"
     assert updated.indexed_at == indexed_at
+
+
+def test_replace_document_chunks_stamps_parse_quality(runtime_db) -> None:
+    document = register_document(runtime_db, _registration())
+
+    chunks = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0, content_text="alpha", page_start=1, page_end=1
+            )
+        ],
+        parse_quality="preview",
+    )
+
+    assert [chunk.parse_quality for chunk in chunks] == ["preview"]
+    assert document.parse_quality == "preview"
 
 
 def test_replace_document_chunks_bounds_section_title_to_column_length(
@@ -389,6 +414,7 @@ def test_replace_document_chunks_bounds_section_title_to_column_length(
                 section_title=long_title,
             )
         ],
+        parse_quality="docling",
     )
 
     assert len(chunks[0].section_title) <= 255

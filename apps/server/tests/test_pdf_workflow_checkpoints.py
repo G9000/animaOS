@@ -456,6 +456,7 @@ def _seed_chunked(
             ExtractedDocumentChunk(chunk_index=0, content_text="seed alpha"),
             ExtractedDocumentChunk(chunk_index=1, content_text="seed beta"),
         ],
+        parse_quality="docling",
     )
     _checkpoint(
         runtime_db,
@@ -1431,6 +1432,7 @@ def test_resume_from_indexed_reembeds_unindexed_document_before_summary(
             ExtractedDocumentChunk(chunk_index=0, content_text="replacement alpha"),
             ExtractedDocumentChunk(chunk_index=1, content_text="replacement beta"),
         ],
+        parse_quality="docling",
     )
     calls = _Calls()
 
