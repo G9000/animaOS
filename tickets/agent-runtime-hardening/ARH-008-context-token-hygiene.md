@@ -1,6 +1,6 @@
 # ARH-008 - Context and token hygiene
 
-- Status: in-review
+- Status: done
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`

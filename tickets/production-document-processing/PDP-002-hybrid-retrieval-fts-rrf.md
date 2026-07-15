@@ -1,6 +1,6 @@
 # PDP-002 - Hybrid Retrieval: BM25 + RRF Fusion
 
-- Status: in_review
+- Status: backlog
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `PDP-000`

@@ -1,6 +1,6 @@
 # PDP-007 - LLM-Wiki Compiler Wiring and Sleep-Agent Auto-Compile
 
-- Status: in_review
+- Status: backlog
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`

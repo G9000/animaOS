@@ -1,6 +1,6 @@
 # PDP-004 - Tiered Parsing: Docling Quality Tier and OCR Fallback
 
-- Status: in_review
+- Status: backlog
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`

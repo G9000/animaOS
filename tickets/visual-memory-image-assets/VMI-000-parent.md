@@ -8,7 +8,7 @@
 - PRD: docs/prds/memory/visual-memory-image-assets-v1.md
 - Plan: docs/superpowers/plans/2026-06-29-visual-memory-image-assets.md
 - Created: 2026-06-29 10:53 MYT
-- Updated: 2026-06-29 13:02 MYT
+- Updated: 2026-07-15 20:02 MYT
 - Started: 2026-06-29 11:49 MYT
 - Completed: 2026-06-29 13:02 MYT
 
@@ -27,6 +27,7 @@ Track the initiative that turns chat images into central visual memory assets wi
 | `VMI-005` | Agent retrieval and proactive image use | `done` | `VMI-004` |
 | `VMI-006` | User controls, deletion, and desktop/API client updates | `done` | `VMI-003`, `VMI-004` |
 | `VMI-007` | Legacy backfill, docs, and final validation | `done` | `VMI-005`, `VMI-006` |
+| `VMI-008` | Memory image details metadata enrichment | `done` | `VMI-006` |
 
 ## Deliverables
 
@@ -77,6 +78,7 @@ The first production-ready slice is `VMI-001` through `VMI-006` together:
 - `VMI-005` - Agent retrieval and proactive image use
 - `VMI-006` - User controls, deletion, and desktop/API client updates
 - `VMI-007` - Legacy backfill, docs, and final validation
+- `VMI-008` - Memory image details metadata enrichment (completed 2026-07-01 13:04 MYT)
 
 ## Activity Log
 
@@ -92,6 +94,7 @@ The first production-ready slice is `VMI-001` through `VMI-006` together:
 - 2026-06-29 12:23 MYT - Completed `VMI-005`; started `VMI-006`.
 - 2026-06-29 12:33 MYT - Completed `VMI-006`; started `VMI-007`.
 - 2026-06-29 13:02 MYT - Completed `VMI-007`; parent tracker closed with validation caveats recorded.
+- 2026-07-15 20:02 MYT - Repaired current parent tracking for completed child `VMI-008` using its existing `2026-07-01 13:04 MYT` completion evidence; kept the parent `done`, preserved its completion timestamp and ownership, and added no new child lifecycle event.
 
 ## Validation
 

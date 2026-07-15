@@ -1,6 +1,6 @@
 # ARH-004 - Background retry hygiene and persisted gates
 
-- Status: in-review
+- Status: done
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`

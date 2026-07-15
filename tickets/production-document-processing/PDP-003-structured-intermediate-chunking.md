@@ -1,6 +1,6 @@
 # PDP-003 - Structured Markdown Intermediate and Structure-Aware Chunking
 
-- Status: in_review
+- Status: backlog
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`

@@ -1,6 +1,6 @@
 # ARH-010 - Crash-durable memory extraction
 
-- Status: in-review
+- Status: done
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `ARH-000`

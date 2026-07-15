@@ -27,11 +27,22 @@ Build thoughtfully. I will remember.
 
 This repo is a mixed monorepo:
 
-- `apps/server`: Python + FastAPI — the cognitive core. SQLAlchemy models in `src/anima_server/models/`, Alembic revisions in `alembic/versions/`. All new backend work goes here.
-- `apps/animus`: Bun-based CLI/local tool interface.
-- `apps/desktop`: React + Vite + Tailwind + Tauri desktop app (`src/pages`, `src/components`, `src/context`, `src/lib`; Rust host in `src-tauri/`).
-- `apps/anima-mod`: Bun + Elysia mod runtime (port 3034). Self-contained skill/integration modules ("mods") live in `mods/`. Each mod exposes config schemas, setup wizards, and HTTP routes. The cognitive core can call mod APIs via thin `@tool` adapters. Example: `mods/google/` for Gmail + Calendar.
-- `docs/`: project documentation and thesis.
+- `apps/anima-mod`: Bun + TypeScript + Elysia external-presence service. Built-in integrations live in `mods/`; locally installed integrations live in `user-mods/`.
+- `apps/animus`: Rust coding terminal and TUI for working with the ANIMA server and a local workspace.
+- `apps/desktop`: React + Vite + Tailwind desktop UI with a Tauri Rust host in `src-tauri/`.
+- `apps/local-runtime-daemon`: Rust + Axum supervisor and control API for the local Python runtime lifecycle, health, restart, locking, and logs.
+- `apps/server`: Python + FastAPI cognitive core. SQLAlchemy models live under `src/anima_server/models/`; Core and runtime Alembic revisions live under `alembic_core/` and `alembic_runtime/`.
+- `apps/site`: Astro + React public website.
+- `packages/anima-auth-contracts`: shared TypeScript authentication route and payload contracts.
+- `packages/anima-core`: Rust memory infrastructure with optional PyO3/maturin Python bindings.
+- `packages/anima-corefs`: Rust cryptographic and filesystem primitives for ANIMA CORE.
+- `packages/anima-file-tools`: bounded, storage-agnostic Rust file operations shared by Animus and CoreFS.
+- `packages/anima-runtime-daemon-contracts`: shared TypeScript daemon control API contracts.
+- `packages/api-client`: shared TypeScript API client and generated API types.
+- `packages/ascii-motion`: React/TypeScript ASCII animation playback and rendering utilities.
+- `packages/standard-templates`: shared React + Tailwind design system, components, icons, and tokens.
+- `docs/`: thesis, architecture, audit history, operations guidance, PRDs, specs, and plans. Start with the [canonical directory map](docs/architecture/system/directory-structure.md).
+- `tickets/`: canonical parent/child initiative tracking; `scratchboard/` is retained only for legacy workstreams pending deliberate migration.
 
 ## Build, Test, and Development Commands
 
@@ -39,10 +50,10 @@ Run from repo root unless noted.
 
 - `bun install`: install workspace dependencies.
 - `uv sync --all-packages`: install/update Python workspace dependencies.
-- `bun dev`: start the Python server and desktop app through `nx`.
+- `bun dev`: start the Python server, desktop, and anima-mod through the root supervisor; it launches the server with uv and the desktop/anima-mod processes with Bun.
 - `bun run dev:server`: run the FastAPI backend on port `3031`.
 - `bun run dev:desktop`: run the desktop web UI.
-- `bun run build`: build `apps/server` and `apps/desktop`.
+- `bun run build`: build `apps/server` and `apps/desktop` through Nx, then run `cargo check -p animus`.
 - `bun run lint`: run the Python lint pipeline and desktop typecheck.
 - `bun run test`: run Python backend tests.
 - `bun run db:server:revision -- "<message>"`: create an Alembic autogenerate revision for `apps/server`.
@@ -50,7 +61,7 @@ Run from repo root unless noted.
 
 ## Coding Style & Naming Conventions
 
-- Language baseline is Python for `apps/server` and TypeScript for the desktop and legacy API.
+- Python is used in `apps/server`; TypeScript in `apps/anima-mod`, `apps/desktop`, `apps/site`, and the TypeScript shared packages; Rust in `apps/animus`, `apps/local-runtime-daemon`, `apps/desktop/src-tauri`, and the Rust shared crates.
 - Python follows SQLAlchemy 2.0 typing style with `Mapped[...]` and `mapped_column(...)`.
 - TypeScript follows existing style: 2-space indentation, semicolons, double quotes.
 - React components and context providers use `PascalCase` filenames (for example `ProtectedRoute.tsx`); route/domain modules use concise lowercase names (for example `chat.ts`).
@@ -84,6 +95,21 @@ PRs should include:
 - screenshots/GIFs for UI changes,
 - migration or setup notes when DB/config behavior changes.
 
+## Project Management Skill
+
+Before taking any of the actions below, read `.codex-skill-staging/anima-project-management/SKILL.md` completely and follow it together with `docs/ops/prd-ticket-workflow.md`:
+
+- start, define, revise, or report the status of an animaOS initiative or feature;
+- create or revise a PRD, design/spec, dated implementation plan, parent tracker, or child ticket;
+- choose the next ticket; claim, assign, reassign, resume, block, or complete work; execute a named ticket ID; reconcile parent and child state; or close an initiative;
+- publish or push work, open or update a PR, request Codex review, address review feedback, or monitor a PR until clean when the user explicitly requests that external action.
+
+External authority is action-scoped. Local implementation or commits do not authorize a push, PR, comment, or monitor. A broader explicit request covers only actions it clearly encompasses; never escalate a narrower `push`, PR, review-request, feedback, or monitoring request. Follow the `Action-Scoped External Authority` matrix in `docs/ops/prd-ticket-workflow.md`. Merge always requires separate explicit authority.
+
+Explanation and diagnosis-only work remains outside this workflow unless publication or review is explicitly requested. An isolated edit does not require fake planning artifacts or ticket metadata; explicit publication/review of that edit enters only the skill's publish/review mode.
+
+This repository-owned skill and the canonical workflow document override stale personal skills that route animaOS work through `docs/prd/` or `scratchboard/`. Do not modify or install personal skills as part of repository work.
+
 ## PRD, Plan, and Ticket Workflow
 
 This repo uses separate artifacts for product scope, implementation sequencing, and issue-style execution. Do not merge them into one file type.
@@ -94,29 +120,29 @@ This repo uses separate artifacts for product scope, implementation sequencing, 
 
 When creating or revising planning artifacts:
 
-1. Create or update a PRD if product scope is changing.
-2. Create or update a dated plan if implementation sequencing matters.
-3. Create or update one parent ticket plus child ticket files for discrete units of work.
+1. Discover and reuse the existing initiative and its artifacts before creating anything new.
+2. Create or update a PRD if product scope is changing, and preserve any design/spec approval gate.
+3. Create or update a dated plan if implementation sequencing matters.
+4. Create or update one parent ticket plus ordered child tickets for discrete executable units.
 
-For new work, prefer `PRD -> plan -> tickets`. Use `scratchboard/` only when continuing an older workstream that already depends on it.
+For new work, prefer `PRD -> design/spec when approval is needed -> plan -> tickets`. New executable children remain `Status: backlog` and `Owner: unassigned` unless explicitly assigned; planning does not claim the entire initiative. Use `scratchboard/` only for historical workstreams that already depend on it.
 
 When executing a ticket:
 
-1. Open the ticket file first.
-2. Set `Status: in_progress`.
-3. Set `Started:` if it is empty.
-4. Update `Updated:`.
-5. Append an `Activity Log` entry with a timestamp.
-6. Do the implementation work.
-7. Record validation and changed paths.
-8. Set `Status: done` or `Status: blocked`.
-9. Set `Completed:` when the ticket is done.
+1. Read the child and parent first, then apply the legal transition and ownership rules in `docs/ops/prd-ticket-workflow.md`.
+2. Claim or start eligible work as one child-and-parent transaction before implementation.
+3. Record material progress and blocker transitions in both child and parent where required.
+4. Record acceptance evidence, validation, and changed paths before completion.
+5. Keep the parent row, completed history, timestamps, and material activity synchronized with the child.
+
+Ticket execution alone does not authorize a push, PR, deployment, message, merge, or other external action.
 
 Parent ticket rule:
 
 - Each initiative should have one parent tracker ticket that lists child tickets, child status, and completed-ticket history.
 - Child tickets should reference the parent in metadata.
 - When a child ticket changes state, update the parent tracker too.
+- Never change parent ownership merely because a child is claimed or reassigned.
 
 Use the workflow doc and template:
 

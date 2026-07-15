@@ -1,6 +1,6 @@
 # ARH-013 - Deduplicate drifted turn and sleep logic
 
-- Status: in-review
+- Status: done
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `ARH-000`
