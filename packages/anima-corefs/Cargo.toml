@@ -13,6 +13,9 @@ argon2 = "0.5"
 base64 = "0.22"
 # These exact crypto-graph pins preserve the workspace's Rust 1.75 MSRV.
 base64ct = "=1.6.0"
+cap-fs-ext = "3.4.5"
+cap-std = "3.4.5"
+fs4 = "0.8"
 getrandom = "0.2"
 hkdf = "0.12"
 rand = "0.8"
@@ -25,7 +28,13 @@ zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
 zeroize_derive = "=1.4.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+winx = "0.36.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 hex = "0.4"

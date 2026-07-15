@@ -100,6 +100,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 15:44 MYT - Began PCF-002 Step 6 from merged `main` on `codex/pcf-002-catalog-head`: first-class folder and policy contracts, complete typed immutable catalog generations, and `fs/HEAD`. The publication coordinator and subsequent mutation, rotation, API/tool, grant, and benchmark slices remain deferred.
 - 2026-07-15 17:50 MYT - Completed PCF-002 Step 6 after requirements and code-quality review: portable folder/policy contracts, strict complete V2 catalogs, authenticated `fs/HEAD`, bounded linear graph/lifecycle validation, fail-closed authority issuance, and coordinator-only cutover promotion are covered by 86 Rust 1.75 CoreFS tests and 304 combined native tests. PCF-002 remains `in_progress`; Step 7 is the Core-wide commit coordinator.
 - 2026-07-15 17:58 MYT - Published PCF-002 Step 6 as draft PR #96 (`codex/pcf-002-catalog-head`) against `main`; the parent remains `in_progress` while review and the later PCF-002 slices continue.
+- 2026-07-15 19:29 MYT - Began PCF-002 Step 7 from merged `origin/main` in `codex/pcf-002-commit-coordinator`; the parent remains `in_progress` while the Core-wide commit coordinator is implemented and validated separately from Step 8 failure injection.
+- 2026-07-15 20:55 MYT - Completed PCF-002 Step 7 with a review-clean Core-wide commit coordinator: exact prepared object/wrapped-key binding, root-anchored kernel exclusion, pinned-layout validation, complete mutation preconditions, shadow-only validation publication, authenticated irreversible cutover receipts, ordered catalog/HEAD publication, and post-unlock invalidation. Exact Rust 1.75, combined native, Python-feature, strict clippy, workspace build, provenance, and release-notice gates passed. The initiative and PCF-002 remain `in_progress`; Step 8 crash-boundary failure injection is next.
 - 2026-07-16 00:26 MYT - Synchronized `Owner: Codex` from the recorded PCF-002 claim/start history and active PR lineage; preserved the parent and PCF-002 `in_progress` state without inventing or transferring ownership.
 
 ## Validation
@@ -115,12 +117,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - third slice-two hardening: canonical-ID/bounds/header/nonce/rollback compile-red regressions, 32 Rust 1.75 CoreFS tests, 250 combined native tests, four focused PyO3 tests, CoreFS format and strict clippy, and zero new diagnostics in the changed production FFI ranges
   - final slice-two allocation follow-up: compile-red clone-tracking preflight regression, focused native envelope/catalog oversize regressions, 35 Rust 1.75 CoreFS tests, 253 combined native tests, CoreFS format and strict clippy, and `git diff --check`
   - PR #94 review follow-up: 7 canonical-ID backend FFI tests, unsorted public catalog canonicalization regression, 36 Rust 1.75 CoreFS tests, and 254 combined native tests
+  - PCF-002 Step 7: 104 exact Rust 1.75 CoreFS test entries, combined `anima-corefs`/`anima-core`, Python-feature check, CoreFS format/strict clippy, workspace build, provenance/release notices, `cargo metadata --locked`, and `git diff --check`
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
 - Changed paths:
   - `packages/anima-corefs/src/{envelope.rs,catalog/,crypto.rs,lib.rs,id.rs,bounded.rs}`
   - `packages/anima-corefs/tests/{envelope.rs,catalog.rs,opaque_id.rs}`
+  - `packages/anima-corefs/src/{transaction.rs,publication.rs}` and `packages/anima-corefs/tests/{transaction.rs,publication.rs}`
   - `packages/anima-core/src/ffi.rs`
   - `apps/server/tests/test_corefs_crypto.py`
   - `packages/anima-corefs/Cargo.toml` and `Cargo.lock`

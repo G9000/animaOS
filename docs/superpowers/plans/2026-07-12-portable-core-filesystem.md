@@ -313,7 +313,7 @@ Implement streaming envelopes/catalogs in `anima-corefs`, expose them through `a
 
 `fs/HEAD` carries generation, catalog hash, envelope version, and required FRK version. Catalog entries carry stable object/folder ID, parent, mutable name, optional unique role, owner, ANIMA access, policy overrides, namespaced client metadata, object revision/hash/kind, wrapped Object DEK, trash/deletion state, and optional cutover marker. Every directory is first-class even when empty. Enforce reserved `core.*` and client `client:<client-id>:*` role namespaces.
 
-- [ ] **Step 7: Implement the Core-wide commit coordinator**
+- [x] **Step 7: Implement the Core-wide commit coordinator**
 
 Prepare immutable object revisions outside the shared lock; acquire an OS-backed exclusive file lock (or atomic-create primitive with equivalent kernel exclusion) plus owner PID/process-start metadata; reload `fs/HEAD`; revalidate expected path/revision; publish catalog then `fs/HEAD`; emit invalidation after commit. Stale recovery must first prove the recorded process identity is gone; a check-then-write JSON file is not a lock.
 
