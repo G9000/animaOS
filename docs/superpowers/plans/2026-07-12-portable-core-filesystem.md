@@ -305,11 +305,11 @@ Create `.github/workflows/corefs-provenance.yml` for pull requests touching the 
 
 Implement an explicit HostFS backend around Animus's existing workspace containment and Allow/Ask/Deny policy. Preserve host-facing tool names and behavior compatibility while replacing full-file `read_to_string`, eager recursive `Vec` accumulation, literal-only search internals, and ad hoc patching with bounded shared machinery. Host multi-file mutation reports its actual atomicity/capabilities; it must not claim CoreFS transaction semantics.
 
-- [ ] **Step 5: Implement Rust `.acore` envelope, catalog, and format boundary**
+- [x] **Step 5: Implement Rust `.acore` envelope, catalog, and format boundary**
 
 Implement streaming envelopes/catalogs in `anima-corefs`, expose them through `anima-core` PyO3, and keep physical names opaque and payload schemas versioned. Do not write decrypted temporary files. Python retains domain format validation/projection, not encryption.
 
-- [ ] **Step 6: Implement folders, policy, full immutable catalogs, and `fs/HEAD`**
+- [x] **Step 6: Implement folders, policy, full immutable catalogs, and `fs/HEAD`**
 
 `fs/HEAD` carries generation, catalog hash, envelope version, and required FRK version. Catalog entries carry stable object/folder ID, parent, mutable name, optional unique role, owner, ANIMA access, policy overrides, namespaced client metadata, object revision/hash/kind, wrapped Object DEK, trash/deletion state, and optional cutover marker. Every directory is first-class even when empty. Enforce reserved `core.*` and client `client:<client-id>:*` role namespaces.
 

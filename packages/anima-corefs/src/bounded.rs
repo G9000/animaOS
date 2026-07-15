@@ -13,13 +13,21 @@ pub(crate) fn clone_after_bounded_json_preflight<T: Clone + Serialize>(
     value: &T,
     limit: usize,
 ) -> Result<T, BoundedJsonError> {
+    bounded_json_preflight(value, limit)?;
+    Ok(value.clone())
+}
+
+pub(crate) fn bounded_json_preflight<T: Serialize>(
+    value: &T,
+    limit: usize,
+) -> Result<(), BoundedJsonError> {
     let mut writer = CountingWriter::new(limit);
     let result = serde_json::to_writer(&mut writer, value);
     if writer.limit_exceeded() {
         return Err(BoundedJsonError::LimitExceeded);
     }
     result.map_err(BoundedJsonError::Json)?;
-    Ok(value.clone())
+    Ok(())
 }
 
 pub(crate) fn json_to_vec<T: Serialize>(

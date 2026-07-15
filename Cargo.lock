@@ -128,6 +128,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "unicode-normalization",
  "windows-sys 0.59.0",
  "zeroize",
  "zeroize_derive",
