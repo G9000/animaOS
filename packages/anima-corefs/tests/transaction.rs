@@ -981,6 +981,35 @@ fn stale_lock_metadata_requires_process_start_identity_not_pid_alone() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn a_missing_relative_core_root_is_created_from_the_current_directory() {
+    let root = reset_root("relative-core-root");
+    fs::create_dir_all(&root).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("helper_process_creates_relative_core_root")
+        .arg("--nocapture")
+        .current_dir(&root)
+        .env("ANIMA_COREFS_RELATIVE_ROOT_HELPER", "1")
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    assert!(root.join(".anima").join("core").join("fs").is_dir());
+    assert!(root.join(".anima").join("core").join("objects").is_dir());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore]
+fn helper_process_creates_relative_core_root() {
+    if std::env::var_os("ANIMA_COREFS_RELATIVE_ROOT_HELPER").is_none() {
+        return;
+    }
+    CoreCommitCoordinator::new(Path::new(".anima").join("core"), CORE_ID).unwrap();
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {

@@ -1447,6 +1447,11 @@ fn find_entry<'a>(
 }
 
 fn ensure_ambient_directory(path: &Path) -> Result<(), CommitError> {
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
@@ -1459,6 +1464,11 @@ fn ensure_ambient_directory(path: &Path) -> Result<(), CommitError> {
     }
 
     let parent = path.parent().ok_or(CommitError::InvalidCoreLayout)?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     ensure_ambient_directory(parent)?;
     let parent_dir = Dir::open_ambient_dir(parent, ambient_authority())?;
     let name = path.file_name().ok_or(CommitError::InvalidCoreLayout)?;
