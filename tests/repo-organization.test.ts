@@ -301,6 +301,58 @@ describe("ticket parsing", () => {
     ]);
   });
 
+  test("rejects a parent table with no delimiter row", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Status |",
+        "| ABC-001 | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.hasAuthoritativeChildTable).toBeFalse();
+    expect(parsed.parentRows).toEqual([]);
+  });
+
+  test("rejects a parent table whose delimiter width differs from its header", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Status |",
+        "| --- | --- |",
+        "| ABC-001 | Child | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.hasAuthoritativeChildTable).toBeFalse();
+    expect(parsed.parentRows).toEqual([]);
+  });
+
+  test("accepts an equal-width delimiter with optional alignment colons", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Status |",
+        "| :- | :---: | -: |",
+        "| ABC-001 | Child | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.hasAuthoritativeChildTable).toBeTrue();
+    expect(parsed.parentRows).toEqual([
+      { ticketId: "ABC-001", status: "done" },
+    ]);
+  });
+
   test("treats Parent none as the no-parent sentinel", () => {
     const parsed = parseTicketDocument(
       "tickets/example/ABC-000-parent.md",

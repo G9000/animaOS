@@ -109,7 +109,7 @@ function parseMarkdownRow(line: string) {
 }
 
 function isSeparatorRow(cells: string[]) {
-  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
 }
 
 function parseTopMetadata(lines: string[]) {
@@ -152,6 +152,7 @@ export function parseTicketDocument(path: string, text: string): TicketDocument 
     }
 
     let headerIndex = index + 1;
+    let headerWidth = 0;
     let ticketColumn = -1;
     let statusColumn = -1;
     for (; headerIndex < lines.length; headerIndex += 1) {
@@ -166,6 +167,7 @@ export function parseTicketDocument(path: string, text: string): TicketDocument 
       ticketColumn = normalizedHeaders.indexOf("ticket");
       statusColumn = normalizedHeaders.indexOf("status");
       if (ticketColumn !== -1 && statusColumn !== -1) {
+        headerWidth = candidate.length;
         break;
       }
     }
@@ -173,13 +175,17 @@ export function parseTicketDocument(path: string, text: string): TicketDocument 
       continue;
     }
 
-    hasAuthoritativeChildTable = true;
-    let rowIndex = headerIndex + 1;
-    const separator = parseMarkdownRow(lines[rowIndex] ?? "");
-    if (separator && isSeparatorRow(separator)) {
-      rowIndex += 1;
+    const separator = parseMarkdownRow(lines[headerIndex + 1] ?? "");
+    if (
+      !separator ||
+      separator.length !== headerWidth ||
+      !isSeparatorRow(separator)
+    ) {
+      continue;
     }
 
+    hasAuthoritativeChildTable = true;
+    let rowIndex = headerIndex + 2;
     for (; rowIndex < lines.length; rowIndex += 1) {
       const cells = parseMarkdownRow(lines[rowIndex]!);
       if (!cells) {

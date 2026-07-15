@@ -9,7 +9,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:14 MYT
+- Updated: 2026-07-15 21:19 MYT
 - Started: 2026-07-15 20:43 MYT
 - Completed:
 
@@ -47,6 +47,7 @@ Add one read-only organization validator that reports repository metadata and hy
 - 2026-07-15 20:53 MYT - Added the read-only validator, injected CLI result boundary, root `check:repo` command, and 24 focused tests through strict RED/GREEN cycles; live validation has zero ticket violations and intentionally leaves `RWF-003` `in_progress` until Task 8 removes the two scheduled hygiene findings.
 - 2026-07-15 21:06 MYT - Fixed the review-discovered Markdown table boundary defect through regression-first TDD: escaped pipes and pipes inside inline code no longer shift authoritative Ticket or Status columns; kept the child and parent row `in_progress` pending Task 8 hygiene.
 - 2026-07-15 21:14 MYT - Corrected the 21:06 inline-code model after second review: GFM table pipes require backslash escaping even inside code spans, so the tokenizer now uses only consecutive-backslash parity and ignores backticks; kept the child and parent row `in_progress` pending Task 8 hygiene.
+- 2026-07-15 21:19 MYT - Added strict GFM delimiter-row validation after third review: parent tables are authoritative only when the Ticket/Status header is followed immediately by an equal-width delimiter; kept the child and parent row `in_progress` pending Task 8 hygiene.
 
 ## Validation
 
@@ -58,6 +59,8 @@ Add one read-only organization validator that reports repository metadata and hy
   - `bun test tests/repo-organization.test.ts` (escaped-pipe review GREEN)
   - `bun test tests/repo-organization.test.ts` (GFM parity review RED)
   - `bun test tests/repo-organization.test.ts` (GFM parity review GREEN)
+  - `bun test tests/repo-organization.test.ts` (delimiter validation review RED)
+  - `bun test tests/repo-organization.test.ts` (delimiter validation review GREEN)
   - `bun run check:repo`
   - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
   - read-only Bun assertion using `parseTicketDocument`, `loadRepositorySnapshot`, and `collectOrganizationViolations`
@@ -86,4 +89,8 @@ Add one read-only organization validator that reports repository metadata and hy
   - the simplified tokenizer ignores backticks and splits only on pipes preceded by an even number of consecutive backslashes, including parity-aware leading and trailing delimiters
   - second-review changed paths: `scripts/check-repo-organization.ts`, `tests/repo-organization.test.ts`, `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`, and `tickets/repo-workflow/RWF-000-parent.md`
   - second-review live validation still reports only deprecated `docs/audits` and tracked root `debug.log`; 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
+  - delimiter validation review RED passed 29 tests and failed 3 regressions with 57 assertions: missing and width-mismatched delimiters were incorrectly authoritative, while a valid aligned one-hyphen delimiter was parsed as a child row
+  - delimiter validation review GREEN passed 32 tests with 59 assertions and 0 failures after requiring an immediate equal-width delimiter whose cells match optional-colon, one-or-more-hyphen GFM syntax
+  - third-review changed paths: `scripts/check-repo-organization.ts`, `tests/repo-organization.test.ts`, `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`, and `tickets/repo-workflow/RWF-000-parent.md`
+  - third-review live validation still reports only deprecated `docs/audits` and tracked root `debug.log`; 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
   - residual follow-up: Task 8 must remove the two live hygiene findings before this ticket can close
