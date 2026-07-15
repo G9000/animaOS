@@ -1,6 +1,6 @@
 # RWF-000 - Repo Workflow Parent Tracker
 
-- Status: in_progress
+- Status: done
 - Priority: P2
 - Scope: repository metadata, documentation, workflow artifacts, validation, and draft-PR review
 - Depends on: none
@@ -8,9 +8,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-16 00:28 MYT
+- Updated: 2026-07-16 00:44 MYT
 - Started: 2026-07-15 17:11 MYT
-- Completed:
+- Completed: 2026-07-16 00:44 MYT
 
 ## Goal
 
@@ -27,7 +27,7 @@ This table is the execution order; dependency eligibility still controls when ea
 | `RWF-002` | Mark scratchboard legacy and add migration checklist | `done` | `RWF-001` |
 | `RWF-003` | Add ticket metadata validation | `done` | `RWF-001` |
 | `RWF-004` | Reconcile repository documentation and hygiene | `done` | `RWF-002` |
-| `RWF-006` | Validate, publish, and complete PR review | `in_progress` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
+| `RWF-006` | Validate, publish, and complete PR review | `done` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
 
 ## Deliverables
 
@@ -53,6 +53,7 @@ This table is the execution order; dependency eligibility still controls when ea
 
 ## Completed Tickets
 
+- 2026-07-16 00:44 MYT - `RWF-006` completed the authorized publication and review loop after exact implementation head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` received a clean Codex review with complete pagination and zero unresolved non-outdated actionable threads.
 - 2026-07-16 00:28 MYT - `RWF-001` repaired PR #99's active-ownership normalization defect with red/green validator coverage, evidence-safe PDP/ASR/PCF metadata, and the full local gate.
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
@@ -109,6 +110,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-16 00:23 MYT - Reopened Codex-owned `RWF-001` for PR #99's acceptance-breaking active-ownership defect, removed its current completed-history entry, preserved completion `2026-07-15 23:43 MYT` here and in child activity, returned its row to `in_progress`, and kept `RWF-006` and `RWF-000` `in_progress` with parent ownership unchanged.
 - 2026-07-16 00:28 MYT - Recorded the initial exact [review handoff](https://github.com/G9000/animaOS/pull/99#issuecomment-4982750057) posted at `2026-07-15T16:09:03Z`, Codex review `PRR_kwDORPzHkM8AAAABGIBt2Q` submitted at `2026-07-15T16:15:22Z` on exact head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`, and actionable thread `PRRT_kwDORPzHkM6RKtHw` on PDP-001.
 - 2026-07-16 00:28 MYT - Re-completed `RWF-001` after the active-ownership repair passed 34 focused tests, the live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and the root build. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress`, preserved parent ownership, and left parent `Completed:` empty.
+- 2026-07-16 00:44 MYT - Closed `RWF-006` and `RWF-000` because all six child files and parent rows are `done`, initiative validation passed, and implementation head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` received Codex's clean [issue comment](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236) (`IC_kwDORPzHkM8AAAABKQK3pA`, `2026-07-15T16:36:44Z`, `Reviewed commit: ac0e84422f`) after complete review/thread/comment pagination showed zero unresolved non-outdated actionable threads and the prior thread resolved/outdated. PR #99 was ready, open, and unmerged at closeout and that state was preserved; parent ownership remains `Codex`, and the pushed metadata head still requires the terminal review guard without merge.
 
 ## Validation
 
@@ -304,3 +306,40 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
   - `isDraft` is `true`; GraphQL `merged` is `false`
   - the PR body contains `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`; it excludes runtime behavior, migrations, personal skill installation, and merge
   - ignored `.tmp-eval-pr-body.md` was removed after PR creation; no `@codex review` comment was posted before the publication-evidence commit and subsequent PR-head synchronization
+
+### Original PR #99 pre-merge Task 13 closeout validation
+
+- Clean implementation-head review:
+  - PR [#99](https://github.com/G9000/animaOS/pull/99) was ready, open, and unmerged at exact head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1`; the externally changed ready state was accepted and preserved
+  - clean comment [`IC_kwDORPzHkM8AAAABKQK3pA`](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236), database ID `4983011236`, was created at `2026-07-15T16:36:44Z` and records `Reviewed commit: ac0e84422f`
+  - bundled fetch plus direct GraphQL consumed all review, review-thread, per-thread-comment, and conversation-comment pages; prior thread `PRRT_kwDORPzHkM6RKtHw` is resolved/outdated and zero unresolved non-outdated actionable threads remain
+- Commands:
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - `$validator = Join-Path $env:USERPROFILE '.codex\skills\.system\skill-creator\scripts\quick_validate.py'; python $validator .codex-skill-staging/anima-project-management`
+  - `git diff --check`
+  - PowerShell exact scope and ticket/dashboard classification assertions
+  - `bun run build`
+- Results:
+  - focused suite passed 34 tests/61 expectations; repository and official skill validation passed; `git diff --check` passed
+  - the original PR #99 branch range was 56 paths from exact base `408d9b64abf639739a2d044abfda647958e7ff3e`, with 0 production-source hotspots and exactly the 2 intended repo-owned staged-skill paths; those are historical original-PR values, not the metadata-only follow-up range
+  - all 6 RWF child files and parent rows are `done`; there is exactly 1 current `RWF-006` completed-history entry; dashboard classification is 11 active, 7 completed, 1 legacy, and 18 unique parent links
+  - root build passed server/desktop Nx builds plus `cargo check -p animus`; the existing Vite chunk-size warning remains non-blocking
+- Task 13 changed paths:
+  - `tickets/README.md`
+  - `tickets/repo-workflow/RWF-000-parent.md`
+  - `tickets/repo-workflow/RWF-006-integration-pr-review.md`
+- Residual notes:
+  - PR #99 was externally squash-merged before the closeout commit could be pushed; the separately authorized metadata-only follow-up must use the new `origin/main`, remain unmerged, synchronize its final head, and receive exact standalone `@codex review`
+  - runtime smoke and `GET /health` are not applicable to metadata-only Task 13
+
+### Authorized early-merge follow-up baseline
+
+- PR #99 was externally squash-merged as `10b63ac6769d2ddfac29246f7159a4713308791f` before the closeout commit could be pushed; recovery branch `codex/repo-workflow-closeout` starts exactly from that new `origin/main`.
+- Fresh follow-up validation passed 34 focused tests/61 expectations, `bun run check:repo`, official skill validation, working and range diff checks, ticket graph/dashboard classification, and the root build.
+- The follow-up range contains exactly these 3 paths, 0 production-source hotspots, and 0 staged-skill paths because the skill already merged in PR #99:
+  - `tickets/README.md`
+  - `tickets/repo-workflow/RWF-000-parent.md`
+  - `tickets/repo-workflow/RWF-006-integration-pr-review.md`
+- Dashboard/graph results are 6 `done` RWF children with matching rows, exactly 1 current `RWF-006` history entry, 11 active initiatives, 7 completed initiatives, 1 legacy entry, and 18 unique parent links.
+- Runtime smoke and `GET /health` remain not applicable to this metadata-only recovery.

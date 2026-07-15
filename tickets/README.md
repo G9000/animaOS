@@ -13,7 +13,6 @@ Canonical index for repo-native initiatives tracked under `tickets/`.
 - [Memory Package Boundary Hardening](./memory-package-boundary/MPB-000-parent.md) (`backlog`; [overview](./memory-package-boundary/README.md))
 - [Portable Core Filesystem](./portable-core-filesystem/PCF-000-portable-core-filesystem.md) (`in_progress`; [overview](./portable-core-filesystem/README.md))
 - [Production Document Processing](./production-document-processing/PDP-000-production-document-processing.md) (`backlog`; [overview](./production-document-processing/README.md))
-- [Repo Workflow](./repo-workflow/RWF-000-parent.md) (`in_progress`; [overview](./repo-workflow/README.md))
 - [Social Memory Identity Discovery](./social-memory-identity-discovery/SID-000-parent.md) (`backlog`; [overview](./social-memory-identity-discovery/README.md))
 - [Voice Foundation v1](./voice-foundation-v1/VCE-000-parent.md) (`backlog`; [overview](./voice-foundation-v1/README.md))
 
@@ -23,6 +22,7 @@ Canonical index for repo-native initiatives tracked under `tickets/`.
 - [Animus Rust Coding TUI](./animus-coding-tui/ACT-000-parent.md) (`done`; [overview](./animus-coding-tui/README.md))
 - [Local Runtime Daemon](./local-runtime-daemon/LRD-000-parent.md) (`done`; [overview](./local-runtime-daemon/README.md))
 - [OKF LLM Wiki Ingestion](./okf-llm-wiki-ingestion/OKF-000-okf-llm-wiki-ingestion.md) (`done`; [overview](./okf-llm-wiki-ingestion/README.md))
+- [Repo Workflow](./repo-workflow/RWF-000-parent.md) (`done`; [overview](./repo-workflow/README.md))
 - [Single-User Temporal Memory v2](./single-user-temporal-memory-v2/SUM-000-parent.md) (`done`; [overview](./single-user-temporal-memory-v2/README.md))
 - [Visual Memory Image Assets](./visual-memory-image-assets/VMI-000-parent.md) (`done`; [overview](./visual-memory-image-assets/README.md))
 
