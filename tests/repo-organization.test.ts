@@ -188,6 +188,42 @@ describe("ticket parsing", () => {
     ]);
   });
 
+  test("does not split an escaped pipe inside a parent-row title", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Status |",
+        "| --- | --- | --- |",
+        "| ABC-001 | Parser A \\| Parser B | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.parentRows).toEqual([
+      { ticketId: "ABC-001", status: "done" },
+    ]);
+  });
+
+  test("does not split a pipe inside inline code in a parent-row title", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Status |",
+        "| --- | --- | --- |",
+        "| ABC-001 | `A | B` | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.parentRows).toEqual([
+      { ticketId: "ABC-001", status: "done" },
+    ]);
+  });
+
   test("finds the authoritative table after explanatory parent prose", () => {
     const parsed = parseTicketDocument(
       "tickets/example/ABC-000-parent.md",

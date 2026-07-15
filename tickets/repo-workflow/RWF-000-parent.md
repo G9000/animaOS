@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 20:53 MYT
+- Updated: 2026-07-15 21:06 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -79,6 +79,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:35 MYT - Re-completed `RWF-002` after clarifying the legacy-continuation and approved-cutover policy, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
 - 2026-07-15 20:43 MYT - Synchronized `RWF-003` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; confirmed `RWF-001` is `done`, preserved parent ownership, and kept the parent `in_progress`.
 - 2026-07-15 20:53 MYT - Recorded material `RWF-003` progress: the strict-TDD validator passes 24 focused tests and the live bidirectional ticket check, while its row and the parent remain `in_progress` pending Task 8 cleanup of `docs/audits` and tracked `debug.log`; parent ownership remains unchanged.
+- 2026-07-15 21:06 MYT - Recorded the material `RWF-003` review follow-up: escaped and inline-code pipes now preserve authoritative table columns with 26 focused tests passing; kept the row and parent `in_progress`, preserved parent ownership, and left Task 8 hygiene as the remaining closeout dependency.
 
 ## Validation
 
