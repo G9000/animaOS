@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 22:17 MYT
+- Updated: 2026-07-15 22:56 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -57,7 +57,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
 - 2026-07-15 21:58 MYT - `RWF-004` reconciled repository navigation and hygiene, including manifest-grounded contributor command and language maps.
-- 2026-07-15 22:17 MYT - `RWF-005` completed five fresh-agent forward evaluations with no required skill refactor and passed official skill and repository validation.
+- 2026-07-15 22:56 MYT - `RWF-005` completed the portable neutral v2 skill evaluation with multi-page and cursor-failure review coverage and no required skill refactor.
 
 ## Activity Log
 
@@ -94,6 +94,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 21:58 MYT - Re-completed `RWF-004` after correcting the contributor command and language map from root supervisor and manifest evidence, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-005` and `RWF-006`.
 - 2026-07-15 22:07 MYT - Recorded material `RWF-005` forward-evaluation progress after resuming its existing Codex-owned `in_progress` state without a new claim; kept the child row and parent `in_progress` and preserved parent ownership.
 - 2026-07-15 22:17 MYT - Completed `RWF-005`, synchronized its row and one current completed-history entry to `done`, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-006` remains `backlog` and is the initiative's publication/review closeout.
+- 2026-07-15 22:38 MYT - Reopened `RWF-005` for acceptance-breaking leading and non-portable forward-evaluation prompts, removed its current completed-history entry, preserved the prior completion timestamp `2026-07-15 22:17 MYT` in parent activity, returned its row to `in_progress`, and kept `RWF-000` `in_progress` with ownership unchanged.
+- 2026-07-15 22:56 MYT - Re-completed `RWF-005` after six portable neutral v2 sub-runs passed, added one current completion-history entry, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-006` remains the authorized end-to-end publication/review closeout.
 
 ## Validation
 
@@ -104,7 +106,7 @@ The commands, changed-path inventories, and result counts below are preserved fr
 - Commands (historical):
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `rg -n 'close an initiative|record the pushed commit OID|headRefOid.*recorded pushed OID' AGENTS.md docs/ops/prd-ticket-workflow.md`
-  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `python <codex-home>\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management` (historical local root normalized for portability)
   - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
   - `rg -n 'Action-Scoped External Authority|pageInfo|owner gate|parent .*Completed|missing authority|permission blocker' AGENTS.md docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
   - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
@@ -148,29 +150,28 @@ The commands, changed-path inventories, and result counts below are preserved fr
   - Task 8 review follow-up matched the exact root `scripts.build` value, clarified the Nx-selected projects versus the subsequent Animus Cargo check, and revalidated focused tests, live organization, diff, and source scope
   - Task 8 quality follow-up matched root dev/build scripts, verified uv/Bun launcher specs and 14 current language-family manifests, passed 44 focused tests and the live organization check, and kept `RWF-003` untouched
 
-### Current RWF-005 closeout validation
+### Current portable neutral v2 RWF-005 closeout validation
 
-The exact executable closeout commands and expected results are recorded in the current validation section of `RWF-005`; this parent records the synchronized initiative-level summary without duplicating the long assertion bodies.
+The full executable replay-manifest parser, exact YAML/frontmatter commands, privacy assertion, and fixture-cleanup routine are recorded under `RWF-005` current validation. This parent preserves the initiative-level commands and results without treating older phase path inventories as current.
 
-- Commands:
-  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+- Exact commands:
+  - `$validator = Join-Path $env:USERPROFILE '.codex\skills\.system\skill-creator\scripts\quick_validate.py'; python $validator .codex-skill-staging/anima-project-management`
   - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
-  - exact Python/YAML assertions for the two frontmatter fields and three approved `agents/openai.yaml` interface fields
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md' AGENTS.md`
-  - staged-skill forbidden personal-path, machine-path, and placeholder search
-  - five-scenario audit structure and no-placeholder count assertions
+  - `$audit = 'docs/audit/skills/2026-07-15-anima-project-management-evaluation.md'; if (@(rg -n '^## Portable neutral v2 Scenario ' $audit).Count -ne 6) { throw 'v2 scenario count mismatch' }; if (@(rg -n '^- Agent: `/root/task9_implementer/v2_' $audit).Count -ne 6) { throw 'v2 agent count mismatch' }; if (@(rg -n '^### Equivalent `collaboration\.spawn_agent` argument object$' $audit).Count -ne 6) { throw 'replay manifest count mismatch' }; if (@(rg -n '^- Result: PASS on first accepted run$' $audit).Count -ne 6) { throw 'v2 pass count mismatch' }; if (@(rg -n '^### Superseded forward v1 result:' $audit).Count -ne 5) { throw 'v1 superseded count mismatch' }`
   - `bun test tests/repo-organization.test.ts`
   - `bun run check:repo`
-  - safe `.tmp-eval-*` cleanup plus remaining-directory and tracked-path assertions
+  - `$remaining = @(Get-ChildItem -Force -Directory -Filter '.tmp-eval-*'); $tracked = @(git ls-files -- '.tmp-eval-*'); if ($remaining.Count -ne 0 -or $tracked.Count -ne 0) { throw 'Temporary evaluation fixture remains' }`
   - `git diff --check`
-  - exact current changed-path, production-source, personal-skill/external-path, and staged-skill diff assertions
+  - `$changed = @(git diff --name-only HEAD); $expected = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-000-parent.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md'); if (@($changed | Where-Object { $_ -notin $expected }).Count -ne 0 -or @($expected | Where-Object { $_ -notin $changed }).Count -ne 0) { throw 'Changed-path scope mismatch' }; if (@($changed | Where-Object { $_ -match '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/' }).Count -ne 0) { throw 'Production source changed' }; if (git diff --name-only HEAD -- .codex-skill-staging/anima-project-management/SKILL.md) { throw 'Unexpected staged-skill change' }`
 - Results:
-  - five distinct fresh forward evaluators passed all approved contracts on iteration 1; no staged-skill refactor or rerun was required
-  - official validation passed; the unchanged skill is 694 words; exact frontmatter and interface metadata assertions passed; `AGENTS.md` exact-path search passed; staged-skill forbidden-pattern search returned no matches
-  - focused repository validation passed with 32 tests, 59 assertions, and 0 failures; the live repository organization check passed
-  - safe fixture cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths
-  - current scope contains exactly the three paths below; `git diff --check` passed with zero production-source and zero personal-skill or machine-external paths
-  - `RWF-000` correctly remains `in_progress`, its owner remains Codex, and `RWF-006` remains `backlog` pending the authorized end-to-end PR loop
+  - six portable neutral v2 evaluators passed scenarios 1-4, multi-page 5A, and cursor-failure 5B; v1 is preserved but superseded and no skill refactor was required
+  - replay-manifest parsing passed for six exact collaboration argument objects; privacy validation found zero machine-specific user paths
+  - official skill validation passed; the unchanged checklist is 694 words; exact frontmatter/interface and `AGENTS.md` path checks passed
+  - focused repository validation passed with 32 tests, 59 assertions, and 0 failures; `bun run check:repo` passed
+  - safe cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths; `git diff --check` passed
+  - current scope contains exactly the three paths below with zero production-source or personal-skill changes
+  - `RWF-000` remains `in_progress`, `Owner: Codex` is unchanged, `RWF-005` is `done`, and `RWF-006` remains `backlog` pending the real authorized PR loop
 - Current changed paths:
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md

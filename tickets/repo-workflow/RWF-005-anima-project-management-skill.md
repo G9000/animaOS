@@ -10,9 +10,9 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 22:17 MYT
+- Updated: 2026-07-15 22:56 MYT
 - Started: 2026-07-15 17:39 MYT
-- Completed: 2026-07-15 22:17 MYT
+- Completed: 2026-07-15 22:56 MYT
 
 ## Goal
 
@@ -50,6 +50,8 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 19:13 MYT - Refactored the skill into a canonical-doc-backed high-risk checklist and aligned action-scoped authority, fail-closed pagination, ownership-safe reopen, parent closeout timestamps, early-merge authority handling, and template validation; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 - 2026-07-15 22:07 MYT - Resumed the existing Codex-owned `in_progress` ticket without a new claim, preserved `Started: 2026-07-15 17:39 MYT`, and began the five fresh-agent forward evaluations; kept the parent row `in_progress`.
 - 2026-07-15 22:17 MYT - Completed `RWF-005` after five distinct fresh-agent forward contracts passed on iteration 1, no skill loophole required a refactor, disposable fixtures were safely removed, and focused repository and official skill validation passed; synchronized the parent row and completion history while leaving the parent `in_progress` for `RWF-006`.
+- 2026-07-15 22:38 MYT - Reopened `RWF-005` for acceptance-breaking evaluation-methodology findings: the prior forward prompts were leading and machine-specific. Preserved the prior completion timestamp `2026-07-15 22:17 MYT` in history, cleared the current `Completed:`, retained `Owner: Codex` and `Started: 2026-07-15 17:39 MYT`, and began a portable neutral v2 evaluation suite.
+- 2026-07-15 22:56 MYT - Re-completed `RWF-005` after portable neutral scenarios 1-4, multi-page 5A, and cursor-failure 5B passed with six distinct fresh agents; exact replay manifests, privacy normalization, fixture cleanup, official skill validation, 32 focused tests, and the live repository check passed. No skill loophole required a refactor; synchronized the parent row/history and kept the parent `in_progress` for `RWF-006`.
 
 ## Validation
 
@@ -66,7 +68,7 @@ The commands, path sets, and counts below are preserved as evidence from RED, GR
   - `rg -n '^### Complete evaluator output\r?$' docs/audit/skills/2026-07-15-anima-project-management-evaluation.md`
   - `rg -n '^#{1,2} (Proposed action log|File/state mutations|External actions|Stopping condition|Rationale)\r?$' docs/audit/skills/2026-07-15-anima-project-management-evaluation.md`
   - `rg -n '^- Forward result: not run yet\r?$' docs/audit/skills/2026-07-15-anima-project-management-evaluation.md`
-  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `python <codex-home>\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management` (historical local root normalized for portability)
   - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
   - `rg -n 'TODO|placeholder|C:\\Users\\|\.agents/skills|\.codex/skills/' .codex-skill-staging/anima-project-management`
   - `Get-ChildItem -Recurse -File .codex-skill-staging/anima-project-management`
@@ -119,36 +121,117 @@ The commands, path sets, and counts below are preserved as evidence from RED, GR
   - authority, pagination, owner-gate, parent-closeout, and early-merge contract searches exited 0; the forbidden contradiction/path search returned no matches
   - `tickets/TEMPLATE.md` metadata search returned exactly 3 matches, expected link targets exist, `git diff --check` exited 0, and working scope contains exactly the 10 approved quality-follow-up paths
 
-### Current reproducible closeout validation
+### Current portable neutral v2 validation
 
-- Commands:
-  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+- Exact commands:
+  - `$validator = Join-Path $env:USERPROFILE '.codex\skills\.system\skill-creator\scripts\quick_validate.py'; python $validator .codex-skill-staging/anima-project-management`
   - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
   - `python -c "from pathlib import Path; import yaml; text=Path(r'.codex-skill-staging/anima-project-management/SKILL.md').read_text(encoding='utf-8'); actual=yaml.safe_load(text.split('---', 2)[1]); expected={'name':'anima-project-management','description':'Use when animaOS initiative or feature work involves status, definition, revision, PRD, plan, tickets, claim, assignment, resume, block, completion, next-ticket selection, ticket-ID execution, parent-child reconciliation, or explicitly requested publish, PR, Codex review, or monitor-until-clean; exclude explanation, diagnosis-only, and isolated edits unless publish or review is explicitly requested.'}; assert actual == expected; print(actual)"`
   - `python -c "from pathlib import Path; import yaml; actual=yaml.safe_load(Path(r'.codex-skill-staging/anima-project-management/agents/openai.yaml').read_text(encoding='utf-8')); expected={'interface':{'display_name':'Anima Project Management','short_description':'Manage animaOS project and ticket lifecycles','default_prompt':'Use '+chr(36)+'anima-project-management to manage this animaOS initiative or ticket lifecycle.'}}; assert actual == expected; print(actual)"`
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md' AGENTS.md`
   - `$forbidden = rg -n -i 'TODO|placeholder|C:\\Users\\|\.agents/skills|\.codex/skills/' .codex-skill-staging/anima-project-management 2>$null; if ($LASTEXITCODE -eq 0) { $forbidden; throw 'Forbidden pattern found in staged skill' }; if ($LASTEXITCODE -ne 1) { throw "rg failed with exit $LASTEXITCODE" }`
-  - PowerShell count assertions for five scenarios, five first-iteration passes, five fresh evaluator IDs, five exact prompts, five fresh fixtures, five complete verbatim outputs, five field comparisons, five no-refactor results, and zero `Forward result: not run yet` placeholders
-  - `bun test tests/repo-organization.test.ts`
-  - `bun run check:repo`
-  - safe fixture removal using resolved root and fixture paths plus a root-prefix assertion before `Remove-Item -Recurse -Force -LiteralPath $fixture`
-  - `Get-ChildItem -Force -Directory -Filter '.tmp-eval-*'`
-  - `git ls-files -- '.tmp-eval-*'`
-  - `git diff --check`
-  - exact changed-path, production-source, personal-skill/external-path, and staged-skill diff assertions over `git diff --name-only HEAD`
+  - `$files = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md','tickets/repo-workflow/RWF-000-parent.md'); $winRoot = 'C:' + [IO.Path]::DirectorySeparatorChar + 'Users' + [IO.Path]::DirectorySeparatorChar; $macRoot = '/' + 'Users' + '/'; $localName = 'le' + 'oca'; $private = @($files | ForEach-Object { Select-String -LiteralPath $_ -SimpleMatch -Pattern $winRoot,$macRoot,$localName }); if ($private.Count -ne 0) { $private; throw 'Machine-specific user path remains' }`
+
+Replay-manifest, prompt-neutrality, audit-count, and pagination assertions:
+
+```powershell
+@'
+from pathlib import Path
+import json
+import re
+
+audit = Path("docs/audit/skills/2026-07-15-anima-project-management-evaluation.md")
+text = audit.read_text(encoding="utf-8")
+blocks = re.findall(
+    r"### Equivalent `collaboration\.spawn_agent` argument object\n\n```json\n(.*?)\n```",
+    text,
+    re.S,
+)
+objects = [json.loads(block) for block in blocks]
+expected = {
+    "v2_urgent_portable": "scenario-1-urgent-feature.md",
+    "v2_next_ticket_portable": "scenario-2-next-ticket.md",
+    "v2_mark_done_portable": "scenario-3-mark-done.md",
+    "v2_diagnosis_edit_portable": "scenario-4-diagnosis-edit.md",
+    "v2_multipage_monitor_portable": "scenario-5a-multipage-monitor.md",
+    "v2_cursor_failure_portable": "scenario-5b-cursor-failure.md",
+}
+assert len(objects) == 6
+assert {item["task_name"] for item in objects} == set(expected)
+for item in objects:
+    assert set(item) == {"task_name", "fork_turns", "message"}
+    assert item["fork_turns"] == "none"
+    message = item["message"]
+    assert ".worktrees/repo-organization-project-management" in message
+    assert expected[item["task_name"]] in message
+    assert ("C:" + chr(92) + "Users" + chr(92)) not in message
+    assert ("/" + "Users" + "/") not in message
+    assert "approved behavior" not in message.lower()
+    assert "expected answer" not in message.lower()
+    assert "baseline rational" not in message.lower()
+    for heading in (
+        "## Proposed action log",
+        "## File/state mutations",
+        "## External actions",
+        "## Stopping condition",
+        "## Rationale",
+    ):
+        assert heading in message
+
+assert text.count("## Portable neutral v2 Scenario ") == 6
+assert text.count("- Result: PASS on first accepted run") == 6
+assert text.count("### Exact synthetic fixture reconstruction content") == 6
+assert text.count("### Exact neutral evaluator prompt") == 6
+assert text.count("### Equivalent `collaboration.spawn_agent` argument object") == 6
+assert text.count("### Complete verbatim output") == 6
+assert text.count("### Contract comparison") == 6
+assert text.count("- Skill refactor/rerun: none") == 6
+assert text.count("### Superseded forward v1 result") == 5
+assert "Forward result: not run yet" not in text
+assert ("C:" + chr(92) + "Users" + chr(92)) not in text
+assert ("/" + "Users" + "/") not in text
+assert ("le" + "oca").lower() not in text.lower()
+
+five_a = text.split("## Portable neutral v2 Scenario 5A", 1)[1].split(
+    "## Portable neutral v2 Scenario 5B", 1
+)[0]
+assert five_a.count('"hasNextPage": true') == 3
+assert five_a.count('"hasNextPage": false') == 4
+assert "THREAD-BEHAVIOR-208" in five_a
+assert "second thread page" in five_a
+assert "second comment page" in five_a
+
+five_b = text.split("## Portable neutral v2 Scenario 5B", 1)[1]
+assert five_b.count('"hasNextPage": true') == 1
+assert five_b.count('"hasNextPage": false') == 1
+assert "synthetic cursor service unavailable" in five_b
+assert "Fail closed" in five_b
+assert "Do not declare the PR clean" in five_b
+print("portable-neutral-v2 manifests=6 scenarios=6 v1_superseded=5 pagination=pass")
+'@ | python -
+```
+
+- `bun test tests/repo-organization.test.ts`
+- `bun run check:repo`
+- `$root = (Resolve-Path .).Path; $candidate = Join-Path $root '.tmp-eval-anima-project-management-v2'; if (Test-Path -LiteralPath $candidate) { $fixture = (Resolve-Path $candidate).Path; if (-not $fixture.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture path escaped workspace' }; Remove-Item -Recurse -Force -LiteralPath $fixture }`
+- `$remaining = @(Get-ChildItem -Force -Directory -Filter '.tmp-eval-*'); $tracked = @(git ls-files -- '.tmp-eval-*'); if ($remaining.Count -ne 0 -or $tracked.Count -ne 0) { throw 'Temporary evaluation fixture remains' }`
+- `git diff --check`
+- `$changed = @(git diff --name-only HEAD); $expected = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-000-parent.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md'); if (@($changed | Where-Object { $_ -notin $expected }).Count -ne 0 -or @($expected | Where-Object { $_ -notin $changed }).Count -ne 0) { $changed; throw 'Changed-path scope mismatch' }; if (@($changed | Where-Object { $_ -match '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/' }).Count -ne 0) { throw 'Production source changed' }; if (@($changed | Where-Object { $_ -match '(^|/)(\.agents/skills|\.codex/skills)(/|$)|^[A-Za-z]:' }).Count -ne 0) { throw 'Personal skill or machine-external path changed' }; if (git diff --name-only HEAD -- .codex-skill-staging/anima-project-management/SKILL.md) { throw 'Staged skill changed without observed loophole' }`
+
 - Results:
-  - official validation exited 0 with `Skill is valid!`; the unchanged staged skill is 694 words
-  - frontmatter parsed to exactly the approved `name` and trigger-only `description`; interface YAML parsed to exactly the three approved interface fields and default prompt
-  - `AGENTS.md` contains the exact repo-owned skill path; the staged-skill forbidden-pattern search returned no matches (expected `rg` exit 1)
-  - all five forward scenarios passed on iteration 1 with five distinct `fork_turns=none` evaluators; the audit contains complete prompt, fixture, verbatim output, and field-by-field evidence for each; no stale forward placeholder remains
-  - `.codex-skill-staging/anima-project-management/SKILL.md` is unchanged because no observed forward loophole required a guardrail
-  - focused repository tests passed: 32 tests, 59 assertions, 0 failures; `bun run check:repo` passed
-  - fixture cleanup reported zero remaining `.tmp-eval-*` directories and zero tracked fixture paths
-  - `git diff --check` passed; the current scope contains exactly the three changed paths below, with zero production-source paths and zero personal-skill or machine-external paths
-- Changed paths:
+  - six distinct portable neutral `fork_turns=none` evaluators passed scenarios 1-4, multi-page 5A, and cursor-failure 5B on their first accepted runs; no accepted prompt exposed expected behavior, baseline rationalizations, or an answer sequence
+  - 5A consumed two review pages, two review-thread pages, and the behavioral thread's two comment pages; it discovered the later-page defect, derived regression-first narrow fixing, pushed-OID/head synchronization, exact `@codex review`, and the same-head stopping rule
+  - 5B refused a clean declaration and merge after the required next `reviewThreads` cursor page became unavailable
+  - replay-manifest validation parsed six exact `collaboration.spawn_agent` argument objects with six unique agent names, `fork_turns=none`, repo-relative cwd/fixture paths, neutral prompts, and the five-field response schema
+  - v1 remains preserved but explicitly superseded; committed local roots are normalized to `<repo-root>` and no machine-specific user path remains in the audit or current ticket files
+  - official validation exited 0 with `Skill is valid!`; the unchanged staged skill is 694 words; exact frontmatter and three-field interface YAML assertions passed; `AGENTS.md` exact-path and staged-skill forbidden-pattern checks passed
+  - focused repository validation passed with 32 tests, 59 assertions, and 0 failures; `bun run check:repo` passed
+  - safe fixture cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths
+  - `git diff --check` passed; the current scope contains exactly the three changed paths below with zero production-source, personal-skill, or machine-external paths
+- Current changed paths:
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Residual notes:
-  - The actual authorized draft-PR publication, current-head Codex review, and monitor-until-clean loop is intentionally pending `RWF-006`; Scenario 5 is isolated simulation evidence only.
-  - No production file, personal skill directory, live ticket fixture, external service, or real PR was mutated by the forward evaluators.
+  - The actual authorized draft-PR publication, current-head Codex review, and monitor-until-clean loop remains pending `RWF-006`; 5A and 5B are simulation evidence only.
+  - No accepted evaluator mutated production files, personal skill directories, live tickets, services, or real PR state.
