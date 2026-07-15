@@ -841,6 +841,23 @@ impl CoreCommitCoordinator {
         keys: &FrkSubkeys,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
         self.validate_pinned_layout()?;
+        let committed = self.load_committed_once(keys);
+        if !matches!(
+            &committed,
+            Err(CommitError::AuthoritativeHeadMissingAfterCutover)
+        ) {
+            return committed;
+        }
+
+        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        self.load_committed_once(keys)
+    }
+
+    fn load_committed_once(
+        &self,
+        keys: &FrkSubkeys,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
         let committed = self.load_pointer(keys, HEAD_FILE)?;
         let receipt = self.load_pointer(keys, CUTOVER_RECEIPT_FILE)?;
         match (committed, receipt) {
@@ -911,7 +928,9 @@ impl CoreCommitCoordinator {
     {
         let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        if self.load_committed(keys)?.is_some() || self.load_validation_snapshot(keys)?.is_some() {
+        if self.load_committed_once(keys)?.is_some()
+            || self.load_validation_snapshot(keys)?.is_some()
+        {
             return Err(CommitError::CoreAlreadyInitialized);
         }
         let catalog = build_next(1)?;
@@ -998,7 +1017,7 @@ impl CoreCommitCoordinator {
         let event = {
             let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
-            let authoritative = self.load_committed(keys)?;
+            let authoritative = self.load_committed_once(keys)?;
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {

@@ -853,6 +853,82 @@ fn cutover_receipt_prevents_missing_head_from_reactivating_the_shadow() {
 }
 
 #[test]
+fn load_committed_reports_an_in_flight_cutover_receipt_as_lock_busy() {
+    let root = reset_root("cutover-receipt-in-flight");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    commit_initial(&coordinator, &keys);
+
+    let alternate_root = reset_root("cutover-receipt-in-flight-alternate");
+    let alternate = CoreCommitCoordinator::new(&alternate_root, CORE_ID).unwrap();
+    let alternate_prepared = commit_initial(&alternate, &keys);
+    alternate
+        .commit_first_mutation(
+            &keys,
+            51,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &alternate_prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let guard = CoreCommitLock::acquire(&root).unwrap();
+    for entry in fs::read_dir(alternate.catalogs_path()).unwrap() {
+        let source = entry.unwrap().path();
+        fs::copy(
+            &source,
+            coordinator
+                .catalogs_path()
+                .join(source.file_name().unwrap()),
+        )
+        .unwrap();
+    }
+    fs::copy(
+        alternate.cutover_receipt_path(),
+        coordinator.cutover_receipt_path(),
+    )
+    .unwrap();
+
+    let reader_root = root.clone();
+    let reader_keys = crate::keys();
+    let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+    let (result_sender, result_receiver) = std::sync::mpsc::channel();
+    let reader = thread::spawn(move || {
+        let coordinator = CoreCommitCoordinator::new(&reader_root, CORE_ID).unwrap();
+        ready_sender.send(()).unwrap();
+        result_sender
+            .send(coordinator.load_committed(&reader_keys))
+            .unwrap();
+    });
+    ready_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+    let in_flight = match result_receiver.recv_timeout(Duration::from_millis(500)) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            drop(guard);
+            reader.join().unwrap();
+            panic!("receipt-only reads must not block on a held commit lock");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("receipt-only reader disconnected")
+        }
+    };
+    assert!(matches!(in_flight, Err(CommitError::LockBusy)));
+    reader.join().unwrap();
+
+    fs::copy(alternate.head_path(), coordinator.head_path()).unwrap();
+    drop(guard);
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(committed.head().generation(), 2);
+    assert_eq!(committed.catalog().cutover_marker().unwrap().epoch(), 51);
+
+    drop(alternate);
+    drop(coordinator);
+    fs::remove_dir_all(alternate_root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cutover_receipt_rejects_a_divergent_head_at_its_generation() {
     let root = reset_root("cutover-receipt-divergent-head");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
