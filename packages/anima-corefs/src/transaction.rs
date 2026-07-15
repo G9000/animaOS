@@ -562,6 +562,16 @@ impl CatalogPrecondition {
                 parent_id: parent_id.as_str().to_owned(),
             });
         }
+        if catalog
+            .entries()
+            .iter()
+            .any(|entry| entry.parent_id() == Some(parent_id) && entry.name() == &name)
+        {
+            return Err(CommitConflict::DestinationOccupied {
+                parent_id: parent_id.as_str().to_owned(),
+                name: name.as_str().to_owned(),
+            });
+        }
         Ok(Self::Vacant(VacantPrecondition { parent_path, name }))
     }
 }

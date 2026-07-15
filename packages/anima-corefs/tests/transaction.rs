@@ -579,7 +579,7 @@ fn stale_path_revision_and_destination_preconditions_fail_before_build() {
             &keys,
             1,
             std::slice::from_ref(&prepared_two),
-            &[stale.clone(), destination],
+            &[stale.clone(), destination.clone()],
             |_, next_generation| Ok(catalog(next_generation, "Renamed.md", &prepared_two)),
             |_| Ok(()),
         )
@@ -609,12 +609,11 @@ fn stale_path_revision_and_destination_preconditions_fail_before_build() {
         catalog_count
     );
 
-    let occupied = vacant_precondition(&coordinator, &keys, "Renamed.md");
     let error = coordinator
         .commit(
             &keys,
             &[],
-            &[occupied],
+            &[destination],
             |_, _| -> Result<CatalogGeneration, _> {
                 panic!("an occupied destination must fail before catalog construction")
             },
@@ -658,6 +657,31 @@ fn vacant_destination_requires_a_present_folder_parent() {
     assert!(matches!(
         object,
         CommitConflict::InvalidDestinationParent { .. }
+    ));
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn vacancy_capture_rejects_an_already_occupied_destination() {
+    let root = reset_root("occupied-destination-capture");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    commit_initial(&coordinator, &keys);
+    let catalog = active_catalog(&coordinator, &keys);
+
+    let occupied = CatalogPrecondition::vacant(
+        &catalog,
+        &OpaqueId::parse(ROOT_ID).unwrap(),
+        PortableName::parse("Note.md").unwrap(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        occupied,
+        CommitConflict::DestinationOccupied { parent_id, name }
+            if parent_id == ROOT_ID && name == "Note.md"
     ));
 
     drop(coordinator);
