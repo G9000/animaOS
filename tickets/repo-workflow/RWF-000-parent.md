@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:58 MYT
+- Updated: 2026-07-15 22:17 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ This table is the execution order; dependency eligibility still controls when ea
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `RWF-005` | Add the anima project-management skill | `in_progress` | none |
+| `RWF-005` | Add the anima project-management skill | `done` | none |
 | `RWF-001` | Rebuild the canonical ticket initiative index | `done` | none |
 | `RWF-002` | Mark scratchboard legacy and add migration checklist | `done` | `RWF-001` |
 | `RWF-003` | Add ticket metadata validation | `done` | `RWF-001` |
@@ -57,6 +57,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
 - 2026-07-15 21:58 MYT - `RWF-004` reconciled repository navigation and hygiene, including manifest-grounded contributor command and language maps.
+- 2026-07-15 22:17 MYT - `RWF-005` completed five fresh-agent forward evaluations with no required skill refactor and passed official skill and repository validation.
 
 ## Activity Log
 
@@ -91,10 +92,16 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 21:45 MYT - Re-completed `RWF-004` after aligning the directory map with the exact root `package.json` build sequence, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-005` and `RWF-006`.
 - 2026-07-15 21:56 MYT - Reopened `RWF-004` for the acceptance-breaking contributor command and language-map errors, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 21:45 MYT` in history, kept `RWF-003` done/history untouched, and preserved parent ownership and `in_progress` state.
 - 2026-07-15 21:58 MYT - Re-completed `RWF-004` after correcting the contributor command and language map from root supervisor and manifest evidence, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-005` and `RWF-006`.
+- 2026-07-15 22:07 MYT - Recorded material `RWF-005` forward-evaluation progress after resuming its existing Codex-owned `in_progress` state without a new claim; kept the child row and parent `in_progress` and preserved parent ownership.
+- 2026-07-15 22:17 MYT - Completed `RWF-005`, synchronized its row and one current completed-history entry to `done`, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-006` remains `backlog` and is the initiative's publication/review closeout.
 
 ## Validation
 
-- Commands:
+### Historical initiative snapshots (superseded for current RWF-005 closeout)
+
+The commands, changed-path inventories, and result counts below are preserved from Task 4 integration, skill thinning, and Tasks 7-8 organization/hygiene work. They are phase-specific historical snapshots, not a claim that every listed path changed in the current closeout. Labels such as the former four-file, ten-file, focused-test, and manifest counts describe those earlier validated scopes and are superseded by the exact current results below.
+
+- Commands (historical):
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `rg -n 'close an initiative|record the pushed commit OID|headRefOid.*recorded pushed OID' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
@@ -109,7 +116,7 @@ This table is the execution order; dependency eligibility still controls when ea
   - `git diff --check`
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
-- Changed paths:
+- Changed paths (historical initiative scope):
   - .codex-skill-staging/anima-project-management/SKILL.md
   - .gitignore
   - AGENTS.md
@@ -128,7 +135,7 @@ This table is the execution order; dependency eligibility still controls when ea
   - tickets/repo-workflow/RWF-004-repository-documentation-hygiene.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
-- Notes:
+- Notes (historical):
   - exact Task 4 terminology and review-head guard searches exited 0
   - working and staged diff checks exited 0
   - Task 4 review follow-up contained exactly the four changed paths listed above
@@ -140,3 +147,31 @@ This table is the execution order; dependency eligibility still controls when ea
   - Task 8 targeted live audit links, debug ignore/untracking, moved-path resolution, and production-source exclusion passed
   - Task 8 review follow-up matched the exact root `scripts.build` value, clarified the Nx-selected projects versus the subsequent Animus Cargo check, and revalidated focused tests, live organization, diff, and source scope
   - Task 8 quality follow-up matched root dev/build scripts, verified uv/Bun launcher specs and 14 current language-family manifests, passed 44 focused tests and the live organization check, and kept `RWF-003` untouched
+
+### Current RWF-005 closeout validation
+
+The exact executable closeout commands and expected results are recorded in the current validation section of `RWF-005`; this parent records the synchronized initiative-level summary without duplicating the long assertion bodies.
+
+- Commands:
+  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
+  - exact Python/YAML assertions for the two frontmatter fields and three approved `agents/openai.yaml` interface fields
+  - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md' AGENTS.md`
+  - staged-skill forbidden personal-path, machine-path, and placeholder search
+  - five-scenario audit structure and no-placeholder count assertions
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - safe `.tmp-eval-*` cleanup plus remaining-directory and tracked-path assertions
+  - `git diff --check`
+  - exact current changed-path, production-source, personal-skill/external-path, and staged-skill diff assertions
+- Results:
+  - five distinct fresh forward evaluators passed all approved contracts on iteration 1; no staged-skill refactor or rerun was required
+  - official validation passed; the unchanged skill is 694 words; exact frontmatter and interface metadata assertions passed; `AGENTS.md` exact-path search passed; staged-skill forbidden-pattern search returned no matches
+  - focused repository validation passed with 32 tests, 59 assertions, and 0 failures; the live repository organization check passed
+  - safe fixture cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths
+  - current scope contains exactly the three paths below; `git diff --check` passed with zero production-source and zero personal-skill or machine-external paths
+  - `RWF-000` correctly remains `in_progress`, its owner remains Codex, and `RWF-006` remains `backlog` pending the authorized end-to-end PR loop
+- Current changed paths:
+  - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
+  - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
+  - tickets/repo-workflow/RWF-000-parent.md

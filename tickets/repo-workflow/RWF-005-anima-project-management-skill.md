@@ -1,6 +1,6 @@
 # RWF-005 - Add the anima project-management skill
 
-- Status: in_progress
+- Status: done
 - Priority: P2
 - Scope: `.codex-skill-staging/anima-project-management`, `AGENTS.md`, `docs/ops`, `docs/audit/skills`
 - Parent: `RWF-000`
@@ -10,9 +10,9 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 19:13 MYT
+- Updated: 2026-07-15 22:17 MYT
 - Started: 2026-07-15 17:39 MYT
-- Completed:
+- Completed: 2026-07-15 22:17 MYT
 
 ## Goal
 
@@ -48,10 +48,16 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 18:53 MYT - Integrated mandatory skill routing, canonical ticket transitions and parent synchronization, and the explicitly authorized current-head PR review loop into repository guidance; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 - 2026-07-15 18:59 MYT - Closed Task 4 review gaps by making initiative closeout an explicit skill trigger, guarding the first review request on pushed-OID/head synchronization, and replacing placeholder parent validation; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 - 2026-07-15 19:13 MYT - Refactored the skill into a canonical-doc-backed high-risk checklist and aligned action-scoped authority, fail-closed pagination, ownership-safe reopen, parent closeout timestamps, early-merge authority handling, and template validation; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
+- 2026-07-15 22:07 MYT - Resumed the existing Codex-owned `in_progress` ticket without a new claim, preserved `Started: 2026-07-15 17:39 MYT`, and began the five fresh-agent forward evaluations; kept the parent row `in_progress`.
+- 2026-07-15 22:17 MYT - Completed `RWF-005` after five distinct fresh-agent forward contracts passed on iteration 1, no skill loophole required a refactor, disposable fixtures were safely removed, and focused repository and official skill validation passed; synchronized the parent row and completion history while leaving the parent `in_progress` for `RWF-006`.
 
 ## Validation
 
-- Commands:
+### Historical snapshots (superseded by current closeout validation)
+
+The commands, path sets, and counts below are preserved as evidence from RED, GREEN, Task 4 integration, and the pre-thinning quality follow-ups. They are historical snapshots, not the current reproducible closeout checklist. In particular, skill-layout grep assertions and the wider changed-path inventories predate the final 694-word checklist and Task 9's exact three-file scope.
+
+- Commands (historical):
   - `rg -n '^- (Status: in_progress|Owner: Codex)\r?$' tickets/repo-workflow/RWF-005-anima-project-management-skill.md`
   - ``rg -n '^\| `RWF-005` \| Add the anima project-management skill \| `in_progress` \| none \|\r?$' tickets/repo-workflow/RWF-000-parent.md``
   - `rg -n '^## Scenario [1-5]: .+\r?$' docs/audit/skills/2026-07-15-anima-project-management-evaluation.md`
@@ -80,7 +86,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
   - `git status --short --untracked-files=all`
-- Changed paths:
+- Changed paths (historical wider scope):
   - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
   - docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
   - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
@@ -93,7 +99,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
-- Notes:
+- Notes (historical):
   - RED fixtures removed; no `.tmp-eval-*` path remains
   - owner/status search returned 2 matches; synchronized parent-row search returned 1 match
   - scenario, exact-prompt, complete-output, and forward-result searches each returned 5 matches; fixture/constraint/contract search returned 15 matches
@@ -112,3 +118,37 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - `agents/openai.yaml` remains unchanged at SHA-256 `840778D52C1848E98FE8ED923393A8D075DC16CF5EA5057D61288A8D9D77EEF3`
   - authority, pagination, owner-gate, parent-closeout, and early-merge contract searches exited 0; the forbidden contradiction/path search returned no matches
   - `tickets/TEMPLATE.md` metadata search returned exactly 3 matches, expected link targets exist, `git diff --check` exited 0, and working scope contains exactly the 10 approved quality-follow-up paths
+
+### Current reproducible closeout validation
+
+- Commands:
+  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
+  - `python -c "from pathlib import Path; import yaml; text=Path(r'.codex-skill-staging/anima-project-management/SKILL.md').read_text(encoding='utf-8'); actual=yaml.safe_load(text.split('---', 2)[1]); expected={'name':'anima-project-management','description':'Use when animaOS initiative or feature work involves status, definition, revision, PRD, plan, tickets, claim, assignment, resume, block, completion, next-ticket selection, ticket-ID execution, parent-child reconciliation, or explicitly requested publish, PR, Codex review, or monitor-until-clean; exclude explanation, diagnosis-only, and isolated edits unless publish or review is explicitly requested.'}; assert actual == expected; print(actual)"`
+  - `python -c "from pathlib import Path; import yaml; actual=yaml.safe_load(Path(r'.codex-skill-staging/anima-project-management/agents/openai.yaml').read_text(encoding='utf-8')); expected={'interface':{'display_name':'Anima Project Management','short_description':'Manage animaOS project and ticket lifecycles','default_prompt':'Use '+chr(36)+'anima-project-management to manage this animaOS initiative or ticket lifecycle.'}}; assert actual == expected; print(actual)"`
+  - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md' AGENTS.md`
+  - `$forbidden = rg -n -i 'TODO|placeholder|C:\\Users\\|\.agents/skills|\.codex/skills/' .codex-skill-staging/anima-project-management 2>$null; if ($LASTEXITCODE -eq 0) { $forbidden; throw 'Forbidden pattern found in staged skill' }; if ($LASTEXITCODE -ne 1) { throw "rg failed with exit $LASTEXITCODE" }`
+  - PowerShell count assertions for five scenarios, five first-iteration passes, five fresh evaluator IDs, five exact prompts, five fresh fixtures, five complete verbatim outputs, five field comparisons, five no-refactor results, and zero `Forward result: not run yet` placeholders
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - safe fixture removal using resolved root and fixture paths plus a root-prefix assertion before `Remove-Item -Recurse -Force -LiteralPath $fixture`
+  - `Get-ChildItem -Force -Directory -Filter '.tmp-eval-*'`
+  - `git ls-files -- '.tmp-eval-*'`
+  - `git diff --check`
+  - exact changed-path, production-source, personal-skill/external-path, and staged-skill diff assertions over `git diff --name-only HEAD`
+- Results:
+  - official validation exited 0 with `Skill is valid!`; the unchanged staged skill is 694 words
+  - frontmatter parsed to exactly the approved `name` and trigger-only `description`; interface YAML parsed to exactly the three approved interface fields and default prompt
+  - `AGENTS.md` contains the exact repo-owned skill path; the staged-skill forbidden-pattern search returned no matches (expected `rg` exit 1)
+  - all five forward scenarios passed on iteration 1 with five distinct `fork_turns=none` evaluators; the audit contains complete prompt, fixture, verbatim output, and field-by-field evidence for each; no stale forward placeholder remains
+  - `.codex-skill-staging/anima-project-management/SKILL.md` is unchanged because no observed forward loophole required a guardrail
+  - focused repository tests passed: 32 tests, 59 assertions, 0 failures; `bun run check:repo` passed
+  - fixture cleanup reported zero remaining `.tmp-eval-*` directories and zero tracked fixture paths
+  - `git diff --check` passed; the current scope contains exactly the three changed paths below, with zero production-source paths and zero personal-skill or machine-external paths
+- Changed paths:
+  - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
+  - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
+  - tickets/repo-workflow/RWF-000-parent.md
+- Residual notes:
+  - The actual authorized draft-PR publication, current-head Codex review, and monitor-until-clean loop is intentionally pending `RWF-006`; Scenario 5 is isolated simulation evidence only.
+  - No production file, personal skill directory, live ticket fixture, external service, or real PR was mutated by the forward evaluators.
