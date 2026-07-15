@@ -111,13 +111,13 @@ pub fn encode_catalog(payload: &CatalogPayload) -> Result<Vec<u8>, CatalogError>
             BoundedJsonError::LimitExceeded => CatalogError::LimitExceeded("catalog plaintext"),
             BoundedJsonError::Json(error) => CatalogError::Json(error),
         })?;
-    canonical.validate()?;
     for entry in &mut canonical.entries {
         canonicalize_value(&mut entry.record);
     }
     canonical
         .entries
         .sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    canonical.validate()?;
     bounded_json_to_vec(&canonical, MAX_CATALOG_PLAINTEXT_SIZE).map_err(|error| match error {
         BoundedJsonError::LimitExceeded => CatalogError::LimitExceeded("catalog plaintext"),
         BoundedJsonError::Json(error) => CatalogError::Json(error),

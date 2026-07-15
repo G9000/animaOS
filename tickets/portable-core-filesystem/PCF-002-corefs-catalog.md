@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 14:26 MYT
+- Updated: 2026-07-15 15:29 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -75,6 +75,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 13:34 MYT - Hardened the second slice against the final format and boundary requirements with red/green coverage: the V1 object header now declares and validates the `object-dek` domain, object-key epoch, and bounded UTF-8 object ID; opaque metadata uses a closed body-encoding enum and recursively rejects catalog-owned placement keys; PyO3 now exposes file-like streaming encrypt, full decrypt, and authenticated range reads with a conservative 16-MiB cap on byte convenience APIs; and catalog version tests assert typed payload and encrypted-header rejection. PCF-002 remains `in_progress` for the deferred filesystem/publication layers.
 - 2026-07-15 14:11 MYT - Completed the third slice-two hardening pass with red/green regressions: object and stable IDs are canonical uppercase Crockford ULIDs; native JSON emission and FFI inputs are bounded before allocation/parsing; catalog decrypt and naming share one exact-length header parser; nonce generation retries collisions and fails closed; and native/PyO3 streaming errors document or enforce discard/rollback semantics, including terminal authenticated hash failures. PCF-002 remains `in_progress` for folders/policy, catalog publication and `fs/HEAD`, rotation, APIs/tools, and benchmarks.
 - 2026-07-15 14:26 MYT - Closed the final slice-two allocation review finding with a test-first capped counting serializer: native metadata and catalog values now complete an allocation-free serialized-size preflight before any proportional clone or canonicalization allocation. A clone-tracking regression proves oversized input never reaches `Clone`; native envelope and catalog limit regressions preserve typed errors and deterministic canonical bytes. Rust 1.75 CoreFS passed 35 tests and the combined native run passed 253 tests. PCF-002 remains `in_progress` for the deferred filesystem/publication layers.
+- 2026-07-15 15:29 MYT - Addressed PR #94 Codex review feedback test-first: backend FFI crypto fixtures now use canonical opaque ULIDs and retain an updated stable AAD vector, while catalog encoding sorts caller-owned public payload entries before canonical validation without weakening strict encoded-byte decoding. The focused Python suite passed 7 tests, Rust 1.75 CoreFS passed 36 tests, and the combined native run passed 254 tests.
 
 ## Validation
 
@@ -103,6 +104,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `cargo test --locked -p anima-corefs --lib bounded::tests::oversized_json_is_rejected_before_clone -- --exact` (required compile-red before the capped preflight helper existed, then passed with zero clone calls)
   - focused native envelope/catalog oversize regressions passed; `cargo +1.75.0 test --locked -p anima-corefs` (35 tests); `cargo test --locked -p anima-corefs -p anima-core` (253 tests)
   - `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
+  - Codex review follow-up: canonical Python object-ID fixtures (7 tests), unsorted public catalog canonicalization regression, `cargo +1.75.0 test --locked -p anima-corefs` (36 tests), and `cargo test --locked -p anima-corefs -p anima-core` (254 tests)
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -122,6 +124,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/anima-corefs/src/{lib.rs,crypto.rs,id.rs,bounded.rs}` and `packages/anima-corefs/Cargo.toml`
   - `packages/anima-corefs/tests/opaque_id.rs`
   - `packages/anima-core/src/ffi.rs`
+  - `apps/server/tests/test_corefs_crypto.py`
   - `Cargo.lock`
   - `packages/anima-file-tools/`
   - `apps/animus/src/tools/files.rs`

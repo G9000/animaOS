@@ -50,6 +50,31 @@ fn canonical_encoding_is_independent_of_entry_and_map_insertion_order() {
 }
 
 #[test]
+fn encode_catalog_canonicalizes_unsorted_public_payloads() {
+    let unsorted = CatalogPayload {
+        schema_version: CATALOG_FORMAT_VERSION,
+        generation: 9,
+        entries: vec![
+            entry(STABLE_Z, json!({"z": 1})),
+            entry(STABLE_A, json!({"a": 1})),
+        ],
+    };
+    let sorted = CatalogPayload::new(
+        9,
+        vec![
+            entry(STABLE_A, json!({"a": 1})),
+            entry(STABLE_Z, json!({"z": 1})),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        encode_catalog(&unsorted).unwrap(),
+        encode_catalog(&sorted).unwrap()
+    );
+}
+
+#[test]
 fn catalog_encryption_roundtrip_and_physical_name_are_private() {
     let payload = payload();
     let encrypted = encrypt_catalog(&keys(0x22), "01JCORE", &payload).unwrap();
