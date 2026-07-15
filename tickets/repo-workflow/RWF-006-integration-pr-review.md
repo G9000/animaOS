@@ -1,6 +1,6 @@
 # RWF-006 - Validate, publish, and complete PR review
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: repository validation, Git metadata, draft PR, Codex review, ticket closeout
 - Parent: `RWF-000`
@@ -10,9 +10,9 @@
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md; docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-16 00:28 MYT
+- Updated: 2026-07-16 00:59 MYT
 - Started: 2026-07-15 23:21 MYT
-- Completed:
+- Completed: 2026-07-16 00:44 MYT
 
 ## Goal
 
@@ -38,7 +38,7 @@ Carry the repository-workflow implementation through final validation and a clea
 
 - Review the final closeout head with the same current-head, required-check, disposition, and zero-actionable-thread stopping rule.
 - If actionable feedback invalidates acceptance, reopen the affected child, `RWF-006`, and `RWF-000` consistently, fix and validate narrowly, close again, push, re-request `@codex review`, and repeat.
-- Leave the draft PR unmerged unless the user separately authorizes merge.
+- Leave the PR unmerged unless the user separately authorizes merge.
 
 ## Activity Log
 
@@ -53,6 +53,8 @@ Carry the repository-workflow implementation through final validation and a clea
 - 2026-07-16 00:09 MYT - After PR `headRefOid` synchronized to publication-evidence head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`, posted the exact standalone [`@codex review`](https://github.com/G9000/animaOS/pull/99#issuecomment-4982750057) handoff (comment `IC_kwDORPzHkM8AAAABKP67aQ`).
 - 2026-07-16 00:15 MYT - Codex review `PRR_kwDORPzHkM8AAAABGIBt2Q` was submitted at `2026-07-15T16:15:22Z` on exact head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`; fully paginated state exposed actionable unresolved non-outdated thread `PRRT_kwDORPzHkM6RKtHw` on PDP-001 requiring assigned ownership for active normalized tickets.
 - 2026-07-16 00:28 MYT - Completed the test-first active-ownership repair and local validation: 34 focused tests, live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and root build passed. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress` with `Completed:` empty pending push, head synchronization, thread disposition/resolution, exact re-ping, and the next independent review.
+- 2026-07-16 00:44 MYT - Closed `RWF-006` after implementation head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` received Codex's exact-head clean comment [`IC_kwDORPzHkM8AAAABKQK3pA`](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236) at `2026-07-15T16:36:44Z` stating no major issues and `Reviewed commit: ac0e84422f`; the bundled fetch and direct GraphQL consumed all review, review-thread, per-thread-comment, and conversation-comment pages, found zero unresolved non-outdated actionable threads, and confirmed prior thread `PRRT_kwDORPzHkM6RKtHw` is resolved and outdated. PR #99 was ready, open, and unmerged at closeout and that state was preserved. The independent minor suggestion to add a blocked-state test was dispositioned as non-actionable low-value churn because current behavior is correct. The final metadata head still requires the terminal review guard after push and a fresh exact `@codex review`; no merge is authorized.
+- 2026-07-16 00:59 MYT - Recorded the authorized early-merge recovery after PR #99 was externally squash-merged at `2026-07-15T16:46:01Z` as new `origin/main` `10b63ac6769d2ddfac29246f7159a4713308791f` before the closeout commit could be pushed. Preserved old local branch `codex/repo-organization-project-management` at `4913f51b9082f23cf29e8bb151379d3050b9560f`; created `codex/repo-workflow-closeout` exactly from the squash commit, published initial follow-up head `aa3b6ea5c7b81963d181877a2ae4474539616c1b`, and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) against `main`. Verified the follow-up PR is draft, open, unmerged, and synchronized to the initial push; kept `Status: done` and `Completed: 2026-07-16 00:44 MYT` unchanged while the evidence-recording head and exact review request remain.
 
 ## Validation
 
@@ -246,8 +248,62 @@ Carry the repository-workflow implementation through final validation and a clea
   - unassigned legacy PDP-001..009 and ASR-001 normalize to `backlog`; PDP-000 and its nine rows remain synchronized at `backlog`
   - PCF-000/002 retain evidence-backed `in_progress` and synchronize `Owner: Codex` from recorded claim/start and active PR lineage
   - the validator now rejects any `in_progress` ticket without an assigned owner and any backlog parent with an active child
-  - intended fix commit: `tickets: enforce active ownership`
+  - fix commit `ac0e84422fb1da4fbeb2ed8dc001033358d386e1`: `tickets: enforce active ownership`
 - Review-fix changed paths:
   - 21 paths listed under `RWF-001` PR #99 active-ownership review-fix validation; none are production source hotspots, and staged skill scope remains exactly the original two files.
-- Pending external handoff:
-  - push the scoped fix, wait for PR `headRefOid`, reply and resolve `PRRT_kwDORPzHkM6RKtHw`, then post the exact standalone `@codex review`; do not merge or close `RWF-006`/`RWF-000` in this round.
+- Completed external handoff:
+  - pushed `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` to the current branch and waited for PR `headRefOid` to match
+  - replied with verified fix evidence in `PRRC_kwDORPzHkM7V7K1z` (database ID `3589057907`, `2026-07-15T16:31:27Z`) and resolved `PRRT_kwDORPzHkM6RKtHw`; the thread is now resolved and outdated
+  - posted exact standalone `@codex review` comment `IC_kwDORPzHkM8AAAABKQHr-Q` (database ID `4982959097`) at `2026-07-15T16:31:38Z`
+  - Codex clean comment [`IC_kwDORPzHkM8AAAABKQK3pA`](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236), database ID `4983011236`, arrived at `2026-07-15T16:36:44Z`, states `Codex Review: Didn't find any major issues. Bravo.`, and records `Reviewed commit: ac0e84422f`
+  - the bundled fetch and direct cursor-aware GraphQL consumed all review, review-thread, per-thread-comment, and conversation-comment pages; zero unresolved non-outdated actionable threads remain
+  - PR #99 was ready, open, and unmerged at closeout; its externally changed ready state was accepted and preserved without toggling it
+
+### Original PR #99 pre-merge Task 13 closeout validation
+
+- Commands:
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - `$validator = Join-Path $env:USERPROFILE '.codex\skills\.system\skill-creator\scripts\quick_validate.py'; python $validator .codex-skill-staging/anima-project-management`
+  - `git diff --check`
+  - PowerShell merge-base, changed-path, production-hotspot, and exact staged-skill assertions
+  - PowerShell child/parent graph, current completion-history, and dashboard-classification assertions
+  - `bun run build`
+- Results:
+  - focused validation passed 34 tests with 61 expectations and 0 failures; `bun run check:repo` passed; official skill validation reported `Skill is valid!`; `git diff --check` passed
+  - the original PR #99 branch range used base `408d9b64abf639739a2d044abfda647958e7ff3e` and contained 56 changed paths, 0 production-source hotspots, and exactly `.codex-skill-staging/anima-project-management/SKILL.md` plus `.codex-skill-staging/anima-project-management/agents/openai.yaml`; those are historical original-PR values, not the metadata-only follow-up range
+  - ticket/dashboard assertions returned 6 `done` RWF child files with matching parent rows, exactly 1 current `RWF-006` completion-history entry, 11 active initiatives, 7 completed initiatives, 1 legacy entry, and 18 unique parent links
+  - root build exited 0 after server/desktop Nx builds and `cargo check -p animus`; the existing 2,137.26 kB Vite chunk warning was non-blocking
+- Changed paths:
+  - `tickets/README.md`
+  - `tickets/repo-workflow/RWF-000-parent.md`
+  - `tickets/repo-workflow/RWF-006-integration-pr-review.md`
+- Notes:
+  - `RWF-006` and `RWF-000` closed at `2026-07-16 00:44 MYT`; PR #99 was externally squash-merged before this closeout commit could be pushed, so the separately authorized metadata-only follow-up is validated against the new `origin/main`
+  - runtime smoke and `GET /health` are not applicable because Task 13 changes ticket metadata and its dashboard only; no application runtime behavior changed
+  - the independent minor blocked-state test suggestion was dispositioned as non-actionable low-value churn because current behavior is correct; no code or test change was made for it
+  - at that pre-merge validation point, PR #99 was ready, open, and unmerged; the later external squash merge triggered the separate authorized metadata-only recovery below
+
+### Authorized early-merge follow-up baseline
+
+- PR #99 was externally squash-merged as `10b63ac6769d2ddfac29246f7159a4713308791f` before the local closeout commit could be pushed. The original branch remains preserved locally; the metadata-only recovery branch `codex/repo-workflow-closeout` starts exactly from that new `origin/main`.
+- Initial recovery publication pushed `aa3b6ea5c7b81963d181877a2ae4474539616c1b` only to `codex/repo-workflow-closeout` and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) with base `main`; its initial `headRefOid` synchronized to that OID and it was open/unmerged.
+- Fresh follow-up commands:
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - `$validator = Join-Path $env:USERPROFILE '.codex\skills\.system\skill-creator\scripts\quick_validate.py'; python $validator .codex-skill-staging/anima-project-management`
+  - `git diff --check`
+  - `git diff --check origin/main`
+  - exact follow-up path, production-hotspot, and staged-skill assertions over `git diff --name-only origin/main`
+  - ticket graph and dashboard-classification assertions
+  - `bun run build`
+- Fresh follow-up results:
+  - focused validation passed 34 tests with 61 expectations and 0 failures; repository validation passed; official skill validation reported `Skill is valid!`; both diff checks passed
+  - follow-up base is exact `10b63ac6769d2ddfac29246f7159a4713308791f`; the range contains exactly 3 changed paths, 0 production-source hotspots, and 0 `.codex-skill-staging` paths because the skill already merged in PR #99
+  - ticket/dashboard assertions returned 6 `done` RWF children with matching parent rows, exactly 1 current `RWF-006` completed-history entry, 11 active initiatives, 7 completed initiatives, 1 legacy entry, and 18 unique parent links
+  - root build passed server/desktop Nx builds plus `cargo check -p animus`; the existing Vite chunk-size warning remained non-blocking
+- Exact follow-up paths:
+  - `tickets/README.md`
+  - `tickets/repo-workflow/RWF-000-parent.md`
+  - `tickets/repo-workflow/RWF-006-integration-pr-review.md`
+- Runtime smoke and `GET /health` remain not applicable to this metadata-only recovery.
