@@ -149,6 +149,65 @@ def test_reparse_upgrades_preview_document(
     assert preview_document.status == "indexed"
 
 
+def test_reparse_returns_upgraded_unembedded_when_embedding_provider_down(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+    monkeypatch: Any,
+) -> None:
+    """If any docling chunk fails to embed, the document must not be
+    reported as a plain "upgraded" success: it stays search-invisible
+    (status != "indexed") and the caller needs to know retrieval is
+    degraded."""
+    monkeypatch.setattr(
+        reparse,
+        "extract_document_text",
+        lambda path: ExtractionOutcome(
+            pages=[PageText(page_number=1, text="# Section\n\nUpgraded body")],
+            parse_quality="docling",
+        ),
+    )
+
+    result = reparse.reparse_document(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+        embedding_fn=lambda text: None,
+    )
+
+    assert result.status == "upgraded_unembedded"
+    assert result.chunk_count >= 1
+    assert preview_document.parse_quality == "docling"
+    assert preview_document.status != "indexed"
+
+
+def test_reparse_returns_parse_degraded_when_docling_crashes_with_pack_ready(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+    monkeypatch: Any,
+) -> None:
+    """A docling crash on this specific file (pack fully ready) is a
+    different failure than "pack still downloading" and must be reported
+    distinctly so the caller knows a retry (not a wait) is warranted."""
+    monkeypatch.setattr(reparse, "parsing_pack_ready", lambda: True)
+    monkeypatch.setattr(
+        reparse,
+        "extract_document_text",
+        lambda path: ExtractionOutcome(
+            pages=[PageText(page_number=1, text="still preview")],
+            parse_quality="preview",
+        ),
+    )
+
+    result = reparse.reparse_document(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+    )
+
+    assert result.status == "parse_degraded"
+    assert preview_document.parse_quality == "preview"
+
+
 def test_reparse_noop_when_pack_not_ready(
     runtime_db: Session,
     preview_document: RuntimeDocument,

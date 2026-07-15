@@ -348,12 +348,22 @@ async def reparse_document_route(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"PDF parsing is unavailable: {exc}",
+        ) from exc
     if result.status == "not_found":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if result.status == "pack_not_ready":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Parsing pack is not ready.",
+        )
+    if result.status == "parse_degraded":
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Quality parsing failed for this document; try again.",
         )
     runtime_db.flush()
     return {"status": result.status, "chunk_count": result.chunk_count}

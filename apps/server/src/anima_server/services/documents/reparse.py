@@ -21,6 +21,7 @@ from anima_server.services.documents.parsing import (
     PARSE_QUALITY_DOCLING,
     extract_document_text,
 )
+from anima_server.services.documents.parsing_pack import parsing_pack_ready
 from anima_server.services.documents.store import (
     get_document_for_user,
     replace_document_chunks,
@@ -33,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ReparseResult:
-    status: str  # "upgraded" | "pack_not_ready" | "not_found"
+    # "upgraded" | "upgraded_unembedded" | "parse_degraded"
+    # | "pack_not_ready" | "not_found"
+    status: str
     chunk_count: int = 0
 
 
@@ -51,6 +54,17 @@ def reparse_document(
     storage_path = resolve_document_storage_path(document.storage_path, user_id=user_id)
     outcome = extract_document_text(str(storage_path))
     if outcome.parse_quality != PARSE_QUALITY_DOCLING:
+        if parsing_pack_ready():
+            # The pack is ready but docling crashed on this specific file
+            # (see parsing.extract_document_text) — the caller needs to know
+            # this is a per-document failure, not a "pack still downloading"
+            # state, so it can retry rather than wait.
+            logger.warning(
+                "Reparse of document %s produced preview output despite a ready "
+                "parsing pack; docling likely crashed on this file",
+                document.id,
+            )
+            return ReparseResult(status="parse_degraded")
         return ReparseResult(status="pack_not_ready")
 
     chunks = chunk_pages_structured(outcome.pages)
@@ -68,6 +82,22 @@ def reparse_document(
     )
     sync_document_source(runtime_db, document=document, embedding_fn=embedding_fn)
     runtime_db.flush()
+
+    if document.status != "indexed":
+        # Docling re-chunked the document (better text, now stored), but at
+        # least one chunk failed to embed (embedding provider down/erroring).
+        # The document is left at status != "indexed" by embed_document_chunks,
+        # which makes it invisible to search — the caller must be told
+        # retrieval is degraded rather than hearing a plain "upgraded".
+        logger.warning(
+            "Reparsed document %s to %d docling chunks but embedding is "
+            "incomplete; document remains unembedded (status=%s)",
+            document.id,
+            len(rows),
+            document.status,
+        )
+        return ReparseResult(status="upgraded_unembedded", chunk_count=len(rows))
+
     logger.info("Reparsed document %s: %d docling chunks", document.id, len(rows))
     return ReparseResult(status="upgraded", chunk_count=len(rows))
 

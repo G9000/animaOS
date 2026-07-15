@@ -776,6 +776,86 @@ def test_reparse_document_returns_409_when_pack_not_ready(monkeypatch: Any) -> N
         assert response.json()["error"] == "Parsing pack is not ready."
 
 
+def test_reparse_document_returns_upgraded_unembedded_payload(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(
+            status="upgraded_unembedded", chunk_count=2
+        ),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-unembedded-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "upgraded_unembedded", "chunk_count": 2}
+
+
+def test_reparse_document_returns_502_when_parse_degraded(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(status="parse_degraded"),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-degraded-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 502
+        assert (
+            response.json()["error"]
+            == "Quality parsing failed for this document; try again."
+        )
+
+
+def test_reparse_document_returns_503_for_runtime_error(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    def raise_runtime_error(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("Failed to read PDF file /tmp/x.pdf: corrupt")
+
+    monkeypatch.setattr(documents_route, "reparse_document", raise_runtime_error)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-runtime-error-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 503
+        assert "PDF parsing is unavailable" in response.json()["error"]
+
+
+def test_reparse_document_returns_503_for_document_parsing_error(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+    from anima_server.services.documents.parsing import DocumentParsingError
+
+    def raise_parsing_error(*args: Any, **kwargs: Any) -> Any:
+        raise DocumentParsingError("Docling could not extract any text from x.pdf.")
+
+    monkeypatch.setattr(documents_route, "reparse_document", raise_parsing_error)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-parsing-error-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 503
+        assert "PDF parsing is unavailable" in response.json()["error"]
+
+
 def test_reparse_document_requires_auth() -> None:
     with managed_test_client("anima-documents-api-") as client:
         response = client.post("/api/documents/1/reparse")
