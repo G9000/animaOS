@@ -183,6 +183,7 @@ Before the first review request:
 3. Run focused validation plus the broader checks required for the changed surface.
 4. Commit the scoped state, confirm authentication, push with upstream tracking, and record the pushed commit OID.
 5. Open a draft PR by default unless the user explicitly requests a ready PR.
+6. Re-query the PR until its `headRefOid` equals the recorded pushed OID. Only then post the first review request below.
 
 The PR body must contain these sections: `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`. Ask reviewers to prioritize actionable correctness, security, regressions, contracts, migrations, and missing tests. De-prioritize style-only preference, speculative redesign, unrelated refactors, and churn already enforced by tooling, without hiding or dismissing real defects.
 

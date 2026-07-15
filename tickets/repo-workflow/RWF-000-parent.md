@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 18:53 MYT
+- Updated: 2026-07-15 18:59 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -65,12 +65,22 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 17:49 MYT - Recorded RED baseline evidence for `RWF-005`; the child remains `in_progress` pending skill creation and forward evaluation.
 - 2026-07-15 18:11 MYT - Added and officially validated the minimal GREEN project-management skill; `RWF-005` remains `in_progress` pending repository integration and forward evaluation.
 - 2026-07-15 18:53 MYT - Integrated `RWF-005` into `AGENTS.md` and the canonical PRD/ticket workflow, including state-safe parent synchronization and explicitly authorized current-head PR review; kept the parent and child row `in_progress` pending forward evaluation.
+- 2026-07-15 18:59 MYT - Completed Task 4 review follow-up by making initiative closeout explicit, guarding the initial review request on PR-head synchronization, and recording the integration validation below; kept the parent and `RWF-005` row `in_progress` pending forward evaluation.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
+  - `rg -n 'close an initiative|record the pushed commit OID|headRefOid.*recorded pushed OID' AGENTS.md docs/ops/prd-ticket-workflow.md`
+  - `git diff --check`
+  - `git diff --cached --check`
+  - `git diff --name-only HEAD`
 - Changed paths:
+  - AGENTS.md
+  - docs/ops/prd-ticket-workflow.md
+  - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
-  - tracker only
+  - exact Task 4 terminology and review-head guard searches exited 0
+  - working and staged diff checks exited 0
+  - Task 4 review follow-up contained exactly the four changed paths listed above

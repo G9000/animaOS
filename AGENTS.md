@@ -90,7 +90,7 @@ Before taking any of the actions below, read `.codex-skill-staging/anima-project
 
 - start, define, revise, or report the status of an animaOS initiative or feature;
 - create or revise a PRD, design/spec, dated implementation plan, parent tracker, or child ticket;
-- choose the next ticket; claim, assign, reassign, resume, block, or complete work; execute a named ticket ID; or reconcile parent and child state;
+- choose the next ticket; claim, assign, reassign, resume, block, or complete work; execute a named ticket ID; reconcile parent and child state; or close an initiative;
 - publish or push work, open or update a PR, request Codex review, address review feedback, or monitor a PR until clean when the user explicitly requests that external action.
 
 Explanation and diagnosis-only work remains outside this workflow unless publication or review is explicitly requested. An isolated edit does not require fake planning artifacts or ticket metadata; explicit publication/review of that edit enters only the skill's publish/review mode.

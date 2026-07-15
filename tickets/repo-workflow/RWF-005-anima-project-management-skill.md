@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 18:53 MYT
+- Updated: 2026-07-15 18:59 MYT
 - Started: 2026-07-15 17:39 MYT
 - Completed:
 
@@ -46,6 +46,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 18:37 MYT - Added atomic first-discovery and clearance bookkeeping for child blockers and synchronized parent state; kept the child and parent row `in_progress` pending integration and forward evaluation.
 - 2026-07-15 18:45 MYT - Added assigned-backlog start semantics, state-first `done` precedence, and rejection of malformed transition combinations; kept project state `in_progress`.
 - 2026-07-15 18:53 MYT - Integrated mandatory skill routing, canonical ticket transitions and parent synchronization, and the explicitly authorized current-head PR review loop into repository guidance; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
+- 2026-07-15 18:59 MYT - Closed Task 4 review gaps by making initiative closeout an explicit skill trigger, guarding the first review request on pushed-OID/head synchronization, and replacing placeholder parent validation; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 
 ## Validation
 
