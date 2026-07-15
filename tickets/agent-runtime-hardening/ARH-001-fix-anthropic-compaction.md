@@ -1,6 +1,6 @@
 # ARH-001 - Fix Anthropic LLM compaction endpoint
 
-- Status: in-review
+- Status: done
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `ARH-000`

@@ -1,6 +1,6 @@
 # ARH-012 - Retrieval scoring correctness
 
-- Status: in-review
+- Status: done
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `ARH-000`

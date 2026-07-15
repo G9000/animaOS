@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 19:13 MYT
+- Updated: 2026-07-15 19:46 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -23,7 +23,7 @@ This table is the execution order; dependency eligibility still controls when ea
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
 | `RWF-005` | Add the anima project-management skill | `in_progress` | none |
-| `RWF-001` | Rebuild the canonical ticket initiative index | `backlog` | none |
+| `RWF-001` | Rebuild the canonical ticket initiative index | `done` | none |
 | `RWF-002` | Mark scratchboard legacy and add migration checklist | `backlog` | `RWF-001` |
 | `RWF-003` | Add ticket metadata validation | `backlog` | `RWF-001` |
 | `RWF-004` | Reconcile repository documentation and hygiene | `backlog` | `RWF-002` |
@@ -53,7 +53,7 @@ This table is the execution order; dependency eligibility still controls when ea
 
 ## Completed Tickets
 
-- none
+- 2026-07-15 19:46 MYT - `RWF-001` rebuilt the canonical ticket initiative index and normalized authoritative ticket state.
 
 ## Activity Log
 
@@ -67,6 +67,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 18:53 MYT - Integrated `RWF-005` into `AGENTS.md` and the canonical PRD/ticket workflow, including state-safe parent synchronization and explicitly authorized current-head PR review; kept the parent and child row `in_progress` pending forward evaluation.
 - 2026-07-15 18:59 MYT - Completed Task 4 review follow-up by making initiative closeout explicit, guarding the initial review request on PR-head synchronization, and recording the integration validation below; kept the parent and `RWF-005` row `in_progress` pending forward evaluation.
 - 2026-07-15 19:13 MYT - Aligned the canonical project-management authority, pagination, reopen, parent-closeout, early-merge, and template-validator contracts; recorded the clarified `RWF-003` scope without claiming it, kept its row `backlog`, and kept `RWF-005`/parent `in_progress` pending forward evaluation.
+- 2026-07-15 19:37 MYT - Synchronized `RWF-001` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; preserved parent ownership and `in_progress` state.
+- 2026-07-15 19:46 MYT - Completed `RWF-001`, synchronized its row and completed history to `done`, and kept `RWF-000` `in_progress` with its owner unchanged because `RWF-005` and other required children remain open.
 
 ## Validation
 

@@ -1,6 +1,6 @@
 # PDP-006 - Agentic Document Tools
 
-- Status: in_review
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`

@@ -1,6 +1,6 @@
 # ASR-001 - Shared session_scope/dual_session_scope helpers (audit A-6)
 
-- Status: in_review
+- Status: in_progress
 - Priority: P2
 - Scope: `apps/server/src/anima_server/db`, `services/agent/soul_writer.py`, `services/agent/eager_consolidation.py`, `services/agent/sleep_agent.py`
 - Parent: none

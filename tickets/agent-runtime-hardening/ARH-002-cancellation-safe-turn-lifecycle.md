@@ -1,6 +1,6 @@
 # ARH-002 - Cancellation-safe turn lifecycle
 
-- Status: in-review
+- Status: done
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `ARH-000`

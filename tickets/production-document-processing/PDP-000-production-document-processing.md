@@ -1,6 +1,6 @@
 # PDP-000 - Production Document Processing Parent Tracker
 
-- Status: todo
+- Status: backlog
 - Priority: P1
 - Scope: `apps/server`, `packages/api-client`, `apps/desktop`, `docs/architecture`
 - Parent: none
@@ -41,15 +41,15 @@ External research (2025–2026 state of the art) confirmed the target stack: Doc
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `PDP-001` | Chat grounding quick wins: injection limits and chunk overlap | in_review | none |
-| `PDP-002` | Hybrid retrieval: BM25 + RRF fusion | in_review | none |
-| `PDP-003` | Structured markdown intermediate and structure-aware chunking | in_review | none |
-| `PDP-004` | Tiered parsing: Docling quality tier and OCR fallback | in_review | `PDP-003` |
-| `PDP-005` | HTML and web capture extraction | in_review | `PDP-003` |
-| `PDP-006` | Agentic document tools | in_review | `PDP-002` |
-| `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | in_review | `PDP-002`, `PDP-003` |
-| `PDP-008` | Contextual chunk blurbs and optional reranker | in_review | `PDP-002`, `PDP-003` |
-| `PDP-009` | Retrieval eval harness, docs, and final validation | in_review | `PDP-001` through `PDP-008` |
+| `PDP-001` | Chat grounding quick wins: injection limits and chunk overlap | in_progress | none |
+| `PDP-002` | Hybrid retrieval: BM25 + RRF fusion | in_progress | none |
+| `PDP-003` | Structured markdown intermediate and structure-aware chunking | in_progress | none |
+| `PDP-004` | Tiered parsing: Docling quality tier and OCR fallback | in_progress | `PDP-003` |
+| `PDP-005` | HTML and web capture extraction | in_progress | `PDP-003` |
+| `PDP-006` | Agentic document tools | in_progress | `PDP-002` |
+| `PDP-007` | LLM-wiki compiler wiring and sleep-agent auto-compile | in_progress | `PDP-002`, `PDP-003` |
+| `PDP-008` | Contextual chunk blurbs and optional reranker | in_progress | `PDP-002`, `PDP-003` |
+| `PDP-009` | Retrieval eval harness, docs, and final validation | in_progress | `PDP-001` through `PDP-008` |
 
 Suggested order: PDP-001 and PDP-002 first (days, biggest user-visible payoff), then PDP-003 → PDP-004/PDP-005 in parallel, then PDP-006/PDP-007, then PDP-008, PDP-009 last.
 

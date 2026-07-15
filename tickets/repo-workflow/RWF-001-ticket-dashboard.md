@@ -1,17 +1,17 @@
 # RWF-001 - Rebuild the canonical ticket initiative index
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `tickets`
 - Parent: `RWF-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 17:27 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-15 19:46 MYT
+- Started: 2026-07-15 19:37 MYT
+- Completed: 2026-07-15 19:46 MYT
 
 ## Goal
 
@@ -37,12 +37,54 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
 - 2026-06-26 17:18 MYT - Ticket created.
 - 2026-07-15 17:11 MYT - Aligned the ticket with the combined repository-organization plan and canonical `tickets/README.md` dashboard.
 - 2026-07-15 17:27 MYT - Narrowed the outcome to the approved concise initiative classification index.
+- 2026-07-15 19:37 MYT - Codex claimed `RWF-001` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; set the child and parent row to `in_progress`.
+- 2026-07-15 19:46 MYT - Completed `RWF-001` after normalizing authoritative ticket state, synchronizing both supported parent-table forms, rebuilding the derived initiative index, and passing the recorded validation; set the parent row to `done` while the parent remains `in_progress` for its remaining children.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `rg -n '^- Status: (todo|in-review|in_review)\r?$|^\|.*\|[[:space:]]*`?(todo|in-review|in_review)`?[[:space:]]*\|' tickets`
+  - read-only PowerShell top-metadata parser before the first `##` for non-empty `Completed:` with non-`done` status
+  - read-only PowerShell parent-table parser for `## Child Ticket Order` and `## Child Tickets`, header-derived `Ticket`/`Status` columns, and quoted or unquoted cells
+  - read-only PowerShell index parser for the three required sections, normalized parent classification, unique parent links, legacy folders, overview links, and link resolution
+  - `rg -n '^## (Active Initiatives|Completed Initiatives|Legacy or Unclassified)\r?$' tickets/README.md`
+  - `git diff --check`
+  - `git diff --unified=0 -- tickets`
 - Changed paths:
-  - none
+  - tickets/README.md
+  - tickets/agent-runtime-hardening/ARH-000-parent.md
+  - tickets/agent-runtime-hardening/ARH-001-fix-anthropic-compaction.md
+  - tickets/agent-runtime-hardening/ARH-002-cancellation-safe-turn-lifecycle.md
+  - tickets/agent-runtime-hardening/ARH-003-soul-block-optimistic-locking.md
+  - tickets/agent-runtime-hardening/ARH-004-background-retry-hygiene.md
+  - tickets/agent-runtime-hardening/ARH-005-llm-client-robustness.md
+  - tickets/agent-runtime-hardening/ARH-006-anthropic-prompt-caching.md
+  - tickets/agent-runtime-hardening/ARH-007-background-dirty-checks.md
+  - tickets/agent-runtime-hardening/ARH-008-context-token-hygiene.md
+  - tickets/agent-runtime-hardening/ARH-009-embedding-contract-consistency.md
+  - tickets/agent-runtime-hardening/ARH-010-crash-durable-extraction.md
+  - tickets/agent-runtime-hardening/ARH-011-ttft-parallel-assembly-single-decrypt.md
+  - tickets/agent-runtime-hardening/ARH-012-retrieval-scoring-correctness.md
+  - tickets/agent-runtime-hardening/ARH-013-dedupe-drifted-logic.md
+  - tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md
+  - tickets/production-document-processing/PDP-000-production-document-processing.md
+  - tickets/production-document-processing/PDP-001-chat-grounding-quick-wins.md
+  - tickets/production-document-processing/PDP-002-hybrid-retrieval-fts-rrf.md
+  - tickets/production-document-processing/PDP-003-structured-intermediate-chunking.md
+  - tickets/production-document-processing/PDP-004-tiered-parsing-docling.md
+  - tickets/production-document-processing/PDP-005-html-web-extraction.md
+  - tickets/production-document-processing/PDP-006-agentic-document-tools.md
+  - tickets/production-document-processing/PDP-007-llm-compiler-wiring-autocompile.md
+  - tickets/production-document-processing/PDP-008-contextual-blurbs-reranker.md
+  - tickets/production-document-processing/PDP-009-eval-harness-docs-validation.md
+  - tickets/repo-workflow/RWF-000-parent.md
+  - tickets/repo-workflow/RWF-001-ticket-dashboard.md
 - Notes:
-  - backlog ticket only
+  - normalized 25 authoritative headers and 22 authoritative child-status cells across 2 parent trackers; missing or ambiguous child mappings: 0
+  - legacy authoritative status search returned no matches (expected `rg` exit 1)
+  - non-empty completion/status violations: 0
+  - parent-table validation covered 17 parents and 145 child rows with 0 mapping or synchronization violations
+  - index validation covered 17 conforming parents: 11 active, 6 completed, and 1 legacy or unclassified folder, with 0 classification or link violations
+  - all three required index section headings were found; `git diff --check` exited 0
+  - final diff inspection found no historical prose changes outside the intentional `RWF-001` lifecycle entries and rebuilt `tickets/README.md`
+  - residual risks or follow-ups: none for `RWF-001`; `bun run check:repo` remains scheduled for `RWF-003`
