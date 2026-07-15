@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 20:25 MYT
+- Updated: 2026-07-15 20:35 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -54,7 +54,7 @@ This table is the execution order; dependency eligibility still controls when ea
 ## Completed Tickets
 
 - 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
-- 2026-07-15 20:25 MYT - `RWF-002` froze scratchboard for new work and documented the incremental migration path while preserving legacy artifacts.
+- 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 
 ## Activity Log
 
@@ -75,6 +75,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:06 MYT - Re-completed `RWF-001` after the `VMI-008` repair and 146-row bidirectional validation, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
 - 2026-07-15 20:23 MYT - Synchronized `RWF-002` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; preserved parent ownership and `in_progress` state.
 - 2026-07-15 20:25 MYT - Completed `RWF-002`, synchronized its row and one completed-history entry to `done`, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
+- 2026-07-15 20:34 MYT - Reopened `RWF-002` for the legacy-continuation versus cutover policy contradiction, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 20:25 MYT` in history, and kept `RWF-000` `in_progress` with ownership unchanged.
+- 2026-07-15 20:35 MYT - Re-completed `RWF-002` after clarifying the legacy-continuation and approved-cutover policy, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
 
 ## Validation
 
