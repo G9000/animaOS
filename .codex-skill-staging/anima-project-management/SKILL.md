@@ -44,7 +44,7 @@ For a normal claim, update child and parent atomically. Set child `Owner: Codex`
 
 ## Execute, block, and complete
 
-Preserve unrelated dirt; stage only intended work. Ticket execution does not imply push, PR, deployment, messages, or other external actions. Record material progress/scope changes in `Updated:` and activity. Use `blocked` only for a concrete missing decision, dependency, permission, or external state; log transition back when cleared. Block the parent only when required blocked work leaves no eligible initiative progress.
+Preserve unrelated dirt; stage only intended work. Ticket execution does not imply push, PR, deployment, messages, or other external actions. Record material progress/scope changes in `Updated:` and activity. On first concrete blocker discovery (missing decision, dependency, permission, or external state), set child `Status: blocked`, update `Updated:`, and append child activity describing it; set parent child row `blocked`, update parent `Updated:`, and append material parent activity. Set parent `Status: blocked` only if no other initiative progress is eligible. When cleared, set child and parent row `in_progress`, update timestamps, log clearance in both, and restore parent `in_progress` if eligible work resumes.
 
 Complete only after acceptance, validation, and changed paths are recorded. Set child `done`, `Updated:`, `Completed:`, and activity; synchronize parent row, completed history, timestamp, and activity. Mark parent done only when all required children and initiative validation/closeout pass.
 
