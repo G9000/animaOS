@@ -89,7 +89,7 @@ Use this execution order and dependency shape:
 | `RWF-001` | none |
 | `RWF-002` | `RWF-001` |
 | `RWF-003` | `RWF-001` |
-| `RWF-004` | none |
+| `RWF-004` | `RWF-002` |
 | `RWF-006` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
 
 - [ ] **Step 3: Align existing ticket plan links and acceptance**
@@ -600,9 +600,9 @@ git -c commit.gpgsign=false commit -m "tooling: add repository organization chec
 - Modify: `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`
 - Modify: `tickets/repo-workflow/RWF-000-parent.md`
 
-- [ ] **Step 1: Claim `RWF-004` and synchronize the parent**
+- [ ] **Step 1: Confirm `RWF-002` is done, then claim `RWF-004`**
 
-Perform standard claim bookkeeping before documentation or Git-index changes.
+Verify the dependency is complete, then perform standard child/parent claim bookkeeping before documentation or Git-index changes.
 
 - [ ] **Step 2: Rewrite the canonical directory map from live manifests**
 

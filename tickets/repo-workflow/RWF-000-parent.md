@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 17:27 MYT
+- Updated: 2026-07-15 17:34 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -26,7 +26,7 @@ This table is the execution order; dependency eligibility still controls when ea
 | `RWF-001` | Rebuild the canonical ticket initiative index | `backlog` | none |
 | `RWF-002` | Mark scratchboard legacy and add migration checklist | `backlog` | `RWF-001` |
 | `RWF-003` | Add ticket metadata validation | `backlog` | `RWF-001` |
-| `RWF-004` | Reconcile repository documentation and hygiene | `backlog` | none |
+| `RWF-004` | Reconcile repository documentation and hygiene | `backlog` | `RWF-002` |
 | `RWF-006` | Validate, publish, and complete PR review | `backlog` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
 
 ## Deliverables
@@ -60,6 +60,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-06-26 17:18 MYT - Parent tracker created for repo workflow improvements.
 - 2026-07-15 17:11 MYT - Codex started the initiative on branch `codex/repo-organization-project-management` using `docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`.
 - 2026-07-15 17:27 MYT - Clarified execution order and the two-phase implementation-review and closeout-head guard.
+- 2026-07-15 17:34 MYT - Added the `RWF-002` dependency to `RWF-004` before repository hygiene validation.
 
 ## Validation
 

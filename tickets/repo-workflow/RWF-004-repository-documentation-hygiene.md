@@ -4,13 +4,13 @@
 - Priority: P2
 - Scope: `AGENTS.md`, `README.md`, `.gitignore`, `docs`, `debug.log`
 - Parent: `RWF-000`
-- Depends on: none
+- Depends on: `RWF-002`
 - Owner: unassigned
 - PRD: none
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 17:27 MYT
+- Updated: 2026-07-15 17:34 MYT
 - Started:
 - Completed:
 
@@ -38,6 +38,7 @@ Make repository navigation and tracked hygiene match the live monorepo without c
 
 - 2026-07-15 17:11 MYT - Ticket created from the approved repository-organization spec and implementation plan.
 - 2026-07-15 17:27 MYT - Removed scratchboard-marker ownership; this ticket only verifies the marker through the live organization check.
+- 2026-07-15 17:34 MYT - Added the `RWF-002` dependency so hygiene validation consumes the completed legacy marker.
 
 ## Validation
 
