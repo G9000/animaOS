@@ -13,6 +13,8 @@ use cap_std::fs::OpenOptionsExt as _;
 
 #[cfg(any(unix, test))]
 const TEMPORARY_FILE_MODE: u32 = 0o600;
+#[cfg(windows)]
+type RenameInfoStorageWord = usize;
 
 /// Atomically publish `payload` and return only after its directory entry is durable.
 pub fn atomic_publish(target: &Path, payload: &[u8]) -> io::Result<()> {
@@ -249,7 +251,12 @@ fn rename_file_by_handle(
     let total_size = header_size
         .checked_add(name.len() * std::mem::size_of::<u16>())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename target too long"))?;
-    let mut buffer = vec![0_u8; total_size];
+    let storage_word_size = std::mem::size_of::<RenameInfoStorageWord>();
+    let storage_len = total_size
+        .checked_add(storage_word_size - 1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename buffer too large"))?
+        / storage_word_size;
+    let mut buffer = vec![0 as RenameInfoStorageWord; storage_len];
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {
         (*info).Anonymous = FILE_RENAME_INFO_0 {
@@ -269,7 +276,7 @@ fn rename_file_by_handle(
             source.as_raw_handle(),
             FileRenameInfo,
             buffer.as_ptr().cast(),
-            u32::try_from(buffer.len()).map_err(|_| {
+            u32::try_from(total_size).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "rename buffer too large")
             })?,
         )
@@ -377,5 +384,16 @@ mod tests {
     #[test]
     fn temporary_publications_use_owner_only_unix_permissions() {
         assert_eq!(super::TEMPORARY_FILE_MODE, 0o600);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rename_info_storage_is_aligned_for_its_header() {
+        use windows_sys::Win32::Storage::FileSystem::FILE_RENAME_INFO;
+
+        assert!(
+            std::mem::align_of::<super::RenameInfoStorageWord>()
+                >= std::mem::align_of::<FILE_RENAME_INFO>()
+        );
     }
 }

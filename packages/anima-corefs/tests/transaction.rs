@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread;
@@ -1059,6 +1061,51 @@ fn stale_lock_metadata_requires_process_start_identity_not_pid_alone() {
 
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_lock_remains_private_with_a_permissive_umask() {
+    let root = reset_root("private-commit-lock");
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("helper_process_checks_private_commit_lock")
+        .arg("--nocapture")
+        .env("ANIMA_COREFS_PRIVATE_LOCK_ROOT", &root)
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore]
+fn helper_process_checks_private_commit_lock() {
+    let Some(root) = std::env::var_os("ANIMA_COREFS_PRIVATE_LOCK_ROOT") else {
+        return;
+    };
+    unsafe {
+        libc::umask(0o022);
+    }
+    let root = std::path::PathBuf::from(root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let lock_path = coordinator.lock_path();
+
+    drop(CoreCommitLock::acquire(&root).unwrap());
+    assert_eq!(
+        fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    fs::set_permissions(lock_path, fs::Permissions::from_mode(0o644)).unwrap();
+    drop(CoreCommitLock::acquire(&root).unwrap());
+    assert_eq!(
+        fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[test]

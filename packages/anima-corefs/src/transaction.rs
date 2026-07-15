@@ -5,10 +5,14 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use cap_fs_ext::MetadataExt as _;
 use cap_std::ambient_authority;
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt as _;
 #[cfg(windows)]
 use cap_std::fs::OpenOptionsExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions};
@@ -45,6 +49,8 @@ const HEAD_FILE: &str = "HEAD";
 const VALIDATION_HEAD_FILE: &str = "VALIDATION_HEAD";
 const CUTOVER_RECEIPT_FILE: &str = "CUTOVER_RECEIPT";
 const COMMIT_LOCK_FILE: &str = "commit.lock";
+#[cfg(any(unix, test))]
+const COMMIT_LOCK_FILE_MODE: u32 = 0o600;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessIdentity {
@@ -298,6 +304,8 @@ impl CoreCommitLock {
         reject_symlink_in(&fs_dir, OsStr::new(COMMIT_LOCK_FILE))?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        options.mode(COMMIT_LOCK_FILE_MODE);
         #[cfg(windows)]
         options.share_mode(
             windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
@@ -305,6 +313,8 @@ impl CoreCommitLock {
         );
         let mut file = fs_dir.open_with(COMMIT_LOCK_FILE, &options)?.into_std();
         validate_opened_regular_file(&fs_dir, OsStr::new(COMMIT_LOCK_FILE), &file)?;
+        #[cfg(unix)]
+        secure_commit_lock_permissions(&file)?;
         #[cfg(not(windows))]
         let anchor = root_dir.try_clone()?.into_std_file();
         #[cfg(windows)]
@@ -394,6 +404,19 @@ fn write_lock_metadata(file: &mut File, identity: &ProcessIdentity) -> Result<()
 
 fn is_lock_contention_error(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::WouldBlock) || error.raw_os_error() == Some(33)
+}
+
+#[cfg(unix)]
+fn secure_commit_lock_permissions(file: &File) -> Result<(), CommitError> {
+    let mut permissions = file.metadata()?.permissions();
+    if permissions.mode() & 0o777 != COMMIT_LOCK_FILE_MODE {
+        permissions.set_mode(COMMIT_LOCK_FILE_MODE);
+        file.set_permissions(permissions)?;
+    }
+    if file.metadata()?.permissions().mode() & 0o777 != COMMIT_LOCK_FILE_MODE {
+        return Err(CommitError::InvalidCoreLayout);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1774,6 +1797,11 @@ mod tests {
         let error = copy_bounded(&mut Cursor::new(b"four"), &mut output, 3).unwrap_err();
         assert!(matches!(error, CommitError::ObjectEnvelopeTooLarge));
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn commit_lock_files_use_owner_only_unix_permissions() {
+        assert_eq!(super::COMMIT_LOCK_FILE_MODE, 0o600);
     }
 
     #[test]
