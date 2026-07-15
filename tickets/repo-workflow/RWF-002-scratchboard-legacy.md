@@ -7,9 +7,9 @@
 - Depends on: `RWF-001`
 - Owner: unassigned
 - PRD: none
-- Plan: docs/ops/prd-ticket-workflow.md
+- Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-06-26 17:18 MYT
+- Updated: 2026-07-15 17:11 MYT
 - Started:
 - Completed:
 
@@ -33,6 +33,7 @@ Freeze `scratchboard/` for new work and define how old active workstreams migrat
 ## Activity Log
 
 - 2026-06-26 17:18 MYT - Ticket created.
+- 2026-07-15 17:11 MYT - Linked the ticket to the combined repository-organization implementation plan.
 
 ## Validation
 
