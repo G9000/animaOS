@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 18:11 MYT
+- Updated: 2026-07-15 18:31 MYT
 - Started: 2026-07-15 17:39 MYT
 - Completed:
 
@@ -42,6 +42,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 17:49 MYT - Recorded five fresh-agent RED baseline scenarios; no workflow failure or missing guarantee was observed, so no failure was invented. Forward evaluation remains pending.
 - 2026-07-15 18:01 MYT - Expanded RED evidence with exact reproducible prompts, synthetic preconditions, and complete evaluator outputs; aligned acceptance and forward comparison with an honest zero-gap baseline.
 - 2026-07-15 18:11 MYT - Created the minimal GREEN skill from the official repo-owned scaffold and validated its trigger contract, lifecycle router, generated interface metadata, and concision; status remains `in_progress` pending repository integration and forward evaluation.
+- 2026-07-15 18:31 MYT - Hardened named-ticket legal transitions, permission-blocked metadata closeout, pushed-OID review synchronization, and the untracked-edit closeout boundary; aligned the approved design and kept the ticket `in_progress`.
 
 ## Validation
 
@@ -59,12 +60,15 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - `rg -n 'TODO|placeholder|C:\\Users\\|\.agents/skills|\.codex/skills/' .codex-skill-staging/anima-project-management`
   - `Get-ChildItem -Recurse -File .codex-skill-staging/anima-project-management`
   - `Get-Content .codex-skill-staging/anima-project-management/agents/openai.yaml`
+  - `rg -n 'Backlog and unassigned|Codex-owned .*in_progress|Codex-owned .*blocked|Another owner \(any state\)|acceptance-breaking review routine' .codex-skill-staging/anima-project-management/SKILL.md`
+  - `rg -n 'pushed OID|headRefOid.*equals that OID|integration child.*blocked|untracked isolated edit' .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md`
   - `git diff --check`
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
   - `git status --short --untracked-files=all`
 - Changed paths:
   - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
+  - docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - .codex-skill-staging/anima-project-management/SKILL.md
   - .codex-skill-staging/anima-project-management/agents/openai.yaml
@@ -77,6 +81,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - structured-output search returned 25 headings: all 5 required fields for each of 5 evaluator outputs
   - both RED-evidence diff checks exited 0; that earlier working scope contained exactly its 3 follow-up paths
   - all five forward results are `not run yet`
-  - official skill validator exited 0 with `Skill is valid!`; `SKILL.md` is 966 words
+  - official skill validator exited 0 with `Skill is valid!`; hardened `SKILL.md` is 956 words
   - forbidden-pattern search returned no matches (expected `rg` exit 1)
   - skill folder contains exactly `SKILL.md` and `agents/openai.yaml`; frontmatter contains only `name` and `description`, and generated interface YAML matches the approved three fields exactly
+  - legal-transition search returned 5 matches; OID/blocker/untracked-boundary search returned 8 matches across skill and design

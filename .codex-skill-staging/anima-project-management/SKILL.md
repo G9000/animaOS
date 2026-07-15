@@ -1,69 +1,80 @@
 ---
 name: anima-project-management
-description: Use when an animaOS initiative or feature needs status, definition, revision, PRD, plan, tickets, claim, assignment, resume, block, completion, next-ticket selection, ticket-ID execution, parent-child reconciliation, or explicitly requested publish, PR, Codex review, or monitor-until-clean follow-through; exclude explanation, diagnosis-only, and isolated edits unless publish or review is explicitly requested.
+description: Use when animaOS initiative or feature work involves status, definition, revision, PRD, plan, tickets, claim, assignment, resume, block, completion, next-ticket selection, ticket-ID execution, parent-child reconciliation, or explicitly requested publish, PR, Codex review, or monitor-until-clean; exclude explanation, diagnosis-only, and isolated edits unless publish or review is explicitly requested.
 ---
 
 # Anima Project Management
 
 ## Overview
 
-Route animaOS work through the smallest honest lifecycle. Keep repository artifacts authoritative, project state synchronized, external actions explicitly authorized, and completion evidence-based.
+Use the smallest honest lifecycle. Keep repository artifacts authoritative, project state synchronized, external actions authorized, and completion evidence-based.
 
 ## Required sources and modes
 
-Read `AGENTS.md` and `docs/ops/prd-ticket-workflow.md` completely. Read `tickets/TEMPLATE.md` before creating tickets. Read the relevant PRD, design/spec, dated plan, parent tracker, and child tickets before changing their state.
+Read `AGENTS.md` and `docs/ops/prd-ticket-workflow.md` completely. Read `tickets/TEMPLATE.md` before creating tickets. Read the relevant PRD, design/spec, dated plan, parent, and children before changing state.
 
 | Mode | Use | Boundary |
 | --- | --- | --- |
-| Status-only | Report initiative or ticket state | Read-only; do not claim or mutate |
-| Planning | Define or revise scope and executable work | Discover existing artifacts first; avoid duplicate initiatives |
-| Ticket execution | Select, claim, resume, block, implement, or complete work | Follow child acceptance and synchronize its parent |
-| Publish/review | User explicitly requests publish, PR, Codex review, or monitoring | No merge without separate authorization |
+| Status-only | Report state | Read-only |
+| Planning | Define/revise scope and artifacts | Discover first; avoid duplicates |
+| Ticket execution | Select, claim, resume, block, implement, complete | Follow acceptance; synchronize parent |
+| Publish/review | Explicit publish, PR, Codex review, or monitoring request | No merge without separate authorization |
 
-Diagnosis-only stays read-only. A truly isolated edit creates no fake PRD, plan, parent, or child; an explicit publish/review request routes only that edit into publish/review mode.
+Diagnosis-only stays read-only. An isolated edit creates no fake project artifacts; explicit publish/review routes only that edit into publish/review mode.
 
 ## Plan without duplicating
 
-Search existing PRDs, specs, plans, and ticket initiatives before creating anything; reuse the established source of truth. For new or changed scope, use: PRD -> design/spec when approval is needed -> dated implementation plan -> one parent plus ordered child tickets. Respect active design and planning approval gates before downstream artifacts or implementation. Keep artifact responsibilities distinct and cross-link them. Create executable children as `Status: backlog`, `Owner: unassigned` unless the user explicitly assigns them.
+Search existing PRDs, specs, plans, and initiatives before creating anything; reuse their source of truth. For new/changed scope use PRD -> design/spec when approval is needed -> dated plan -> one parent plus ordered children. Respect active approval gates. Cross-link distinct artifacts. New executable children are `Status: backlog`, `Owner: unassigned` unless explicitly assigned.
 
-## Select and claim safely
+## Select, transition, and claim safely
 
-For a named ticket, read it and its parent. For "next ticket," choose the first ordered child that is backlog, unassigned, has all dependencies done, and has no visible branch, worktree, or activity-log claim. A dependency may be waived only by explicit user direction recorded in the ticket. If none qualifies, report each blocking owner, dependency, claim, or state.
+For a named ticket, read it and its parent, then apply only its legal transition:
 
-Claim before implementation as one child/parent transaction. Never steal an owner. Set child `Owner: Codex`, `Status: in_progress`, `Started:` only if empty, and `Updated:` in MYT; log the claim with branch/worktree. Set the matching parent row and top-level parent `Status:` to `in_progress`, update parent `Updated:`, and add material activity. Do not change parent ownership.
+| Current child state | Action |
+| --- | --- |
+| Backlog and unassigned | Claim normally |
+| Codex-owned `in_progress` | Resume; preserve `Started:` and do not add a false new claim |
+| Codex-owned `blocked` | Resume only after the blocker clears; transition/log child and parent back to `in_progress` |
+| `done` | Refuse normal execution; only the acceptance-breaking review routine may reopen |
+| Another owner (any state) | Never mutate unless the user explicitly authorizes reassignment; log it |
+
+For "next ticket," keep documented order and choose the first backlog, unassigned child whose dependencies are done and with no visible branch, worktree, or activity claim. Record any explicit dependency waiver. If none qualifies, report each blocking owner, dependency, claim, or state.
+
+For a normal claim, update child and parent atomically. Set child `Owner: Codex`, `Status: in_progress`, `Started:` if empty, `Updated:` in MYT, and claim activity with branch/worktree. Set parent row and top-level status `in_progress`, update its timestamp/activity, and never change parent ownership.
 
 ## Execute, block, and complete
 
-Preserve unrelated dirt and stage only intended work. Ticket execution does not imply push, PR, deployment, messages, or other external actions. Record material progress and scope changes in `Updated:` and activity. Use `blocked` only for a concrete missing decision, dependency, permission, or external-state condition; when cleared, return to `in_progress` and log both transitions. Block the parent only when no eligible initiative progress remains because required work is blocked.
+Preserve unrelated dirt; stage only intended work. Ticket execution does not imply push, PR, deployment, messages, or other external actions. Record material progress/scope changes in `Updated:` and activity. Use `blocked` only for a concrete missing decision, dependency, permission, or external state; log transition back when cleared. Block the parent only when required blocked work leaves no eligible initiative progress.
 
-Complete only after acceptance passes and validation and changed paths are recorded. Set child `done`, `Updated:`, `Completed:`, and completion activity; synchronize the parent row, completed history, timestamp, and material activity. Mark the parent done only when every required child and initiative-level validation/closeout pass.
+Complete only after acceptance, validation, and changed paths are recorded. Set child `done`, `Updated:`, `Completed:`, and activity; synchronize parent row, completed history, timestamp, and activity. Mark parent done only when all required children and initiative validation/closeout pass.
 
-If publish/review is authorized, keep the integration child and parent open through a clean implementation head. Close them in a metadata commit, push, re-request review, and treat clean current-head review of that closeout commit as the terminal guard. Actionable feedback reopens state consistently.
+When authorized publish/review includes an existing tracked child/parent, keep integration state open through a clean implementation head; close in a metadata commit, push, re-request review, and require clean current-head review of that closeout commit. An untracked isolated edit creates no project artifacts and skips ticket metadata closeout.
 
 ## Publish and review only when authorized
 
-Inspect intended scope and staging; confirm base/head, run focused and broad checks, push with upstream, and default to a draft PR. Use PR body sections `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`. Ask review to prioritize correctness, security, regressions, contracts, migrations, and missing tests while de-prioritizing style-only, speculative, unrelated, or tool-enforced churn without concealing defects. Post this exact standalone comment:
+Inspect scope/staging; confirm base/head; run focused and broad checks; push with upstream; default to a draft PR. Use body sections `Summary`, `Scope`, `Review focus`, `Out of scope`, `Validation`. Prioritize correctness, security, regressions, contracts, migrations, and missing tests; de-prioritize style-only, speculative, unrelated, or tool-enforced churn without hiding defects. The review request is this exact standalone comment:
 
 ```text
 @codex review
 ```
 
-Cache PR number, branch, and `headRefOid`. Query GraphQL `reviewThreads(first: 100)` for `isResolved`, `isOutdated`, path, line, comments, review commits, and `merged`; use flat comments only as supplemental context. A latest Codex review older than `headRefOid` is stale, never clean.
+Cache PR number, branch, and `headRefOid`. Query GraphQL `reviewThreads(first: 100)` for `isResolved`, `isOutdated`, path, line, comments, review commits, and `merged`; flat comments are supplemental only. A Codex review older than `headRefOid` is never clean.
 
-Classify unresolved, non-outdated threads as actionable or duplicate, already-fixed, outdated, style-only, speculative, unrelated, or contradicted by current code/tests. Fix actionable defects narrowly; add a failing regression first for behavioral defects. For non-actionable feedback, reply once with an evidence-based disposition instead of blind code churn. Resolve only after a verified fix or sound disposition. Run focused then appropriate broad validation, commit and push, resolve addressed threads, post `@codex review`, and repeat.
+Classify unresolved, non-outdated threads as actionable or duplicate, already-fixed, outdated, style-only, speculative, unrelated, or contradicted. Fix actionable defects narrowly; add a failing regression first for behavioral defects. Give non-actionable feedback one evidence disposition, not blind churn. Resolve only after verified fix/disposition.
 
-Stop only when the latest Codex review covers current `headRefOid`, required checks pass, zero unresolved non-outdated actionable threads remain, and every non-actionable thread is dispositioned. Never auto-merge.
+Before the initial review request and after every fix, run required validation, commit if needed, push, and record the pushed OID. Re-query until PR `headRefOid` equals that OID; only then resolve any materially addressed threads and post exact `@codex review`. Repeat. Stop only when latest Codex review equals refreshed current head, checks pass, zero unresolved non-outdated actionable threads remain, and all non-actionable threads are dispositioned. Never auto-merge.
 
-If another actor merges early while tracked state is open, create a metadata-only follow-up branch and draft PR and run the same loop; if permissions prevent it, leave state `in_progress`, record the blocker, and report it. If an acceptance-breaking finding arrives after completion, set child, matching parent row, and parent status to `in_progress`; preserve prior child and parent completion timestamps in their respective activity logs; clear current `Completed:` values and remove the child from parent completed history. Fix, then close again with new timestamps. Do not reopen for non-actionable or non-acceptance findings.
+If another actor merges early with tracked state open, create a metadata-only follow-up branch/draft PR and run the same loop. If permissions prevent it, set the integration child `blocked`; block the parent only if no other eligible initiative progress remains; record/report the concrete permission blocker; never mark done.
 
-Delete any asynchronous PR monitor when its loop reaches terminal state, the PR closes, or a replacement monitor is created.
+For an acceptance-breaking finding after completion, set child, parent row, and parent status `in_progress`; preserve prior child/parent completion timestamps in their activity logs; clear current `Completed:` values and remove the child from parent completed history. Fix, then close again with new timestamps. Do not reopen for non-actionable or non-acceptance findings.
+
+Delete any asynchronous PR monitor at terminal state, PR closure, or replacement.
 
 ## Red flags
 
-- Skipping the claim transaction or dependency rules
-- Overwriting ownership or changing the parent owner
-- Marking done before acceptance, validation, and changed paths exist
-- Blindly implementing review nitpicks or hiding valid defects
-- Stopping on a stale review or unresolved current-head evidence
-- Auto-merging or taking unauthorized external actions
-- Installing this repo-owned skill into a personal skill directory
+- Skipped claim/dependency rules, stolen ownership, or false resume claim
+- Premature done or inconsistent parent state
+- Blind nitpick churn or hidden valid defects
+- Resolving/re-pinging before pushed OID becomes PR head
+- Stale-head stop, auto-merge, or unauthorized external action
+- Personal installation of this repo-owned skill

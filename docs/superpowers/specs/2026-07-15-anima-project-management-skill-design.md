@@ -133,6 +133,8 @@ The parent becomes `in_progress` when at least one child has started and incompl
 
 When the same user request includes PR publication and review follow-through, record implementation validation but keep the child and parent `in_progress` until the review loop reaches a clean current head. Final ticket closeout then becomes a small project-metadata commit inside the PR; push it, re-request review, and continue the loop until that final head is also clean. This prevents acceptance-breaking review findings from arriving after the project was declared complete.
 
+This two-phase ticket closeout applies only when an existing tracked child and parent are in scope. Publishing or reviewing an untracked isolated edit must not create project artifacts and skips ticket-metadata closeout.
+
 ### 7. Publish and Codex Review Loop
 
 Enter this phase only when the user explicitly requests publication or PR follow-through. That authorization covers in-scope commits, branch push, PR creation or update, the exact `@codex review` ping, review-thread replies and resolutions, and follow-up pushes for that PR. It does not authorize merging.
@@ -147,7 +149,7 @@ Before publishing:
 
 The PR body must contain `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation` sections. The review-focus contract should ask for actionable correctness, security, regression, contract, migration, and missing-test findings. It should explicitly de-prioritize style-only preferences, speculative redesign, unrelated refactors, and suggestions already enforced mechanically by repository tooling. This focuses review without suppressing real defects.
 
-After the PR exists, post the review request as the exact standalone comment:
+After the PR exists, record the pushed OID and re-query until `headRefOid` equals it. Only then post the review request as the exact standalone comment:
 
 ```text
 @codex review
@@ -163,12 +165,12 @@ Then self-loop instead of returning immediately:
    - non-actionable: duplicates, already-fixed or outdated observations, style-only preference, speculative redesign, unrelated scope expansion, or claims contradicted by current code and tests.
 5. Fix every actionable thread narrowly. Add a failing regression first for behavioral defects, run focused validation, then broader validation appropriate to the changed surface.
 6. Do not change code merely to satisfy a non-actionable nitpick. Reply once with a concise evidence-based disposition. Resolve a thread only after its concern has been materially addressed by a verified fix or a sound disposition; never hide unresolved valid feedback.
-7. Commit and push the review fixes, resolve the addressed threads, update validation notes when needed, and post `@codex review` again.
+7. Commit and push the review fixes, record the pushed OID, and re-query until the PR `headRefOid` equals that OID. Only then resolve materially addressed threads, update validation notes when needed, and post `@codex review` again.
 8. Repeat from the thread-aware read for the new head.
 
 The clean stopping rule is strict: stop only when the latest Codex review targets the current `headRefOid`, all checks required for the changed surface pass, and there are zero unresolved non-outdated actionable threads. Any non-actionable thread must already have an evidence-based disposition rather than being ignored. A merged PR is also terminal only when no tracked ticket remains open or the reviewed merged head already contains the required ticket and parent closeout.
 
-If another actor merges the implementation PR while its tracked ticket is still `in_progress`, do not strand project state and do not attempt to modify the merged PR. Create a metadata-only follow-up branch and draft PR containing the child and parent closeout, then apply the same review-focus, `@codex review`, and current-head clean loop to that follow-up PR. This follow-up is within an explicit request for full publication and project closeout; it still does not authorize merging. If repository permissions prevent the follow-up PR, leave the ticket `in_progress`, record the concrete blocker, and report it instead of falsely completing the project.
+If another actor merges the implementation PR while its tracked ticket is still `in_progress`, do not strand project state and do not attempt to modify the merged PR. Create a metadata-only follow-up branch and draft PR containing the child and parent closeout, then apply the same review-focus, `@codex review`, and current-head clean loop to that follow-up PR. This follow-up is within an explicit request for full publication and project closeout; it still does not authorize merging. If repository permissions prevent the follow-up PR, set the integration child to `blocked`; set the parent to `blocked` only when no other eligible initiative progress remains; record and report the concrete permission blocker; never mark the project done.
 
 If an asynchronous monitor or heartbeat is created for a PR loop, delete it when that PR reaches its applicable stopping rule or closes, including before replacing it with a follow-up metadata PR monitor. Do not merge unless separately asked.
 
@@ -188,6 +190,7 @@ Fix and validate normally, then perform child and parent closeout again only aft
 - Duplicate artifact or ID: update or reuse the existing artifact; do not create a competing source of truth.
 - Owner conflict: do not claim; surface the current owner and ticket state.
 - Dependency conflict: do not claim unless the user explicitly waives it and the waiver is recorded.
+- Permission conflict during required metadata closeout: block the integration child, block the parent only when no other progress is eligible, and report the concrete blocker; never mark the project done.
 - Dirty worktree: preserve unrelated changes and use a safe isolated path when necessary.
 - Failed validation: leave the ticket `in_progress` or set it `blocked` when a genuine external blocker exists; never mark it `done` for convenience.
 - Stale PR review: compare the latest review commit to `headRefOid` and continue monitoring instead of reporting a false clean state.
