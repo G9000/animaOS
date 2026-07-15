@@ -1,16 +1,16 @@
 # IL-001 - Affect state vector with decay-to-baseline dynamics
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/agent/inner_life`, `apps/server/src/anima_server/models/runtime_consciousness.py`
 - Parent: `IL-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 18:30 MYT
-- Started:
+- Updated: 2026-07-15 18:54 MYT
+- Started: 2026-07-15 18:54 MYT
 - Completed:
 
 ## Goal
@@ -34,6 +34,7 @@ Persist a deterministic affect vector (valence, arousal, energy) with closed-for
 
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 18:30 MYT - Rescoped affect model from agent_runtime.py (soul Base) to a RuntimeBase model per review — affect is rebuildable and must stay out of the vault.
+- 2026-07-15 18:54 MYT - Started implementation on branch feature/il-001-affect-state-vector.
 
 ## Validation
 
