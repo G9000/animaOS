@@ -1,0 +1,4 @@
+interface:
+  display_name: "Anima Project Management"
+  short_description: "Manage animaOS project and ticket lifecycles"
+  default_prompt: "Use $anima-project-management to manage this animaOS initiative or ticket lifecycle."
