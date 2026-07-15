@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 18:59 MYT
+- Updated: 2026-07-15 19:13 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -49,7 +49,7 @@ This table is the execution order; dependency eligibility still controls when ea
 ## Post-closeout Terminal Guard
 
 - Review the final closeout head under the same current-head stopping rule without merging automatically.
-- If actionable feedback invalidates acceptance, reopen the affected child, `RWF-006`, and this parent consistently, then fix, close, push, and review again.
+- If actionable feedback invalidates acceptance, reapply the canonical owner gate before reopening the affected child, `RWF-006`, and this parent consistently; then fix, close, push, and review again.
 
 ## Completed Tickets
 
@@ -66,21 +66,35 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 18:11 MYT - Added and officially validated the minimal GREEN project-management skill; `RWF-005` remains `in_progress` pending repository integration and forward evaluation.
 - 2026-07-15 18:53 MYT - Integrated `RWF-005` into `AGENTS.md` and the canonical PRD/ticket workflow, including state-safe parent synchronization and explicitly authorized current-head PR review; kept the parent and child row `in_progress` pending forward evaluation.
 - 2026-07-15 18:59 MYT - Completed Task 4 review follow-up by making initiative closeout explicit, guarding the initial review request on PR-head synchronization, and recording the integration validation below; kept the parent and `RWF-005` row `in_progress` pending forward evaluation.
+- 2026-07-15 19:13 MYT - Aligned the canonical project-management authority, pagination, reopen, parent-closeout, early-merge, and template-validator contracts; recorded the clarified `RWF-003` scope without claiming it, kept its row `backlog`, and kept `RWF-005`/parent `in_progress` pending forward evaluation.
 
 ## Validation
 
 - Commands:
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `rg -n 'close an initiative|record the pushed commit OID|headRefOid.*recorded pushed OID' AGENTS.md docs/ops/prd-ticket-workflow.md`
+  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
+  - `rg -n 'Action-Scoped External Authority|pageInfo|owner gate|parent .*Completed|missing authority|permission blocker' AGENTS.md docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
+  - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
   - `git diff --check`
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
 - Changed paths:
+  - .codex-skill-staging/anima-project-management/SKILL.md
   - AGENTS.md
   - docs/ops/prd-ticket-workflow.md
+  - docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
+  - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
+  - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
+  - tickets/TEMPLATE.md
+  - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
   - exact Task 4 terminology and review-head guard searches exited 0
   - working and staged diff checks exited 0
   - Task 4 review follow-up contained exactly the four changed paths listed above
+  - quality follow-up official skill validation exited 0; the checklist is 694 words and the interface YAML hash is unchanged
+  - action-scope, full-pagination, ownership-safe reopen, parent-closeout, early-merge blocker, and template-contract searches passed
+  - template metadata has exactly 3 matches; expected link targets exist; forbidden contradiction/path search returned no matches; working diff check passed with exactly the 10 listed paths

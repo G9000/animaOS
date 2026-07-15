@@ -31,7 +31,8 @@
 - `.gitignore` — ignore root `/debug.log`.
 - `package.json` — add the nonbreaking `check:repo` command.
 - `docs/architecture/system/directory-structure.md` — canonical, count-free map of the polyglot monorepo.
-- `docs/ops/prd-ticket-workflow.md` — ownership, assignment, parent synchronization, publication, and review-loop clarifications.
+- `docs/ops/prd-ticket-workflow.md` — ownership, assignment, parent synchronization, action-scoped publication, pagination, and review-loop clarifications.
+- `tickets/TEMPLATE.md` — required PRD/spec/plan metadata contract for new tickets.
 - `docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md` — repair the historical audit path example after the directory move if needed.
 - `docs/superpowers/plans/2026-07-14-dual-session-scope-a6.md` — repair links and commands referring to the plural audit directory.
 - `tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md` — repair the audit-document reference and normalize current status.
@@ -215,42 +216,9 @@ Expected: `SKILL.md` and `agents/openai.yaml` exist below the exact repo-owned p
 
 - [ ] **Step 3: Replace scaffold placeholders with the minimal GREEN skill**
 
-Keep YAML frontmatter to `name` and a trigger-focused `description`. The body must route among `status-only`, `planning`, `ticket execution`, and `publish/review` modes and encode these non-negotiable transitions:
+Keep YAML frontmatter to `name` and a trigger-focused `description`. Route among `status-only`, `planning`, `ticket execution`, and `publish/review` modes, but keep the body as a concise high-risk checklist. Explicitly defer exact legal-transition tables, claim/blocker/completion transactions, the action-scoped authority matrix, cursor-pagination mechanics, and closeout details to their named sections in `docs/ops/prd-ticket-workflow.md`.
 
-```markdown
-## Required sources
-
-Read `AGENTS.md` and `docs/ops/prd-ticket-workflow.md` completely. Read
-`tickets/TEMPLATE.md` before creating tickets, then read the relevant PRD, plan,
-parent tracker, and child ticket before changing their state.
-
-## Claim before implementation
-
-Never overwrite another owner. Select only an unassigned backlog ticket whose
-dependencies are done, then update the child and parent in one logical change:
-`Owner: Codex`, `Status: in_progress`, `Started:` if empty, `Updated:` in MYT,
-and matching activity entries and parent-table state.
-
-## Complete with evidence
-
-Do not mark work done until acceptance passes and validation and changed paths
-are recorded. Synchronize the parent row and completed history. Failed checks
-leave work in progress unless a concrete external blocker requires `blocked`.
-
-## Publish only when authorized
-
-Inspect the diff, validate, push, open or update a scoped draft PR, and use body
-sections `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`.
-Post the exact standalone comment `@codex review`. Query thread-aware
-`reviewThreads(first: 100)` and compare the latest Codex review commit with
-`headRefOid`. Fix actionable defects narrowly, disposition evidence-backed
-nitpicks without code churn, push, re-request review, and repeat. Stop only when
-the latest review targets the current head, required checks pass, and no
-unresolved non-outdated actionable thread remains. Never merge without separate
-authorization.
-```
-
-Also include the closeout rule, reopening rule for acceptance-breaking review findings, metadata-only follow-up PR rule if another actor merges early, quick-reference table, and red flags from the approved skill design. Link to canonical repo docs rather than duplicating their full contents.
+The checklist must still guard `done` precedence, ownership and dependency safety, synchronized parent state, parent `Updated:`/`Completed:` on closeout, action-scoped external authority, exact standalone `@codex review`, pushed-OID/head synchronization, fail-closed pagination of review threads/reviews/comments, ownership-safe reopen, authority-vs-permission handling after early merge, current-head stopping, monitor cleanup, and no merge without separate authority. Retain the quick-reference mode table and red flags without copying the canonical workflow.
 
 - [ ] **Step 4: Confirm generated interface metadata**
 
@@ -302,7 +270,7 @@ Document `Owner: unassigned` for new tickets, eligibility and dependency checks,
 
 - [ ] **Step 3: Add the scoped publication and review loop to the workflow doc**
 
-Document explicit authorization, draft PR default, required PR body sections, exact `@codex review`, thread-aware `reviewThreads(first: 100)`, current `headRefOid`, actionable-vs-nitpick treatment, strict current-head stopping rule, reopen/closeout behavior, metadata-only follow-up after an early merge, monitor cleanup, and the prohibition on merging without separate authorization.
+Document the canonical action-scoped authority matrix, draft PR default, required PR body sections, exact `@codex review`, cursor-paginated thread-aware `reviewThreads(first: 100)`/reviews/comments with `pageInfo`, current `headRefOid`, actionable-vs-nitpick treatment, fail-closed current-head stopping, ownership-safe reopen/closeout behavior, authority-vs-permission handling for an early-merge metadata follow-up, monitor cleanup, and the prohibition on merging without separate authorization.
 
 - [ ] **Step 4: Verify exact path and terminology**
 
@@ -454,6 +422,7 @@ git -c commit.gpgsign=false commit -m "docs: mark scratchboard as legacy"
 - Modify: `package.json`
 - Modify: `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`
 - Modify: `tickets/repo-workflow/RWF-000-parent.md`
+- Read: `tickets/TEMPLATE.md`
 
 - [ ] **Step 1: Confirm `RWF-001` is done, then claim `RWF-003`**
 
@@ -461,7 +430,7 @@ Perform the standard dependency check and self-assignment mutation.
 
 - [ ] **Step 2: Write parser tests first**
 
-Export pure helpers from the future script and add tests covering canonical header statuses, rejection of `todo`/`in-review`/`in_review`/unknown values, parent child-status cells, and ignoring matching words inside Activity Log prose. Use temporary directories created by Bun tests and remove them in `afterEach`.
+Export pure helpers from the future script and add tests covering canonical header statuses, rejection of `todo`/`in-review`/`in_review`/unknown values, parent child-status cells, required `PRD:`/`Spec:`/`Plan:` fields in `tickets/TEMPLATE.md`, and ignoring matching words inside Activity Log prose. Verify that an otherwise valid legacy ticket lacking `Spec:` is not rejected merely for that omission. Use temporary directories created by Bun tests and remove them in `afterEach`.
 
 Core test shape:
 
@@ -505,6 +474,7 @@ test("parses CRLF ticket metadata and unquoted child status cells", () => {
 Add focused failing cases for:
 
 - non-`done` ticket with non-empty `Completed:`;
+- template missing any of `PRD:`, `Spec:`, or `Plan:`, plus a legacy ticket missing `Spec:` that remains valid;
 - child metadata disagreeing with its parent table row;
 - parent row naming a missing child ticket;
 - direct app/package directory without a recognized manifest;
@@ -556,7 +526,7 @@ export function collectOrganizationViolations(
 }
 ```
 
-Normalize CRLF to LF (or trim trailing `\r` from parsed lines) before field comparison. Parse only top metadata lines before the first `##` section. Recognize authoritative Markdown tables under both `## Child Ticket Order` and `## Child Tickets`; derive the `Ticket` and `Status` column indexes from the header row rather than fixed positions, and accept optional inline-code backticks around ticket IDs and status cells. Match child IDs to ticket filenames by ID prefix, compare row state to child metadata, and report missing/ambiguous children actionably. Add test fixtures for LF and CRLF, both heading forms, and both quoted and unquoted statuses so `PDP-000`-style rows cannot escape validation.
+Normalize CRLF to LF (or trim trailing `\r` from parsed lines) before field comparison. Parse only top metadata lines before the first `##` section. Recognize authoritative Markdown tables under both `## Child Ticket Order` and `## Child Tickets`; derive the `Ticket` and `Status` column indexes from the header row rather than fixed positions, and accept optional inline-code backticks around ticket IDs and status cells. Match child IDs to ticket filenames by ID prefix, compare row state to child metadata, and report missing/ambiguous children actionably. Check `tickets/TEMPLATE.md` separately for top-level `PRD:`, `Spec:`, and `Plan:` fields without imposing those fields on legacy tickets. Keep completion validation one-way (`Completed:` implies `done`) rather than requiring every historical `done` ticket to have `Completed:`. Add test fixtures for LF and CRLF, both heading forms, and both quoted and unquoted statuses so `PDP-000`-style rows cannot escape validation.
 
 - [ ] **Step 6: Implement the CLI boundary and grouped report**
 
@@ -581,6 +551,14 @@ bun test tests/repo-organization.test.ts
 ```
 
 Expected: all focused tests pass. `bun run check:repo` may still fail at this stage only on real documentation/hygiene items scheduled in Task 8; its output must aggregate them.
+
+Also run:
+
+```powershell
+rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md
+```
+
+Expected: exactly 3 matches.
 
 - [ ] **Step 9: Commit validator implementation without falsely closing the ticket**
 
@@ -815,6 +793,8 @@ git -c commit.gpgsign=false commit -m "tickets: record repository integration va
 
 ### Task 11: Publish a focused draft PR and request Codex review
 
+**Authority basis:** The user's approved initiative request explicitly includes scoped publication, PR creation, Codex review, feedback handling, and monitor-until-clean follow-through for `RWF-006`. Those broader instructions authorize Tasks 11-13 actions that are clearly encompassed, including re-pings and the conditional metadata closeout follow-up; they do not authorize merge.
+
 **Files:**
 - No expected source mutation; GitHub PR metadata and comments only.
 - Modify tickets only if publication evidence or a real review finding changes project state.
@@ -838,9 +818,10 @@ Run:
 
 ```powershell
 git push -u origin codex/repo-organization-project-management
+git rev-parse HEAD
 ```
 
-Expected: push succeeds and the upstream is set.
+Expected: push succeeds, the upstream is set, and the pushed OID is recorded.
 
 - [ ] **Step 3: Open a draft PR with the required review contract**
 
@@ -873,17 +854,7 @@ Run `gh pr create --draft --base main --head codex/repo-organization-project-man
 
 Expected: draft PR URL returned.
 
-- [ ] **Step 4: Post the exact review request**
-
-Run:
-
-```powershell
-gh pr comment <PR_NUMBER> --body '@codex review'
-```
-
-Expected: the comment contains only `@codex review`.
-
-- [ ] **Step 5: Cache PR identity and current head**
+- [ ] **Step 4: Cache PR identity and wait for the pushed head**
 
 Run:
 
@@ -891,7 +862,17 @@ Run:
 gh pr view <PR_NUMBER> --json number,url,headRefName,headRefOid,baseRefName,isDraft,merged
 ```
 
-Expected: PR identity, current head OID, draft state, and merge state are recorded. If the installed `gh` JSON view lacks `merged`, obtain it through GraphQL; do not substitute `isMerged`.
+Expected: PR identity, current head OID, draft state, and merge state are recorded. If the installed `gh` JSON view lacks `merged`, obtain it through GraphQL; do not substitute `isMerged`. Re-query until `headRefOid` equals the pushed OID from Step 2.
+
+- [ ] **Step 5: Post the exact review request**
+
+Run:
+
+```powershell
+gh pr comment <PR_NUMBER> --body '@codex review'
+```
+
+Expected: the comment contains only `@codex review` and is posted only after current `headRefOid` matches the recorded pushed OID.
 
 ---
 
@@ -904,56 +885,75 @@ Expected: PR identity, current head OID, draft state, and merge state are record
 
 - [ ] **Step 1: Query review threads and current-head review state**
 
-Use `gh api graphql` with variables for owner, repository, and PR number. Query:
+Use `gh api graphql` with variables for owner, repository, PR number, and cursors. Paginate reviews and review threads independently:
 
 ```graphql
-pullRequest(number: $number) {
-  merged
-  headRefOid
-  reviews(last: 50) {
-    nodes { author { login } commit { oid } state submittedAt body }
-  }
-  reviewThreads(first: 100) {
-    nodes {
-      isResolved
-      isOutdated
-      path
-      line
-      originalLine
-      comments(first: 50) {
-        nodes { id databaseId author { login } body createdAt url commit { oid } }
+query ReviewState(
+  $owner: String!
+  $repo: String!
+  $number: Int!
+  $reviewsCursor: String
+  $threadsCursor: String
+) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      merged
+      headRefOid
+      reviews(first: 50, after: $reviewsCursor) {
+        nodes { author { login } commit { oid } state submittedAt body }
+        pageInfo { hasNextPage endCursor }
+      }
+      reviewThreads(first: 100, after: $threadsCursor) {
+        nodes { id isResolved isOutdated path line originalLine }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
 }
 ```
 
-Expected: thread-level state and latest Codex review commit are available; flat PR comments are supplemental only.
+For every returned thread ID, paginate comments separately:
+
+```graphql
+query ThreadComments($threadId: ID!, $commentsCursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $commentsCursor) {
+        nodes { id databaseId author { login } body createdAt url commit { oid } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+```
+
+Expected: accumulate every page until each `pageInfo.hasNextPage` is false. Thread-level state, all comments, and latest Codex review commit are then available; flat PR comments remain supplemental only. If a cursor request fails or any connection remains unconsumed, fail closed and do not classify the PR as clean.
 
 - [ ] **Step 2: Apply the strict stopping rule**
 
 Do not declare clean unless all are true:
 
+- all review, review-thread, and per-thread comment pages were consumed successfully;
 - latest Codex review commit equals current `headRefOid`;
 - required checks for the changed surface pass;
 - zero unresolved, non-outdated actionable threads remain;
 - every non-actionable thread has a concise evidence-based disposition.
 
-If the latest review is older than the head, continue monitoring even when no thread is visible.
+If pagination is incomplete or the latest review is older than the head, continue monitoring or report the read failure even when no thread is visible; never declare clean from partial state.
 
 - [ ] **Step 3: Classify and address feedback without nitpick churn**
 
 Treat correctness, security, behavior, compatibility, contracts, tests, and in-scope documentation defects as actionable. Treat duplicate, already-fixed/outdated, style-only, speculative redesign, unrelated expansion, or claims contradicted by current code/tests as non-actionable. Never dismiss a valid defect as a nitpick.
 
-For each behavioral defect: reopen the acceptance-owning child if necessary, preserve prior completion timestamps in activity logs, add a failing regression test first, implement the narrow fix, run focused and broad checks, and update ticket/parent state honestly. For a non-actionable observation, reply once with evidence and resolve only after the disposition is sound.
+For each behavioral defect, apply the owner gate before reopening the acceptance-owning child. If the completed child is not Codex-owned, require explicit logged reassignment before any lifecycle mutation or fix execution; otherwise leave state untouched and report the conflict. After the gate, preserve prior completion timestamps in activity logs, add a failing regression test first, implement the narrow fix, run focused and broad checks, and update ticket/parent state honestly. For a non-actionable observation, reply once with evidence and resolve only after the disposition is sound.
 
 - [ ] **Step 4: Commit, push, resolve addressed threads, and re-request review**
 
-Run scoped tests, inspect/stage only intended changes, commit with `git -c commit.gpgsign=false`, push, resolve materially addressed threads through GraphQL, and post the exact standalone `@codex review` again. Then return to Step 1 for the new head.
+The current full-follow-through authority includes fix pushes, resolutions, and re-pings. Run scoped tests, inspect/stage only intended changes, commit with `git -c commit.gpgsign=false`, push, record the OID, and wait until PR `headRefOid` matches. Then resolve materially addressed threads through GraphQL, post the exact standalone `@codex review`, and return to Step 1 for a new fully paginated read.
 
 - [ ] **Step 5: Handle asynchronous or early-merge cases**
 
-If a recurring monitor is created, remove it when the PR closes or reaches the stopping rule. If another actor merges before ticket closeout, create a metadata-only follow-up branch and draft PR for child/parent closeout, apply the same review-focus contract and current-head loop, and do not merge it. If permissions prevent this, leave tickets open and record/report the blocker.
+If a recurring monitor is created, remove it when the PR closes or reaches the stopping rule. Because this initiative's explicit authority includes full publication plus project closeout/follow-through, an early merge authorizes a metadata-only follow-up branch and draft PR without another prompt; apply the same review-focus contract and fully paginated current-head loop, and do not merge it. In a narrower workflow lacking that original authority, block the integration child for missing authority, block the parent only if no other eligible progress remains, record/report the authority gap, and request fresh authority. If authority exists but repository permissions fail, record a distinct permission blocker and apply the same blocking rule. Neither blocker permits `done`.
 
 ---
 
@@ -966,7 +966,7 @@ If a recurring monitor is created, remove it when the PR closes or reaches the s
 
 - [ ] **Step 1: Close `RWF-006` only after the implementation head is clean**
 
-Record the PR URL, clean implementation-head OID, successful validations, zero actionable-thread result, and review notes. Set `RWF-006` to `done`, set timestamps, update parent row/history, and close `RWF-000` only because all six required children are done and initiative-level validation passed. This metadata transition occurs after the implementation head is clean and before review of the new closeout head.
+Record the PR URL, clean implementation-head OID, successful validations, zero actionable-thread result, and review notes. Set `RWF-006` to `done` with its closeout timestamps, update the parent row/history, and close `RWF-000` only because all six required children are done and initiative-level validation passed. Set parent `Updated:` and parent `Completed:` to the same closeout timestamp and log the parent transition. This transition-time contract does not require a historical backfill or a repo-wide reverse validator rule. The metadata transition occurs after the implementation head is clean and before review of the new closeout head.
 
 - [ ] **Step 2: Rebuild the initiative index for final parent state**
 
@@ -997,7 +997,7 @@ Expected: the final project-metadata commit is pushed and a fresh exact review r
 
 - [ ] **Step 5: Repeat Task 12 for the closeout head**
 
-Treat this review as the terminal guard: stop only when Codex's latest review targets this final `headRefOid`, required checks still pass, and no unresolved non-outdated actionable feedback remains. If actionable feedback invalidates acceptance, reopen the acceptance-owning child when applicable, `RWF-006`, and `RWF-000` consistently; preserve earlier completion timestamps in activity logs, fix and validate narrowly, close again, push, post the exact `@codex review`, and repeat the guard. Do not merge without separate authorization.
+Treat this review as the terminal guard: stop only after all paginated review state is consumed, Codex's latest review targets this final `headRefOid`, required checks still pass, and no unresolved non-outdated actionable feedback remains. If actionable feedback invalidates acceptance, apply the owner gate before reopening the acceptance-owning child: require explicit logged reassignment when it is not Codex-owned, and perform no lifecycle mutation or fix without it. Then reopen the affected child when applicable, `RWF-006`, and `RWF-000` consistently; preserve earlier completion timestamps in activity logs, fix and validate narrowly, close again with new child and parent timestamps, push, post the exact `@codex review`, and repeat the guard. Do not merge without separate authorization.
 
 - [ ] **Step 6: Report the achieved terminal state without merging**
 

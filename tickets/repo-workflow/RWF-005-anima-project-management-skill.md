@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 18:59 MYT
+- Updated: 2026-07-15 19:13 MYT
 - Started: 2026-07-15 17:39 MYT
 - Completed:
 
@@ -47,6 +47,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 18:45 MYT - Added assigned-backlog start semantics, state-first `done` precedence, and rejection of malformed transition combinations; kept project state `in_progress`.
 - 2026-07-15 18:53 MYT - Integrated mandatory skill routing, canonical ticket transitions and parent synchronization, and the explicitly authorized current-head PR review loop into repository guidance; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 - 2026-07-15 18:59 MYT - Closed Task 4 review gaps by making initiative closeout an explicit skill trigger, guarding the first review request on pushed-OID/head synchronization, and replacing placeholder parent validation; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
+- 2026-07-15 19:13 MYT - Refactored the skill into a canonical-doc-backed high-risk checklist and aligned action-scoped authority, fail-closed pagination, ownership-safe reopen, parent closeout timestamps, early-merge authority handling, and template validation; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 
 ## Validation
 
@@ -71,6 +72,10 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `rg -n -i 'in-review|in_review' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `rg -n -i 'auto[ -]?merge|\.agents/skills|\.codex/skills|docs/prd/|scratchboard/' AGENTS.md docs/ops/prd-ticket-workflow.md`
+  - `rg -n 'Action-Scoped External Authority|Local implementation or commit|Request Codex review|Address feedback|Monitor until clean|Merge' AGENTS.md docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md`
+  - `rg -n 'pageInfo|hasNextPage|endCursor|fail closed|pagination' docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
+  - `rg -n 'owner gate|non-Codex|reassignment|parent .*Updated.*Completed|parent .*Completed' docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
+  - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
   - `git diff --check`
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
@@ -78,11 +83,14 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - Changed paths:
   - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
   - docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
+  - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - .codex-skill-staging/anima-project-management/SKILL.md
   - .codex-skill-staging/anima-project-management/agents/openai.yaml
   - AGENTS.md
   - docs/ops/prd-ticket-workflow.md
+  - tickets/TEMPLATE.md
+  - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
@@ -100,3 +108,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - repository-guidance terminology search found the exact repo-owned skill path, `Owner: unassigned`, standalone `@codex review`, `reviewThreads(first: 100)`, and current `headRefOid` contract
   - forbidden-status search returned no `in-review` or `in_review` matches; auto-merge appears only in an explicit prohibition, personal skill paths are absent, `docs/prd/` appears only in the stale-personal-workflow override, and `scratchboard/` appears only in override/historical-compatibility guidance
   - integration diff and scope checks exited 0 and contained exactly the four Task 4 files
+  - quality follow-up official validation exited 0 with `Skill is valid!`; the high-risk checklist is 694 words and remains below the approved 1,000-word ceiling
+  - `agents/openai.yaml` remains unchanged at SHA-256 `840778D52C1848E98FE8ED923393A8D075DC16CF5EA5057D61288A8D9D77EEF3`
+  - authority, pagination, owner-gate, parent-closeout, and early-merge contract searches exited 0; the forbidden contradiction/path search returned no matches
+  - `tickets/TEMPLATE.md` metadata search returned exactly 3 matches, expected link targets exist, `git diff --check` exited 0, and working scope contains exactly the 10 approved quality-follow-up paths

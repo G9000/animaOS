@@ -25,6 +25,7 @@ At the same time, source-level hotspot refactors are already in progress on anot
 - Changing API contracts, imports, package names, runtime behavior, or database schemas.
 - Forcing every language project into Nx. Bun/package manifests, uv, Cargo, and Nx remain authoritative for their existing scopes.
 - Moving completed ticket folders or rewriting historical activity logs.
+- Backfilling a missing `Spec:` field across historical tickets or imposing a reverse `done` implies non-empty `Completed:` rule on legacy metadata.
 - Changing the semantics of the existing root `build`, `lint`, or `test` commands.
 
 ## Selected Approach
@@ -87,10 +88,13 @@ The validator performs these checks:
 
 1. Every authoritative ticket metadata status and parent child-status table cell belongs to `backlog`, `in_progress`, `blocked`, or `done`.
 2. Every ticket with a non-empty `Completed:` field has `Status: done`.
-3. Every direct child of `apps/` and `packages/` contains at least one recognized project manifest: `package.json`, `project.json`, `pyproject.toml`, or `Cargo.toml`.
-4. The deprecated `docs/audits/` directory does not exist and `docs/audit/` does exist.
-5. `debug.log` is not tracked by Git.
-6. `scratchboard/README.md` exists and identifies the directory as legacy.
+3. `tickets/TEMPLATE.md` exposes top-level `PRD:`, `Spec:`, and `Plan:` fields for new tickets.
+4. Every direct child of `apps/` and `packages/` contains at least one recognized project manifest: `package.json`, `project.json`, `pyproject.toml`, or `Cargo.toml`.
+5. The deprecated `docs/audits/` directory does not exist and `docs/audit/` does exist.
+6. `debug.log` is not tracked by Git.
+7. `scratchboard/README.md` exists and identifies the directory as legacy.
+
+The completion rule is intentionally one-way: a non-empty `Completed:` requires `done`, but the validator does not require historical `done` tickets to backfill `Completed:`. Likewise, the template-field check applies only to `tickets/TEMPLATE.md`; legacy tickets are not invalid merely because they lack `Spec:`.
 
 The validator is read-only. It reports all discovered violations in one run, groups them by check, prints actionable paths, and exits with code 1 when any violation exists. A clean run prints a short success summary and exits with code 0. Unexpected filesystem or Git failures produce a distinct error message and nonzero exit code rather than being treated as an organizational violation.
 
@@ -103,6 +107,7 @@ The repository validator reads the working tree and tracked-file list, applies d
 ```text
 apps/ + packages/ manifests ---+
 tickets/ metadata -------------+--> check:repo --> grouped report --> exit 0 or 1
+ticket template fields --------+
 docs/ layout ------------------+
 git tracked-file list ---------+
 scratchboard marker -----------+
@@ -118,6 +123,7 @@ Add focused Bun tests under `tests/repo-organization.test.ts` for:
 - rejection of legacy and unknown statuses;
 - synchronization checks for parent child-status table cells while ignoring activity-log prose;
 - rejection of a non-`done` ticket with a non-empty `Completed:` field;
+- detection of a missing `PRD:`, `Spec:`, or `Plan:` field in `tickets/TEMPLATE.md`, without flagging legacy tickets that lack `Spec:`;
 - detection of an app or package without a recognized manifest;
 - detection of the plural audit directory;
 - detection of tracked `debug.log` through an injectable tracked-file set;
@@ -165,3 +171,4 @@ Each step is reversible through ordinary Git history. Stable application, packag
 - ticket Markdown files whose status vocabulary is noncanonical
 - `scripts/check-repo-organization.ts`
 - `tests/repo-organization.test.ts`
+- `tickets/TEMPLATE.md`

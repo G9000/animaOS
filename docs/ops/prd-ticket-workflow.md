@@ -82,6 +82,8 @@ Required child metadata includes:
 
 Every ticket also contains a goal, deliverables, acceptance, activity log, and validation section.
 
+`tickets/TEMPLATE.md` is the contract for new child metadata and must expose top-level `PRD:`, `Spec:`, and `Plan:` fields. The organization validator checks those fields on the template; it does not require historical tickets to backfill a missing `Spec:` field.
+
 ## Status and Timestamp Contract
 
 The only legal ticket statuses are:
@@ -166,28 +168,40 @@ Then close child and parent state as one logical update:
 3. Add the child and completion timestamp to parent completed-ticket history without duplicating it.
 4. Update parent `Updated:` and append material parent activity.
 
-The top-level parent remains `in_progress` while required children or initiative closeout remain. Set it to `done` only when every required child is `done` and initiative-level validation and closeout have passed. Preserve parent ownership throughout.
+The top-level parent remains `in_progress` while required children or initiative closeout remain. Set it to `done` only when every required child is `done` and initiative-level validation and closeout have passed. On that transition, set parent `Updated:` and parent `Completed:` to the same closeout timestamp and log the transition. Preserve parent ownership throughout. Validate this at transition time; do not mass-backfill historical `done` tickets or add a repository-wide reverse rule that every `done` ticket must already have `Completed:`.
 
 ## Scoped Publication and Review
 
-Enter publication/review only when the user explicitly authorizes a push, PR, review request, or monitor-until-clean workflow. Ticket execution by itself provides no such authority. Explicit authorization covers the in-scope commits, branch push, PR creation/update, review comments and thread resolutions, and follow-up review-fix pushes needed for that PR; it never authorizes merge unless the user separately requests merge.
+External authority is action-scoped. Actions clearly encompassed by a broader explicit request count as authorized prerequisites or follow-through; never escalate a narrower request. Merge always requires separate explicit authority.
+
+### Action-Scoped External Authority
+
+| Explicit request | Authorized actions | Not authorized by that request alone |
+| --- | --- | --- |
+| Local implementation or commit | Local edits, tests, validation, and scoped commits | Push, PR creation/update, comments, review-state monitoring, or merge |
+| `push` | Scoped validation/commit prerequisites and branch push | PR creation/update, review ping, feedback handling, monitoring, or merge |
+| Open or update PR | Needed scoped validation/commit/push plus PR creation or update | `@codex review`, review monitoring, feedback fixes, or merge |
+| Request Codex review | Exact standalone review ping and read-only review-state checks on that PR | Feedback fixes, commits, pushes, replies, thread resolution, re-ping, monitoring-until-clean, or merge |
+| Address feedback | Thread-aware reads plus in-scope fixes, tests, commits, pushes, replies, and resolution for that PR | Re-ping or monitor-until-clean unless explicitly requested or clearly included; merge |
+| Monitor until clean or full review follow-through | Thread-aware reads, actionable fixes, tests, commits, pushes, replies, resolutions, and re-pings until the clean stopping rule | Merge |
+| Merge | Merge only when separately and explicitly authorized | Any unrelated external action |
 
 Publishing an untracked isolated edit does not create planning artifacts or tickets and does not require tracked-work metadata closeout.
 
 ### Prepare and Publish
 
-Before the first review request:
+Apply only the preparation steps authorized by the matrix. When the request includes a new or updated PR:
 
 1. Inspect the intended diff and staging area; stage only in-scope files.
 2. Confirm the base branch, head branch, and commit relationship, especially for stacked work.
 3. Run focused validation plus the broader checks required for the changed surface.
-4. Commit the scoped state, confirm authentication, push with upstream tracking, and record the pushed commit OID.
-5. Open a draft PR by default unless the user explicitly requests a ready PR.
-6. Re-query the PR until its `headRefOid` equals the recorded pushed OID. Only then post the first review request below.
+4. Commit and push only when authorized, use upstream tracking when needed, and record any pushed commit OID.
+5. Open or update a draft PR by default unless the user explicitly requests a ready PR.
+6. After any push, re-query the PR until its `headRefOid` equals the recorded pushed OID before performing a later authorized review action.
 
 The PR body must contain these sections: `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`. Ask reviewers to prioritize actionable correctness, security, regressions, contracts, migrations, and missing tests. De-prioritize style-only preference, speculative redesign, unrelated refactors, and churn already enforced by tooling, without hiding or dismissing real defects.
 
-The Codex review request must be this exact standalone comment:
+When review-request authority exists, the Codex review request must be this exact standalone comment:
 
 ```text
 @codex review
@@ -197,27 +211,28 @@ Do not auto-merge, and do not merge without separate explicit authorization.
 
 ### Read Current-Head Review State
 
-Cache the PR number, branch, and current `headRefOid`. Query GraphQL `reviewThreads(first: 100)` and retrieve, at minimum:
+Cache the PR number, branch, and current `headRefOid`. Query GraphQL with cursor pagination. Every `reviewThreads`, `reviews`, and per-thread `comments` connection used for classification or stopping must request `pageInfo { hasNextPage endCursor }`, advance its cursor, and continue until all pages are consumed. Retrieve, at minimum:
 
 - PR `merged` and `headRefOid`;
 - reviews with author, state, submitted time, and review commit OID;
 - each thread's `isResolved`, `isOutdated`, path, line/original line, comments, and comment commit OIDs.
 
-Flat PR/review comments are supplemental; they cannot replace thread-aware state. The latest Codex review commit must equal the refreshed current `headRefOid`. An older review is stale even if it was clean and even if no current thread is visible.
+Flat PR/review comments are supplemental; they cannot replace thread-aware state. If any required connection still has `hasNextPage: true`, a cursor fails, or pagination cannot complete, fail closed: report the incomplete read and never declare the PR clean. The latest Codex review commit must equal the refreshed current `headRefOid`. An older review is stale even if it was clean and even if no current thread is visible.
 
 ### Classify, Fix, and Repeat
 
-For every unresolved, non-outdated thread:
+Review-request-only authority permits read-only checks and reporting, not lifecycle mutation or fixes. With address-feedback or full-follow-through authority, handle every unresolved, non-outdated thread:
 
 1. Classify it as actionable or as duplicate, already-fixed, outdated, style-only, speculative, unrelated, or contradicted by current evidence.
 2. Fix actionable defects narrowly. For a behavioral defect, add a failing regression first, then implement and verify the fix.
 3. Give every non-actionable finding one concise evidence-based disposition. Never relabel or hide valid feedback merely to clear a thread.
 4. Run focused and required broad validation, commit and push the scoped change, and record the pushed OID.
 5. Re-query until PR `headRefOid` equals that pushed OID. Only then resolve threads whose concerns were materially addressed by a verified fix or sound disposition.
-6. Post the exact standalone `@codex review` comment and repeat from a fresh thread-aware read.
+6. Re-ping only when explicitly requested, clearly included in address-feedback authority, or authorized by monitor-until-clean/full-follow-through. Under full follow-through, post exact standalone `@codex review` and repeat from a fresh, fully paginated read.
 
-Stop only when all four conditions are true on the same refreshed head:
+Stop only when all five conditions are true on the same refreshed head:
 
+- every required review, review-thread, and comment page was consumed successfully;
 - the latest Codex review commit equals current `headRefOid`;
 - required checks pass;
 - zero unresolved, non-outdated actionable threads remain;
@@ -225,18 +240,18 @@ Stop only when all four conditions are true on the same refreshed head:
 
 ### Tracked-Work Two-Phase Closeout
 
-When publication/review includes an existing tracked child and parent, keep the integration child and parent open through a clean implementation head. After that head meets the stopping rule:
+When the authorized scope includes full publication/review follow-through for an existing tracked child and parent, keep the integration child and parent open through a clean implementation head. After that head meets the stopping rule:
 
 1. record final evidence and close the child and parent metadata consistently;
 2. commit and push that metadata closeout;
 3. record the pushed closeout OID and wait for PR `headRefOid` to catch up;
 4. post exact `@codex review` and apply the same stopping rule to the final closeout head.
 
-If an actionable review finding invalidates acceptance after a ticket was closed, reopen consistently: set the child and matching parent row to `in_progress`, return top-level parent to `in_progress`, clear current child/parent `Completed:` values, remove the child from current parent completed history, and preserve every prior completion timestamp and history in child and parent activity logs. Fix and validate, then perform closeout again with new timestamps. Do not reopen for a non-actionable or non-acceptance finding.
+If an actionable review finding invalidates acceptance after a ticket was closed, apply the owner gate before any lifecycle mutation or fix execution. A completed Codex-owned child may enter the documented reopen. If its owner is not Codex, require explicit user-authorized reassignment and log it first; otherwise leave child and parent untouched, report the ownership conflict, and request authority. After the gate, reopen consistently: set the child and matching parent row to `in_progress`, return top-level parent to `in_progress`, clear current child/parent `Completed:` values, remove the child from current parent completed history, and preserve every prior completion timestamp and history in child and parent activity logs. Fix and validate, then perform closeout again with new timestamps. Do not reopen for a non-actionable or non-acceptance finding.
 
 ### Early Merge, Permissions, and Monitor Cleanup
 
-If another actor merges while tracked metadata remains open, create a metadata-only follow-up branch and draft PR and run the same current-head review loop. Never use the early merge as evidence that tickets are done. If permissions prevent the follow-up, set the integration child to `blocked`, and set the parent `blocked` only when no other eligible initiative work remains; record and report the exact permission blocker.
+If another actor merges while tracked metadata remains open, create a metadata-only follow-up branch and draft PR without a fresh prompt only when the original explicit request clearly included full publication plus project closeout or review follow-through. Otherwise set the integration child to `blocked` for missing authority, set the parent `blocked` only when no other eligible initiative work remains, record/report the authority gap, and request fresh authority. If follow-up authority exists but repository permissions prevent the branch or PR, record a distinct permission blocker and apply the same child/parent blocking rule. An authority gap and a permission failure are different blockers; neither permits `done`.
 
 Delete any asynchronous review monitor when its PR reaches the applicable terminal state, closes, or is replaced by a follow-up PR monitor.
 

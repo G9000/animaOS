@@ -93,6 +93,8 @@ Before taking any of the actions below, read `.codex-skill-staging/anima-project
 - choose the next ticket; claim, assign, reassign, resume, block, or complete work; execute a named ticket ID; reconcile parent and child state; or close an initiative;
 - publish or push work, open or update a PR, request Codex review, address review feedback, or monitor a PR until clean when the user explicitly requests that external action.
 
+External authority is action-scoped. Local implementation or commits do not authorize a push, PR, comment, or monitor. A broader explicit request covers only actions it clearly encompasses; never escalate a narrower `push`, PR, review-request, feedback, or monitoring request. Follow the `Action-Scoped External Authority` matrix in `docs/ops/prd-ticket-workflow.md`. Merge always requires separate explicit authority.
+
 Explanation and diagnosis-only work remains outside this workflow unless publication or review is explicitly requested. An isolated edit does not require fake planning artifacts or ticket metadata; explicit publication/review of that edit enters only the skill's publish/review mode.
 
 This repository-owned skill and the canonical workflow document override stale personal skills that route animaOS work through `docs/prd/` or `scratchboard/`. Do not modify or install personal skills as part of repository work.
