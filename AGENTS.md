@@ -50,10 +50,10 @@ Run from repo root unless noted.
 
 - `bun install`: install workspace dependencies.
 - `uv sync --all-packages`: install/update Python workspace dependencies.
-- `bun dev`: start the Python server and desktop app through `nx`.
+- `bun dev`: start the Python server, desktop, and anima-mod through the root supervisor; it launches the server with uv and the desktop/anima-mod processes with Bun.
 - `bun run dev:server`: run the FastAPI backend on port `3031`.
 - `bun run dev:desktop`: run the desktop web UI.
-- `bun run build`: build `apps/server` and `apps/desktop`.
+- `bun run build`: build `apps/server` and `apps/desktop` through Nx, then run `cargo check -p animus`.
 - `bun run lint`: run the Python lint pipeline and desktop typecheck.
 - `bun run test`: run Python backend tests.
 - `bun run db:server:revision -- "<message>"`: create an Alembic autogenerate revision for `apps/server`.
@@ -61,7 +61,7 @@ Run from repo root unless noted.
 
 ## Coding Style & Naming Conventions
 
-- Language baseline is Python for `apps/server` and TypeScript for the desktop and legacy API.
+- Python is used in `apps/server`; TypeScript in `apps/anima-mod`, `apps/desktop`, `apps/site`, and the TypeScript shared packages; Rust in `apps/animus`, `apps/local-runtime-daemon`, `apps/desktop/src-tauri`, and the Rust shared crates.
 - Python follows SQLAlchemy 2.0 typing style with `Mapped[...]` and `mapped_column(...)`.
 - TypeScript follows existing style: 2-space indentation, semicolons, double quotes.
 - React components and context providers use `PascalCase` filenames (for example `ProtectedRoute.tsx`); route/domain modules use concise lowercase names (for example `chat.ts`).

@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:45 MYT
+- Updated: 2026-07-15 21:58 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -56,7 +56,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
-- 2026-07-15 21:45 MYT - `RWF-004` reconciled repository navigation and hygiene, including the corrected root Nx-plus-Cargo build orchestration wording.
+- 2026-07-15 21:58 MYT - `RWF-004` reconciled repository navigation and hygiene, including manifest-grounded contributor command and language maps.
 
 ## Activity Log
 
@@ -89,6 +89,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 21:33 MYT - Completed `RWF-003` after the final 32-test suite, clean live organization run, three-field template check, and 146-row bidirectional assertion; synchronized its row and one completed-history entry to `done` and kept the parent `in_progress` for `RWF-005` and `RWF-006`.
 - 2026-07-15 21:43 MYT - Reopened `RWF-004` for the acceptance-breaking root-build orchestration wording, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 21:33 MYT` in history, kept `RWF-003` done/history untouched, and preserved parent ownership and `in_progress` state.
 - 2026-07-15 21:45 MYT - Re-completed `RWF-004` after aligning the directory map with the exact root `package.json` build sequence, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-005` and `RWF-006`.
+- 2026-07-15 21:56 MYT - Reopened `RWF-004` for the acceptance-breaking contributor command and language-map errors, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 21:45 MYT` in history, kept `RWF-003` done/history untouched, and preserved parent ownership and `in_progress` state.
+- 2026-07-15 21:58 MYT - Re-completed `RWF-004` after correcting the contributor command and language map from root supervisor and manifest evidence, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-005` and `RWF-006`.
 
 ## Validation
 
@@ -100,6 +102,7 @@ This table is the execution order; dependency eligibility still controls when ea
   - `rg -n 'Action-Scoped External Authority|pageInfo|owner gate|parent .*Completed|missing authority|permission blocker' AGENTS.md docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
   - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
   - `bun test tests/repo-organization.test.ts`
+  - `bun test tests/dev-root.test.ts tests/repo-organization.test.ts`
   - `bun run check:repo`
   - `bunx nx show projects`
   - targeted old audit-path, moved-link, debug tracking/ignore, and source-hotspot checks
@@ -136,3 +139,4 @@ This table is the execution order; dependency eligibility still controls when ea
   - Task 8 bidirectional live assertion returned 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
   - Task 8 targeted live audit links, debug ignore/untracking, moved-path resolution, and production-source exclusion passed
   - Task 8 review follow-up matched the exact root `scripts.build` value, clarified the Nx-selected projects versus the subsequent Animus Cargo check, and revalidated focused tests, live organization, diff, and source scope
+  - Task 8 quality follow-up matched root dev/build scripts, verified uv/Bun launcher specs and 14 current language-family manifests, passed 44 focused tests and the live organization check, and kept `RWF-003` untouched
