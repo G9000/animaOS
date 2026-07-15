@@ -25,6 +25,7 @@ from anima_server.services.documents import (
     DocumentStoragePathError,
     resolve_document_storage_path,
 )
+from anima_server.services.documents.parsing_pack import ensure_parsing_pack, pack_status
 from anima_server.services.documents.pdf_workflow import (
     PDFIngestionDependencies,
     PDFIngestionRequest,
@@ -34,6 +35,7 @@ from anima_server.services.documents.pdf_workflow import (
     start_pdf_ingestion_workflow,
 )
 from anima_server.services.documents.rag import search_document_chunks
+from anima_server.services.documents.reparse import reparse_document
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -314,6 +316,45 @@ async def search_documents(
         for result in results
     ]
     return {"count": len(serialized), "results": serialized}
+
+
+@router.get("/parsing-pack")
+async def get_parsing_pack_status(request: Request) -> dict[str, Any]:
+    require_unlocked_session(request)
+    return _parsing_pack_response(pack_status())
+
+
+@router.post("/parsing-pack/download")
+async def download_parsing_pack(request: Request) -> dict[str, Any]:
+    require_unlocked_session(request)
+    return _parsing_pack_response(ensure_parsing_pack())
+
+
+@router.post("/{document_id}/reparse")
+async def reparse_document_route(
+    document_id: int,
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> dict[str, Any]:
+    session = require_unlocked_session(request)
+    result = reparse_document(
+        runtime_db,
+        user_id=session.user_id,
+        document_id=document_id,
+    )
+    if result.status == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if result.status == "pack_not_ready":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Parsing pack is not ready.",
+        )
+    runtime_db.flush()
+    return {"status": result.status, "chunk_count": result.chunk_count}
+
+
+def _parsing_pack_response(pack: Any) -> dict[str, Any]:
+    return {"state": pack.state, "progress": pack.progress, "error": pack.error}
 
 
 def _load_owned_workflow(
