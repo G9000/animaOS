@@ -30,6 +30,9 @@ zeroize_derive = "=1.4.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+winx = "0.36.4"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

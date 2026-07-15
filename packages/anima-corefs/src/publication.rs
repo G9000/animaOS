@@ -13,6 +13,10 @@ use cap_std::fs::OpenOptionsExt as _;
 
 #[cfg(any(unix, test))]
 const TEMPORARY_FILE_MODE: u32 = 0o600;
+
+#[cfg(windows)]
+const WINDOWS_TEMPORARY_CUSTOM_FLAGS: u32 =
+    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_WRITE_THROUGH;
 #[cfg(windows)]
 type RenameInfoStorageWord = usize;
 
@@ -103,7 +107,10 @@ pub(crate) fn create_temporary_in(dir: &Dir, target: &OsStr) -> io::Result<(File
             .share_mode(
                 windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
                     | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
-            );
+            )
+            // Keep the exact staged file pinned against path substitution while
+            // making SetFileInformationByHandle rename metadata write-through.
+            .custom_flags(WINDOWS_TEMPORARY_CUSTOM_FLAGS);
         match dir.open_with(&temporary_name, &options) {
             Ok(file) => return Ok((file, temporary_name)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -395,5 +402,29 @@ mod tests {
             std::mem::align_of::<super::RenameInfoStorageWord>()
                 >= std::mem::align_of::<FILE_RENAME_INFO>()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_staged_handles_are_write_through() {
+        use std::os::windows::io::AsHandle;
+
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-write-through-handle-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let (temporary, temporary_name) =
+            super::create_temporary_in(&dir, std::ffi::OsStr::new("HEAD")).unwrap();
+
+        let mode = winx::file::query_mode_information(temporary.as_handle()).unwrap();
+        assert!(mode.contains(winx::file::FileModeInformation::FILE_WRITE_THROUGH));
+
+        drop(temporary);
+        dir.remove_file(temporary_name).unwrap();
+        drop(dir);
+        std::fs::remove_dir(root).unwrap();
     }
 }
