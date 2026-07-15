@@ -156,15 +156,17 @@ Create ignored fixtures under `.tmp-eval-anima-project-management/baseline/` for
 4. diagnosis-only and isolated-edit requests that must not create project artifacts;
 5. publish/monitor request whose old review targets a stale head and includes one behavioral defect plus one style-only suggestion.
 
+Retain each exact synthetic fixture/precondition set and exact evaluator prompt/response contract in the evaluation document so the baseline remains independently reproducible after disposable fixture deletion.
+
 - [ ] **Step 3: Run each baseline with a fresh subagent that cannot see the intended skill**
 
 For every scenario, dispatch a fresh general-purpose subagent with only the fixture path and prompt. Require a proposed action log, file mutations, external actions, stopping condition, and rationale. Explicitly prohibit touching live repo files or services.
 
-Expected RED evidence: at least one meaningful workflow failure or missing guarantee across the baseline set; do not invent a failure if a baseline behaves correctly.
+Expected RED evidence: record every actually observed workflow failure or missing guarantee. A zero-gap baseline across all five scenarios is valid evidence and must not be fabricated into a failure.
 
 - [ ] **Step 4: Record verbatim baseline behavior and expected corrections**
 
-Create the evaluation document with a table containing `Scenario`, `Baseline action`, `Failure or gap`, `Required guardrail`, and `Forward result`. Mark forward results `not run yet`. Avoid names or secrets from external systems.
+Create the evaluation document with one section per scenario containing the exact synthetic fixture/preconditions, exact evaluator prompt/response contract, and complete structured evaluator output: action log, file/state mutations, external actions, stopping condition, and rationale. Record `Scenario`, `Failure or gap`, `Required guardrail`, and `Forward result: not run yet`. Avoid names or secrets from external systems.
 
 - [ ] **Step 5: Remove disposable baseline fixtures**
 
@@ -708,13 +710,15 @@ Require the subagent to read `.codex-skill-staging/anima-project-management/SKIL
 4. remain read-only for diagnosis and avoid fake project artifacts for an isolated edit;
 5. recognize the stale review, fix only the real defect with regression evidence, disposition the style nitpick, post `@codex review` after the new push, and wait for a clean current-head review.
 
+Retain the complete forward action log, file/state mutations, external actions, stopping condition, and rationale for every run. Compare each complete forward result against the exact retained baseline prompt/response contract and the approved behavior contract above; summaries or selected excerpts are not sufficient evidence.
+
 - [ ] **Step 3: Refactor only for observed loopholes**
 
 If a forward run violates the contract, add the smallest explicit guardrail to `SKILL.md`, rerun that scenario with another fresh subagent, and record the iteration. Do not add instructions merely because they might be useful someday.
 
 - [ ] **Step 4: Remove fixtures and update evaluation evidence**
 
-Populate every `Forward result`, record pass/fail and any skill refactor, then resolve and verify the fixture path remains under the worktree before recursively removing `.tmp-eval-anima-project-management`, as in Task 2. Confirm no live ticket, personal skill, production file, or external service was mutated by evaluation.
+Populate every `Forward result`, retain the complete forward output, record the field-by-field contract comparison, pass/fail, and any skill refactor, then resolve and verify the fixture path remains under the worktree before recursively removing `.tmp-eval-anima-project-management`, as in Task 2. Confirm no live ticket, personal skill, production file, or external service was mutated by evaluation.
 
 - [ ] **Step 5: Re-run official skill validation**
 
