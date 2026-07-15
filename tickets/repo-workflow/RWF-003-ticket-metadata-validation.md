@@ -1,16 +1,16 @@
 # RWF-003 - Add ticket metadata validation
 
-- Status: backlog
+- Status: in_progress
 - Priority: P2
 - Scope: `tickets`, `apps`, `packages`, `docs`, `scratchboard`, `scripts`, `tests`, `package.json`
 - Parent: `RWF-000`
 - Depends on: `RWF-001`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 20:02 MYT
-- Started:
+- Updated: 2026-07-15 20:53 MYT
+- Started: 2026-07-15 20:43 MYT
 - Completed:
 
 ## Goal
@@ -43,19 +43,31 @@ Add one read-only organization validator that reports repository metadata and hy
 - 2026-07-15 17:11 MYT - Expanded acceptance to the approved read-only repository organization validator contract.
 - 2026-07-15 19:13 MYT - Clarified the template-only PRD/spec/plan validator contract and one-way completion semantics without claiming or starting `RWF-003`; status remains `backlog` and owner remains `unassigned`.
 - 2026-07-15 20:02 MYT - Expanded the planning contract to bidirectional parent-child validation after the missing `VMI-008` row was detected; kept `RWF-003` `backlog`/`unassigned`, updated only planning artifacts, and began no validator implementation.
+- 2026-07-15 20:43 MYT - Codex claimed `RWF-003` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; dependency `RWF-001` is `done`, no competing claim was visible, and the child and parent row were set to `in_progress`.
+- 2026-07-15 20:53 MYT - Added the read-only validator, injected CLI result boundary, root `check:repo` command, and 24 focused tests through strict RED/GREEN cycles; live validation has zero ticket violations and intentionally leaves `RWF-003` `in_progress` until Task 8 removes the two scheduled hygiene findings.
 
 ## Validation
 
 - Commands:
+  - `bun test tests/repo-organization.test.ts` (initial RED before implementation)
+  - `bun test tests/repo-organization.test.ts` (live-fixture regression RED)
+  - `bun test tests/repo-organization.test.ts` (final GREEN)
+  - `bun run check:repo`
   - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
+  - read-only Bun assertion using `parseTicketDocument`, `loadRepositorySnapshot`, and `collectOrganizationViolations`
+  - `git diff --check`
 - Changed paths:
-  - docs/ops/prd-ticket-workflow.md
-  - tickets/TEMPLATE.md
-  - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
-  - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
+  - package.json
+  - scripts/check-repo-organization.ts
+  - tests/repo-organization.test.ts
   - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
+  - initial RED exited 1 because `../scripts/check-repo-organization` did not exist: 0 pass, 1 fail, 1 error
+  - live-fixture regressions reproduced explanatory prose before a parent table and the `Parent: none` sentinel: 21 pass, 2 fail
+  - final GREEN passed 24 tests with 48 assertions and 0 failures
+  - live `check:repo` exited 1 with exactly 2 aggregated Task 8 findings: deprecated `docs/audits` and tracked root `debug.log`; ticket, template, manifest, and scratchboard violations: 0
   - template metadata search returned exactly 3 matches
-  - bidirectional child-reference and parent-row validation is now explicit in the approved design, implementation plan, and backlog ticket without claiming implementation
-  - validator implementation and focused tests remain pending; ticket remains `backlog`/`unassigned`
+  - bidirectional live assertion returned 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
+  - exported API separates pure parsing/reporting from injected snapshot loading and returns exit 0 for clean state, exit 1 for organization violations, and exit 2 with a distinct failure prefix for unexpected filesystem or Git errors
+  - residual follow-up: Task 8 must remove the two live hygiene findings before this ticket can close
