@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from anima_server.services.documents import parsing
 from anima_server.services.documents.pdf_text import PageText
-
 from pdf_fixtures import write_text_pdf
 
 
