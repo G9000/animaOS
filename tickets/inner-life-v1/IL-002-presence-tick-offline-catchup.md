@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 17:10 MYT
+- Updated: 2026-07-15 17:55 MYT
 - Started:
 - Completed:
 
