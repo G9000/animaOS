@@ -92,12 +92,29 @@ def test_determinism_same_event_sequence_same_trajectory() -> None:
 
 
 def test_relax_closed_form_equivalence_over_three_weeks() -> None:
-    # Isolate the pure exponential-decay math from circadian modulation:
-    # with amplitude=0 the arousal baseline is constant regardless of hour,
-    # so composing many small relax() calls must equal one large call
-    # exactly (relaxation toward a FIXED baseline is a semigroup: applying
-    # exp(-dt1/tau) then exp(-dt2/tau) equals exp(-(dt1+dt2)/tau)). Testing
-    # circadian modulation itself is a separate, dedicated test below.
+    # The arousal relaxation uses the exact solution of the linear ODE
+    # dx/dt = (b(t) - x)/tau (attenuated, phase-lagged particular
+    # solution), which is exactly semigroup even with the circadian
+    # baseline moving — so the default amplitude stays ENABLED here and
+    # one 21-day call must equal 30,240 one-minute ticks.
+    start = _state(valence=0.8, arousal=0.9, energy=0.1)
+
+    one_shot = relax(start, start.updated_at + timedelta(days=21))
+
+    composed = start
+    now = start.updated_at
+    for _ in range(30_240):
+        now = now + timedelta(seconds=60)
+        composed = relax(composed, now)
+
+    assert abs(one_shot.valence - composed.valence) < 1e-6
+    assert abs(one_shot.arousal - composed.arousal) < 1e-6
+    assert abs(one_shot.energy - composed.energy) < 1e-6
+
+
+def test_relax_equivalence_with_zero_circadian_amplitude() -> None:
+    # Degenerate check: with amplitude=0 the particular solution collapses
+    # to the constant baseline and the classic exponential form must hold.
     config = AffectConfig(circadian_amplitude=0.0)
     start = _state(valence=0.8, arousal=0.9, energy=0.1)
 
@@ -109,9 +126,50 @@ def test_relax_closed_form_equivalence_over_three_weeks() -> None:
         now = now + timedelta(seconds=60)
         composed = relax(composed, now, config)
 
+    assert abs(one_shot.arousal - composed.arousal) < 1e-6
+
+
+def test_relax_equivalence_across_trough_to_peak_gap() -> None:
+    # The reviewer's exact scenario: a gap spanning the moving baseline
+    # from trough (03:00) to peak (15:00) must give identical arousal
+    # whether applied in one call or per-minute ticks.
+    start = _state(
+        valence=0.4,
+        arousal=0.85,
+        energy=0.3,
+        updated_at=datetime(2026, 1, 1, 3, 0, tzinfo=UTC),
+    )
+    end = datetime(2026, 1, 1, 15, 0, tzinfo=UTC)
+
+    one_shot = relax(start, end)
+
+    composed = start
+    now = start.updated_at
+    for _ in range(720):
+        now = now + timedelta(minutes=1)
+        composed = relax(composed, now)
+
     assert abs(one_shot.valence - composed.valence) < 1e-6
     assert abs(one_shot.arousal - composed.arousal) < 1e-6
     assert abs(one_shot.energy - composed.energy) < 1e-6
+
+
+def test_relax_long_gap_converges_to_particular_solution() -> None:
+    # After many time constants the transient dies out and arousal sits on
+    # xp(now) — the damped, phase-lagged equilibrium wave — not on the raw
+    # circadian baseline b(now).
+    from anima_server.services.agent.inner_life.affect import (
+        DEFAULT_AFFECT_CONFIG,
+        _circadian_particular_arousal,
+    )
+
+    start = _state(arousal=1.0, updated_at=datetime(2026, 1, 1, 3, 0, tzinfo=UTC))
+    end = datetime(2026, 1, 8, 15, 0, tzinfo=UTC)
+    relaxed = relax(start, end)
+
+    xp_end = _circadian_particular_arousal(15.0, 0.0, DEFAULT_AFFECT_CONFIG)
+    assert relaxed.arousal == pytest.approx(xp_end, abs=1e-9)
+    assert relaxed.arousal != pytest.approx(circadian_arousal_baseline(15.0), abs=1e-3)
 
 
 def test_relax_moves_toward_baseline() -> None:

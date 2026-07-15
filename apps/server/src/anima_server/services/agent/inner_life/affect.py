@@ -90,16 +90,52 @@ def apply_turn_deltas(
     )
 
 
+_CIRCADIAN_OMEGA = 2.0 * math.pi / 24.0  # radians per hour
+
+
 def circadian_arousal_baseline(
     local_hour: float,
     config: AffectConfig = DEFAULT_AFFECT_CONFIG,
 ) -> float:
-    """Fixed sinusoidal baseline arousal over local hour-of-day.
+    """Fixed sinusoidal baseline arousal `b(t)` over local hour-of-day.
 
     Trough at 03:00, peak at 15:00 (12h apart), midline/amplitude per config.
     """
-    phase = 2.0 * math.pi * (local_hour - config.circadian_peak_hour) / 24.0
-    return config.circadian_midline + config.circadian_amplitude * math.cos(phase)
+    theta = _CIRCADIAN_OMEGA * (local_hour - config.circadian_peak_hour)
+    return config.circadian_midline + config.circadian_amplitude * math.cos(theta)
+
+
+def _circadian_particular_arousal(
+    local_hour: float,
+    shift: float,
+    config: AffectConfig,
+) -> float:
+    """Particular solution `xp(t)` of the arousal ODE dx/dt = (b(t) - x)/tau.
+
+    xp(t) = m + A/(1 + (wt)^2) * [cos(theta) + wt*sin(theta)] with
+    theta = w*(local_hour - peak), w = 2*pi/24, m = midline + allostatic
+    shift. With wt = pi/2 (tau = 6 h) equilibrium arousal tracks a damped,
+    delayed daily wave: resultant amplitude A/sqrt(1+(wt)^2) ~= 0.054
+    (gain per quadrature component A/(1+(wt)^2) ~= 0.029), phase lag
+    atan(wt) ~= 3.8 h — physically sensible and exactly composable.
+    """
+    omega_tau = _CIRCADIAN_OMEGA * config.tau_arousal_hours
+    theta = _CIRCADIAN_OMEGA * (local_hour - config.circadian_peak_hour)
+    gain = config.circadian_amplitude / (1.0 + omega_tau * omega_tau)
+    return (
+        config.circadian_midline
+        + shift
+        + gain * (math.cos(theta) + omega_tau * math.sin(theta))
+    )
+
+
+def _local_hour(moment: datetime) -> float:
+    return (
+        moment.hour
+        + moment.minute / 60.0
+        + moment.second / 3600.0
+        + moment.microsecond / 3.6e9
+    )
 
 
 def relax(
@@ -109,27 +145,31 @@ def relax(
 ) -> AffectState:
     """Relax every component toward its baseline in closed form.
 
-    `x(t+dt) = b + (x(t) - b) * exp(-dt/tau_x)`. `now` is treated as already
-    being in the local timezone the circadian baseline should use — timezone
-    resolution is a side-effect concern and happens at the wiring edge, not
-    here. Arousal's baseline is the circadian sinusoid shifted up by the
-    allostatic load (`arousal_baseline_shift`).
+    Valence and energy have constant baselines: `x(t+dt) = b + (x(t) - b)
+    * exp(-dt/tau_x)`. Arousal's baseline oscillates (circadian), so it
+    uses the exact solution of the linear ODE dx/dt = (b(t) - x)/tau:
+    `x(t) = xp(t) + (x(t0) - xp(t0)) * exp(-dt/tau)` with the attenuated,
+    phase-lagged particular solution `xp` — exactly semigroup, so one gap
+    application equals any tick composition even across moving baseline.
+    `now` is treated as already being in the local timezone the circadian
+    baseline should use — timezone resolution is a side-effect concern and
+    happens at the wiring edge, not here.
     """
     dt_hours = (now - state.updated_at).total_seconds() / 3600.0
     if dt_hours <= 0:
         return state if dt_hours < 0 else replace(state, updated_at=now)
 
-    local_hour = (
-        now.hour + now.minute / 60.0 + now.second / 3600.0 + now.microsecond / 3.6e9
+    xp_now = _circadian_particular_arousal(
+        _local_hour(now), state.arousal_baseline_shift, config
     )
-    arousal_baseline = (
-        circadian_arousal_baseline(local_hour, config) + state.arousal_baseline_shift
+    xp_then = _circadian_particular_arousal(
+        _local_hour(state.updated_at), state.arousal_baseline_shift, config
     )
 
     valence = config.baseline_valence + (state.valence - config.baseline_valence) * math.exp(
         -dt_hours / config.tau_valence_hours
     )
-    arousal = arousal_baseline + (state.arousal - arousal_baseline) * math.exp(
+    arousal = xp_now + (state.arousal - xp_then) * math.exp(
         -dt_hours / config.tau_arousal_hours
     )
     energy = config.baseline_energy + (state.energy - config.baseline_energy) * math.exp(
