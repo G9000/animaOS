@@ -513,6 +513,58 @@ fn every_changed_source_and_new_destination_requires_a_precondition() {
 }
 
 #[test]
+fn a_new_subtree_needs_one_vacancy_at_its_existing_parent() {
+    let root = reset_root("new-subtree-precondition");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator
+        .initialize_validation_snapshot(&keys, &[], |generation| {
+            CatalogGeneration::new(
+                generation,
+                vec![CatalogGenerationEntry::folder(common(
+                    ROOT_ID, None, "Core",
+                ))],
+            )
+        })
+        .unwrap();
+    let destination = vacant_precondition(&coordinator, &keys, "NewFolder");
+
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            17,
+            &[],
+            &[destination],
+            |_, next_generation| {
+                CatalogGeneration::new(
+                    next_generation,
+                    vec![
+                        CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+                        CatalogGenerationEntry::folder(common(
+                            FOLDER_ID,
+                            Some(ROOT_ID),
+                            "NewFolder",
+                        )),
+                        CatalogGenerationEntry::folder(common(
+                            MISSING_ID,
+                            Some(FOLDER_ID),
+                            "Nested",
+                        )),
+                    ],
+                )
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(committed.catalog().entries().len(), 3);
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn stale_path_revision_and_destination_preconditions_fail_before_build() {
     let root = reset_root("stale-precondition");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
@@ -1144,6 +1196,56 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn zombie_lock_owner_is_stale_before_its_parent_reaps_it() {
+    let root = reset_root("zombie-lock-owner");
+    CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let child = Command::new(std::env::current_exe().unwrap())
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("helper_process_leaves_stale_lock_metadata")
+        .arg("--nocapture")
+        .env("ANIMA_COREFS_ZOMBIE_LOCK_ROOT", &root)
+        .spawn()
+        .unwrap();
+    let mut child = ChildGuard(child);
+    let stat_path = format!("/proc/{}/stat", child.0.id());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut became_zombie = false;
+    while Instant::now() < deadline {
+        if let Ok(stat) = fs::read_to_string(&stat_path) {
+            if stat
+                .rfind(')')
+                .and_then(|command_end| stat[command_end + 1..].split_whitespace().next())
+                == Some("Z")
+            {
+                became_zombie = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(became_zombie, "helper process did not become a zombie");
+
+    drop(CoreCommitLock::acquire(&root).unwrap());
+
+    let status = child.0.wait().unwrap();
+    assert!(status.success());
+    std::mem::forget(child);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn helper_process_leaves_stale_lock_metadata() {
+    let Some(root) = std::env::var_os("ANIMA_COREFS_ZOMBIE_LOCK_ROOT") else {
+        return;
+    };
+    drop(CoreCommitLock::acquire(Path::new(&root)).unwrap());
 }
 
 #[test]

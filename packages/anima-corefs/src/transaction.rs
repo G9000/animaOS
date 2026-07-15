@@ -159,12 +159,23 @@ fn inspect_process_start_time(pid: u32) -> Result<Option<u64>, CommitError> {
             )))
         }
     };
+    parse_linux_process_stat(pid, &stat)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+fn parse_linux_process_stat(pid: u32, stat: &str) -> Result<Option<u64>, CommitError> {
     let command_end = stat.rfind(')').ok_or_else(|| {
         CommitError::ProcessInspection(format!("PID {pid} has malformed /proc stat data"))
     })?;
-    let start_time = stat[command_end + 1..]
-        .split_whitespace()
-        .nth(19)
+    let mut fields = stat[command_end + 1..].split_whitespace();
+    let state = fields.next().ok_or_else(|| {
+        CommitError::ProcessInspection(format!("PID {pid} has truncated /proc stat data"))
+    })?;
+    if matches!(state, "Z" | "X" | "x") {
+        return Ok(None);
+    }
+    let start_time = fields
+        .nth(18)
         .ok_or_else(|| {
             CommitError::ProcessInspection(format!("PID {pid} has truncated /proc stat data"))
         })?
@@ -1261,6 +1272,9 @@ fn validate_precondition_coverage(
         let Some(parent_id) = entry.parent_id() else {
             continue;
         };
+        if !current_by_id.contains_key(parent_id.as_str()) {
+            continue;
+        }
         if !preconditions.iter().any(|precondition| {
             matches!(precondition,
                 CatalogPrecondition::Vacant(expected)
@@ -1802,6 +1816,41 @@ mod tests {
     #[test]
     fn commit_lock_files_use_owner_only_unix_permissions() {
         assert_eq!(super::COMMIT_LOCK_FILE_MODE, 0o600);
+    }
+
+    #[test]
+    fn linux_process_stat_parser_reads_a_live_process_start_identity() {
+        let mut fields = vec!["0"; 20];
+        fields[0] = "S";
+        fields[19] = "4242";
+        let stat = format!("123 (worker with ) parenthesis) {}", fields.join(" "));
+
+        assert_eq!(
+            super::parse_linux_process_stat(123, &stat).unwrap(),
+            Some(4242)
+        );
+    }
+
+    #[test]
+    fn linux_process_stat_parser_treats_a_zombie_as_absent() {
+        let mut fields = vec!["0"; 20];
+        fields[0] = "Z";
+        fields[19] = "4242";
+        let stat = format!("123 (worker) {}", fields.join(" "));
+
+        assert_eq!(super::parse_linux_process_stat(123, &stat).unwrap(), None);
+    }
+
+    #[test]
+    fn linux_process_stat_parser_treats_dead_states_as_absent() {
+        for state in ["X", "x"] {
+            let mut fields = vec!["0"; 20];
+            fields[0] = state;
+            fields[19] = "4242";
+            let stat = format!("123 (worker) {}", fields.join(" "));
+
+            assert_eq!(super::parse_linux_process_stat(123, &stat).unwrap(), None);
+        }
     }
 
     #[test]
