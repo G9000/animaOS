@@ -27,11 +27,22 @@ Build thoughtfully. I will remember.
 
 This repo is a mixed monorepo:
 
-- `apps/server`: Python + FastAPI — the cognitive core. SQLAlchemy models in `src/anima_server/models/`, Alembic revisions in `alembic/versions/`. All new backend work goes here.
-- `apps/animus`: Bun-based CLI/local tool interface.
-- `apps/desktop`: React + Vite + Tailwind + Tauri desktop app (`src/pages`, `src/components`, `src/context`, `src/lib`; Rust host in `src-tauri/`).
-- `apps/anima-mod`: Bun + Elysia mod runtime (port 3034). Self-contained skill/integration modules ("mods") live in `mods/`. Each mod exposes config schemas, setup wizards, and HTTP routes. The cognitive core can call mod APIs via thin `@tool` adapters. Example: `mods/google/` for Gmail + Calendar.
-- `docs/`: project documentation and thesis.
+- `apps/anima-mod`: Bun + TypeScript + Elysia external-presence service. Built-in integrations live in `mods/`; locally installed integrations live in `user-mods/`.
+- `apps/animus`: Rust coding terminal and TUI for working with the ANIMA server and a local workspace.
+- `apps/desktop`: React + Vite + Tailwind desktop UI with a Tauri Rust host in `src-tauri/`.
+- `apps/local-runtime-daemon`: Rust + Axum supervisor and control API for the local Python runtime lifecycle, health, restart, locking, and logs.
+- `apps/server`: Python + FastAPI cognitive core. SQLAlchemy models live under `src/anima_server/models/`; Core and runtime Alembic revisions live under `alembic_core/` and `alembic_runtime/`.
+- `apps/site`: Astro + React public website.
+- `packages/anima-auth-contracts`: shared TypeScript authentication route and payload contracts.
+- `packages/anima-core`: Rust memory infrastructure with optional PyO3/maturin Python bindings.
+- `packages/anima-corefs`: Rust cryptographic and filesystem primitives for ANIMA CORE.
+- `packages/anima-file-tools`: bounded, storage-agnostic Rust file operations shared by Animus and CoreFS.
+- `packages/anima-runtime-daemon-contracts`: shared TypeScript daemon control API contracts.
+- `packages/api-client`: shared TypeScript API client and generated API types.
+- `packages/ascii-motion`: React/TypeScript ASCII animation playback and rendering utilities.
+- `packages/standard-templates`: shared React + Tailwind design system, components, icons, and tokens.
+- `docs/`: thesis, architecture, audit history, operations guidance, PRDs, specs, and plans. Start with the [canonical directory map](docs/architecture/system/directory-structure.md).
+- `tickets/`: canonical parent/child initiative tracking; `scratchboard/` is retained only for legacy workstreams pending deliberate migration.
 
 ## Build, Test, and Development Commands
 

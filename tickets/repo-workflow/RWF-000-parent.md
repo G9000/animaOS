@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:19 MYT
+- Updated: 2026-07-15 21:33 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -25,8 +25,8 @@ This table is the execution order; dependency eligibility still controls when ea
 | `RWF-005` | Add the anima project-management skill | `in_progress` | none |
 | `RWF-001` | Rebuild the canonical ticket initiative index | `done` | none |
 | `RWF-002` | Mark scratchboard legacy and add migration checklist | `done` | `RWF-001` |
-| `RWF-003` | Add ticket metadata validation | `in_progress` | `RWF-001` |
-| `RWF-004` | Reconcile repository documentation and hygiene | `backlog` | `RWF-002` |
+| `RWF-003` | Add ticket metadata validation | `done` | `RWF-001` |
+| `RWF-004` | Reconcile repository documentation and hygiene | `done` | `RWF-002` |
 | `RWF-006` | Validate, publish, and complete PR review | `backlog` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
 
 ## Deliverables
@@ -55,6 +55,8 @@ This table is the execution order; dependency eligibility still controls when ea
 
 - 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
+- 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
+- 2026-07-15 21:33 MYT - `RWF-004` reconciled the manifest-derived repository map, audit path, live references, and root debug-log tracking hygiene.
 
 ## Activity Log
 
@@ -82,6 +84,9 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 21:06 MYT - Recorded the material `RWF-003` review follow-up: escaped and inline-code pipes now preserve authoritative table columns with 26 focused tests passing; kept the row and parent `in_progress`, preserved parent ownership, and left Task 8 hygiene as the remaining closeout dependency.
 - 2026-07-15 21:14 MYT - Corrected the 21:06 `RWF-003` inline-code model to GFM consecutive-backslash parity after second review; recorded 29 focused tests and a clean ticket graph, kept the row and parent `in_progress`, and preserved parent ownership while Task 8 hygiene remains open.
 - 2026-07-15 21:19 MYT - Recorded the material third `RWF-003` review follow-up: immediate equal-width GFM delimiters now gate authoritative parent tables, 32 focused tests and the live ticket graph pass, and the row and parent remain `in_progress` with ownership unchanged pending Task 8 hygiene.
+- 2026-07-15 21:25 MYT - Synchronized `RWF-004` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; confirmed `RWF-002` is `done`, preserved parent ownership, and kept the parent `in_progress`.
+- 2026-07-15 21:33 MYT - Completed `RWF-004`, synchronized its row and one completed-history entry to `done`, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-005` and `RWF-006` remain open.
+- 2026-07-15 21:33 MYT - Completed `RWF-003` after the final 32-test suite, clean live organization run, three-field template check, and 146-row bidirectional assertion; synchronized its row and one completed-history entry to `done` and kept the parent `in_progress` for `RWF-005` and `RWF-006`.
 
 ## Validation
 
@@ -92,18 +97,30 @@ This table is the execution order; dependency eligibility still controls when ea
   - `(Get-Content .codex-skill-staging/anima-project-management/SKILL.md | Measure-Object -Word).Words`
   - `rg -n 'Action-Scoped External Authority|pageInfo|owner gate|parent .*Completed|missing authority|permission blocker' AGENTS.md docs/ops/prd-ticket-workflow.md .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
   - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - `bunx nx show projects`
+  - targeted old audit-path, moved-link, debug tracking/ignore, and source-hotspot checks
   - `git diff --check`
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
 - Changed paths:
   - .codex-skill-staging/anima-project-management/SKILL.md
+  - .gitignore
   - AGENTS.md
+  - README.md
+  - debug.log (removed from tracking; ignored local file preserved)
+  - docs/architecture/system/directory-structure.md
+  - docs/audit/2026-06-11-agent-server-audit.md
   - docs/ops/prd-ticket-workflow.md
+  - docs/superpowers/plans/2026-07-14-dual-session-scope-a6.md
   - docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
   - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
   - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
   - tickets/TEMPLATE.md
+  - tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md
   - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
+  - tickets/repo-workflow/RWF-004-repository-documentation-hygiene.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
@@ -113,3 +130,6 @@ This table is the execution order; dependency eligibility still controls when ea
   - quality follow-up official skill validation exited 0; the checklist is 694 words and the interface YAML hash is unchanged
   - action-scope, full-pagination, ownership-safe reopen, parent-closeout, early-merge blocker, and template-contract searches passed
   - template metadata has exactly 3 matches; expected link targets exist; forbidden contradiction/path search returned no matches; working diff check passed with exactly the 10 listed paths
+  - Task 8 final focused suite passed 32 tests with 59 assertions and 0 failures; live `check:repo` passed
+  - Task 8 bidirectional live assertion returned 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
+  - Task 8 targeted live audit links, debug ignore/untracking, moved-path resolution, and production-source exclusion passed

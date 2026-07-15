@@ -1,6 +1,6 @@
 # RWF-003 - Add ticket metadata validation
 
-- Status: in_progress
+- Status: done
 - Priority: P2
 - Scope: `tickets`, `apps`, `packages`, `docs`, `scratchboard`, `scripts`, `tests`, `package.json`
 - Parent: `RWF-000`
@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:19 MYT
+- Updated: 2026-07-15 21:33 MYT
 - Started: 2026-07-15 20:43 MYT
-- Completed:
+- Completed: 2026-07-15 21:33 MYT
 
 ## Goal
 
@@ -48,6 +48,7 @@ Add one read-only organization validator that reports repository metadata and hy
 - 2026-07-15 21:06 MYT - Fixed the review-discovered Markdown table boundary defect through regression-first TDD: escaped pipes and pipes inside inline code no longer shift authoritative Ticket or Status columns; kept the child and parent row `in_progress` pending Task 8 hygiene.
 - 2026-07-15 21:14 MYT - Corrected the 21:06 inline-code model after second review: GFM table pipes require backslash escaping even inside code spans, so the tokenizer now uses only consecutive-backslash parity and ignores backticks; kept the child and parent row `in_progress` pending Task 8 hygiene.
 - 2026-07-15 21:19 MYT - Added strict GFM delimiter-row validation after third review: parent tables are authoritative only when the Ticket/Status header is followed immediately by an equal-width delimiter; kept the child and parent row `in_progress` pending Task 8 hygiene.
+- 2026-07-15 21:33 MYT - Completed `RWF-003` after Task 8 removed the two live hygiene findings; the final focused suite passed 32 tests, `check:repo` passed, template metadata returned exactly three fields, and the bidirectional live assertion returned 17 conforming parents, 146 authoritative rows, 146 reverse references, and zero ticket violations.
 
 ## Validation
 
@@ -93,4 +94,7 @@ Add one read-only organization validator that reports repository metadata and hy
   - delimiter validation review GREEN passed 32 tests with 59 assertions and 0 failures after requiring an immediate equal-width delimiter whose cells match optional-colon, one-or-more-hyphen GFM syntax
   - third-review changed paths: `scripts/check-repo-organization.ts`, `tests/repo-organization.test.ts`, `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`, and `tickets/repo-workflow/RWF-000-parent.md`
   - third-review live validation still reports only deprecated `docs/audits` and tracked root `debug.log`; 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
-  - residual follow-up: Task 8 must remove the two live hygiene findings before this ticket can close
+  - final Task 8 GREEN passed 32 tests with 59 assertions and 0 failures; live `check:repo` exited 0 with `Repository organization check passed.`
+  - final template metadata search returned exactly 3 matches
+  - final bidirectional live assertion returned 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
+  - residual risks or follow-ups: none for the validator acceptance contract

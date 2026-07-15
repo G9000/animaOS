@@ -4,7 +4,7 @@
 - Priority: P2
 - Scope: `apps/server/src/anima_server/db`, `services/agent/soul_writer.py`, `services/agent/eager_consolidation.py`, `services/agent/sleep_agent.py`
 - Parent: none
-- Depends on: docs/audits/2026-06-11-agent-server-audit.md (finding A-6)
+- Depends on: docs/audit/2026-06-11-agent-server-audit.md (finding A-6)
 - Owner: unassigned
 - PRD: docs/prds/three-tier-architecture/P2-runtime-messages.md (§ dual-session pattern)
 - Plan: docs/superpowers/plans/2026-07-14-dual-session-scope-a6.md
