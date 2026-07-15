@@ -323,9 +323,11 @@ Expected: current legacy variants are visible in ticket headers and in both quot
 Apply the approved mapping:
 
 - `todo` becomes `backlog`;
-- `in-review` and `in_review` become `done` when `Completed:` is non-empty, otherwise `in_progress`;
+- `in-review` and `in_review` become `done` when `Completed:` is non-empty, `in_progress` only when `Owner:` is actually assigned, and otherwise `backlog`;
 - a non-empty `Completed:` on any parent or child forces current metadata to `done`;
 - synchronize every parent child-status cell from the corresponding child metadata.
+
+Never invent ownership during vocabulary normalization. An unassigned legacy ticket remains selectable backlog work; only evidence-backed existing claims may retain `in_progress` with their owner metadata synchronized.
 
 Do not rewrite activity logs, historical narratives, completion timestamps, or ticket-folder locations. This vocabulary migration does not create a new activity entry for every mechanically normalized ticket.
 

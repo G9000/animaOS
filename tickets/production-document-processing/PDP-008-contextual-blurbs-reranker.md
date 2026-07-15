@@ -1,6 +1,6 @@
 # PDP-008 - Contextual Chunk Blurbs and Optional Reranker
 
-- Status: in_progress
+- Status: backlog
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `PDP-000`

@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md; docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-16 00:07 MYT
+- Updated: 2026-07-16 00:28 MYT
 - Started: 2026-07-15 23:21 MYT
 - Completed:
 
@@ -50,6 +50,9 @@ Carry the repository-workflow implementation through final validation and a clea
 - 2026-07-15 23:52 MYT - Recorded post-reconciliation range evidence: the committed branch is `0` behind and `30` ahead of current `origin/main`, still spans exactly 54 planned paths, has a conflict-free merge tree equal to HEAD, and remains locally clean without any push or PR action.
 - 2026-07-16 00:03 MYT - Added exact reproducible pre-publication PowerShell assertions for the derived merge base, 54 changed paths, zero production-source hotspots, and exactly the two intended repo-owned staged-skill paths; kept RWF-006 and its parent `in_progress` with `Completed:` empty.
 - 2026-07-16 00:07 MYT - Pushed only branch `codex/repo-organization-project-management` with upstream tracking at `0f02ce73c307f7f6a03d45286a5b48720273f4e1` and opened draft PR [#99](https://github.com/G9000/animaOS/pull/99) against `main` with the required review contract; verified the PR is draft and unmerged, removed the ignored temporary body file, and intentionally withheld `@codex review` until this evidence commit is pushed and `headRefOid` catches up.
+- 2026-07-16 00:09 MYT - After PR `headRefOid` synchronized to publication-evidence head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`, posted the exact standalone [`@codex review`](https://github.com/G9000/animaOS/pull/99#issuecomment-4982750057) handoff (comment `IC_kwDORPzHkM8AAAABKP67aQ`).
+- 2026-07-16 00:15 MYT - Codex review `PRR_kwDORPzHkM8AAAABGIBt2Q` was submitted at `2026-07-15T16:15:22Z` on exact head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`; fully paginated state exposed actionable unresolved non-outdated thread `PRRT_kwDORPzHkM6RKtHw` on PDP-001 requiring assigned ownership for active normalized tickets.
+- 2026-07-16 00:28 MYT - Completed the test-first active-ownership repair and local validation: 34 focused tests, live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and root build passed. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress` with `Completed:` empty pending push, head synchronization, thread disposition/resolution, exact re-ping, and the next independent review.
 
 ## Validation
 
@@ -224,3 +227,27 @@ Carry the repository-workflow implementation through final validation and a clea
   - `isDraft` is `true`; GraphQL `merged` is `false`
   - the PR body contains `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`; it excludes runtime behavior, migrations, personal skill installation, and merge
   - ignored `.tmp-eval-pr-body.md` was removed after PR creation; no `@codex review` comment was posted before the publication-evidence commit and subsequent PR-head synchronization
+
+### Task 12 review-fix round 1 evidence
+
+- Initial reviewed state:
+  - draft PR [#99](https://github.com/G9000/animaOS/pull/99) was open and unmerged at head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`, with base/head merge base `408d9b64abf639739a2d044abfda647958e7ff3e`
+  - initial exact review request: comment `IC_kwDORPzHkM8AAAABKP67aQ`, posted `2026-07-15T16:09:03Z`
+  - current-head Codex review: `PRR_kwDORPzHkM8AAAABGIBt2Q`, submitted `2026-07-15T16:15:22Z`
+  - actionable thread: `PRRT_kwDORPzHkM6RKtHw`, unresolved/non-outdated on PDP-001 before the fix
+  - the bundled `fetch_comments.py` read and direct GraphQL both completed all review/review-thread/per-thread-comment pages with every `hasNextPage` false
+- Red/green and broad validation:
+  - RED: 32 pass, 2 expected failures, 61 expectations before validator implementation
+  - GREEN: 34 pass, 0 failures, 61 expectations after implementation
+  - `bun run check:repo`, zero `in_progress`/unassigned audit, official skill `quick_validate.py`, `git diff --check`, and `git diff --check origin/main` passed
+  - exact scope assertions returned merge base `408d9b64abf639739a2d044abfda647958e7ff3e`, 56 changed paths, 0 production hotspots, and exactly 2 intended staged-skill paths
+  - `bun run build` passed cached server/desktop Nx builds and `cargo check -p animus`; the existing Vite chunk-size warning was non-blocking
+- Fix disposition:
+  - unassigned legacy PDP-001..009 and ASR-001 normalize to `backlog`; PDP-000 and its nine rows remain synchronized at `backlog`
+  - PCF-000/002 retain evidence-backed `in_progress` and synchronize `Owner: Codex` from recorded claim/start and active PR lineage
+  - the validator now rejects any `in_progress` ticket without an assigned owner and any backlog parent with an active child
+  - intended fix commit: `tickets: enforce active ownership`
+- Review-fix changed paths:
+  - 21 paths listed under `RWF-001` PR #99 active-ownership review-fix validation; none are production source hotspots, and staged skill scope remains exactly the original two files.
+- Pending external handoff:
+  - push the scoped fix, wait for PR `headRefOid`, reply and resolve `PRRT_kwDORPzHkM6RKtHw`, then post the exact standalone `@codex review`; do not merge or close `RWF-006`/`RWF-000` in this round.

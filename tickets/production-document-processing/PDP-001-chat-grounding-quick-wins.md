@@ -1,6 +1,6 @@
 # PDP-001 - Chat Grounding Quick Wins: Injection Limits and Chunk Overlap
 
-- Status: in_progress
+- Status: backlog
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `PDP-000`

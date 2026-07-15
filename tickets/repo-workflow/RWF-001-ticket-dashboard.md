@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 23:43 MYT
+- Updated: 2026-07-16 00:28 MYT
 - Started: 2026-07-15 19:37 MYT
-- Completed: 2026-07-15 23:43 MYT
+- Completed: 2026-07-16 00:28 MYT
 
 ## Goal
 
@@ -43,6 +43,8 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
 - 2026-07-15 20:06 MYT - Re-completed `RWF-001` after adding `VMI-008` to its parent table and completed history, extending the future validator contract in both directions, and passing the 146-row bidirectional and dashboard checks; prior completion `2026-07-15 19:46 MYT` remains preserved in history.
 - 2026-07-15 23:42 MYT - Reopened `RWF-001` because rebasing onto current `origin/main` added the canonical `inner-life-v1` initiative and made the derived dashboard acceptance stale; preserved the current completion timestamp `2026-07-15 20:06 MYT`, cleared current completion, and synchronized the parent row to `in_progress` before reconciliation.
 - 2026-07-15 23:43 MYT - Re-completed `RWF-001` after adding the normalized `inner-life-v1` parent to the active dashboard and verifying 18 conforming parents, 153 authoritative rows, 153 reverse references, 12 active initiatives, 6 completed initiatives, 1 legacy folder, 18 unique parent links, and 0 graph, classification, or link violations.
+- 2026-07-16 00:23 MYT - Reopened `RWF-001` for the acceptance-breaking active-ownership defect reported on PR #99: legacy `in_review` tickets without an owner were normalized to `in_progress`, which violates the canonical transition contract. Preserved completion `2026-07-15 23:43 MYT` in history, cleared the current completion, and synchronized the parent row to `in_progress` before the test-first repair.
+- 2026-07-16 00:28 MYT - Re-completed `RWF-001` after a red/green active-owner and parent-lifecycle regression, evidence-safe status normalization, live zero-violation ownership audit, repository/skill validation, exact scope checks, and the root build; synchronized the parent row and one current completed-history entry to `done` while `RWF-006` and `RWF-000` remain `in_progress` for review follow-through.
 
 ## Validation
 
@@ -122,3 +124,46 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
   - final diff inspection found no edits to pre-existing historical prose or timestamps; new prose is limited to the intentional RWF lifecycle/planning entries, the `VMI-000` repair entry, validator-contract clarifications, and the rebuilt `tickets/README.md`
   - `VMI-008` now appears once in the `VMI-000` table and once in completed history using its existing `2026-07-01 13:04 MYT` completion timestamp
   - residual risks or follow-ups: none for `RWF-001`; the bidirectional `bun run check:repo` guard is implemented and passes on the rebased current-main graph
+
+### PR #99 active-ownership review fix
+
+- Red evidence:
+  - `bun test tests/repo-organization.test.ts` failed only the two new regressions: missing `ticket-ownership` violations for unassigned/missing owners and missing `ticket-lifecycle` violations for a backlog parent with an active child; result was 32 pass, 2 fail, 61 expectations.
+- Green commands:
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - PowerShell top-metadata audit asserting zero `in_progress` tickets with missing or `unassigned` owners
+  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `git diff --check`
+  - exact merge-base, changed-path, production-hotspot, and staged-skill PowerShell assertions over `git diff --name-only origin/main`
+  - `bun run build`
+- Results:
+  - focused suite passed 34 tests, 61 expectations, and 0 failures; live organization check passed; `IN_PROGRESS_UNASSIGNED=0`
+  - PDP-001 through PDP-009 and ASR-001 are `backlog`/`unassigned`; PDP-000 and all nine rows remain synchronized at `backlog`
+  - PCF-000 and PCF-002 remain `in_progress` with `Owner: Codex`, supported by their existing claim/start and active PR history
+  - official staged-skill validation and both diff checks passed; merge base remained `408d9b64abf639739a2d044abfda647958e7ff3e`, changed scope was 56 paths, production hotspots were 0, and the staged-skill set remained exactly 2 intended paths
+  - root build passed for cached server/desktop Nx builds plus `cargo check -p animus`; the existing Vite chunk-size warning remained non-blocking
+- Review-fix changed paths:
+  - docs/ops/prd-ticket-workflow.md
+  - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
+  - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
+  - scripts/check-repo-organization.ts
+  - tests/repo-organization.test.ts
+  - tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md
+  - tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md
+  - tickets/portable-core-filesystem/PCF-002-corefs-catalog.md
+  - tickets/production-document-processing/PDP-000-production-document-processing.md
+  - tickets/production-document-processing/PDP-001-chat-grounding-quick-wins.md
+  - tickets/production-document-processing/PDP-002-hybrid-retrieval-fts-rrf.md
+  - tickets/production-document-processing/PDP-003-structured-intermediate-chunking.md
+  - tickets/production-document-processing/PDP-004-tiered-parsing-docling.md
+  - tickets/production-document-processing/PDP-005-html-web-extraction.md
+  - tickets/production-document-processing/PDP-006-agentic-document-tools.md
+  - tickets/production-document-processing/PDP-007-llm-compiler-wiring-autocompile.md
+  - tickets/production-document-processing/PDP-008-contextual-blurbs-reranker.md
+  - tickets/production-document-processing/PDP-009-eval-harness-docs-validation.md
+  - tickets/repo-workflow/RWF-000-parent.md
+  - tickets/repo-workflow/RWF-001-ticket-dashboard.md
+  - tickets/repo-workflow/RWF-006-integration-pr-review.md
+- Residual risks or follow-ups:
+  - none for the active-ownership defect; `RWF-006` and `RWF-000` stay open for the next current-head review.

@@ -29,6 +29,7 @@ export type TicketDocument = {
   ticketId?: string;
   title?: string;
   status?: string;
+  owner?: string;
   parent?: string;
   completed?: string;
   parentRows: ParentRow[];
@@ -212,6 +213,7 @@ export function parseTicketDocument(path: string, text: string): TicketDocument 
     ticketId,
     title,
     status: fields.get("Status"),
+    owner: fields.get("Owner"),
     parent:
       parent && parent.toLowerCase() !== "none"
         ? parent.toUpperCase()
@@ -332,6 +334,17 @@ async function collectTicketViolations(
         `Completed is nonempty but Status is "${document.status ?? "missing"}" instead of "done".`,
       );
     }
+    if (
+      document.status === "in_progress" &&
+      (!document.owner || document.owner.toLowerCase() === "unassigned")
+    ) {
+      addViolation(
+        violations,
+        "ticket-ownership",
+        document.path,
+        `Status "in_progress" requires an assigned Owner; Owner is "${document.owner ?? "missing"}".`,
+      );
+    }
     for (const row of document.parentRows) {
       if (!CANONICAL_STATUSES.has(row.status)) {
         addViolation(
@@ -339,6 +352,17 @@ async function collectTicketViolations(
           "ticket-status",
           document.path,
           `Authoritative child row ${row.ticketId} uses noncanonical status "${row.status}".`,
+        );
+      }
+      if (
+        document.status === "backlog" &&
+        (row.status === "in_progress" || row.status === "blocked")
+      ) {
+        addViolation(
+          violations,
+          "ticket-lifecycle",
+          document.path,
+          `A backlog parent cannot contain ${row.status} child ${row.ticketId}.`,
         );
       }
     }

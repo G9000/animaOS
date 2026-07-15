@@ -37,6 +37,7 @@ function parentDocument(
     "# ABC-000 - Parent",
     "",
     "- Status: in_progress",
+    "- Owner: Codex",
     "- Completed:",
     "",
     `## ${heading}`,
@@ -58,6 +59,7 @@ function childDocument(
     "",
     `- Status: ${status}`,
     `- Parent: \`${parent}\``,
+    "- Owner: Codex",
     `- Completed: ${completed}`,
     "",
     "## Activity Log",
@@ -459,6 +461,64 @@ describe("ticket organization checks", () => {
 
     expect(violations).toHaveLength(1);
     expect(violations[0]?.path).toBe("tickets/example/ABC-001-child.md");
+  });
+
+  test("reports every in_progress ticket without an assigned owner", async () => {
+    const snapshot = await createCleanSnapshot();
+    await write(
+      snapshot.root,
+      "tickets/ownership/OWN-001-unassigned.md",
+      "# OWN-001 - Unassigned active ticket\n- Status: in_progress\n- Owner: unassigned\n",
+    );
+    await write(
+      snapshot.root,
+      "tickets/ownership/OWN-002-missing.md",
+      "# OWN-002 - Missing active owner\n- Status: in_progress\n",
+    );
+
+    const violations = await violationsFor(snapshot, "ticket-ownership");
+
+    expect(violations).toEqual([
+      expect.objectContaining({
+        path: "tickets/ownership/OWN-001-unassigned.md",
+        message: expect.stringContaining('Owner is "unassigned"'),
+      }),
+      expect.objectContaining({
+        path: "tickets/ownership/OWN-002-missing.md",
+        message: expect.stringContaining('Owner is "missing"'),
+      }),
+    ]);
+  });
+
+  test("reports a backlog parent with an in_progress child", async () => {
+    const snapshot = await createCleanSnapshot();
+    await write(
+      snapshot.root,
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: backlog",
+        "- Owner: unassigned",
+        "## Child Tickets",
+        "| Ticket | Status |",
+        "| --- | --- |",
+        "| ABC-001 | in_progress |",
+      ].join("\n"),
+    );
+    await write(
+      snapshot.root,
+      "tickets/example/ABC-001-child.md",
+      childDocument("in_progress", "ABC-000", ""),
+    );
+
+    const violations = await violationsFor(snapshot, "ticket-lifecycle");
+
+    expect(violations).toEqual([
+      expect.objectContaining({
+        path: "tickets/example/ABC-000-parent.md",
+        message: expect.stringContaining("backlog parent cannot contain in_progress child ABC-001"),
+      }),
+    ]);
   });
 
   test("accepts a unique parent row whose child parent and status match", async () => {

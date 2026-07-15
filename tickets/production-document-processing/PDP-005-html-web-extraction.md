@@ -1,6 +1,6 @@
 # PDP-005 - HTML and Web Capture Extraction
 
-- Status: in_progress
+- Status: backlog
 - Priority: P1
 - Scope: `apps/server`
 - Parent: `PDP-000`

@@ -102,6 +102,8 @@ Use `YYYY-MM-DD HH:MM MYT` for every ticket timestamp.
 - `Started:` is set once, when work first begins, and is preserved on resume.
 - `Completed:` is set only while the ticket is `done`; a documented acceptance-breaking reopen clears the current value while preserving the prior timestamp in history.
 
+Every `in_progress` ticket has a non-`unassigned` owner, and a `backlog` parent cannot contain an `in_progress` or `blocked` child. These are malformed lifecycle states, not normalization shortcuts; correct them from recorded ownership and state evidence without inventing a claim.
+
 Historical workstreams that already depend on `scratchboard/` may continue there until deliberately migrated. Do not silently rewrite historical artifacts during unrelated work; all new initiatives use the current PRD, design/spec, dated-plan, and ticket paths above.
 
 ## Ticket Selection and Legal Transitions

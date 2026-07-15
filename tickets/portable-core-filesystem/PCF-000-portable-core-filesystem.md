@@ -5,11 +5,11 @@
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
 - Depends on: none
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 17:58 MYT
+- Updated: 2026-07-16 00:26 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -100,6 +100,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 15:44 MYT - Began PCF-002 Step 6 from merged `main` on `codex/pcf-002-catalog-head`: first-class folder and policy contracts, complete typed immutable catalog generations, and `fs/HEAD`. The publication coordinator and subsequent mutation, rotation, API/tool, grant, and benchmark slices remain deferred.
 - 2026-07-15 17:50 MYT - Completed PCF-002 Step 6 after requirements and code-quality review: portable folder/policy contracts, strict complete V2 catalogs, authenticated `fs/HEAD`, bounded linear graph/lifecycle validation, fail-closed authority issuance, and coordinator-only cutover promotion are covered by 86 Rust 1.75 CoreFS tests and 304 combined native tests. PCF-002 remains `in_progress`; Step 7 is the Core-wide commit coordinator.
 - 2026-07-15 17:58 MYT - Published PCF-002 Step 6 as draft PR #96 (`codex/pcf-002-catalog-head`) against `main`; the parent remains `in_progress` while review and the later PCF-002 slices continue.
+- 2026-07-16 00:26 MYT - Synchronized `Owner: Codex` from the recorded PCF-002 claim/start history and active PR lineage; preserved the parent and PCF-002 `in_progress` state without inventing or transferring ownership.
 
 ## Validation
 

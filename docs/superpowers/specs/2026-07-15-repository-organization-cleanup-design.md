@@ -69,14 +69,14 @@ Normalize ticket metadata to the four statuses documented in `docs/ops/prd-ticke
 | `backlog` | `backlog` |
 | `todo` | `backlog` |
 | `in_progress` | `in_progress` |
-| `in-review` | `in_progress`, or `done` when that ticket already has a non-empty `Completed:` field |
-| `in_review` | `in_progress`, or `done` when that ticket already has a non-empty `Completed:` field |
+| `in-review` | `done` when `Completed:` is non-empty; otherwise `in_progress` only with an assigned owner, or `backlog` when unassigned |
+| `in_review` | `done` when `Completed:` is non-empty; otherwise `in_progress` only with an assigned owner, or `backlog` when unassigned |
 | `blocked` | `blocked` |
 | `done` | `done` |
 
 Authoritative current-state locations are the top metadata `Status:` line in each ticket and the child-status column in parent tracker tables. Normalize ticket metadata first, then synchronize each parent table row from the corresponding child ticket. Historical prose, activity logs, and completed-ticket narratives are records of what happened and must not be rewritten merely because they contain a legacy term.
 
-This is primarily a vocabulary migration, not a new lifecycle event. It does not append activity entries or rewrite existing timestamps. One consistency rule applies: a non-empty `Completed:` field is durable evidence that the ticket reached `done`, so its current metadata status and parent-table row must become `done`. This repairs the known Agent Runtime Hardening contradiction without erasing its completion timestamp. A ticket without a non-empty `Completed:` field follows the mechanical mapping above; child completion is not inferred from Git history or prose.
+This is primarily a vocabulary migration, not a new lifecycle event. It does not append activity entries or rewrite existing timestamps. One consistency rule applies: a non-empty `Completed:` field is durable evidence that the ticket reached `done`, so its current metadata status and parent-table row must become `done`. This repairs the known Agent Runtime Hardening contradiction without erasing its completion timestamp. A ticket without a non-empty `Completed:` field follows the mechanical mapping above; child completion is not inferred from Git history or prose. Normalization never invents an owner: evidence-backed active claims keep `in_progress` and synchronize their recorded owner, while unassigned legacy work becomes legally claimable `backlog`.
 
 Rebuild `tickets/README.md` as a concise initiative index derived from normalized parent tracker metadata. A parent with `Status: done` is completed; every other canonical parent status is active. A non-empty parent `Completed:` field must first be reconciled to `Status: done`. Child states do not automatically complete a parent. An initiative without a conforming parent tracker is listed separately as legacy or unclassified instead of being guessed. Ticket folders stay where they are to preserve links.
 

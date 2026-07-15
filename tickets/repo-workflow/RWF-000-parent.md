@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-16 00:07 MYT
+- Updated: 2026-07-16 00:28 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -53,7 +53,7 @@ This table is the execution order; dependency eligibility still controls when ea
 
 ## Completed Tickets
 
-- 2026-07-15 23:43 MYT - `RWF-001` reconciled the canonical initiative index with current `origin/main`, including `inner-life-v1`, and revalidated the 18-parent/153-row graph and 12-active/6-completed/1-legacy dashboard.
+- 2026-07-16 00:28 MYT - `RWF-001` repaired PR #99's active-ownership normalization defect with red/green validator coverage, evidence-safe PDP/ASR/PCF metadata, and the full local gate.
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
 - 2026-07-15 21:58 MYT - `RWF-004` reconciled repository navigation and hygiene, including manifest-grounded contributor command and language maps.
@@ -106,6 +106,9 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 23:52 MYT - Recorded post-reconciliation verification at 0 behind/30 ahead and 54 planned paths with a clean HEAD merge tree, zero production-source hotspots, exactly two staged-skill files, and a clean local worktree before this evidence amendment; kept integration state open and parent ownership unchanged.
 - 2026-07-16 00:03 MYT - Synchronized the Task 10 evidence correction with RWF-006 by recording exact reproducible pre-publication PowerShell assertions for 54 changed paths, zero production-source hotspots, and exactly the two intended staged-skill paths; kept both tickets `in_progress`, preserved parent ownership, and left `Completed:` empty.
 - 2026-07-16 00:07 MYT - Recorded authorized Task 11 publication with RWF-006: pushed only `codex/repo-organization-project-management` at `0f02ce73c307f7f6a03d45286a5b48720273f4e1`, opened draft PR [#99](https://github.com/G9000/animaOS/pull/99) against `main`, verified draft/unmerged state, and withheld the review request until the publication-evidence head is pushed and synchronized; kept the parent and child row `in_progress`, preserved parent ownership, and left `Completed:` empty.
+- 2026-07-16 00:23 MYT - Reopened Codex-owned `RWF-001` for PR #99's acceptance-breaking active-ownership defect, removed its current completed-history entry, preserved completion `2026-07-15 23:43 MYT` here and in child activity, returned its row to `in_progress`, and kept `RWF-006` and `RWF-000` `in_progress` with parent ownership unchanged.
+- 2026-07-16 00:28 MYT - Recorded the initial exact [review handoff](https://github.com/G9000/animaOS/pull/99#issuecomment-4982750057) posted at `2026-07-15T16:09:03Z`, Codex review `PRR_kwDORPzHkM8AAAABGIBt2Q` submitted at `2026-07-15T16:15:22Z` on exact head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`, and actionable thread `PRRT_kwDORPzHkM6RKtHw` on PDP-001.
+- 2026-07-16 00:28 MYT - Re-completed `RWF-001` after the active-ownership repair passed 34 focused tests, the live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and the root build. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress`, preserved parent ownership, and left parent `Completed:` empty.
 
 ## Validation
 

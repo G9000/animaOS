@@ -1,6 +1,6 @@
 # PDP-009 - Retrieval Eval Harness, Docs, and Final Validation
 
-- Status: in_progress
+- Status: backlog
 - Priority: P1
 - Scope: `apps/server`, `docs/architecture`
 - Parent: `PDP-000`
