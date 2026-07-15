@@ -68,14 +68,16 @@ Normalize ticket metadata to the four statuses documented in `docs/ops/prd-ticke
 | `backlog` | `backlog` |
 | `todo` | `backlog` |
 | `in_progress` | `in_progress` |
-| `in-review` | `in_progress` |
-| `in_review` | `in_progress` |
+| `in-review` | `in_progress`, or `done` when that ticket already has a non-empty `Completed:` field |
+| `in_review` | `in_progress`, or `done` when that ticket already has a non-empty `Completed:` field |
 | `blocked` | `blocked` |
 | `done` | `done` |
 
-This is a vocabulary migration, not a lifecycle event. It changes only the `Status:` metadata line and does not append activity entries, rewrite timestamps, or alter completed-ticket history.
+Authoritative current-state locations are the top metadata `Status:` line in each ticket and the child-status column in parent tracker tables. Normalize ticket metadata first, then synchronize each parent table row from the corresponding child ticket. Historical prose, activity logs, and completed-ticket narratives are records of what happened and must not be rewritten merely because they contain a legacy term.
 
-Rebuild `tickets/README.md` as a concise initiative index derived from parent tracker metadata. It must separate active initiatives from completed initiatives and identify any legacy initiative without a conforming parent tracker. Ticket folders stay where they are to preserve links.
+This is primarily a vocabulary migration, not a new lifecycle event. It does not append activity entries or rewrite existing timestamps. One consistency rule applies: a non-empty `Completed:` field is durable evidence that the ticket reached `done`, so its current metadata status and parent-table row must become `done`. This repairs the known Agent Runtime Hardening contradiction without erasing its completion timestamp. A ticket without a non-empty `Completed:` field follows the mechanical mapping above; child completion is not inferred from Git history or prose.
+
+Rebuild `tickets/README.md` as a concise initiative index derived from normalized parent tracker metadata. A parent with `Status: done` is completed; every other canonical parent status is active. A non-empty parent `Completed:` field must first be reconciled to `Status: done`. Child states do not automatically complete a parent. An initiative without a conforming parent tracker is listed separately as legacy or unclassified instead of being guessed. Ticket folders stay where they are to preserve links.
 
 ### 5. Read-Only Repository Validator
 
@@ -83,11 +85,12 @@ Add `scripts/check-repo-organization.ts` and expose it through a nonbreaking roo
 
 The validator performs these checks:
 
-1. Every ticket metadata status belongs to `backlog`, `in_progress`, `blocked`, or `done`.
-2. Every direct child of `apps/` and `packages/` contains at least one recognized project manifest: `package.json`, `project.json`, `pyproject.toml`, or `Cargo.toml`.
-3. The deprecated `docs/audits/` directory does not exist and `docs/audit/` does exist.
-4. `debug.log` is not tracked by Git.
-5. `scratchboard/README.md` exists and identifies the directory as legacy.
+1. Every authoritative ticket metadata status and parent child-status table cell belongs to `backlog`, `in_progress`, `blocked`, or `done`.
+2. Every ticket with a non-empty `Completed:` field has `Status: done`.
+3. Every direct child of `apps/` and `packages/` contains at least one recognized project manifest: `package.json`, `project.json`, `pyproject.toml`, or `Cargo.toml`.
+4. The deprecated `docs/audits/` directory does not exist and `docs/audit/` does exist.
+5. `debug.log` is not tracked by Git.
+6. `scratchboard/README.md` exists and identifies the directory as legacy.
 
 The validator is read-only. It reports all discovered violations in one run, groups them by check, prints actionable paths, and exits with code 1 when any violation exists. A clean run prints a short success summary and exits with code 0. Unexpected filesystem or Git failures produce a distinct error message and nonzero exit code rather than being treated as an organizational violation.
 
@@ -113,6 +116,8 @@ Add focused Bun tests under `tests/repo-organization.test.ts` for:
 
 - acceptance of each canonical ticket status;
 - rejection of legacy and unknown statuses;
+- synchronization checks for parent child-status table cells while ignoring activity-log prose;
+- rejection of a non-`done` ticket with a non-empty `Completed:` field;
 - detection of an app or package without a recognized manifest;
 - detection of the plural audit directory;
 - detection of tracked `debug.log` through an injectable tracked-file set;
@@ -128,14 +133,14 @@ bunx nx show projects
 bun run build
 ```
 
-Targeted searches must confirm there are no remaining ticket status variants and no tracked references to `docs/audits/`. The final Git diff must contain no production source changes and no unrelated work from another pull request.
+Targeted checks must confirm there are no remaining ticket status variants in metadata or parent child-status tables and no tracked references to `docs/audits/`. Historical activity prose is explicitly excluded from the status-vocabulary assertion. The final Git diff must contain no production source changes and no unrelated work from another pull request.
 
 ## Rollout and Safety
 
 Implement the cleanup in this order:
 
 1. Add validator tests and the validator.
-2. Normalize ticket metadata and rebuild the ticket index.
+2. Normalize ticket metadata, synchronize parent child-status tables, reconcile non-empty `Completed:` fields to `done`, and rebuild the ticket index.
 3. Consolidate the audit directory and repair links.
 4. Update the repository documentation and scratchboard marker.
 5. Untrack and ignore `debug.log`.
