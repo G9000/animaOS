@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md; docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-16 00:44 MYT
+- Updated: 2026-07-16 00:59 MYT
 - Started: 2026-07-15 23:21 MYT
 - Completed: 2026-07-16 00:44 MYT
 
@@ -54,6 +54,7 @@ Carry the repository-workflow implementation through final validation and a clea
 - 2026-07-16 00:15 MYT - Codex review `PRR_kwDORPzHkM8AAAABGIBt2Q` was submitted at `2026-07-15T16:15:22Z` on exact head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`; fully paginated state exposed actionable unresolved non-outdated thread `PRRT_kwDORPzHkM6RKtHw` on PDP-001 requiring assigned ownership for active normalized tickets.
 - 2026-07-16 00:28 MYT - Completed the test-first active-ownership repair and local validation: 34 focused tests, live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and root build passed. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress` with `Completed:` empty pending push, head synchronization, thread disposition/resolution, exact re-ping, and the next independent review.
 - 2026-07-16 00:44 MYT - Closed `RWF-006` after implementation head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` received Codex's exact-head clean comment [`IC_kwDORPzHkM8AAAABKQK3pA`](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236) at `2026-07-15T16:36:44Z` stating no major issues and `Reviewed commit: ac0e84422f`; the bundled fetch and direct GraphQL consumed all review, review-thread, per-thread-comment, and conversation-comment pages, found zero unresolved non-outdated actionable threads, and confirmed prior thread `PRRT_kwDORPzHkM6RKtHw` is resolved and outdated. PR #99 was ready, open, and unmerged at closeout and that state was preserved. The independent minor suggestion to add a blocked-state test was dispositioned as non-actionable low-value churn because current behavior is correct. The final metadata head still requires the terminal review guard after push and a fresh exact `@codex review`; no merge is authorized.
+- 2026-07-16 00:59 MYT - Recorded the authorized early-merge recovery after PR #99 was externally squash-merged at `2026-07-15T16:46:01Z` as new `origin/main` `10b63ac6769d2ddfac29246f7159a4713308791f` before the closeout commit could be pushed. Preserved old local branch `codex/repo-organization-project-management` at `4913f51b9082f23cf29e8bb151379d3050b9560f`; created `codex/repo-workflow-closeout` exactly from the squash commit, published initial follow-up head `aa3b6ea5c7b81963d181877a2ae4474539616c1b`, and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) against `main`. Verified the follow-up PR is draft, open, unmerged, and synchronized to the initial push; kept `Status: done` and `Completed: 2026-07-16 00:44 MYT` unchanged while the evidence-recording head and exact review request remain.
 
 ## Validation
 
@@ -286,6 +287,7 @@ Carry the repository-workflow implementation through final validation and a clea
 ### Authorized early-merge follow-up baseline
 
 - PR #99 was externally squash-merged as `10b63ac6769d2ddfac29246f7159a4713308791f` before the local closeout commit could be pushed. The original branch remains preserved locally; the metadata-only recovery branch `codex/repo-workflow-closeout` starts exactly from that new `origin/main`.
+- Initial recovery publication pushed `aa3b6ea5c7b81963d181877a2ae4474539616c1b` only to `codex/repo-workflow-closeout` and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) with base `main`; its initial `headRefOid` synchronized to that OID and it was open/unmerged.
 - Fresh follow-up commands:
   - `bun test tests/repo-organization.test.ts`
   - `bun run check:repo`

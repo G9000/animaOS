@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-16 00:44 MYT
+- Updated: 2026-07-16 00:59 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed: 2026-07-16 00:44 MYT
 
@@ -111,6 +111,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-16 00:28 MYT - Recorded the initial exact [review handoff](https://github.com/G9000/animaOS/pull/99#issuecomment-4982750057) posted at `2026-07-15T16:09:03Z`, Codex review `PRR_kwDORPzHkM8AAAABGIBt2Q` submitted at `2026-07-15T16:15:22Z` on exact head `a6b5bd82c4c3c0a7d4ece9180dfda08f322bf40a`, and actionable thread `PRRT_kwDORPzHkM6RKtHw` on PDP-001.
 - 2026-07-16 00:28 MYT - Re-completed `RWF-001` after the active-ownership repair passed 34 focused tests, the live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and the root build. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress`, preserved parent ownership, and left parent `Completed:` empty.
 - 2026-07-16 00:44 MYT - Closed `RWF-006` and `RWF-000` because all six child files and parent rows are `done`, initiative validation passed, and implementation head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` received Codex's clean [issue comment](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236) (`IC_kwDORPzHkM8AAAABKQK3pA`, `2026-07-15T16:36:44Z`, `Reviewed commit: ac0e84422f`) after complete review/thread/comment pagination showed zero unresolved non-outdated actionable threads and the prior thread resolved/outdated. PR #99 was ready, open, and unmerged at closeout and that state was preserved; parent ownership remains `Codex`, and the pushed metadata head still requires the terminal review guard without merge.
+- 2026-07-16 00:59 MYT - Recorded PR #99's external squash merge at `2026-07-15T16:46:01Z` as new `origin/main` `10b63ac6769d2ddfac29246f7159a4713308791f` and the authorized metadata-only recovery. Preserved the old local branch at closeout commit `4913f51b9082f23cf29e8bb151379d3050b9560f`; created `codex/repo-workflow-closeout` from the squash commit, pushed initial head `aa3b6ea5c7b81963d181877a2ae4474539616c1b`, and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) against `main`. Verified draft/open/unmerged state and initial head synchronization; all child rows, parent `Status: done`, parent ownership, and `Completed: 2026-07-16 00:44 MYT` remain unchanged pending the evidence-recording push and exact review request.
 
 ## Validation
 
@@ -336,6 +337,7 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
 ### Authorized early-merge follow-up baseline
 
 - PR #99 was externally squash-merged as `10b63ac6769d2ddfac29246f7159a4713308791f` before the closeout commit could be pushed; recovery branch `codex/repo-workflow-closeout` starts exactly from that new `origin/main`.
+- Initial recovery publication pushed `aa3b6ea5c7b81963d181877a2ae4474539616c1b` only to the new branch and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) against `main`; it was open/unmerged with initial `headRefOid` synchronized to that OID.
 - Fresh follow-up validation passed 34 focused tests/61 expectations, `bun run check:repo`, official skill validation, working and range diff checks, ticket graph/dashboard classification, and the root build.
 - The follow-up range contains exactly these 3 paths, 0 production-source hotspots, and 0 staged-skill paths because the skill already merged in PR #99:
   - `tickets/README.md`
