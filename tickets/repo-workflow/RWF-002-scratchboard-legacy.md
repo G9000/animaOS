@@ -1,17 +1,17 @@
 # RWF-002 - Mark scratchboard legacy and add migration checklist
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `scratchboard`, `docs`
 - Parent: `RWF-000`
 - Depends on: `RWF-001`
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 17:27 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-15 20:25 MYT
+- Started: 2026-07-15 20:23 MYT
+- Completed: 2026-07-15 20:25 MYT
 
 ## Goal
 
@@ -36,12 +36,25 @@ Freeze `scratchboard/` for new work and define how old active workstreams migrat
 - 2026-06-26 17:18 MYT - Ticket created.
 - 2026-07-15 17:11 MYT - Linked the ticket to the combined repository-organization implementation plan.
 - 2026-07-15 17:27 MYT - Made legacy inventory, exact links, migration steps, and preservation acceptance measurable.
+- 2026-07-15 20:23 MYT - Codex claimed `RWF-002` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; set the child and parent row to `in_progress` with the dependency on completed `RWF-001` satisfied.
+- 2026-07-15 20:25 MYT - Completed `RWF-002` after adding the legacy-only marker, current-state-safe inventory, canonical workflow links, and seven-step incremental migration checklist; preserved every existing scratchboard artifact unchanged and synchronized the parent row and completed history.
 
 ## Validation
 
 - Commands:
-  - not run yet
+  - `rg -n 'legacy|frozen|PRD|tickets|v1-encrypted-core|v2-memory-recall-reliability|Migration checklist|bulk-move' scratchboard/README.md`
+  - `rg -n '^([1-7])\. ' scratchboard/README.md`
+  - `rg -n '\[docs/ops/prd-ticket-workflow\.md\]\(\.\./docs/ops/prd-ticket-workflow\.md\)|\[docs/prds/\]\(\.\./docs/prds/\)|\[docs/superpowers/plans/\]\(\.\./docs/superpowers/plans/\)|\[tickets/\]\(\.\./tickets/\)' scratchboard/README.md`
+  - PowerShell `Test-Path` check for all four relative Markdown targets resolved from `scratchboard/`
+  - `git diff --name-status -- scratchboard`
+  - `git diff --exit-code HEAD -- scratchboard/_system/active-tasks.md scratchboard/v1-encrypted-core scratchboard/v2-memory-recall-reliability`
+  - `git diff --check`
 - Changed paths:
-  - none
+  - scratchboard/README.md
+  - tickets/repo-workflow/RWF-002-scratchboard-legacy.md
+  - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
-  - backlog ticket only
+  - focused content searches found the legacy/frozen marker, canonical route, both migration candidates, no-bulk-move policy, and all seven numbered steps
+  - all four canonical relative link targets resolved
+  - scratchboard name-status output contained only `A scratchboard/README.md`; the protected legacy paths had no diff
+  - residual risks or follow-ups: current legacy workstream state still requires deliberate human and current-artifact confirmation before migration, as documented in the README

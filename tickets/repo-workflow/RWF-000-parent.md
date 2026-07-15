@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 20:06 MYT
+- Updated: 2026-07-15 20:25 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ This table is the execution order; dependency eligibility still controls when ea
 | --- | --- | --- | --- |
 | `RWF-005` | Add the anima project-management skill | `in_progress` | none |
 | `RWF-001` | Rebuild the canonical ticket initiative index | `done` | none |
-| `RWF-002` | Mark scratchboard legacy and add migration checklist | `backlog` | `RWF-001` |
+| `RWF-002` | Mark scratchboard legacy and add migration checklist | `done` | `RWF-001` |
 | `RWF-003` | Add ticket metadata validation | `backlog` | `RWF-001` |
 | `RWF-004` | Reconcile repository documentation and hygiene | `backlog` | `RWF-002` |
 | `RWF-006` | Validate, publish, and complete PR review | `backlog` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
@@ -54,6 +54,7 @@ This table is the execution order; dependency eligibility still controls when ea
 ## Completed Tickets
 
 - 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
+- 2026-07-15 20:25 MYT - `RWF-002` froze scratchboard for new work and documented the incremental migration path while preserving legacy artifacts.
 
 ## Activity Log
 
@@ -72,6 +73,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:02 MYT - Reopened `RWF-001` for the missing `VMI-008` parent-row acceptance defect, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 19:46 MYT` in history, and kept `RWF-000` `in_progress` with ownership unchanged.
 - 2026-07-15 20:02 MYT - Revised the unclaimed `RWF-003` planning contract to enforce bidirectional child-reference and parent-row coverage; kept its row `backlog`, owner `unassigned`, and implementation unstarted.
 - 2026-07-15 20:06 MYT - Re-completed `RWF-001` after the `VMI-008` repair and 146-row bidirectional validation, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
+- 2026-07-15 20:23 MYT - Synchronized `RWF-002` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; preserved parent ownership and `in_progress` state.
+- 2026-07-15 20:25 MYT - Completed `RWF-002`, synchronized its row and one completed-history entry to `done`, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
 
 ## Validation
 
