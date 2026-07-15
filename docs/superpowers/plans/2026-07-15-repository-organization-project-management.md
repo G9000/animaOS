@@ -136,10 +136,17 @@ Expected: one commit containing the approved implementation plan and repo-workfl
 ### Task 2: Run RED baseline evaluations without the skill
 
 **Files:**
+- Modify: `docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`
+- Modify: `tickets/repo-workflow/RWF-005-anima-project-management-skill.md`
+- Modify: `tickets/repo-workflow/RWF-000-parent.md`
 - Create after evaluations: `docs/audit/skills/2026-07-15-anima-project-management-evaluation.md`
 - Use temporarily, then remove: `.tmp-eval-anima-project-management/**` (covered by the existing `.tmp-eval-*` ignore rule)
 
-- [ ] **Step 1: Create disposable fixture descriptions outside live ticket state**
+- [ ] **Step 1: Claim `RWF-005` before creating evaluation fixtures**
+
+Set the child `Owner: Codex`, `Status: in_progress`, `Started:` if empty, and `Updated:` to one current MYT timestamp. Append a claim activity entry naming branch `codex/repo-organization-project-management` and worktree `.worktrees/repo-organization-project-management`. Synchronize the parent row, `Updated:`, and activity log in the same logical change without changing the parent owner.
+
+- [ ] **Step 2: Create disposable fixture descriptions outside live ticket state**
 
 Create ignored fixtures under `.tmp-eval-anima-project-management/baseline/` for these scenarios; fixtures contain synthetic PRDs, tickets, Git status, review-thread JSON, and command results only:
 
@@ -149,17 +156,17 @@ Create ignored fixtures under `.tmp-eval-anima-project-management/baseline/` for
 4. diagnosis-only and isolated-edit requests that must not create project artifacts;
 5. publish/monitor request whose old review targets a stale head and includes one behavioral defect plus one style-only suggestion.
 
-- [ ] **Step 2: Run each baseline with a fresh subagent that cannot see the intended skill**
+- [ ] **Step 3: Run each baseline with a fresh subagent that cannot see the intended skill**
 
 For every scenario, dispatch a fresh general-purpose subagent with only the fixture path and prompt. Require a proposed action log, file mutations, external actions, stopping condition, and rationale. Explicitly prohibit touching live repo files or services.
 
 Expected RED evidence: at least one meaningful workflow failure or missing guarantee across the baseline set; do not invent a failure if a baseline behaves correctly.
 
-- [ ] **Step 3: Record verbatim baseline behavior and expected corrections**
+- [ ] **Step 4: Record verbatim baseline behavior and expected corrections**
 
 Create the evaluation document with a table containing `Scenario`, `Baseline action`, `Failure or gap`, `Required guardrail`, and `Forward result`. Mark forward results `not run yet`. Avoid names or secrets from external systems.
 
-- [ ] **Step 4: Remove disposable baseline fixtures**
+- [ ] **Step 5: Remove disposable baseline fixtures**
 
 Run:
 
@@ -171,12 +178,12 @@ Remove-Item -Recurse -Force -LiteralPath $fixture
 git status --short
 ```
 
-Expected: only the evaluation evidence document is new; no live tickets, personal skills, or external services changed.
+Expected: only the intended plan, `RWF-005`, `RWF-000`, and evaluation evidence changes remain; no fixture, personal skill, production file, or external service changed.
 
-- [ ] **Step 5: Commit RED evidence**
+- [ ] **Step 6: Commit RED evidence and claim bookkeeping**
 
 ```powershell
-git add docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
+git add docs/superpowers/plans/2026-07-15-repository-organization-project-management.md tickets/repo-workflow/RWF-005-anima-project-management-skill.md tickets/repo-workflow/RWF-000-parent.md docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
 git -c commit.gpgsign=false commit -m "docs: record project management skill baseline"
 ```
 
@@ -190,9 +197,9 @@ git -c commit.gpgsign=false commit -m "docs: record project management skill bas
 - Modify: `tickets/repo-workflow/RWF-005-anima-project-management-skill.md`
 - Modify: `tickets/repo-workflow/RWF-000-parent.md`
 
-- [ ] **Step 1: Claim `RWF-005` before creating the skill**
+- [ ] **Step 1: Confirm `RWF-005` is already claimed before creating the skill**
 
-Set the child `Owner: Codex`, `Status: in_progress`, `Started:` and `Updated:` to the current MYT timestamp, append a claim activity entry with the branch/worktree, and synchronize the parent row and activity log. Do not change the parent owner as a side effect of the child claim.
+Verify the child remains `Owner: Codex` and `Status: in_progress`, its claim activity names the branch/worktree, and the parent row matches. Do not re-claim it or change the parent owner.
 
 - [ ] **Step 2: Initialize the official skill scaffold**
 

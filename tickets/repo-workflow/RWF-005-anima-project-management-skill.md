@@ -1,17 +1,17 @@
 # RWF-005 - Add the anima project-management skill
 
-- Status: backlog
+- Status: in_progress
 - Priority: P2
 - Scope: `.codex-skill-staging/anima-project-management`, `AGENTS.md`, `docs/ops`, `docs/audit/skills`
 - Parent: `RWF-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 17:11 MYT
-- Started:
+- Updated: 2026-07-15 17:49 MYT
+- Started: 2026-07-15 17:39 MYT
 - Completed:
 
 ## Goal
@@ -36,12 +36,20 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 ## Activity Log
 
 - 2026-07-15 17:11 MYT - Ticket created from the approved anima project-management skill design and implementation plan.
+- 2026-07-15 17:39 MYT - Codex claimed `RWF-005` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management` before RED baseline evaluation.
+- 2026-07-15 17:49 MYT - Recorded five fresh-agent RED baseline scenarios; no workflow failure or missing guarantee was observed, so no failure was invented. Forward evaluation remains pending.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - ticket/parent/plan/evaluation PowerShell assertions
+  - `git diff --check`
+  - safe resolved-path fixture removal and `git status --short --untracked-files=all`
 - Changed paths:
-  - none
+  - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
+  - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
+  - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
+  - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
-  - backlog ticket only
+  - RED fixtures removed; no `.tmp-eval-*` path remains
+  - all forward results are `not run yet`
