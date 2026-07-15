@@ -6,8 +6,13 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, OpenOptions};
 use getrandom::getrandom;
 
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt as _;
 #[cfg(windows)]
 use cap_std::fs::OpenOptionsExt as _;
+
+#[cfg(any(unix, test))]
+const TEMPORARY_FILE_MODE: u32 = 0o600;
 
 /// Atomically publish `payload` and return only after its directory entry is durable.
 pub fn atomic_publish(target: &Path, payload: &[u8]) -> io::Result<()> {
@@ -84,6 +89,8 @@ pub(crate) fn create_temporary_in(dir: &Dir, target: &OsStr) -> io::Result<(File
             OsString::from(format!(".{}.{}.tmp", target.to_string_lossy(), suffix));
         let mut options = OpenOptions::new();
         options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(TEMPORARY_FILE_MODE);
         #[cfg(windows)]
         options
             .access_mode(
@@ -363,4 +370,12 @@ fn hex_bytes(bytes: &[u8]) -> String {
         output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn temporary_publications_use_owner_only_unix_permissions() {
+        assert_eq!(super::TEMPORARY_FILE_MODE, 0o600);
+    }
 }

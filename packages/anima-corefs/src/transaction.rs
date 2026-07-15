@@ -1474,6 +1474,17 @@ fn ensure_ambient_directory(path: &Path) -> Result<(), CommitError> {
 }
 
 fn ensure_child_directory(parent: &Dir, name: &str) -> Result<Dir, CommitError> {
+    ensure_child_directory_with(parent, name, durable_create_directory_in)
+}
+
+fn ensure_child_directory_with<F>(
+    parent: &Dir,
+    name: &str,
+    create_directory: F,
+) -> Result<Dir, CommitError>
+where
+    F: FnOnce(&Dir, &OsStr) -> io::Result<()>,
+{
     match parent.symlink_metadata(name) {
         Ok(metadata) => {
             if !metadata.is_dir() || metadata.is_symlink() {
@@ -1481,7 +1492,11 @@ fn ensure_child_directory(parent: &Dir, name: &str) -> Result<Dir, CommitError> 
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            durable_create_directory_in(parent, OsStr::new(name))?;
+            match create_directory(parent, OsStr::new(name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Err(error) => return Err(error.into()),
     }
@@ -1703,9 +1718,13 @@ pub enum CommitError {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
 
-    use super::{copy_bounded, CommitError};
+    use cap_std::{ambient_authority, fs::Dir};
+
+    use crate::publication::durable_create_directory_in;
+
+    use super::{copy_bounded, ensure_child_directory_with, CommitError};
 
     #[test]
     fn streaming_preparation_stops_before_writing_past_its_bound() {
@@ -1713,5 +1732,30 @@ mod tests {
         let error = copy_bounded(&mut Cursor::new(b"four"), &mut output, 3).unwrap_err();
         assert!(matches!(error, CommitError::ObjectEnvelopeTooLarge));
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn child_directory_creation_tolerates_a_concurrent_winner() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-child-directory-race-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let parent = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+
+        let child = ensure_child_directory_with(&parent, "fs", |parent, name| {
+            durable_create_directory_in(parent, name)?;
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "simulated concurrent directory winner",
+            ))
+        })
+        .unwrap();
+
+        assert!(child.metadata(".").unwrap().is_dir());
+        drop(child);
+        drop(parent);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
