@@ -7,9 +7,9 @@
 - Depends on: `IL-001`, `IL-002`, `IL-006`
 - Owner: unassigned
 - PRD: docs/prds/presence/inner-life-v1.md
-- Plan: none
+- Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 16:55 MYT
+- Updated: 2026-07-15 17:10 MYT
 - Started:
 - Completed:
 
