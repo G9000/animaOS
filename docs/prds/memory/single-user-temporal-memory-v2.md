@@ -250,6 +250,7 @@ sequenceDiagram
 - [F12 Experience Clustering](F12-experience-clustering.md)
 - [F13 Skill Distillation](F13-skill-distillation.md)
 - [F15 Memory Provenance And Event Evidence](provenance-and-event-memory.md)
+- [Inner Life v1](../presence/inner-life-v1.md)
 - [Memory System Architecture](../../architecture/memory/memory-system.md)
 
 ## External References
