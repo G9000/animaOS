@@ -1135,9 +1135,32 @@ impl CoreCommitCoordinator {
                 &encoded_head,
             )?;
         }
-        self.validate_pinned_layout()?;
-        atomic_publish_in(&self.fs_dir, OsStr::new(pointer_name), &encoded_head)?;
+        self.publish_pointer_and_revalidate(
+            pointer_name,
+            &encoded_head,
+            |dir, target, payload| {
+                atomic_publish_in(dir, target, payload)?;
+                Ok(())
+            },
+            Self::validate_pinned_layout,
+        )?;
         Ok((head, catalog_name))
+    }
+
+    fn publish_pointer_and_revalidate<P, V>(
+        &self,
+        pointer_name: &str,
+        payload: &[u8],
+        publish_pointer: P,
+        validate_layout: V,
+    ) -> Result<(), CommitError>
+    where
+        P: FnOnce(&Dir, &OsStr, &[u8]) -> Result<(), CommitError>,
+        V: Fn(&Self) -> Result<(), CommitError>,
+    {
+        validate_layout(self)?;
+        publish_pointer(&self.fs_dir, OsStr::new(pointer_name), payload)?;
+        validate_layout(self)
     }
 
     fn validate_pinned_layout(&self) -> Result<(), CommitError> {
@@ -1891,6 +1914,7 @@ pub enum CommitError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::io::{self, Cursor};
 
     use cap_std::{ambient_authority, fs::Dir};
@@ -1900,7 +1924,7 @@ mod tests {
     use crate::folders::{FolderOwner, PortableName};
     use crate::id::OpaqueId;
     use crate::policy::AnimaAccess;
-    use crate::publication::durable_create_directory_in;
+    use crate::publication::{atomic_publish_in, durable_create_directory_in};
 
     use super::{copy_bounded, ensure_child_directory_with, CommitError, CoreCommitCoordinator};
 
@@ -2107,5 +2131,41 @@ mod tests {
         drop(coordinator);
         std::fs::remove_dir_all(pinned_root).unwrap();
         std::fs::remove_dir_all(replacement_root).unwrap();
+    }
+
+    #[test]
+    fn catalog_publication_revalidates_after_pointer_publish() {
+        let pinned_root = std::env::temp_dir().join(format!(
+            "anima-corefs-post-publish-pinned-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&pinned_root);
+        let coordinator = CoreCommitCoordinator::new(&pinned_root, "core-a").unwrap();
+        let pointer_published = Cell::new(false);
+
+        let error = coordinator
+            .publish_pointer_and_revalidate(
+                "VALIDATION_HEAD",
+                b"head",
+                |dir, target, payload| {
+                    atomic_publish_in(dir, target, payload)?;
+                    pointer_published.set(true);
+                    Ok(())
+                },
+                |coordinator| {
+                    if pointer_published.get() {
+                        Err(CommitError::InvalidCoreLayout)
+                    } else {
+                        coordinator.validate_pinned_layout()
+                    }
+                },
+            )
+            .unwrap_err();
+
+        assert!(pointer_published.get());
+        assert!(matches!(error, CommitError::InvalidCoreLayout));
+        assert!(pinned_root.join("fs").join("VALIDATION_HEAD").is_file());
+        drop(coordinator);
+        std::fs::remove_dir_all(pinned_root).unwrap();
     }
 }
