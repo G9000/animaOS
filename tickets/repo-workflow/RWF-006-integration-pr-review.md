@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md; docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-16 00:03 MYT
+- Updated: 2026-07-16 00:07 MYT
 - Started: 2026-07-15 23:21 MYT
 - Completed:
 
@@ -49,6 +49,7 @@ Carry the repository-workflow implementation through final validation and a clea
 - 2026-07-15 23:46 MYT - Rebased the never-pushed branch onto current `origin/main` with local safety ref `codex/repo-organization-project-management-pre-rebase`; intentionally resolved the expected cleanup-spec add/add conflict from `REBASE_HEAD`, verified the final spec matches the safety version, reconciled the new canonical `inner-life-v1` initiative through an ownership-safe RWF-001 reopen/reclose, and reran the full local integration gate while keeping RWF-006 and its parent open.
 - 2026-07-15 23:52 MYT - Recorded post-reconciliation range evidence: the committed branch is `0` behind and `30` ahead of current `origin/main`, still spans exactly 54 planned paths, has a conflict-free merge tree equal to HEAD, and remains locally clean without any push or PR action.
 - 2026-07-16 00:03 MYT - Added exact reproducible pre-publication PowerShell assertions for the derived merge base, 54 changed paths, zero production-source hotspots, and exactly the two intended repo-owned staged-skill paths; kept RWF-006 and its parent `in_progress` with `Completed:` empty.
+- 2026-07-16 00:07 MYT - Pushed only branch `codex/repo-organization-project-management` with upstream tracking at `0f02ce73c307f7f6a03d45286a5b48720273f4e1` and opened draft PR [#99](https://github.com/G9000/animaOS/pull/99) against `main` with the required review contract; verified the PR is draft and unmerged, removed the ignored temporary body file, and intentionally withheld `@codex review` until this evidence commit is pushed and `headRefOid` catches up.
 
 ## Validation
 
@@ -209,3 +210,17 @@ Carry the repository-workflow implementation through final validation and a clea
   - `STAGED_SKILLS=2`
   - `.codex-skill-staging/anima-project-management/SKILL.md`
   - `.codex-skill-staging/anima-project-management/agents/openai.yaml`
+
+### Task 11 draft PR publication evidence
+
+- Exact commands:
+  - `git push -u origin codex/repo-organization-project-management`
+  - `gh pr create --draft --base main --head codex/repo-organization-project-management --title "workflow: organize repository project management" --body-file .tmp-eval-pr-body.md`
+  - `gh pr view 99 --json number,url,title,headRefName,headRefOid,baseRefName,isDraft`
+  - `gh api graphql -F owner=G9000 -F repo=animaOS -F number=99 -f 'query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){merged}}}'`
+- Results:
+  - pushed only `codex/repo-organization-project-management` and set upstream to `origin/codex/repo-organization-project-management`; initial publication OID is `0f02ce73c307f7f6a03d45286a5b48720273f4e1`
+  - draft PR [#99](https://github.com/G9000/animaOS/pull/99) has exact title `workflow: organize repository project management`, base `main`, head branch `codex/repo-organization-project-management`, and initial `headRefOid` `0f02ce73c307f7f6a03d45286a5b48720273f4e1`
+  - `isDraft` is `true`; GraphQL `merged` is `false`
+  - the PR body contains `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`; it excludes runtime behavior, migrations, personal skill installation, and merge
+  - ignored `.tmp-eval-pr-body.md` was removed after PR creation; no `@codex review` comment was posted before the publication-evidence commit and subsequent PR-head synchronization
