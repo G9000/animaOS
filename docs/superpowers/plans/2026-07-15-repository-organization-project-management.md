@@ -81,35 +81,36 @@ Expected: one timestamp such as `2026-07-15 16:30 MYT`; use the same value in re
 
 Set `RWF-000` to `Status: in_progress`, `Owner: Codex`, populate `Started:` if empty, update `Updated:`, and append an activity entry naming branch `codex/repo-organization-project-management` and this plan. Add `RWF-004`, `RWF-005`, and `RWF-006` to the child table. Keep new child tickets at `backlog` and `Owner: unassigned` until their task begins.
 
-Use this dependency shape:
+Use this execution order and dependency shape:
 
 | Ticket | Depends on |
 | --- | --- |
+| `RWF-005` | none |
 | `RWF-001` | none |
 | `RWF-002` | `RWF-001` |
 | `RWF-003` | `RWF-001` |
 | `RWF-004` | none |
-| `RWF-005` | none |
 | `RWF-006` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
 
 - [ ] **Step 3: Align existing ticket plan links and acceptance**
 
-Change each `RWF-001` through `RWF-003` `Plan:` field to `docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`. Update `RWF-001` to deliver the canonical `tickets/README.md` initiative index rather than a second `tickets/INDEX.md`. Update `RWF-003` to cover the full read-only organization-validator contract from the approved cleanup spec.
+Change each `RWF-001` through `RWF-003` `Plan:` field to `docs/superpowers/plans/2026-07-15-repository-organization-project-management.md`. Update `RWF-001` to deliver the concise canonical `tickets/README.md` initiative index rather than a second `tickets/INDEX.md`: classify active, completed, and legacy or unclassified initiatives from normalized parent metadata; link parent trackers and conventions/workflow/check guidance; do not promise next-ticket, blocker, or completion-count reporting; and never infer parent completion from children. Update `RWF-003` to cover the full read-only organization-validator contract from the approved cleanup spec.
 
 - [ ] **Step 4: Create the three new child tickets from `tickets/TEMPLATE.md`**
 
-Give every ticket a single outcome, measurable acceptance, `Owner: unassigned`, `Status: backlog`, and the plan/spec links. `RWF-006` acceptance must require:
+Give every ticket a single outcome, measurable acceptance, `Owner: unassigned`, `Status: backlog`, and the plan/spec links. `RWF-006` must separate its pre-closeout acceptance from its post-closeout terminal guard:
 
 - focused and broad validation passing;
 - an in-scope draft PR with required body sections;
 - the exact standalone `@codex review` request;
-- current-head Codex review with zero unresolved non-outdated actionable threads;
+- a clean current-head Codex review of the implementation head with zero unresolved non-outdated actionable threads;
 - no merge without separate authorization;
-- final child and parent closeout committed, pushed, and reviewed on the final head.
+- after that clean implementation head, Task 13 marks child and parent closeout `done` in one metadata commit, pushes it, and sends a fresh exact `@codex review`;
+- post-closeout review of the final head is a terminal guard, not a precondition claimed before the `done` transition, and it reopens affected child/integration/parent state if actionable feedback invalidates acceptance.
 
 - [ ] **Step 5: Update the initiative README**
 
-List `RWF-001` through `RWF-006` in execution order and state that implementation tickets may close after local acceptance, while `RWF-006` and `RWF-000` remain `in_progress` through PR review and final metadata-head review.
+List the execution order as `RWF-005`, `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, then `RWF-006`. State that implementation tickets may close after local acceptance, while `RWF-006` and `RWF-000` remain `in_progress` through a clean implementation-head review. Task 13 then marks them `done` in the closeout metadata commit; review of that final head is a terminal guard that reopens acceptance-breaking state and repeats closeout when necessary.
 
 - [ ] **Step 6: Verify ticket links and initial state**
 
@@ -317,7 +318,7 @@ git -c commit.gpgsign=false commit -m "docs: integrate project management workfl
 
 ---
 
-### Task 5: Normalize ticket state and rebuild the initiative dashboard
+### Task 5: Normalize ticket state and rebuild the concise initiative index
 
 **Files:**
 - Modify: `tickets/repo-workflow/RWF-001-ticket-dashboard.md`
@@ -353,9 +354,9 @@ Do not rewrite activity logs, historical narratives, completion timestamps, or t
 
 - [ ] **Step 4: Rebuild `tickets/README.md` from normalized parent trackers**
 
-List parents with `Status: done` under `Completed Initiatives`, every other canonical parent under `Active Initiatives`, and folders without a conforming parent under `Legacy or Unclassified`. Retain conventions, template/workflow links, and add `bun run check:repo` as the mechanical consistency command (noting it becomes available later in the same initiative).
+List parents with `Status: done` under `Completed Initiatives`, every other canonical parent under `Active Initiatives`, and folders without a conforming parent under `Legacy or Unclassified`. Retain conventions, template/workflow links, and add `bun run check:repo` as the mechanical consistency command (noting it becomes available later in the same initiative). Link every classified initiative to its parent tracker. Do not infer parent completion from child state and do not add next-ticket, blocker, or completion-count reporting.
 
-- [ ] **Step 5: Verify normalized state and dashboard membership**
+- [ ] **Step 5: Verify normalized state and index classification**
 
 Run:
 
@@ -652,7 +653,7 @@ Record validation and changed paths for both. Close `RWF-004`, then close `RWF-0
 Run:
 
 ```powershell
-git diff --name-only | rg '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/'
+git diff HEAD --name-only | rg '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/'
 ```
 
 Expected: no output.
@@ -660,11 +661,20 @@ Expected: no output.
 - [ ] **Step 9: Commit documentation and hygiene cleanup**
 
 ```powershell
-git add .gitignore AGENTS.md README.md docs tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md tickets/repo-workflow
+git add -- .gitignore AGENTS.md README.md `
+  docs/architecture/system/directory-structure.md `
+  docs/audit/2026-06-11-agent-server-audit.md `
+  docs/superpowers/plans/2026-07-14-dual-session-scope-a6.md `
+  docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md `
+  tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md `
+  tickets/repo-workflow/RWF-000-parent.md `
+  tickets/repo-workflow/RWF-003-ticket-metadata-validation.md `
+  tickets/repo-workflow/RWF-004-repository-documentation-hygiene.md
+git status --short
 git -c commit.gpgsign=false commit -m "docs: align repository organization"
 ```
 
-Expected: Git stages the tracked removal of `debug.log` even if the ignored working-tree file remains locally.
+Expected: the explicit list stages only the documentation/hygiene paths named by this task. The earlier `git rm --cached -- debug.log` already staged the tracked removal, so `debug.log` is not passed to `git add`; inspect `git status --short` for its staged deletion before committing even if the ignored working-tree file remains locally.
 
 ---
 
@@ -733,14 +743,14 @@ git -c commit.gpgsign=false commit -m "test: validate project management skill"
 Run:
 
 ```powershell
-rg -n '^- Status: ' tickets/repo-workflow/RWF-00[1-5]-*.md
+rg -n '^- Status: ' tickets/repo-workflow -g 'RWF-00[1-5]-*.md'
 ```
 
 Expected: `RWF-001` through `RWF-005` each report `Status: done`.
 
 - [ ] **Step 2: Claim `RWF-006` and synchronize the parent**
 
-Perform standard claim bookkeeping. Keep `RWF-006` and `RWF-000` `in_progress` until the full PR review loop and final closeout-head review complete.
+Perform standard claim bookkeeping. Keep `RWF-006` and `RWF-000` `in_progress` until the implementation head satisfies the full current-head review stopping rule. Task 13 then marks them `done` in the closeout metadata commit before the terminal review guard runs on that final head.
 
 - [ ] **Step 3: Run focused organization and skill checks**
 
@@ -945,9 +955,9 @@ If a recurring monitor is created, remove it when the PR closes or reaches the s
 
 - [ ] **Step 1: Close `RWF-006` only after the implementation head is clean**
 
-Record the PR URL, current reviewed head OID, successful validations, zero actionable-thread result, and review notes. Set `RWF-006` to `done`, set timestamps, update parent row/history, and close `RWF-000` only because all six required children are done and initiative-level validation passed.
+Record the PR URL, clean implementation-head OID, successful validations, zero actionable-thread result, and review notes. Set `RWF-006` to `done`, set timestamps, update parent row/history, and close `RWF-000` only because all six required children are done and initiative-level validation passed. This metadata transition occurs after the implementation head is clean and before review of the new closeout head.
 
-- [ ] **Step 2: Rebuild the dashboard for final parent state**
+- [ ] **Step 2: Rebuild the initiative index for final parent state**
 
 Move the repo-workflow initiative from active to completed in `tickets/README.md` based on `RWF-000` metadata. Do not infer other parent statuses.
 
@@ -976,7 +986,7 @@ Expected: the final project-metadata commit is pushed and a fresh exact review r
 
 - [ ] **Step 5: Repeat Task 12 for the closeout head**
 
-Stop only when Codex's latest review targets this final `headRefOid`, required checks still pass, and no unresolved non-outdated actionable feedback remains. If review finds an acceptance-breaking issue, reopen affected child/parent state exactly as documented, fix it, and repeat closeout and review.
+Treat this review as the terminal guard: stop only when Codex's latest review targets this final `headRefOid`, required checks still pass, and no unresolved non-outdated actionable feedback remains. If actionable feedback invalidates acceptance, reopen the acceptance-owning child when applicable, `RWF-006`, and `RWF-000` consistently; preserve earlier completion timestamps in activity logs, fix and validate narrowly, close again, push, post the exact `@codex review`, and repeat the guard. Do not merge without separate authorization.
 
 - [ ] **Step 6: Report the achieved terminal state without merging**
 

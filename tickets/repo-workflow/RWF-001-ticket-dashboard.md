@@ -1,4 +1,4 @@
-# RWF-001 - Add top-level tickets dashboard
+# RWF-001 - Rebuild the canonical ticket initiative index
 
 - Status: backlog
 - Priority: P2
@@ -9,32 +9,34 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 17:11 MYT
+- Updated: 2026-07-15 17:27 MYT
 - Started:
 - Completed:
 
 ## Goal
 
-Create a top-level dashboard that shows active initiatives, parent trackers, next ticket, blockers, and completion counts.
+Rebuild `tickets/README.md` as the concise canonical index of active, completed, and legacy or unclassified initiatives.
 
 ## Deliverables
 
 - Rebuild the canonical `tickets/README.md` initiative index
-- Separate active and completed initiatives from legacy or unclassified folders
-- Derive parent initiative state from canonical parent metadata
-- Link each classified initiative to its parent tracker without duplicating child acceptance
+- Classify conforming parent trackers as active or completed from normalized parent metadata
+- Classify folders without a conforming parent as legacy or unclassified
+- Link classified initiatives to parent trackers and retain conventions, template/workflow links, and `bun run check:repo`
 
 ## Acceptance
 
-- A future agent can answer "what is next" from one file
-- `tickets/README.md` links to every conforming parent tracker and classifies nonconforming initiative folders as legacy or unclassified
-- Active versus completed placement follows normalized parent metadata rather than inferred child or prose state
-- Dashboard does not duplicate detailed child acceptance criteria
+- `tickets/README.md` contains `Active Initiatives`, `Completed Initiatives`, and `Legacy or Unclassified` sections
+- Every conforming parent tracker appears exactly once under active or completed according to normalized parent `Status:` metadata
+- Parent completion is never inferred from child state, historical prose, blockers, or progress counts
+- Every folder without a conforming parent is listed under legacy or unclassified, and every listed parent link resolves
+- The index retains ticket conventions, template and workflow links, and the `bun run check:repo` command without duplicating child acceptance criteria
 
 ## Activity Log
 
 - 2026-06-26 17:18 MYT - Ticket created.
 - 2026-07-15 17:11 MYT - Aligned the ticket with the combined repository-organization plan and canonical `tickets/README.md` dashboard.
+- 2026-07-15 17:27 MYT - Narrowed the outcome to the approved concise initiative classification index.
 
 ## Validation
 
