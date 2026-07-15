@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -9,8 +9,8 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-13 20:47 MYT
-- Started:
+- Updated: 2026-07-15 02:54 MYT
+- Started: 2026-07-14 19:45 MYT
 - Completed:
 
 ## Goal
@@ -55,12 +55,52 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-12 17:34 MYT - Added the shared Rust file-tool/CoreFS architecture, customizable folder policy, client grants, trash, Codex provenance, and atomic multi-file patch requirement.
 - 2026-07-12 18:58 MYT - Assigned clean-checkout CI, desktop legal-resource packaging, and distinct Core-session principal authorization to this ticket.
 - 2026-07-13 20:47 MYT - Expanded scope metadata to every owned provenance/release surface and locked the benchmark fixture matrix so tombstones cannot consume the advertised live-entry capacity.
+- 2026-07-14 19:45 MYT - Claimed PCF-002 from merged `main` on `codex/pcf-002-file-tools`. Began the first reviewable slice: shared bounded Rust file-operation contracts and the Animus HostFS adapter; encrypted CoreFS objects/catalogs remain sequenced behind this foundation.
+- 2026-07-14 21:12 MYT - Completed the first PCF-002 implementation slice: added the MSRV-compatible `anima-file-tools` crate, bounded backend-neutral read/walk/glob/grep/text/patch engines, migrated Animus HostFS tools onto the shared contracts, added explicit HostFS best-effort patch atomicity, and established pinned Codex attribution plus standalone release-notice CI. PCF-002 remains `in_progress` for encrypted CoreFS objects/catalogs and later slices.
+- 2026-07-14 21:22 MYT - Published the first slice as PR #91 (`codex/pcf-002-file-tools`) and requested a substantive Codex review focused on backend separation, path containment, boundedness, patch semantics, atomicity reporting, and provenance.
+- 2026-07-14 21:34 MYT - Addressed both current-head Codex review findings with red/green regressions: explicit file-root grep now bypasses directory walking, and walk/grep cursors resume by deterministic preorder position rather than lexicographic path comparison. Added the derived nested-file match-cursor case and revalidated the full shared/Animus suites and build.
+- 2026-07-14 21:51 MYT - Addressed the second current-head Codex review pass with red/green regressions: `apply_patch` approval cannot leak into a session-wide wildcard, HostFS patch keys follow the workspace volume's detected case semantics including case-insensitive APFS, and update hunks preserve a missing final newline. Revalidated all shared and Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-14 22:02 MYT - Addressed the third current-head Codex review pass with a red/green malformed UTF-8 patch regression: update lines now validate ` `, `+`, or `-` through Unicode-safe prefix stripping before extracting content, returning a typed parse error instead of panicking at a non-character byte boundary. Revalidated shared and Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-14 22:35 MYT - Addressed the fourth current-head Codex review pass with a red/green authority-boundary regression: grep now rejects a mismatched `BackendPath` tag before metadata, directory, or file access, including the single-file fast path. Revalidated shared and Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-14 22:52 MYT - Addressed the fifth current-head Codex review pass with a red/green nested/sibling glob regression: resumed pages now trust deterministic walk preorder without a second lexicographic filter. Diagnosed the Linux provenance failure as a test-only cross-channel scheduling assertion, retained both replay/queued-response outcomes without comparing independent observer arrival order, and passed the focused websocket test 100 consecutive times plus all full gates.
+- 2026-07-14 23:08 MYT - Addressed the sixth current-head Codex review pass with red/green patch regressions: planner preflight now rejects virtual file/descendant collisions in either order (including moves beneath the source), while HostFS delete/move-source mutations resolve the named directory entry rather than following a final symlink. Added separate entry identity to planner snapshots so deleting a symlink does not mark its target deleted. Revalidated 50 shared tests and 122 Animus tests before the full quality gates.
+- 2026-07-14 23:24 MYT - Addressed the seventh current-head Codex review pass with red/green delete-preflight regressions: `PatchSnapshot` now exposes file-entry existence independently from text decoding, HostFS implements it with non-following `symlink_metadata`, binary files and dangling/outside-target symlinks can be deleted safely, and directories are rejected before any earlier best-effort mutation applies. Revalidated focused behavior before the full quality gates.
+- 2026-07-15 01:36 MYT - Addressed the eighth current-head Codex review pass with instrumented-reader red/green regressions: grep stops scanning after an output cap plus one bounded validation probe, while text reads and grep both stop immediately when a line exceeds its byte ceiling. Preserved bounded late-binary detection and added explicit read-count assertions for large inputs before the full quality gates.
+- 2026-07-15 01:51 MYT - Addressed the ninth current-head Codex review pass with red/green boundary regressions: text reads stop before validating content beyond the requested window while preserving exact-EOF truncation semantics, and patch preflight tracks a deleted symlink entry through regular-file recreation and later same-patch updates. Revalidated 56 shared tests, 125 Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-15 02:16 MYT - Addressed the tenth current-head Codex review pass: reproduced and fixed HostFS partial patch application by preflighting every ordered write parent against filesystem and virtual mutation state before the first write. Verified the separate dangling-symlink listing comment already follows the requested skip behavior at the permission boundary and added a regression documenting readable-sibling continuity. Revalidated 56 shared tests, 127 Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-15 02:31 MYT - Addressed the eleventh current-head Codex review pass: `read_file` now reports truncation with the exact next offset, and HostFS directory enumeration skips non-UTF-8 Unix entries instead of aborting sibling listing/search. Added a red/green truncation regression plus a Unix-specific filename regression; revalidated 56 shared tests, 128 local Animus tests, formatting, clippy, build, and diff checks before standalone Linux CI.
+- 2026-07-15 02:54 MYT - Addressed the twelfth current-head Codex review pass with a red/green HostFS traversal regression: walk/search metadata now preserves a requested root symlink's identity after canonical containment authorization, so a directory symlink used as the root is never descended. Added a Windows junction fallback so the traversal regression exercises the behavior without elevated symlink privileges; revalidated 56 shared tests, 129 Animus tests, formatting, clippy, build, and diff checks.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
+  - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
+  - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
+  - `cargo fmt -p anima-file-tools -p animus -- --check`
+  - `cargo clippy --locked -p anima-file-tools --all-targets -- -D warnings`
+  - `cargo clippy --locked -p animus --bin animus -- -D warnings`
+  - `bun run build`
+  - `uv run ruff check scripts/check_codex_attribution.py scripts/check_corefs_release_notices.py`
+  - `uv run python scripts/check_codex_attribution.py`
+  - `bun run scripts/prepare-desktop-release.ts --legal-only`
+  - `uv run python scripts/check_corefs_release_notices.py`
+  - `cargo metadata --locked --no-deps --format-version 1`
+  - workflow YAML parse and `git diff --check`
 - Changed paths:
-  - none
+  - `packages/anima-file-tools/`
+  - `apps/animus/src/tools/files.rs`
+  - `apps/animus/src/tools/files/`
+  - `apps/animus/src/tools/{mod.rs,process.rs,secrets.rs,shell.rs}`
+  - `apps/animus/src/approvals.rs`
+  - `Cargo.toml`, `Cargo.lock`, and `apps/animus/Cargo.toml`
+  - `THIRD_PARTY_NOTICES.md` and `third_party/`
+  - `scripts/check_codex_attribution.py`, `scripts/check_corefs_release_notices.py`, and `scripts/prepare-desktop-release.ts`
+  - `.github/workflows/corefs-provenance.yml`
+  - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
+  - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-002-corefs-catalog.md}`
 - Notes:
-  - Claim after PCF-001 is done.
+  - PCF-001 is complete. PCF-002 is being delivered through reviewable PR slices while retaining this ticket as the milestone tracker.
+  - The normal parallel Animus run initially exposed a pre-existing shared secrets-fixture race. A red/green test-only fixture consolidation removed the race; the unchanged single-thread suite had already passed all 116 tests.
+  - Tauri already maps `resources/.anima/` into the bundle, so staging `.anima/legal` required no `tauri.conf.json` change.
+  - Review: https://github.com/G9000/animaOS/pull/91

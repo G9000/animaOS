@@ -1,0 +1,64 @@
+name: CoreFS provenance
+
+on:
+  pull_request:
+    paths:
+      - "packages/anima-file-tools/**"
+      - "packages/anima-corefs/**"
+      - "apps/animus/**"
+      - "THIRD_PARTY_NOTICES.md"
+      - "third_party/**"
+      - "scripts/check_codex_attribution.py"
+      - "scripts/check_corefs_release_notices.py"
+      - "scripts/prepare-desktop-release.ts"
+      - "apps/desktop/src-tauri/tauri.conf.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/corefs-provenance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-checkout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout animaOS only
+        uses: actions/checkout@v4
+
+      - name: Assert there is no sibling Codex checkout
+        shell: bash
+        run: >-
+          test -z "$(find .. -mindepth 1 -maxdepth 1 -type d -name codex -print -quit)"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install shared-crate MSRV toolchain
+        run: rustup toolchain install 1.75.0 --profile minimal
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - name: Validate attribution and repository-local dependencies
+        run: python3 scripts/check_codex_attribution.py
+
+      - name: Validate locked Cargo metadata
+        run: cargo metadata --locked --format-version 1 --no-deps
+
+      - name: Test shared file tools on Rust 1.75
+        run: cargo +1.75.0 test --locked -p anima-file-tools
+
+      - name: Test HostFS adapter on repository stable Rust
+        run: cargo test --locked -p animus
+
+      - name: Stage release legal resources only
+        run: bun run scripts/prepare-desktop-release.ts --legal-only
+
+      - name: Validate staged release notices
+        run: >-
+          python3 scripts/check_corefs_release_notices.py
+          --release-root apps/desktop/src-tauri/resources/.anima

@@ -126,3 +126,23 @@ fn animus_secrets_path() -> Option<PathBuf> {
                 .map(|home| PathBuf::from(home).join(".animus").join("secrets.json"))
         })
 }
+
+#[cfg(test)]
+pub(crate) fn install_test_saved_secrets() {
+    use std::sync::OnceLock;
+
+    static SECRETS_PATH: OnceLock<PathBuf> = OnceLock::new();
+    let path = SECRETS_PATH.get_or_init(|| {
+        let path = env::temp_dir().join(format!(
+            "animus-saved-secret-substitution-{}.json",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"{"ANIMUS_TEST_TOKEN":"saved-secret-value","ANIMUS_DANGEROUS":"git push origin main"}"#,
+        )
+        .expect("test secrets fixture should be writable");
+        path
+    });
+    env::set_var("ANIMUS_SECRETS_PATH", path);
+}

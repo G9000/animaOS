@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-14 18:27 MYT
+- Updated: 2026-07-15 02:54 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | backlog | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -76,6 +76,21 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-14 18:02 MYT - Completed and validated atomic orphaned-backfill cleanup during legacy password rotation with red/green crash recovery coverage, 91 credential tests, lint, build, and diff gates; PCF-002 is unblocked again.
 - 2026-07-14 18:15 MYT - Reopened PCF-001 for a current-head stale-native-extension startup compatibility follow-up; PCF-002 is blocked pending validation and re-review.
 - 2026-07-14 18:27 MYT - Completed and validated native-first manifest publication with a durable Python fallback for stale extensions: 48 CoreFS keyslot tests, 10 binding/permission tests, lint, build, and diff gates passed; PCF-002 is unblocked again.
+- 2026-07-14 19:45 MYT - Started PCF-002 from merged `main`; the first reviewable slice establishes shared bounded file-operation contracts and migrates Animus HostFS onto them before CoreFS catalog work.
+- 2026-07-14 21:12 MYT - Completed and validated PCF-002's first reviewable slice: shared bounded file tools, explicit Animus HostFS reuse, typed preflighted patch planning, and standalone Codex attribution/release gates. PCF-002 remains in progress for the CoreFS object/catalog implementation.
+- 2026-07-14 21:22 MYT - Opened PCF-002 slice-one PR #91 and requested substantive Codex review; the parent remains in progress pending review/merge and later PCF-002 slices.
+- 2026-07-14 21:34 MYT - Addressed PR #91's first Codex review pass with file-root grep and preorder-safe walk/grep cursor regressions; full shared/Animus tests, clippy, build, and diff checks passed before the follow-up push.
+- 2026-07-14 21:51 MYT - Addressed PR #91's second Codex review pass by preventing reusable wildcard patch approvals, honoring case-insensitive HostFS volumes beyond Windows, and preserving missing final newlines during patch updates; all focused and full validation gates passed before the follow-up push.
+- 2026-07-14 22:02 MYT - Addressed PR #91's third Codex review pass by making malformed multi-byte update-line prefixes fail with a typed parse error instead of panicking; the focused regression plus full shared/Animus, clippy, build, and diff gates passed.
+- 2026-07-14 22:35 MYT - Addressed PR #91's fourth Codex review pass by enforcing backend authority before grep metadata access, with a regression proving mismatched paths cannot touch storage; all focused and full validation gates passed.
+- 2026-07-14 22:52 MYT - Addressed PR #91's fifth Codex review pass by removing the redundant lexicographic glob cursor filter, and stabilized the failing Linux provenance test by removing an undefined ordering assertion across independent UI/server observer channels while preserving both protocol outcome checks; 100 focused repetitions and all full gates passed.
+- 2026-07-14 23:08 MYT - Addressed PR #91's sixth Codex review pass by rejecting file/descendant patch plans before mutation and making HostFS symlink deletion/removal operate on the named entry without corrupting its target; entry-vs-target planner state is covered separately, and the full shared/Animus suites passed before final gates.
+- 2026-07-14 23:24 MYT - Addressed PR #91's seventh Codex review pass by separating delete-entry metadata preflight from text snapshots: binary and dangling-symlink entries can be deleted without reading targets, while directory deletes fail before any prior best-effort mutation. Focused red/green regressions cover all three cases.
+- 2026-07-15 01:36 MYT - Addressed PR #91's eighth Codex review pass by bounding grep work after the page fills and returning immediately on overlong text/grep lines; instrumented readers prove large inputs are not streamed to EOF, while the existing late-binary guard remains covered.
+- 2026-07-15 01:51 MYT - Addressed PR #91's ninth Codex review pass by stopping text validation at the requested line boundary without falsely marking exact EOF as truncated, and by preserving virtual entry identity when a symlink is deleted then recreated as a regular file within one patch. All focused regressions and full shared/Animus quality gates passed.
+- 2026-07-15 02:16 MYT - Addressed PR #91's tenth Codex review pass by preflighting HostFS write-parent shape across the full ordered mutation plan before applying any best-effort write. Confirmed dangling symlinks are already skipped before metadata lookup while readable siblings remain available, and added focused coverage for both behaviors; full shared/Animus quality gates passed.
+- 2026-07-15 02:31 MYT - Addressed PR #91's eleventh Codex review pass by exposing `read_file` continuation offsets whenever output is truncated and skipping non-UTF-8 directory entries on Unix without dropping readable siblings. Focused platform coverage and the full local shared/Animus quality gates passed before standalone Linux CI.
+- 2026-07-15 02:54 MYT - Addressed PR #91's twelfth Codex review pass by preserving final symlink identity for HostFS walk/search roots after containment authorization, preventing a root directory symlink from being traversed. Added cross-platform red/green coverage and revalidated the full shared/Animus quality gates.
 
 ## Validation
 
