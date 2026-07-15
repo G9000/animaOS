@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 23:15 MYT
+- Updated: 2026-07-15 23:23 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -27,7 +27,7 @@ This table is the execution order; dependency eligibility still controls when ea
 | `RWF-002` | Mark scratchboard legacy and add migration checklist | `done` | `RWF-001` |
 | `RWF-003` | Add ticket metadata validation | `done` | `RWF-001` |
 | `RWF-004` | Reconcile repository documentation and hygiene | `done` | `RWF-002` |
-| `RWF-006` | Validate, publish, and complete PR review | `backlog` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
+| `RWF-006` | Validate, publish, and complete PR review | `in_progress` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
 
 ## Deliverables
 
@@ -98,6 +98,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 22:56 MYT - Re-completed `RWF-005` after six portable neutral v2 sub-runs passed, added one current completion-history entry, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-006` remains the authorized end-to-end publication/review closeout.
 - 2026-07-15 23:13 MYT - Reopened `RWF-005` for the acceptance-breaking working-tree-only closeout evidence, removed its current completed-history entry, preserved the prior completion timestamp `2026-07-15 22:56 MYT` in parent activity, returned its row to `in_progress`, and kept `RWF-000` `in_progress` with `Owner: Codex` unchanged.
 - 2026-07-15 23:15 MYT - Re-completed `RWF-005` after reproducible validation from base `681dd11dc399faa8a593ef9e73dcb4796b91d5ad` confirmed exactly the three Task 9 paths with empty production-source and staged-skill filters; added one current completion-history entry and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-006`.
+- 2026-07-15 23:21 MYT - Synchronized `RWF-006` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; confirmed `RWF-001` through `RWF-005` are `done`, preserved parent ownership, and kept the parent `in_progress` through clean implementation-head review.
+- 2026-07-15 23:23 MYT - Recorded Task 10 integration evidence for implementation head `71dc234e3e114b3d5fb034803e0e2dcaf2822f0d`: focused tests, live repository and skill validation, nine-project Nx discovery, server/desktop/Animus build, merge-base diff, and all scope exclusions passed; kept the parent and `RWF-006` row `in_progress` with parent ownership unchanged for Tasks 11-13.
 
 ## Validation
 
@@ -180,4 +182,37 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
 - Committed Task 9 changed paths from `681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`:
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
+  - tickets/repo-workflow/RWF-000-parent.md
+
+### Current Task 10 integration-head validation
+
+- Exact commands:
+  - `rg -n '^- Status: done\r?$' tickets/repo-workflow -g 'RWF-00[1-5]-*.md'`
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `bunx nx show projects`
+  - `bun run build`
+  - `git diff --check origin/main...HEAD`
+  - `git branch --show-current`
+  - `git rev-parse HEAD`
+  - `git rev-parse origin/main`
+  - `git merge-base HEAD origin/main`
+  - `git log --oneline origin/main..HEAD`
+  - `$mergeBase = git merge-base HEAD origin/main; git diff --name-only "$mergeBase..HEAD"`
+  - PowerShell exact/planned-scope, production-source, staged-skill, and personal-path assertions over `git diff --name-only "$mergeBase..HEAD"`
+  - `git status --short --untracked-files=all`
+  - `git check-ignore -v apps/desktop/dist/index.html dist/anima_server-0.1.0.tar.gz target/.rustc_info.json`
+- Results:
+  - all five implementation dependencies are `done`; the worktree was clean at requested starting head `71dc234e3e114b3d5fb034803e0e2dcaf2822f0d` before the RWF-006 claim transaction
+  - focused validation passed with 32 tests, 59 assertions, and 0 failures; the live organization check and official staged-skill validator passed
+  - Nx discovered 9 configured projects; the root build exited 0 after server and desktop Nx builds plus `cargo check -p animus`
+  - Vite's 2,137.26 kB main-bundle chunk-size warning was non-blocking; ignored desktop, server-wheel, and Cargo build outputs did not enter tracked scope
+  - `origin/main` was `408d9b64abf639739a2d044abfda647958e7ff3e`; merge base `e813e748f6fc44bdf03895e1e33a0aeef73e9c69` yielded 28 branch commits and 54 changed paths
+  - branch categories were 2 repo-owned staged-skill files, 5 root metadata files, 8 docs files, 1 scratchboard guide, 1 organization script, 1 focused test file, and 36 ticket files
+  - diff and scope gates passed with 0 production-source hotspots, exactly 2 intended staged-skill paths, 0 personal or absolute paths, and 0 paths outside the exact or mechanical ticket-normalization plan scope
+  - runtime smoke and `GET /health` are not applicable because no application runtime behavior changed
+  - `RWF-006`, its parent row, and `RWF-000` remain `in_progress`; Task 11-13 publication/review closeout is pending, no Task 10 external action occurred, and merge remains separately authorized
+- Task 10 changed paths:
+  - tickets/repo-workflow/RWF-006-integration-pr-review.md
   - tickets/repo-workflow/RWF-000-parent.md
