@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 13:02 MYT
+- Updated: 2026-07-15 13:34 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -93,6 +93,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 02:54 MYT - Addressed PR #91's twelfth Codex review pass by preserving final symlink identity for HostFS walk/search roots after containment authorization, preventing a root directory symlink from being traversed. Added cross-platform red/green coverage and revalidated the full shared/Animus quality gates.
 - 2026-07-15 12:19 MYT - Began PCF-002's second isolated PR slice for the Rust `.acore` envelope, deterministic catalog codec, and PyO3 format boundary after a clean merged-main Rust baseline. Canonical catalog publication and the remaining PCF-002 filesystem layers stay in later slices.
 - 2026-07-15 13:02 MYT - Completed and validated PCF-002's second isolated implementation slice: bounded streaming `.acore` object framing, deterministic generation-keyed encrypted catalog payloads, opaque physical catalog names, and typed Rust-owned PyO3 operations. Exact Rust 1.75, focused PyO3, combined Rust tests, CoreFS format/clippy, and scoped FFI gates passed; PCF-002 remains in progress for the deferred filesystem/publication layers.
+- 2026-07-15 13:34 MYT - Completed final requirements hardening for PCF-002 slice two: V1 object headers now bind object identity, object-key epoch, and the closed `object-dek` key domain; metadata cannot smuggle catalog placement authority; Python callers have bounded file-like streaming APIs; and typed catalog version rejection covers both plaintext and encrypted headers. Focused red/green regressions, Rust 1.75, 243 combined native tests, PyO3 streaming, format, clippy, and diff gates passed; PCF-002 remains in progress for later publication/filesystem slices.
 
 ## Validation
 
@@ -103,6 +104,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `cargo fmt -p anima-corefs -- --check` plus scoped new-FFI format inspection; the existing `anima-core` package-wide format check remains blocked by unrelated baseline drift
   - `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`
   - scoped new-CoreFS-FFI clippy check and `git diff --check`
+  - final slice-two hardening: 14 focused envelope/catalog tests, 25 Rust 1.75 CoreFS tests, 243 combined native tests, one focused `io.BytesIO` PyO3 streaming/cap/error-mapping test, CoreFS format and strict clippy, and zero scoped new-FFI clippy diagnostics
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

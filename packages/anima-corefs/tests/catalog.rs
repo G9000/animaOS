@@ -95,9 +95,20 @@ fn duplicate_ids_versions_and_oversize_are_rejected() {
     ));
     assert!(CatalogPayload::new(0, vec![]).is_err());
 
-    let mut encoded = encode_catalog(&payload()).unwrap();
-    encoded[17] = (CATALOG_FORMAT_VERSION + 1) as u8;
-    assert!(decode_catalog(&encoded).is_err());
+    let mut unsupported_payload = serde_json::to_value(payload()).unwrap();
+    unsupported_payload["schemaVersion"] = json!(CATALOG_FORMAT_VERSION + 1);
+    let unsupported_payload = serde_json::to_vec(&unsupported_payload).unwrap();
+    assert!(matches!(
+        decode_catalog(&unsupported_payload),
+        Err(CatalogError::UnsupportedVersion(2))
+    ));
+
+    let mut unsupported_envelope = encrypt_catalog(&keys(0x22), "01JCORE", &payload()).unwrap();
+    unsupported_envelope[8..10].copy_from_slice(&(CATALOG_FORMAT_VERSION + 1).to_le_bytes());
+    assert!(matches!(
+        decrypt_catalog(&keys(0x22), "01JCORE", &unsupported_envelope),
+        Err(CatalogError::UnsupportedVersion(2))
+    ));
 
     let huge = "x".repeat(MAX_CATALOG_PLAINTEXT_SIZE + 1);
     let oversized = CatalogPayload::new(1, vec![CatalogEntry::new("one", json!(huge))]).unwrap();

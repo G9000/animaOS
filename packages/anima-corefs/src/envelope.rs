@@ -24,11 +24,27 @@ pub const BODY_CHUNK_PLAINTEXT_SIZE: usize = 4 * 1024 * 1024;
 pub const MAX_BODY_CHUNKS: usize = 2_048;
 pub const MAX_BODY_LENGTH: u64 = BODY_CHUNK_PLAINTEXT_SIZE as u64 * MAX_BODY_CHUNKS as u64;
 pub const MAX_METADATA_PLAINTEXT_SIZE: usize = 1024 * 1024;
-pub const ENVELOPE_HEADER_SIZE: usize = 32;
+pub const MAX_OBJECT_ID_LENGTH: usize = 1024;
+pub const ENVELOPE_HEADER_SIZE: usize = 39;
 
 const MAGIC: &[u8; 8] = b"ACOREV1\0";
+const KEY_DOMAIN_OBJECT_DEK: u8 = 1;
 const FRAME_HEADER_SIZE: usize = 32;
 const TAG_LENGTH: usize = 16;
+
+const RESERVED_METADATA_AUTHORITY_KEYS: &[&str] = &[
+    "path",
+    "logicalPath",
+    "logical_path",
+    "parentPath",
+    "parent_path",
+    "parentId",
+    "parent_id",
+    "folderPath",
+    "folder_path",
+    "folderId",
+    "folder_id",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnvelopeError {
@@ -46,6 +62,14 @@ pub enum EnvelopeError {
     Json(#[from] serde_json::Error),
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum BodyEncoding {
+    #[serde(rename = "utf-8")]
+    Utf8,
+    #[serde(rename = "binary")]
+    Binary,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvelopeMetadata {
@@ -57,7 +81,7 @@ pub struct EnvelopeMetadata {
     pub updated_at: String,
     pub content_type: String,
     pub metadata: BTreeMap<String, Value>,
-    pub body_encoding: String,
+    pub body_encoding: BodyEncoding,
     pub body_length: u64,
     pub body_sha256: String,
     pub chunk_plaintext_size: u32,
@@ -74,7 +98,7 @@ impl EnvelopeMetadata {
         updated_at: impl Into<String>,
         content_type: impl Into<String>,
         metadata: BTreeMap<String, Value>,
-        body_encoding: impl Into<String>,
+        body_encoding: BodyEncoding,
         body: &[u8],
     ) -> Result<Self, EnvelopeError> {
         let body_length =
@@ -89,7 +113,7 @@ impl EnvelopeMetadata {
             updated_at: updated_at.into(),
             content_type: content_type.into(),
             metadata,
-            body_encoding: body_encoding.into(),
+            body_encoding,
             body_length,
             body_sha256: hex_digest(body),
             chunk_plaintext_size: BODY_CHUNK_PLAINTEXT_SIZE as u32,
@@ -109,11 +133,11 @@ impl EnvelopeMetadata {
             || self.created_at.is_empty()
             || self.updated_at.is_empty()
             || self.content_type.is_empty()
-            || self.body_encoding.is_empty()
             || self.revision == 0
         {
             return Err(EnvelopeError::InvalidFormat("incomplete metadata"));
         }
+        validate_metadata_authority(&self.metadata)?;
         if self.body_length > MAX_BODY_LENGTH {
             return Err(EnvelopeError::LimitExceeded("body length"));
         }
@@ -157,8 +181,10 @@ pub struct EnvelopeRead {
     pub whole_body_verified: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Header {
+    object_key_epoch: u32,
+    object_id: String,
     metadata_ciphertext_length: usize,
     body_length: u64,
     chunk_count: u32,
@@ -195,12 +221,15 @@ pub fn write_envelope<W: Write, R: Read>(
         .len()
         .checked_add(TAG_LENGTH)
         .ok_or(EnvelopeError::LimitExceeded("metadata ciphertext"))?;
+    validate_object_id(aad.object_id())?;
     let header = Header {
+        object_key_epoch: aad.object_key_epoch(),
+        object_id: aad.object_id().to_owned(),
         metadata_ciphertext_length,
         body_length: metadata.body_length,
         chunk_count: metadata.chunk_count,
     };
-    write_header(writer, header)?;
+    write_header(writer, &header)?;
 
     let cipher = cipher(key)?;
     let mut used_nonces = HashSet::new();
@@ -292,13 +321,14 @@ pub fn read_envelope<R: Read, W: Write>(
     let mut state = read_metadata(reader, key, aad)?;
     let mut body_hasher = Sha256::new();
     for index in 0..state.header.chunk_count {
-        let frame = read_and_validate_frame_header(reader, state.header, index, &mut state.nonces)?;
+        let frame =
+            read_and_validate_frame_header(reader, &state.header, index, &mut state.nonces)?;
         let mut ciphertext = vec![0_u8; frame.ciphertext_length];
         reader.read_exact(&mut ciphertext)?;
         let plaintext = decrypt_frame(
             &state.cipher,
             aad,
-            state.header,
+            &state.header,
             state.frame_hash,
             frame,
             &ciphertext,
@@ -340,7 +370,8 @@ pub fn read_envelope_range<R: Read, W: Write>(
     let whole_body = range.start == 0 && range.end == state.header.body_length;
     let mut body_hasher = Sha256::new();
     for index in 0..state.header.chunk_count {
-        let frame = read_and_validate_frame_header(reader, state.header, index, &mut state.nonces)?;
+        let frame =
+            read_and_validate_frame_header(reader, &state.header, index, &mut state.nonces)?;
         let frame_end = frame.offset + u64::from(frame.plaintext_length);
         let intersects = range.start < frame_end && range.end > frame.offset;
         if intersects || whole_body {
@@ -349,7 +380,7 @@ pub fn read_envelope_range<R: Read, W: Write>(
             let plaintext = decrypt_frame(
                 &state.cipher,
                 aad,
-                state.header,
+                &state.header,
                 state.frame_hash,
                 frame,
                 &ciphertext,
@@ -398,7 +429,7 @@ fn read_metadata<R: Read>(
     key: &SecretBytes,
     aad: &ObjectBaseAad,
 ) -> Result<MetadataRead, EnvelopeError> {
-    let header = read_header(reader)?;
+    let header = read_header(reader, aad)?;
     let mut nonce = [0_u8; NONCE_LENGTH];
     reader.read_exact(&mut nonce)?;
     let mut nonces = HashSet::new();
@@ -425,6 +456,7 @@ fn read_metadata<R: Read>(
     if metadata.body_length != header.body_length
         || metadata.chunk_count != header.chunk_count
         || metadata.chunk_plaintext_size != BODY_CHUNK_PLAINTEXT_SIZE as u32
+        || metadata.object_id != header.object_id
     {
         return Err(EnvelopeError::InvalidFormat("metadata/header mismatch"));
     }
@@ -454,21 +486,40 @@ fn expected_chunk_count(body_length: u64) -> Result<u32, EnvelopeError> {
     Ok(count as u32)
 }
 
-fn write_header<W: Write>(writer: &mut W, header: Header) -> Result<(), EnvelopeError> {
+fn validate_object_id(object_id: &str) -> Result<(), EnvelopeError> {
+    if object_id.is_empty() {
+        return Err(EnvelopeError::InvalidFormat("object ID"));
+    }
+    if object_id.len() > MAX_OBJECT_ID_LENGTH {
+        return Err(EnvelopeError::LimitExceeded("object ID"));
+    }
+    Ok(())
+}
+
+fn write_header<W: Write>(writer: &mut W, header: &Header) -> Result<(), EnvelopeError> {
+    let object_id = header.object_id.as_bytes();
+    validate_object_id(&header.object_id)?;
+    if header.object_key_epoch == 0 {
+        return Err(EnvelopeError::InvalidFormat("object-key epoch"));
+    }
     let mut bytes = [0_u8; ENVELOPE_HEADER_SIZE];
     bytes[..8].copy_from_slice(MAGIC);
     bytes[8..10].copy_from_slice(&ENVELOPE_VERSION.to_le_bytes());
     bytes[10] = CIPHER_AES_256_GCM;
     bytes[11] = CHUNKING_FIXED_V1;
-    bytes[12..16].copy_from_slice(&(header.metadata_ciphertext_length as u32).to_le_bytes());
-    bytes[16..24].copy_from_slice(&header.body_length.to_le_bytes());
-    bytes[24..28].copy_from_slice(&(BODY_CHUNK_PLAINTEXT_SIZE as u32).to_le_bytes());
-    bytes[28..32].copy_from_slice(&header.chunk_count.to_le_bytes());
+    bytes[12] = KEY_DOMAIN_OBJECT_DEK;
+    bytes[13..17].copy_from_slice(&header.object_key_epoch.to_le_bytes());
+    bytes[17..19].copy_from_slice(&(object_id.len() as u16).to_le_bytes());
+    bytes[19..23].copy_from_slice(&(header.metadata_ciphertext_length as u32).to_le_bytes());
+    bytes[23..31].copy_from_slice(&header.body_length.to_le_bytes());
+    bytes[31..35].copy_from_slice(&(BODY_CHUNK_PLAINTEXT_SIZE as u32).to_le_bytes());
+    bytes[35..39].copy_from_slice(&header.chunk_count.to_le_bytes());
     writer.write_all(&bytes)?;
+    writer.write_all(object_id)?;
     Ok(())
 }
 
-fn read_header<R: Read>(reader: &mut R) -> Result<Header, EnvelopeError> {
+fn read_header<R: Read>(reader: &mut R, aad: &ObjectBaseAad) -> Result<Header, EnvelopeError> {
     let mut bytes = [0_u8; ENVELOPE_HEADER_SIZE];
     reader.read_exact(&mut bytes)?;
     if &bytes[..8] != MAGIC {
@@ -483,29 +534,53 @@ fn read_header<R: Read>(reader: &mut R) -> Result<Header, EnvelopeError> {
     if bytes[11] != CHUNKING_FIXED_V1 {
         return Err(EnvelopeError::Unsupported("chunking"));
     }
+    if bytes[12] != KEY_DOMAIN_OBJECT_DEK {
+        return Err(EnvelopeError::Unsupported("key domain"));
+    }
+    let object_key_epoch = u32::from_le_bytes(bytes[13..17].try_into().expect("fixed slice"));
+    if object_key_epoch == 0 {
+        return Err(EnvelopeError::InvalidFormat("object-key epoch"));
+    }
+    let object_id_length =
+        u16::from_le_bytes(bytes[17..19].try_into().expect("fixed slice")) as usize;
+    if object_id_length == 0 {
+        return Err(EnvelopeError::InvalidFormat("object ID"));
+    }
+    if object_id_length > MAX_OBJECT_ID_LENGTH {
+        return Err(EnvelopeError::LimitExceeded("object ID"));
+    }
     let metadata_ciphertext_length =
-        u32::from_le_bytes(bytes[12..16].try_into().expect("fixed slice")) as usize;
+        u32::from_le_bytes(bytes[19..23].try_into().expect("fixed slice")) as usize;
     if !(TAG_LENGTH..=MAX_METADATA_PLAINTEXT_SIZE + TAG_LENGTH)
         .contains(&metadata_ciphertext_length)
     {
         return Err(EnvelopeError::LimitExceeded("metadata ciphertext"));
     }
-    let body_length = u64::from_le_bytes(bytes[16..24].try_into().expect("fixed slice"));
+    let body_length = u64::from_le_bytes(bytes[23..31].try_into().expect("fixed slice"));
     if body_length > MAX_BODY_LENGTH {
         return Err(EnvelopeError::LimitExceeded("body length"));
     }
-    let chunk_size = u32::from_le_bytes(bytes[24..28].try_into().expect("fixed slice"));
+    let chunk_size = u32::from_le_bytes(bytes[31..35].try_into().expect("fixed slice"));
     if chunk_size != BODY_CHUNK_PLAINTEXT_SIZE as u32 {
         return Err(EnvelopeError::Unsupported("chunk plaintext size"));
     }
-    let chunk_count = u32::from_le_bytes(bytes[28..32].try_into().expect("fixed slice"));
+    let chunk_count = u32::from_le_bytes(bytes[35..39].try_into().expect("fixed slice"));
     if chunk_count as usize > MAX_BODY_CHUNKS {
         return Err(EnvelopeError::LimitExceeded("body chunk count"));
     }
     if chunk_count != expected_chunk_count(body_length)? {
         return Err(EnvelopeError::InvalidFormat("header chunk count"));
     }
+    let mut object_id = vec![0_u8; object_id_length];
+    reader.read_exact(&mut object_id)?;
+    let object_id = String::from_utf8(object_id)
+        .map_err(|_| EnvelopeError::InvalidFormat("object ID encoding"))?;
+    if object_key_epoch != aad.object_key_epoch() || object_id != aad.object_id() {
+        return Err(EnvelopeError::InvalidFormat("header/AAD mismatch"));
+    }
     Ok(Header {
+        object_key_epoch,
+        object_id,
         metadata_ciphertext_length,
         body_length,
         chunk_count,
@@ -526,7 +601,7 @@ fn write_frame_header<W: Write>(writer: &mut W, frame: FrameHeader) -> Result<()
 
 fn read_and_validate_frame_header<R: Read>(
     reader: &mut R,
-    header: Header,
+    header: &Header,
     expected_index: u32,
     nonces: &mut HashSet<[u8; NONCE_LENGTH]>,
 ) -> Result<FrameHeader, EnvelopeError> {
@@ -568,7 +643,7 @@ fn read_and_validate_frame_header<R: Read>(
 fn decrypt_frame(
     cipher: &Aes256Gcm,
     aad: &ObjectBaseAad,
-    header: Header,
+    header: &Header,
     metadata_hash: [u8; 32],
     frame: FrameHeader,
     ciphertext: &[u8],
@@ -654,6 +729,40 @@ fn canonicalize_map(map: &mut BTreeMap<String, Value>) {
     for value in map.values_mut() {
         canonicalize_value(value);
     }
+}
+
+fn validate_metadata_authority(metadata: &BTreeMap<String, Value>) -> Result<(), EnvelopeError> {
+    for (key, value) in metadata {
+        if RESERVED_METADATA_AUTHORITY_KEYS.contains(&key.as_str()) {
+            return Err(EnvelopeError::InvalidFormat(
+                "reserved metadata authority key",
+            ));
+        }
+        validate_metadata_authority_value(value)?;
+    }
+    Ok(())
+}
+
+fn validate_metadata_authority_value(value: &Value) -> Result<(), EnvelopeError> {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                validate_metadata_authority_value(value)?;
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                if RESERVED_METADATA_AUTHORITY_KEYS.contains(&key.as_str()) {
+                    return Err(EnvelopeError::InvalidFormat(
+                        "reserved metadata authority key",
+                    ));
+                }
+                validate_metadata_authority_value(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn canonicalize_value(value: &mut Value) {

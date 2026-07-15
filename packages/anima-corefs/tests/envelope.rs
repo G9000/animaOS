@@ -4,10 +4,17 @@ use std::io::Cursor;
 use anima_corefs::crypto::{ObjectBaseAad, ObjectKind, SecretBytes};
 use anima_corefs::envelope::{
     decode_envelope, decode_envelope_range, encode_envelope, read_envelope, write_envelope,
-    EnvelopeError, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE,
-    MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE,
+    BodyEncoding, EnvelopeError, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE,
+    MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE, MAX_OBJECT_ID_LENGTH,
 };
-use serde_json::json;
+use serde_json::{json, Map, Value};
+
+const KEY_DOMAIN_OFFSET: usize = 12;
+const OBJECT_KEY_EPOCH_OFFSET: usize = 13;
+const OBJECT_ID_LENGTH_OFFSET: usize = 17;
+const METADATA_CIPHERTEXT_LENGTH_OFFSET: usize = 19;
+const BODY_LENGTH_OFFSET: usize = 23;
+const CHUNK_COUNT_OFFSET: usize = 35;
 
 fn key(byte: u8) -> SecretBytes {
     SecretBytes::new(vec![byte; 32]).unwrap()
@@ -29,7 +36,7 @@ fn metadata(object_id: &str, revision: u64, body: &[u8]) -> EnvelopeMetadata {
         "2026-07-15T00:00:01Z",
         "text/markdown",
         opaque,
-        "identity",
+        BodyEncoding::Binary,
         body,
     )
     .unwrap()
@@ -70,7 +77,7 @@ fn empty_single_and_multi_chunk_roundtrip_streaming() {
 }
 
 #[test]
-fn encoded_bytes_hide_metadata_body_and_logical_paths() {
+fn encoded_bytes_hide_metadata_body_and_path_looking_display_values() {
     let body = b"known plaintext body";
     let mut meta = metadata("01JOBJECT", 7, body);
     meta.metadata
@@ -87,6 +94,130 @@ fn encoded_bytes_hide_metadata_body_and_logical_paths() {
         .windows(b"private/diary/secret-entry.md".len())
         .any(|window| window == b"private/diary/secret-entry.md"));
     assert!(!encoded.windows(10).any(|window| window == b"displayNam"));
+}
+
+#[test]
+fn body_encoding_is_closed_and_catalog_authority_keys_are_rejected_recursively() {
+    let body = b"body";
+    let binary = metadata("01JOBJECT", 7, body);
+    assert!(serde_json::to_string(&binary)
+        .unwrap()
+        .contains("\"bodyEncoding\":\"binary\""));
+
+    let utf8 = EnvelopeMetadata::for_body(
+        "note",
+        "01JOBJECT",
+        7,
+        "2026-07-15T00:00:00Z",
+        "2026-07-15T00:00:01Z",
+        "text/plain",
+        BTreeMap::new(),
+        BodyEncoding::Utf8,
+        body,
+    )
+    .unwrap();
+    assert!(serde_json::to_string(&utf8)
+        .unwrap()
+        .contains("\"bodyEncoding\":\"utf-8\""));
+
+    let mut invalid_encoding = serde_json::to_value(&binary).unwrap();
+    invalid_encoding["bodyEncoding"] = json!("identity");
+    assert!(serde_json::from_value::<EnvelopeMetadata>(invalid_encoding).is_err());
+
+    let reserved = [
+        "path",
+        "logicalPath",
+        "logical_path",
+        "parentPath",
+        "parent_path",
+        "parentId",
+        "parent_id",
+        "folderPath",
+        "folder_path",
+        "folderId",
+        "folder_id",
+    ];
+    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    for key_name in reserved {
+        let mut authority = Map::new();
+        authority.insert(key_name.to_string(), json!("catalog-owned"));
+        let mut invalid = binary.clone();
+        invalid.metadata.insert(
+            "safeContainer".into(),
+            Value::Array(vec![Value::Object(authority)]),
+        );
+        assert!(matches!(
+            encode_envelope(&key(0x11), &base, &invalid, body),
+            Err(EnvelopeError::InvalidFormat(
+                "reserved metadata authority key"
+            ))
+        ));
+    }
+}
+
+#[test]
+fn v1_header_carries_and_validates_object_identity_and_key_domain() {
+    let body = b"bound content";
+    let meta = metadata("01JOBJECT", 7, body);
+    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let encoded = encode_envelope(&key(0x11), &base, &meta, body).unwrap();
+
+    assert_eq!(encoded[KEY_DOMAIN_OFFSET], 1);
+    assert_eq!(
+        u32::from_le_bytes(
+            encoded[OBJECT_KEY_EPOCH_OFFSET..OBJECT_KEY_EPOCH_OFFSET + 4]
+                .try_into()
+                .unwrap()
+        ),
+        3
+    );
+    let object_id_length = object_id_length(&encoded);
+    assert_eq!(object_id_length, "01JOBJECT".len());
+    assert_eq!(
+        &encoded[ENVELOPE_HEADER_SIZE..ENVELOPE_HEADER_SIZE + object_id_length],
+        b"01JOBJECT"
+    );
+
+    let mut unknown_domain = encoded.clone();
+    unknown_domain[KEY_DOMAIN_OFFSET] = 2;
+    assert!(matches!(
+        decode_envelope(&key(0x11), &base, &unknown_domain),
+        Err(EnvelopeError::Unsupported("key domain"))
+    ));
+
+    for epoch in [0_u32, 4] {
+        let mut changed = encoded.clone();
+        changed[OBJECT_KEY_EPOCH_OFFSET..OBJECT_KEY_EPOCH_OFFSET + 4]
+            .copy_from_slice(&epoch.to_le_bytes());
+        assert!(decode_envelope(&key(0x11), &base, &changed).is_err());
+    }
+
+    let mut changed_id = encoded.clone();
+    changed_id[ENVELOPE_HEADER_SIZE] = b'X';
+    assert!(decode_envelope(&key(0x11), &base, &changed_id).is_err());
+
+    let mut invalid_utf8 = encoded.clone();
+    invalid_utf8[ENVELOPE_HEADER_SIZE] = 0xff;
+    assert!(matches!(
+        decode_envelope(&key(0x11), &base, &invalid_utf8),
+        Err(EnvelopeError::InvalidFormat("object ID encoding"))
+    ));
+
+    let mut oversized_declaration = encoded;
+    oversized_declaration[OBJECT_ID_LENGTH_OFFSET..OBJECT_ID_LENGTH_OFFSET + 2]
+        .copy_from_slice(&((MAX_OBJECT_ID_LENGTH as u16) + 1).to_le_bytes());
+    assert!(matches!(
+        decode_envelope(&key(0x11), &base, &oversized_declaration),
+        Err(EnvelopeError::LimitExceeded("object ID"))
+    ));
+
+    let oversized_id = "x".repeat(MAX_OBJECT_ID_LENGTH + 1);
+    let oversized_aad = aad("01JCORE", &oversized_id, 7, ObjectKind::Note, 3);
+    let oversized_meta = metadata(&oversized_id, 7, body);
+    assert!(matches!(
+        encode_envelope(&key(0x11), &oversized_aad, &oversized_meta, body),
+        Err(EnvelopeError::LimitExceeded("object ID"))
+    ));
 }
 
 #[test]
@@ -115,7 +246,7 @@ fn tampering_truncation_trailing_reorder_duplicate_and_splice_are_rejected() {
     let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
 
-    for index in [ENVELOPE_HEADER_SIZE + 2, encoded.len() - 1] {
+    for index in [metadata_frame_start(&encoded) + 2, encoded.len() - 1] {
         let mut tampered = encoded.clone();
         tampered[index] ^= 0x80;
         assert!(decode_envelope(&key(0x11), &base, &tampered).is_err());
@@ -177,7 +308,7 @@ fn declarations_are_bounded_before_allocation() {
     let encoded = encode_envelope(&key(0x11), &base, &meta, body).unwrap();
 
     let mut too_much_metadata = encoded.clone();
-    too_much_metadata[12..16]
+    too_much_metadata[METADATA_CIPHERTEXT_LENGTH_OFFSET..METADATA_CIPHERTEXT_LENGTH_OFFSET + 4]
         .copy_from_slice(&((MAX_METADATA_PLAINTEXT_SIZE as u32) + 17).to_le_bytes());
     assert!(matches!(
         decode_envelope(&key(0x11), &base, &too_much_metadata),
@@ -185,14 +316,15 @@ fn declarations_are_bounded_before_allocation() {
     ));
 
     let mut too_many_chunks = encoded;
-    too_many_chunks[28..32].copy_from_slice(&((MAX_BODY_CHUNKS as u32) + 1).to_le_bytes());
+    too_many_chunks[CHUNK_COUNT_OFFSET..CHUNK_COUNT_OFFSET + 4]
+        .copy_from_slice(&((MAX_BODY_CHUNKS as u32) + 1).to_le_bytes());
     assert!(matches!(
         decode_envelope(&key(0x11), &base, &too_many_chunks),
         Err(EnvelopeError::LimitExceeded(_))
     ));
 
     let mut too_large_body = encode_envelope(&key(0x11), &base, &meta, body).unwrap();
-    too_large_body[16..24]
+    too_large_body[BODY_LENGTH_OFFSET..BODY_LENGTH_OFFSET + 8]
         .copy_from_slice(&(anima_corefs::envelope::MAX_BODY_LENGTH + 1).to_le_bytes());
     assert!(matches!(
         decode_envelope(&key(0x11), &base, &too_large_body),
@@ -225,7 +357,8 @@ fn unsupported_wire_parameters_schema_versions_and_repeated_nonces_are_rejected(
 
     let first_frame = body_frame_ranges(&encoded)[0].start;
     let mut repeated_nonce = encoded;
-    let metadata_nonce: [u8; 12] = repeated_nonce[ENVELOPE_HEADER_SIZE..ENVELOPE_HEADER_SIZE + 12]
+    let metadata_start = metadata_frame_start(&repeated_nonce);
+    let metadata_nonce: [u8; 12] = repeated_nonce[metadata_start..metadata_start + 12]
         .try_into()
         .unwrap();
     repeated_nonce[first_frame..first_frame + 12].copy_from_slice(&metadata_nonce);
@@ -259,9 +392,17 @@ fn range_reads_authenticate_intersecting_chunks_and_report_scope() {
 }
 
 fn body_frame_ranges(bytes: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let metadata_ciphertext_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    let chunk_count = u32::from_le_bytes(bytes[28..32].try_into().unwrap()) as usize;
-    let mut cursor = ENVELOPE_HEADER_SIZE + 12 + metadata_ciphertext_len;
+    let metadata_ciphertext_len = u32::from_le_bytes(
+        bytes[METADATA_CIPHERTEXT_LENGTH_OFFSET..METADATA_CIPHERTEXT_LENGTH_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let chunk_count = u32::from_le_bytes(
+        bytes[CHUNK_COUNT_OFFSET..CHUNK_COUNT_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let mut cursor = metadata_frame_start(bytes) + 12 + metadata_ciphertext_len;
     let mut ranges = Vec::new();
     for _ in 0..chunk_count {
         let cipher_len = u32::from_le_bytes([
@@ -275,4 +416,16 @@ fn body_frame_ranges(bytes: &[u8]) -> Vec<std::ops::Range<usize>> {
         cursor = end;
     }
     ranges
+}
+
+fn object_id_length(bytes: &[u8]) -> usize {
+    u16::from_le_bytes(
+        bytes[OBJECT_ID_LENGTH_OFFSET..OBJECT_ID_LENGTH_OFFSET + 2]
+            .try_into()
+            .unwrap(),
+    ) as usize
+}
+
+fn metadata_frame_start(bytes: &[u8]) -> usize {
+    ENVELOPE_HEADER_SIZE + object_id_length(bytes)
 }
