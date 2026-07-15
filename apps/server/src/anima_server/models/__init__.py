@@ -58,6 +58,7 @@ from anima_server.models.runtime import (
 )
 from anima_server.models.runtime_consciousness import (
     ActiveIntention,
+    AffectStateRow,
     CurrentEmotion,
     WorkingContext,
 )
@@ -74,6 +75,7 @@ from anima_server.models.user_key import UserKey
 
 __all__ = [
     "ActiveIntention",
+    "AffectStateRow",
     "AgentExperience",
     "AgentMessage",
     "AgentProfile",

@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     agent_retrieval_recency_weight: float = 0.2
     agent_retrieval_heat_weight: float = 0.1
     agent_retrieval_recency_tau_days: float = 14.0
+    # IL1 affect-state relaxation time constants (hours); see
+    # services/agent/inner_life/affect.py for the closed-form dynamics.
+    inner_life_tau_valence_hours: float = 36.0
+    inner_life_tau_arousal_hours: float = 6.0
+    inner_life_tau_energy_hours: float = 18.0
     agent_session_memory_budget_chars: int = 1500
     agent_self_model_identity_budget: int = 1000
     agent_self_model_inner_state_budget: int = 800

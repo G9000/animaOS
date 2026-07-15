@@ -11,10 +11,18 @@ from threading import Lock
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.services.agent.emotional_intelligence import (
+    dominant_valence_arousal,
     record_emotional_signal,
+)
+from anima_server.services.agent.inner_life.affect import apply_turn_deltas, relax
+from anima_server.services.agent.inner_life.store import (
+    get_affect_config,
+    get_affect_state,
+    save_affect_state,
 )
 from anima_server.services.agent.json_utils import (
     parse_json_array as _parse_json_array,
@@ -579,6 +587,12 @@ async def run_background_extraction(
                                 emotion_payload.get("trajectory", "stable")
                             ),
                         )
+                        _apply_affect_turn_deltas_best_effort(
+                            rt_db,
+                            user_id=user_id,
+                            emotion_name=emotion_name,
+                            now=now,
+                        )
 
                     if intent is not None:
                         intent.status = "resolved"
@@ -701,6 +715,41 @@ def record_memory_extraction_failure(
     runtime_db.add(failure)
     runtime_db.flush()
     return failure
+
+
+def _apply_affect_turn_deltas_best_effort(
+    rt_db: Session,
+    *,
+    user_id: int,
+    emotion_name: str,
+    now: datetime,
+) -> None:
+    """Map the turn's detected emotion onto IL1 affect deltas.
+
+    Relaxes the stored affect to `now` first, then applies clamped deltas
+    derived from the circumplex (valence, arousal) of the dominant emotion.
+    Best-effort: any failure here must not break consolidation.
+    """
+    try:
+        valence_arousal = dominant_valence_arousal(emotion_name)
+        if valence_arousal is None:
+            return
+        valence, arousal = valence_arousal
+
+        config = get_affect_config()
+        state = get_affect_state(rt_db, user_id=user_id, config=config)
+        state = relax(state, now, config)
+        state = apply_turn_deltas(
+            state,
+            0.15 * valence,
+            0.15 * (arousal - state.arousal),
+            0.05 * valence,
+        )
+        save_affect_state(rt_db, user_id=user_id, state=state)
+    except Exception:
+        logger.debug(
+            "Affect turn-delta update skipped for user %s", user_id, exc_info=True
+        )
 
 
 def _store_foresight_best_effort(
