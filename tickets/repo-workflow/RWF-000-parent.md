@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 22:56 MYT
+- Updated: 2026-07-15 23:15 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -57,7 +57,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
 - 2026-07-15 21:58 MYT - `RWF-004` reconciled repository navigation and hygiene, including manifest-grounded contributor command and language maps.
-- 2026-07-15 22:56 MYT - `RWF-005` completed the portable neutral v2 skill evaluation with multi-page and cursor-failure review coverage and no required skill refactor.
+- 2026-07-15 23:15 MYT - `RWF-005` completed the portable neutral v2 skill evaluation with reproducible committed-range scope validation and no required skill refactor.
 
 ## Activity Log
 
@@ -96,12 +96,14 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 22:17 MYT - Completed `RWF-005`, synchronized its row and one current completed-history entry to `done`, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-006` remains `backlog` and is the initiative's publication/review closeout.
 - 2026-07-15 22:38 MYT - Reopened `RWF-005` for acceptance-breaking leading and non-portable forward-evaluation prompts, removed its current completed-history entry, preserved the prior completion timestamp `2026-07-15 22:17 MYT` in parent activity, returned its row to `in_progress`, and kept `RWF-000` `in_progress` with ownership unchanged.
 - 2026-07-15 22:56 MYT - Re-completed `RWF-005` after six portable neutral v2 sub-runs passed, added one current completion-history entry, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-006` remains the authorized end-to-end publication/review closeout.
+- 2026-07-15 23:13 MYT - Reopened `RWF-005` for the acceptance-breaking working-tree-only closeout evidence, removed its current completed-history entry, preserved the prior completion timestamp `2026-07-15 22:56 MYT` in parent activity, returned its row to `in_progress`, and kept `RWF-000` `in_progress` with `Owner: Codex` unchanged.
+- 2026-07-15 23:15 MYT - Re-completed `RWF-005` after reproducible validation from base `681dd11dc399faa8a593ef9e73dcb4796b91d5ad` confirmed exactly the three Task 9 paths with empty production-source and staged-skill filters; added one current completion-history entry and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-006`.
 
 ## Validation
 
 ### Historical initiative snapshots (superseded for current RWF-005 closeout)
 
-The commands, changed-path inventories, and result counts below are preserved from Task 4 integration, skill thinning, and Tasks 7-8 organization/hygiene work. They are phase-specific historical snapshots, not a claim that every listed path changed in the current closeout. Labels such as the former four-file, ten-file, focused-test, and manifest counts describe those earlier validated scopes and are superseded by the exact current results below.
+The commands, changed-path inventories, and result counts below are preserved from Task 4 integration, skill thinning, and Tasks 7-8 organization/hygiene work. They are phase-specific historical snapshots, not a claim that every listed path changed in the current closeout. Labels such as the former four-file, ten-file, focused-test, and manifest counts describe those earlier validated scopes and are superseded by the exact current results below. Historical `git diff --check` and `git diff --name-only HEAD` commands describe working-tree snapshots only and are not current closeout evidence.
 
 - Commands (historical):
   - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
@@ -162,17 +164,20 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
   - `bun test tests/repo-organization.test.ts`
   - `bun run check:repo`
   - `$remaining = @(Get-ChildItem -Force -Directory -Filter '.tmp-eval-*'); $tracked = @(git ls-files -- '.tmp-eval-*'); if ($remaining.Count -ne 0 -or $tracked.Count -ne 0) { throw 'Temporary evaluation fixture remains' }`
-  - `git diff --check`
-  - `$changed = @(git diff --name-only HEAD); $expected = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-000-parent.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md'); if (@($changed | Where-Object { $_ -notin $expected }).Count -ne 0 -or @($expected | Where-Object { $_ -notin $changed }).Count -ne 0) { throw 'Changed-path scope mismatch' }; if (@($changed | Where-Object { $_ -match '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/' }).Count -ne 0) { throw 'Production source changed' }; if (git diff --name-only HEAD -- .codex-skill-staging/anima-project-management/SKILL.md) { throw 'Unexpected staged-skill change' }`
+  - `git diff --check 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`
+  - `git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`
+  - `$changed = @(git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD); $expected = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-000-parent.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md'); $delta = @(Compare-Object -ReferenceObject $expected -DifferenceObject $changed); if ($changed.Count -ne 3 -or $delta.Count -ne 0) { $changed; $delta; throw 'Committed Task 9 changed-path scope mismatch' }; "TASK9_CHANGED_PATHS=$($changed.Count)"`
+  - `git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD -- ':(glob)apps/**/src/**' ':(glob)apps/desktop/src-tauri/**' ':(glob)packages/**/src/**'`
+  - `git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD -- .codex-skill-staging/anima-project-management/SKILL.md`
 - Results:
   - six portable neutral v2 evaluators passed scenarios 1-4, multi-page 5A, and cursor-failure 5B; v1 is preserved but superseded and no skill refactor was required
   - replay-manifest parsing passed for six exact collaboration argument objects; privacy validation found zero machine-specific user paths
   - official skill validation passed; the unchanged checklist is 694 words; exact frontmatter/interface and `AGENTS.md` path checks passed
   - focused repository validation passed with 32 tests, 59 assertions, and 0 failures; `bun run check:repo` passed
-  - safe cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths; `git diff --check` passed
-  - current scope contains exactly the three paths below with zero production-source or personal-skill changes
+  - safe cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths
+  - committed-range `git diff --check` passed from base `681dd11dc399faa8a593ef9e73dcb4796b91d5ad`; the exact scope assertion returned `TASK9_CHANGED_PATHS=3`, and the production-source and staged-skill commands produced no output
   - `RWF-000` remains `in_progress`, `Owner: Codex` is unchanged, `RWF-005` is `done`, and `RWF-006` remains `backlog` pending the real authorized PR loop
-- Current changed paths:
+- Committed Task 9 changed paths from `681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`:
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md

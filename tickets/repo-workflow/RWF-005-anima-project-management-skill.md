@@ -10,9 +10,9 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 22:56 MYT
+- Updated: 2026-07-15 23:15 MYT
 - Started: 2026-07-15 17:39 MYT
-- Completed: 2026-07-15 22:56 MYT
+- Completed: 2026-07-15 23:15 MYT
 
 ## Goal
 
@@ -52,12 +52,14 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 22:17 MYT - Completed `RWF-005` after five distinct fresh-agent forward contracts passed on iteration 1, no skill loophole required a refactor, disposable fixtures were safely removed, and focused repository and official skill validation passed; synchronized the parent row and completion history while leaving the parent `in_progress` for `RWF-006`.
 - 2026-07-15 22:38 MYT - Reopened `RWF-005` for acceptance-breaking evaluation-methodology findings: the prior forward prompts were leading and machine-specific. Preserved the prior completion timestamp `2026-07-15 22:17 MYT` in history, cleared the current `Completed:`, retained `Owner: Codex` and `Started: 2026-07-15 17:39 MYT`, and began a portable neutral v2 evaluation suite.
 - 2026-07-15 22:56 MYT - Re-completed `RWF-005` after portable neutral scenarios 1-4, multi-page 5A, and cursor-failure 5B passed with six distinct fresh agents; exact replay manifests, privacy normalization, fixture cleanup, official skill validation, 32 focused tests, and the live repository check passed. No skill loophole required a refactor; synchronized the parent row/history and kept the parent `in_progress` for `RWF-006`.
+- 2026-07-15 23:13 MYT - Reopened `RWF-005` for the acceptance-breaking closeout-scope finding: the current evidence used working-tree-only commands that became vacuous after commit. Preserved the prior completion timestamp `2026-07-15 22:56 MYT` in activity, cleared the current `Completed:`, retained `Owner: Codex` and `Started: 2026-07-15 17:39 MYT`, and began committed-range validation from `681dd11dc399faa8a593ef9e73dcb4796b91d5ad`.
+- 2026-07-15 23:15 MYT - Re-completed `RWF-005` after replacing working-tree-only closeout evidence with reproducible committed-range commands from `681dd11dc399faa8a593ef9e73dcb4796b91d5ad`; the exact three-path assertion, empty production/skill filters, 32 focused tests, live repository check, and two-ticket follow-up diff all passed. Synchronized one current parent completion entry and kept the parent `in_progress` for `RWF-006`.
 
 ## Validation
 
 ### Historical snapshots (superseded by current closeout validation)
 
-The commands, path sets, and counts below are preserved as evidence from RED, GREEN, Task 4 integration, and the pre-thinning quality follow-ups. They are historical snapshots, not the current reproducible closeout checklist. In particular, skill-layout grep assertions and the wider changed-path inventories predate the final 694-word checklist and Task 9's exact three-file scope.
+The commands, path sets, and counts below are preserved as evidence from RED, GREEN, Task 4 integration, and the pre-thinning quality follow-ups. They are historical snapshots, not the current reproducible closeout checklist. In particular, skill-layout grep assertions and the wider changed-path inventories predate the final 694-word checklist and Task 9's exact three-file scope. Historical `git diff --check` and `git diff --name-only HEAD` commands describe then-current working-tree state only and are explicitly superseded by the committed-range validation below.
 
 - Commands (historical):
   - `rg -n '^- (Status: in_progress|Owner: Codex)\r?$' tickets/repo-workflow/RWF-005-anima-project-management-skill.md`
@@ -215,8 +217,11 @@ print("portable-neutral-v2 manifests=6 scenarios=6 v1_superseded=5 pagination=pa
 - `bun run check:repo`
 - `$root = (Resolve-Path .).Path; $candidate = Join-Path $root '.tmp-eval-anima-project-management-v2'; if (Test-Path -LiteralPath $candidate) { $fixture = (Resolve-Path $candidate).Path; if (-not $fixture.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture path escaped workspace' }; Remove-Item -Recurse -Force -LiteralPath $fixture }`
 - `$remaining = @(Get-ChildItem -Force -Directory -Filter '.tmp-eval-*'); $tracked = @(git ls-files -- '.tmp-eval-*'); if ($remaining.Count -ne 0 -or $tracked.Count -ne 0) { throw 'Temporary evaluation fixture remains' }`
-- `git diff --check`
-- `$changed = @(git diff --name-only HEAD); $expected = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-000-parent.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md'); if (@($changed | Where-Object { $_ -notin $expected }).Count -ne 0 -or @($expected | Where-Object { $_ -notin $changed }).Count -ne 0) { $changed; throw 'Changed-path scope mismatch' }; if (@($changed | Where-Object { $_ -match '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/' }).Count -ne 0) { throw 'Production source changed' }; if (@($changed | Where-Object { $_ -match '(^|/)(\.agents/skills|\.codex/skills)(/|$)|^[A-Za-z]:' }).Count -ne 0) { throw 'Personal skill or machine-external path changed' }; if (git diff --name-only HEAD -- .codex-skill-staging/anima-project-management/SKILL.md) { throw 'Staged skill changed without observed loophole' }`
+- `git diff --check 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`
+- `git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`
+- `$changed = @(git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD); $expected = @('docs/audit/skills/2026-07-15-anima-project-management-evaluation.md','tickets/repo-workflow/RWF-000-parent.md','tickets/repo-workflow/RWF-005-anima-project-management-skill.md'); $delta = @(Compare-Object -ReferenceObject $expected -DifferenceObject $changed); if ($changed.Count -ne 3 -or $delta.Count -ne 0) { $changed; $delta; throw 'Committed Task 9 changed-path scope mismatch' }; "TASK9_CHANGED_PATHS=$($changed.Count)"`
+- `git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD -- ':(glob)apps/**/src/**' ':(glob)apps/desktop/src-tauri/**' ':(glob)packages/**/src/**'`
+- `git diff --name-only 681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD -- .codex-skill-staging/anima-project-management/SKILL.md`
 
 - Results:
   - six distinct portable neutral `fork_turns=none` evaluators passed scenarios 1-4, multi-page 5A, and cursor-failure 5B on their first accepted runs; no accepted prompt exposed expected behavior, baseline rationalizations, or an answer sequence
@@ -227,8 +232,8 @@ print("portable-neutral-v2 manifests=6 scenarios=6 v1_superseded=5 pagination=pa
   - official validation exited 0 with `Skill is valid!`; the unchanged staged skill is 694 words; exact frontmatter and three-field interface YAML assertions passed; `AGENTS.md` exact-path and staged-skill forbidden-pattern checks passed
   - focused repository validation passed with 32 tests, 59 assertions, and 0 failures; `bun run check:repo` passed
   - safe fixture cleanup left zero `.tmp-eval-*` directories and zero tracked fixture paths
-  - `git diff --check` passed; the current scope contains exactly the three changed paths below with zero production-source, personal-skill, or machine-external paths
-- Current changed paths:
+  - committed-range `git diff --check` passed from base `681dd11dc399faa8a593ef9e73dcb4796b91d5ad`; its exact path assertion returned `TASK9_CHANGED_PATHS=3`, while the production-source filter and staged-skill assertion produced no output
+- Committed Task 9 changed paths from `681dd11dc399faa8a593ef9e73dcb4796b91d5ad..HEAD`:
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
