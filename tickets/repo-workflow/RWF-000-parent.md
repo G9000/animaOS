@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 23:52 MYT
+- Updated: 2026-07-16 00:03 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -104,6 +104,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 23:43 MYT - Re-completed `RWF-001` after reconciling `tickets/README.md` with the canonical `inner-life-v1` metadata and verifying 18 parents, 153 authoritative rows, 153 reverse references, 12 active initiatives, 6 completed initiatives, 1 legacy folder, and 18 unique parent links; re-added one current completed-history entry and kept `RWF-006` and the parent `in_progress` with ownership unchanged.
 - 2026-07-15 23:46 MYT - Recorded the current-main integration reconciliation: preserved safety ref `codex/repo-organization-project-management-pre-rebase`, resolved the expected cleanup-spec add/add from `REBASE_HEAD`, rebased all 29 commits onto `origin/main` `408d9b64abf639739a2d044abfda647958e7ff3e`, revalidated the 18-parent/153-row graph and 12-active/6-completed/1-legacy dashboard, and kept `RWF-006` and the parent `in_progress` with parent ownership unchanged.
 - 2026-07-15 23:52 MYT - Recorded post-reconciliation verification at 0 behind/30 ahead and 54 planned paths with a clean HEAD merge tree, zero production-source hotspots, exactly two staged-skill files, and a clean local worktree before this evidence amendment; kept integration state open and parent ownership unchanged.
+- 2026-07-16 00:03 MYT - Synchronized the Task 10 evidence correction with RWF-006 by recording exact reproducible pre-publication PowerShell assertions for 54 changed paths, zero production-source hotspots, and exactly the two intended staged-skill paths; kept both tickets `in_progress`, preserved parent ownership, and left `Completed:` empty.
 
 ## Validation
 
@@ -252,3 +253,36 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
   - pre-reconciliation committed range is 29 commits and 54 paths, with 0 production-source hotspots and exactly 2 intended staged-skill paths
   - final post-reconciliation range is 30 commits and the same 54 paths, ahead/behind `0 30`, with a clean merge tree equal to HEAD, 0 production-source hotspots, and exactly 2 intended staged-skill paths
   - current reconciliation paths are tickets/README.md, RWF-001, RWF-006, and RWF-000; RWF-006 and the parent remain `in_progress`, Completed remains empty, parent ownership is unchanged, and no external action occurred
+
+### Reproducible pre-publication scope assertions
+
+- Exact PowerShell commands:
+  ```powershell
+  $base = git merge-base HEAD origin/main
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($base)) { throw 'Unable to derive merge base' }
+  $changed = @(git diff --name-only "$base..HEAD")
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to derive changed paths' }
+  $hotspots = @($changed | Where-Object { $_ -match '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/' })
+  $skills = @($changed | Where-Object { $_ -like '.codex-skill-staging/*' } | Sort-Object)
+  $expectedSkills = @(
+    '.codex-skill-staging/anima-project-management/SKILL.md',
+    '.codex-skill-staging/anima-project-management/agents/openai.yaml'
+  )
+  $skillDelta = @(Compare-Object -ReferenceObject $expectedSkills -DifferenceObject $skills)
+  if ($base -ne '408d9b64abf639739a2d044abfda647958e7ff3e') { throw "Unexpected merge base: $base" }
+  if ($changed.Count -ne 54) { throw "Expected 54 changed paths, found $($changed.Count)" }
+  if ($hotspots.Count -ne 0) { $hotspots; throw "Expected 0 production-source hotspots, found $($hotspots.Count)" }
+  if ($skills.Count -ne 2 -or $skillDelta.Count -ne 0) { $skills; $skillDelta; throw 'Staged-skill scope mismatch' }
+  "BASE=$base"
+  "CHANGED_PATHS=$($changed.Count)"
+  "HOTSPOTS=$($hotspots.Count)"
+  "STAGED_SKILLS=$($skills.Count)"
+  $skills
+  ```
+- Expected assertions:
+  - `BASE=408d9b64abf639739a2d044abfda647958e7ff3e`
+  - `CHANGED_PATHS=54`
+  - `HOTSPOTS=0`
+  - `STAGED_SKILLS=2`
+  - `.codex-skill-staging/anima-project-management/SKILL.md`
+  - `.codex-skill-staging/anima-project-management/agents/openai.yaml`

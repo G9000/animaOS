@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md; docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 23:52 MYT
+- Updated: 2026-07-16 00:03 MYT
 - Started: 2026-07-15 23:21 MYT
 - Completed:
 
@@ -48,6 +48,7 @@ Carry the repository-workflow implementation through final validation and a clea
 - 2026-07-15 23:23 MYT - Recorded final local integration verification on implementation head `71dc234e3e114b3d5fb034803e0e2dcaf2822f0d`: focused checks, repository validation, staged-skill validation, workspace discovery, root build, merge-base diff, and scope assertions passed; kept `RWF-006` and `RWF-000` `in_progress` for the authorized Task 11-13 publication and current-head review loop.
 - 2026-07-15 23:46 MYT - Rebased the never-pushed branch onto current `origin/main` with local safety ref `codex/repo-organization-project-management-pre-rebase`; intentionally resolved the expected cleanup-spec add/add conflict from `REBASE_HEAD`, verified the final spec matches the safety version, reconciled the new canonical `inner-life-v1` initiative through an ownership-safe RWF-001 reopen/reclose, and reran the full local integration gate while keeping RWF-006 and its parent open.
 - 2026-07-15 23:52 MYT - Recorded post-reconciliation range evidence: the committed branch is `0` behind and `30` ahead of current `origin/main`, still spans exactly 54 planned paths, has a conflict-free merge tree equal to HEAD, and remains locally clean without any push or PR action.
+- 2026-07-16 00:03 MYT - Added exact reproducible pre-publication PowerShell assertions for the derived merge base, 54 changed paths, zero production-source hotspots, and exactly the two intended repo-owned staged-skill paths; kept RWF-006 and its parent `in_progress` with `Completed:` empty.
 
 ## Validation
 
@@ -175,3 +176,36 @@ Carry the repository-workflow implementation through final validation and a clea
   - after the single four-file reconciliation commit, the final local range is 30 commits and the same 54 paths, with ahead/behind `0 30`, 0 production-source hotspots, and exactly 2 intended staged-skill files
   - RWF-001 was reopened and reclosed under its unchanged Codex ownership and Started timestamp; prior completions `2026-07-15 19:46 MYT` and `2026-07-15 20:06 MYT` remain in activity, while one current `2026-07-15 23:43 MYT` parent history entry exists
   - runtime smoke and `GET /health` remain not applicable because no application runtime behavior changed; no push, PR, comment, or merge occurred, and the local safety ref has not been pushed
+
+### Reproducible pre-publication scope assertions
+
+- Exact PowerShell commands:
+  ```powershell
+  $base = git merge-base HEAD origin/main
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($base)) { throw 'Unable to derive merge base' }
+  $changed = @(git diff --name-only "$base..HEAD")
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to derive changed paths' }
+  $hotspots = @($changed | Where-Object { $_ -match '^(apps|packages)/.*/src/|^apps/desktop/src-tauri/' })
+  $skills = @($changed | Where-Object { $_ -like '.codex-skill-staging/*' } | Sort-Object)
+  $expectedSkills = @(
+    '.codex-skill-staging/anima-project-management/SKILL.md',
+    '.codex-skill-staging/anima-project-management/agents/openai.yaml'
+  )
+  $skillDelta = @(Compare-Object -ReferenceObject $expectedSkills -DifferenceObject $skills)
+  if ($base -ne '408d9b64abf639739a2d044abfda647958e7ff3e') { throw "Unexpected merge base: $base" }
+  if ($changed.Count -ne 54) { throw "Expected 54 changed paths, found $($changed.Count)" }
+  if ($hotspots.Count -ne 0) { $hotspots; throw "Expected 0 production-source hotspots, found $($hotspots.Count)" }
+  if ($skills.Count -ne 2 -or $skillDelta.Count -ne 0) { $skills; $skillDelta; throw 'Staged-skill scope mismatch' }
+  "BASE=$base"
+  "CHANGED_PATHS=$($changed.Count)"
+  "HOTSPOTS=$($hotspots.Count)"
+  "STAGED_SKILLS=$($skills.Count)"
+  $skills
+  ```
+- Expected assertions:
+  - `BASE=408d9b64abf639739a2d044abfda647958e7ff3e`
+  - `CHANGED_PATHS=54`
+  - `HOTSPOTS=0`
+  - `STAGED_SKILLS=2`
+  - `.codex-skill-staging/anima-project-management/SKILL.md`
+  - `.codex-skill-staging/anima-project-management/agents/openai.yaml`
