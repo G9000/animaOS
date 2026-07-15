@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
@@ -60,18 +61,30 @@ def get_affect_state(
     )
     if row is None:
         seed = _seed_state(config)
-        row = AffectStateRow(
-            user_id=user_id,
-            valence=seed.valence,
-            arousal=seed.arousal,
-            energy=seed.energy,
-            arousal_baseline_shift=seed.arousal_baseline_shift,
-            high_arousal_hours=seed.high_arousal_hours,
-            updated_at=seed.updated_at,
+        runtime_db.add(
+            AffectStateRow(
+                user_id=user_id,
+                valence=seed.valence,
+                arousal=seed.arousal,
+                energy=seed.energy,
+                arousal_baseline_shift=seed.arousal_baseline_shift,
+                high_arousal_hours=seed.high_arousal_hours,
+                updated_at=seed.updated_at,
+            )
         )
-        runtime_db.add(row)
-        runtime_db.flush()
-        return seed
+        try:
+            runtime_db.flush()
+        except IntegrityError:
+            # A concurrent first read won the insert race on the user_id
+            # unique constraint; fall back to its row.
+            runtime_db.rollback()
+            row = runtime_db.scalar(
+                select(AffectStateRow).where(AffectStateRow.user_id == user_id)
+            )
+            if row is None:
+                return seed
+        else:
+            return seed
 
     return AffectState(
         valence=row.valence,

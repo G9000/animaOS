@@ -11,7 +11,6 @@ from threading import Lock
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.services.agent.emotional_intelligence import (
@@ -588,7 +587,7 @@ async def run_background_extraction(
                             ),
                         )
                         _apply_affect_turn_deltas_best_effort(
-                            rt_db,
+                            rt_factory,
                             user_id=user_id,
                             emotion_name=emotion_name,
                             now=now,
@@ -718,7 +717,7 @@ def record_memory_extraction_failure(
 
 
 def _apply_affect_turn_deltas_best_effort(
-    rt_db: Session,
+    runtime_db_factory: Callable[..., Any],
     *,
     user_id: int,
     emotion_name: str,
@@ -728,7 +727,9 @@ def _apply_affect_turn_deltas_best_effort(
 
     Relaxes the stored affect to `now` first, then applies clamped deltas
     derived from the circumplex (valence, arousal) of the dominant emotion.
-    Best-effort: any failure here must not break consolidation.
+    Runs on its own session so a failed flush can never poison the
+    consolidation session's pending work. Best-effort: any failure here must
+    not break consolidation.
     """
     try:
         valence_arousal = dominant_valence_arousal(emotion_name)
@@ -737,15 +738,17 @@ def _apply_affect_turn_deltas_best_effort(
         valence, arousal = valence_arousal
 
         config = get_affect_config()
-        state = get_affect_state(rt_db, user_id=user_id, config=config)
-        state = relax(state, now, config)
-        state = apply_turn_deltas(
-            state,
-            0.15 * valence,
-            0.15 * (arousal - state.arousal),
-            0.05 * valence,
-        )
-        save_affect_state(rt_db, user_id=user_id, state=state)
+        with runtime_db_factory() as affect_db:
+            state = get_affect_state(affect_db, user_id=user_id, config=config)
+            state = relax(state, now, config)
+            state = apply_turn_deltas(
+                state,
+                0.15 * valence,
+                0.15 * (arousal - state.arousal),
+                0.05 * valence,
+            )
+            save_affect_state(affect_db, user_id=user_id, state=state)
+            affect_db.commit()
     except Exception:
         logger.debug(
             "Affect turn-delta update skipped for user %s", user_id, exc_info=True

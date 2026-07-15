@@ -203,8 +203,15 @@ def test_allostatic_shift_stays_zero_under_48h() -> None:
     assert state.arousal_baseline_shift == 0.0
 
 
-def test_allostatic_shift_decays_when_arousal_normal() -> None:
+def test_allostatic_load_drains_at_half_rate_when_arousal_normal() -> None:
     state = _state(arousal=0.2, arousal_baseline_shift=0.05, high_arousal_hours=60.0)
+    drained = update_allostatic_shift(state, 24.0)
+
+    assert drained.high_arousal_hours == pytest.approx(48.0)
+
+
+def test_allostatic_shift_decays_when_load_below_threshold() -> None:
+    state = _state(arousal=0.2, arousal_baseline_shift=0.05, high_arousal_hours=10.0)
     decayed = update_allostatic_shift(state, 24.0)
 
     assert decayed.high_arousal_hours == 0.0
@@ -239,6 +246,16 @@ def test_render_affect_reflects_drift_direction() -> None:
 def test_render_affect_stable_without_drift_info() -> None:
     phrase = render_affect(_state(valence=0.0, arousal=0.5))
     assert "holding steady" in phrase
+
+
+def test_render_affect_reflects_energy() -> None:
+    rested = render_affect(_state(valence=0.0, arousal=0.5, energy=0.6))
+    tired = render_affect(_state(valence=0.0, arousal=0.5, energy=0.1))
+    energized = render_affect(_state(valence=0.0, arousal=0.5, energy=0.9))
+    assert rested != tired
+    assert rested != energized
+    assert "tired" in tired
+    assert not any(ch.isdigit() for ch in tired + energized)
 
 
 # --- No-LLM guarantee ------------------------------------------------------
@@ -299,3 +316,54 @@ def test_store_missing_runtime_db_returns_default() -> None:
     state = get_affect_state(None, user_id=1)
     assert state.valence == pytest.approx(DEFAULT_AFFECT_CONFIG.baseline_valence)
     assert state.energy == pytest.approx(DEFAULT_AFFECT_CONFIG.baseline_energy)
+
+
+# --- Consolidation wiring: failure isolation --------------------------------
+
+
+def test_affect_write_failure_does_not_poison_consolidation_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    from pathlib import Path
+
+    from anima_server.models.runtime_consciousness import AffectStateRow, CurrentEmotion
+    from anima_server.services.agent import consolidation
+    from sqlalchemy import func, select
+
+    # A file-backed DB gives the two sessions genuinely separate
+    # connections/transactions, unlike StaticPool in-memory SQLite.
+    db_path = Path(str(tmp_path)) / "runtime.db"
+    engine: Engine = create_engine(f"sqlite:///{db_path}")
+    RuntimeBase.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def _failing_save(runtime_db: Session, *, user_id: int, state: object) -> None:
+        # A real constraint violation on whatever session the affect write
+        # uses: under shared-session wiring this leaves that session needing
+        # rollback, which would break consolidation's later commit.
+        runtime_db.add(AffectStateRow(user_id=user_id))
+        runtime_db.add(AffectStateRow(user_id=user_id))
+        runtime_db.flush()
+
+    monkeypatch.setattr(consolidation, "save_affect_state", _failing_save)
+
+    main_db = factory()
+    try:
+        main_db.add(CurrentEmotion(user_id=1, emotion="excited", confidence=0.9))
+
+        consolidation._apply_affect_turn_deltas_best_effort(
+            factory,
+            user_id=1,
+            emotion_name="excited",
+            now=datetime.now(UTC),
+        )
+
+        main_db.commit()
+        count = main_db.scalar(
+            select(func.count()).select_from(CurrentEmotion)
+        )
+        assert count == 1
+    finally:
+        main_db.close()
+        engine.dispose()

@@ -49,6 +49,7 @@ class AffectConfig:
     allostatic_sustained_hours: float = 48.0
     allostatic_max_shift: float = 0.05
     allostatic_decay_tau_hours: float = 24.0 * 7.0
+    allostatic_recovery_drain_rate: float = 0.5
     high_arousal_hours_cap: float = 96.0
 
 
@@ -154,11 +155,12 @@ def update_allostatic_shift(
     `sustained_high_arousal_hours` is the elapsed hours since the last
     update. When `state.arousal` is currently above the allostatic
     threshold, those hours accumulate onto `high_arousal_hours`; otherwise
-    the streak resets (it is no longer "sustained"). Once the cumulative
-    total exceeds the sustained-hours threshold, `arousal_baseline_shift`
-    is raised toward its cap in proportion to how far past the threshold the
-    streak has run; otherwise the shift decays back toward zero with a
-    7-day time constant.
+    the accumulator drains at half rate — load is cumulative and recovers
+    gradually, per the PRD's "until a recovery period passes", rather than
+    resetting on the first calm moment. Once the cumulative total exceeds
+    the sustained-hours threshold, `arousal_baseline_shift` is raised toward
+    its cap in proportion to how far past the threshold the load has run;
+    otherwise the shift decays back toward zero with a 7-day time constant.
     """
     dt_hours = max(0.0, sustained_high_arousal_hours)
 
@@ -167,7 +169,11 @@ def update_allostatic_shift(
             state.high_arousal_hours + dt_hours, 0.0, config.high_arousal_hours_cap
         )
     else:
-        high_hours = 0.0
+        high_hours = _clamp(
+            state.high_arousal_hours - config.allostatic_recovery_drain_rate * dt_hours,
+            0.0,
+            config.high_arousal_hours_cap,
+        )
 
     if high_hours > config.allostatic_sustained_hours:
         excess = high_hours - config.allostatic_sustained_hours
@@ -191,26 +197,29 @@ _VALENCE_LOW = -0.3
 _VALENCE_HIGH = 0.3
 _AROUSAL_LOW = 0.35
 _AROUSAL_HIGH = 0.65
+_ENERGY_LOW = 0.35
+_ENERGY_HIGH = 0.75
 _DRIFT_STABLE_THRESHOLD = 0.02
 
-# (valence band, arousal band) -> adjective. Kept intentionally small.
-_ADJECTIVES: dict[tuple[str, str], str] = {
-    ("low", "low"): "subdued",
-    ("low", "mid"): "unsettled",
-    ("low", "high"): "agitated",
-    ("mid", "low"): "quiet",
-    ("mid", "mid"): "settled",
-    ("mid", "high"): "keyed up",
-    ("high", "low"): "content",
-    ("high", "mid"): "bright",
-    ("high", "high"): "elated",
-}
-
-# drift sign -> trajectory phrase.
-_TRAJECTORIES: dict[str, str] = {
-    "rising": "slowly brightening",
-    "falling": "slowly dimming",
-    "stable": "holding steady",
+# The full rendering vocabulary in one place: ("adjective", valence band,
+# arousal band) picks the core adjective, ("energy", band) prefixes an
+# energy qualifier, ("trajectory", drift sign) closes the phrase.
+_VOCABULARY: dict[tuple[str, ...], str] = {
+    ("adjective", "low", "low"): "subdued",
+    ("adjective", "low", "mid"): "unsettled",
+    ("adjective", "low", "high"): "agitated",
+    ("adjective", "mid", "low"): "quiet",
+    ("adjective", "mid", "mid"): "settled",
+    ("adjective", "mid", "high"): "keyed up",
+    ("adjective", "high", "low"): "content",
+    ("adjective", "high", "mid"): "bright",
+    ("adjective", "high", "high"): "elated",
+    ("energy", "low"): "tired and ",
+    ("energy", "mid"): "",
+    ("energy", "high"): "energized and ",
+    ("trajectory", "rising"): "slowly brightening",
+    ("trajectory", "falling"): "slowly dimming",
+    ("trajectory", "stable"): "holding steady",
 }
 
 
@@ -230,22 +239,25 @@ def render_affect(
 ) -> str:
     """Render the affect state as a short adjective + trajectory phrase.
 
-    Never emits raw numbers — prompts get adjectives, not scalars. Drift is
-    either passed explicitly or derived from `previous.valence`; with
-    neither, the trajectory reads as stable.
+    Deterministic mapping over (valence, arousal, energy) bands plus the
+    sign of recent drift. Never emits raw numbers — prompts get adjectives,
+    not scalars. Drift is either passed explicitly or derived from
+    `previous.valence`; with neither, the trajectory reads as stable.
     """
     valence_band = _band(state.valence, _VALENCE_LOW, _VALENCE_HIGH)
     arousal_band = _band(state.arousal, _AROUSAL_LOW, _AROUSAL_HIGH)
-    adjective = _ADJECTIVES[(valence_band, arousal_band)]
+    energy_band = _band(state.energy, _ENERGY_LOW, _ENERGY_HIGH)
+    adjective = _VOCABULARY[("adjective", valence_band, arousal_band)]
+    energy_qualifier = _VOCABULARY[("energy", energy_band)]
 
     effective_drift = drift if drift is not None else (
         state.valence - previous.valence if previous is not None else 0.0
     )
     if effective_drift > _DRIFT_STABLE_THRESHOLD:
-        trajectory = _TRAJECTORIES["rising"]
+        trajectory = _VOCABULARY[("trajectory", "rising")]
     elif effective_drift < -_DRIFT_STABLE_THRESHOLD:
-        trajectory = _TRAJECTORIES["falling"]
+        trajectory = _VOCABULARY[("trajectory", "falling")]
     else:
-        trajectory = _TRAJECTORIES["stable"]
+        trajectory = _VOCABULARY[("trajectory", "stable")]
 
-    return f"{adjective}, {trajectory}"
+    return f"{energy_qualifier}{adjective}, {trajectory}"
