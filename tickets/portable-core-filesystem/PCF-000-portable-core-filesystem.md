@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 17:50 MYT
+- Updated: 2026-07-15 17:58 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -99,6 +99,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 15:29 MYT - Addressed both actionable PR #94 review threads: canonical ULID fixtures now exercise the backend FFI AAD contract, and public catalog encoding canonicalizes entry order before validation while decode remains strict. Focused Python, Rust 1.75 CoreFS, and combined native gates passed; PCF-002 remains in progress for later publication/filesystem slices.
 - 2026-07-15 15:44 MYT - Began PCF-002 Step 6 from merged `main` on `codex/pcf-002-catalog-head`: first-class folder and policy contracts, complete typed immutable catalog generations, and `fs/HEAD`. The publication coordinator and subsequent mutation, rotation, API/tool, grant, and benchmark slices remain deferred.
 - 2026-07-15 17:50 MYT - Completed PCF-002 Step 6 after requirements and code-quality review: portable folder/policy contracts, strict complete V2 catalogs, authenticated `fs/HEAD`, bounded linear graph/lifecycle validation, fail-closed authority issuance, and coordinator-only cutover promotion are covered by 86 Rust 1.75 CoreFS tests and 304 combined native tests. PCF-002 remains `in_progress`; Step 7 is the Core-wide commit coordinator.
+- 2026-07-15 17:58 MYT - Published PCF-002 Step 6 as draft PR #96 (`codex/pcf-002-catalog-head`) against `main`; the parent remains `in_progress` while review and the later PCF-002 slices continue.
 
 ## Validation
 
