@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:33 MYT
+- Updated: 2026-07-15 21:45 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -56,7 +56,7 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
-- 2026-07-15 21:33 MYT - `RWF-004` reconciled the manifest-derived repository map, audit path, live references, and root debug-log tracking hygiene.
+- 2026-07-15 21:45 MYT - `RWF-004` reconciled repository navigation and hygiene, including the corrected root Nx-plus-Cargo build orchestration wording.
 
 ## Activity Log
 
@@ -87,6 +87,8 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 21:25 MYT - Synchronized `RWF-004` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; confirmed `RWF-002` is `done`, preserved parent ownership, and kept the parent `in_progress`.
 - 2026-07-15 21:33 MYT - Completed `RWF-004`, synchronized its row and one completed-history entry to `done`, and kept `RWF-000` `in_progress` with ownership unchanged because `RWF-005` and `RWF-006` remain open.
 - 2026-07-15 21:33 MYT - Completed `RWF-003` after the final 32-test suite, clean live organization run, three-field template check, and 146-row bidirectional assertion; synchronized its row and one completed-history entry to `done` and kept the parent `in_progress` for `RWF-005` and `RWF-006`.
+- 2026-07-15 21:43 MYT - Reopened `RWF-004` for the acceptance-breaking root-build orchestration wording, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 21:33 MYT` in history, kept `RWF-003` done/history untouched, and preserved parent ownership and `in_progress` state.
+- 2026-07-15 21:45 MYT - Re-completed `RWF-004` after aligning the directory map with the exact root `package.json` build sequence, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-005` and `RWF-006`.
 
 ## Validation
 
@@ -133,3 +135,4 @@ This table is the execution order; dependency eligibility still controls when ea
   - Task 8 final focused suite passed 32 tests with 59 assertions and 0 failures; live `check:repo` passed
   - Task 8 bidirectional live assertion returned 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
   - Task 8 targeted live audit links, debug ignore/untracking, moved-path resolution, and production-source exclusion passed
+  - Task 8 review follow-up matched the exact root `scripts.build` value, clarified the Nx-selected projects versus the subsequent Animus Cargo check, and revalidated focused tests, live organization, diff, and source scope

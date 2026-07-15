@@ -10,9 +10,9 @@
 - Spec: docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 21:33 MYT
+- Updated: 2026-07-15 21:45 MYT
 - Started: 2026-07-15 21:25 MYT
-- Completed: 2026-07-15 21:33 MYT
+- Completed: 2026-07-15 21:45 MYT
 
 ## Goal
 
@@ -41,6 +41,8 @@ Make repository navigation and tracked hygiene match the live monorepo without c
 - 2026-07-15 17:34 MYT - Added the `RWF-002` dependency so hygiene validation consumes the completed legacy marker.
 - 2026-07-15 21:25 MYT - Codex claimed `RWF-004` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; confirmed dependency `RWF-002` is `done`, found no competing claim, and synchronized the parent row to `in_progress`.
 - 2026-07-15 21:33 MYT - Completed `RWF-004` after reconciling the manifest-derived app/package map and entry-point navigation, moving audit history to `docs/audit/`, repairing both live consumers, and untracking root `debug.log` without deleting or altering its local contents; synchronized the parent row and completed history.
+- 2026-07-15 21:43 MYT - Reopened `RWF-004` after spec review found that the Nx orchestration wording incorrectly implied the full root build selected only `server` and `desktop`; preserved prior completion `2026-07-15 21:33 MYT`, cleared the current completion, and synchronized the parent row/history for repair.
+- 2026-07-15 21:45 MYT - Re-completed `RWF-004` after clarifying that only the Nx portion of the root build selects `server` and `desktop`, followed by the separate `cargo check -p animus`; revalidated the manifest contract, focused suite, live organization check, diff, and source exclusion, then synchronized the parent row and one current completed-history entry.
 
 ## Validation
 
@@ -48,6 +50,7 @@ Make repository navigation and tracked hygiene match the live monorepo without c
   - `bun test tests/repo-organization.test.ts`
   - `bun run check:repo`
   - `bunx nx show projects`
+  - PowerShell JSON equality check for root `scripts.build` plus `Select-String -SimpleMatch` for the canonical orchestration wording
   - `rg -n 'docs/audits/2026-06-11-agent-server-audit\.md' docs/superpowers/plans/2026-07-14-dual-session-scope-a6.md tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md`
   - PowerShell `Test-Path` checks for the canonical directory map, architecture index, moved audit, workflow, PRDs, plans, and tickets
   - `git check-ignore -v debug.log`
@@ -74,4 +77,5 @@ Make repository navigation and tracked hygiene match the live monorepo without c
   - targeted old live-path search returned no matches; all 7 targeted navigation and moved-audit targets resolved
   - root `debug.log` remains locally present with identical SHA-256 `BDC3EAD49DA4403CD114C09B700F7607914AC783BD415064D08D7F1C15CCC5A6`, is matched by `.gitignore:2:/debug.log`, and is absent from `git ls-files`
   - source-hotspot exclusion returned no paths; no `apps/*/src/**`, `packages/*/src/**`, or `apps/desktop/src-tauri/**` production source changed
+  - review follow-up verified root `build` is exactly `node ./scripts/run-nx.cjs run-many -t build --projects=server,desktop && cargo check -p animus`; the directory map now distinguishes the Nx selection from the subsequent Cargo check
   - residual risks or follow-ups: none within the approved repository-organization scope
