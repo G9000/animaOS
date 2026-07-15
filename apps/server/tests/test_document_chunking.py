@@ -232,3 +232,49 @@ def test_chunk_pages_structured_preserves_overlong_single_path_in_metadata() -> 
     chunk = chunks[0]
     assert len(chunk.section_title) > 255  # pre-insert value keeps the full path
     assert chunk.metadata_json == {"section_paths": [chunk.section_title]}
+
+
+def test_structured_chunking_preserves_docling_sections() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    install_body = " ".join(["Mount the relay before wiring the pump."] * 8)
+    calibrate_body = " ".join(["Calibrate at 40 PSI before sealing."] * 8)
+    pages = [
+        PageText(page_number=1, text=f"# Installation\n\n{install_body}"),
+        PageText(
+            page_number=2,
+            text=(
+                f"## Calibration\n\n{calibrate_body}\n\n"
+                "| knob | value |\n| - | - |\n| A | 40 |"
+            ),
+        ),
+    ]
+
+    chunks = chunk_pages_structured(pages, target_chars=200)
+
+    titles = [chunk.section_title for chunk in chunks]
+    assert "Installation" in titles[0]
+    assert any(
+        title is not None and "Calibration" in title for title in titles
+    )
+    assert all(chunk.page_start is not None for chunk in chunks)
+    table_chunks = [
+        chunk for chunk in chunks if "| knob |" in chunk.content_text
+    ]
+    assert len(table_chunks) == 1
+
+
+def test_plain_pypdf_pages_get_conservative_heading_detection() -> None:
+    from anima_server.services.documents.chunking import chunk_pages_structured
+
+    pages = [
+        PageText(
+            page_number=1,
+            text="2.1 Safety Procedures\n\nAlways disconnect power before servicing.",
+        ),
+    ]
+
+    chunks = chunk_pages_structured(pages, target_chars=500)
+
+    assert chunks[0].section_title == "2.1 Safety Procedures"
+    assert chunks[0].page_start == 1

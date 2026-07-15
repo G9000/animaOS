@@ -12,6 +12,7 @@ from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.vector_store import VectorSearchResult
 from anima_server.services.documents import ExtractedDocumentChunk, pdf_workflow
+from anima_server.services.documents.parsing import ExtractionOutcome
 from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
@@ -91,10 +92,13 @@ def _patch_pdf_edges(
             ]
 
         return pdf_workflow.PDFIngestionDependencies(
-            extract_text=lambda _path: [
-                PageText(page_number=1, text="alpha installation guide"),
-                PageText(page_number=2, text="beta usage notes"),
-            ],
+            extract_text=lambda _path: ExtractionOutcome(
+                pages=[
+                    PageText(page_number=1, text="alpha installation guide"),
+                    PageText(page_number=2, text="beta usage notes"),
+                ],
+                parse_quality="docling",
+            ),
             chunk_text=lambda _pages: [
                 ExtractedDocumentChunk(
                     chunk_index=0,
@@ -118,10 +122,13 @@ def _patch_pdf_edges(
     monkeypatch.setattr(
         pdf_workflow,
         "extract_document_text",
-        lambda _path: [
-            PageText(page_number=1, text="alpha installation guide"),
-            PageText(page_number=2, text="beta usage notes"),
-        ],
+        lambda _path: ExtractionOutcome(
+            pages=[
+                PageText(page_number=1, text="alpha installation guide"),
+                PageText(page_number=2, text="beta usage notes"),
+            ],
+            parse_quality="docling",
+        ),
     )
 
     def fake_upsert_source(

@@ -29,6 +29,7 @@ from anima_server.services.documents import (
     register_document,
     replace_document_chunks,
 )
+from anima_server.services.documents.parsing import ExtractionOutcome
 from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.documents.pdf_workflow import (
     PDF_WORKFLOW_STATES,
@@ -156,15 +157,18 @@ def _dependencies(
     calls.embedded = []
     embedding_fn_override = embedding_override
 
-    def extract_text(path: str) -> list[PageText]:
+    def extract_text(path: str) -> ExtractionOutcome:
         if fail_extract:
             raise AssertionError("extract_text should not run")
         calls.extracted += 1
         filename = Path(path).name
-        return [
-            PageText(page_number=1, text=f"{filename} alpha"),
-            PageText(page_number=2, text="beta"),
-        ]
+        return ExtractionOutcome(
+            pages=[
+                PageText(page_number=1, text=f"{filename} alpha"),
+                PageText(page_number=2, text="beta"),
+            ],
+            parse_quality="docling",
+        )
 
     def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
         if fail_chunk:
@@ -594,12 +598,15 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     page_one_text = " ".join(["alpha"] * 280)
     page_two_text = " ".join(["beta"] * 50)
 
-    def fake_extract_pdf_text(path: str) -> list[PageText]:
+    def fake_extract_pdf_text(path: str) -> ExtractionOutcome:
         extracted_paths.append(path)
-        return [
-            PageText(page_number=1, text=page_one_text),
-            PageText(page_number=2, text=page_two_text),
-        ]
+        return ExtractionOutcome(
+            pages=[
+                PageText(page_number=1, text=page_one_text),
+                PageText(page_number=2, text=page_two_text),
+            ],
+            parse_quality="docling",
+        )
 
     def fake_embedding(text: str) -> list[float]:
         embedded_texts.append(text)
@@ -965,7 +972,7 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
     document.indexed_at = None
     runtime_db.flush()
 
-    def extract_text(_path: str) -> list[PageText]:
+    def extract_text(_path: str) -> ExtractionOutcome:
         raise RuntimeError("re-extract")
 
     def chunk_text(_pages: list[PageText]) -> list[ExtractedDocumentChunk]:
@@ -1033,8 +1040,8 @@ def test_resume_reused_text_checkpoint_replaces_stale_pages_payload(
 
     restored_pages = [PageText(page_number=1, text="restored page")]
 
-    def extract_text(_path: str) -> list[PageText]:
-        return restored_pages
+    def extract_text(_path: str) -> ExtractionOutcome:
+        return ExtractionOutcome(pages=restored_pages, parse_quality="docling")
 
     def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
         assert [page.text for page in pages] == ["restored page"]
@@ -1073,6 +1080,7 @@ def test_resume_reused_text_checkpoint_replaces_stale_pages_payload(
     assert text_extracted.output_json == {
         "document_id": document.id,
         "pages": [{"page_number": 1, "text": "restored page"}],
+        "parse_quality": "docling",
     }
     chunks = list_document_chunks(runtime_db, document_id=document.id)
     assert [chunk.content_text for chunk in chunks] == ["restored page"]
@@ -1332,6 +1340,10 @@ def test_resume_from_text_extracted_reuses_staged_pages(
         "seed alpha",
         "seed beta",
     ]
+    # The seeded checkpoint predates "parse_quality"; resuming through it must
+    # default to preview quality rather than erroring or assuming docling.
+    runtime_db.refresh(document)
+    assert document.parse_quality == "preview"
 
 
 def test_resume_from_chunked_reuses_stored_chunks(

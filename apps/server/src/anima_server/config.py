@@ -63,10 +63,6 @@ class Settings(BaseSettings):
     agent_background_memory_enabled: bool = True
     chat_image_max_size_bytes: int = 10 * 1024 * 1024
     chat_image_max_count: int = 4
-    # PDF parsing tier: "fast" (preview text only), "quality" (Docling when the
-    # optional extra is installed), or "auto" (preview text first, escalate to
-    # Docling when extraction quality looks poor or pages are scanned).
-    document_parser_tier: str = "auto"
     # Document-grounded turns retrieve this many chunks for the context block.
     document_context_chunk_limit: int = 15
     # Raw evidence chunks pass through untruncated up to this safety cap,
