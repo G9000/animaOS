@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::bounded::{json_to_vec as bounded_json_to_vec, BoundedJsonError};
+use crate::bounded::{
+    clone_after_bounded_json_preflight, json_to_vec as bounded_json_to_vec, BoundedJsonError,
+};
 use crate::crypto::{CryptoError, FrkSubkeys, SecretBytes, KEY_LENGTH, NONCE_LENGTH};
 use crate::id::validate_opaque_id;
 
@@ -104,8 +106,12 @@ impl CatalogPayload {
 }
 
 pub fn encode_catalog(payload: &CatalogPayload) -> Result<Vec<u8>, CatalogError> {
-    payload.validate()?;
-    let mut canonical = payload.clone();
+    let mut canonical = clone_after_bounded_json_preflight(payload, MAX_CATALOG_PLAINTEXT_SIZE)
+        .map_err(|error| match error {
+            BoundedJsonError::LimitExceeded => CatalogError::LimitExceeded("catalog plaintext"),
+            BoundedJsonError::Json(error) => CatalogError::Json(error),
+        })?;
+    canonical.validate()?;
     for entry in &mut canonical.entries {
         canonicalize_value(&mut entry.record);
     }

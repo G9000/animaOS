@@ -115,7 +115,7 @@ fn physical_name_rejects_invalid_catalog_envelope_lengths() {
 }
 
 #[test]
-fn duplicate_ids_versions_and_oversize_are_rejected() {
+fn duplicate_ids_and_versions_are_rejected() {
     assert!(matches!(
         CatalogPayload::new(
             1,
@@ -142,7 +142,10 @@ fn duplicate_ids_versions_and_oversize_are_rejected() {
         decrypt_catalog(&keys(0x22), "01JCORE", &unsupported_envelope),
         Err(CatalogError::UnsupportedVersion(2))
     ));
+}
 
+#[test]
+fn oversized_native_catalog_is_rejected_before_canonical_copy() {
     let huge = "x".repeat(MAX_CATALOG_PLAINTEXT_SIZE + 1);
     let oversized = CatalogPayload::new(1, vec![entry(STABLE_OTHER, json!(huge))]).unwrap();
     assert!(matches!(

@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::bounded::{json_to_vec as bounded_json_to_vec, BoundedJsonError};
+use crate::bounded::{
+    clone_after_bounded_json_preflight, json_to_vec as bounded_json_to_vec, BoundedJsonError,
+};
 use crate::crypto::{
     BodyFrameAad, CryptoError, MetadataFrameAad, ObjectBaseAad, SecretBytes, NONCE_LENGTH,
 };
@@ -169,7 +171,11 @@ impl EnvelopeMetadata {
     }
 
     fn canonical_bytes(&self) -> Result<Vec<u8>, EnvelopeError> {
-        let mut canonical = self.clone();
+        let mut canonical = clone_after_bounded_json_preflight(self, MAX_METADATA_PLAINTEXT_SIZE)
+            .map_err(|error| match error {
+            BoundedJsonError::LimitExceeded => EnvelopeError::LimitExceeded("metadata plaintext"),
+            BoundedJsonError::Json(error) => EnvelopeError::Json(error),
+        })?;
         canonicalize_map(&mut canonical.metadata);
         canonical.validate_shape()?;
         bounded_json_to_vec(&canonical, MAX_METADATA_PLAINTEXT_SIZE).map_err(|error| match error {

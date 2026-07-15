@@ -324,6 +324,26 @@ fn authenticated_wrong_body_hash_is_a_terminal_streaming_read_failure() {
 }
 
 #[test]
+fn oversized_native_metadata_is_rejected_before_canonical_copy() {
+    let body = b"small";
+    let mut meta = metadata(OBJECT_ID, 7, body);
+    meta.metadata.insert(
+        "oversized".into(),
+        json!("x".repeat(MAX_METADATA_PLAINTEXT_SIZE + 1)),
+    );
+
+    assert!(matches!(
+        encode_envelope(
+            &key(0x11),
+            &aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3),
+            &meta,
+            body,
+        ),
+        Err(EnvelopeError::LimitExceeded("metadata plaintext"))
+    ));
+}
+
+#[test]
 fn declarations_are_bounded_before_allocation() {
     let body = b"small";
     let meta = metadata(OBJECT_ID, 7, body);

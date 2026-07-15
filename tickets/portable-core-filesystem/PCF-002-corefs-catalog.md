@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 14:11 MYT
+- Updated: 2026-07-15 14:26 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -74,6 +74,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 13:02 MYT - Completed PCF-002's second implementation slice with red/green coverage: streaming AES-256-GCM metadata/body framing, strict authenticated bounds and range reads, canonical encrypted catalogs with generation-derived keys and opaque names, and byte-oriented PyO3 operations that retain Rust key ownership. Exact Rust 1.75, focused PyO3, combined Rust tests, CoreFS formatting/clippy, and scoped new-FFI checks passed. PCF-002 remains `in_progress` for folders/policy, catalog publication and `fs/HEAD`, rotation, APIs/tools, and benchmarks.
 - 2026-07-15 13:34 MYT - Hardened the second slice against the final format and boundary requirements with red/green coverage: the V1 object header now declares and validates the `object-dek` domain, object-key epoch, and bounded UTF-8 object ID; opaque metadata uses a closed body-encoding enum and recursively rejects catalog-owned placement keys; PyO3 now exposes file-like streaming encrypt, full decrypt, and authenticated range reads with a conservative 16-MiB cap on byte convenience APIs; and catalog version tests assert typed payload and encrypted-header rejection. PCF-002 remains `in_progress` for the deferred filesystem/publication layers.
 - 2026-07-15 14:11 MYT - Completed the third slice-two hardening pass with red/green regressions: object and stable IDs are canonical uppercase Crockford ULIDs; native JSON emission and FFI inputs are bounded before allocation/parsing; catalog decrypt and naming share one exact-length header parser; nonce generation retries collisions and fails closed; and native/PyO3 streaming errors document or enforce discard/rollback semantics, including terminal authenticated hash failures. PCF-002 remains `in_progress` for folders/policy, catalog publication and `fs/HEAD`, rotation, APIs/tools, and benchmarks.
+- 2026-07-15 14:26 MYT - Closed the final slice-two allocation review finding with a test-first capped counting serializer: native metadata and catalog values now complete an allocation-free serialized-size preflight before any proportional clone or canonicalization allocation. A clone-tracking regression proves oversized input never reaches `Clone`; native envelope and catalog limit regressions preserve typed errors and deterministic canonical bytes. Rust 1.75 CoreFS passed 35 tests and the combined native run passed 253 tests. PCF-002 remains `in_progress` for the deferred filesystem/publication layers.
 
 ## Validation
 
@@ -99,6 +100,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `cargo test --locked -p anima-corefs -p anima-core` (250 tests)
   - `$env:PATH='<Python 3.13 home>;' + $env:PATH; cargo test --locked -p anima-core --features python --lib ffi::python::tests::corefs_` (4 focused PyO3 tests covering bounds, append-only writer validation, and rollback after late failures)
   - `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `cargo clippy --locked -p anima-core --features python --all-targets` with no new diagnostics in changed production FFI ranges; `git diff --check`
+  - `cargo test --locked -p anima-corefs --lib bounded::tests::oversized_json_is_rejected_before_clone -- --exact` (required compile-red before the capped preflight helper existed, then passed with zero clone calls)
+  - focused native envelope/catalog oversize regressions passed; `cargo +1.75.0 test --locked -p anima-corefs` (35 tests); `cargo test --locked -p anima-corefs -p anima-core` (253 tests)
+  - `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
