@@ -799,6 +799,68 @@ fn cutover_receipt_prevents_missing_head_from_reactivating_the_shadow() {
 }
 
 #[test]
+fn cutover_receipt_rejects_a_divergent_head_at_its_generation() {
+    let root = reset_root("cutover-receipt-divergent-head");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            41,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let alternate_root = reset_root("cutover-receipt-divergent-head-alternate");
+    let alternate = CoreCommitCoordinator::new(&alternate_root, CORE_ID).unwrap();
+    let alternate_prepared = commit_initial(&alternate, &keys);
+    alternate
+        .commit_first_mutation(
+            &keys,
+            41,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &alternate_prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let alternate_catalog = fs::read_dir(alternate.catalogs_path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog-00000000000000000002-")
+        })
+        .unwrap();
+    fs::copy(
+        &alternate_catalog,
+        coordinator
+            .catalogs_path()
+            .join(alternate_catalog.file_name().unwrap()),
+    )
+    .unwrap();
+    fs::copy(alternate.head_path(), coordinator.head_path()).unwrap();
+
+    let error = coordinator.load_committed(&keys).unwrap_err();
+    assert!(matches!(
+        error,
+        CommitError::AuthoritativeHeadViolatesCutoverReceipt
+    ));
+
+    drop(alternate);
+    drop(coordinator);
+    fs::remove_dir_all(alternate_root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn invalidation_runs_after_unlock_and_failure_does_not_rollback_commit() {
     let root = reset_root("invalidation-after-unlock");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();

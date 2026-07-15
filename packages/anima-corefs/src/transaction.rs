@@ -819,6 +819,7 @@ impl CoreCommitCoordinator {
                 if receipt_marker.is_none()
                     || committed_marker != receipt_marker
                     || head.generation() < receipt_head.generation()
+                    || (head.generation() == receipt_head.generation() && head != receipt_head)
                 {
                     return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
                 }

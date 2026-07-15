@@ -811,12 +811,19 @@ enum WirePayload {
     Folder,
     Object {
         revision: u64,
-        physical_name: String,
+        #[serde(default)]
+        physical_name: Option<String>,
         content_hash: String,
         object_kind: String,
         wrapped_dek: Box<WireWrappedDek>,
         lifecycle: WireLifecycle,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalNameWireShape {
+    Legacy,
+    Current,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -854,8 +861,18 @@ struct WireCutoverMarker {
 }
 
 pub fn encode_catalog_generation(payload: &CatalogGeneration) -> Result<Vec<u8>, CatalogError> {
+    encode_catalog_generation_with_shape(payload, PhysicalNameWireShape::Current)
+}
+
+fn encode_catalog_generation_with_shape(
+    payload: &CatalogGeneration,
+    physical_name_shape: PhysicalNameWireShape,
+) -> Result<Vec<u8>, CatalogError> {
     payload.validate()?;
-    let wire = WireCatalogGenerationRef(payload);
+    let wire = WireCatalogGenerationRef {
+        catalog: payload,
+        physical_name_shape,
+    };
     bounded_json_preflight(&wire, MAX_CATALOG_PLAINTEXT_SIZE).map_err(map_bounded_error)?;
     bounded_json_to_vec(&wire, MAX_CATALOG_PLAINTEXT_SIZE).map_err(map_bounded_error)
 }
@@ -868,11 +885,35 @@ fn decode_catalog_generation(encoded: &[u8]) -> Result<CatalogGeneration, Catalo
     if wire.schema_version != CATALOG_GENERATION_SCHEMA_VERSION {
         return Err(CatalogError::UnsupportedVersion(wire.schema_version));
     }
+    let physical_name_shape = physical_name_wire_shape(&wire)?;
     let payload = from_wire(wire)?;
-    if encode_catalog_generation(&payload)? != encoded {
+    if encode_catalog_generation_with_shape(&payload, physical_name_shape)? != encoded {
         return Err(CatalogError::InvalidFormat("non-canonical catalog"));
     }
     Ok(payload)
+}
+
+fn physical_name_wire_shape(
+    wire: &WireCatalogGeneration,
+) -> Result<PhysicalNameWireShape, CatalogError> {
+    let mut shape = None;
+    for entry in &wire.entries {
+        let WirePayload::Object { physical_name, .. } = &entry.payload else {
+            continue;
+        };
+        let next = if physical_name.is_some() {
+            PhysicalNameWireShape::Current
+        } else {
+            PhysicalNameWireShape::Legacy
+        };
+        if shape.is_some_and(|existing| existing != next) {
+            return Err(CatalogError::InvalidFormat(
+                "mixed object physical-name wire shapes",
+            ));
+        }
+        shape = Some(next);
+    }
+    Ok(shape.unwrap_or(PhysicalNameWireShape::Current))
 }
 
 /// Validates untrusted plaintext without promoting it into a catalog value.
@@ -1045,7 +1086,10 @@ fn v2_generation_key(
     Ok(SecretBytes::new(output)?)
 }
 
-struct WireCatalogGenerationRef<'a>(&'a CatalogGeneration);
+struct WireCatalogGenerationRef<'a> {
+    catalog: &'a CatalogGeneration,
+    physical_name_shape: PhysicalNameWireShape,
+}
 
 impl Serialize for WireCatalogGenerationRef<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -1054,7 +1098,7 @@ impl Serialize for WireCatalogGenerationRef<'_> {
     {
         use serde::ser::SerializeStruct;
 
-        let catalog = self.0;
+        let catalog = self.catalog;
         let mut state = serializer.serialize_struct("WireCatalogGeneration", 4)?;
         state.serialize_field("schemaVersion", &CATALOG_GENERATION_SCHEMA_VERSION)?;
         state.serialize_field("generation", &catalog.generation)?;
@@ -1068,7 +1112,13 @@ impl Serialize for WireCatalogGenerationRef<'_> {
                     epoch: marker.epoch,
                 }),
         )?;
-        state.serialize_field("entries", &WireEntriesRef(&catalog.entries))?;
+        state.serialize_field(
+            "entries",
+            &WireEntriesRef {
+                entries: &catalog.entries,
+                physical_name_shape: self.physical_name_shape,
+            },
+        )?;
         state.end()
     }
 }
@@ -1080,22 +1130,31 @@ struct WireCutoverMarkerRef {
     epoch: u64,
 }
 
-struct WireEntriesRef<'a>(&'a [CatalogGenerationEntry]);
+struct WireEntriesRef<'a> {
+    entries: &'a [CatalogGenerationEntry],
+    physical_name_shape: PhysicalNameWireShape,
+}
 
 impl Serialize for WireEntriesRef<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for entry in self.0 {
-            sequence.serialize_element(&WireEntryRef(entry))?;
+        let mut sequence = serializer.serialize_seq(Some(self.entries.len()))?;
+        for entry in self.entries {
+            sequence.serialize_element(&WireEntryRef {
+                entry,
+                physical_name_shape: self.physical_name_shape,
+            })?;
         }
         sequence.end()
     }
 }
 
-struct WireEntryRef<'a>(&'a CatalogGenerationEntry);
+struct WireEntryRef<'a> {
+    entry: &'a CatalogGenerationEntry,
+    physical_name_shape: PhysicalNameWireShape,
+}
 
 impl Serialize for WireEntryRef<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -1104,7 +1163,7 @@ impl Serialize for WireEntryRef<'_> {
     {
         use serde::ser::SerializeStruct;
 
-        let entry = self.0;
+        let entry = self.entry;
         let common = entry.common();
         let mut state = serializer.serialize_struct("WireEntry", 9)?;
         state.serialize_field("stableId", common.stable_id.as_str())?;
@@ -1121,7 +1180,13 @@ impl Serialize for WireEntryRef<'_> {
             },
         )?;
         state.serialize_field("clientMetadata", &common.client_metadata.values)?;
-        state.serialize_field("payload", &WirePayloadRef(entry))?;
+        state.serialize_field(
+            "payload",
+            &WirePayloadRef {
+                entry,
+                physical_name_shape: self.physical_name_shape,
+            },
+        )?;
         state.end()
     }
 }
@@ -1133,7 +1198,10 @@ struct WirePolicyOverrideRef {
     anima_access: &'static str,
 }
 
-struct WirePayloadRef<'a>(&'a CatalogGenerationEntry);
+struct WirePayloadRef<'a> {
+    entry: &'a CatalogGenerationEntry,
+    physical_name_shape: PhysicalNameWireShape,
+}
 
 impl Serialize for WirePayloadRef<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -1142,17 +1210,24 @@ impl Serialize for WirePayloadRef<'_> {
     {
         use serde::ser::SerializeStruct;
 
-        match self.0 {
+        match self.entry {
             CatalogGenerationEntry::Folder(_) => {
                 let mut state = serializer.serialize_struct("WirePayload", 1)?;
                 state.serialize_field("kind", "folder")?;
                 state.end()
             }
             CatalogGenerationEntry::Object(_, object) => {
-                let mut state = serializer.serialize_struct("WirePayload", 7)?;
+                let field_count = if self.physical_name_shape == PhysicalNameWireShape::Current {
+                    7
+                } else {
+                    6
+                };
+                let mut state = serializer.serialize_struct("WirePayload", field_count)?;
                 state.serialize_field("kind", "object")?;
                 state.serialize_field("revision", &object.revision)?;
-                state.serialize_field("physical_name", object.physical_name.as_str())?;
+                if self.physical_name_shape == PhysicalNameWireShape::Current {
+                    state.serialize_field("physical_name", object.physical_name.as_str())?;
+                }
                 state.serialize_field("content_hash", object.content_hash.as_str())?;
                 state.serialize_field("object_kind", object.kind.as_str())?;
                 state.serialize_field(
@@ -1306,11 +1381,15 @@ fn from_wire(wire: WireCatalogGeneration) -> Result<CatalogGeneration, CatalogEr
                         .decode(wrapped_dek.ciphertext)
                         .map_err(|_| CatalogError::InvalidFormat("wrapped DEK ciphertext"))?,
                 )?;
+                let physical_name = match physical_name {
+                    Some(value) => ObjectPhysicalName::parse(&value)?,
+                    None => legacy_object_physical_name(&common.stable_id, revision)?,
+                };
                 CatalogGenerationEntry::object(
                     common,
                     CatalogObject::new(
                         revision,
-                        ObjectPhysicalName::parse(&physical_name)?,
+                        physical_name,
                         ContentHash::parse(&content_hash)?,
                         ObjectKind::parse(&object_kind)?,
                         wrapped_dek,
@@ -1326,6 +1405,24 @@ fn from_wire(wire: WireCatalogGeneration) -> Result<CatalogGeneration, CatalogEr
         Some(marker) => catalog.with_cutover_marker(marker),
         None => Ok(catalog),
     }
+}
+
+fn legacy_object_physical_name(
+    stable_id: &OpaqueId,
+    revision: u64,
+) -> Result<ObjectPhysicalName, CatalogError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"anima-corefs-legacy-v2-physical-name\0");
+    hasher.update(stable_id.as_str().as_bytes());
+    hasher.update(revision.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut random = String::with_capacity(32);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in &digest[..16] {
+        random.push(HEX[(byte >> 4) as usize] as char);
+        random.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    ObjectPhysicalName::parse(&format!("object-{random}.acore"))
 }
 
 fn lifecycle_from_wire(value: WireLifecycle) -> Result<ObjectLifecycle, CatalogError> {
@@ -1474,7 +1571,10 @@ fn map_bounded_error(error: BoundedJsonError) -> CatalogError {
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::{derive_corefs_subkeys, SecretBytes};
+    use crate::crypto::{
+        derive_corefs_subkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
+        OBJECT_WRAP_ALGORITHM,
+    };
     use crate::folders::{FolderOwner, PortableName};
     use crate::id::OpaqueId;
     use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
@@ -1482,6 +1582,7 @@ mod tests {
     use super::{
         decode_catalog_generation, encode_catalog_generation, v2_generation_key,
         CatalogCutoverMarker, CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry,
+        CatalogObject, ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
     };
 
     #[test]
@@ -1525,6 +1626,63 @@ mod tests {
 
         let encoded = encode_catalog_generation(&catalog).unwrap();
         assert_eq!(decode_catalog_generation(&encoded).unwrap(), catalog);
+    }
+
+    #[test]
+    fn prior_v2_object_payload_without_physical_name_remains_readable() {
+        let root_id = OpaqueId::parse("01J00000000000000000000000").unwrap();
+        let object_id = OpaqueId::parse("01J00000000000000000000001").unwrap();
+        let physical_name =
+            ObjectPhysicalName::parse("object-0123456789abcdef0123456789abcdef.acore").unwrap();
+        let catalog = CatalogGeneration::new(
+            1,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    root_id.clone(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::object(
+                    CatalogEntryCommon::new(
+                        object_id,
+                        Some(root_id),
+                        PortableName::parse("Note.md").unwrap(),
+                        FolderOwner::User,
+                        AnimaAccess::Write,
+                    ),
+                    CatalogObject::new(
+                        1,
+                        physical_name.clone(),
+                        ContentHash::parse(&"ab".repeat(32)).unwrap(),
+                        ObjectKind::Note,
+                        WrappedObjectDekRecord::from_parts(
+                            1,
+                            1,
+                            OBJECT_WRAP_ALGORITHM,
+                            OBJECT_KEY_ENVELOPE_VERSION,
+                            &[7; 12],
+                            vec![9; 48],
+                        )
+                        .unwrap(),
+                        ObjectLifecycle::Live,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let current = String::from_utf8(encode_catalog_generation(&catalog).unwrap()).unwrap();
+        let physical_field = format!("\"physical_name\":\"{}\",", physical_name.as_str());
+        let legacy = current.replacen(&physical_field, "", 1).into_bytes();
+
+        let decoded = decode_catalog_generation(&legacy).unwrap();
+
+        assert_eq!(decoded.generation(), 1);
+        assert_eq!(decoded.entries().len(), 2);
+        assert!(decoded.entries()[1].object_payload().is_some());
+        assert_eq!(decode_catalog_generation(&legacy).unwrap(), decoded);
     }
 
     #[test]
