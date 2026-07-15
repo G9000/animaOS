@@ -1,4 +1,18 @@
 //! Deterministic catalog payloads and authenticated catalog envelopes.
+//!
+//! Privileged catalog state cannot be promoted from caller-supplied plaintext
+//! or marked forward-only outside the crate-owned coordinator:
+//!
+//! ```compile_fail
+//! use anima_corefs::catalog::{decode_catalog_generation, CatalogCutoverMarker};
+//!
+//! let _ = decode_catalog_generation(b"{}");
+//! let _ = CatalogCutoverMarker::new(1);
+//! ```
+
+mod v2;
+
+pub use v2::*;
 
 use std::collections::HashSet;
 

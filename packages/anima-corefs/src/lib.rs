@@ -5,5 +5,8 @@ mod bounded;
 pub mod catalog;
 pub mod crypto;
 pub mod envelope;
+pub mod folders;
+pub mod head;
 pub mod id;
+pub mod policy;
 pub mod publication;
