@@ -1041,6 +1041,7 @@ impl CoreCommitCoordinator {
     ) -> Result<(HeadRecord, String), CommitError> {
         let encrypted_catalog = encrypt_catalog_generation(keys, &self.core_id, catalog)?;
         let catalog_name = catalog_generation_physical_name(&encrypted_catalog)?;
+        self.validate_pinned_layout()?;
         publish_immutable_in(
             &self.catalogs_dir,
             OsStr::new(&catalog_name),
@@ -1054,17 +1055,20 @@ impl CoreCommitCoordinator {
         )?;
         let encoded_head = encode_head(&head)?;
         if publish_cutover_receipt {
+            self.validate_pinned_layout()?;
             publish_immutable_in(
                 &self.fs_dir,
                 OsStr::new(CUTOVER_RECEIPT_FILE),
                 &encoded_head,
             )?;
         }
+        self.validate_pinned_layout()?;
         atomic_publish_in(&self.fs_dir, OsStr::new(pointer_name), &encoded_head)?;
         Ok((head, catalog_name))
     }
 
     fn validate_pinned_layout(&self) -> Result<(), CommitError> {
+        validate_ambient_linked_directory(&self.core_root, &self.root_dir)?;
         validate_linked_directory(&self.root_dir, FS_DIRECTORY, &self.fs_dir)?;
         validate_linked_directory(&self.fs_dir, CATALOGS_DIRECTORY, &self.catalogs_dir)?;
         validate_linked_directory(&self.root_dir, OBJECTS_DIRECTORY, &self.objects_dir)
@@ -1537,6 +1541,28 @@ fn validate_linked_directory(
     Ok(())
 }
 
+fn validate_ambient_linked_directory(path: &Path, opened_dir: &Dir) -> Result<(), CommitError> {
+    let opened = Metadata::from_file(&opened_dir.try_clone()?.into_std_file())?;
+    let linked = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => {
+            let parent = Dir::open_ambient_dir(parent, ambient_authority())?;
+            parent.symlink_metadata(Path::new(name))?
+        }
+        _ => {
+            let linked = Dir::open_ambient_dir(path, ambient_authority())?;
+            Metadata::from_file(&linked.into_std_file())?
+        }
+    };
+    if !opened.is_dir()
+        || !linked.is_dir()
+        || linked.is_symlink()
+        || !same_file_identity(&opened, &linked)
+    {
+        return Err(CommitError::InvalidCoreLayout);
+    }
+    Ok(())
+}
+
 fn reject_symlink_in(dir: &Dir, name: &OsStr) -> Result<(), CommitError> {
     match dir.symlink_metadata(name) {
         Ok(metadata) if metadata.is_symlink() => Err(CommitError::InvalidCoreLayout),
@@ -1733,9 +1759,14 @@ mod tests {
 
     use cap_std::{ambient_authority, fs::Dir};
 
+    use crate::catalog::{CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry};
+    use crate::crypto::{derive_corefs_subkeys, SecretBytes};
+    use crate::folders::{FolderOwner, PortableName};
+    use crate::id::OpaqueId;
+    use crate::policy::AnimaAccess;
     use crate::publication::durable_create_directory_in;
 
-    use super::{copy_bounded, ensure_child_directory_with, CommitError};
+    use super::{copy_bounded, ensure_child_directory_with, CommitError, CoreCommitCoordinator};
 
     #[test]
     fn streaming_preparation_stops_before_writing_past_its_bound() {
@@ -1768,5 +1799,66 @@ mod tests {
         drop(child);
         drop(parent);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pinned_root_must_still_match_the_core_root_path() {
+        let pinned_root =
+            std::env::temp_dir().join(format!("anima-corefs-pinned-root-{}", std::process::id()));
+        let replacement_root = std::env::temp_dir().join(format!(
+            "anima-corefs-replacement-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&pinned_root);
+        let _ = std::fs::remove_dir_all(&replacement_root);
+        std::fs::create_dir_all(&replacement_root).unwrap();
+        let mut coordinator = CoreCommitCoordinator::new(&pinned_root, "core-a").unwrap();
+        coordinator.core_root = std::fs::canonicalize(&replacement_root).unwrap();
+
+        let error = coordinator.validate_pinned_layout().unwrap_err();
+
+        assert!(matches!(error, CommitError::InvalidCoreLayout));
+        drop(coordinator);
+        std::fs::remove_dir_all(pinned_root).unwrap();
+        std::fs::remove_dir_all(replacement_root).unwrap();
+    }
+
+    #[test]
+    fn catalog_publication_revalidates_the_pinned_root() {
+        let pinned_root = std::env::temp_dir().join(format!(
+            "anima-corefs-publish-pinned-root-{}",
+            std::process::id()
+        ));
+        let replacement_root = std::env::temp_dir().join(format!(
+            "anima-corefs-publish-replacement-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&pinned_root);
+        let _ = std::fs::remove_dir_all(&replacement_root);
+        std::fs::create_dir_all(&replacement_root).unwrap();
+        let mut coordinator = CoreCommitCoordinator::new(&pinned_root, "core-a").unwrap();
+        coordinator.core_root = std::fs::canonicalize(&replacement_root).unwrap();
+        let keys = derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), 1).unwrap();
+        let catalog = CatalogGeneration::new(
+            1,
+            vec![CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                None,
+                PortableName::parse("Core").unwrap(),
+                FolderOwner::User,
+                AnimaAccess::Write,
+            ))],
+        )
+        .unwrap();
+
+        let error = coordinator
+            .publish_catalog_pointer(&keys, &catalog, "VALIDATION_HEAD", false)
+            .unwrap_err();
+
+        assert!(matches!(error, CommitError::InvalidCoreLayout));
+        assert!(!pinned_root.join("fs").join("VALIDATION_HEAD").exists());
+        drop(coordinator);
+        std::fs::remove_dir_all(pinned_root).unwrap();
+        std::fs::remove_dir_all(replacement_root).unwrap();
     }
 }

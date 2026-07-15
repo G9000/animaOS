@@ -906,6 +906,7 @@ fn invalidation_runs_after_unlock_and_failure_does_not_rollback_commit() {
 fn pinned_layout_fails_closed_when_the_fs_directory_is_replaced() {
     let root = reset_root("pinned-directory");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let prepared = prepare(&coordinator, 1, b"must not reach detached fs");
     let original_fs = root.join("fs-original");
     match fs::rename(root.join("fs"), &original_fs) {
         Ok(()) => {
@@ -921,7 +922,6 @@ fn pinned_layout_fails_closed_when_the_fs_directory_is_replaced() {
     }
 
     let competing_guard = CoreCommitLock::acquire(&root).unwrap();
-    let prepared = prepare(&coordinator, 1, b"must not reach detached fs");
     let error = coordinator
         .initialize_validation_snapshot(&keys(), std::slice::from_ref(&prepared), |generation| {
             Ok(catalog(generation, "Note.md", &prepared))
@@ -944,6 +944,86 @@ fn pinned_layout_fails_closed_when_the_fs_directory_is_replaced() {
     assert!(!original_fs.join("HEAD").exists());
     assert!(!root.join("fs").join("HEAD").exists());
     drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pinned_layout_fails_closed_when_the_core_root_is_replaced() {
+    let root = reset_root("pinned-root");
+    let detached_root = reset_root("pinned-root-detached");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let prepared = prepare(&coordinator, 1, b"must not reach detached root");
+    match fs::rename(&root, &detached_root) {
+        Ok(()) => {}
+        Err(error) if cfg!(windows) && matches!(error.raw_os_error(), Some(5) | Some(32)) => {
+            drop(coordinator);
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        Err(error) => panic!("unexpected Core root swap error: {error}"),
+    }
+    let replacement = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let competing_guard = CoreCommitLock::acquire(&root).unwrap();
+
+    let error = coordinator
+        .initialize_validation_snapshot(&keys(), std::slice::from_ref(&prepared), |generation| {
+            Ok(catalog(generation, "Note.md", &prepared))
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, CommitError::InvalidCoreLayout));
+    assert!(!detached_root.join("fs").join("VALIDATION_HEAD").exists());
+    assert!(!root.join("fs").join("VALIDATION_HEAD").exists());
+    drop(competing_guard);
+    drop(replacement);
+    drop(coordinator);
+    fs::remove_dir_all(detached_root).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pinned_layout_is_revalidated_after_catalog_construction() {
+    let root = reset_root("pinned-root-during-build");
+    let detached_root = reset_root("pinned-root-during-build-detached");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let prepared = prepare(&coordinator, 1, b"must not publish through detached root");
+    let mut replacement = None;
+    let mut swapped = false;
+
+    let outcome = coordinator.initialize_validation_snapshot(
+        &keys(),
+        std::slice::from_ref(&prepared),
+        |generation| {
+            match fs::rename(&root, &detached_root) {
+                Ok(()) => {
+                    swapped = true;
+                    replacement = Some(CoreCommitCoordinator::new(&root, CORE_ID).unwrap());
+                }
+                Err(error)
+                    if cfg!(windows) && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+                {
+                    return Ok(catalog(generation, "Note.md", &prepared));
+                }
+                Err(error) => panic!("unexpected Core root swap error: {error}"),
+            }
+            Ok(catalog(generation, "Note.md", &prepared))
+        },
+    );
+
+    if !swapped {
+        assert!(outcome.is_ok());
+        drop(replacement);
+        drop(coordinator);
+        fs::remove_dir_all(root).unwrap();
+        return;
+    }
+    let error = outcome.unwrap_err();
+    assert!(matches!(error, CommitError::InvalidCoreLayout));
+    assert!(!detached_root.join("fs").join("VALIDATION_HEAD").exists());
+    assert!(!root.join("fs").join("VALIDATION_HEAD").exists());
+    drop(replacement);
+    drop(coordinator);
+    fs::remove_dir_all(detached_root).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
