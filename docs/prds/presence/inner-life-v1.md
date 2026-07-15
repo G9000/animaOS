@@ -147,22 +147,24 @@ A `latent_traces` table: `(topic_key, kind, weight, evidence_refs, first_seen, l
 - When `consolidation.py` scores a `MemoryCandidate` below the promotion threshold but above a floor (default 0.25× threshold), it is folded into a latent trace additively: `weight ← min(1.0, weight + candidate_score · 0.5)` per matching topic, evidence ref appended. The update is a leaky integrator — additive growth so repeated weak signals genuinely accumulate (an EMA would converge to the candidate score and never crystallize), with the weekly decay below as the leak.
 - Traces decay on the slow path (weekly sleep-time sweep, `weight ×= 0.98`).
 - When a topic's cumulative weight crosses the crystallization threshold `θ_c`, the sleep agent synthesizes a single memory item from the accumulated evidence refs — flagged `origin: crystallized`, with provenance listing every contributing trace — and clears the topic.
+- **Right-to-forget integration**: latent traces are inside the F7 deletion boundary. Explicit forgetting (single-item and topic-scoped) deletes matching latent traces and scrubs any `evidence_refs` pointing at forgotten sources; a trace whose evidence is emptied is deleted. As defense in depth, crystallization re-validates every evidence ref at synthesis time and drops refs that no longer resolve — a trace must never synthesize a memory from evidence the user asked to remove.
 
 Ten passing mentions of work stress across a month become one well-evidenced memory, instead of ten dropped candidates.
 
-**Acceptance**: sub-threshold candidates are never silently dropped when above floor; crystallized memories carry complete evidence provenance; trace table is bounded (cap + decay); duplicate-topic churn does not double-count (dedup via existing claim slots).
+**Acceptance**: sub-threshold candidates are never silently dropped when above floor; crystallized memories carry complete evidence provenance; trace table is bounded (cap + decay); duplicate-topic churn does not double-count (dedup via existing claim slots); explicit forget of a topic or source removes matching traces/refs, and crystallization from stale refs is impossible (tests).
 
 ### IL5 — Forgetting as Distillation (extends F7)
 
 When passive decay (F7) takes an episode or fact below the visibility floor AND its stability class is `casual`, `transient`, or `emotional_pattern`:
 
-1. **Distill**: fold its affective/topical signature into a semantic tendency claim (namespace `tendency`, e.g. "low-grade recurring frustration around commuting"), EMA-merged with any existing tendency for that signature (0.85/0.15).
-2. **Tombstone**: replace the item with a minimal shadow row — memory class, affect label, and time range retained; content, embeddings, and evidence cryptographically deleted per F7 rules.
-3. **Audit**: one `forget_audit_log` row marked `mode: distilled`.
+1. **Distill**: fold its affective/topical signature into a semantic tendency claim (namespace `tendency`, e.g. "low-grade recurring frustration around commuting").
+2. **Ledger**: write a `tendency_contributions` row `(tombstone_id, tendency_claim_id, contribution_vector)` — numeric signature deltas only, no content. The tendency's value is defined as a recency-weighted aggregate *recomputable from its surviving ledger rows*, so any single contribution can be removed exactly later.
+3. **Tombstone**: replace the item with a minimal shadow row — memory class, affect label, and time range retained; content, embeddings, and evidence cryptographically deleted per F7 rules.
+4. **Audit**: one `forget_audit_log` row marked `mode: distilled`.
 
-`identity`, `life_event`, and `relationship` classes are exempt — they follow existing F7 semantics only. User-initiated forgetting (explicit delete) remains total deletion, *including* any tendency contribution from the deleted item (right-to-forget takes precedence over distillation).
+`identity`, `life_event`, and `relationship` classes are exempt — they follow existing F7 semantics only. User-initiated forgetting (explicit delete) remains total deletion, *including* for already-distilled items: the tombstone's ledger rows are deleted and each affected tendency is recomputed from its remaining contributions (deleted entirely if none remain). Right-to-forget takes precedence over distillation, and the ledger itself retains nothing that would reconstruct deleted content.
 
-**Acceptance**: distilled tendencies appear in retrieval as semantic claims with `origin: distilled`; tombstones are content-free (verified against export); explicit user deletion removes tendency contributions; anchored classes never distill.
+**Acceptance**: distilled tendencies appear in retrieval as semantic claims with `origin: distilled`; tombstones and ledger rows are content-free (verified against export); explicit deletion of an already-distilled item removes its ledger rows and recomputes affected tendencies exactly (property test: distill → forget ≡ never distilled); anchored classes never distill.
 
 ### IL6 — Recall Reconsolidation (extends F2)
 

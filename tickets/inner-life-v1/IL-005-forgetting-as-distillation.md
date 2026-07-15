@@ -19,21 +19,23 @@ Make passive forgetting distill instead of delete: decayed casual/transient/emot
 
 ## Deliverables
 
-- Distillation step in the F7 decay path: affective/topical signature → `tendency` namespace claim, EMA-merged 0.85/0.15, `origin: distilled`.
+- Distillation step in the F7 decay path: affective/topical signature → `tendency` namespace claim, `origin: distilled`.
+- `tendency_contributions` ledger (tombstone_id, tendency_claim_id, contribution_vector — numeric only, no content); tendency values recomputable from surviving ledger rows.
 - Tombstone rows retaining only memory class, affect label, and time range; content/embeddings/evidence cryptographically deleted.
 - `forget_audit_log` mode `distilled`.
-- User-initiated deletion also removes the item's tendency contribution (right-to-forget precedence).
+- User-initiated deletion of a distilled item deletes its ledger rows and recomputes affected tendencies (right-to-forget precedence).
 - Class exemptions: identity, life_event, relationship never distill.
 
 ## Acceptance
 
-- Distilled tendencies retrievable as semantic claims; tombstones verified content-free via export.
-- Explicit deletion removes tendency contributions (test).
+- Distilled tendencies retrievable as semantic claims; tombstones and ledger rows verified content-free via export.
+- Property test: distill → explicit forget ≡ never distilled (exact tendency recomputation).
 - Exempt classes follow unchanged F7 behavior (regression tests pass).
 
 ## Activity Log
 
 - 2026-07-15 16:55 MYT - Ticket created.
+- 2026-07-15 17:40 MYT - Added tendency_contributions ledger per review: EMA-merged aggregates made explicit forget of already-distilled items impossible; tendencies now recompute from surviving ledger rows.
 
 ## Validation
 

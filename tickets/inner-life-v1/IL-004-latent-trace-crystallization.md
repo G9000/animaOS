@@ -23,6 +23,7 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 - Consolidation hook: candidates in [0.25× threshold, threshold) fold into traces additively (`weight ← min(1.0, weight + 0.5 · candidate_score)`, leaky integrator with weekly decay as the leak) with evidence refs.
 - Sleep-time crystallization task: topic weight ≥ θ_c → synthesize one `origin: crystallized` memory listing all contributing evidence, clear topic.
 - Weekly trace decay (×0.98) and table cap.
+- F7 integration: explicit forget (single-item and topic-scoped) deletes matching traces and scrubs evidence_refs to forgotten sources; crystallization re-validates refs at synthesis time.
 
 ## Acceptance
 
@@ -30,11 +31,13 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 - Crystallized memories carry complete evidence provenance.
 - Duplicate-topic churn does not double-count (claim-slot dedup reused).
 - Trace table bounded under sustained load (test).
+- Forgotten evidence can never crystallize: forget-then-sleep test proves no memory synthesizes from removed refs.
 
 ## Activity Log
 
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:25 MYT - Switched trace update from EMA to additive leaky integrator per review (EMA converges below threshold and never crystallizes).
+- 2026-07-15 17:40 MYT - Brought latent traces inside the F7 deletion boundary per review (forget scrubs traces/refs; crystallization re-validates refs).
 
 ## Validation
 
