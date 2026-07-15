@@ -337,11 +337,17 @@ async def reparse_document_route(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = require_unlocked_session(request)
-    result = reparse_document(
-        runtime_db,
-        user_id=session.user_id,
-        document_id=document_id,
-    )
+    try:
+        result = reparse_document(
+            runtime_db,
+            user_id=session.user_id,
+            document_id=document_id,
+        )
+    except DocumentStoragePathError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     if result.status == "not_found":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if result.status == "pack_not_ready":

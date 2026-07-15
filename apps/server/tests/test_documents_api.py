@@ -780,3 +780,22 @@ def test_reparse_document_requires_auth() -> None:
     with managed_test_client("anima-documents-api-") as client:
         response = client.post("/api/documents/1/reparse")
         assert response.status_code == 401
+
+
+def test_reparse_document_returns_400_for_storage_path_error(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+    from anima_server.services.documents import DocumentStoragePathError
+
+    def raise_storage_error(*args: Any, **kwargs: Any) -> Any:
+        raise DocumentStoragePathError("Invalid document storage path.")
+
+    monkeypatch.setattr(documents_route, "reparse_document", raise_storage_error)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-storage-error-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid document storage path."
