@@ -56,7 +56,7 @@ Purpose: land the state primitive everything else reads.
 
 Purpose: the three trace-level mechanisms; none depend on Phases 0–1.
 
-- [ ] IL-004: soul migration for `latent_traces`; consolidation floor-band hook with additive leaky-integrator fold (`weight ← min(1.0, weight + 0.5·score)`); sleep-time crystallization task with full evidence provenance; weekly decay + cap; F7 forget hooks scrub matching traces/refs and crystallization re-validates refs at synthesis time.
+- [ ] IL-004: new candidate scoring/rejection flow (score `s` from importance/salience/evidence, promotion threshold θ_p, behavior-preserving default; `minor_observation` extraction category); soul migration for `latent_traces`; consolidation floor-band hook with additive leaky-integrator fold (`weight ← min(1.0, weight + 0.5·s)`); sleep-time crystallization task with full evidence provenance; weekly decay + cap; F7 forget hooks scrub matching traces/refs and crystallization re-validates refs at synthesis time.
 - [ ] IL-005: distillation step in the F7 decay path (tendency claims, `tendency_contributions` ledger with numeric-only rows, content-free tombstones, `mode: distilled` audit); explicit forget of distilled items deletes ledger rows and recomputes tendencies exactly; class exemptions; F7 regression suite stays green.
 - [ ] IL-006: reconsolidation hook on context inclusion in retrieval assembly; η = 0.05, lifetime drift cap Σ|Δ| ≤ 0.3, per-adjustment provenance, identity-class exemption; reduced-strength mode (η = 0.02) exported for the dream cycle.
 - [ ] Validation: per-feature tests; export audit proves tombstones content-free; retrieval latency delta < 1 ms/item.

@@ -20,7 +20,9 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 ## Deliverables
 
 - `latent_traces` table (topic_key, kind, weight, evidence_refs, first_seen, last_seen) + migration, soul-store scoped.
-- Consolidation hook: candidates in [0.25× threshold, threshold) fold into traces additively (`weight ← min(1.0, weight + 0.5 · candidate_score)`, leaky integrator with weekly decay as the leak) with evidence refs.
+- New candidate scoring/rejection flow (none exists today — plan_candidate_promotion() never rejects by score): normalized score `s = clamp01(0.6·importance/5 + 0.3·emotional_salience + 0.1·evidence_strength)` with promotion threshold θ_p, calibrated behavior-preserving (importance ≥ 2 promotes as today).
+- Extraction prompt update: emit `minor_observation` candidates currently omitted (the actual source of sub-threshold volume).
+- Consolidation hook: candidates with s in [0.25·θ_p, θ_p) fold into traces additively (`weight ← min(1.0, weight + 0.5·s)`, leaky integrator with weekly decay as the leak) with evidence refs.
 - Sleep-time crystallization task: topic weight ≥ θ_c → synthesize one `origin: crystallized` memory listing all contributing evidence, clear topic.
 - Weekly trace decay (×0.98) and table cap.
 - F7 integration: explicit forget (single-item and topic-scoped) deletes matching traces and scrubs evidence_refs to forgotten sources; crystallization re-validates refs at synthesis time.
@@ -38,6 +40,7 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:25 MYT - Switched trace update from EMA to additive leaky integrator per review (EMA converges below threshold and never crystallizes).
 - 2026-07-15 17:40 MYT - Brought latent traces inside the F7 deletion boundary per review (forget scrubs traces/refs; crystallization re-validates refs).
+- 2026-07-15 18:15 MYT - Specified the candidate scoring/rejection flow explicitly per review: no promotion threshold exists today, so IL4 adds one (behavior-preserving default) plus minor_observation extraction.
 
 ## Validation
 
