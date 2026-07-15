@@ -1,6 +1,6 @@
-"""Tiered PDF text extraction: pypdf fast path, optional Docling quality tier.
+"""Tiered PDF text extraction: preview text fast path, optional Docling quality tier.
 
-The fast path (pypdf) is the default for born-digital PDFs. When the
+The fast path (preview text via pdfium) is the default for born-digital PDFs. When the
 ``docling`` extra is installed, poor fast-path output — scanned pages, near-
 empty extractions — escalates to Docling, which runs layout analysis plus OCR
 and exports per-page markdown. Both tiers return the same ``PageText`` shape,
@@ -27,7 +27,7 @@ PARSER_TIER_AUTO = "auto"
 _DOCLING_PAGE_BREAK = "\f"
 
 # Escalation heuristics (auto tier): a page this sparse suggests a scan or a
-# layout pypdf could not read; escalate when at least this share of pages is
+# layout preview text could not read; escalate when at least this share of pages is
 # sparse.
 _SPARSE_PAGE_WORD_COUNT = 15
 _SPARSE_PAGE_SHARE_THRESHOLD = 0.5

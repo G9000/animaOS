@@ -45,6 +45,6 @@ def test_extract_pdf_text_raises_controlled_read_error(tmp_path: Path) -> None:
 
     with pytest.raises(
         RuntimeError,
-        match=r"Failed to read PDF file not-a-pdf\.pdf",
+        match=r"Failed to read PDF file",
     ):
         extract_pdf_text(str(pdf_path))

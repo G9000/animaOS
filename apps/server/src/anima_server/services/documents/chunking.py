@@ -139,7 +139,7 @@ def chunk_pages_structured(
 ) -> list[ExtractedDocumentChunk]:
     """Structure-aware chunking for the PDF workflow.
 
-    Pages (plain pypdf text or Docling markdown) are structured into heading
+    Pages (preview text or Docling markdown) are structured into heading
     sections, then chunked along section boundaries; `section_title` records
     the heading path. Overlap applies within oversized sections only —
     section boundaries are semantic boundaries.

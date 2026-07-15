@@ -30,7 +30,6 @@ dependencies = [
   "mnemonic>=0.21",
   "rank-bm25>=0.2.2",
   "json-repair>=0.30.0",
-  "pypdf>=6.14.2",
   "pypdfium2>=4.30",
   "trafilatura>=2.0",
 ]
