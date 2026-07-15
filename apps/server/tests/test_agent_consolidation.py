@@ -447,6 +447,115 @@ async def test_run_background_extraction_ignores_incomplete_emotion_payload(
 
 
 @pytest.mark.asyncio
+async def test_rejected_emotion_signal_does_not_move_affect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sub-threshold detections are rejected by record_emotional_signal and
+    must not move the affect state either."""
+    from anima_server.models.runtime_consciousness import AffectStateRow
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            emotion={
+                "emotion": "excited",
+                "confidence": 0.1,
+                "trajectory": "stable",
+                "evidence": "barely a flicker",
+            },
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="hello there",
+                assistant_response="hello",
+                runtime_db_factory=rt_factory,
+                trigger_soul_writer=False,
+            )
+
+            with rt_factory() as rt_db:
+                row = rt_db.scalar(
+                    select(AffectStateRow).where(AffectStateRow.user_id == 1)
+                )
+
+        assert row is None
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_accepted_emotion_signal_moves_affect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.models.runtime_consciousness import AffectStateRow
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            emotion={
+                "emotion": "excited",
+                "confidence": 0.9,
+                "trajectory": "stable",
+                "evidence": "exclamation marks everywhere",
+            },
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            rt_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="this is great news",
+                assistant_response="wonderful",
+                runtime_db_factory=rt_factory,
+                trigger_soul_writer=False,
+            )
+
+            with rt_factory() as rt_db:
+                row = rt_db.scalar(
+                    select(AffectStateRow).where(AffectStateRow.user_id == 1)
+                )
+
+        assert row is not None
+        assert row.valence > 0.0
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
 async def test_llm_extraction_failure_creates_retryable_work() -> None:
     from anima_server.models.runtime_memory import MemoryExtractionFailure
 

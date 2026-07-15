@@ -571,7 +571,7 @@ async def run_background_extraction(
 
                     # Persist detected emotion (was previously only logged)
                     if emotion_payload and emotion_name:
-                        record_emotional_signal(
+                        emotion_signal = record_emotional_signal(
                             rt_db,
                             user_id=user_id,
                             emotion=emotion_name,
@@ -586,12 +586,16 @@ async def run_background_extraction(
                                 emotion_payload.get("trajectory", "stable")
                             ),
                         )
-                        _apply_affect_turn_deltas_best_effort(
-                            rt_factory,
-                            user_id=user_id,
-                            emotion_name=emotion_name,
-                            now=now,
-                        )
+                        # Only accepted signals move affect: a None return
+                        # means the detection was rejected (unknown emotion
+                        # or sub-threshold confidence).
+                        if emotion_signal is not None:
+                            _apply_affect_turn_deltas_best_effort(
+                                rt_factory,
+                                user_id=user_id,
+                                emotion_name=emotion_name,
+                                now=now,
+                            )
 
                     if intent is not None:
                         intent.status = "resolved"
@@ -739,7 +743,11 @@ def _apply_affect_turn_deltas_best_effort(
 
         config = get_affect_config()
         with runtime_db_factory() as affect_db:
-            state = get_affect_state(affect_db, user_id=user_id, config=config)
+            # for_update holds the row lock across read -> mutate -> commit
+            # so overlapping extractions serialize instead of losing deltas.
+            state = get_affect_state(
+                affect_db, user_id=user_id, config=config, for_update=True
+            )
             state = relax(state, now, config)
             state = apply_turn_deltas(
                 state,

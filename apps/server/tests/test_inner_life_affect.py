@@ -367,6 +367,85 @@ def test_store_missing_runtime_db_returns_default() -> None:
     assert state.energy == pytest.approx(DEFAULT_AFFECT_CONFIG.baseline_energy)
 
 
+# --- Write-path locking -----------------------------------------------------
+
+
+def test_get_affect_state_for_update_emits_row_lock() -> None:
+    # with_for_update() is a no-op on SQLite (single-writer there), so
+    # assert at the statement level: the SELECT the write path issues must
+    # carry FOR UPDATE when compiled for PostgreSQL, and must not for
+    # read-only callers.
+    from anima_server.services.agent.inner_life.store import (
+        get_affect_state,
+        save_affect_state,
+    )
+    from sqlalchemy.dialects import postgresql
+
+    with _runtime_session() as runtime_db:
+        save_affect_state(runtime_db, user_id=1, state=_state())
+        runtime_db.commit()
+
+        captured: list[object] = []
+        original_scalar = runtime_db.scalar
+
+        def capturing_scalar(stmt: object, *args: object, **kwargs: object) -> object:
+            captured.append(stmt)
+            return original_scalar(stmt, *args, **kwargs)
+
+        runtime_db.scalar = capturing_scalar  # type: ignore[method-assign]
+
+        get_affect_state(runtime_db, user_id=1, for_update=True)
+        locked_sql = str(captured[-1].compile(dialect=postgresql.dialect()))
+        assert "FOR UPDATE" in locked_sql
+
+        get_affect_state(runtime_db, user_id=1)
+        unlocked_sql = str(captured[-1].compile(dialect=postgresql.dialect()))
+        assert "FOR UPDATE" not in unlocked_sql
+
+
+def test_consolidation_write_path_requests_row_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import consolidation
+
+    engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    RuntimeBase.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    captured: dict[str, bool] = {}
+
+    def capturing_get(
+        runtime_db: Session | None,
+        *,
+        user_id: int,
+        config: object = None,
+        for_update: bool = False,
+    ) -> AffectState:
+        captured["for_update"] = for_update
+        return _state()
+
+    monkeypatch.setattr(consolidation, "get_affect_state", capturing_get)
+    monkeypatch.setattr(
+        consolidation, "save_affect_state", lambda *args, **kwargs: None
+    )
+
+    try:
+        consolidation._apply_affect_turn_deltas_best_effort(
+            factory,
+            user_id=1,
+            emotion_name="excited",
+            now=datetime.now(UTC),
+        )
+    finally:
+        engine.dispose()
+
+    assert captured["for_update"] is True
+
+
 # --- Ambient wiring: affect hint surfaces in the state context --------------
 
 

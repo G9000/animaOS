@@ -46,19 +46,27 @@ def get_affect_state(
     *,
     user_id: int,
     config: AffectConfig = DEFAULT_AFFECT_CONFIG,
+    for_update: bool = False,
 ) -> AffectState:
     """Load the persisted affect vector, seeding a default row on first read.
 
     A missing runtime session (e.g. PostgreSQL unavailable) returns the
     default state without erroring — affect is best-effort ambient state,
     not a hard dependency of the turn pipeline.
+
+    `for_update=True` locks the row (SELECT ... FOR UPDATE) so a
+    read-modify-write caller holds it until commit — overlapping writers
+    serialize instead of silently dropping each other's deltas. On SQLite
+    `with_for_update()` is a no-op, which is acceptable there: the runtime
+    tier on SQLite is single-writer anyway.
     """
     if runtime_db is None:
         return _seed_state(config)
 
-    row = runtime_db.scalar(
-        select(AffectStateRow).where(AffectStateRow.user_id == user_id)
-    )
+    stmt = select(AffectStateRow).where(AffectStateRow.user_id == user_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    row = runtime_db.scalar(stmt)
     if row is None:
         seed = _seed_state(config)
         try:
