@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 20:06 MYT
+- Updated: 2026-07-15 23:43 MYT
 - Started: 2026-07-15 19:37 MYT
-- Completed: 2026-07-15 20:06 MYT
+- Completed: 2026-07-15 23:43 MYT
 
 ## Goal
 
@@ -41,6 +41,8 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
 - 2026-07-15 19:46 MYT - Completed `RWF-001` after normalizing authoritative ticket state, synchronizing both supported parent-table forms, rebuilding the derived initiative index, and passing the recorded validation; set the parent row to `done` while the parent remains `in_progress` for its remaining children.
 - 2026-07-15 20:02 MYT - Reopened `RWF-001` after bidirectional validation exposed the missing `VMI-008` parent row; preserved the prior completion timestamp `2026-07-15 19:46 MYT`, cleared the current completion, and synchronized the parent row to `in_progress` before repair.
 - 2026-07-15 20:06 MYT - Re-completed `RWF-001` after adding `VMI-008` to its parent table and completed history, extending the future validator contract in both directions, and passing the 146-row bidirectional and dashboard checks; prior completion `2026-07-15 19:46 MYT` remains preserved in history.
+- 2026-07-15 23:42 MYT - Reopened `RWF-001` because rebasing onto current `origin/main` added the canonical `inner-life-v1` initiative and made the derived dashboard acceptance stale; preserved the current completion timestamp `2026-07-15 20:06 MYT`, cleared current completion, and synchronized the parent row to `in_progress` before reconciliation.
+- 2026-07-15 23:43 MYT - Re-completed `RWF-001` after adding the normalized `inner-life-v1` parent to the active dashboard and verifying 18 conforming parents, 153 authoritative rows, 153 reverse references, 12 active initiatives, 6 completed initiatives, 1 legacy folder, 18 unique parent links, and 0 graph, classification, or link violations.
 
 ## Validation
 
@@ -50,6 +52,27 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
   - read-only PowerShell bidirectional parent-child parser for both supported table headings, header-derived `Ticket`/`Status` columns, quoted or unquoted cells, parent-row-to-unique-child status equality, and every child `Parent:` reference appearing in exactly one row of its conforming parent
   - read-only PowerShell index parser for the three required sections, normalized parent classification, unique parent links, legacy folders, overview links, and link resolution
   - `rg -n '^## (Active Initiatives|Completed Initiatives|Legacy or Unclassified)\r?$' tickets/README.md`
+  - `bun run check:repo`
+  - PowerShell/Bun graph counter:
+    ```powershell
+    @'
+    import { Glob } from "bun";
+    import { readFile } from "node:fs/promises";
+    import { parseTicketDocument } from "./scripts/check-repo-organization.ts";
+    const docs = [];
+    for await (const path of new Glob("tickets/**/*.md").scan(".")) {
+      const doc = parseTicketDocument(path, await readFile(path, "utf8"));
+      if (doc.ticketId) docs.push(doc);
+    }
+    const parents = docs.filter((doc) => doc.hasAuthoritativeChildTable);
+    const ids = new Set(parents.map((doc) => doc.ticketId));
+    console.log("PARENTS=" + parents.length);
+    console.log("AUTHORITATIVE_ROWS=" + parents.reduce((n, doc) => n + doc.parentRows.length, 0));
+    console.log("REVERSE_REFS=" + docs.filter((doc) => doc.parent && doc.parent !== "none" && ids.has(doc.parent)).length);
+    '@ | bun -
+    ```
+  - read-only PowerShell dashboard-section parser over `tickets/README.md` that resolves every first parent link, derives expected active/completed classification from top-level parent `Status:`, and asserts `12` active, `6` completed, `1` legacy, `18` parent links, `18` unique parent links, and `0` classification errors
+  - ``rg -n '^\- \[Inner Life v1\]\(\./inner-life-v1/IL-000-parent\.md\) \(`backlog`; \[overview\]\(\./inner-life-v1/README\.md\)\)\r?$' tickets/README.md``
   - `git diff --check`
   - `git diff --unified=0 -- tickets`
 - Changed paths:
@@ -86,13 +109,16 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
   - tickets/repo-workflow/RWF-001-ticket-dashboard.md
   - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
   - tickets/visual-memory-image-assets/VMI-000-parent.md
+  - current-base reconciliation: tickets/README.md
+  - current-base reconciliation: tickets/repo-workflow/RWF-001-ticket-dashboard.md
+  - current-base reconciliation: tickets/repo-workflow/RWF-000-parent.md
 - Notes:
   - normalized 25 authoritative headers and 22 authoritative child-status cells across 2 parent trackers; missing or ambiguous child mappings: 0
   - legacy authoritative status search returned no matches (expected `rg` exit 1)
   - non-empty completion/status violations: 0
-  - bidirectional parent-child validation covered 17 parents, 146 authoritative rows, and 146 reverse child references with 0 missing, ambiguous, duplicate, status, or synchronization violations
-  - index validation covered 17 conforming parents: 11 active, 6 completed, and 1 legacy or unclassified folder, with 0 classification or link violations
+  - current bidirectional parent-child validation covers 18 parents, 153 authoritative rows, and 153 reverse child references with 0 missing, ambiguous, duplicate, status, or synchronization violations
+  - current index validation covers 18 conforming parents: 12 active, 6 completed, and 1 legacy or unclassified folder, with 18 unique parent links and 0 classification or link violations
   - all three required index section headings were found; `git diff --check` exited 0
   - final diff inspection found no edits to pre-existing historical prose or timestamps; new prose is limited to the intentional RWF lifecycle/planning entries, the `VMI-000` repair entry, validator-contract clarifications, and the rebuilt `tickets/README.md`
   - `VMI-008` now appears once in the `VMI-000` table and once in completed history using its existing `2026-07-01 13:04 MYT` completion timestamp
-  - residual risks or follow-ups: none for `RWF-001`; implementation of the bidirectional `bun run check:repo` guard remains scheduled for `RWF-003`
+  - residual risks or follow-ups: none for `RWF-001`; the bidirectional `bun run check:repo` guard is implemented and passes on the rebased current-main graph

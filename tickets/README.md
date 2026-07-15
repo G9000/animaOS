@@ -7,6 +7,7 @@ Canonical index for repo-native initiatives tracked under `tickets/`.
 - [Capability Module Standard](./agent-capability-modules/ACM-000-parent.md) (`backlog`; [overview](./agent-capability-modules/README.md))
 - [Camera Perception Capability Module](./camera-perception/CAM-000-parent.md) (`in_progress`; [overview](./camera-perception/README.md))
 - [Gateway Runtime Online](./gateway-runtime-online/GWR-000-parent.md) (`backlog`; [overview](./gateway-runtime-online/README.md))
+- [Inner Life v1](./inner-life-v1/IL-000-parent.md) (`backlog`; [overview](./inner-life-v1/README.md))
 - [Local Turso Core and Runtime](./local-turso-core-runtime/LTR-000-parent.md) (`backlog`; [overview](./local-turso-core-runtime/README.md))
 - [Memory Atlas Graph](./memory-atlas-graph/MAG-000-parent.md) (`backlog`; [overview](./memory-atlas-graph/README.md))
 - [Memory Package Boundary Hardening](./memory-package-boundary/MPB-000-parent.md) (`backlog`; [overview](./memory-package-boundary/README.md))

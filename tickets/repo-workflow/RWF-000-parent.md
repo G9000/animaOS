@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 23:23 MYT
+- Updated: 2026-07-15 23:52 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -53,7 +53,7 @@ This table is the execution order; dependency eligibility still controls when ea
 
 ## Completed Tickets
 
-- 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
+- 2026-07-15 23:43 MYT - `RWF-001` reconciled the canonical initiative index with current `origin/main`, including `inner-life-v1`, and revalidated the 18-parent/153-row graph and 12-active/6-completed/1-legacy dashboard.
 - 2026-07-15 20:35 MYT - `RWF-002` clarified the legacy-continuation and approved-cutover policy while preserving scratchboard history.
 - 2026-07-15 21:33 MYT - `RWF-003` completed the read-only repository organization validator after final focused, live-clean, template, and bidirectional validation.
 - 2026-07-15 21:58 MYT - `RWF-004` reconciled repository navigation and hygiene, including manifest-grounded contributor command and language maps.
@@ -100,6 +100,10 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 23:15 MYT - Re-completed `RWF-005` after reproducible validation from base `681dd11dc399faa8a593ef9e73dcb4796b91d5ad` confirmed exactly the three Task 9 paths with empty production-source and staged-skill filters; added one current completion-history entry and kept `RWF-000` `in_progress` with ownership unchanged for `RWF-006`.
 - 2026-07-15 23:21 MYT - Synchronized `RWF-006` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; confirmed `RWF-001` through `RWF-005` are `done`, preserved parent ownership, and kept the parent `in_progress` through clean implementation-head review.
 - 2026-07-15 23:23 MYT - Recorded Task 10 integration evidence for implementation head `71dc234e3e114b3d5fb034803e0e2dcaf2822f0d`: focused tests, live repository and skill validation, nine-project Nx discovery, server/desktop/Animus build, merge-base diff, and all scope exclusions passed; kept the parent and `RWF-006` row `in_progress` with parent ownership unchanged for Tasks 11-13.
+- 2026-07-15 23:42 MYT - Reopened `RWF-001` after rebasing onto current `origin/main` introduced the canonical `inner-life-v1` parent and made its derived dashboard acceptance stale; removed the current completed-history entry, preserved completion `2026-07-15 20:06 MYT` here and in child activity, kept `RWF-006` and the parent `in_progress`, and preserved parent ownership.
+- 2026-07-15 23:43 MYT - Re-completed `RWF-001` after reconciling `tickets/README.md` with the canonical `inner-life-v1` metadata and verifying 18 parents, 153 authoritative rows, 153 reverse references, 12 active initiatives, 6 completed initiatives, 1 legacy folder, and 18 unique parent links; re-added one current completed-history entry and kept `RWF-006` and the parent `in_progress` with ownership unchanged.
+- 2026-07-15 23:46 MYT - Recorded the current-main integration reconciliation: preserved safety ref `codex/repo-organization-project-management-pre-rebase`, resolved the expected cleanup-spec add/add from `REBASE_HEAD`, rebased all 29 commits onto `origin/main` `408d9b64abf639739a2d044abfda647958e7ff3e`, revalidated the 18-parent/153-row graph and 12-active/6-completed/1-legacy dashboard, and kept `RWF-006` and the parent `in_progress` with parent ownership unchanged.
+- 2026-07-15 23:52 MYT - Recorded post-reconciliation verification at 0 behind/30 ahead and 54 planned paths with a clean HEAD merge tree, zero production-source hotspots, exactly two staged-skill files, and a clean local worktree before this evidence amendment; kept integration state open and parent ownership unchanged.
 
 ## Validation
 
@@ -184,7 +188,7 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 
-### Current Task 10 integration-head validation
+### Superseded pre-rebase Task 10 integration-head validation
 
 - Exact commands:
   - `rg -n '^- Status: done\r?$' tickets/repo-workflow -g 'RWF-00[1-5]-*.md'`
@@ -216,3 +220,35 @@ The full executable replay-manifest parser, exact YAML/frontmatter commands, pri
 - Task 10 changed paths:
   - tickets/repo-workflow/RWF-006-integration-pr-review.md
   - tickets/repo-workflow/RWF-000-parent.md
+
+### Current-main Task 10 rebase and dashboard reconciliation
+
+- Exact commands:
+  - `git fetch origin main`
+  - `git branch codex/repo-organization-project-management-pre-rebase HEAD`
+  - `git -c core.editor=true rebase origin/main`
+  - `git ls-files -u -- docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md`
+  - `git restore --source=REBASE_HEAD --worktree -- docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md`
+  - `git add -- docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md`
+  - `git -c core.editor=true rebase --continue`
+  - `git diff --name-only codex/repo-organization-project-management-pre-rebase..HEAD -- docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md`
+  - `git merge-base HEAD origin/main`
+  - `git rev-list --left-right --count origin/main...HEAD`
+  - `git merge-tree --write-tree origin/main HEAD`
+  - `bun test tests/repo-organization.test.ts`
+  - `bun run check:repo`
+  - PowerShell/Bun graph counter recorded verbatim under current RWF-001 validation.
+  - read-only dashboard parser recorded under the current RWF-006 validation, asserting 12 active, 6 completed, 1 legacy, 18 unique parent links, and classification from normalized parent status
+  - `python C:\Users\leoca\.codex\skills\.system\skill-creator\scripts\quick_validate.py .codex-skill-staging/anima-project-management`
+  - `bunx nx show projects`
+  - `bun run build`
+  - `git diff --check origin/main...HEAD`
+  - PowerShell production-source and exact staged-skill assertions over `git diff --name-only origin/main...HEAD`
+- Results:
+  - local safety ref is `142a5c91cd5a14c4708adc93b5feb1f461ca8950`; current base is `408d9b64abf639739a2d044abfda647958e7ff3e`, with merge base equal to `origin/main`, ahead/behind `0 29`, and clean merge-tree equal to the rebased HEAD tree
+  - expected add/add stages were origin blob `da8dfb3825135c524bbaa8bb917d190fe1439a33` and replayed blob `79bc20274dbfc955865f79af94306fc1bdf86ef0`; final spec blob `c05594c1629bbece1b9b2bb566403214163b694f` matches the safety ref
+  - current graph is 18 parents, 153 authoritative rows, 153 reverse refs, and 0 violations; dashboard is 12 active, 6 completed, 1 legacy, 18 unique parent links, and 0 classification errors
+  - focused suite passed 32 tests/59 assertions; live organization and skill validation passed; Nx discovered 9 projects; server/desktop/Animus root build passed with only the non-blocking 2,137.26 kB Vite chunk warning
+  - pre-reconciliation committed range is 29 commits and 54 paths, with 0 production-source hotspots and exactly 2 intended staged-skill paths
+  - final post-reconciliation range is 30 commits and the same 54 paths, ahead/behind `0 30`, with a clean merge tree equal to HEAD, 0 production-source hotspots, and exactly 2 intended staged-skill paths
+  - current reconciliation paths are tickets/README.md, RWF-001, RWF-006, and RWF-000; RWF-006 and the parent remain `in_progress`, Completed remains empty, parent ownership is unchanged, and no external action occurred
