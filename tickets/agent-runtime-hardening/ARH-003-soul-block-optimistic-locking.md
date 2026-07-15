@@ -1,6 +1,6 @@
 # ARH-003 - Optimistic locking for soul-block writes
 
-- Status: in-review
+- Status: done
 - Priority: P0
 - Scope: `apps/server`
 - Parent: `ARH-000`

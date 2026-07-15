@@ -34,6 +34,8 @@ under human supervision
 
 ---
 
+Repository navigation: [canonical directory map](docs/architecture/system/directory-structure.md).
+
 ## Requirements
 
 ### LLM (Local Inference)

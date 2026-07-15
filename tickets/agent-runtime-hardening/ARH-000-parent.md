@@ -1,6 +1,6 @@
 # ARH-000 - Agent Runtime Hardening Parent Tracker
 
-- Status: backlog
+- Status: done
 - Priority: P0
 - Scope: `apps/server`, `docs/superpowers/plans`, `tickets/agent-runtime-hardening`
 - Depends on: none
@@ -20,19 +20,19 @@ Track the runtime hardening initiative that fixes silently-broken paths, adds du
 
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
-| `ARH-001` | Fix Anthropic LLM compaction endpoint | `in-review` | none |
-| `ARH-002` | Cancellation-safe turn lifecycle | `in-review` | none |
-| `ARH-003` | Optimistic locking for soul-block writes | `in-review` | none |
-| `ARH-004` | Background retry hygiene and persisted gates | `in-review` | none |
-| `ARH-005` | LLM client robustness and capability gating | `in-review` | none |
-| `ARH-006` | Anthropic prompt caching with stable prefix | `in-review` | `ARH-005` |
-| `ARH-007` | Dirty-checks for background cognition | `in-review` | `ARH-004` |
-| `ARH-008` | Context and token hygiene | `in-review` | none |
-| `ARH-009` | Embedding contract and store consistency | `in-review` | none |
-| `ARH-010` | Crash-durable memory extraction | `in-review` | `ARH-004` |
-| `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `in-review` | none |
-| `ARH-012` | Retrieval scoring correctness | `in-review` | none |
-| `ARH-013` | Deduplicate drifted turn and sleep logic | `in-review` | `ARH-002` |
+| `ARH-001` | Fix Anthropic LLM compaction endpoint | `done` | none |
+| `ARH-002` | Cancellation-safe turn lifecycle | `done` | none |
+| `ARH-003` | Optimistic locking for soul-block writes | `done` | none |
+| `ARH-004` | Background retry hygiene and persisted gates | `done` | none |
+| `ARH-005` | LLM client robustness and capability gating | `done` | none |
+| `ARH-006` | Anthropic prompt caching with stable prefix | `done` | `ARH-005` |
+| `ARH-007` | Dirty-checks for background cognition | `done` | `ARH-004` |
+| `ARH-008` | Context and token hygiene | `done` | none |
+| `ARH-009` | Embedding contract and store consistency | `done` | none |
+| `ARH-010` | Crash-durable memory extraction | `done` | `ARH-004` |
+| `ARH-011` | TTFT: parallel assembly and single-decrypt retrieval | `done` | none |
+| `ARH-012` | Retrieval scoring correctness | `done` | none |
+| `ARH-013` | Deduplicate drifted turn and sleep logic | `done` | `ARH-002` |
 
 ## Deliverables
 

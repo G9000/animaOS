@@ -5,11 +5,11 @@
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
 - Depends on: none
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 20:55 MYT
+- Updated: 2026-07-16 00:26 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -102,6 +102,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 17:58 MYT - Published PCF-002 Step 6 as draft PR #96 (`codex/pcf-002-catalog-head`) against `main`; the parent remains `in_progress` while review and the later PCF-002 slices continue.
 - 2026-07-15 19:29 MYT - Began PCF-002 Step 7 from merged `origin/main` in `codex/pcf-002-commit-coordinator`; the parent remains `in_progress` while the Core-wide commit coordinator is implemented and validated separately from Step 8 failure injection.
 - 2026-07-15 20:55 MYT - Completed PCF-002 Step 7 with a review-clean Core-wide commit coordinator: exact prepared object/wrapped-key binding, root-anchored kernel exclusion, pinned-layout validation, complete mutation preconditions, shadow-only validation publication, authenticated irreversible cutover receipts, ordered catalog/HEAD publication, and post-unlock invalidation. Exact Rust 1.75, combined native, Python-feature, strict clippy, workspace build, provenance, and release-notice gates passed. The initiative and PCF-002 remain `in_progress`; Step 8 crash-boundary failure injection is next.
+- 2026-07-16 00:26 MYT - Synchronized `Owner: Codex` from the recorded PCF-002 claim/start history and active PR lineage; preserved the parent and PCF-002 `in_progress` state without inventing or transferring ownership.
 
 ## Validation
 

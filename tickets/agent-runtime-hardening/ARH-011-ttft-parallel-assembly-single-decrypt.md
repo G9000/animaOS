@@ -1,6 +1,6 @@
 # ARH-011 - TTFT: parallel assembly and single-decrypt retrieval
 
-- Status: in-review
+- Status: done
 - Priority: P2
 - Scope: `apps/server`
 - Parent: `ARH-000`

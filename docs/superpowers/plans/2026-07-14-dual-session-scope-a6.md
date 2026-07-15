@@ -650,7 +650,7 @@ git commit -m "sleep_agent: adopt session_scope in heat-decay and foresight task
 
 **Files:**
 - Create: `tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md`
-- Modify: `docs/audits/2026-06-11-agent-server-audit.md` (Deferred section, ~line 281)
+- Modify: `docs/audit/2026-06-11-agent-server-audit.md` (Deferred section, ~line 281)
 
 - [ ] **Step 1: Write the ticket** (frontmatter style mirrors `tickets/memory-package-boundary/MPB-000-parent.md`):
 
@@ -661,7 +661,7 @@ git commit -m "sleep_agent: adopt session_scope in heat-decay and foresight task
 - Priority: P2
 - Scope: `apps/server/src/anima_server/db`, `services/agent/soul_writer.py`, `services/agent/eager_consolidation.py`, `services/agent/sleep_agent.py`
 - Parent: none
-- Depends on: docs/audits/2026-06-11-agent-server-audit.md (finding A-6)
+- Depends on: docs/audit/2026-06-11-agent-server-audit.md (finding A-6)
 - Owner: unassigned
 - PRD: docs/prds/three-tier-architecture/P2-runtime-messages.md (§ dual-session pattern)
 - Plan: docs/superpowers/plans/2026-07-14-dual-session-scope-a6.md
@@ -692,7 +692,7 @@ mechanical call sites (9 in this pass).
 ```
 
 - [ ] **Step 2: Update the audit doc's Deferred list.** In
-`docs/audits/2026-06-11-agent-server-audit.md` (~line 281), annotate A-6:
+`docs/audit/2026-06-11-agent-server-audit.md` (~line 281), annotate A-6:
 change the deferred mention to note `A-6: helpers landed + 9 sites migrated
 (ASR-001, 2026-07-14); inner_monologue/consolidation/service.py sites remain`.
 Keep A-4/A-5 as-is.
@@ -700,7 +700,7 @@ Keep A-4/A-5 as-is.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tickets/agent-server-audit-remediation/ docs/audits/2026-06-11-agent-server-audit.md
+git add tickets/agent-server-audit-remediation/ docs/audit/2026-06-11-agent-server-audit.md
 git commit -m "tickets: ASR-001 dual-session-scope (A-6) status + audit doc note"
 ```
 
@@ -727,7 +727,7 @@ Expected: no matches in the six migrated blocks (other files untouched).
 git push -u origin fix/a6-dual-session-scope
 gh pr create --title "Fix audit A-6: shared session_scope/dual_session_scope helpers" --body "$(cat <<'EOF'
 ## Summary
-- Adds `anima_server.db.helpers` with `session_scope()` / `dual_session_scope()` per audit finding A-6 (docs/audits/2026-06-11-agent-server-audit.md)
+- Adds `anima_server.db.helpers` with `session_scope()` / `dual_session_scope()` per audit finding A-6 (docs/audit/2026-06-11-agent-server-audit.md)
 - Encodes the dual-store commit ordering rule: soul first, runtime second (at-least-once promotion; Soul Writer content-hash idempotency absorbs retries)
 - Migrates 9 hand-rolled sites: soul_writer Phase 4 (dual), eager_consolidation ×6, sleep_agent ×2
 - Ticket: tickets/agent-server-audit-remediation/ASR-001-dual-session-scope.md

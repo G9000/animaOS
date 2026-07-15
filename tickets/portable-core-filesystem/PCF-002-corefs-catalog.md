@@ -5,11 +5,11 @@
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
 - Depends on: `PCF-001`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 20:55 MYT
+- Updated: 2026-07-16 00:26 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -81,6 +81,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 17:58 MYT - Published the Step 6 catalog/HEAD slice as draft PR #96 (`codex/pcf-002-catalog-head`) against `main`. The PR description records the completed Step 6 boundary, 86 Rust 1.75 CoreFS tests, 304 combined native tests, workspace build, and the explicitly deferred Step 7+ work.
 - 2026-07-15 19:29 MYT - Began PCF-002 Step 7 in isolated worktree `codex/pcf-002-commit-coordinator` from merged `origin/main` at `408d9b64`. Scope is the Core-wide commit coordinator: prepared immutable revisions, kernel-backed exclusive locking with PID/process-start ownership metadata, authenticated HEAD/catalog reload, typed path/revision revalidation, ordered catalog-to-HEAD publication, and post-commit invalidation. Step 8 crash-boundary injection remains deferred. Dependency setup completed and the Rust 1.75 CoreFS baseline passed all 86 tests.
 - 2026-07-15 20:55 MYT - Completed PCF-002 Step 7 after two requirements and production/security review passes. The coordinator now prepares bounded authenticated object revisions and their exact wrapped DEKs outside the lock; anchors interprocess exclusion to non-replaceable handles; validates pinned Core layout identity; reloads authenticated state; requires complete source/destination precondition coverage; keeps converter output on `VALIDATION_HEAD`; publishes catalog, cutover receipt, then authoritative `HEAD`; preserves irreversible marker continuity; and emits invalidation only after unlock. Adversarial tests cover PID reuse, lock/path replacement, wrapper mismatch, stale paths, omitted preconditions, replayed validation HEAD, and invalidation failure. Step 8 failure injection remains separate, so PCF-002 stays `in_progress`.
+- 2026-07-16 00:26 MYT - Synchronized `Owner: Codex` from this ticket's explicit claim/start entries and active PR #91/#94/#96 lineage; preserved `in_progress` because later PCF-002 slices remain open.
 
 ## Validation
 

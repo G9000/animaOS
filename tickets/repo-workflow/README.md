@@ -6,14 +6,21 @@ Agents claiming work in this folder should follow [prd-ticket-workflow.md](../..
 
 Parent tracker: [RWF-000-parent.md](./RWF-000-parent.md)
 
-## Order
+## Execution Order
 
-1. `RWF-001` Add top-level tickets dashboard
-2. `RWF-002` Mark scratchboard legacy and add migration checklist
-3. `RWF-003` Add ticket metadata validation
+1. `RWF-005` Add the anima project-management skill
+2. `RWF-001` Rebuild the canonical ticket initiative index
+3. `RWF-002` Mark scratchboard legacy and add migration checklist
+4. `RWF-003` Add ticket metadata validation
+5. `RWF-004` Reconcile repository documentation and hygiene
+6. `RWF-006` Validate, publish, and complete PR review
 
 ## Done Condition
 
-- Repo-local planning has a single dashboard for active initiatives.
+- Repo-local planning has one concise index classifying active, completed, and legacy or unclassified initiatives from parent metadata.
 - New work uses tickets instead of scratchboard.
-- Ticket metadata and parent-child consistency can be checked mechanically.
+- Repository metadata, parent-child consistency, manifests, documentation hygiene, tracked log state, and the scratchboard marker can be checked mechanically and read-only.
+- The repo-owned project-management skill is integrated and supported by RED-GREEN-REFACTOR evaluation evidence.
+- Implementation tickets may close after their local acceptance criteria pass. `RWF-006` and `RWF-000` remain `in_progress` through a clean current-head review of the implementation head.
+- Task 13 then records both as `done` in a closeout metadata commit, pushes it, and posts a fresh exact `@codex review` request.
+- Review of the final closeout head is a terminal guard. If actionable feedback invalidates acceptance, reopen the affected child, `RWF-006`, and `RWF-000`, fix, close, push, and review again. Never merge without separate user authorization.
