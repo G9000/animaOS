@@ -9,7 +9,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 21:06 MYT
+- Updated: 2026-07-15 21:14 MYT
 - Started: 2026-07-15 20:43 MYT
 - Completed:
 
@@ -46,6 +46,7 @@ Add one read-only organization validator that reports repository metadata and hy
 - 2026-07-15 20:43 MYT - Codex claimed `RWF-003` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; dependency `RWF-001` is `done`, no competing claim was visible, and the child and parent row were set to `in_progress`.
 - 2026-07-15 20:53 MYT - Added the read-only validator, injected CLI result boundary, root `check:repo` command, and 24 focused tests through strict RED/GREEN cycles; live validation has zero ticket violations and intentionally leaves `RWF-003` `in_progress` until Task 8 removes the two scheduled hygiene findings.
 - 2026-07-15 21:06 MYT - Fixed the review-discovered Markdown table boundary defect through regression-first TDD: escaped pipes and pipes inside inline code no longer shift authoritative Ticket or Status columns; kept the child and parent row `in_progress` pending Task 8 hygiene.
+- 2026-07-15 21:14 MYT - Corrected the 21:06 inline-code model after second review: GFM table pipes require backslash escaping even inside code spans, so the tokenizer now uses only consecutive-backslash parity and ignores backticks; kept the child and parent row `in_progress` pending Task 8 hygiene.
 
 ## Validation
 
@@ -55,6 +56,8 @@ Add one read-only organization validator that reports repository metadata and hy
   - `bun test tests/repo-organization.test.ts` (final GREEN)
   - `bun test tests/repo-organization.test.ts` (escaped-pipe review RED)
   - `bun test tests/repo-organization.test.ts` (escaped-pipe review GREEN)
+  - `bun test tests/repo-organization.test.ts` (GFM parity review RED)
+  - `bun test tests/repo-organization.test.ts` (GFM parity review GREEN)
   - `bun run check:repo`
   - `rg -n '^- (PRD|Spec|Plan): none\r?$' tickets/TEMPLATE.md`
   - read-only Bun assertion using `parseTicketDocument`, `loadRepositorySnapshot`, and `collectOrganizationViolations`
@@ -77,4 +80,10 @@ Add one read-only organization validator that reports repository metadata and hy
   - escaped-pipe review GREEN passed 26 tests with 50 assertions and 0 failures after replacing naive splitting with a focused scanner for backslash escapes and matching backtick delimiter runs
   - review follow-up changed paths: `scripts/check-repo-organization.ts`, `tests/repo-organization.test.ts`, `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`, and `tickets/repo-workflow/RWF-000-parent.md`
   - post-fix live validation still reports only deprecated `docs/audits` and tracked root `debug.log`; 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
+  - the 21:06 raw-inline-code-pipe test and backtick-state model were invalid under GFM and are superseded by the second review evidence below; code spans do not protect unescaped table pipes
+  - GFM parity review RED passed 27 tests and failed 2 regressions with 53 assertions: a backslash immediately before a closing backtick and an unmatched backtick both caused the later Status cell to parse as empty
+  - GFM parity review GREEN passed 29 tests with 53 assertions and 0 failures; valid escaped code-span pipes and odd/even consecutive-backslash cases are covered
+  - the simplified tokenizer ignores backticks and splits only on pipes preceded by an even number of consecutive backslashes, including parity-aware leading and trailing delimiters
+  - second-review changed paths: `scripts/check-repo-organization.ts`, `tests/repo-organization.test.ts`, `tickets/repo-workflow/RWF-003-ticket-metadata-validation.md`, and `tickets/repo-workflow/RWF-000-parent.md`
+  - second-review live validation still reports only deprecated `docs/audits` and tracked root `debug.log`; 17 conforming parents, 146 authoritative rows, 146 reverse child references, and 0 ticket violations
   - residual follow-up: Task 8 must remove the two live hygiene findings before this ticket can close

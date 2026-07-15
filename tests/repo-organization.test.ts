@@ -188,7 +188,7 @@ describe("ticket parsing", () => {
     ]);
   });
 
-  test("does not split an escaped pipe inside a parent-row title", () => {
+  test("does not split a pipe preceded by an odd backslash count", () => {
     const parsed = parseTicketDocument(
       "tickets/example/ABC-000-parent.md",
       [
@@ -206,7 +206,7 @@ describe("ticket parsing", () => {
     ]);
   });
 
-  test("does not split a pipe inside inline code in a parent-row title", () => {
+  test("does not split a GFM-escaped pipe inside inline code", () => {
     const parsed = parseTicketDocument(
       "tickets/example/ABC-000-parent.md",
       [
@@ -215,7 +215,61 @@ describe("ticket parsing", () => {
         "## Child Tickets",
         "| Ticket | Title | Status |",
         "| --- | --- | --- |",
-        "| ABC-001 | `A | B` | done |",
+        "| ABC-001 | `A \\| B` | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.parentRows).toEqual([
+      { ticketId: "ABC-001", status: "done" },
+    ]);
+  });
+
+  test("splits after a backslash immediately before a closing backtick", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Status |",
+        "| --- | --- | --- |",
+        "| ABC-001 | Path `C:\\` behavior | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.parentRows).toEqual([
+      { ticketId: "ABC-001", status: "done" },
+    ]);
+  });
+
+  test("splits after an unmatched backtick literal", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Status |",
+        "| --- | --- | --- |",
+        "| ABC-001 | literal ` marker | done |",
+      ].join("\n"),
+    );
+
+    expect(parsed.parentRows).toEqual([
+      { ticketId: "ABC-001", status: "done" },
+    ]);
+  });
+
+  test("splits a pipe preceded by an even backslash count", () => {
+    const parsed = parseTicketDocument(
+      "tickets/example/ABC-000-parent.md",
+      [
+        "# ABC-000 - Parent",
+        "- Status: in_progress",
+        "## Child Tickets",
+        "| Ticket | Title | Note | Status |",
+        "| --- | --- | --- | --- |",
+        "| ABC-001 | Path \\\\| Parser | done |",
       ].join("\n"),
     );
 

@@ -74,36 +74,18 @@ function stripInlineCode(value: string) {
 function tokenizeMarkdownRowCells(row: string) {
   const cells: string[] = [];
   let cell = "";
-  let inlineCodeDelimiterLength: number | undefined;
+  let consecutiveBackslashes = 0;
 
-  for (let index = 0; index < row.length; index += 1) {
-    const character = row[index]!;
-    if (character === "\\" && index + 1 < row.length) {
-      cell += character + row[index + 1]!;
-      index += 1;
-      continue;
-    }
-    if (character === "`") {
-      let runEnd = index + 1;
-      while (row[runEnd] === "`") {
-        runEnd += 1;
-      }
-      const runLength = runEnd - index;
-      if (inlineCodeDelimiterLength === undefined) {
-        inlineCodeDelimiterLength = runLength;
-      } else if (inlineCodeDelimiterLength === runLength) {
-        inlineCodeDelimiterLength = undefined;
-      }
-      cell += row.slice(index, runEnd);
-      index = runEnd - 1;
-      continue;
-    }
-    if (character === "|" && inlineCodeDelimiterLength === undefined) {
+  for (const character of row) {
+    if (character === "|" && consecutiveBackslashes % 2 === 0) {
       cells.push(cell);
       cell = "";
+      consecutiveBackslashes = 0;
       continue;
     }
     cell += character;
+    consecutiveBackslashes =
+      character === "\\" ? consecutiveBackslashes + 1 : 0;
   }
 
   cells.push(cell);
@@ -116,10 +98,14 @@ function parseMarkdownRow(line: string) {
     return undefined;
   }
 
-  const row = trimmed
-    .replace(/^\|/, "")
-    .replace(/\|$/, "");
-  return tokenizeMarkdownRowCells(row).map((cell) => stripInlineCode(cell));
+  const cells = tokenizeMarkdownRowCells(trimmed);
+  if (cells[0] === "") {
+    cells.shift();
+  }
+  if (cells.at(-1) === "") {
+    cells.pop();
+  }
+  return cells.map((cell) => stripInlineCode(cell));
 }
 
 function isSeparatorRow(cells: string[]) {
