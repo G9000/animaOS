@@ -87,12 +87,13 @@ Add `scripts/check-repo-organization.ts` and expose it through a nonbreaking roo
 The validator performs these checks:
 
 1. Every authoritative ticket metadata status and parent child-status table cell belongs to `backlog`, `in_progress`, `blocked`, or `done`.
-2. Every ticket with a non-empty `Completed:` field has `Status: done`.
-3. `tickets/TEMPLATE.md` exposes top-level `PRD:`, `Spec:`, and `Plan:` fields for new tickets.
-4. Every direct child of `apps/` and `packages/` contains at least one recognized project manifest: `package.json`, `project.json`, `pyproject.toml`, or `Cargo.toml`.
-5. The deprecated `docs/audits/` directory does not exist and `docs/audit/` does exist.
-6. `debug.log` is not tracked by Git.
-7. `scratchboard/README.md` exists and identifies the directory as legacy.
+2. Parent-child tracking is bidirectional: every authoritative parent row maps to exactly one child and matches its status, and every child whose `Parent:` references a conforming parent appears in exactly one authoritative row in that parent.
+3. Every ticket with a non-empty `Completed:` field has `Status: done`.
+4. `tickets/TEMPLATE.md` exposes top-level `PRD:`, `Spec:`, and `Plan:` fields for new tickets.
+5. Every direct child of `apps/` and `packages/` contains at least one recognized project manifest: `package.json`, `project.json`, `pyproject.toml`, or `Cargo.toml`.
+6. The deprecated `docs/audits/` directory does not exist and `docs/audit/` does exist.
+7. `debug.log` is not tracked by Git.
+8. `scratchboard/README.md` exists and identifies the directory as legacy.
 
 The completion rule is intentionally one-way: a non-empty `Completed:` requires `done`, but the validator does not require historical `done` tickets to backfill `Completed:`. Likewise, the template-field check applies only to `tickets/TEMPLATE.md`; legacy tickets are not invalid merely because they lack `Spec:`.
 
@@ -121,7 +122,7 @@ Add focused Bun tests under `tests/repo-organization.test.ts` for:
 
 - acceptance of each canonical ticket status;
 - rejection of legacy and unknown statuses;
-- synchronization checks for parent child-status table cells while ignoring activity-log prose;
+- bidirectional parent-child synchronization checks, including missing, ambiguous, duplicate, or mismatched parent rows and child `Parent:` references, while ignoring activity-log prose;
 - rejection of a non-`done` ticket with a non-empty `Completed:` field;
 - detection of a missing `PRD:`, `Spec:`, or `Plan:` field in `tickets/TEMPLATE.md`, without flagging legacy tickets that lack `Spec:`;
 - detection of an app or package without a recognized manifest;
@@ -139,7 +140,7 @@ bunx nx show projects
 bun run build
 ```
 
-Targeted checks must confirm there are no remaining ticket status variants in metadata or parent child-status tables and no tracked references to `docs/audits/`. Historical activity prose is explicitly excluded from the status-vocabulary assertion. The final Git diff must contain no production source changes and no unrelated work from another pull request.
+Targeted checks must confirm there are no remaining ticket status variants in metadata or parent child-status tables, every parent row and child `Parent:` reference reconciles exactly once in both directions, and no tracked references to `docs/audits/` remain. Historical activity prose is explicitly excluded from the status-vocabulary assertion. The final Git diff must contain no production source changes and no unrelated work from another pull request.
 
 ## Rollout and Safety
 

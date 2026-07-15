@@ -430,7 +430,7 @@ Perform the standard dependency check and self-assignment mutation.
 
 - [ ] **Step 2: Write parser tests first**
 
-Export pure helpers from the future script and add tests covering canonical header statuses, rejection of `todo`/`in-review`/`in_review`/unknown values, parent child-status cells, required `PRD:`/`Spec:`/`Plan:` fields in `tickets/TEMPLATE.md`, and ignoring matching words inside Activity Log prose. Verify that an otherwise valid legacy ticket lacking `Spec:` is not rejected merely for that omission. Use temporary directories created by Bun tests and remove them in `afterEach`.
+Export pure helpers from the future script and add tests covering canonical header statuses, rejection of `todo`/`in-review`/`in_review`/unknown values, child `Parent:` metadata, parent child-status cells, bidirectional exactly-once parent-child coverage, required `PRD:`/`Spec:`/`Plan:` fields in `tickets/TEMPLATE.md`, and ignoring matching words inside Activity Log prose. Verify that an otherwise valid legacy ticket lacking `Spec:` is not rejected merely for that omission. Use temporary directories created by Bun tests and remove them in `afterEach`.
 
 Core test shape:
 
@@ -477,6 +477,8 @@ Add focused failing cases for:
 - template missing any of `PRD:`, `Spec:`, or `Plan:`, plus a legacy ticket missing `Spec:` that remains valid;
 - child metadata disagreeing with its parent table row;
 - parent row naming a missing child ticket;
+- child `Parent:` metadata naming a conforming parent with no corresponding authoritative row;
+- duplicate authoritative parent rows for one referenced child;
 - direct app/package directory without a recognized manifest;
 - existing `docs/audits/` or missing `docs/audit/`;
 - tracked root `debug.log` via an injected tracked-file set;
@@ -526,7 +528,7 @@ export function collectOrganizationViolations(
 }
 ```
 
-Normalize CRLF to LF (or trim trailing `\r` from parsed lines) before field comparison. Parse only top metadata lines before the first `##` section. Recognize authoritative Markdown tables under both `## Child Ticket Order` and `## Child Tickets`; derive the `Ticket` and `Status` column indexes from the header row rather than fixed positions, and accept optional inline-code backticks around ticket IDs and status cells. Match child IDs to ticket filenames by ID prefix, compare row state to child metadata, and report missing/ambiguous children actionably. Check `tickets/TEMPLATE.md` separately for top-level `PRD:`, `Spec:`, and `Plan:` fields without imposing those fields on legacy tickets. Keep completion validation one-way (`Completed:` implies `done`) rather than requiring every historical `done` ticket to have `Completed:`. Add test fixtures for LF and CRLF, both heading forms, and both quoted and unquoted statuses so `PDP-000`-style rows cannot escape validation.
+Normalize CRLF to LF (or trim trailing `\r` from parsed lines) before field comparison. Parse only top metadata lines before the first `##` section, including each child's `Parent:` reference. Recognize authoritative Markdown tables under both `## Child Ticket Order` and `## Child Tickets`; derive the `Ticket` and `Status` column indexes from the header row rather than fixed positions, and accept optional inline-code backticks around ticket IDs and status cells. Match child IDs to ticket filenames by ID prefix, compare row state to child metadata, and report missing/ambiguous children actionably. Then validate the reverse direction: every child whose `Parent:` resolves to a conforming parent must appear in exactly one authoritative row in that parent, with zero-row and duplicate-row violations reported explicitly. Check `tickets/TEMPLATE.md` separately for top-level `PRD:`, `Spec:`, and `Plan:` fields without imposing those fields on legacy tickets. Keep completion validation one-way (`Completed:` implies `done`) rather than requiring every historical `done` ticket to have `Completed:`. Add test fixtures for LF and CRLF, both heading forms, quoted and unquoted statuses, and both directions of missing/duplicate mappings so `PDP-000`-style rows and orphaned child references cannot escape validation.
 
 - [ ] **Step 6: Implement the CLI boundary and grouped report**
 
@@ -551,6 +553,8 @@ bun test tests/repo-organization.test.ts
 ```
 
 Expected: all focused tests pass. `bun run check:repo` may still fail at this stage only on real documentation/hygiene items scheduled in Task 8; its output must aggregate them.
+
+The live ticket check must also prove bidirectional coverage: every authoritative parent row resolves uniquely with matching status, and every child `Parent:` reference to a conforming parent appears in exactly one row.
 
 Also run:
 

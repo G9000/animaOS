@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 19:46 MYT
+- Updated: 2026-07-15 20:06 MYT
 - Started: 2026-07-15 19:37 MYT
-- Completed: 2026-07-15 19:46 MYT
+- Completed: 2026-07-15 20:06 MYT
 
 ## Goal
 
@@ -39,18 +39,23 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
 - 2026-07-15 17:27 MYT - Narrowed the outcome to the approved concise initiative classification index.
 - 2026-07-15 19:37 MYT - Codex claimed `RWF-001` on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; set the child and parent row to `in_progress`.
 - 2026-07-15 19:46 MYT - Completed `RWF-001` after normalizing authoritative ticket state, synchronizing both supported parent-table forms, rebuilding the derived initiative index, and passing the recorded validation; set the parent row to `done` while the parent remains `in_progress` for its remaining children.
+- 2026-07-15 20:02 MYT - Reopened `RWF-001` after bidirectional validation exposed the missing `VMI-008` parent row; preserved the prior completion timestamp `2026-07-15 19:46 MYT`, cleared the current completion, and synchronized the parent row to `in_progress` before repair.
+- 2026-07-15 20:06 MYT - Re-completed `RWF-001` after adding `VMI-008` to its parent table and completed history, extending the future validator contract in both directions, and passing the 146-row bidirectional and dashboard checks; prior completion `2026-07-15 19:46 MYT` remains preserved in history.
 
 ## Validation
 
 - Commands:
-  - `rg -n '^- Status: (todo|in-review|in_review)\r?$|^\|.*\|[[:space:]]*`?(todo|in-review|in_review)`?[[:space:]]*\|' tickets`
+  - ``rg -n '^- Status: (todo|in-review|in_review)\r?$|^\|.*\|[[:space:]]*`?(todo|in-review|in_review)`?[[:space:]]*\|' tickets``
   - read-only PowerShell top-metadata parser before the first `##` for non-empty `Completed:` with non-`done` status
-  - read-only PowerShell parent-table parser for `## Child Ticket Order` and `## Child Tickets`, header-derived `Ticket`/`Status` columns, and quoted or unquoted cells
+  - read-only PowerShell bidirectional parent-child parser for both supported table headings, header-derived `Ticket`/`Status` columns, quoted or unquoted cells, parent-row-to-unique-child status equality, and every child `Parent:` reference appearing in exactly one row of its conforming parent
   - read-only PowerShell index parser for the three required sections, normalized parent classification, unique parent links, legacy folders, overview links, and link resolution
   - `rg -n '^## (Active Initiatives|Completed Initiatives|Legacy or Unclassified)\r?$' tickets/README.md`
   - `git diff --check`
   - `git diff --unified=0 -- tickets`
 - Changed paths:
+  - docs/ops/prd-ticket-workflow.md
+  - docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
+  - docs/superpowers/specs/2026-07-15-repository-organization-cleanup-design.md
   - tickets/README.md
   - tickets/agent-runtime-hardening/ARH-000-parent.md
   - tickets/agent-runtime-hardening/ARH-001-fix-anthropic-compaction.md
@@ -79,12 +84,15 @@ Rebuild `tickets/README.md` as the concise canonical index of active, completed,
   - tickets/production-document-processing/PDP-009-eval-harness-docs-validation.md
   - tickets/repo-workflow/RWF-000-parent.md
   - tickets/repo-workflow/RWF-001-ticket-dashboard.md
+  - tickets/repo-workflow/RWF-003-ticket-metadata-validation.md
+  - tickets/visual-memory-image-assets/VMI-000-parent.md
 - Notes:
   - normalized 25 authoritative headers and 22 authoritative child-status cells across 2 parent trackers; missing or ambiguous child mappings: 0
   - legacy authoritative status search returned no matches (expected `rg` exit 1)
   - non-empty completion/status violations: 0
-  - parent-table validation covered 17 parents and 145 child rows with 0 mapping or synchronization violations
+  - bidirectional parent-child validation covered 17 parents, 146 authoritative rows, and 146 reverse child references with 0 missing, ambiguous, duplicate, status, or synchronization violations
   - index validation covered 17 conforming parents: 11 active, 6 completed, and 1 legacy or unclassified folder, with 0 classification or link violations
   - all three required index section headings were found; `git diff --check` exited 0
-  - final diff inspection found no historical prose changes outside the intentional `RWF-001` lifecycle entries and rebuilt `tickets/README.md`
-  - residual risks or follow-ups: none for `RWF-001`; `bun run check:repo` remains scheduled for `RWF-003`
+  - final diff inspection found no edits to pre-existing historical prose or timestamps; new prose is limited to the intentional RWF lifecycle/planning entries, the `VMI-000` repair entry, validator-contract clarifications, and the rebuilt `tickets/README.md`
+  - `VMI-008` now appears once in the `VMI-000` table and once in completed history using its existing `2026-07-01 13:04 MYT` completion timestamp
+  - residual risks or follow-ups: none for `RWF-001`; implementation of the bidirectional `bun run check:repo` guard remains scheduled for `RWF-003`

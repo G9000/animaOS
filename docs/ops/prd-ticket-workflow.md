@@ -57,6 +57,8 @@ For new or materially changed scope, use this order when applicable:
 
 Cross-link these artifacts without collapsing or copying their responsibilities. Planning does not auto-claim an initiative: every new executable child starts with `Status: backlog` and `Owner: unassigned` unless the user explicitly assigns it during creation.
 
+Planning-mode revisions to a `backlog`/`unassigned` ticket's goal, deliverables, or acceptance may occur without a claim only while both `Status:` and `Owner:` remain unchanged. Update the ticket's `Updated:` field and activity log, add parent planning activity when the revision is material, and do not begin implementation under this exception.
+
 Status-only requests are read-only. Explanation and diagnosis-only work does not create or mutate project artifacts. An isolated edit does not receive fake project artifacts merely because it may later be published.
 
 ## Initiative and Ticket Shape

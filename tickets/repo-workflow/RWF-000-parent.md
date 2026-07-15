@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-15 19:46 MYT
+- Updated: 2026-07-15 20:06 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed:
 
@@ -53,7 +53,7 @@ This table is the execution order; dependency eligibility still controls when ea
 
 ## Completed Tickets
 
-- 2026-07-15 19:46 MYT - `RWF-001` rebuilt the canonical ticket initiative index and normalized authoritative ticket state.
+- 2026-07-15 20:06 MYT - `RWF-001` repaired bidirectional parent tracking and revalidated the canonical initiative index.
 
 ## Activity Log
 
@@ -69,6 +69,9 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-15 19:13 MYT - Aligned the canonical project-management authority, pagination, reopen, parent-closeout, early-merge, and template-validator contracts; recorded the clarified `RWF-003` scope without claiming it, kept its row `backlog`, and kept `RWF-005`/parent `in_progress` pending forward evaluation.
 - 2026-07-15 19:37 MYT - Synchronized `RWF-001` to `in_progress` after Codex claimed it on branch `codex/repo-organization-project-management` in worktree `.worktrees/repo-organization-project-management`; preserved parent ownership and `in_progress` state.
 - 2026-07-15 19:46 MYT - Completed `RWF-001`, synchronized its row and completed history to `done`, and kept `RWF-000` `in_progress` with its owner unchanged because `RWF-005` and other required children remain open.
+- 2026-07-15 20:02 MYT - Reopened `RWF-001` for the missing `VMI-008` parent-row acceptance defect, removed its current completed-history entry, preserved the child completion timestamp `2026-07-15 19:46 MYT` in history, and kept `RWF-000` `in_progress` with ownership unchanged.
+- 2026-07-15 20:02 MYT - Revised the unclaimed `RWF-003` planning contract to enforce bidirectional child-reference and parent-row coverage; kept its row `backlog`, owner `unassigned`, and implementation unstarted.
+- 2026-07-15 20:06 MYT - Re-completed `RWF-001` after the `VMI-008` repair and 146-row bidirectional validation, re-added one current completed-history entry, and kept `RWF-000` `in_progress` with its owner unchanged while required children remain open.
 
 ## Validation
 
