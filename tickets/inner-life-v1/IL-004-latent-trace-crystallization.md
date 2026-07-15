@@ -20,7 +20,7 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 ## Deliverables
 
 - `latent_traces` table (topic_key, kind, weight, evidence_refs, first_seen, last_seen) + migration, soul-store scoped.
-- Consolidation hook: candidates in [0.25× threshold, threshold) fold into traces via EMA (0.9/0.1) with evidence refs.
+- Consolidation hook: candidates in [0.25× threshold, threshold) fold into traces additively (`weight ← min(1.0, weight + 0.5 · candidate_score)`, leaky integrator with weekly decay as the leak) with evidence refs.
 - Sleep-time crystallization task: topic weight ≥ θ_c → synthesize one `origin: crystallized` memory listing all contributing evidence, clear topic.
 - Weekly trace decay (×0.98) and table cap.
 
@@ -34,6 +34,7 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 ## Activity Log
 
 - 2026-07-15 16:55 MYT - Ticket created.
+- 2026-07-15 17:25 MYT - Switched trace update from EMA to additive leaky integrator per review (EMA converges below threshold and never crystallizes).
 
 ## Validation
 

@@ -144,7 +144,7 @@ Named pressure scalars `P_i ∈ [0,1]`, each with its own source, growth rule, t
 
 A `latent_traces` table: `(topic_key, kind, weight, evidence_refs, first_seen, last_seen)`.
 
-- When `consolidation.py` scores a `MemoryCandidate` below the promotion threshold but above a floor (default 0.25× threshold), it is folded into a latent trace: `weight ← weight · 0.9 + candidate_score · 0.1` per matching topic (EMA), evidence ref appended.
+- When `consolidation.py` scores a `MemoryCandidate` below the promotion threshold but above a floor (default 0.25× threshold), it is folded into a latent trace additively: `weight ← min(1.0, weight + candidate_score · 0.5)` per matching topic, evidence ref appended. The update is a leaky integrator — additive growth so repeated weak signals genuinely accumulate (an EMA would converge to the candidate score and never crystallize), with the weekly decay below as the leak.
 - Traces decay on the slow path (weekly sleep-time sweep, `weight ×= 0.98`).
 - When a topic's cumulative weight crosses the crystallization threshold `θ_c`, the sleep agent synthesizes a single memory item from the accumulated evidence refs — flagged `origin: crystallized`, with provenance listing every contributing trace — and clears the topic.
 
@@ -180,7 +180,7 @@ This closes the loop F2 opened: access already boosts heat; now access also *upd
 
 **Eligibility** (checked on presence tick): user idle ≥ 4 h AND local time within the night window (00:00–06:00) AND at most one dream per night.
 
-**Material selection** — deliberately *not* recent context: K = 3 items sampled by `significance × (1 − heat)` (important but cold), plus any latent traces above 0.5 weight, plus one random old user-utterance fragment from the transcript archive.
+**Material selection** — deliberately *not* recent context: K = 3 items sampled by `significance × coldness` (important but cold), plus any latent traces above 0.5 weight, plus one random old user-utterance fragment from the transcript archive. Raw F2 heat is unbounded above 1, so `coldness = 1 − rank_normalized(heat)` within the candidate pool — never `1 − heat` directly, which can go negative and corrupt sampling weights.
 
 **Processing**: one small-LLM reflection pass (extraction model, not the main agent model) recombining the material into a short dream narrative. Effects:
 

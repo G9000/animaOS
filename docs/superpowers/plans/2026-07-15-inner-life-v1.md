@@ -56,7 +56,7 @@ Purpose: land the state primitive everything else reads.
 
 Purpose: the three trace-level mechanisms; none depend on Phases 0–1.
 
-- [ ] IL-004: soul migration for `latent_traces`; consolidation floor-band hook with EMA fold; sleep-time crystallization task with full evidence provenance; weekly decay + cap.
+- [ ] IL-004: soul migration for `latent_traces`; consolidation floor-band hook with additive leaky-integrator fold (`weight ← min(1.0, weight + 0.5·score)`); sleep-time crystallization task with full evidence provenance; weekly decay + cap.
 - [ ] IL-005: distillation step in the F7 decay path (tendency claims, content-free tombstones, `mode: distilled` audit); right-to-forget precedence on explicit delete; class exemptions; F7 regression suite stays green.
 - [ ] IL-006: reconsolidation hook on context inclusion in retrieval assembly; η = 0.05, lifetime drift cap Σ|Δ| ≤ 0.3, per-adjustment provenance, identity-class exemption; reduced-strength mode (η = 0.02) exported for the dream cycle.
 - [ ] Validation: per-feature tests; export audit proves tombstones content-free; retrieval latency delta < 1 ms/item.
@@ -73,7 +73,7 @@ Purpose: the first user-visible behavior; lands only after continuity exists.
 
 ### Phase 4: Dream cycle (IL-007)
 
-- [ ] `dream.py`: eligibility (idle ≥ 4 h, 00:00–06:00 local, ≤ 1/night), material selection (`significance × (1 − heat)`, latent traces > 0.5, one archive fragment).
+- [ ] `dream.py`: eligibility (idle ≥ 4 h, 00:00–06:00 local, ≤ 1/night), material selection (`significance × coldness` with rank-normalized heat, latent traces > 0.5, one archive fragment).
 - [ ] Extraction-model narrative pass; affect deltas at 25 % scale; IL-006 reduced-strength touch; soul migration for `dream_journal` (cap 30).
 - [ ] Share-worthy flagging → `dream_residue` pressure; `presence_config.dream_sharing` gate (default `on_ask`).
 - [ ] Validation: never during active sessions; nightly cap; provenance completeness; identity-class content untouched.

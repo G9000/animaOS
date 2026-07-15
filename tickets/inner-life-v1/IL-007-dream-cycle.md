@@ -20,7 +20,7 @@ Add an idle-time dream cycle: during long-idle night windows, recombine importan
 ## Deliverables
 
 - Eligibility check on presence tick: idle ≥ 4 h, 00:00–06:00 local, ≤ 1 dream/night.
-- Material selection: K = 3 items by `significance × (1 − heat)`, latent traces > 0.5 weight, one random old transcript fragment.
+- Material selection: K = 3 items by `significance × coldness` where `coldness = 1 − rank_normalized(heat)` (raw F2 heat is unbounded), latent traces > 0.5 weight, one random old transcript fragment.
 - Single extraction-model reflection pass producing a dream narrative; affect deltas at 25 % turn strength; touched memories reconsolidated at η = 0.02.
 - `dream_journal` table (narrative, source refs, affect delta, timestamp), rolling cap 30, soul-store scoped.
 - Share-worthy flagging raising `dream_residue` (IL-003); `presence_config.dream_sharing` gate (`off | on_ask | ambient`, default `on_ask`).
@@ -34,6 +34,7 @@ Add an idle-time dream cycle: during long-idle night windows, recombine importan
 ## Activity Log
 
 - 2026-07-15 16:55 MYT - Ticket created.
+- 2026-07-15 17:25 MYT - Dream sampling now uses rank-normalized coldness per review (raw heat exceeds 1, so `1 − heat` can go negative).
 
 ## Validation
 
