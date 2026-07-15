@@ -461,6 +461,40 @@ def test_get_affect_state_for_update_emits_row_lock() -> None:
         assert "FOR UPDATE" not in unlocked_sql
 
 
+def test_race_fallback_select_keeps_row_lock() -> None:
+    # Losing the first-read insert race must not drop the lock: the
+    # fallback re-select after IntegrityError has to carry FOR UPDATE too.
+    # Simulate the race by faking a None result for the primary select
+    # while the row actually exists, so the seed insert collides.
+    from anima_server.services.agent.inner_life.store import (
+        get_affect_state,
+        save_affect_state,
+    )
+    from sqlalchemy.dialects import postgresql
+
+    with _runtime_session() as runtime_db:
+        save_affect_state(runtime_db, user_id=1, state=_state(valence=0.3))
+        runtime_db.commit()
+
+        captured: list[object] = []
+        original_scalar = runtime_db.scalar
+
+        def racing_scalar(stmt: object, *args: object, **kwargs: object) -> object:
+            captured.append(stmt)
+            if len(captured) == 1:
+                return None
+            return original_scalar(stmt, *args, **kwargs)
+
+        runtime_db.scalar = racing_scalar  # type: ignore[method-assign]
+
+        loaded = get_affect_state(runtime_db, user_id=1, for_update=True)
+
+        assert len(captured) == 2  # the fallback re-select actually ran
+        fallback_sql = str(captured[-1].compile(dialect=postgresql.dialect()))
+        assert "FOR UPDATE" in fallback_sql
+        assert loaded.valence == pytest.approx(0.3)  # the winner's row
+
+
 def test_consolidation_write_path_requests_row_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

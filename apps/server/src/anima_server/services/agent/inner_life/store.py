@@ -87,10 +87,9 @@ def get_affect_state(
                 )
         except IntegrityError:
             # A concurrent first read won the insert race on the user_id
-            # unique constraint; fall back to its row.
-            row = runtime_db.scalar(
-                select(AffectStateRow).where(AffectStateRow.user_id == user_id)
-            )
+            # unique constraint; fall back to its row, reusing `stmt` so a
+            # for_update caller keeps the row lock on this path too.
+            row = runtime_db.scalar(stmt)
             if row is None:
                 return seed
         else:

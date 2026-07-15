@@ -20,6 +20,7 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models import (
+    AffectStateRow,
     AgentExperience,
     AgentSkill,
     ExperienceClusterState,
@@ -1357,6 +1358,12 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                     content_text="hello",
                 )
             )
+            runtime_db.add_all(
+                [
+                    AffectStateRow(user_id=1, valence=0.5, arousal=0.8, energy=0.4),
+                    AffectStateRow(user_id=2, valence=-0.2, arousal=0.3, energy=0.7),
+                ]
+            )
             runtime_db.commit()
             soul_db.commit()
 
@@ -1381,6 +1388,7 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert deleted["agent_experiences"] == 1
             assert deleted["experience_cluster_state"] == 1
             assert deleted["agent_skills"] == 1
+            assert deleted["affect_state"] == 1
             assert soul_db.scalars(
                 select(MemoryItem).where(MemoryItem.user_id == 1)
             ).all() == []
@@ -1469,6 +1477,14 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                     RuntimeWorkflowCheckpoint.workflow_run_id == 101
                 )
             ).all() == []
+            assert runtime_db.scalars(
+                select(AffectStateRow).where(AffectStateRow.user_id == 1)
+            ).all() == []
+            assert len(
+                runtime_db.scalars(
+                    select(AffectStateRow).where(AffectStateRow.user_id == 2)
+                ).all()
+            ) == 1
             assert len(
                 runtime_db.scalars(
                     select(RuntimeThread).where(RuntimeThread.user_id == 2)
