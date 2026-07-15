@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from anima_server.db.runtime_base import RuntimeBase
@@ -294,6 +295,54 @@ def test_store_roundtrip_save_and_load() -> None:
         assert loaded.energy == pytest.approx(0.4)
 
 
+def test_store_roundtrip_survives_restart() -> None:
+    # A SECOND session from the same factory bypasses the first session's
+    # identity map, so this actually exercises reload-from-storage (the
+    # restart-persistence acceptance) including tz-normalization of the
+    # naive datetimes SQLite returns.
+    from anima_server.services.agent.inner_life.store import (
+        get_affect_state,
+        save_affect_state,
+    )
+
+    engine: Engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    RuntimeBase.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    state = _state(
+        valence=0.3,
+        arousal=0.6,
+        energy=0.4,
+        arousal_baseline_shift=0.02,
+        high_arousal_hours=12.5,
+    )
+    with factory() as first_session:
+        save_affect_state(first_session, user_id=1, state=state)
+        first_session.commit()
+
+    try:
+        with factory() as second_session:
+            loaded = get_affect_state(second_session, user_id=1)
+
+        assert loaded.valence == pytest.approx(state.valence)
+        assert loaded.arousal == pytest.approx(state.arousal)
+        assert loaded.energy == pytest.approx(state.energy)
+        assert loaded.arousal_baseline_shift == pytest.approx(
+            state.arousal_baseline_shift
+        )
+        assert loaded.high_arousal_hours == pytest.approx(state.high_arousal_hours)
+        assert loaded.updated_at.tzinfo is not None
+        assert loaded.updated_at == state.updated_at
+        relaxed = relax(loaded, loaded.updated_at + timedelta(hours=1))
+        assert relaxed.updated_at > loaded.updated_at
+    finally:
+        engine.dispose()
+
+
 def test_store_first_read_creates_default_row() -> None:
     from anima_server.services.agent.inner_life.affect import DEFAULT_AFFECT_CONFIG
     from anima_server.services.agent.inner_life.store import get_affect_state
@@ -318,22 +367,38 @@ def test_store_missing_runtime_db_returns_default() -> None:
     assert state.energy == pytest.approx(DEFAULT_AFFECT_CONFIG.baseline_energy)
 
 
+# --- Ambient wiring: affect hint surfaces in the state context --------------
+
+
+def test_state_context_message_includes_affect_hint() -> None:
+    from anima_server.services.agent.proactive import _state_context_message
+
+    with_hint = _state_context_message(
+        thought="listening",
+        dominant_emotion=None,
+        affect_hint="settled, holding steady",
+    )
+    without_hint = _state_context_message(thought="listening", dominant_emotion=None)
+
+    assert "settled, holding steady" in with_hint
+    assert "Inner tone" in with_hint
+    assert "Inner tone" not in without_hint
+
+
 # --- Consolidation wiring: failure isolation --------------------------------
 
 
 def test_affect_write_failure_does_not_poison_consolidation_session(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: object,
+    tmp_path: Path,
 ) -> None:
-    from pathlib import Path
-
     from anima_server.models.runtime_consciousness import AffectStateRow, CurrentEmotion
     from anima_server.services.agent import consolidation
     from sqlalchemy import func, select
 
     # A file-backed DB gives the two sessions genuinely separate
     # connections/transactions, unlike StaticPool in-memory SQLite.
-    db_path = Path(str(tmp_path)) / "runtime.db"
+    db_path = tmp_path / "runtime.db"
     engine: Engine = create_engine(f"sqlite:///{db_path}")
     RuntimeBase.metadata.create_all(bind=engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

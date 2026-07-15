@@ -242,16 +242,19 @@ def test_agent_state_returns_grounded_short_thought() -> None:
         assert data["thought"] == "Tracking the agent state line handoff before changing code."
         assert data["thoughtSource"] == "working_memory"
         assert data["chatPrompt"] == "What's behind that thought?"
-        assert data["contextMessages"] == [
-            {
-                "role": "assistant",
-                "content": (
-                    "Current companion state: Tracking the agent state line "
-                    "handoff before changing code. Recent emotion: curious."
-                ),
-                "source": "agent_state",
-            },
-        ]
+        assert len(data["contextMessages"]) == 1
+        message = data["contextMessages"][0]
+        assert message["role"] == "assistant"
+        assert message["source"] == "agent_state"
+        assert message["content"].startswith(
+            "Current companion state: Tracking the agent state line "
+            "handoff before changing code. Recent emotion: curious."
+        )
+        # IL1 affect hint: rendered adjectives in the context message and
+        # surfaced on the response, never raw numbers.
+        assert "Inner tone:" in message["content"]
+        assert data["affectHint"]
+        assert not any(ch.isdigit() for ch in data["affectHint"])
 
 
 def test_pending_ops_endpoint_returns_unconsolidated_ops() -> None:

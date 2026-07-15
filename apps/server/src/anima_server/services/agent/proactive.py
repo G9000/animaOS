@@ -155,11 +155,18 @@ def _compact_state_line(value: str | None) -> str | None:
     return None
 
 
-def _state_context_message(*, thought: str, dominant_emotion: str | None) -> str:
+def _state_context_message(
+    *,
+    thought: str,
+    dominant_emotion: str | None,
+    affect_hint: str | None = None,
+) -> str:
     sentence = thought.rstrip(".!?")
     content = f"Current companion state: {sentence}."
     if dominant_emotion:
         content += f" Recent emotion: {dominant_emotion}."
+    if affect_hint:
+        content += f" Inner tone: {affect_hint}."
     return content
 
 
@@ -629,6 +636,8 @@ def build_agent_state(
             thought = _EMOTION_STATE_LINES.get(dominant_emotion, f"feeling {dominant_emotion}")
             thought_source = "emotion"
 
+    affect_hint = _render_affect_hint(runtime_db, user_id=user_id)
+
     return AgentStateResult(
         user_id=user_id,
         dominant_emotion=dominant_emotion,
@@ -641,11 +650,12 @@ def build_agent_state(
                 "content": _state_context_message(
                     thought=thought,
                     dominant_emotion=dominant_emotion,
+                    affect_hint=affect_hint,
                 ),
                 "source": "agent_state",
             },
         ],
-        affect_hint=_render_affect_hint(runtime_db, user_id=user_id),
+        affect_hint=affect_hint,
     )
 
 
@@ -696,6 +706,11 @@ async def generate_greeting(
     emotional_context = ""
     if ctx.emotional_summary:
         emotional_context = f"Last emotional read:\n{ctx.emotional_summary}"
+    affect_hint = _render_affect_hint(runtime_db, user_id=user_id)
+    if affect_hint:
+        emotional_context = (
+            f"{emotional_context}\nYour own current mood: {affect_hint}."
+        ).strip()
 
     time_context = ""
     if ctx.days_since_last_chat is not None:

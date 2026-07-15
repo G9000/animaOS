@@ -146,6 +146,7 @@ class AgentStateResponse(BaseModel):
     thoughtSource: str
     chatPrompt: str
     contextMessages: list[AgentStateContextMessageResponse]
+    affectHint: str | None = None
 
 
 class AgentBiographyPreviewSectionResponse(BaseModel):
@@ -1176,6 +1177,7 @@ async def get_agent_state(
             AgentStateContextMessageResponse(**message)
             for message in state.context_messages
         ],
+        affectHint=state.affect_hint,
     )
 
 

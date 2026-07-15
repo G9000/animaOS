@@ -61,23 +61,25 @@ def get_affect_state(
     )
     if row is None:
         seed = _seed_state(config)
-        runtime_db.add(
-            AffectStateRow(
-                user_id=user_id,
-                valence=seed.valence,
-                arousal=seed.arousal,
-                energy=seed.energy,
-                arousal_baseline_shift=seed.arousal_baseline_shift,
-                high_arousal_hours=seed.high_arousal_hours,
-                updated_at=seed.updated_at,
-            )
-        )
         try:
-            runtime_db.flush()
+            # The savepoint confines a lost insert race to this block: the
+            # caller's session (shared on the request path) keeps its other
+            # pending work.
+            with runtime_db.begin_nested():
+                runtime_db.add(
+                    AffectStateRow(
+                        user_id=user_id,
+                        valence=seed.valence,
+                        arousal=seed.arousal,
+                        energy=seed.energy,
+                        arousal_baseline_shift=seed.arousal_baseline_shift,
+                        high_arousal_hours=seed.high_arousal_hours,
+                        updated_at=seed.updated_at,
+                    )
+                )
         except IntegrityError:
             # A concurrent first read won the insert race on the user_id
             # unique constraint; fall back to its row.
-            runtime_db.rollback()
             row = runtime_db.scalar(
                 select(AffectStateRow).where(AffectStateRow.user_id == user_id)
             )
@@ -86,11 +88,20 @@ def get_affect_state(
         else:
             return seed
 
+    updated_at = row.updated_at
+    if updated_at.tzinfo is None:
+        # The runtime tier is normally PostgreSQL (TIMESTAMPTZ), but tests
+        # and constrained deployments run it on SQLite, which returns naive
+        # datetimes (and serializes writes on a single lock). Stored values
+        # are always UTC, so re-attach it or relax() would raise on the
+        # naive/aware subtraction and silently freeze affect.
+        updated_at = updated_at.replace(tzinfo=UTC)
+
     return AffectState(
         valence=row.valence,
         arousal=row.arousal,
         energy=row.energy,
-        updated_at=row.updated_at,
+        updated_at=updated_at,
         arousal_baseline_shift=row.arousal_baseline_shift,
         high_arousal_hours=row.high_arousal_hours,
     )
