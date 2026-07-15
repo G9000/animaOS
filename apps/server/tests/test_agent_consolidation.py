@@ -556,6 +556,147 @@ async def test_accepted_emotion_signal_moves_affect(
 
 
 @pytest.mark.asyncio
+async def test_affect_applies_only_after_batch_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The affect write must run strictly after the Phase C commit — its
+    dedicated session would otherwise contend with rt_db's uncommitted
+    write lock on single-writer SQLite."""
+    from anima_server.services.agent import consolidation
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            emotion={
+                "emotion": "excited",
+                "confidence": 0.9,
+                "trajectory": "stable",
+                "evidence": "clear enthusiasm",
+            },
+        )
+
+    events: list[str] = []
+
+    def fake_affect(*args: object, **kwargs: object) -> None:
+        events.append("affect")
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+        monkeypatch.setattr(
+            consolidation, "_apply_affect_turn_deltas_best_effort", fake_affect
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            real_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+
+            def tracking_factory() -> Session:
+                session = real_factory()
+                original_commit = session.commit
+
+                def tracked_commit() -> None:
+                    events.append("commit")
+                    original_commit()
+
+                session.commit = tracked_commit  # type: ignore[method-assign]
+                return session
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="this is great news",
+                assistant_response="wonderful",
+                runtime_db_factory=tracking_factory,
+                trigger_soul_writer=False,
+            )
+
+        assert "affect" in events
+        last_commit_index = max(
+            i for i, event in enumerate(events) if event == "commit"
+        )
+        assert events.index("affect") > last_commit_index
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
+async def test_affect_skipped_when_batch_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the Phase C commit raises, affect must not move — deltas for a
+    batch that never persisted would be wrong."""
+    from anima_server.models.runtime_consciousness import AffectStateRow
+
+    async def fake_extract_memories_via_llm(**kwargs: object) -> LLMExtractionResult:
+        del kwargs
+        return LLMExtractionResult(
+            emotion={
+                "emotion": "excited",
+                "confidence": 0.9,
+                "trajectory": "stable",
+                "evidence": "clear enthusiasm",
+            },
+        )
+
+    original_provider = settings.agent_provider
+    try:
+        settings.agent_provider = "openai"
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.extract_memories_via_llm",
+            fake_extract_memories_via_llm,
+        )
+
+        with runtime_db_session() as runtime_session:
+            rt_engine = runtime_session.get_bind()
+            real_factory = sessionmaker(
+                bind=rt_engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+                class_=Session,
+            )
+            session_count = 0
+
+            def failing_factory() -> Session:
+                nonlocal session_count
+                session_count += 1
+                session = real_factory()
+                if session_count == 2:  # Phase C session
+                    def failing_commit() -> None:
+                        raise RuntimeError("simulated Phase C commit failure")
+
+                    session.commit = failing_commit  # type: ignore[method-assign]
+                return session
+
+            await run_background_extraction(
+                user_id=1,
+                user_message="this is great news",
+                assistant_response="wonderful",
+                runtime_db_factory=failing_factory,
+                trigger_soul_writer=False,
+            )
+
+            with real_factory() as rt_db:
+                row = rt_db.scalar(
+                    select(AffectStateRow).where(AffectStateRow.user_id == 1)
+                )
+
+        assert row is None
+    finally:
+        settings.agent_provider = original_provider
+
+
+@pytest.mark.asyncio
 async def test_llm_extraction_failure_creates_retryable_work() -> None:
     from anima_server.models.runtime_memory import MemoryExtractionFailure
 

@@ -645,6 +645,7 @@ export interface AgentStateData {
   thoughtSource: string;
   chatPrompt: string;
   contextMessages: ChatContextMessage[];
+  affectHint?: string | null;
 }
 
 export interface MemoryItemData {

@@ -484,6 +484,7 @@ async def run_background_extraction(
 
         # Phase C — persist LLM results and resolve (or keep) the intent
         # row in a fresh session; results and resolution commit atomically.
+        pending_affect: tuple[str, datetime] | None = None
         with rt_factory() as rt_db:
             if llm_enabled:
                 from anima_server.models.runtime_memory import (
@@ -588,14 +589,13 @@ async def run_background_extraction(
                         )
                         # Only accepted signals move affect: a None return
                         # means the detection was rejected (unknown emotion
-                        # or sub-threshold confidence).
+                        # or sub-threshold confidence). Deferred until after
+                        # the batch commit below — the dedicated affect
+                        # session must not contend with rt_db's uncommitted
+                        # write lock (single-writer SQLite), and affect must
+                        # not move for a batch that never persisted.
                         if emotion_signal is not None:
-                            _apply_affect_turn_deltas_best_effort(
-                                rt_factory,
-                                user_id=user_id,
-                                emotion_name=emotion_name,
-                                now=now,
-                            )
+                            pending_affect = (emotion_name, now)
 
                     if intent is not None:
                         intent.status = "resolved"
@@ -614,6 +614,15 @@ async def run_background_extraction(
                     )
 
             rt_db.commit()
+
+            if pending_affect is not None:
+                affect_emotion, affect_now = pending_affect
+                _apply_affect_turn_deltas_best_effort(
+                    rt_factory,
+                    user_id=user_id,
+                    emotion_name=affect_emotion,
+                    now=affect_now,
+                )
 
             # 3. Eager promotion — run Soul Writer unless a higher-level
             # orchestrator is taking ownership of the post-turn pipeline.

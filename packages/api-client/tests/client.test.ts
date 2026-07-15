@@ -252,10 +252,11 @@ describe("createApiClient error handling", () => {
               {
                 role: "assistant",
                 content:
-                  "Current companion state: Tracking the agent state line handoff. Recent emotion: curious.",
+                  "Current companion state: Tracking the agent state line handoff. Recent emotion: curious. Inner tone: settled, holding steady.",
                 source: "agent_state",
               },
             ],
+            affectHint: "settled, holding steady",
           }),
         );
       },
@@ -268,6 +269,7 @@ describe("createApiClient error handling", () => {
     );
     expect(state.thought).toBe("Tracking the agent state line handoff.");
     expect(state.contextMessages[0]?.source).toBe("agent_state");
+    expect(state.affectHint).toBe("settled, holding steady");
   });
 
   test("requests compiled agent biography preview", async () => {
