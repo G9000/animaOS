@@ -11,6 +11,8 @@ use rand::{rngs::OsRng, CryptoRng, RngCore};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::id::validate_opaque_id;
+
 pub const KEY_LENGTH: usize = 32;
 pub const NONCE_LENGTH: usize = 12;
 pub const OBJECT_KEY_ENVELOPE_VERSION: u16 = 1;
@@ -433,8 +435,8 @@ impl ObjectBaseAad {
         if self.core_id.is_empty() {
             return Err(CryptoError::InvalidAad("core ID is empty"));
         }
-        if self.object_id.is_empty() {
-            return Err(CryptoError::InvalidAad("object ID is empty"));
+        if validate_opaque_id(&self.object_id).is_err() {
+            return Err(CryptoError::InvalidAad("object ID is not canonical"));
         }
         if self.revision == 0 {
             return Err(CryptoError::InvalidAad("revision must be positive"));
@@ -469,6 +471,30 @@ impl ObjectBaseAad {
         push_value(&mut encoded, b"revision", &self.revision.to_string());
         encoded.pop();
         encoded
+    }
+
+    pub fn core_id(&self) -> &str {
+        &self.core_id
+    }
+
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+
+    pub fn kind(&self) -> ObjectKind {
+        self.kind
+    }
+
+    pub fn envelope_version(&self) -> u16 {
+        self.envelope_version
+    }
+
+    pub fn object_key_epoch(&self) -> u32 {
+        self.object_key_epoch
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -833,8 +859,11 @@ pub fn unwrap_object_dek(
 mod tests {
     use super::*;
 
+    const OBJECT_ID: &str = "01J00000000000000000000000";
+    const OTHER_OBJECT_ID: &str = "01J00000000000000000000001";
+
     fn aad(kind: ObjectKind) -> ObjectKeyAad {
-        ObjectKeyAad::new("019f-core", "019f-object", 7, kind, 1, 2, 3).unwrap()
+        ObjectKeyAad::new("019f-core", OBJECT_ID, 7, kind, 1, 2, 3).unwrap()
     }
 
     #[test]
@@ -916,7 +945,7 @@ mod tests {
 
         let mutations = [
             base.with_core_id("different-core"),
-            base.with_object_id("different-object"),
+            base.with_object_id(OTHER_OBJECT_ID),
             base.with_revision(8),
             base.with_kind(ObjectKind::GalleryAsset),
             base.with_envelope_version(2),
@@ -954,21 +983,14 @@ mod tests {
     fn typed_aad_has_a_stable_unambiguous_encoding() {
         assert_eq!(
             hex::encode(aad(ObjectKind::KnowledgeSource).to_bytes()),
-            "616e696d612d636f726566732d6f626a6563742d6b65792d777261702d763100626173653d3134333a616e696d612d636f726566732d6f626a6563742d626173652d763100636f72652d69643d393a303139662d636f7265006f626a6563742d69643d31313a303139662d6f626a656374006b696e643d6b6e6f776c656467652d736f7572636500656e76656c6f70652d76657273696f6e3d31006f626a6563742d6b65792d65706f63683d32007265766973696f6e3d370066726b2d76657273696f6e3d33"
+            "616e696d612d636f726566732d6f626a6563742d6b65792d777261702d763100626173653d3135383a616e696d612d636f726566732d6f626a6563742d626173652d763100636f72652d69643d393a303139662d636f7265006f626a6563742d69643d32363a30314a3030303030303030303030303030303030303030303030006b696e643d6b6e6f776c656467652d736f7572636500656e76656c6f70652d76657273696f6e3d31006f626a6563742d6b65792d65706f63683d32007265766973696f6e3d370066726b2d76657273696f6e3d33"
         );
     }
 
     #[test]
     fn metadata_and_body_aad_extend_the_same_base_without_frk_version() {
-        let base = ObjectBaseAad::new(
-            "019f-core",
-            "019f-object",
-            ObjectKind::KnowledgeSource,
-            1,
-            2,
-            7,
-        )
-        .unwrap();
+        let base = ObjectBaseAad::new("019f-core", OBJECT_ID, ObjectKind::KnowledgeSource, 1, 2, 7)
+            .unwrap();
         let metadata = MetadataFrameAad::new(base.clone(), 1).unwrap();
         let body = BodyFrameAad::new(base.clone(), [0xAB; 32], 0, 1, 0, 12, 12, true).unwrap();
         assert!(metadata
@@ -992,15 +1014,8 @@ mod tests {
 
     #[test]
     fn final_body_chunk_must_reach_declared_total_length() {
-        let base = ObjectBaseAad::new(
-            "019f-core",
-            "019f-object",
-            ObjectKind::KnowledgeSource,
-            1,
-            2,
-            7,
-        )
-        .unwrap();
+        let base = ObjectBaseAad::new("019f-core", OBJECT_ID, ObjectKind::KnowledgeSource, 1, 2, 7)
+            .unwrap();
         let result = BodyFrameAad::new(base, [0xAB; 32], 1, 2, 5, 4, 10, true);
 
         assert!(matches!(

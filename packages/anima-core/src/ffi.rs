@@ -5,11 +5,15 @@
 
 #[cfg(feature = "python")]
 mod python {
+    // PyO3 0.22 generated wrappers trigger this false positive for `PyResult` returns.
+    #![allow(clippy::useless_conversion)]
+
     use pyo3::prelude::*;
     use pyo3::types::{PyBytes, PyDict, PyList};
     use pyo3::IntoPy;
     use serde_json::{json, Value};
     use std::collections::HashMap;
+    use std::io::{self, Read, Write};
     use std::path::Path;
 
     use crate::cards::{
@@ -24,7 +28,198 @@ mod python {
     use crate::search::{HeatMeta, HeatParams};
     use crate::temporal::TemporalIndex;
 
+    const CORE_FS_FFI_IN_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+
+    struct PyBinaryReader<'py> {
+        inner: Bound<'py, PyAny>,
+    }
+
+    impl<'py> PyBinaryReader<'py> {
+        fn new(inner: &Bound<'py, PyAny>) -> Self {
+            Self {
+                inner: inner.clone(),
+            }
+        }
+    }
+
+    impl Read for PyBinaryReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            let value = self
+                .inner
+                .call_method1("read", (buffer.len(),))
+                .map_err(py_stream_io_error)?;
+            let bytes = value.downcast::<PyBytes>().map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("read(size) must return bytes: {error}"),
+                )
+            })?;
+            let bytes = bytes.as_bytes();
+            if bytes.len() > buffer.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "read(size) returned more bytes than requested",
+                ));
+            }
+            buffer[..bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    struct PyBinaryWriter<'py> {
+        inner: Bound<'py, PyAny>,
+        start_position: u64,
+    }
+
+    impl<'py> PyBinaryWriter<'py> {
+        fn new(inner: &Bound<'py, PyAny>) -> PyResult<Self> {
+            for method in ["write", "tell", "seek", "truncate"] {
+                let value = inner
+                    .getattr(method)
+                    .map_err(|error| py_writer_protocol_error(method, error))?;
+                if !value.is_callable() {
+                    return Err(pyo3::exceptions::PyOSError::new_err(format!(
+                        "CoreFS streaming writer {method} must be callable"
+                    )));
+                }
+            }
+            let start_position = inner
+                .call_method0("tell")
+                .and_then(|value| value.extract::<u64>())
+                .map_err(|error| py_writer_protocol_error("tell", error))?;
+            let end_position = inner
+                .call_method1("seek", (0_i64, 2))
+                .and_then(|value| value.extract::<u64>())
+                .map_err(|error| py_writer_protocol_error("seek", error))?;
+            inner
+                .call_method1("seek", (start_position, 0))
+                .map_err(|error| py_writer_protocol_error("seek", error))?;
+            if start_position != end_position {
+                return Err(pyo3::exceptions::PyOSError::new_err(
+                    "CoreFS streaming writer must be positioned at end-of-file",
+                ));
+            }
+            Ok(Self {
+                inner: inner.clone(),
+                start_position,
+            })
+        }
+
+        fn rollback(&mut self) -> PyResult<()> {
+            self.inner
+                .call_method1("seek", (self.start_position, 0))?;
+            self.inner
+                .call_method1("truncate", (self.start_position,))?;
+            self.inner
+                .call_method1("seek", (self.start_position, 0))?;
+            Ok(())
+        }
+    }
+
+    impl Write for PyBinaryWriter<'_> {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            let value = self
+                .inner
+                .call_method1("write", (PyBytes::new_bound(self.inner.py(), buffer),))
+                .map_err(py_stream_io_error)?;
+            let written = value.extract::<usize>().map_err(py_stream_io_error)?;
+            if written > buffer.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "write(bytes) reported more bytes than supplied",
+                ));
+            }
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn py_stream_io_error(error: PyErr) -> io::Error {
+        io::Error::other(error.to_string())
+    }
+
+    fn py_writer_protocol_error(operation: &str, error: PyErr) -> PyErr {
+        pyo3::exceptions::PyOSError::new_err(format!(
+            "CoreFS streaming writer {operation} failed: {error}"
+        ))
+    }
+
+    fn enforce_corefs_in_memory_limit(length: usize) -> PyResult<()> {
+        if length > CORE_FS_FFI_IN_MEMORY_LIMIT {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "CoreFS in-memory binding is limited to {CORE_FS_FFI_IN_MEMORY_LIMIT} bytes; use a streaming CoreFS binding"
+            )));
+        }
+        Ok(())
+    }
+
+    fn enforce_corefs_metadata_limit(length: usize) -> PyResult<()> {
+        if length > anima_corefs::envelope::MAX_METADATA_PLAINTEXT_SIZE {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS envelope limit exceeded: metadata plaintext",
+            ));
+        }
+        Ok(())
+    }
+
+    fn enforce_corefs_catalog_plaintext_limit(length: usize) -> PyResult<()> {
+        if length > anima_corefs::catalog::MAX_CATALOG_PLAINTEXT_SIZE {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS catalog limit exceeded: catalog plaintext",
+            ));
+        }
+        Ok(())
+    }
+
+    fn enforce_corefs_catalog_envelope_limit(length: usize) -> PyResult<()> {
+        if length > anima_corefs::catalog::MAX_CATALOG_ENVELOPE_SIZE {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS catalog limit exceeded: catalog envelope",
+            ));
+        }
+        Ok(())
+    }
+
+    fn finish_corefs_stream<T>(
+        writer: &mut PyBinaryWriter<'_>,
+        result: Result<T, anima_corefs::envelope::EnvelopeError>,
+    ) -> PyResult<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => Err(rollback_corefs_stream(writer, corefs_envelope_error(error))),
+        }
+    }
+
+    fn rollback_corefs_stream(writer: &mut PyBinaryWriter<'_>, original: PyErr) -> PyErr {
+        if let Err(rollback) = writer.rollback() {
+            pyo3::exceptions::PyOSError::new_err(format!(
+                "CoreFS stream failed ({original}) and writer rollback failed: {rollback}"
+            ))
+        } else {
+            original
+        }
+    }
+
     fn corefs_value_error(error: anima_corefs::crypto::CryptoError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn corefs_envelope_error(error: anima_corefs::envelope::EnvelopeError) -> PyErr {
+        match error {
+            anima_corefs::envelope::EnvelopeError::Io(error) => {
+                pyo3::exceptions::PyOSError::new_err(error.to_string())
+            }
+            error => pyo3::exceptions::PyValueError::new_err(error.to_string()),
+        }
+    }
+
+    fn corefs_catalog_error(error: anima_corefs::catalog::CatalogError) -> PyErr {
         pyo3::exceptions::PyValueError::new_err(error.to_string())
     }
 
@@ -506,6 +701,297 @@ mod python {
         values.set_item("catalog", PyBytes::new_bound(py, keys.catalog().as_slice()))?;
         values.set_item("search", PyBytes::new_bound(py, keys.search().as_slice()))?;
         Ok(values.into_py(py))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, metadata_json, body, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_encrypt_object_envelope(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        metadata_json: &[u8],
+        body: &[u8],
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        enforce_corefs_metadata_limit(metadata_json.len())?;
+        let input_length = metadata_json
+            .len()
+            .checked_add(body.len())
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("CoreFS input is too large"))?;
+        enforce_corefs_in_memory_limit(input_length)?;
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let metadata: anima_corefs::envelope::EnvelopeMetadata =
+            serde_json::from_slice(metadata_json)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let encoded =
+            anima_corefs::envelope::encode_envelope(&object_dek.inner, &aad, &metadata, body)
+                .map_err(corefs_envelope_error)?;
+        enforce_corefs_in_memory_limit(encoded.len())?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    fn corefs_envelope_read_to_py(
+        py: Python<'_>,
+        read: anima_corefs::envelope::EnvelopeRead,
+        body: Option<Vec<u8>>,
+    ) -> PyResult<PyObject> {
+        let metadata = serde_json::to_vec(&read.metadata)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let result = PyDict::new_bound(py);
+        result.set_item("metadata", PyBytes::new_bound(py, &metadata))?;
+        if let Some(body) = body {
+            result.set_item("body", PyBytes::new_bound(py, &body))?;
+        }
+        result.set_item("whole_body_verified", read.whole_body_verified)?;
+        Ok(result.into_py(py))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, envelope, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_decrypt_object_envelope(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        envelope: &[u8],
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        enforce_corefs_in_memory_limit(envelope.len())?;
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let (read, body) =
+            anima_corefs::envelope::decode_envelope(&object_dek.inner, &aad, envelope)
+                .map_err(corefs_envelope_error)?;
+        enforce_corefs_in_memory_limit(body.len())?;
+        corefs_envelope_read_to_py(py, read, Some(body))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, envelope, range_start, range_end, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_read_object_envelope_range(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        envelope: &[u8],
+        range_start: u64,
+        range_end: u64,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        enforce_corefs_in_memory_limit(envelope.len())?;
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let (read, body) = anima_corefs::envelope::decode_envelope_range(
+            &object_dek.inner,
+            &aad,
+            envelope,
+            range_start..range_end,
+        )
+        .map_err(corefs_envelope_error)?;
+        enforce_corefs_in_memory_limit(body.len())?;
+        corefs_envelope_read_to_py(py, read, Some(body))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, metadata_json, body_reader, envelope_writer, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_encrypt_object_envelope_stream(
+        _py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        metadata_json: &[u8],
+        body_reader: &Bound<'_, PyAny>,
+        envelope_writer: &Bound<'_, PyAny>,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<()> {
+        enforce_corefs_metadata_limit(metadata_json.len())?;
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let metadata: anima_corefs::envelope::EnvelopeMetadata =
+            serde_json::from_slice(metadata_json)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let mut reader = PyBinaryReader::new(body_reader);
+        let mut writer = PyBinaryWriter::new(envelope_writer)?;
+        let result = anima_corefs::envelope::write_envelope(
+            &mut writer,
+            &object_dek.inner,
+            &aad,
+            &metadata,
+            &mut reader,
+        );
+        finish_corefs_stream(&mut writer, result)
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, envelope_reader, body_writer, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_decrypt_object_envelope_stream(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        envelope_reader: &Bound<'_, PyAny>,
+        body_writer: &Bound<'_, PyAny>,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let mut reader = PyBinaryReader::new(envelope_reader);
+        let mut writer = PyBinaryWriter::new(body_writer)?;
+        let result = anima_corefs::envelope::read_envelope(
+            &mut reader,
+            &object_dek.inner,
+            &aad,
+            &mut writer,
+        );
+        let read = finish_corefs_stream(&mut writer, result)?;
+        corefs_envelope_read_to_py(py, read, None)
+            .map_err(|error| rollback_corefs_stream(&mut writer, error))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, envelope_reader, body_writer, range_start, range_end, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_read_object_envelope_range_stream(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        envelope_reader: &Bound<'_, PyAny>,
+        body_writer: &Bound<'_, PyAny>,
+        range_start: u64,
+        range_end: u64,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let mut reader = PyBinaryReader::new(envelope_reader);
+        let mut writer = PyBinaryWriter::new(body_writer)?;
+        let result = anima_corefs::envelope::read_envelope_range(
+            &mut reader,
+            &object_dek.inner,
+            &aad,
+            range_start..range_end,
+            &mut writer,
+        );
+        let read = finish_corefs_stream(&mut writer, result)?;
+        corefs_envelope_read_to_py(py, read, None)
+            .map_err(|error| rollback_corefs_stream(&mut writer, error))
+    }
+
+    #[pyfunction]
+    fn corefs_encode_catalog(py: Python<'_>, payload_json: &[u8]) -> PyResult<PyObject> {
+        enforce_corefs_catalog_plaintext_limit(payload_json.len())?;
+        let payload: anima_corefs::catalog::CatalogPayload =
+            serde_json::from_slice(payload_json)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let encoded =
+            anima_corefs::catalog::encode_catalog(&payload).map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_decode_catalog(py: Python<'_>, payload_json: &[u8]) -> PyResult<PyObject> {
+        let payload =
+            anima_corefs::catalog::decode_catalog(payload_json).map_err(corefs_catalog_error)?;
+        let encoded =
+            anima_corefs::catalog::encode_catalog(&payload).map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_encrypt_catalog(
+        py: Python<'_>,
+        keys: &PyCorefsSubkeys,
+        core_id: &str,
+        payload_json: &[u8],
+    ) -> PyResult<PyObject> {
+        let payload =
+            anima_corefs::catalog::decode_catalog(payload_json).map_err(corefs_catalog_error)?;
+        let encrypted = anima_corefs::catalog::encrypt_catalog(&keys.inner, core_id, &payload)
+            .map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encrypted).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_decrypt_catalog(
+        py: Python<'_>,
+        keys: &PyCorefsSubkeys,
+        core_id: &str,
+        envelope: &[u8],
+    ) -> PyResult<PyObject> {
+        let payload = anima_corefs::catalog::decrypt_catalog(&keys.inner, core_id, envelope)
+            .map_err(corefs_catalog_error)?;
+        let encoded =
+            anima_corefs::catalog::encode_catalog(&payload).map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_catalog_physical_name(generation: u64, envelope: &[u8]) -> PyResult<String> {
+        enforce_corefs_catalog_envelope_limit(envelope.len())?;
+        anima_corefs::catalog::catalog_physical_name(generation, envelope)
+            .map_err(corefs_catalog_error)
     }
 
     fn json_value_to_py(py: Python<'_>, value: Value) -> PyResult<PyObject> {
@@ -1943,6 +2429,17 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_metadata_frame_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_body_frame_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_fixed_subkey_test_vector, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encrypt_object_envelope, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decrypt_object_envelope, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encrypt_object_envelope_stream, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decrypt_object_envelope_stream, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range_stream, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encode_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decode_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decrypt_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_catalog_physical_name, m)?)?;
 
         // SIMD functions
         m.add_function(wrap_pyfunction!(l2_distance, m)?)?;
@@ -2026,10 +2523,529 @@ mod python {
         use crate::frame::{Frame, FrameKind, FrameSource};
         use crate::integrity::{scan_frame_store, IntegrityIssueKind};
 
+        const OBJECT_ID: &str = "01J00000000000000000000000";
+        const STREAM_ID: &str = "01J00000000000000000000001";
+        const CATALOG_ID: &str = "01J00000000000000000000002";
+
         fn with_python<T>(f: impl FnOnce(Python<'_>) -> T) -> T {
             static INIT: Once = Once::new();
             INIT.call_once(|| pyo3::prepare_freethreaded_python());
             Python::with_gil(f)
+        }
+
+        #[test]
+        fn corefs_envelope_and_catalog_bindings_roundtrip_bytes_without_exposing_keys() {
+            with_python(|py| {
+                let object_dek = PyCorefsObjectDek {
+                    inner: anima_corefs::crypto::SecretBytes::new(vec![0x31; 32]).unwrap(),
+                };
+                let body = b"portable private content";
+                let metadata = anima_corefs::envelope::EnvelopeMetadata::for_body(
+                    "note",
+                    OBJECT_ID,
+                    4,
+                    "2026-07-15T00:00:00Z",
+                    "2026-07-15T00:00:01Z",
+                    "text/plain",
+                    std::collections::BTreeMap::new(),
+                    anima_corefs::envelope::BodyEncoding::Binary,
+                    body,
+                )
+                .unwrap();
+                let metadata_json = serde_json::to_vec(&metadata).unwrap();
+                let encrypted = corefs_encrypt_object_envelope(
+                    py,
+                    &object_dek,
+                    &metadata_json,
+                    body,
+                    "01JCORE",
+                    OBJECT_ID,
+                    4,
+                    "note",
+                    1,
+                    2,
+                )
+                .unwrap();
+                let encrypted_bytes = encrypted.bind(py).downcast::<PyBytes>().unwrap().as_bytes();
+                assert!(!encrypted_bytes
+                    .windows(body.len())
+                    .any(|window| window == body));
+                let decrypted = corefs_decrypt_object_envelope(
+                    py,
+                    &object_dek,
+                    encrypted_bytes,
+                    "01JCORE",
+                    OBJECT_ID,
+                    4,
+                    "note",
+                    1,
+                    2,
+                )
+                .unwrap();
+                let result = decrypted.bind(py).downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    result
+                        .get_item("body")
+                        .unwrap()
+                        .unwrap()
+                        .downcast::<PyBytes>()
+                        .unwrap()
+                        .as_bytes(),
+                    body
+                );
+                assert!(result
+                    .get_item("whole_body_verified")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+
+                let root = anima_corefs::crypto::SecretBytes::new(vec![0x41; 32]).unwrap();
+                let keys = PyCorefsSubkeys {
+                    inner: anima_corefs::crypto::derive_corefs_subkeys(&root, 1).unwrap(),
+                };
+                let payload = anima_corefs::catalog::CatalogPayload::new(
+                    3,
+                    vec![anima_corefs::catalog::CatalogEntry::new(
+                        CATALOG_ID,
+                        serde_json::json!({"type": "note"}),
+                    )
+                    .unwrap()],
+                )
+                .unwrap();
+                let payload_json = anima_corefs::catalog::encode_catalog(&payload).unwrap();
+                let encrypted_catalog =
+                    corefs_encrypt_catalog(py, &keys, "01JCORE", &payload_json).unwrap();
+                let encrypted_catalog_bytes = encrypted_catalog
+                    .bind(py)
+                    .downcast::<PyBytes>()
+                    .unwrap()
+                    .as_bytes();
+                let decoded =
+                    corefs_decrypt_catalog(py, &keys, "01JCORE", encrypted_catalog_bytes).unwrap();
+                assert_eq!(
+                    decoded.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                    payload_json
+                );
+            });
+        }
+
+        #[test]
+        fn corefs_streaming_bindings_roundtrip_range_and_enforce_convenience_cap() {
+            with_python(|py| {
+                let object_dek = PyCorefsObjectDek {
+                    inner: anima_corefs::crypto::SecretBytes::new(vec![0x51; 32]).unwrap(),
+                };
+                let body = b"streamed portable private content";
+                let metadata = anima_corefs::envelope::EnvelopeMetadata::for_body(
+                    "note",
+                    STREAM_ID,
+                    5,
+                    "2026-07-15T00:00:00Z",
+                    "2026-07-15T00:00:01Z",
+                    "application/octet-stream",
+                    std::collections::BTreeMap::new(),
+                    anima_corefs::envelope::BodyEncoding::Binary,
+                    body,
+                )
+                .unwrap();
+                let metadata_json = serde_json::to_vec(&metadata).unwrap();
+                let bytes_io = py.import_bound("io").unwrap().getattr("BytesIO").unwrap();
+                let body_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, body),))
+                    .unwrap();
+                let envelope_writer = bytes_io.call0().unwrap();
+                corefs_encrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &metadata_json,
+                    &body_reader,
+                    &envelope_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    5,
+                    "note",
+                    1,
+                    7,
+                )
+                .unwrap();
+                let encrypted = envelope_writer.call_method0("getvalue").unwrap();
+                let encrypted = encrypted.downcast::<PyBytes>().unwrap().as_bytes();
+                assert!(!encrypted.windows(body.len()).any(|window| window == body));
+
+                let envelope_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, encrypted),))
+                    .unwrap();
+                let body_writer = bytes_io.call0().unwrap();
+                let result = corefs_decrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &envelope_reader,
+                    &body_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    5,
+                    "note",
+                    1,
+                    7,
+                )
+                .unwrap();
+                let result = result.bind(py).downcast::<PyDict>().unwrap();
+                assert!(result
+                    .get_item("whole_body_verified")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+                let streamed_body = body_writer.call_method0("getvalue").unwrap();
+                assert_eq!(
+                    streamed_body.downcast::<PyBytes>().unwrap().as_bytes(),
+                    body
+                );
+
+                let envelope_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, encrypted),))
+                    .unwrap();
+                let range_writer = bytes_io.call0().unwrap();
+                let range_result = corefs_read_object_envelope_range_stream(
+                    py,
+                    &object_dek,
+                    &envelope_reader,
+                    &range_writer,
+                    9,
+                    17,
+                    "01JCORE",
+                    STREAM_ID,
+                    5,
+                    "note",
+                    1,
+                    7,
+                )
+                .unwrap();
+                let range_result = range_result.bind(py).downcast::<PyDict>().unwrap();
+                assert!(!range_result
+                    .get_item("whole_body_verified")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+                let range_body = range_writer.call_method0("getvalue").unwrap();
+                assert_eq!(
+                    range_body.downcast::<PyBytes>().unwrap().as_bytes(),
+                    &body[9..17]
+                );
+
+                let oversized = vec![0_u8; CORE_FS_FFI_IN_MEMORY_LIMIT + 1];
+                let error = corefs_encrypt_object_envelope(
+                    py,
+                    &object_dek,
+                    &metadata_json,
+                    &oversized,
+                    "01JCORE",
+                    STREAM_ID,
+                    5,
+                    "note",
+                    1,
+                    7,
+                )
+                .unwrap_err();
+                assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+                assert!(error.to_string().contains("use a streaming CoreFS binding"));
+
+                let closed_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, body),))
+                    .unwrap();
+                closed_reader.call_method0("close").unwrap();
+                let unused_writer = bytes_io.call0().unwrap();
+                let error = corefs_encrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &metadata_json,
+                    &closed_reader,
+                    &unused_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    5,
+                    "note",
+                    1,
+                    7,
+                )
+                .unwrap_err();
+                assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py));
+            });
+        }
+
+        #[test]
+        fn corefs_ffi_rejects_metadata_and_catalog_inputs_before_parsing() {
+            with_python(|py| {
+                let object_dek = PyCorefsObjectDek {
+                    inner: anima_corefs::crypto::SecretBytes::new(vec![0x61; 32]).unwrap(),
+                };
+                let oversized_metadata =
+                    vec![b'['; anima_corefs::envelope::MAX_METADATA_PLAINTEXT_SIZE + 1];
+                let error = corefs_encrypt_object_envelope(
+                    py,
+                    &object_dek,
+                    &oversized_metadata,
+                    b"",
+                    "01JCORE",
+                    OBJECT_ID,
+                    1,
+                    "note",
+                    1,
+                    1,
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("metadata plaintext"));
+
+                let bytes_io = py.import_bound("io").unwrap().getattr("BytesIO").unwrap();
+                let body_reader = bytes_io.call0().unwrap();
+                let envelope_writer = bytes_io.call0().unwrap();
+                let error = corefs_encrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &oversized_metadata,
+                    &body_reader,
+                    &envelope_writer,
+                    "01JCORE",
+                    OBJECT_ID,
+                    1,
+                    "note",
+                    1,
+                    1,
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("metadata plaintext"));
+
+                let oversized_catalog =
+                    vec![b'['; anima_corefs::catalog::MAX_CATALOG_PLAINTEXT_SIZE + 1];
+                let error = corefs_encode_catalog(py, &oversized_catalog).unwrap_err();
+                assert!(error.to_string().contains("catalog plaintext"));
+
+                let root = anima_corefs::crypto::SecretBytes::new(vec![0x62; 32]).unwrap();
+                let keys = PyCorefsSubkeys {
+                    inner: anima_corefs::crypto::derive_corefs_subkeys(&root, 1).unwrap(),
+                };
+                let payload = anima_corefs::catalog::CatalogPayload::new(
+                    1,
+                    vec![anima_corefs::catalog::CatalogEntry::new(
+                        CATALOG_ID,
+                        serde_json::json!({}),
+                    )
+                    .unwrap()],
+                )
+                .unwrap();
+                let payload = anima_corefs::catalog::encode_catalog(&payload).unwrap();
+                let encrypted = corefs_encrypt_catalog(py, &keys, "01JCORE", &payload).unwrap();
+                let mut oversized_envelope = encrypted
+                    .bind(py)
+                    .downcast::<PyBytes>()
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec();
+                oversized_envelope.resize(
+                    anima_corefs::catalog::MAX_CATALOG_ENVELOPE_SIZE + 1,
+                    0,
+                );
+                let error = corefs_catalog_physical_name(1, &oversized_envelope).unwrap_err();
+                assert!(error.to_string().contains("catalog envelope"));
+            });
+        }
+
+        #[test]
+        fn corefs_streaming_bindings_rollback_partial_outputs_on_late_failures() {
+            with_python(|py| {
+                let object_dek = PyCorefsObjectDek {
+                    inner: anima_corefs::crypto::SecretBytes::new(vec![0x71; 32]).unwrap(),
+                };
+                let body = b"authenticated body";
+                let metadata = anima_corefs::envelope::EnvelopeMetadata::for_body(
+                    "note",
+                    STREAM_ID,
+                    6,
+                    "2026-07-15T00:00:00Z",
+                    "2026-07-15T00:00:01Z",
+                    "application/octet-stream",
+                    std::collections::BTreeMap::new(),
+                    anima_corefs::envelope::BodyEncoding::Binary,
+                    body,
+                )
+                .unwrap();
+                let metadata_json = serde_json::to_vec(&metadata).unwrap();
+                let aad = corefs_base_aad("01JCORE", STREAM_ID, 6, "note", 1, 7).unwrap();
+                let encoded = anima_corefs::envelope::encode_envelope(
+                    &object_dek.inner,
+                    &aad,
+                    &metadata,
+                    body,
+                )
+                .unwrap();
+                let bytes_io = py.import_bound("io").unwrap().getattr("BytesIO").unwrap();
+                let prefix = b"existing-prefix";
+
+                let mut too_long = body.to_vec();
+                too_long.push(0);
+                let body_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, &too_long),))
+                    .unwrap();
+                let envelope_writer = bytes_io
+                    .call1((PyBytes::new_bound(py, prefix),))
+                    .unwrap();
+                envelope_writer.call_method1("seek", (0, 2)).unwrap();
+                assert!(corefs_encrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &metadata_json,
+                    &body_reader,
+                    &envelope_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    6,
+                    "note",
+                    1,
+                    7,
+                )
+                .is_err());
+                assert_eq!(
+                    envelope_writer
+                        .call_method0("getvalue")
+                        .unwrap()
+                        .downcast::<PyBytes>()
+                        .unwrap()
+                        .as_bytes(),
+                    prefix
+                );
+
+                let mut trailing = encoded.clone();
+                trailing.push(0);
+                let envelope_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, &trailing),))
+                    .unwrap();
+                let body_writer = bytes_io
+                    .call1((PyBytes::new_bound(py, prefix),))
+                    .unwrap();
+                body_writer.call_method1("seek", (0, 2)).unwrap();
+                assert!(corefs_decrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &envelope_reader,
+                    &body_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    6,
+                    "note",
+                    1,
+                    7,
+                )
+                .is_err());
+                assert_eq!(
+                    body_writer
+                        .call_method0("getvalue")
+                        .unwrap()
+                        .downcast::<PyBytes>()
+                        .unwrap()
+                        .as_bytes(),
+                    prefix
+                );
+
+                let envelope_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, &trailing),))
+                    .unwrap();
+                let range_writer = bytes_io
+                    .call1((PyBytes::new_bound(py, prefix),))
+                    .unwrap();
+                range_writer.call_method1("seek", (0, 2)).unwrap();
+                assert!(corefs_read_object_envelope_range_stream(
+                    py,
+                    &object_dek,
+                    &envelope_reader,
+                    &range_writer,
+                    0,
+                    4,
+                    "01JCORE",
+                    STREAM_ID,
+                    6,
+                    "note",
+                    1,
+                    7,
+                )
+                .is_err());
+                assert_eq!(
+                    range_writer
+                        .call_method0("getvalue")
+                        .unwrap()
+                        .downcast::<PyBytes>()
+                        .unwrap()
+                        .as_bytes(),
+                    prefix
+                );
+
+                let mut wrong_hash = metadata.clone();
+                wrong_hash.body_sha256 = "00".repeat(32);
+                let mut authenticated_wrong_hash = Vec::new();
+                assert!(anima_corefs::envelope::write_envelope(
+                    &mut authenticated_wrong_hash,
+                    &object_dek.inner,
+                    &aad,
+                    &wrong_hash,
+                    &mut std::io::Cursor::new(body),
+                )
+                .is_err());
+                let envelope_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, &authenticated_wrong_hash),))
+                    .unwrap();
+                let body_writer = bytes_io.call0().unwrap();
+                assert!(corefs_decrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &envelope_reader,
+                    &body_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    6,
+                    "note",
+                    1,
+                    7,
+                )
+                .is_err());
+                assert!(body_writer
+                    .call_method0("getvalue")
+                    .unwrap()
+                    .downcast::<PyBytes>()
+                    .unwrap()
+                    .as_bytes()
+                    .is_empty());
+
+                let envelope_reader = bytes_io
+                    .call1((PyBytes::new_bound(py, &encoded),))
+                    .unwrap();
+                let non_append_writer = bytes_io
+                    .call1((PyBytes::new_bound(py, prefix),))
+                    .unwrap();
+                let error = corefs_decrypt_object_envelope_stream(
+                    py,
+                    &object_dek,
+                    &envelope_reader,
+                    &non_append_writer,
+                    "01JCORE",
+                    STREAM_ID,
+                    6,
+                    "note",
+                    1,
+                    7,
+                )
+                .unwrap_err();
+                assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py));
+                assert_eq!(
+                    non_append_writer
+                        .call_method0("getvalue")
+                        .unwrap()
+                        .downcast::<PyBytes>()
+                        .unwrap()
+                        .as_bytes(),
+                    prefix
+                );
+            });
         }
 
         #[test]

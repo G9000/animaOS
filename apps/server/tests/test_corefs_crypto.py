@@ -3,11 +3,14 @@ from __future__ import annotations
 import anima_core
 import pytest
 
+OBJECT_ID = "01J00000000000000000000000"
+OTHER_OBJECT_ID = "01J00000000000000000000001"
+
 
 def _aad_kwargs(**overrides: object) -> dict[str, object]:
     values: dict[str, object] = {
         "core_id": "019f-core",
-        "object_id": "019f-object",
+        "object_id": OBJECT_ID,
         "revision": 7,
         "kind": "knowledge-source",
         "envelope_version": 1,
@@ -76,7 +79,7 @@ def test_native_object_dek_wrap_rejects_every_aad_mismatch() -> None:
 
     for field, changed in {
         "core_id": "other-core",
-        "object_id": "other-object",
+        "object_id": OTHER_OBJECT_ID,
         "revision": 8,
         "kind": "gallery-asset",
         "envelope_version": 2,
@@ -112,11 +115,11 @@ def test_native_object_crypto_rejects_unknown_kind_and_algorithm() -> None:
 
 def test_native_aad_bytes_match_rust_encoding() -> None:
     assert anima_core.corefs_object_key_aad(**_aad_kwargs()).hex() == (
-        "616e696d612d636f726566732d6f626a6563742d6b65792d777261702d763100626173653d"
-        "3134333a616e696d612d636f726566732d6f626a6563742d626173652d763100636f72652d"
-        "69643d393a303139662d636f7265006f626a6563742d69643d31313a303139662d6f626a65"
-        "6374006b696e643d6b6e6f776c656467652d736f7572636500656e76656c6f70652d766572"
-        "73696f6e3d31006f626a6563742d6b65792d65706f63683d32007265766973696f6e3d3700"
+        "616e696d612d636f726566732d6f626a6563742d6b65792d777261702d763100626173653d313538"
+        "3a616e696d612d636f726566732d6f626a6563742d626173652d763100636f72652d69643d393a30"
+        "3139662d636f7265006f626a6563742d69643d32363a30314a303030303030303030303030303030"
+        "3030303030303030006b696e643d6b6e6f776c656467652d736f7572636500656e76656c6f70652d"
+        "76657273696f6e3d31006f626a6563742d6b65792d65706f63683d32007265766973696f6e3d3700"
         "66726b2d76657273696f6e3d33"
     )
 
