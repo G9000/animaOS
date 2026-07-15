@@ -34,6 +34,8 @@ use crate::envelope::{read_envelope, EnvelopeError, MAX_ENVELOPE_SIZE};
 use crate::folders::PortableName;
 use crate::head::{decode_head, encode_head, HeadError, HeadRecord, MAX_HEAD_SIZE};
 use crate::id::OpaqueId;
+#[cfg(any(unix, test))]
+use crate::publication::is_temporary_name_for_target;
 use crate::publication::{
     atomic_publish_in, create_temporary_in, durable_create_directory_in, publish_immutable_in,
     publish_staged_immutable_in,
@@ -1644,11 +1646,71 @@ fn validate_opened_regular_file(dir: &Dir, name: &OsStr, file: &File) -> Result<
         || !linked.is_file()
         || linked.is_symlink()
         || !same_file_identity(&opened, &linked)
-        || link_count(&opened) != Some(1)
     {
         return Err(CommitError::InvalidCoreLayout);
     }
+    match link_count(&opened) {
+        Some(1) => {}
+        #[cfg(any(unix, test))]
+        Some(2) if has_known_crash_stale_immutable_stage(dir, name, &opened)? => {}
+        _ => return Err(CommitError::InvalidCoreLayout),
+    }
     Ok(())
+}
+
+#[cfg(any(unix, test))]
+fn has_known_crash_stale_immutable_stage(
+    dir: &Dir,
+    target: &OsStr,
+    target_metadata: &Metadata,
+) -> Result<bool, CommitError> {
+    let Some(staging_target) = immutable_staging_target(target) else {
+        return Ok(false);
+    };
+    let mut matching_aliases = 0_u8;
+    for entry in dir.entries()? {
+        let candidate = entry?.file_name();
+        if !is_temporary_name_for_target(&candidate, staging_target) {
+            continue;
+        }
+        let candidate_metadata = dir.symlink_metadata(&candidate)?;
+        if candidate_metadata.is_file()
+            && !candidate_metadata.is_symlink()
+            && same_file_identity(target_metadata, &candidate_metadata)
+        {
+            matching_aliases = matching_aliases.saturating_add(1);
+        }
+    }
+    Ok(matching_aliases == 1)
+}
+
+#[cfg(any(unix, test))]
+fn immutable_staging_target(target: &OsStr) -> Option<&OsStr> {
+    let target_text = target.to_str()?;
+    if target_text == CUTOVER_RECEIPT_FILE || is_catalog_physical_name(target_text) {
+        return Some(target);
+    }
+    ObjectPhysicalName::parse(target_text)
+        .ok()
+        .map(|_| OsStr::new("object"))
+}
+
+#[cfg(any(unix, test))]
+fn is_catalog_physical_name(value: &str) -> bool {
+    let Some((generation, hash)) = value
+        .strip_prefix("catalog-")
+        .and_then(|value| value.strip_suffix(".acore"))
+        .and_then(|value| value.split_once('-'))
+    else {
+        return false;
+    };
+    generation.len() == 20
+        && generation.bytes().all(|byte| byte.is_ascii_digit())
+        && generation.parse::<u64>().is_ok_and(|value| value > 0)
+        && hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn same_file_identity(left: &Metadata, right: &Metadata) -> bool {
@@ -1894,6 +1956,77 @@ mod tests {
         assert!(child.metadata(".").unwrap().is_dir());
         drop(child);
         drop(parent);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn immutable_file_validation_tolerates_a_known_crash_stale_stage_alias() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-crash-stale-stage-alias-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = concat!(
+            "catalog-00000000000000000001-",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.acore"
+        );
+        let stale_stage = format!(".{target}.17.tmp");
+        std::fs::write(root.join(target), b"catalog").unwrap();
+        std::fs::hard_link(root.join(target), root.join(&stale_stage)).unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let file = dir.open(target).unwrap().into_std();
+
+        super::validate_opened_regular_file(&dir, target.as_ref(), &file).unwrap();
+
+        drop(file);
+        drop(dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn immutable_file_validation_rejects_an_unrecognized_extra_hard_link() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-unrecognized-extra-link-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = concat!(
+            "catalog-00000000000000000001-",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.acore"
+        );
+        std::fs::write(root.join(target), b"catalog").unwrap();
+        std::fs::hard_link(root.join(target), root.join("unexpected-link")).unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let file = dir.open(target).unwrap().into_std();
+
+        let error = super::validate_opened_regular_file(&dir, target.as_ref(), &file).unwrap_err();
+        assert!(matches!(error, CommitError::InvalidCoreLayout));
+
+        drop(file);
+        drop(dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mutable_pointer_validation_rejects_a_stage_shaped_extra_hard_link() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-mutable-stage-shaped-link-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("HEAD"), b"head").unwrap();
+        std::fs::hard_link(root.join("HEAD"), root.join(".HEAD.17.tmp")).unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let file = dir.open("HEAD").unwrap().into_std();
+
+        let error = super::validate_opened_regular_file(&dir, "HEAD".as_ref(), &file).unwrap_err();
+        assert!(matches!(error, CommitError::InvalidCoreLayout));
+
+        drop(file);
+        drop(dir);
         std::fs::remove_dir_all(root).unwrap();
     }
 

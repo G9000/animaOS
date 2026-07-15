@@ -1032,6 +1032,83 @@ fn invalidation_runs_after_unlock_and_failure_does_not_rollback_commit() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn committed_catalog_load_tolerates_a_crash_stale_immutable_stage_link() {
+    let root = reset_root("crash-stale-immutable-stage");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            61,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let catalog_path = fs::read_dir(coordinator.catalogs_path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog-00000000000000000002-")
+        })
+        .unwrap();
+    let catalog_name = catalog_path.file_name().unwrap().to_string_lossy();
+    let stale_stage = coordinator
+        .catalogs_path()
+        .join(format!(".{catalog_name}.17.tmp"));
+    fs::hard_link(&catalog_path, &stale_stage).unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(committed.head().generation(), 2);
+    assert!(stale_stage.is_file());
+    let outcome = coordinator
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(outcome.generation(), 3);
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn prepared_object_validation_tolerates_a_crash_stale_immutable_stage_link() {
+    let root = reset_root("crash-stale-object-stage");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = prepare(&coordinator, 1, b"crash-stale object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    let stale_stage = coordinator.objects_path().join(".object.17.tmp");
+    fs::hard_link(&object_path, &stale_stage).unwrap();
+
+    let snapshot = coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&prepared), |generation| {
+            Ok(catalog(generation, "Note.md", &prepared))
+        })
+        .unwrap();
+    assert_eq!(snapshot.head().generation(), 1);
+    assert!(stale_stage.is_file());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn pinned_layout_fails_closed_when_the_fs_directory_is_replaced() {
     let root = reset_root("pinned-directory");

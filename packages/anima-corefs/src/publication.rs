@@ -123,6 +123,23 @@ pub(crate) fn create_temporary_in(dir: &Dir, target: &OsStr) -> io::Result<(File
     ))
 }
 
+#[cfg(any(unix, test))]
+pub(crate) fn is_temporary_name_for_target(candidate: &OsStr, target: &OsStr) -> bool {
+    let Some(candidate) = candidate.to_str() else {
+        return false;
+    };
+    let prefix = format!(".{}.", target.to_string_lossy());
+    let Some(suffix) = candidate
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    suffix
+        .parse::<u64>()
+        .is_ok_and(|value| value.to_string() == suffix)
+}
+
 pub(crate) fn publish_staged_immutable_in(
     dir: &Dir,
     temporary: &File,
