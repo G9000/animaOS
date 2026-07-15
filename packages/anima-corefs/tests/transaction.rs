@@ -1268,6 +1268,20 @@ fn stale_lock_metadata_requires_process_start_identity_not_pid_alone() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn partial_lock_metadata_is_recovered_after_the_kernel_lock_is_acquired() {
+    let root = reset_root("partial-lock-metadata");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    fs::write(coordinator.lock_path(), br#"{"schemaVersion":1,"pid":"#).unwrap();
+
+    let recovered = CoreCommitLock::acquire(&root).unwrap();
+    assert_eq!(recovered.owner_identity().pid(), std::process::id());
+    drop(recovered);
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn commit_lock_remains_private_with_a_permissive_umask() {

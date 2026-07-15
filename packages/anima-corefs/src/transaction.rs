@@ -341,7 +341,15 @@ impl CoreCommitLock {
         })?;
 
         let identity = ProcessIdentity::current()?;
-        if let Some(recorded) = read_lock_metadata(&mut file)? {
+        let recorded = match read_lock_metadata(&mut file) {
+            Ok(recorded) => recorded,
+            // The authoritative kernel lock is already held, so malformed
+            // bytes can only be crash residue or inactive tampering. Replace
+            // them below while preserving live-owner checks for valid records.
+            Err(CommitError::InvalidLockMetadata) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(recorded) = recorded {
             let recorded_identity = recorded.identity();
             if recorded_identity.is_still_alive()? {
                 return Err(CommitError::RecordedOwnerAlive {
