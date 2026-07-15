@@ -11,12 +11,17 @@ description = "Canonical cryptographic and filesystem primitives for ANIMA CORE.
 aes-gcm = "0.10"
 argon2 = "0.5"
 base64 = "0.22"
+# These exact crypto-graph pins preserve the workspace's Rust 1.75 MSRV.
+base64ct = "=1.6.0"
 getrandom = "0.2"
 hkdf = "0.12"
 rand = "0.8"
+serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
-zeroize = { version = "1.7", features = ["zeroize_derive"] }
+zeroize = { version = "=1.8.1", features = ["zeroize_derive"] }
+zeroize_derive = "=1.4.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }

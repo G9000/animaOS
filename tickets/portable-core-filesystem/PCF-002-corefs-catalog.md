@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 02:54 MYT
+- Updated: 2026-07-15 13:02 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -70,10 +70,21 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 02:16 MYT - Addressed the tenth current-head Codex review pass: reproduced and fixed HostFS partial patch application by preflighting every ordered write parent against filesystem and virtual mutation state before the first write. Verified the separate dangling-symlink listing comment already follows the requested skip behavior at the permission boundary and added a regression documenting readable-sibling continuity. Revalidated 56 shared tests, 127 Animus tests, formatting, clippy, build, and diff checks.
 - 2026-07-15 02:31 MYT - Addressed the eleventh current-head Codex review pass: `read_file` now reports truncation with the exact next offset, and HostFS directory enumeration skips non-UTF-8 Unix entries instead of aborting sibling listing/search. Added a red/green truncation regression plus a Unix-specific filename regression; revalidated 56 shared tests, 128 local Animus tests, formatting, clippy, build, and diff checks before standalone Linux CI.
 - 2026-07-15 02:54 MYT - Addressed the twelfth current-head Codex review pass with a red/green HostFS traversal regression: walk/search metadata now preserves a requested root symlink's identity after canonical containment authorization, so a directory symlink used as the root is never descended. Added a Windows junction fallback so the traversal regression exercises the behavior without elevated symlink privileges; revalidated 56 shared tests, 129 Animus tests, formatting, clippy, build, and diff checks.
+- 2026-07-15 12:19 MYT - Started PCF-002's second reviewable slice from merged `main` in an isolated worktree. Scope is the bounded authenticated `.acore` object envelope, deterministic versioned catalog codec, and typed `anima-core` PyO3 boundary only; folders/policy, `fs/HEAD`, publication transactions, rotation, APIs/tools, and benchmark work remain deferred. Fresh dependency setup and the merged Rust baseline (`anima-file-tools`, `anima-corefs`, `anima-core`, `animus`) passed before implementation.
+- 2026-07-15 13:02 MYT - Completed PCF-002's second implementation slice with red/green coverage: streaming AES-256-GCM metadata/body framing, strict authenticated bounds and range reads, canonical encrypted catalogs with generation-derived keys and opaque names, and byte-oriented PyO3 operations that retain Rust key ownership. Exact Rust 1.75, focused PyO3, combined Rust tests, CoreFS formatting/clippy, and scoped new-FFI checks passed. PCF-002 remains `in_progress` for folders/policy, catalog publication and `fs/HEAD`, rotation, APIs/tools, and benchmarks.
 
 ## Validation
 
 - Commands:
+  - `cargo test -p anima-corefs --tests` (required red compile failure before the envelope/catalog modules existed)
+  - `cargo +1.75.0 test --locked -p anima-corefs` (23 tests, including 12 new catalog/envelope integration tests)
+  - `cargo test --locked -p anima-corefs -p anima-core` (241 tests)
+  - `cargo check --locked -p anima-core --features python --tests`
+  - `$env:PATH='<uv-python-home>;' + $env:PATH; $env:PYO3_PYTHON='<worktree>/.venv/Scripts/python.exe'; cargo test --locked -p anima-core --features python --lib corefs_envelope_and_catalog_bindings_roundtrip_bytes_without_exposing_keys` (1 focused PyO3 test)
+  - `cargo fmt -p anima-corefs -- --check`; `cargo fmt -p anima-core -- --check` remains blocked by pre-existing formatter drift across nine unrelated `anima-core` files, which was intentionally left untouched after inspecting the new FFI hunk separately
+  - `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`
+  - `cargo clippy --locked -p anima-core --features python --all-targets` plus scoped verification of zero diagnostics in the new CoreFS FFI line range; repository-wide `-D warnings` remains blocked by 107 pre-existing `anima-core` lints outside this slice
+  - `git diff --check`
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -88,6 +99,11 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `cargo metadata --locked --no-deps --format-version 1`
   - workflow YAML parse and `git diff --check`
 - Changed paths:
+  - `packages/anima-corefs/src/envelope.rs` and `packages/anima-corefs/tests/envelope.rs`
+  - `packages/anima-corefs/src/catalog/` and `packages/anima-corefs/tests/catalog.rs`
+  - `packages/anima-corefs/src/{lib.rs,crypto.rs}` and `packages/anima-corefs/Cargo.toml`
+  - `packages/anima-core/src/ffi.rs`
+  - `Cargo.lock`
   - `packages/anima-file-tools/`
   - `apps/animus/src/tools/files.rs`
   - `apps/animus/src/tools/files/`

@@ -470,6 +470,30 @@ impl ObjectBaseAad {
         encoded.pop();
         encoded
     }
+
+    pub fn core_id(&self) -> &str {
+        &self.core_id
+    }
+
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+
+    pub fn kind(&self) -> ObjectKind {
+        self.kind
+    }
+
+    pub fn envelope_version(&self) -> u16 {
+        self.envelope_version
+    }
+
+    pub fn object_key_epoch(&self) -> u32 {
+        self.object_key_epoch
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

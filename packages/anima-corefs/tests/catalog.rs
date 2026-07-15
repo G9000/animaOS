@@ -1,0 +1,117 @@
+use anima_corefs::catalog::{
+    catalog_physical_name, decode_catalog, decrypt_catalog, encode_catalog, encrypt_catalog,
+    CatalogEntry, CatalogError, CatalogPayload, CATALOG_FORMAT_VERSION, MAX_CATALOG_PLAINTEXT_SIZE,
+};
+use anima_corefs::crypto::{derive_corefs_subkeys, SecretBytes};
+use serde_json::json;
+
+fn keys(byte: u8) -> anima_corefs::crypto::FrkSubkeys {
+    derive_corefs_subkeys(&SecretBytes::new(vec![byte; 32]).unwrap(), 1).unwrap()
+}
+
+fn payload() -> CatalogPayload {
+    CatalogPayload::new(
+        9,
+        vec![
+            CatalogEntry::new("stable-z", json!({"z": 1, "a": {"y": 2, "x": 1}})),
+            CatalogEntry::new("stable-a", json!({"logicalName": "private/diary/entry.md"})),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn canonical_encoding_is_independent_of_entry_and_map_insertion_order() {
+    let first = payload();
+    let second = CatalogPayload::new(
+        9,
+        vec![
+            CatalogEntry::new("stable-a", json!({"logicalName": "private/diary/entry.md"})),
+            CatalogEntry::new("stable-z", json!({"a": {"x": 1, "y": 2}, "z": 1})),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        encode_catalog(&first).unwrap(),
+        encode_catalog(&second).unwrap()
+    );
+    assert_eq!(
+        decode_catalog(&encode_catalog(&first).unwrap()).unwrap(),
+        first
+    );
+}
+
+#[test]
+fn catalog_encryption_roundtrip_and_physical_name_are_private() {
+    let payload = payload();
+    let encrypted = encrypt_catalog(&keys(0x22), "01JCORE", &payload).unwrap();
+    let decoded = decrypt_catalog(&keys(0x22), "01JCORE", &encrypted).unwrap();
+    assert_eq!(decoded, payload);
+    assert!(!encrypted
+        .windows(b"private/diary/entry.md".len())
+        .any(|window| window == b"private/diary/entry.md"));
+    let name = catalog_physical_name(payload.generation, &encrypted).unwrap();
+    assert!(name.ends_with(".acore"));
+    assert!(name.contains("00000000000000000009"));
+    assert!(!name.contains("diary"));
+    assert!(!name.contains("entry"));
+    assert!(catalog_physical_name(payload.generation + 1, &encrypted).is_err());
+}
+
+#[test]
+fn wrong_generation_core_key_and_tampering_fail() {
+    let payload = payload();
+    let encrypted = encrypt_catalog(&keys(0x22), "01JCORE", &payload).unwrap();
+    assert!(decrypt_catalog(&keys(0x33), "01JCORE", &encrypted).is_err());
+    assert!(decrypt_catalog(&keys(0x22), "OTHER", &encrypted).is_err());
+
+    let mut generation = encrypted.clone();
+    generation[10] ^= 1;
+    assert!(decrypt_catalog(&keys(0x22), "01JCORE", &generation).is_err());
+
+    let mut tampered = encrypted;
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    assert!(decrypt_catalog(&keys(0x22), "01JCORE", &tampered).is_err());
+
+    let encrypted = encrypt_catalog(&keys(0x22), "01JCORE", &payload).unwrap();
+    assert!(decrypt_catalog(&keys(0x22), "01JCORE", &encrypted[..encrypted.len() - 1]).is_err());
+    let mut trailing = encrypted;
+    trailing.push(0);
+    assert!(decrypt_catalog(&keys(0x22), "01JCORE", &trailing).is_err());
+}
+
+#[test]
+fn duplicate_ids_versions_and_oversize_are_rejected() {
+    assert!(matches!(
+        CatalogPayload::new(
+            1,
+            vec![
+                CatalogEntry::new("same", json!(1)),
+                CatalogEntry::new("same", json!(2)),
+            ],
+        ),
+        Err(CatalogError::DuplicateStableId(_))
+    ));
+    assert!(CatalogPayload::new(0, vec![]).is_err());
+
+    let mut encoded = encode_catalog(&payload()).unwrap();
+    encoded[17] = (CATALOG_FORMAT_VERSION + 1) as u8;
+    assert!(decode_catalog(&encoded).is_err());
+
+    let huge = "x".repeat(MAX_CATALOG_PLAINTEXT_SIZE + 1);
+    let oversized = CatalogPayload::new(1, vec![CatalogEntry::new("one", json!(huge))]).unwrap();
+    assert!(matches!(
+        encode_catalog(&oversized),
+        Err(CatalogError::LimitExceeded(_))
+    ));
+
+    let encrypted = encrypt_catalog(&keys(0x22), "01JCORE", &payload()).unwrap();
+    let mut oversized_declaration = encrypted;
+    oversized_declaration[30..34]
+        .copy_from_slice(&((MAX_CATALOG_PLAINTEXT_SIZE as u32) + 17).to_le_bytes());
+    assert!(matches!(
+        decrypt_catalog(&keys(0x22), "01JCORE", &oversized_declaration),
+        Err(CatalogError::LimitExceeded(_))
+    ));
+}

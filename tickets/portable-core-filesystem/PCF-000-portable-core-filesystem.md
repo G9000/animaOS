@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-15 02:54 MYT
+- Updated: 2026-07-15 13:02 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -91,15 +91,26 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 02:16 MYT - Addressed PR #91's tenth Codex review pass by preflighting HostFS write-parent shape across the full ordered mutation plan before applying any best-effort write. Confirmed dangling symlinks are already skipped before metadata lookup while readable siblings remain available, and added focused coverage for both behaviors; full shared/Animus quality gates passed.
 - 2026-07-15 02:31 MYT - Addressed PR #91's eleventh Codex review pass by exposing `read_file` continuation offsets whenever output is truncated and skipping non-UTF-8 directory entries on Unix without dropping readable siblings. Focused platform coverage and the full local shared/Animus quality gates passed before standalone Linux CI.
 - 2026-07-15 02:54 MYT - Addressed PR #91's twelfth Codex review pass by preserving final symlink identity for HostFS walk/search roots after containment authorization, preventing a root directory symlink from being traversed. Added cross-platform red/green coverage and revalidated the full shared/Animus quality gates.
+- 2026-07-15 12:19 MYT - Began PCF-002's second isolated PR slice for the Rust `.acore` envelope, deterministic catalog codec, and PyO3 format boundary after a clean merged-main Rust baseline. Canonical catalog publication and the remaining PCF-002 filesystem layers stay in later slices.
+- 2026-07-15 13:02 MYT - Completed and validated PCF-002's second isolated implementation slice: bounded streaming `.acore` object framing, deterministic generation-keyed encrypted catalog payloads, opaque physical catalog names, and typed Rust-owned PyO3 operations. Exact Rust 1.75, focused PyO3, combined Rust tests, CoreFS format/clippy, and scoped FFI gates passed; PCF-002 remains in progress for the deferred filesystem/publication layers.
 
 ## Validation
 
 - Commands:
-  - `git diff --check`
+  - `cargo +1.75.0 test --locked -p anima-corefs` (23 tests)
+  - `cargo test --locked -p anima-corefs -p anima-core` (241 tests)
+  - focused PyO3 binding test with the worktree CPython runtime (1 test)
+  - `cargo fmt -p anima-corefs -- --check` plus scoped new-FFI format inspection; the existing `anima-core` package-wide format check remains blocked by unrelated baseline drift
+  - `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`
+  - scoped new-CoreFS-FFI clippy check and `git diff --check`
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
 - Changed paths:
+  - `packages/anima-corefs/src/{envelope.rs,catalog/,crypto.rs,lib.rs}`
+  - `packages/anima-corefs/tests/{envelope.rs,catalog.rs}`
+  - `packages/anima-core/src/ffi.rs`
+  - `packages/anima-corefs/Cargo.toml` and `Cargo.lock`
   - `docs/prds/portable-core-filesystem-v1.md`
   - `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md`
   - `docs/superpowers/specs/2026-07-12-portable-core-key-hierarchy-design.md`

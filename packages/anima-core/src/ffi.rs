@@ -5,6 +5,9 @@
 
 #[cfg(feature = "python")]
 mod python {
+    // PyO3 0.22 generated wrappers trigger this false positive for `PyResult` returns.
+    #![allow(clippy::useless_conversion)]
+
     use pyo3::prelude::*;
     use pyo3::types::{PyBytes, PyDict, PyList};
     use pyo3::IntoPy;
@@ -25,6 +28,19 @@ mod python {
     use crate::temporal::TemporalIndex;
 
     fn corefs_value_error(error: anima_corefs::crypto::CryptoError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn corefs_envelope_error(error: anima_corefs::envelope::EnvelopeError) -> PyErr {
+        match error {
+            anima_corefs::envelope::EnvelopeError::Io(error) => {
+                pyo3::exceptions::PyOSError::new_err(error.to_string())
+            }
+            error => pyo3::exceptions::PyValueError::new_err(error.to_string()),
+        }
+    }
+
+    fn corefs_catalog_error(error: anima_corefs::catalog::CatalogError) -> PyErr {
         pyo3::exceptions::PyValueError::new_err(error.to_string())
     }
 
@@ -506,6 +522,167 @@ mod python {
         values.set_item("catalog", PyBytes::new_bound(py, keys.catalog().as_slice()))?;
         values.set_item("search", PyBytes::new_bound(py, keys.search().as_slice()))?;
         Ok(values.into_py(py))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, metadata_json, body, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_encrypt_object_envelope(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        metadata_json: &[u8],
+        body: &[u8],
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let metadata: anima_corefs::envelope::EnvelopeMetadata =
+            serde_json::from_slice(metadata_json)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let encoded =
+            anima_corefs::envelope::encode_envelope(&object_dek.inner, &aad, &metadata, body)
+                .map_err(corefs_envelope_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    fn corefs_envelope_read_to_py(
+        py: Python<'_>,
+        read: anima_corefs::envelope::EnvelopeRead,
+        body: Vec<u8>,
+    ) -> PyResult<PyObject> {
+        let metadata = serde_json::to_vec(&read.metadata)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let result = PyDict::new_bound(py);
+        result.set_item("metadata", PyBytes::new_bound(py, &metadata))?;
+        result.set_item("body", PyBytes::new_bound(py, &body))?;
+        result.set_item("whole_body_verified", read.whole_body_verified)?;
+        Ok(result.into_py(py))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, envelope, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_decrypt_object_envelope(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        envelope: &[u8],
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let (read, body) =
+            anima_corefs::envelope::decode_envelope(&object_dek.inner, &aad, envelope)
+                .map_err(corefs_envelope_error)?;
+        corefs_envelope_read_to_py(py, read, body)
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (object_dek, envelope, range_start, range_end, *, core_id, object_id, revision, kind, envelope_version, object_key_epoch))]
+    #[allow(clippy::too_many_arguments)]
+    fn corefs_read_object_envelope_range(
+        py: Python<'_>,
+        object_dek: &PyCorefsObjectDek,
+        envelope: &[u8],
+        range_start: u64,
+        range_end: u64,
+        core_id: &str,
+        object_id: &str,
+        revision: u64,
+        kind: &str,
+        envelope_version: u16,
+        object_key_epoch: u32,
+    ) -> PyResult<PyObject> {
+        let aad = corefs_base_aad(
+            core_id,
+            object_id,
+            revision,
+            kind,
+            envelope_version,
+            object_key_epoch,
+        )?;
+        let (read, body) = anima_corefs::envelope::decode_envelope_range(
+            &object_dek.inner,
+            &aad,
+            envelope,
+            range_start..range_end,
+        )
+        .map_err(corefs_envelope_error)?;
+        corefs_envelope_read_to_py(py, read, body)
+    }
+
+    #[pyfunction]
+    fn corefs_encode_catalog(py: Python<'_>, payload_json: &[u8]) -> PyResult<PyObject> {
+        let payload: anima_corefs::catalog::CatalogPayload =
+            serde_json::from_slice(payload_json)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let encoded =
+            anima_corefs::catalog::encode_catalog(&payload).map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_decode_catalog(py: Python<'_>, payload_json: &[u8]) -> PyResult<PyObject> {
+        let payload =
+            anima_corefs::catalog::decode_catalog(payload_json).map_err(corefs_catalog_error)?;
+        let encoded =
+            anima_corefs::catalog::encode_catalog(&payload).map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_encrypt_catalog(
+        py: Python<'_>,
+        keys: &PyCorefsSubkeys,
+        core_id: &str,
+        payload_json: &[u8],
+    ) -> PyResult<PyObject> {
+        let payload =
+            anima_corefs::catalog::decode_catalog(payload_json).map_err(corefs_catalog_error)?;
+        let encrypted = anima_corefs::catalog::encrypt_catalog(&keys.inner, core_id, &payload)
+            .map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encrypted).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_decrypt_catalog(
+        py: Python<'_>,
+        keys: &PyCorefsSubkeys,
+        core_id: &str,
+        envelope: &[u8],
+    ) -> PyResult<PyObject> {
+        let payload = anima_corefs::catalog::decrypt_catalog(&keys.inner, core_id, envelope)
+            .map_err(corefs_catalog_error)?;
+        let encoded =
+            anima_corefs::catalog::encode_catalog(&payload).map_err(corefs_catalog_error)?;
+        Ok(PyBytes::new_bound(py, &encoded).into_py(py))
+    }
+
+    #[pyfunction]
+    fn corefs_catalog_physical_name(generation: u64, envelope: &[u8]) -> PyResult<String> {
+        anima_corefs::catalog::catalog_physical_name(generation, envelope)
+            .map_err(corefs_catalog_error)
     }
 
     fn json_value_to_py(py: Python<'_>, value: Value) -> PyResult<PyObject> {
@@ -1943,6 +2120,14 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_metadata_frame_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_body_frame_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_fixed_subkey_test_vector, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encrypt_object_envelope, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decrypt_object_envelope, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encode_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decode_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_decrypt_catalog, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_catalog_physical_name, m)?)?;
 
         // SIMD functions
         m.add_function(wrap_pyfunction!(l2_distance, m)?)?;
@@ -2030,6 +2215,102 @@ mod python {
             static INIT: Once = Once::new();
             INIT.call_once(|| pyo3::prepare_freethreaded_python());
             Python::with_gil(f)
+        }
+
+        #[test]
+        fn corefs_envelope_and_catalog_bindings_roundtrip_bytes_without_exposing_keys() {
+            with_python(|py| {
+                let object_dek = PyCorefsObjectDek {
+                    inner: anima_corefs::crypto::SecretBytes::new(vec![0x31; 32]).unwrap(),
+                };
+                let body = b"portable private content";
+                let metadata = anima_corefs::envelope::EnvelopeMetadata::for_body(
+                    "note",
+                    "01JOBJECT",
+                    4,
+                    "2026-07-15T00:00:00Z",
+                    "2026-07-15T00:00:01Z",
+                    "text/plain",
+                    std::collections::BTreeMap::new(),
+                    "identity",
+                    body,
+                )
+                .unwrap();
+                let metadata_json = serde_json::to_vec(&metadata).unwrap();
+                let encrypted = corefs_encrypt_object_envelope(
+                    py,
+                    &object_dek,
+                    &metadata_json,
+                    body,
+                    "01JCORE",
+                    "01JOBJECT",
+                    4,
+                    "note",
+                    1,
+                    2,
+                )
+                .unwrap();
+                let encrypted_bytes = encrypted.bind(py).downcast::<PyBytes>().unwrap().as_bytes();
+                assert!(!encrypted_bytes
+                    .windows(body.len())
+                    .any(|window| window == body));
+                let decrypted = corefs_decrypt_object_envelope(
+                    py,
+                    &object_dek,
+                    encrypted_bytes,
+                    "01JCORE",
+                    "01JOBJECT",
+                    4,
+                    "note",
+                    1,
+                    2,
+                )
+                .unwrap();
+                let result = decrypted.bind(py).downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    result
+                        .get_item("body")
+                        .unwrap()
+                        .unwrap()
+                        .downcast::<PyBytes>()
+                        .unwrap()
+                        .as_bytes(),
+                    body
+                );
+                assert!(result
+                    .get_item("whole_body_verified")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+
+                let root = anima_corefs::crypto::SecretBytes::new(vec![0x41; 32]).unwrap();
+                let keys = PyCorefsSubkeys {
+                    inner: anima_corefs::crypto::derive_corefs_subkeys(&root, 1).unwrap(),
+                };
+                let payload = anima_corefs::catalog::CatalogPayload::new(
+                    3,
+                    vec![anima_corefs::catalog::CatalogEntry::new(
+                        "stable-1",
+                        serde_json::json!({"type": "note"}),
+                    )],
+                )
+                .unwrap();
+                let payload_json = anima_corefs::catalog::encode_catalog(&payload).unwrap();
+                let encrypted_catalog =
+                    corefs_encrypt_catalog(py, &keys, "01JCORE", &payload_json).unwrap();
+                let encrypted_catalog_bytes = encrypted_catalog
+                    .bind(py)
+                    .downcast::<PyBytes>()
+                    .unwrap()
+                    .as_bytes();
+                let decoded =
+                    corefs_decrypt_catalog(py, &keys, "01JCORE", encrypted_catalog_bytes).unwrap();
+                assert_eq!(
+                    decoded.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                    payload_json
+                );
+            });
         }
 
         #[test]
