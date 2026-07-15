@@ -1,153 +1,75 @@
 # PRD, Plan, and Ticket Workflow
 
-This repository uses three planning artifacts for new work:
-
-1. `docs/prds/` for product requirements and version scope
-2. `docs/superpowers/plans/` for implementation sequencing
-3. `tickets/` for local issue-style units of work
-
-Agents should not collapse these into one file type.
+This document is the canonical repository source for planning artifacts, ticket state, and explicitly authorized publication/review. The repo-owned project-management skill routes agents into this workflow; it does not replace this contract.
 
 ## Artifact Roles
 
+Keep product scope, implementation sequencing, and executable work separate:
+
+1. `docs/prds/` contains product requirements and version scope.
+2. `docs/superpowers/specs/` contains behavior or architecture that requires approval.
+3. `docs/superpowers/plans/` contains dated implementation sequencing.
+4. `tickets/` contains issue-style units that can be assigned, progressed, blocked, and completed.
+
 ### PRD
 
-Use a PRD when defining what a feature/version should deliver.
+Use a PRD when defining what a feature or version should deliver.
+
+Path patterns:
+
+- `docs/prds/<domain>/<name>.md`
+- `docs/prds/<name>.md` for a top-level umbrella document
+
+A PRD states user-visible outcomes, constraints, success measures, and explicit non-goals. It is not an execution checklist.
+
+### Design/Spec
+
+Use a design/spec when behavior, architecture, or a material trade-off needs approval before implementation planning. Preserve its approval gate; urgency does not imply approval.
 
 Path pattern:
 
-- docs/prds/<domain>/<name>.md
-- docs/prds/<name>.md for top-level umbrella docs
-
-PRDs answer:
-
-- what this version delivers
-- what users see
-- rules and constraints
-- success metrics
-- what is explicitly out of scope
-
-PRDs are not execution checklists.
+- `docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md`
 
 ### Implementation Plan
 
-Use a plan when the work is approved enough to sequence engineering tasks.
+Use a plan when approved work is large enough to require engineering sequence, file-level scope, verification, migration, or rollout steps.
 
 Path pattern:
 
-- docs/superpowers/plans/YYYY-MM-DD-<slug>.md
+- `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`
 
-Plans answer:
-
-- what files/services change
-- task order
-- test and verification steps
-- migration or rollout order
-
-Plans are execution maps, not ticket queues.
+A plan is an execution map, not a ticket queue.
 
 ### Tickets
 
-Use `tickets/` for issue-style units that can be claimed, progressed, blocked, and completed over time.
+Use `tickets/` for single issue-style units. A ticket records its parent, dependencies, owner, state, acceptance, activity, validation, and changed paths.
 
-Tickets answer:
+## Intake, Discovery, and Planning
 
-- what single unit of work exists
-- what parent initiative it belongs to
-- who or what claimed it
-- whether it is blocked or active
-- what changed
-- how completion was validated
+Before creating or revising artifacts, search existing PRDs, designs/specs, plans, parent trackers, and child tickets for the same initiative. Reuse established sources, slugs, and identifiers instead of creating a duplicate because the request uses different wording. Read the relevant artifacts completely and respect outstanding user-approval gates.
 
-## Required Lifecycle
+For new or materially changed scope, use this order when applicable:
 
-When a user asks to create a new initiative, the agent should create artifacts in this order when applicable:
+1. PRD when product scope is new or changing.
+2. Design/spec when behavior or architecture needs approval.
+3. Dated implementation plan when sequencing matters.
+4. One parent tracker plus ordered child tickets for executable units.
 
-1. PRD if product scope is not already defined
-2. Plan if implementation is large enough to need sequencing
-3. Parent ticket for the initiative
-4. Child tickets for concrete work units
+Cross-link these artifacts without collapsing or copying their responsibilities. Planning does not auto-claim an initiative: every new executable child starts with `Status: backlog` and `Owner: unassigned` unless the user explicitly assigns it during creation.
 
-When a user asks to execute a ticket, the agent should:
+Status-only requests are read-only. Explanation and diagnosis-only work does not create or mutate project artifacts. An isolated edit does not receive fake project artifacts merely because it may later be published.
 
-1. open the target ticket file
-2. set `Status: in_progress`
-3. set `Started:` if empty
-4. update `Updated:`
-5. append an `Activity Log` entry with timestamp and action
-6. do the implementation work
-7. record validation and changed paths
-8. set `Status: done` or `Status: blocked`
-9. set `Completed:` when done
-10. update `Updated:` again
+## Initiative and Ticket Shape
 
-Agents should not silently work a ticket without claiming it in the file first unless the user explicitly asks for a draft-only change.
+Each initiative folder under `tickets/` should contain:
 
-## Parent Ticket Model
+- `tickets/<initiative>/README.md` with a short folder purpose;
+- one `<PREFIX>-000` parent tracker;
+- ordered child tickets created from [tickets/TEMPLATE.md](../../tickets/TEMPLATE.md).
 
-Each initiative folder under `tickets/` should contain one parent tracker ticket plus child tickets.
+The parent states the initiative goal, lists child order and dependencies, mirrors child status in one table, records completed-ticket history, and summarizes overall progress and blockers. Every child references the parent.
 
-Recommended parent ticket id:
-
-- `<prefix>-000`
-
-Parent ticket responsibilities:
-
-- state the initiative goal
-- list child tickets in order
-- track child status in one table
-- maintain a completed-ticket section
-- summarize overall progress and blockers
-
-## Ticket Status Model
-
-Allowed values:
-
-- `backlog`
-- `in_progress`
-- `blocked`
-- `done`
-
-Meaning:
-
-- `backlog`: not started
-- `in_progress`: currently claimed by an agent or human
-- `blocked`: cannot progress without a missing decision, dependency, or external change
-- `done`: acceptance met and validation recorded
-
-## Timestamp Rules
-
-Use one timestamp format everywhere in ticket files:
-
-- `YYYY-MM-DD HH:MM MYT`
-
-Required fields:
-
-- `Created:`
-- `Updated:`
-- `Started:`
-- `Completed:`
-
-Rules:
-
-- `Created` is set when the ticket file is created
-- `Updated` changes on every material edit
-- `Started` is set only once, the first time work begins
-- `Completed` is set only when status becomes `done`
-
-## Required Ticket Sections
-
-Every ticket should contain:
-
-- title with ticket id
-- metadata block
-- goal
-- deliverables
-- acceptance
-- activity log
-- validation
-
-Recommended metadata fields:
+Required child metadata includes:
 
 - `Status:`
 - `Priority:`
@@ -155,65 +77,176 @@ Recommended metadata fields:
 - `Parent:`
 - `Depends on:`
 - `Owner:`
-- `PRD:`
-- `Plan:`
-- `Created:`
-- `Updated:`
-- `Started:`
-- `Completed:`
+- relevant `PRD:`, `Spec:`, and `Plan:` links
+- `Created:`, `Updated:`, `Started:`, and `Completed:`
 
-## Completion Contract
+Every ticket also contains a goal, deliverables, acceptance, activity log, and validation section.
 
-A ticket is not complete just because code was written.
+## Status and Timestamp Contract
 
-Before marking `done`, the ticket should include:
+The only legal ticket statuses are:
 
-- final validation commands or checks
-- changed file paths
-- any follow-up risks or notes
+- `backlog`: not started;
+- `in_progress`: actively owned and underway;
+- `blocked`: unable to progress because of a concrete missing decision, dependency, permission, or external-state change;
+- `done`: acceptance met and validation recorded.
 
-If part of the acceptance is still unmet, leave the ticket `in_progress` or `blocked`.
+Use `YYYY-MM-DD HH:MM MYT` for every ticket timestamp.
 
-## Agent Pickup Rules
+- `Created:` is set when the ticket file is created.
+- `Updated:` changes on every material edit.
+- `Started:` is set once, when work first begins, and is preserved on resume.
+- `Completed:` is set only while the ticket is `done`; a documented acceptance-breaking reopen clears the current value while preserving the prior timestamp in history.
 
-If the user says "do the next ticket" or similar, the agent should:
+Historical workstreams that already depend on `scratchboard/` may continue there until deliberately migrated. Do not silently rewrite historical artifacts during unrelated work; all new initiatives use the current PRD, design/spec, dated-plan, and ticket paths above.
 
-1. read the parent ticket first
-2. choose the first child ticket in initiative order whose status is `backlog`
-3. confirm dependencies are `done` or intentionally waived by the user
-4. claim it by updating the child ticket file
-5. update the parent tracker status table
-6. execute and update the child ticket before final response
+## Ticket Selection and Legal Transitions
 
-If the user names a specific ticket, use that ticket directly.
+For a named ticket, read the child and parent before mutation. Apply state precedence and ownership exactly:
 
-## Parent Updates on Completion
+| Current child state | Legal action |
+| --- | --- |
+| Any `done`, regardless of owner | Reject mutation. Only the acceptance-breaking reopen routine below may change it. |
+| `backlog` with `Owner: unassigned` | Claim through the transaction below. |
+| `backlog` with `Owner: Codex` | Start through the transaction below; log a start, not a false ownership claim. |
+| `in_progress` with `Owner: Codex` | Resume without changing `Started:` or logging a new claim. |
+| `blocked` with `Owner: Codex` | Resume only after blocker clearance is verified and recorded in child and parent. |
+| Any non-`done` state owned by someone else | Reject unless the user explicitly authorizes reassignment; log that reassignment before applying the new owner's legal transition. |
+| Unlisted or malformed status/owner combination | Reject without lifecycle mutation and report the malformed contract. |
 
-When a child ticket changes status, also update the parent ticket:
+For a request to choose the next ticket, evaluate the parent child table in documented order and select the first child that satisfies all of these conditions:
 
-1. refresh the child status row
-2. append to `Completed Tickets` if the child became `done`
-3. update parent `Updated:`
-4. append a parent `Activity Log` entry if the change is material
+- `Status: backlog`;
+- `Owner: unassigned`;
+- every dependency is `done`;
+- no branch, worktree, or activity-log entry shows a visible existing claim.
 
-## File Templates
+A dependency may be bypassed only through explicit user authorization recorded as a waiver in the child and parent activity logs. If no child is eligible, do not improvise: report the specific owner, dependency, visible claim, malformed metadata, or state that prevents selection.
 
-Use [tickets/TEMPLATE.md](../../tickets/TEMPLATE.md) for new child ticket files.
+## Claim or Assigned-Start Transaction
 
-When creating a new initiative folder under `tickets/`, also create:
+Before any backlog start, recheck dependencies and visible claims. Treat the child and parent edits as one logical transaction:
 
-- `tickets/<initiative>/README.md` with short folder purpose
-- `tickets/<initiative>/<prefix>-000-<initiative>.md` as the parent tracker
-- child ticket files using the template
+1. For an unassigned child, set `Owner: Codex` and log that Codex claimed it. For a Codex-owned backlog child, preserve `Owner: Codex` and log that work started without claiming ownership again.
+2. Set child `Status: in_progress`.
+3. Set child `Started:` only if empty and update child `Updated:` in MYT.
+4. Include the branch and worktree in child activity when available.
+5. Set the matching parent child row to `in_progress`.
+6. Set top-level parent `Status: in_progress` when executable initiative work is active, update parent `Updated:`, and append a material parent activity entry.
+7. Preserve the parent `Owner:` exactly; child assignment never reassigns the parent.
+
+If any required part cannot be recorded, do not start implementation under a partially claimed state.
+
+## Progress, Blockers, and Clearance
+
+Preserve unrelated dirty work and stage only intended files. Update the child `Updated:` and activity log for material progress or scope changes, and synchronize material state changes to the parent.
+
+On first discovery of a concrete blocker:
+
+1. Set child `Status: blocked`, update child `Updated:`, and append an activity entry naming the blocker and required clearance.
+2. Set the parent child row to `blocked`, update parent `Updated:`, and append material parent activity.
+3. Set top-level parent `Status: blocked` only when no other initiative work is eligible to progress; otherwise keep it `in_progress`.
+
+When the blocker clears, record the evidence of clearance in both child and parent, set the child and parent row to `in_progress`, update both timestamps, and restore top-level parent `Status: in_progress` when eligible work resumes. Preserve the original `Started:` value and all blocker history.
+
+Ticket execution does not authorize pushing, opening a PR, deploying, sending messages, merging, or any other external action.
+
+## Completion and Parent Closeout
+
+A child is complete only when all acceptance conditions are met and the ticket records:
+
+- focused and required broader validation commands or checks and their results;
+- every changed path;
+- residual risks, follow-ups, or an explicit `none`.
+
+Then close child and parent state as one logical update:
+
+1. Set child `Status: done`, `Updated:`, and `Completed:` and append a completion activity entry.
+2. Set the parent child row to `done`.
+3. Add the child and completion timestamp to parent completed-ticket history without duplicating it.
+4. Update parent `Updated:` and append material parent activity.
+
+The top-level parent remains `in_progress` while required children or initiative closeout remain. Set it to `done` only when every required child is `done` and initiative-level validation and closeout have passed. Preserve parent ownership throughout.
+
+## Scoped Publication and Review
+
+Enter publication/review only when the user explicitly authorizes a push, PR, review request, or monitor-until-clean workflow. Ticket execution by itself provides no such authority. Explicit authorization covers the in-scope commits, branch push, PR creation/update, review comments and thread resolutions, and follow-up review-fix pushes needed for that PR; it never authorizes merge unless the user separately requests merge.
+
+Publishing an untracked isolated edit does not create planning artifacts or tickets and does not require tracked-work metadata closeout.
+
+### Prepare and Publish
+
+Before the first review request:
+
+1. Inspect the intended diff and staging area; stage only in-scope files.
+2. Confirm the base branch, head branch, and commit relationship, especially for stacked work.
+3. Run focused validation plus the broader checks required for the changed surface.
+4. Commit the scoped state, confirm authentication, push with upstream tracking, and record the pushed commit OID.
+5. Open a draft PR by default unless the user explicitly requests a ready PR.
+
+The PR body must contain these sections: `Summary`, `Scope`, `Review focus`, `Out of scope`, and `Validation`. Ask reviewers to prioritize actionable correctness, security, regressions, contracts, migrations, and missing tests. De-prioritize style-only preference, speculative redesign, unrelated refactors, and churn already enforced by tooling, without hiding or dismissing real defects.
+
+The Codex review request must be this exact standalone comment:
+
+```text
+@codex review
+```
+
+Do not auto-merge, and do not merge without separate explicit authorization.
+
+### Read Current-Head Review State
+
+Cache the PR number, branch, and current `headRefOid`. Query GraphQL `reviewThreads(first: 100)` and retrieve, at minimum:
+
+- PR `merged` and `headRefOid`;
+- reviews with author, state, submitted time, and review commit OID;
+- each thread's `isResolved`, `isOutdated`, path, line/original line, comments, and comment commit OIDs.
+
+Flat PR/review comments are supplemental; they cannot replace thread-aware state. The latest Codex review commit must equal the refreshed current `headRefOid`. An older review is stale even if it was clean and even if no current thread is visible.
+
+### Classify, Fix, and Repeat
+
+For every unresolved, non-outdated thread:
+
+1. Classify it as actionable or as duplicate, already-fixed, outdated, style-only, speculative, unrelated, or contradicted by current evidence.
+2. Fix actionable defects narrowly. For a behavioral defect, add a failing regression first, then implement and verify the fix.
+3. Give every non-actionable finding one concise evidence-based disposition. Never relabel or hide valid feedback merely to clear a thread.
+4. Run focused and required broad validation, commit and push the scoped change, and record the pushed OID.
+5. Re-query until PR `headRefOid` equals that pushed OID. Only then resolve threads whose concerns were materially addressed by a verified fix or sound disposition.
+6. Post the exact standalone `@codex review` comment and repeat from a fresh thread-aware read.
+
+Stop only when all four conditions are true on the same refreshed head:
+
+- the latest Codex review commit equals current `headRefOid`;
+- required checks pass;
+- zero unresolved, non-outdated actionable threads remain;
+- every non-actionable thread has an evidence-based disposition.
+
+### Tracked-Work Two-Phase Closeout
+
+When publication/review includes an existing tracked child and parent, keep the integration child and parent open through a clean implementation head. After that head meets the stopping rule:
+
+1. record final evidence and close the child and parent metadata consistently;
+2. commit and push that metadata closeout;
+3. record the pushed closeout OID and wait for PR `headRefOid` to catch up;
+4. post exact `@codex review` and apply the same stopping rule to the final closeout head.
+
+If an actionable review finding invalidates acceptance after a ticket was closed, reopen consistently: set the child and matching parent row to `in_progress`, return top-level parent to `in_progress`, clear current child/parent `Completed:` values, remove the child from current parent completed history, and preserve every prior completion timestamp and history in child and parent activity logs. Fix and validate, then perform closeout again with new timestamps. Do not reopen for a non-actionable or non-acceptance finding.
+
+### Early Merge, Permissions, and Monitor Cleanup
+
+If another actor merges while tracked metadata remains open, create a metadata-only follow-up branch and draft PR and run the same current-head review loop. Never use the early merge as evidence that tickets are done. If permissions prevent the follow-up, set the integration child to `blocked`, and set the parent `blocked` only when no other eligible initiative work remains; record and report the exact permission blocker.
+
+Delete any asynchronous review monitor when its PR reaches the applicable terminal state, closes, or is replaced by a follow-up PR monitor.
 
 ## Example Activity Log
 
 ```markdown
 ## Activity Log
 
-- 2026-06-26 17:40 MYT - Claimed by Codex, set status to `in_progress`.
-- 2026-06-26 18:05 MYT - Added auth package boundary and updated route imports.
-- 2026-06-26 18:20 MYT - Ran focused auth tests and recorded results.
+- 2026-06-26 17:40 MYT - Codex claimed the ticket on branch `codex/example` in worktree `.worktrees/example`; set child and parent row to `in_progress`.
+- 2026-06-26 18:05 MYT - Added the scoped implementation and recorded material progress.
+- 2026-06-26 18:20 MYT - Ran focused and broad validation and recorded results.
 ```
 
 ## Example Validation
@@ -228,5 +261,5 @@ When creating a new initiative folder under `tickets/`, also create:
   - `apps/server/src/anima_server/auth/__init__.py`
   - `apps/server/src/anima_server/api/routes/auth.py`
 - Notes:
-  - Desktop unlock flow kept on compatibility shim.
+  - Desktop unlock flow remains on the compatibility shim.
 ```

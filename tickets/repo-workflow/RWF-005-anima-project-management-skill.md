@@ -10,7 +10,7 @@
 - Spec: docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-07-15 17:11 MYT
-- Updated: 2026-07-15 18:45 MYT
+- Updated: 2026-07-15 18:53 MYT
 - Started: 2026-07-15 17:39 MYT
 - Completed:
 
@@ -45,6 +45,7 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
 - 2026-07-15 18:31 MYT - Hardened named-ticket legal transitions, permission-blocked metadata closeout, pushed-OID review synchronization, and the untracked-edit closeout boundary; aligned the approved design and kept the ticket `in_progress`.
 - 2026-07-15 18:37 MYT - Added atomic first-discovery and clearance bookkeeping for child blockers and synchronized parent state; kept the child and parent row `in_progress` pending integration and forward evaluation.
 - 2026-07-15 18:45 MYT - Added assigned-backlog start semantics, state-first `done` precedence, and rejection of malformed transition combinations; kept project state `in_progress`.
+- 2026-07-15 18:53 MYT - Integrated mandatory skill routing, canonical ticket transitions and parent synchronization, and the explicitly authorized current-head PR review loop into repository guidance; kept `RWF-005` and its parent row `in_progress` pending forward evaluation.
 
 ## Validation
 
@@ -66,6 +67,9 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - `rg -n 'Before any backlog start.*verify dependencies and visible claims.*unassigned.*Owner: Codex.*Codex-owned.*preserve .*Owner: Codex.*log a start.*not a new ownership claim.*Status: in_progress.*Started:.*Updated:.*parent row/status.*Updated:.*activity' .codex-skill-staging/anima-project-management/SKILL.md`
   - `rg -n 'pushed OID|headRefOid.*equals that OID|integration child.*blocked|untracked isolated edit' .codex-skill-staging/anima-project-management/SKILL.md docs/superpowers/specs/2026-07-15-anima-project-management-skill-design.md`
   - `rg -n 'first concrete blocker discovery.*Status: blocked.*parent child row.*blocked.*parent.*Updated:.*parent activity.*Status: blocked.*no other initiative progress.*When cleared.*parent row.*in_progress.*restore parent.*in_progress' .codex-skill-staging/anima-project-management/SKILL.md`
+  - `rg -n '\.codex-skill-staging/anima-project-management/SKILL\.md|@codex review|reviewThreads|headRefOid|Owner: unassigned|Project Management Skill' AGENTS.md docs/ops/prd-ticket-workflow.md`
+  - `rg -n -i 'in-review|in_review' AGENTS.md docs/ops/prd-ticket-workflow.md`
+  - `rg -n -i 'auto[ -]?merge|\.agents/skills|\.codex/skills|docs/prd/|scratchboard/' AGENTS.md docs/ops/prd-ticket-workflow.md`
   - `git diff --check`
   - `git diff --cached --check`
   - `git diff --name-only HEAD`
@@ -76,6 +80,8 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - docs/audit/skills/2026-07-15-anima-project-management-evaluation.md
   - .codex-skill-staging/anima-project-management/SKILL.md
   - .codex-skill-staging/anima-project-management/agents/openai.yaml
+  - AGENTS.md
+  - docs/ops/prd-ticket-workflow.md
   - tickets/repo-workflow/RWF-005-anima-project-management-skill.md
   - tickets/repo-workflow/RWF-000-parent.md
 - Notes:
@@ -90,3 +96,6 @@ Add a concise repo-owned animaOS project-management skill whose behavior is inte
   - skill folder contains exactly `SKILL.md` and `agents/openai.yaml`; frontmatter contains only `name` and `description`, and generated interface YAML matches the approved three fields exactly
   - legal-transition search returned 7 matches; assigned-backlog start assertion returned 1 matching contract line; OID/blocker/untracked-boundary search returned 8 matches across skill and design
   - first-discovery blocker-bookkeeping assertion returned 1 matching contract line
+  - repository-guidance terminology search found the exact repo-owned skill path, `Owner: unassigned`, standalone `@codex review`, `reviewThreads(first: 100)`, and current `headRefOid` contract
+  - forbidden-status search returned no `in-review` or `in_review` matches; auto-merge appears only in an explicit prohibition, personal skill paths are absent, `docs/prd/` appears only in the stale-personal-workflow override, and `scratchboard/` appears only in override/historical-compatibility guidance
+  - integration diff and scope checks exited 0 and contained exactly the four Task 4 files

@@ -84,6 +84,19 @@ PRs should include:
 - screenshots/GIFs for UI changes,
 - migration or setup notes when DB/config behavior changes.
 
+## Project Management Skill
+
+Before taking any of the actions below, read `.codex-skill-staging/anima-project-management/SKILL.md` completely and follow it together with `docs/ops/prd-ticket-workflow.md`:
+
+- start, define, revise, or report the status of an animaOS initiative or feature;
+- create or revise a PRD, design/spec, dated implementation plan, parent tracker, or child ticket;
+- choose the next ticket; claim, assign, reassign, resume, block, or complete work; execute a named ticket ID; or reconcile parent and child state;
+- publish or push work, open or update a PR, request Codex review, address review feedback, or monitor a PR until clean when the user explicitly requests that external action.
+
+Explanation and diagnosis-only work remains outside this workflow unless publication or review is explicitly requested. An isolated edit does not require fake planning artifacts or ticket metadata; explicit publication/review of that edit enters only the skill's publish/review mode.
+
+This repository-owned skill and the canonical workflow document override stale personal skills that route animaOS work through `docs/prd/` or `scratchboard/`. Do not modify or install personal skills as part of repository work.
+
 ## PRD, Plan, and Ticket Workflow
 
 This repo uses separate artifacts for product scope, implementation sequencing, and issue-style execution. Do not merge them into one file type.
@@ -94,29 +107,29 @@ This repo uses separate artifacts for product scope, implementation sequencing, 
 
 When creating or revising planning artifacts:
 
-1. Create or update a PRD if product scope is changing.
-2. Create or update a dated plan if implementation sequencing matters.
-3. Create or update one parent ticket plus child ticket files for discrete units of work.
+1. Discover and reuse the existing initiative and its artifacts before creating anything new.
+2. Create or update a PRD if product scope is changing, and preserve any design/spec approval gate.
+3. Create or update a dated plan if implementation sequencing matters.
+4. Create or update one parent ticket plus ordered child tickets for discrete executable units.
 
-For new work, prefer `PRD -> plan -> tickets`. Use `scratchboard/` only when continuing an older workstream that already depends on it.
+For new work, prefer `PRD -> design/spec when approval is needed -> plan -> tickets`. New executable children remain `Status: backlog` and `Owner: unassigned` unless explicitly assigned; planning does not claim the entire initiative. Use `scratchboard/` only for historical workstreams that already depend on it.
 
 When executing a ticket:
 
-1. Open the ticket file first.
-2. Set `Status: in_progress`.
-3. Set `Started:` if it is empty.
-4. Update `Updated:`.
-5. Append an `Activity Log` entry with a timestamp.
-6. Do the implementation work.
-7. Record validation and changed paths.
-8. Set `Status: done` or `Status: blocked`.
-9. Set `Completed:` when the ticket is done.
+1. Read the child and parent first, then apply the legal transition and ownership rules in `docs/ops/prd-ticket-workflow.md`.
+2. Claim or start eligible work as one child-and-parent transaction before implementation.
+3. Record material progress and blocker transitions in both child and parent where required.
+4. Record acceptance evidence, validation, and changed paths before completion.
+5. Keep the parent row, completed history, timestamps, and material activity synchronized with the child.
+
+Ticket execution alone does not authorize a push, PR, deployment, message, merge, or other external action.
 
 Parent ticket rule:
 
 - Each initiative should have one parent tracker ticket that lists child tickets, child status, and completed-ticket history.
 - Child tickets should reference the parent in metadata.
 - When a child ticket changes state, update the parent tracker too.
+- Never change parent ownership merely because a child is claimed or reassigned.
 
 Use the workflow doc and template:
 
