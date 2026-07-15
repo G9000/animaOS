@@ -12,9 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::bounded::{json_to_vec as bounded_json_to_vec, BoundedJsonError};
 use crate::crypto::{
     BodyFrameAad, CryptoError, MetadataFrameAad, ObjectBaseAad, SecretBytes, NONCE_LENGTH,
 };
+use crate::id::validate_opaque_id;
 
 pub const ENVELOPE_VERSION: u16 = 1;
 pub const CIPHER_AES_256_GCM: u8 = 1;
@@ -137,6 +139,9 @@ impl EnvelopeMetadata {
         {
             return Err(EnvelopeError::InvalidFormat("incomplete metadata"));
         }
+        if validate_opaque_id(&self.object_id).is_err() {
+            return Err(EnvelopeError::InvalidFormat("object ID"));
+        }
         validate_metadata_authority(&self.metadata)?;
         if self.body_length > MAX_BODY_LENGTH {
             return Err(EnvelopeError::LimitExceeded("body length"));
@@ -167,11 +172,10 @@ impl EnvelopeMetadata {
         let mut canonical = self.clone();
         canonicalize_map(&mut canonical.metadata);
         canonical.validate_shape()?;
-        let bytes = serde_json::to_vec(&canonical)?;
-        if bytes.len() > MAX_METADATA_PLAINTEXT_SIZE {
-            return Err(EnvelopeError::LimitExceeded("metadata plaintext"));
-        }
-        Ok(bytes)
+        bounded_json_to_vec(&canonical, MAX_METADATA_PLAINTEXT_SIZE).map_err(|error| match error {
+            BoundedJsonError::LimitExceeded => EnvelopeError::LimitExceeded("metadata plaintext"),
+            BoundedJsonError::Json(error) => EnvelopeError::Json(error),
+        })
     }
 }
 
@@ -208,12 +212,28 @@ struct MetadataRead {
     nonces: HashSet<[u8; NONCE_LENGTH]>,
 }
 
+/// Streams an authenticated envelope into `writer`.
+///
+/// The writer may contain a partial envelope when this function returns `Err`.
+/// Callers must discard or roll back that sink. Canonical CoreFS publication must
+/// write to a staged sink and atomically publish it only after `Ok(())`.
 pub fn write_envelope<W: Write, R: Read>(
     writer: &mut W,
     key: &SecretBytes,
     aad: &ObjectBaseAad,
     metadata: &EnvelopeMetadata,
     body: &mut R,
+) -> Result<(), EnvelopeError> {
+    write_envelope_with_nonce_source(writer, key, aad, metadata, body, &mut SystemNonceSource)
+}
+
+fn write_envelope_with_nonce_source<W: Write, R: Read, N: NonceSource>(
+    writer: &mut W,
+    key: &SecretBytes,
+    aad: &ObjectBaseAad,
+    metadata: &EnvelopeMetadata,
+    body: &mut R,
+    nonce_source: &mut N,
 ) -> Result<(), EnvelopeError> {
     metadata.validate_for_aad(aad)?;
     let metadata_plaintext = metadata.canonical_bytes()?;
@@ -233,7 +253,7 @@ pub fn write_envelope<W: Write, R: Read>(
 
     let cipher = cipher(key)?;
     let mut used_nonces = HashSet::new();
-    let metadata_nonce = unique_nonce(&mut used_nonces)?;
+    let metadata_nonce = unique_nonce(&mut used_nonces, nonce_source)?;
     let metadata_aad = MetadataFrameAad::new(aad.clone(), CHUNKING_FIXED_V1 as u16)?;
     let metadata_ciphertext = cipher
         .encrypt(
@@ -267,7 +287,7 @@ pub fn write_envelope<W: Write, R: Read>(
             metadata.body_length,
             final_chunk,
         )?;
-        let nonce = unique_nonce(&mut used_nonces)?;
+        let nonce = unique_nonce(&mut used_nonces, nonce_source)?;
         let ciphertext = cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
@@ -312,6 +332,11 @@ pub fn encode_envelope(
     Ok(output)
 }
 
+/// Authenticates and streams the complete body into `output`.
+///
+/// Each chunk is authenticated before release, but a later frame, EOF, or whole-body
+/// hash failure can occur after earlier plaintext was written. Callers must discard or
+/// roll back `output` on `Err`.
 pub fn read_envelope<R: Read, W: Write>(
     reader: &mut R,
     key: &SecretBytes,
@@ -356,6 +381,10 @@ pub fn decode_envelope(
     Ok((result, body))
 }
 
+/// Authenticates intersecting chunks and streams the requested range into `output`.
+///
+/// A terminal envelope validation failure can occur after range bytes were written.
+/// Callers must discard or roll back `output` on `Err`.
 pub fn read_envelope_range<R: Read, W: Write>(
     reader: &mut R,
     key: &SecretBytes,
@@ -487,7 +516,7 @@ fn expected_chunk_count(body_length: u64) -> Result<u32, EnvelopeError> {
 }
 
 fn validate_object_id(object_id: &str) -> Result<(), EnvelopeError> {
-    if object_id.is_empty() {
+    if validate_opaque_id(object_id).is_err() {
         return Err(EnvelopeError::InvalidFormat("object ID"));
     }
     if object_id.len() > MAX_OBJECT_ID_LENGTH {
@@ -575,6 +604,7 @@ fn read_header<R: Read>(reader: &mut R, aad: &ObjectBaseAad) -> Result<Header, E
     reader.read_exact(&mut object_id)?;
     let object_id = String::from_utf8(object_id)
         .map_err(|_| EnvelopeError::InvalidFormat("object ID encoding"))?;
+    validate_object_id(&object_id)?;
     if object_key_epoch != aad.object_key_epoch() || object_id != aad.object_id() {
         return Err(EnvelopeError::InvalidFormat("header/AAD mismatch"));
     }
@@ -673,12 +703,26 @@ fn decrypt_frame(
     Ok(plaintext)
 }
 
-fn unique_nonce(
-    used: &mut HashSet<[u8; NONCE_LENGTH]>,
-) -> Result<[u8; NONCE_LENGTH], EnvelopeError> {
-    for _ in 0..16 {
+trait NonceSource {
+    fn next_nonce(&mut self) -> Result<[u8; NONCE_LENGTH], CryptoError>;
+}
+
+struct SystemNonceSource;
+
+impl NonceSource for SystemNonceSource {
+    fn next_nonce(&mut self) -> Result<[u8; NONCE_LENGTH], CryptoError> {
         let mut nonce = [0_u8; NONCE_LENGTH];
         getrandom::getrandom(&mut nonce).map_err(|_| CryptoError::Randomness)?;
+        Ok(nonce)
+    }
+}
+
+fn unique_nonce<N: NonceSource>(
+    used: &mut HashSet<[u8; NONCE_LENGTH]>,
+    source: &mut N,
+) -> Result<[u8; NONCE_LENGTH], EnvelopeError> {
+    for _ in 0..16 {
+        let nonce = source.next_nonce()?;
         if used.insert(nonce) {
             return Ok(nonce);
         }
@@ -798,4 +842,100 @@ fn discard_exact<R: Read>(reader: &mut R, length: usize) -> Result<(), EnvelopeE
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated frame").into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, VecDeque};
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::crypto::{ObjectKind, SecretBytes};
+
+    const OBJECT_ID: &str = "01J00000000000000000000000";
+
+    struct SequenceNonceSource {
+        values: VecDeque<[u8; NONCE_LENGTH]>,
+        calls: usize,
+    }
+
+    impl SequenceNonceSource {
+        fn new(values: impl IntoIterator<Item = [u8; NONCE_LENGTH]>) -> Self {
+            Self {
+                values: values.into_iter().collect(),
+                calls: 0,
+            }
+        }
+    }
+
+    impl NonceSource for SequenceNonceSource {
+        fn next_nonce(&mut self) -> Result<[u8; NONCE_LENGTH], CryptoError> {
+            self.calls += 1;
+            self.values.pop_front().ok_or(CryptoError::Randomness)
+        }
+    }
+
+    fn fixture(body: &[u8]) -> (SecretBytes, ObjectBaseAad, EnvelopeMetadata) {
+        let key = SecretBytes::new(vec![0x41; 32]).unwrap();
+        let aad = ObjectBaseAad::new("01JCORE", OBJECT_ID, ObjectKind::Note, 1, 1, 1).unwrap();
+        let metadata = EnvelopeMetadata::for_body(
+            "note",
+            OBJECT_ID,
+            1,
+            "2026-07-15T00:00:00Z",
+            "2026-07-15T00:00:01Z",
+            "application/octet-stream",
+            BTreeMap::new(),
+            BodyEncoding::Binary,
+            body,
+        )
+        .unwrap();
+        (key, aad, metadata)
+    }
+
+    #[test]
+    fn duplicate_generated_nonce_is_retried_before_frame_encryption() {
+        let body = b"one body frame";
+        let (key, aad, metadata) = fixture(body);
+        let nonce_a = [0x11; NONCE_LENGTH];
+        let nonce_b = [0x22; NONCE_LENGTH];
+        let mut source = SequenceNonceSource::new([nonce_a, nonce_a, nonce_b]);
+        let mut encoded = Vec::new();
+
+        write_envelope_with_nonce_source(
+            &mut encoded,
+            &key,
+            &aad,
+            &metadata,
+            &mut Cursor::new(body),
+            &mut source,
+        )
+        .unwrap();
+
+        assert_eq!(source.calls, 3);
+        assert_eq!(decode_envelope(&key, &aad, &encoded).unwrap().1, body);
+    }
+
+    #[test]
+    fn persistent_generated_nonce_collision_fails_the_envelope_write() {
+        let body = b"one body frame";
+        let (key, aad, metadata) = fixture(body);
+        let nonce = [0x11; NONCE_LENGTH];
+        let mut source = SequenceNonceSource::new(std::iter::repeat(nonce).take(17));
+        let mut encoded = Vec::new();
+
+        assert!(matches!(
+            write_envelope_with_nonce_source(
+                &mut encoded,
+                &key,
+                &aad,
+                &metadata,
+                &mut Cursor::new(body),
+                &mut source,
+            ),
+            Err(EnvelopeError::Crypto(CryptoError::Randomness))
+        ));
+        assert_eq!(source.calls, 17);
+        assert!(decode_envelope(&key, &aad, &encoded).is_err());
+    }
 }

@@ -5,16 +5,24 @@ use anima_corefs::catalog::{
 use anima_corefs::crypto::{derive_corefs_subkeys, SecretBytes};
 use serde_json::json;
 
+const STABLE_A: &str = "01J00000000000000000000000";
+const STABLE_Z: &str = "01J00000000000000000000001";
+const STABLE_OTHER: &str = "01J00000000000000000000002";
+
 fn keys(byte: u8) -> anima_corefs::crypto::FrkSubkeys {
     derive_corefs_subkeys(&SecretBytes::new(vec![byte; 32]).unwrap(), 1).unwrap()
+}
+
+fn entry(stable_id: &str, record: serde_json::Value) -> CatalogEntry {
+    CatalogEntry::new(stable_id, record).unwrap()
 }
 
 fn payload() -> CatalogPayload {
     CatalogPayload::new(
         9,
         vec![
-            CatalogEntry::new("stable-z", json!({"z": 1, "a": {"y": 2, "x": 1}})),
-            CatalogEntry::new("stable-a", json!({"logicalName": "private/diary/entry.md"})),
+            entry(STABLE_Z, json!({"z": 1, "a": {"y": 2, "x": 1}})),
+            entry(STABLE_A, json!({"logicalName": "private/diary/entry.md"})),
         ],
     )
     .unwrap()
@@ -26,8 +34,8 @@ fn canonical_encoding_is_independent_of_entry_and_map_insertion_order() {
     let second = CatalogPayload::new(
         9,
         vec![
-            CatalogEntry::new("stable-a", json!({"logicalName": "private/diary/entry.md"})),
-            CatalogEntry::new("stable-z", json!({"a": {"x": 1, "y": 2}, "z": 1})),
+            entry(STABLE_A, json!({"logicalName": "private/diary/entry.md"})),
+            entry(STABLE_Z, json!({"a": {"x": 1, "y": 2}, "z": 1})),
         ],
     )
     .unwrap();
@@ -82,13 +90,38 @@ fn wrong_generation_core_key_and_tampering_fail() {
 }
 
 #[test]
+fn physical_name_rejects_invalid_catalog_envelope_lengths() {
+    let encrypted = encrypt_catalog(&keys(0x22), "01JCORE", &payload()).unwrap();
+
+    assert!(matches!(
+        catalog_physical_name(9, &encrypted[..33]),
+        Err(CatalogError::InvalidFormat("truncated header"))
+    ));
+
+    let mut trailing = encrypted.clone();
+    trailing.push(0);
+    assert!(matches!(
+        catalog_physical_name(9, &trailing),
+        Err(CatalogError::InvalidFormat("catalog ciphertext length"))
+    ));
+
+    let mut oversized_declaration = encrypted;
+    oversized_declaration[30..34]
+        .copy_from_slice(&((MAX_CATALOG_PLAINTEXT_SIZE as u32) + 17).to_le_bytes());
+    assert!(matches!(
+        catalog_physical_name(9, &oversized_declaration),
+        Err(CatalogError::LimitExceeded("catalog ciphertext"))
+    ));
+}
+
+#[test]
 fn duplicate_ids_versions_and_oversize_are_rejected() {
     assert!(matches!(
         CatalogPayload::new(
             1,
             vec![
-                CatalogEntry::new("same", json!(1)),
-                CatalogEntry::new("same", json!(2)),
+                CatalogEntry::new(STABLE_OTHER, json!(1)).unwrap(),
+                CatalogEntry::new(STABLE_OTHER, json!(2)).unwrap(),
             ],
         ),
         Err(CatalogError::DuplicateStableId(_))
@@ -111,7 +144,7 @@ fn duplicate_ids_versions_and_oversize_are_rejected() {
     ));
 
     let huge = "x".repeat(MAX_CATALOG_PLAINTEXT_SIZE + 1);
-    let oversized = CatalogPayload::new(1, vec![CatalogEntry::new("one", json!(huge))]).unwrap();
+    let oversized = CatalogPayload::new(1, vec![entry(STABLE_OTHER, json!(huge))]).unwrap();
     assert!(matches!(
         encode_catalog(&oversized),
         Err(CatalogError::LimitExceeded(_))

@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::bounded::{json_to_vec as bounded_json_to_vec, BoundedJsonError};
 use crate::crypto::{CryptoError, FrkSubkeys, SecretBytes, KEY_LENGTH, NONCE_LENGTH};
+use crate::id::validate_opaque_id;
 
 pub const CATALOG_FORMAT_VERSION: u16 = 1;
 pub const MAX_CATALOG_PLAINTEXT_SIZE: usize = 16 * 1024 * 1024;
@@ -20,6 +22,8 @@ const MAGIC: &[u8; 8] = b"ACATV1\0\0";
 const HEADER_SIZE: usize = 34;
 const TAG_LENGTH: usize = 16;
 const GENERATION_LABEL_PREFIX: &str = "anima-catalog-generation-v1:";
+
+pub const MAX_CATALOG_ENVELOPE_SIZE: usize = HEADER_SIZE + MAX_CATALOG_PLAINTEXT_SIZE + TAG_LENGTH;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -45,12 +49,11 @@ pub struct CatalogEntry {
 }
 
 impl CatalogEntry {
-    pub fn new(stable_id: impl Into<String>, mut record: Value) -> Self {
+    pub fn new(stable_id: impl Into<String>, mut record: Value) -> Result<Self, CatalogError> {
+        let stable_id = stable_id.into();
+        validate_stable_id(&stable_id)?;
         canonicalize_value(&mut record);
-        Self {
-            stable_id: stable_id.into(),
-            record,
-        }
+        Ok(Self { stable_id, record })
     }
 }
 
@@ -87,9 +90,7 @@ impl CatalogPayload {
         let mut previous: Option<&str> = None;
         let mut ids = HashSet::new();
         for entry in &self.entries {
-            if entry.stable_id.is_empty() {
-                return Err(CatalogError::InvalidFormat("stable ID is empty"));
-            }
+            validate_stable_id(&entry.stable_id)?;
             if !ids.insert(entry.stable_id.as_str()) {
                 return Err(CatalogError::DuplicateStableId(entry.stable_id.clone()));
             }
@@ -111,11 +112,10 @@ pub fn encode_catalog(payload: &CatalogPayload) -> Result<Vec<u8>, CatalogError>
     canonical
         .entries
         .sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
-    let encoded = serde_json::to_vec(&canonical)?;
-    if encoded.len() > MAX_CATALOG_PLAINTEXT_SIZE {
-        return Err(CatalogError::LimitExceeded("catalog plaintext"));
-    }
-    Ok(encoded)
+    bounded_json_to_vec(&canonical, MAX_CATALOG_PLAINTEXT_SIZE).map_err(|error| match error {
+        BoundedJsonError::LimitExceeded => CatalogError::LimitExceeded("catalog plaintext"),
+        BoundedJsonError::Json(error) => CatalogError::Json(error),
+    })
 }
 
 pub fn decode_catalog(encoded: &[u8]) -> Result<CatalogPayload, CatalogError> {
@@ -170,6 +170,53 @@ pub fn decrypt_catalog(
     encoded: &[u8],
 ) -> Result<CatalogPayload, CatalogError> {
     validate_core_id(core_id)?;
+    let header = parse_catalog_header(encoded)?;
+    let generation_key = generation_key(keys.catalog(), header.generation)?;
+    let cipher = Aes256Gcm::new_from_slice(generation_key.as_slice())
+        .map_err(|_| CryptoError::Derivation)?;
+    let plaintext = cipher
+        .decrypt(
+            Nonce::from_slice(&header.nonce),
+            Payload {
+                msg: &encoded[HEADER_SIZE..],
+                aad: &catalog_aad(core_id, header.generation),
+            },
+        )
+        .map_err(|_| CryptoError::Authentication)?;
+    let payload = decode_catalog(&plaintext)?;
+    if payload.generation != header.generation {
+        return Err(CatalogError::InvalidFormat("catalog generation mismatch"));
+    }
+    Ok(payload)
+}
+
+pub fn catalog_physical_name(
+    generation: u64,
+    encrypted_catalog: &[u8],
+) -> Result<String, CatalogError> {
+    if generation == 0 {
+        return Err(CatalogError::InvalidFormat("generation must be positive"));
+    }
+    let header = parse_catalog_header(encrypted_catalog)?;
+    if generation != header.generation {
+        return Err(CatalogError::InvalidFormat(
+            "physical-name generation mismatch",
+        ));
+    }
+    let digest: [u8; 32] = Sha256::digest(encrypted_catalog).into();
+    Ok(format!(
+        "catalog-{generation:020}-{}.acore",
+        hex_bytes(&digest)
+    ))
+}
+
+#[derive(Clone, Copy)]
+struct CatalogHeader {
+    generation: u64,
+    nonce: [u8; NONCE_LENGTH],
+}
+
+fn parse_catalog_header(encoded: &[u8]) -> Result<CatalogHeader, CatalogError> {
     if encoded.len() < HEADER_SIZE {
         return Err(CatalogError::InvalidFormat("truncated header"));
     }
@@ -184,61 +231,19 @@ pub fn decrypt_catalog(
     if generation == 0 {
         return Err(CatalogError::InvalidFormat("generation must be positive"));
     }
-    let nonce: [u8; NONCE_LENGTH] = encoded[18..30].try_into().expect("fixed slice");
+    let nonce = encoded[18..30].try_into().expect("fixed slice");
     let ciphertext_length =
         u32::from_le_bytes(encoded[30..34].try_into().expect("fixed slice")) as usize;
     if !(TAG_LENGTH..=MAX_CATALOG_PLAINTEXT_SIZE + TAG_LENGTH).contains(&ciphertext_length) {
         return Err(CatalogError::LimitExceeded("catalog ciphertext"));
     }
-    if encoded.len() != HEADER_SIZE + ciphertext_length {
+    let total_length = HEADER_SIZE
+        .checked_add(ciphertext_length)
+        .ok_or(CatalogError::LimitExceeded("catalog envelope"))?;
+    if encoded.len() != total_length {
         return Err(CatalogError::InvalidFormat("catalog ciphertext length"));
     }
-    let generation_key = generation_key(keys.catalog(), generation)?;
-    let cipher = Aes256Gcm::new_from_slice(generation_key.as_slice())
-        .map_err(|_| CryptoError::Derivation)?;
-    let plaintext = cipher
-        .decrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: &encoded[HEADER_SIZE..],
-                aad: &catalog_aad(core_id, generation),
-            },
-        )
-        .map_err(|_| CryptoError::Authentication)?;
-    let payload = decode_catalog(&plaintext)?;
-    if payload.generation != generation {
-        return Err(CatalogError::InvalidFormat("catalog generation mismatch"));
-    }
-    Ok(payload)
-}
-
-pub fn catalog_physical_name(
-    generation: u64,
-    encrypted_catalog: &[u8],
-) -> Result<String, CatalogError> {
-    if generation == 0 {
-        return Err(CatalogError::InvalidFormat("generation must be positive"));
-    }
-    if encrypted_catalog.len() < HEADER_SIZE || &encrypted_catalog[..8] != MAGIC {
-        return Err(CatalogError::InvalidFormat("catalog envelope"));
-    }
-    let encoded_version =
-        u16::from_le_bytes(encrypted_catalog[8..10].try_into().expect("fixed slice"));
-    if encoded_version != CATALOG_FORMAT_VERSION {
-        return Err(CatalogError::UnsupportedVersion(encoded_version));
-    }
-    let encoded_generation =
-        u64::from_le_bytes(encrypted_catalog[10..18].try_into().expect("fixed slice"));
-    if generation != encoded_generation {
-        return Err(CatalogError::InvalidFormat(
-            "physical-name generation mismatch",
-        ));
-    }
-    let digest: [u8; 32] = Sha256::digest(encrypted_catalog).into();
-    Ok(format!(
-        "catalog-{generation:020}-{}.acore",
-        hex_bytes(&digest)
-    ))
+    Ok(CatalogHeader { generation, nonce })
 }
 
 fn generation_key(catalog_key: &SecretBytes, generation: u64) -> Result<SecretBytes, CatalogError> {
@@ -264,6 +269,10 @@ fn validate_core_id(core_id: &str) -> Result<(), CatalogError> {
         return Err(CatalogError::InvalidFormat("core ID"));
     }
     Ok(())
+}
+
+fn validate_stable_id(stable_id: &str) -> Result<(), CatalogError> {
+    validate_opaque_id(stable_id).map_err(|_| CatalogError::InvalidFormat("stable ID"))
 }
 
 fn canonicalize_value(value: &mut Value) {

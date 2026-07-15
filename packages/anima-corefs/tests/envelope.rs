@@ -15,6 +15,8 @@ const OBJECT_ID_LENGTH_OFFSET: usize = 17;
 const METADATA_CIPHERTEXT_LENGTH_OFFSET: usize = 19;
 const BODY_LENGTH_OFFSET: usize = 23;
 const CHUNK_COUNT_OFFSET: usize = 35;
+const OBJECT_ID: &str = "01J00000000000000000000000";
+const OTHER_OBJECT_ID: &str = "01J00000000000000000000001";
 
 fn key(byte: u8) -> SecretBytes {
     SecretBytes::new(vec![byte; 32]).unwrap()
@@ -50,8 +52,8 @@ fn empty_single_and_multi_chunk_roundtrip_streaming() {
         vec![0x5a; BODY_CHUNK_PLAINTEXT_SIZE * 2 + 37],
     ];
     for body in bodies {
-        let meta = metadata("01JOBJECT", 7, &body);
-        let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+        let meta = metadata(OBJECT_ID, 7, &body);
+        let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
         let mut encoded = Vec::new();
         write_envelope(
             &mut encoded,
@@ -79,12 +81,12 @@ fn empty_single_and_multi_chunk_roundtrip_streaming() {
 #[test]
 fn encoded_bytes_hide_metadata_body_and_path_looking_display_values() {
     let body = b"known plaintext body";
-    let mut meta = metadata("01JOBJECT", 7, body);
+    let mut meta = metadata(OBJECT_ID, 7, body);
     meta.metadata
         .insert("displayName".into(), json!("private/diary/secret-entry.md"));
     let encoded = encode_envelope(
         &key(0x11),
-        &aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3),
+        &aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3),
         &meta,
         body,
     )
@@ -99,14 +101,14 @@ fn encoded_bytes_hide_metadata_body_and_path_looking_display_values() {
 #[test]
 fn body_encoding_is_closed_and_catalog_authority_keys_are_rejected_recursively() {
     let body = b"body";
-    let binary = metadata("01JOBJECT", 7, body);
+    let binary = metadata(OBJECT_ID, 7, body);
     assert!(serde_json::to_string(&binary)
         .unwrap()
         .contains("\"bodyEncoding\":\"binary\""));
 
     let utf8 = EnvelopeMetadata::for_body(
         "note",
-        "01JOBJECT",
+        OBJECT_ID,
         7,
         "2026-07-15T00:00:00Z",
         "2026-07-15T00:00:01Z",
@@ -137,7 +139,7 @@ fn body_encoding_is_closed_and_catalog_authority_keys_are_rejected_recursively()
         "folderId",
         "folder_id",
     ];
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     for key_name in reserved {
         let mut authority = Map::new();
         authority.insert(key_name.to_string(), json!("catalog-owned"));
@@ -158,8 +160,8 @@ fn body_encoding_is_closed_and_catalog_authority_keys_are_rejected_recursively()
 #[test]
 fn v1_header_carries_and_validates_object_identity_and_key_domain() {
     let body = b"bound content";
-    let meta = metadata("01JOBJECT", 7, body);
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, body).unwrap();
 
     assert_eq!(encoded[KEY_DOMAIN_OFFSET], 1);
@@ -172,10 +174,10 @@ fn v1_header_carries_and_validates_object_identity_and_key_domain() {
         3
     );
     let object_id_length = object_id_length(&encoded);
-    assert_eq!(object_id_length, "01JOBJECT".len());
+    assert_eq!(object_id_length, OBJECT_ID.len());
     assert_eq!(
         &encoded[ENVELOPE_HEADER_SIZE..ENVELOPE_HEADER_SIZE + object_id_length],
-        b"01JOBJECT"
+        OBJECT_ID.as_bytes()
     );
 
     let mut unknown_domain = encoded.clone();
@@ -212,26 +214,21 @@ fn v1_header_carries_and_validates_object_identity_and_key_domain() {
     ));
 
     let oversized_id = "x".repeat(MAX_OBJECT_ID_LENGTH + 1);
-    let oversized_aad = aad("01JCORE", &oversized_id, 7, ObjectKind::Note, 3);
-    let oversized_meta = metadata(&oversized_id, 7, body);
-    assert!(matches!(
-        encode_envelope(&key(0x11), &oversized_aad, &oversized_meta, body),
-        Err(EnvelopeError::LimitExceeded("object ID"))
-    ));
+    assert!(ObjectBaseAad::new("01JCORE", oversized_id, ObjectKind::Note, 1, 3, 7).is_err());
 }
 
 #[test]
 fn wrong_base_aad_dimensions_and_key_fail_authentication() {
     let body = b"bound content";
-    let meta = metadata("01JOBJECT", 7, body);
-    let good = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, body);
+    let good = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &good, &meta, body).unwrap();
     let wrong = [
-        aad("OTHER", "01JOBJECT", 7, ObjectKind::Note, 3),
-        aad("01JCORE", "OTHER", 7, ObjectKind::Note, 3),
-        aad("01JCORE", "01JOBJECT", 8, ObjectKind::Note, 3),
-        aad("01JCORE", "01JOBJECT", 7, ObjectKind::Task, 3),
-        aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 4),
+        aad("OTHER", OBJECT_ID, 7, ObjectKind::Note, 3),
+        aad("01JCORE", OTHER_OBJECT_ID, 7, ObjectKind::Note, 3),
+        aad("01JCORE", OBJECT_ID, 8, ObjectKind::Note, 3),
+        aad("01JCORE", OBJECT_ID, 7, ObjectKind::Task, 3),
+        aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 4),
     ];
     for bad in wrong {
         assert!(decode_envelope(&key(0x11), &bad, &encoded).is_err());
@@ -242,8 +239,8 @@ fn wrong_base_aad_dimensions_and_key_fail_authentication() {
 #[test]
 fn tampering_truncation_trailing_reorder_duplicate_and_splice_are_rejected() {
     let body = vec![0x41; BODY_CHUNK_PLAINTEXT_SIZE * 2 + 11];
-    let meta = metadata("01JOBJECT", 7, &body);
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
 
     for index in [metadata_frame_start(&encoded) + 2, encoded.len() - 1] {
@@ -282,8 +279,8 @@ fn tampering_truncation_trailing_reorder_duplicate_and_splice_are_rejected() {
 #[test]
 fn altered_frame_offset_final_length_and_hash_are_rejected() {
     let body = vec![0x44; BODY_CHUNK_PLAINTEXT_SIZE + 9];
-    let meta = metadata("01JOBJECT", 7, &body);
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
     let first = body_frame_ranges(&encoded)[0].start;
     for offset in [first + 12, first + 16, first + 28] {
@@ -301,10 +298,36 @@ fn altered_frame_offset_final_length_and_hash_are_rejected() {
 }
 
 #[test]
+fn authenticated_wrong_body_hash_is_a_terminal_streaming_read_failure() {
+    let body = b"authenticated body";
+    let mut meta = metadata(OBJECT_ID, 7, body);
+    meta.body_sha256 = "00".repeat(32);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
+    let mut encoded = Vec::new();
+    assert!(matches!(
+        write_envelope(
+            &mut encoded,
+            &key(0x11),
+            &base,
+            &meta,
+            &mut Cursor::new(body)
+        ),
+        Err(EnvelopeError::InvalidFormat("body hash mismatch"))
+    ));
+
+    let mut output = Vec::new();
+    assert!(matches!(
+        read_envelope(&mut Cursor::new(&encoded), &key(0x11), &base, &mut output),
+        Err(EnvelopeError::InvalidFormat("body hash mismatch"))
+    ));
+    assert_eq!(output, body);
+}
+
+#[test]
 fn declarations_are_bounded_before_allocation() {
     let body = b"small";
-    let meta = metadata("01JOBJECT", 7, body);
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, body).unwrap();
 
     let mut too_much_metadata = encoded.clone();
@@ -335,8 +358,8 @@ fn declarations_are_bounded_before_allocation() {
 #[test]
 fn unsupported_wire_parameters_schema_versions_and_repeated_nonces_are_rejected() {
     let body = b"one encrypted chunk";
-    let meta = metadata("01JOBJECT", 7, body);
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, body).unwrap();
 
     for offset in [8, 10, 11] {
@@ -370,8 +393,8 @@ fn range_reads_authenticate_intersecting_chunks_and_report_scope() {
     let body: Vec<u8> = (0..BODY_CHUNK_PLAINTEXT_SIZE * 2 + 100)
         .map(|index| (index % 251) as u8)
         .collect();
-    let meta = metadata("01JOBJECT", 7, &body);
-    let base = aad("01JCORE", "01JOBJECT", 7, ObjectKind::Note, 3);
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
     let encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
 
     let start = BODY_CHUNK_PLAINTEXT_SIZE as u64 - 20;
