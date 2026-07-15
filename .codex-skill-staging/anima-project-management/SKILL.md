@@ -7,7 +7,7 @@ description: Use when animaOS initiative or feature work involves status, defini
 
 ## Overview
 
-Use the smallest honest lifecycle. Keep repository artifacts authoritative, project state synchronized, external actions authorized, and completion evidence-based.
+Keep artifacts authoritative, state synchronized, external actions authorized, and completion evidence-based.
 
 ## Required sources and modes
 
@@ -20,11 +20,11 @@ Read `AGENTS.md` and `docs/ops/prd-ticket-workflow.md` completely. Read `tickets
 | Ticket execution | Select, claim, resume, block, implement, complete | Follow acceptance; synchronize parent |
 | Publish/review | Explicit publish, PR, Codex review, or monitoring request | No merge without separate authorization |
 
-Diagnosis-only stays read-only. An isolated edit creates no fake project artifacts; explicit publish/review routes only that edit into publish/review mode.
+Diagnosis-only is read-only. Isolated edits create no artifacts; explicit publish/review routes that edit only.
 
 ## Plan without duplicating
 
-Search existing PRDs, specs, plans, and initiatives before creating anything; reuse their source of truth. For new/changed scope use PRD -> design/spec when approval is needed -> dated plan -> one parent plus ordered children. Respect active approval gates. Cross-link distinct artifacts. New executable children are `Status: backlog`, `Owner: unassigned` unless explicitly assigned.
+Search existing PRDs/specs/plans/initiatives first; reuse their source. For new/changed scope use PRD -> design/spec if approval is needed -> dated plan -> parent plus ordered children. Respect approval gates; cross-link distinct artifacts. New children are backlog/unassigned unless explicitly assigned.
 
 ## Select, transition, and claim safely
 
@@ -32,15 +32,17 @@ For a named ticket, read it and its parent, then apply only its legal transition
 
 | Current child state | Action |
 | --- | --- |
-| Backlog and unassigned | Claim normally |
-| Codex-owned `in_progress` | Resume; preserve `Started:` and do not add a false new claim |
-| Codex-owned `blocked` | Resume only after the blocker clears; transition/log child and parent back to `in_progress` |
-| `done` | Refuse normal execution; only the acceptance-breaking review routine may reopen |
-| Another owner (any state) | Never mutate unless the user explicitly authorizes reassignment; log it |
+| Any `done` (takes precedence) | Reject regardless of owner; only the documented acceptance-breaking reopen routine may mutate |
+| Backlog and unassigned | Claim using the transaction below |
+| Codex-owned backlog | Start using the transaction below; no ownership claim |
+| Codex-owned `in_progress` | Resume; preserve `Started:`; no new claim |
+| Codex-owned `blocked` | Resume only after blocker clearance; transition/log child and parent `in_progress` |
+| Another owner, non-`done` | Never mutate absent explicit user-authorized reassignment; log it |
+| Unlisted or malformed state/owner | Reject without mutation |
 
-For "next ticket," keep documented order and choose the first backlog, unassigned child whose dependencies are done and with no visible branch, worktree, or activity claim. Record any explicit dependency waiver. If none qualifies, report each blocking owner, dependency, claim, or state.
+For "next ticket," choose the first ordered backlog/unassigned child with dependencies done and no visible branch/worktree/activity claim. Record an explicit waiver; if none qualifies, report blocking owner/dependency/claim/state.
 
-For a normal claim, update child and parent atomically. Set child `Owner: Codex`, `Status: in_progress`, `Started:` if empty, `Updated:` in MYT, and claim activity with branch/worktree. Set parent row and top-level status `in_progress`, update its timestamp/activity, and never change parent ownership.
+Before any backlog start, verify dependencies and visible claims. For unassigned, set `Owner: Codex` and log a claim; for Codex-owned, preserve `Owner: Codex` and log a start, not a new ownership claim. Both set child `Status: in_progress`, `Started:` if empty, `Updated:` in MYT, include branch/worktree, and synchronize parent row/status/`Updated:`/activity. Never change parent ownership.
 
 ## Execute, block, and complete
 
