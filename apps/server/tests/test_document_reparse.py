@@ -149,6 +149,53 @@ def test_reparse_upgrades_preview_document(
     assert preview_document.status == "indexed"
 
 
+def test_reparse_uses_default_embedder_for_source_sync_when_none_passed(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+    monkeypatch: Any,
+) -> None:
+    """The API route calls reparse_document() without an embedding_fn.
+    embed_document_chunks() falls back to the default embedder internally,
+    but sync_document_source()/replace_source_artifacts_and_spans() treat a
+    None embedding_fn as "skip embedding" (see artifacts.py). If reparse
+    forwards the caller's None straight through, the new source spans and
+    compiled knowledge concepts are left without dense embeddings even
+    though the chunks themselves got upgraded embeddings. reparse_document
+    must resolve its own default embedder once and pass that (non-None)
+    function to sync_document_source too."""
+    monkeypatch.setattr(
+        reparse,
+        "extract_document_text",
+        lambda path: ExtractionOutcome(
+            pages=[PageText(page_number=1, text="# Section\n\nUpgraded body")],
+            parse_quality="docling",
+        ),
+    )
+
+    recorded: dict[str, Any] = {}
+    real_sync_document_source = reparse.sync_document_source
+
+    def recording_sync_document_source(*args: Any, **kwargs: Any) -> Any:
+        recorded["embedding_fn"] = kwargs.get("embedding_fn")
+        return real_sync_document_source(*args, **kwargs)
+
+    monkeypatch.setattr(
+        reparse, "sync_document_source", recording_sync_document_source
+    )
+    monkeypatch.setattr(
+        reparse, "generate_embedding", lambda text: _embedding(0.4, 0.5, 0.6)
+    )
+
+    result = reparse.reparse_document(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+    )
+
+    assert result.status == "upgraded"
+    assert recorded["embedding_fn"] is not None
+
+
 def test_reparse_returns_upgraded_unembedded_when_embedding_provider_down(
     runtime_db: Session,
     preview_document: RuntimeDocument,

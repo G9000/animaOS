@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeDocument
+from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import EmbeddingFn, embed_document_chunks
 from anima_server.services.documents.parsing import (
@@ -51,6 +52,16 @@ def reparse_document(
     if document is None:
         return ReparseResult(status="not_found")
 
+    # Mirror embed_document_chunks' own default resolution (indexing.py) so a
+    # caller that omits embedding_fn (e.g. the reparse API route) still gets
+    # dense embeddings on the synced source spans and compiled knowledge
+    # concepts, not just the document chunks. sync_document_source/artifacts.py
+    # treat a None embedding_fn as "skip embedding" — that contract is correct
+    # for callers like pdf_workflow.py that already embedded everything and
+    # pass None deliberately, but reparse must never forward a "no embedder
+    # given" None into that path.
+    effective_embedding_fn = embedding_fn or generate_embedding
+
     storage_path = resolve_document_storage_path(document.storage_path, user_id=user_id)
     outcome = extract_document_text(str(storage_path))
     if outcome.parse_quality != PARSE_QUALITY_DOCLING:
@@ -78,12 +89,12 @@ def reparse_document(
         runtime_db,
         user_id=user_id,
         document_id=document.id,
-        embedding_fn=embedding_fn,
+        embedding_fn=effective_embedding_fn,
     )
     sync_document_source(
         runtime_db,
         document=document,
-        embedding_fn=embedding_fn,
+        embedding_fn=effective_embedding_fn,
         compile_knowledge=True,
     )
     runtime_db.flush()
