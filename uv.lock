@@ -214,6 +214,7 @@ dependencies = [
 [package.optional-dependencies]
 docling = [
     { name = "docling" },
+    { name = "docling-core" },
 ]
 reranker = [
     { name = "sentence-transformers" },
@@ -238,6 +239,7 @@ requires-dist = [
     { name = "chromadb", specifier = ">=1.0.0" },
     { name = "cryptography", specifier = ">=45.0.0" },
     { name = "docling", marker = "extra == 'docling'", specifier = ">=2.0.0" },
+    { name = "docling-core", marker = "extra == 'docling'", specifier = ">=2.70.2" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jinja2", specifier = ">=3.1.6" },
