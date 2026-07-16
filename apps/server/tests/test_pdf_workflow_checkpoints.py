@@ -153,6 +153,7 @@ def _dependencies(
     fail_summarize: bool = False,
     fail_propose: bool = False,
     embedding_override: Any | None = None,
+    parse_quality: str = "docling",
 ) -> PDFIngestionDependencies:
     calls.embedded = []
     embedding_fn_override = embedding_override
@@ -167,7 +168,7 @@ def _dependencies(
                 PageText(page_number=1, text=f"{filename} alpha"),
                 PageText(page_number=2, text="beta"),
             ],
-            parse_quality="docling",
+            parse_quality=parse_quality,
         )
 
     def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
@@ -370,6 +371,44 @@ def test_pdf_workflow_compiles_indexed_document_source_to_knowledge(
     assert compile_run.run_type == "compile:initial"
     assert compile_run.status == "completed"
     assert compile_run.source_id == source.id
+
+
+def test_pdf_workflow_preview_quality_indexes_without_compiling_knowledge(
+    runtime_db: Session,
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _patch_pgvec_upsert(monkeypatch)
+    calls = _Calls()
+    run = start_pdf_ingestion_workflow(runtime_db, _request(thread_id=None))
+
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(calls, parse_quality="preview"),
+    )
+
+    source = runtime_db.scalar(
+        select(RuntimeSource).where(
+            RuntimeSource.user_id == 7,
+            RuntimeSource.kind == "document",
+        )
+    )
+    spans = list(
+        runtime_db.scalars(
+            select(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)
+        ).all()
+    )
+    concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
+    citations = list(runtime_db.scalars(select(RuntimeKnowledgeConceptSource)).all())
+
+    assert result.status == "awaiting_input"
+    assert source is not None
+    assert source.status == "indexed"
+    assert len(spans) == 2
+    assert concepts == []
+    assert citations == []
 
 
 def _checkpoint(
@@ -1331,7 +1370,6 @@ def test_resume_from_text_extracted_reuses_staged_pages(
     assert result.status == "awaiting_input"
     assert calls.extracted == 0
     assert calls.chunked == 1
-    _assert_pdf_embedding_calls(calls.embedded, ["seed alpha", "seed beta"])
     chunk_texts = [
         chunk.content_text
         for chunk in list_document_chunks(runtime_db, document_id=document.id)
@@ -1344,6 +1382,19 @@ def test_resume_from_text_extracted_reuses_staged_pages(
     # default to preview quality rather than erroring or assuming docling.
     runtime_db.refresh(document)
     assert document.parse_quality == "preview"
+    # Preview-quality (unconfirmed) output must still land as searchable
+    # chunk/source-span embeddings, but must NOT be promoted into OKF
+    # knowledge concepts — only docling-quality output feeds the compiler.
+    assert calls.embedded == [
+        "seed alpha",
+        "seed beta",
+        "seed alpha",
+        "seed beta",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 0
+    assert (
+        runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
+    )
 
 
 def test_resume_from_chunked_reuses_stored_chunks(

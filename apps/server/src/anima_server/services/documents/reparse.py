@@ -80,7 +80,12 @@ def reparse_document(
         document_id=document.id,
         embedding_fn=embedding_fn,
     )
-    sync_document_source(runtime_db, document=document, embedding_fn=embedding_fn)
+    sync_document_source(
+        runtime_db,
+        document=document,
+        embedding_fn=embedding_fn,
+        compile_knowledge=True,
+    )
     runtime_db.flush()
 
     if document.status != "indexed":

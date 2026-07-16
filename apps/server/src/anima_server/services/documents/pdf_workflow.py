@@ -29,6 +29,7 @@ from anima_server.services.documents.models import (
     ExtractedDocumentChunk,
 )
 from anima_server.services.documents.parsing import (
+    PARSE_QUALITY_DOCLING,
     PARSE_QUALITY_PREVIEW,
     ExtractionOutcome,
     extract_document_text,
@@ -423,6 +424,7 @@ def run_pdf_ingestion_until_wait_or_done(
                 db,
                 document=document,
                 embedding_fn=dependencies.embedding_fn if sync_source_embeddings else None,
+                compile_knowledge=document.parse_quality == PARSE_QUALITY_DOCLING,
             )
             _append_completed(
                 db,
