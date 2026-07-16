@@ -30,6 +30,17 @@ class DocumentParsingError(RuntimeError):
     """Raised when no parser can extract text from a document."""
 
 
+class DocumentAwaitingParserError(DocumentParsingError):
+    """Raised when a scanned/image-only document needs the quality parser.
+
+    The pdfium preview path has no OCR, so it cannot extract text from a
+    scanned PDF. When the Docling parsing pack (which does OCR) is not yet
+    ready, that is a transient condition, not a permanent failure — the
+    caller should let the ingest retry once the pack finishes downloading,
+    rather than treating this as an unrecoverable error.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ExtractionOutcome:
     pages: list[PageText]
@@ -52,9 +63,17 @@ def extract_document_text(path: str) -> ExtractionOutcome:
     else:
         ensure_parsing_pack()
         logger.info("Parsing pack not ready; extracting preview text for %s", path)
-    return ExtractionOutcome(
-        pages=extract_pdf_text(path), parse_quality=PARSE_QUALITY_PREVIEW
-    )
+    try:
+        pages = extract_pdf_text(path)
+    except RuntimeError as exc:
+        if "no extractable text" in str(exc) and not parsing_pack_ready():
+            raise DocumentAwaitingParserError(
+                f"{exc} The document appears to be scanned (no text layer); "
+                "the quality parser with OCR is not ready yet — wait for the "
+                "parsing pack download to finish, then resume or re-upload."
+            ) from exc
+        raise
+    return ExtractionOutcome(pages=pages, parse_quality=PARSE_QUALITY_PREVIEW)
 
 
 def _docling_pages(path: str) -> list[PageText]:
@@ -102,6 +121,7 @@ def _convert_with_docling(path: str) -> str:
 __all__ = [
     "PARSE_QUALITY_DOCLING",
     "PARSE_QUALITY_PREVIEW",
+    "DocumentAwaitingParserError",
     "DocumentParsingError",
     "ExtractionOutcome",
     "extract_document_text",

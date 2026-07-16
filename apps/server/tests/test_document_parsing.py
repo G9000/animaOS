@@ -56,3 +56,39 @@ def test_docling_producing_nothing_raises_parsing_error(monkeypatch, tmp_path: P
 
     with pytest.raises(parsing.DocumentParsingError):
         parsing.extract_document_text(str(tmp_path / "doc.pdf"))
+
+
+def test_scanned_pdf_while_pack_not_ready_raises_awaiting_parser(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    ensured: list[bool] = []
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: ensured.append(True))
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
+
+    with pytest.raises(parsing.DocumentAwaitingParserError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
+
+    assert ensured == [True]
+    assert "parsing pack" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_scanned_pdf_while_pack_ready_is_plain_runtime_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: True)
+
+    def boom(path: str) -> list[PageText]:
+        raise RuntimeError("docling exploded")
+
+    monkeypatch.setattr(parsing, "_docling_pages", boom)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
+
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    assert "no extractable text" in str(exc_info.value)
