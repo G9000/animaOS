@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from anima_server.services.documents.parsing_pack import (
     ensure_parsing_pack,
+    pack_status,
     parsing_pack_ready,
 )
 from anima_server.services.documents.pdf_text import PageText, extract_pdf_text
@@ -67,6 +68,33 @@ def extract_document_text(path: str) -> ExtractionOutcome:
         pages = extract_pdf_text(path)
     except RuntimeError as exc:
         if "no extractable text" in str(exc) and not parsing_pack_ready():
+            status = pack_status()
+            if status.state == "absent":
+                # The docling extra isn't installed, so ensure_parsing_pack()
+                # (called above) can never make progress — nothing will ever
+                # arrive. Telling the caller to "wait" would be a permanent
+                # lie; tell them what to actually do instead.
+                raise DocumentParsingError(
+                    f"{exc} The document appears to be scanned (no text layer) "
+                    "and the quality parser with OCR is not installed — install "
+                    "the server's docling extra (or download the parsing pack) "
+                    "to ingest scanned PDFs."
+                ) from exc
+            if status.state == "error":
+                # The download already failed; retrying the same ingest will
+                # hit this same dead end forever unless the pack download is
+                # retried explicitly.
+                raise DocumentParsingError(
+                    f"{exc} The document appears to be scanned (no text layer); "
+                    f"the parsing pack download failed ({status.error}) — retry "
+                    "it via POST /documents/parsing-pack/download."
+                ) from exc
+            # state == "downloading" (the common case), or "ready" in the rare
+            # race where the pack finished between our parsing_pack_ready()
+            # check above and this one — either way it's safe to treat as
+            # transient: a "ready" race just means the caller retries once
+            # more than strictly necessary before the next ingest picks up
+            # docling, whereas any other verdict here would be unsafe.
             raise DocumentAwaitingParserError(
                 f"{exc} The document appears to be scanned (no text layer); "
                 "the quality parser with OCR is not ready yet — wait for the "

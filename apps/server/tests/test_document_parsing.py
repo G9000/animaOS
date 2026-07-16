@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from anima_server.services.documents import parsing
+from anima_server.services.documents.parsing_pack import ParsingPackStatus
 from anima_server.services.documents.pdf_text import PageText
 from pdf_fixtures import write_text_pdf
 
@@ -58,10 +59,13 @@ def test_docling_producing_nothing_raises_parsing_error(monkeypatch, tmp_path: P
         parsing.extract_document_text(str(tmp_path / "doc.pdf"))
 
 
-def test_scanned_pdf_while_pack_not_ready_raises_awaiting_parser(
+def test_scanned_pdf_pack_downloading_raises_awaiting_parser(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    monkeypatch.setattr(
+        parsing, "pack_status", lambda: ParsingPackStatus(state="downloading")
+    )
     ensured: list[bool] = []
     monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: ensured.append(True))
     pdf_path = tmp_path / "scanned.pdf"
@@ -73,6 +77,46 @@ def test_scanned_pdf_while_pack_not_ready_raises_awaiting_parser(
     assert ensured == [True]
     assert "parsing pack" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_scanned_pdf_pack_absent_raises_parsing_error_not_awaiting(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    monkeypatch.setattr(parsing, "pack_status", lambda: ParsingPackStatus(state="absent"))
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: None)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
+
+    with pytest.raises(parsing.DocumentParsingError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
+
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    message = str(exc_info.value)
+    assert "docling extra" in message
+    assert "parsing pack" in message
+
+
+def test_scanned_pdf_pack_error_raises_parsing_error_with_pack_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    monkeypatch.setattr(
+        parsing,
+        "pack_status",
+        lambda: ParsingPackStatus(state="error", error="network down"),
+    )
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: None)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
+
+    with pytest.raises(parsing.DocumentParsingError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
+
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    message = str(exc_info.value)
+    assert "network down" in message
+    assert "parsing-pack/download" in message
 
 
 def test_scanned_pdf_while_pack_ready_is_plain_runtime_error(
