@@ -119,3 +119,28 @@ class AffectStateRow(RuntimeBase):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class PresenceCatchup(RuntimeBase):
+    """Audit row for one offline catch-up application (IL2).
+
+    Written once per user per catch-up (startup after a gap); rows
+    accumulate across restarts for inspectability, so ``user_id`` is
+    indexed but not unique.
+    """
+
+    __tablename__ = "presence_catchup"
+    __table_args__ = (
+        Index("ix_presence_catchup_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    gap_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    components: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    dream_deferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )

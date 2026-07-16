@@ -49,9 +49,9 @@ Purpose: land the state primitive everything else reads.
 
 ### Phase 1: Continuity — presence tick and offline catch-up (IL-002)
 
-- [ ] Add `_periodic_presence_tick()` (60 s) co-scheduled with existing sweeps; skip cleanly while a turn is in flight.
-- [ ] Implement `catchup.py`: O(1) gap application (affect, pressures) + `presence_catchup` audit row; no inline dream passes — defer at most one catch-up dream to the next idle window.
-- [ ] Equivalence test: 3-week gap == 30,240 ticks within float tolerance; catch-up < 50 ms; no behavioral output during catch-up.
+- [x] Add `_periodic_presence_tick()` (60 s) co-scheduled with existing sweeps; skip cleanly while a turn is in flight.
+- [x] Implement `catchup.py`: O(1) gap application (affect; pressures deferred to IL-003, which doesn't exist yet) + `presence_catchup` audit row; no inline dream passes — defers at most one catch-up dream marker (a data flag only — IL-007 doesn't exist yet either) to the next idle window.
+- [x] Equivalence test: 3-week gap == 30,240 ticks within float tolerance; catch-up < 50 ms; no behavioral output during catch-up.
 
 ### Phase 2: Memory dynamics (IL-004, IL-005, IL-006 — parallelizable, standalone)
 

@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 19:55 MYT
+- Updated: 2026-07-16 13:30 MYT
 - Started:
 - Completed:
 
@@ -22,7 +22,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 | Ticket | Title | Status | Depends on |
 | --- | --- | --- | --- |
 | `IL-001` | Affect state vector with decay-to-baseline dynamics | `done` | none |
-| `IL-002` | Presence tick loop and offline catch-up | `backlog` | `IL-001` |
+| `IL-002` | Presence tick loop and offline catch-up | `done` | `IL-001` |
 | `IL-003` | Drive accumulators and push initiative channel | `backlog` | `IL-001`, `IL-002` |
 | `IL-004` | Latent trace buffer and crystallization | `backlog` | none |
 | `IL-005` | Forgetting as distillation (F7 extension) | `backlog` | none |
@@ -32,6 +32,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 ## Completed Ticket History
 
 - 2026-07-15 19:55 MYT - `IL-001` done: affect state vector (branch feature/il-001-affect-state-vector), review-approved after one fix round.
+- 2026-07-16 13:30 MYT - `IL-002` done: presence tick loop and offline catch-up (branch feature/il-002-presence-tick), pending review.
 
 ## Deliverables
 

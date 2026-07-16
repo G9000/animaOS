@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     inner_life_tau_valence_hours: float = 36.0
     inner_life_tau_arousal_hours: float = 6.0
     inner_life_tau_energy_hours: float = 18.0
+    # IL2 presence tick / offline catch-up (see
+    # services/agent/inner_life/presence.py and inner_life/catchup.py).
+    presence_tick_interval_seconds: int = 60
+    presence_active_window_seconds: int = 120
+    presence_catchup_min_gap_seconds: int = 600
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30

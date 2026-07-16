@@ -43,6 +43,7 @@ from .db.runtime import (
     dispose_runtime_engine,
     ensure_pgvector,
     ensure_runtime_tables,
+    get_runtime_session_factory,
     init_runtime_engine,
 )
 from .db.user_store import ensure_per_user_databases_ready
@@ -110,6 +111,20 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             )
             ensure_pgvector()
             ensure_runtime_tables()
+
+            try:
+                from .services.agent.inner_life.catchup import apply_offline_catchup
+
+                catchup_results = await asyncio.to_thread(
+                    apply_offline_catchup, get_runtime_session_factory()
+                )
+                if catchup_results:
+                    logger.info(
+                        "Offline presence catch-up applied for %d user(s)",
+                        len(catchup_results),
+                    )
+            except Exception:
+                logger.warning("Offline presence catch-up failed", exc_info=True)
     except Exception:
         if embedded_pg is not None:
             embedded_pg.stop()
@@ -151,8 +166,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 except Exception:
                     logger.warning("Prune sweep error", exc_info=True)
 
+        async def _periodic_presence_tick() -> None:
+            while True:
+                await asyncio.sleep(settings.presence_tick_interval_seconds)
+                try:
+                    from .services.agent.inner_life.presence import run_presence_tick
+
+                    await asyncio.to_thread(
+                        run_presence_tick, get_runtime_session_factory()
+                    )
+                except Exception:
+                    logger.warning("Presence tick error", exc_info=True)
+
         sweep_tasks.append(asyncio.create_task(_periodic_inactivity_sweep()))
         sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
+        sweep_tasks.append(asyncio.create_task(_periodic_presence_tick()))
 
         # Install structured health event logger
         health_logger = get_event_logger()
@@ -173,7 +201,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 try:
                     from sqlalchemy import select as _sel
 
-                    from .db.runtime import get_runtime_session_factory
                     from .models.runtime import RuntimeThread
                     from .services.agent.soul_writer import run_soul_writer
 
