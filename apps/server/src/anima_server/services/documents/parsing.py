@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 
 from anima_server.services.documents.parsing_pack import (
+    ParsingPackStatus,
     ensure_parsing_pack,
     pack_status,
     parsing_pack_ready,
@@ -49,6 +50,7 @@ class ExtractionOutcome:
 
 
 def extract_document_text(path: str) -> ExtractionOutcome:
+    prior_status: ParsingPackStatus | None = None
     if parsing_pack_ready():
         try:
             return ExtractionOutcome(
@@ -62,35 +64,60 @@ def extract_document_text(path: str) -> ExtractionOutcome:
             # document stays usable and reparse can retry later.
             logger.warning("Docling parse failed for %s; using preview", path, exc_info=True)
     else:
+        # Snapshot status BEFORE triggering the retry below. ensure_parsing_pack()
+        # clears any recorded download error and starts a fresh attempt, so if we
+        # queried status only *after* calling it, a persistent failure would look
+        # identical to "still downloading" and its actionable error message (see
+        # commit debe594) would become permanently unreachable. We still call
+        # ensure_parsing_pack() every time — auto-retry is desired — we just must
+        # not let it erase the evidence of the failure it's about to retry.
+        prior_status = pack_status()
         ensure_parsing_pack()
         logger.info("Parsing pack not ready; extracting preview text for %s", path)
     try:
         pages = extract_pdf_text(path)
     except RuntimeError as exc:
         if "no extractable text" in str(exc) and not parsing_pack_ready():
-            status = pack_status()
-            if status.state == "absent":
-                # The docling extra isn't installed, so ensure_parsing_pack()
-                # (called above) can never make progress — nothing will ever
-                # arrive. Telling the caller to "wait" would be a permanent
-                # lie; tell them what to actually do instead.
-                raise DocumentParsingError(
-                    f"{exc} The document appears to be scanned (no text layer) "
-                    "and the quality parser with OCR is not installed — install "
-                    "the server's docling extra (or download the parsing pack) "
-                    "to ingest scanned PDFs."
-                ) from exc
+            # Use the pre-retry snapshot, not a fresh pack_status() call: by now
+            # ensure_parsing_pack() has run and may have cleared an "error" state
+            # into "downloading", which would hide the failure below.
+            status = prior_status if prior_status is not None else pack_status()
             if status.state == "error":
-                # The download already failed; retrying the same ingest will
-                # hit this same dead end forever unless the pack download is
-                # retried explicitly.
+                # The download already failed; ensure_parsing_pack() above has
+                # just kicked off a new attempt (auto-retry), but the caller
+                # still needs to know the previous one failed rather than
+                # silently waiting on a retry it doesn't know is happening.
                 raise DocumentParsingError(
                     f"{exc} The document appears to be scanned (no text layer); "
-                    f"the parsing pack download failed ({status.error}) — retry "
-                    "it via POST /documents/parsing-pack/download."
+                    f"the parsing pack download previously failed ({status.error}) "
+                    "— a new download attempt has been started automatically; "
+                    "check GET /documents/parsing-pack for progress, or retry it "
+                    "explicitly via POST /documents/parsing-pack/download."
                 ) from exc
-            # state == "downloading" (the common case), or "ready" in the rare
-            # race where the pack finished between our parsing_pack_ready()
+            if status.state == "absent":
+                # "absent" alone is ambiguous: it means either "docling isn't
+                # installed" or "docling is installed but no download has ever
+                # been attempted" — both read the same before ensure runs.
+                # Disambiguate by checking status again now that
+                # ensure_parsing_pack() has had a chance to act: it only leaves
+                # the pack "absent" when docling isn't installed (it no-ops in
+                # that case), so still-absent here means truly not installed —
+                # telling the caller to "wait" would be a permanent lie, so tell
+                # them what to actually do instead. Any other post-ensure state
+                # means this was genuinely the first download attempt, just
+                # kicked off above, so we fall through to the awaiting-parser
+                # branch below.
+                post_ensure_status = pack_status()
+                if post_ensure_status.state == "absent":
+                    raise DocumentParsingError(
+                        f"{exc} The document appears to be scanned (no text layer) "
+                        "and the quality parser with OCR is not installed — install "
+                        "the server's docling extra (or download the parsing pack) "
+                        "to ingest scanned PDFs."
+                    ) from exc
+            # state == "downloading" (the common case), the first-download-just-
+            # started case falling through from "absent" above, or "ready" in the
+            # rare race where the pack finished between our parsing_pack_ready()
             # check above and this one — either way it's safe to treat as
             # transient: a "ready" race just means the caller retries once
             # more than strictly necessary before the next ingest picks up

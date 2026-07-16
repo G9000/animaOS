@@ -119,6 +119,43 @@ def test_scanned_pdf_pack_error_raises_parsing_error_with_pack_error(
     assert "parsing-pack/download" in message
 
 
+def test_scanned_pdf_pack_error_snapshot_survives_auto_retry_start(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A prior download failure must be reported even though ensure_parsing_pack()
+    (called for its auto-retry side effect) clears the error and flips
+    pack_status() to "downloading" for anyone who queries it afterwards.
+
+    This mirrors the real parsing_pack module: ensure_parsing_pack() resets
+    the recorded error and starts a new download thread, so a fresh
+    pack_status() call made *after* ensure has run can no longer see the
+    failure. The fix must snapshot status *before* calling ensure.
+    """
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    ensure_called = {"value": False}
+
+    def fake_pack_status() -> ParsingPackStatus:
+        if ensure_called["value"]:
+            return ParsingPackStatus(state="downloading")
+        return ParsingPackStatus(state="error", error="network down")
+
+    def fake_ensure() -> None:
+        ensure_called["value"] = True
+
+    monkeypatch.setattr(parsing, "pack_status", fake_pack_status)
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", fake_ensure)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
+
+    with pytest.raises(parsing.DocumentParsingError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
+
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    message = str(exc_info.value)
+    assert "network down" in message
+    assert "parsing-pack/download" in message
+
+
 def test_scanned_pdf_while_pack_ready_is_plain_runtime_error(
     monkeypatch, tmp_path: Path
 ) -> None:
