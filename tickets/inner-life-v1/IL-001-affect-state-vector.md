@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 19:55 MYT
+- Updated: 2026-07-16 03:00 MYT
 - Started: 2026-07-15 18:54 MYT
 - Completed: 2026-07-15 19:55 MYT
 
@@ -36,6 +36,7 @@ Persist a deterministic affect vector (valence, arousal, energy) with closed-for
 - 2026-07-15 18:30 MYT - Rescoped affect model from agent_runtime.py (soul Base) to a RuntimeBase model per review — affect is rebuildable and must stay out of the vault.
 - 2026-07-15 18:54 MYT - Started implementation on branch feature/il-001-affect-state-vector.
 - 2026-07-15 19:55 MYT - Implemented affect vector (pure dynamics, RuntimeBase persistence, migration 027, consolidation/proactive wiring, 22 tests). Task review approved after one fix round (session isolation, energy rendering, allostatic recovery drain, first-read race).
+- 2026-07-16 03:00 MYT - PR #98 review rounds (all findings valid, fixed): surfaced affect hint end-to-end + greeting tone; savepoint-scoped seed insert; tz-normalization on load; gated affect on accepted emotion signals; FOR UPDATE row lock on write path (incl. race fallback); exact closed-form circadian relaxation (replaces at-now approximation — tick-equivalence now holds with amplitude enabled); affect applied only after successful runtime commit (SQLite lock + batch-integrity semantics); api-client AgentStateData.affectHint sync; affect_state cleared on eval reset.
 
 ## Validation
 
@@ -54,6 +55,12 @@ Persist a deterministic affect vector (valence, arousal, energy) with closed-for
   - apps/server/src/anima_server/services/agent/inner_life/store.py
   - apps/server/src/anima_server/services/agent/proactive.py
   - apps/server/tests/test_inner_life_affect.py
+  - apps/server/src/anima_server/api/routes/consciousness.py
+  - apps/server/src/anima_server/services/eval_reset.py
+  - apps/server/tests/test_creation_flow.py
+  - apps/server/tests/test_eval_harness.py
+  - packages/api-client/src/types.ts
+  - docs/prds/presence/inner-life-v1.md
   - tickets/inner-life-v1/IL-002-presence-tick-offline-catchup.md
 - Notes:
   - update_allostatic_shift deliberately unwired; IL-002 presence tick is its caller (recorded in IL-002).
