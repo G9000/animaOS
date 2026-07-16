@@ -1,16 +1,16 @@
 # IL-002 - Presence tick loop and offline catch-up
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server/src/anima_server/main.py`, `apps/server/src/anima_server/services/agent/inner_life`
 - Parent: `IL-000`
 - Depends on: `IL-001`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 19:20 MYT
-- Started:
+- Updated: 2026-07-16 11:42 MYT
+- Started: 2026-07-16 11:42 MYT
 - Completed:
 
 ## Goal
@@ -35,6 +35,7 @@ Run inner-life dynamics on a 60 s background tick and apply the entire offline g
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:55 MYT - Catch-up no longer evaluates dream windows inline per review (O(1) conflict); defers at most one catch-up dream.
 - 2026-07-15 19:20 MYT - IL-001 review: allostatic update is implemented in inner_life/affect.py but unwired by design; this tick is its caller.
+- 2026-07-16 11:42 MYT - Started implementation on branch feature/il-002-presence-tick.
 
 ## Validation
 
