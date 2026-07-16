@@ -101,6 +101,7 @@ class AgentStateResult:
     thought_source: str
     chat_prompt: str
     context_messages: list[dict[str, str]]
+    affect_hint: str | None = None
 
 
 _STATE_THOUGHT_MAX_CHARS = 72
@@ -154,11 +155,18 @@ def _compact_state_line(value: str | None) -> str | None:
     return None
 
 
-def _state_context_message(*, thought: str, dominant_emotion: str | None) -> str:
+def _state_context_message(
+    *,
+    thought: str,
+    dominant_emotion: str | None,
+    affect_hint: str | None = None,
+) -> str:
     sentence = thought.rstrip(".!?")
     content = f"Current companion state: {sentence}."
     if dominant_emotion:
         content += f" Recent emotion: {dominant_emotion}."
+    if affect_hint:
+        content += f" Inner tone: {affect_hint}."
     return content
 
 
@@ -628,6 +636,8 @@ def build_agent_state(
             thought = _EMOTION_STATE_LINES.get(dominant_emotion, f"feeling {dominant_emotion}")
             thought_source = "emotion"
 
+    affect_hint = _render_affect_hint(runtime_db, user_id=user_id)
+
     return AgentStateResult(
         user_id=user_id,
         dominant_emotion=dominant_emotion,
@@ -640,11 +650,34 @@ def build_agent_state(
                 "content": _state_context_message(
                     thought=thought,
                     dominant_emotion=dominant_emotion,
+                    affect_hint=affect_hint,
                 ),
                 "source": "agent_state",
             },
         ],
+        affect_hint=affect_hint,
     )
+
+
+def _render_affect_hint(runtime_db: Session | None, *, user_id: int) -> str | None:
+    """Relax the stored IL1 affect vector to now and render it as adjectives.
+
+    Best-effort: this is ambient flavor for the UI, never a hard dependency.
+    """
+    try:
+        from anima_server.services.agent.inner_life.affect import relax, render_affect
+        from anima_server.services.agent.inner_life.store import (
+            get_affect_config,
+            get_affect_state,
+        )
+
+        config = get_affect_config()
+        stored = get_affect_state(runtime_db, user_id=user_id, config=config)
+        current = relax(stored, datetime.now(UTC), config)
+        return render_affect(current, previous=stored)
+    except Exception:
+        logger.debug("Affect hint unavailable for user %s", user_id, exc_info=True)
+        return None
 
 
 async def generate_greeting(
@@ -673,6 +706,11 @@ async def generate_greeting(
     emotional_context = ""
     if ctx.emotional_summary:
         emotional_context = f"Last emotional read:\n{ctx.emotional_summary}"
+    affect_hint = _render_affect_hint(runtime_db, user_id=user_id)
+    if affect_hint:
+        emotional_context = (
+            f"{emotional_context}\nYour own current mood: {affect_hint}."
+        ).strip()
 
     time_context = ""
     if ctx.days_since_last_chat is not None:

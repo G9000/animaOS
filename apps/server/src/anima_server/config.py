@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     agent_emotional_signal_buffer_size: int = 20
     agent_emotional_confidence_threshold: float = 0.4
     agent_emotional_patterns_budget: int = 400
+    # IL1 affect-state relaxation time constants (hours); see
+    # services/agent/inner_life/affect.py for the closed-form dynamics.
+    inner_life_tau_valence_hours: float = 36.0
+    inner_life_tau_arousal_hours: float = 6.0
+    inner_life_tau_energy_hours: float = 18.0
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30

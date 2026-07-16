@@ -14,7 +14,14 @@ from sqlalchemy import select
 
 from anima_server.config import settings
 from anima_server.services.agent.emotional_intelligence import (
+    dominant_valence_arousal,
     record_emotional_signal,
+)
+from anima_server.services.agent.inner_life.affect import apply_turn_deltas, relax
+from anima_server.services.agent.inner_life.store import (
+    get_affect_config,
+    get_affect_state,
+    save_affect_state,
 )
 from anima_server.services.agent.json_utils import (
     parse_json_array as _parse_json_array,
@@ -477,6 +484,7 @@ async def run_background_extraction(
 
         # Phase C — persist LLM results and resolve (or keep) the intent
         # row in a fresh session; results and resolution commit atomically.
+        pending_affect: tuple[str, datetime] | None = None
         with rt_factory() as rt_db:
             if llm_enabled:
                 from anima_server.models.runtime_memory import (
@@ -564,7 +572,7 @@ async def run_background_extraction(
 
                     # Persist detected emotion (was previously only logged)
                     if emotion_payload and emotion_name:
-                        record_emotional_signal(
+                        emotion_signal = record_emotional_signal(
                             rt_db,
                             user_id=user_id,
                             emotion=emotion_name,
@@ -579,6 +587,15 @@ async def run_background_extraction(
                                 emotion_payload.get("trajectory", "stable")
                             ),
                         )
+                        # Only accepted signals move affect: a None return
+                        # means the detection was rejected (unknown emotion
+                        # or sub-threshold confidence). Deferred until after
+                        # the batch commit below — the dedicated affect
+                        # session must not contend with rt_db's uncommitted
+                        # write lock (single-writer SQLite), and affect must
+                        # not move for a batch that never persisted.
+                        if emotion_signal is not None:
+                            pending_affect = (emotion_name, now)
 
                     if intent is not None:
                         intent.status = "resolved"
@@ -597,6 +614,15 @@ async def run_background_extraction(
                     )
 
             rt_db.commit()
+
+            if pending_affect is not None:
+                affect_emotion, affect_now = pending_affect
+                _apply_affect_turn_deltas_best_effort(
+                    rt_factory,
+                    user_id=user_id,
+                    emotion_name=affect_emotion,
+                    now=affect_now,
+                )
 
             # 3. Eager promotion — run Soul Writer unless a higher-level
             # orchestrator is taking ownership of the post-turn pipeline.
@@ -701,6 +727,49 @@ def record_memory_extraction_failure(
     runtime_db.add(failure)
     runtime_db.flush()
     return failure
+
+
+def _apply_affect_turn_deltas_best_effort(
+    runtime_db_factory: Callable[..., Any],
+    *,
+    user_id: int,
+    emotion_name: str,
+    now: datetime,
+) -> None:
+    """Map the turn's detected emotion onto IL1 affect deltas.
+
+    Relaxes the stored affect to `now` first, then applies clamped deltas
+    derived from the circumplex (valence, arousal) of the dominant emotion.
+    Runs on its own session so a failed flush can never poison the
+    consolidation session's pending work. Best-effort: any failure here must
+    not break consolidation.
+    """
+    try:
+        valence_arousal = dominant_valence_arousal(emotion_name)
+        if valence_arousal is None:
+            return
+        valence, arousal = valence_arousal
+
+        config = get_affect_config()
+        with runtime_db_factory() as affect_db:
+            # for_update holds the row lock across read -> mutate -> commit
+            # so overlapping extractions serialize instead of losing deltas.
+            state = get_affect_state(
+                affect_db, user_id=user_id, config=config, for_update=True
+            )
+            state = relax(state, now, config)
+            state = apply_turn_deltas(
+                state,
+                0.15 * valence,
+                0.15 * (arousal - state.arousal),
+                0.05 * valence,
+            )
+            save_affect_state(affect_db, user_id=user_id, state=state)
+            affect_db.commit()
+    except Exception:
+        logger.debug(
+            "Affect turn-delta update skipped for user %s", user_id, exc_info=True
+        )
 
 
 def _store_foresight_best_effort(

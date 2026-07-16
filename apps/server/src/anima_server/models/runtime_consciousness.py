@@ -99,3 +99,23 @@ class CurrentEmotion(RuntimeBase):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class AffectStateRow(RuntimeBase):
+    """Persisted affect state vector (IL1): valence/arousal/energy dynamics."""
+
+    __tablename__ = "affect_state"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    valence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    arousal: Mapped[float] = mapped_column(Float, nullable=False, default=0.35)
+    energy: Mapped[float] = mapped_column(Float, nullable=False, default=0.6)
+    arousal_baseline_shift: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    high_arousal_hours: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

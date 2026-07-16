@@ -99,7 +99,7 @@ A persisted vector `A = (valence v ∈ [−1,1], arousal a ∈ [0,1], energy e �
 
 - **Turn events**: emotional signals already extracted by `emotional_intelligence.py` apply clamped deltas (per-turn cap ±0.15 per component).
 - **Relaxation**: between updates, each component relaxes toward baseline in closed form: `x(t+Δt) = b + (x(t) − b) · exp(−Δt/τ_x)`. Defaults: τ_v = 36 h, τ_a = 6 h, τ_e = 18 h.
-- **Circadian modulation**: baseline arousal `b_a` follows a fixed sinusoid over local time (amplitude 0.1, trough 03:00, peak 15:00).
+- **Circadian modulation**: baseline arousal `b_a` follows a fixed sinusoid over local time (amplitude 0.1, trough 03:00, peak 15:00). The circadian component uses the exact closed-form solution of the linear relaxation ODE (attenuated, phase-lagged sinusoid), so gap application and tick composition are exactly equivalent.
 - **Allostatic load**: sustained high arousal (> 0.7 for > 48 h cumulative) shifts `b_a` up by ≤ 0.05 until a recovery period passes — baselines themselves are slow state.
 
 **Consumers**: `build_agent_state()` ambient line, greeting/notice tone in `proactive.py`, thinking monologue register, dream intensity (IL7), initiative thresholds (IL3). The vector is *read* by prompts as rendered adjectives + trajectory ("settled, slowly brightening since Tuesday"), never as raw numbers.

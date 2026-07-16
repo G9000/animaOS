@@ -45,6 +45,7 @@ from anima_server.models import (
 from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.runtime_consciousness import (
     ActiveIntention,
+    AffectStateRow,
     CurrentEmotion,
     WorkingContext,
 )
@@ -101,6 +102,7 @@ def _reset_runtime_state(
     _delete(db, deleted, "current_emotions", delete(CurrentEmotion).where(CurrentEmotion.user_id == user_id))
     _delete(db, deleted, "working_context", delete(WorkingContext).where(WorkingContext.user_id == user_id))
     _delete(db, deleted, "active_intentions", delete(ActiveIntention).where(ActiveIntention.user_id == user_id))
+    _delete(db, deleted, "affect_state", delete(AffectStateRow).where(AffectStateRow.user_id == user_id))
     _delete(
         db,
         deleted,
