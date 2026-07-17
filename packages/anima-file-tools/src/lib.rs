@@ -14,9 +14,9 @@ mod text;
 mod walk;
 
 pub use backend::{
-    BackendCapabilities, BackendKind, BackendPath, DirectoryEntry, DirectoryListing, EntryKind,
-    EntryMetadata, FileBackend, MutationAtomicity, PathSemantics, ReadBackend, ReadSeek,
-    SearchableBackend, WalkBackend, MAX_BACKEND_PATH_BYTES,
+    BackendCapabilities, BackendKind, BackendPath, ContentClassification, DirectoryEntry,
+    DirectoryListing, EntryKind, EntryMetadata, FileBackend, MutationAtomicity, PathSemantics,
+    ReadBackend, ReadSeek, SearchableBackend, WalkBackend, MAX_BACKEND_PATH_BYTES,
 };
 pub use control::{CancellationToken, OperationControl};
 pub use error::{FileToolError, TextReadIssue};

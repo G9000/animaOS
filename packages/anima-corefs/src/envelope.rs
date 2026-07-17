@@ -1,7 +1,7 @@
 //! Streaming, authenticated `.acore` object envelopes.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
 use aes_gcm::{
@@ -11,6 +11,7 @@ use aes_gcm::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::bounded::{
     clone_after_bounded_json_preflight, json_to_vec as bounded_json_to_vec, BoundedJsonError,
@@ -37,6 +38,7 @@ pub const MAX_ENVELOPE_SIZE: u64 = ENVELOPE_HEADER_SIZE as u64
     + 16
     + MAX_BODY_LENGTH
     + MAX_BODY_CHUNKS as u64 * (32 + 16);
+pub const MAX_AUTHENTICATED_RANGE_BYTES: usize = 4 * 1024 * 1024;
 
 const MAGIC: &[u8; 8] = b"ACOREV1\0";
 const KEY_DOMAIN_OBJECT_DEK: u8 = 1;
@@ -196,6 +198,118 @@ impl EnvelopeMetadata {
 pub struct EnvelopeRead {
     pub metadata: EnvelopeMetadata,
     pub whole_body_verified: bool,
+}
+
+/// Sequential reader that authenticates each immutable body chunk before it is
+/// returned. The final chunk is withheld until EOF and the whole-body hash has
+/// also been verified.
+pub struct AuthenticatedEnvelopeStream<R> {
+    reader: R,
+    aad: ObjectBaseAad,
+    state: MetadataRead,
+    next_index: u32,
+    body_hasher: Sha256,
+    plaintext: Cursor<Vec<u8>>,
+    finished: bool,
+    failed: bool,
+}
+
+impl<R: Read> AuthenticatedEnvelopeStream<R> {
+    pub fn metadata(&self) -> &EnvelopeMetadata {
+        &self.state.metadata
+    }
+
+    fn load_next_chunk(&mut self) -> Result<bool, EnvelopeError> {
+        if self.next_index == self.state.header.chunk_count {
+            if !self.finished {
+                require_eof(&mut self.reader)?;
+                if std::mem::take(&mut self.body_hasher).finalize().as_slice()
+                    != parse_sha256(&self.state.metadata.body_sha256)?
+                {
+                    return Err(EnvelopeError::InvalidFormat("body hash mismatch"));
+                }
+                self.finished = true;
+            }
+            return Ok(false);
+        }
+
+        let frame = read_and_validate_frame_header(
+            &mut self.reader,
+            &self.state.header,
+            self.next_index,
+            &mut self.state.nonces,
+        )?;
+        let mut ciphertext = vec![0_u8; frame.ciphertext_length];
+        self.reader.read_exact(&mut ciphertext)?;
+        let plaintext = decrypt_frame(
+            &self.state.cipher,
+            &self.aad,
+            &self.state.header,
+            self.state.frame_hash,
+            frame,
+            &ciphertext,
+        )?;
+        self.body_hasher.update(&plaintext);
+        self.next_index += 1;
+
+        if self.next_index == self.state.header.chunk_count {
+            require_eof(&mut self.reader)?;
+            if std::mem::take(&mut self.body_hasher).finalize().as_slice()
+                != parse_sha256(&self.state.metadata.body_sha256)?
+            {
+                return Err(EnvelopeError::InvalidFormat("body hash mismatch"));
+            }
+            self.finished = true;
+        }
+        self.plaintext = Cursor::new(plaintext);
+        Ok(true)
+    }
+}
+
+impl<R: Read> Read for AuthenticatedEnvelopeStream<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.failed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "authenticated envelope stream is invalid",
+            ));
+        }
+
+        let position = self.plaintext.position() as usize;
+        if position == self.plaintext.get_ref().len() {
+            self.plaintext = Cursor::new(Vec::new());
+            match self.load_next_chunk() {
+                Ok(true) => {}
+                Ok(false) => return Ok(0),
+                Err(error) => {
+                    self.failed = true;
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, error));
+                }
+            }
+        }
+        self.plaintext.read(output)
+    }
+}
+
+pub fn open_envelope_stream<R: Read>(
+    mut reader: R,
+    key: &SecretBytes,
+    aad: ObjectBaseAad,
+) -> Result<AuthenticatedEnvelopeStream<R>, EnvelopeError> {
+    let state = read_metadata(&mut reader, key, &aad)?;
+    Ok(AuthenticatedEnvelopeStream {
+        reader,
+        aad,
+        state,
+        next_index: 0,
+        body_hasher: Sha256::new(),
+        plaintext: Cursor::new(Vec::new()),
+        finished: false,
+        failed: false,
+    })
 }
 
 #[derive(Clone)]
@@ -588,6 +702,109 @@ pub fn decode_envelope_range(
     let mut body = Vec::new();
     let result = read_envelope_range(&mut Cursor::new(encoded), key, aad, range, &mut body)?;
     Ok((result, body))
+}
+
+/// Authenticates and returns only the fixed-v1 frames intersecting a bounded
+/// plaintext range. Nonintersecting ciphertext is addressed by seek, never
+/// scanned or decrypted. The callback is checked at every bounded I/O and
+/// authentication boundary.
+pub fn read_envelope_seekable_range<R, W, F>(
+    reader: &mut R,
+    key: &SecretBytes,
+    aad: &ObjectBaseAad,
+    offset: u64,
+    max_bytes: usize,
+    output: &mut W,
+    mut check: F,
+) -> Result<EnvelopeRead, EnvelopeError>
+where
+    R: Read + Seek,
+    W: Write,
+    F: FnMut() -> io::Result<()>,
+{
+    if max_bytes > MAX_AUTHENTICATED_RANGE_BYTES {
+        return Err(EnvelopeError::LimitExceeded("authenticated range"));
+    }
+    check()?;
+    let mut state = read_metadata(reader, key, aad)?;
+    check()?;
+    if max_bytes == 0 || offset >= state.header.body_length {
+        return Ok(EnvelopeRead {
+            metadata: state.metadata,
+            whole_body_verified: false,
+        });
+    }
+
+    let body_start = reader.stream_position()?;
+    let frame_overhead = (FRAME_HEADER_SIZE + TAG_LENGTH) as u64;
+    let frame_bytes = u64::from(state.header.chunk_count)
+        .checked_mul(frame_overhead)
+        .and_then(|value| value.checked_add(state.header.body_length))
+        .ok_or(EnvelopeError::LimitExceeded("envelope length"))?;
+    let expected_end = body_start
+        .checked_add(frame_bytes)
+        .ok_or(EnvelopeError::LimitExceeded("envelope length"))?;
+    check()?;
+    if reader.seek(SeekFrom::End(0))? != expected_end {
+        return Err(EnvelopeError::InvalidFormat("envelope file length"));
+    }
+
+    let requested = u64::try_from(max_bytes)
+        .map_err(|_| EnvelopeError::LimitExceeded("authenticated range"))?;
+    let end = offset
+        .saturating_add(requested)
+        .min(state.header.body_length);
+    let chunk_size = BODY_CHUNK_PLAINTEXT_SIZE as u64;
+    let first_index = offset / chunk_size;
+    let last_index = (end - 1) / chunk_size;
+    let mut staged = Vec::with_capacity((end - offset) as usize);
+
+    for index in first_index..=last_index {
+        check()?;
+        let prior_frame_bytes = index
+            .checked_mul(chunk_size + frame_overhead)
+            .ok_or(EnvelopeError::LimitExceeded("frame offset"))?;
+        let frame_position = body_start
+            .checked_add(prior_frame_bytes)
+            .ok_or(EnvelopeError::LimitExceeded("frame offset"))?;
+        reader.seek(SeekFrom::Start(frame_position))?;
+        check()?;
+        let frame =
+            read_and_validate_frame_header(reader, &state.header, index as u32, &mut state.nonces)?;
+        let mut ciphertext = vec![0_u8; frame.ciphertext_length];
+        check()?;
+        reader.read_exact(&mut ciphertext)?;
+        check()?;
+        let mut plaintext = decrypt_frame(
+            &state.cipher,
+            aad,
+            &state.header,
+            state.frame_hash,
+            frame,
+            &ciphertext,
+        )?;
+        ciphertext.zeroize();
+        let frame_end = frame.offset + u64::from(frame.plaintext_length);
+        let from = offset.saturating_sub(frame.offset) as usize;
+        let to = (end.min(frame_end) - frame.offset) as usize;
+        staged.extend_from_slice(&plaintext[from..to]);
+        plaintext.zeroize();
+    }
+
+    check()?;
+    let whole_body = offset == 0 && end == state.header.body_length;
+    if whole_body
+        && Sha256::digest(&staged).as_slice() != parse_sha256(&state.metadata.body_sha256)?
+    {
+        staged.zeroize();
+        return Err(EnvelopeError::InvalidFormat("body hash mismatch"));
+    }
+    output.write_all(&staged)?;
+    staged.zeroize();
+    Ok(EnvelopeRead {
+        metadata: state.metadata,
+        whole_body_verified: whole_body,
+    })
 }
 
 fn cipher(key: &SecretBytes) -> Result<Aes256Gcm, EnvelopeError> {

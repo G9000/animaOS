@@ -63,6 +63,28 @@ fn glob_matches_root_relative_paths_with_real_globstar_semantics() {
 }
 
 #[test]
+fn first_glob_match_that_cannot_fit_is_a_typed_error() {
+    let error = glob(
+        &sample_tree(),
+        request("**/*", 10),
+        OperationLimits {
+            response_bytes: 1,
+            ..OperationLimits::default()
+        }
+        .validate()
+        .unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        FileToolError::ResponseItemTooLarge { kind: "walk", .. }
+            | FileToolError::ResponseItemTooLarge { kind: "glob", .. }
+    ));
+}
+
+#[test]
 fn invalid_globs_return_a_typed_error() {
     let error = glob(
         &sample_tree(),
@@ -136,24 +158,25 @@ fn cursor_resumes_file_preorder_without_lexicographic_filtering() {
 }
 
 #[test]
-fn hard_walk_ceiling_is_terminal_instead_of_returning_a_repeating_cursor() {
+fn hard_walk_ceiling_without_a_resumable_position_is_a_glob_error() {
     let limits = OperationLimits {
         walk_entries: 1,
         ..OperationLimits::default()
     }
     .validate()
     .unwrap();
-    let page = glob(
+    let error = glob(
         &sample_tree(),
         request("**/*.rs", 1),
         limits,
         OperationControl::default(),
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert!(page.truncated);
-    assert!(page.limit_reached);
-    assert!(page.next_cursor.is_none());
+    assert!(matches!(
+        error,
+        FileToolError::PaginationCannotAdvance { operation: "glob" }
+    ));
 }
 
 #[test]

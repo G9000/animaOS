@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 11:24 MYT
+- Updated: 2026-07-17 19:13 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -109,6 +109,16 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 10:34 MYT - PR #102 merged PCF-002 Step 8 into `main` at `f2f56825` after standalone CI passed and Codex reviewed the exact head with zero actionable threads. Began Step 9 catalog-bound key rotation from that merged head in isolated worktree `codex/pcf-002-key-rotation`. Scope is targeted object-key rotation, FRK catalog rewrap, pending-FRK `fs/HEAD` recovery/finalization, retained old-catalog decryption, and explicit retirement gates; blind-token switching remains deferred to Task 3 and physical key pruning remains gated by PCF-010.
 - 2026-07-17 11:24 MYT - Completed PCF-002 Step 9 with authenticated streaming Object-DEK replacement for live and recoverably trashed objects, exact-next-version FRK catalog rewrap across all retained wrappers, keyring-aware cutover recovery and later commits, explicit backup/retention retirement gates, and deterministic concurrent/crash regressions. Exact Rust 1.75 CoreFS, combined native and Python-feature checks, strict CoreFS clippy/format, workspace build, attribution, packaged notices, locked metadata, diff hygiene, and independent Critical/Important review passed. PCF-002 and the parent initiative remain `in_progress`; Step 10 logical CoreFS operations and bounded agent tools are next.
 
+- 2026-07-17 12:13 MYT - PR #103 merged PCF-002 Step 9 at `7d4cae3f`, and Step 10 began from that exact `origin/main` head in isolated worktree `codex/pcf-002-logical-tools`. Scope is logical CoreFS operations, bounded shared traversal/grep, explicit search-index readiness, internal atomic mutation planning, and migration-frozen Python agent wrappers; generic client API/grants and catalog benchmarking remain Steps 11 and 12. The exact Rust 1.75 baseline passed 211 tests with 3 subprocess helpers intentionally ignored.
+- 2026-07-17 15:36 MYT - PCF-002 Step 10 completed its Rust logical read and internal mutation layers in `codex/pcf-002-logical-tools`: live-only bounded logical operations, V1 wire accounting, catalog-bound range reads, folder-trash authenticated lifecycle and hiding, sealed one-generation validation-head mutation planning, public frozen write facade, and cross-policy preflight rejection. Exact Rust 1.75 CoreFS tests and strict clippy passed; independent review found no remaining Critical or Important issues. PCF-002 remains `in_progress` for Python/PyO3 wrappers, client API/grants, and benchmarks.
+- 2026-07-17 15:57 MYT - PCF-002 Step 10 completed its Python/PyO3 logical tool boundary: validation-snapshot selection, selected generation/catalog-hash guards on every read wrapper, shared CoreFS V1 wire output, server-side Python adapters, and migration-frozen public mutator wrappers. Focused PyO3, Python adapter, Python lint, Python-feature compile, and diff hygiene checks passed. PCF-002 remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 16:42 MYT - Addressed PR #106 current-head Codex review feedback for PCF-002 Step 10 by wiring logical glob/grep continuation cursors through the PyO3 and server Python wrappers, with focused Rust/Python validation passing. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 17:18 MYT - Addressed PR #106's second current-head Codex review pass for PCF-002 Step 10: logical reads now respect response-budget clamping before raw backend open, and trashed objects retain historical restore metadata even when their original parent folder is later trashed. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 18:24 MYT - Addressed PR #106's third current-head Codex review pass for PCF-002 Step 10: catalog validation now rejects hidden original-parent cycles for trashed folders, and CoreFS package initialization no longer eagerly imports native logical bindings. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass for PCF-002 Step 10: migration-frozen server mutation wrappers now preserve the native variadic frozen-write contract for realistic mutation inputs. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 18:59 MYT - Addressed PR #106's fifth current-head Codex review pass for PCF-002 Step 10: trashed folders now allow historical original-parent references to parents that are later trashed, while keeping live-trash-folder and hidden descendant-cycle validation fail-closed. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 19:13 MYT - Addressed PR #106's sixth current-head Codex review pass for PCF-002 Step 10: generic CoreFS directory listings now return authenticated file metadata from the encrypted envelope rather than zero-byte unknown placeholders. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+
 ## Validation
 
 - Commands:
@@ -125,6 +135,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 Step 7: 104 exact Rust 1.75 CoreFS test entries, combined `anima-corefs`/`anima-core`, Python-feature check, CoreFS format/strict clippy, workspace build, provenance/release notices, `cargo metadata --locked`, and `git diff --check`
   - PCF-002 Step 8: exact Rust 1.75 CoreFS suite (138 passed, 3 helper entries ignored), 69 injected Windows process crashes, stable combined native suite (356 passed), Python-feature check, Rust 1.75 Linux-target check, strict CoreFS format/clippy, workspace build, repository organization, provenance/release notices, locked metadata, and `git diff --check`
   - PCF-002 Step 9: exact Rust 1.75 CoreFS suite (153 passed, 3 subprocess-helper entries ignored), targeted-object and FRK crash matrices, combined `anima-file-tools`/`anima-corefs`/`anima-core`/`animus` tests, Python-feature check, strict CoreFS clippy/format, workspace build, attribution/release notices, locked metadata, independent review, and `git diff --check`
+  - PCF-002 Step 10 Layer 1/2: exact Rust 1.75 merged-head baseline (`anima-file-tools` + `anima-corefs`) passed 211 tests with 3 subprocess-helper entries ignored; focused logical mutation tests passed 6 tests; the cross-policy move/restore/patch regression passed; full `cargo +1.75.0 test --locked -p anima-corefs` passed; strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings` passed
+  - PCF-002 Step 10 Layer 3: `cargo check --locked -p anima-core --features python`; focused PyO3 `cargo test --locked -p anima-core --features python corefs_`; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_logical.py -q`; scoped ruff check; `git diff --check`
+  - PR #106 cursor follow-up: Python logical wrapper test, `cargo check --locked -p anima-core --features python`, `cargo +1.75.0 test --locked -p anima-file-tools -p anima-corefs`, focused PyO3 CoreFS tests, scoped Ruff, and `git diff --check`
+  - PR #106 second review pass: red/green focused regressions, full `cargo +1.75.0 test --locked -p anima-corefs`, strict CoreFS clippy, and `git diff --check` passed; touched files were manually aligned with rustfmt output while unrelated pre-existing CoreFS format drift remains outside this PR fix.
+  - PR #106 third review pass: hidden-original-parent and native-binding package-import regressions, full CoreFS tests, strict CoreFS clippy, Python package/logical tests, scoped Ruff, and `git diff --check` passed.
+  - PR #106 fourth review pass: mutation-wrapper argument-forwarding regression, focused Python logical tests, scoped Ruff, and `git diff --check` passed.
+  - PR #106 fifth review pass: red/green `folder_trash_graph_invariants_fail_closed` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
+  - PR #106 sixth review pass: red/green `read_directory_returns_authenticated_file_metadata` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
@@ -144,6 +162,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `docs/architecture/README.md`
   - `docs/architecture/system/anima-core-filesystem.md`
   - `tickets/portable-core-filesystem/`
+  - `packages/anima-corefs/src/logical/`
+  - `packages/anima-corefs/src/catalog/v2.rs`
+  - `packages/anima-corefs/src/transaction.rs`
+  - `packages/anima-corefs/src/transaction/failure_tests.rs`
+  - `packages/anima-corefs/tests/{catalog_entries.rs,logical_snapshot.rs}`
+  - `packages/anima-core/{Cargo.toml,src/ffi.rs}` and `Cargo.lock`
+  - `apps/server/src/anima_server/services/corefs/{__init__.py,logical.py}`
+  - `apps/server/tests/test_corefs_logical.py`
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.

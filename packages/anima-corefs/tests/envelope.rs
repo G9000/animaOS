@@ -1,12 +1,13 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use anima_corefs::crypto::{ObjectBaseAad, ObjectKind, SecretBytes};
 use anima_corefs::envelope::{
-    decode_envelope, decode_envelope_range, encode_envelope, read_envelope,
-    rotate_object_key_envelope, write_envelope, BodyEncoding, EnvelopeError, EnvelopeMetadata,
-    BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE, MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE,
-    MAX_OBJECT_ID_LENGTH,
+    decode_envelope, decode_envelope_range, encode_envelope, open_envelope_stream, read_envelope,
+    read_envelope_seekable_range, rotate_object_key_envelope, write_envelope, BodyEncoding,
+    EnvelopeError, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE,
+    MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE, MAX_OBJECT_ID_LENGTH,
 };
 use serde_json::{json, Map, Value};
 
@@ -325,6 +326,25 @@ fn authenticated_wrong_body_hash_is_a_terminal_streaming_read_failure() {
 }
 
 #[test]
+fn authenticated_stream_never_releases_bytes_from_a_late_failing_chunk() {
+    let body = vec![0x44; BODY_CHUNK_PLAINTEXT_SIZE + 9];
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
+    let mut encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
+    *encoded.last_mut().unwrap() ^= 1;
+
+    let object_key = key(0x11);
+    let mut stream = open_envelope_stream(Cursor::new(encoded), &object_key, base).unwrap();
+    let mut first_authenticated_chunk = vec![0; BODY_CHUNK_PLAINTEXT_SIZE];
+    stream.read_exact(&mut first_authenticated_chunk).unwrap();
+    assert_eq!(first_authenticated_chunk, body[..BODY_CHUNK_PLAINTEXT_SIZE]);
+
+    let mut untrusted_tail = vec![0; 9];
+    assert!(stream.read_exact(&mut untrusted_tail).is_err());
+    assert_eq!(untrusted_tail, vec![0; 9]);
+}
+
+#[test]
 fn oversized_native_metadata_is_rejected_before_canonical_copy() {
     let body = b"small";
     let mut meta = metadata(OBJECT_ID, 7, body);
@@ -501,6 +521,158 @@ fn range_reads_authenticate_intersecting_chunks_and_report_scope() {
     let mut tampered = encoded.clone();
     tampered[frames[1].end - 1] ^= 1;
     assert!(decode_envelope_range(&key(0x11), &base, &tampered, start..end).is_err());
+}
+
+struct CountingSeekReader {
+    inner: Cursor<Vec<u8>>,
+    bytes_read: usize,
+    seeks: usize,
+}
+
+impl CountingSeekReader {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            inner: Cursor::new(bytes),
+            bytes_read: 0,
+            seeks: 0,
+        }
+    }
+}
+
+impl Read for CountingSeekReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(output)?;
+        self.bytes_read += read;
+        Ok(read)
+    }
+}
+
+impl Seek for CountingSeekReader {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.seeks += 1;
+        self.inner.seek(position)
+    }
+}
+
+#[test]
+fn seekable_range_reads_only_intersecting_frames_and_out_of_range_is_immediate_eof() {
+    let body: Vec<u8> = (0..BODY_CHUNK_PLAINTEXT_SIZE * 2 + 97)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
+    let encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
+    let offset = body.len() as u64 - 32;
+    let mut reader = CountingSeekReader::new(encoded.clone());
+    let mut output = Vec::new();
+
+    let result = read_envelope_seekable_range(
+        &mut reader,
+        &key(0x11),
+        &base,
+        offset,
+        16,
+        &mut output,
+        || Ok(()),
+    )
+    .unwrap();
+
+    assert_eq!(output, body[offset as usize..offset as usize + 16]);
+    assert!(!result.whole_body_verified);
+    assert!(reader.bytes_read < encoded.len() / 2);
+    assert!(reader.seeks <= 3);
+
+    let mut eof_reader = CountingSeekReader::new(encoded);
+    let mut eof = Vec::new();
+    read_envelope_seekable_range(
+        &mut eof_reader,
+        &key(0x11),
+        &base,
+        body.len() as u64 + 1,
+        1,
+        &mut eof,
+        || Ok(()),
+    )
+    .unwrap();
+    assert!(eof.is_empty());
+    assert_eq!(eof_reader.seeks, 0);
+}
+
+#[test]
+fn seekable_range_is_cancellable_fail_closed_and_continuable() {
+    let body: Vec<u8> = (0..BODY_CHUNK_PLAINTEXT_SIZE * 2 + 97)
+        .map(|index| (index % 239) as u8)
+        .collect();
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
+    let encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
+    let frames = body_frame_ranges(&encoded);
+    let final_offset = BODY_CHUNK_PLAINTEXT_SIZE as u64 * 2;
+
+    let checks = Cell::new(0);
+    let mut cancelled_output = Vec::new();
+    let error = read_envelope_seekable_range(
+        &mut Cursor::new(encoded.clone()),
+        &key(0x11),
+        &base,
+        final_offset,
+        16,
+        &mut cancelled_output,
+        || {
+            checks.set(checks.get() + 1);
+            if checks.get() == 3 {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EnvelopeError::Io(ref error) if error.kind() == io::ErrorKind::Interrupted)
+    );
+    assert!(cancelled_output.is_empty());
+
+    let mut tampered = encoded.clone();
+    *tampered.get_mut(frames[2].end - 1).unwrap() ^= 1;
+    let mut untrusted = Vec::new();
+    assert!(read_envelope_seekable_range(
+        &mut Cursor::new(tampered),
+        &key(0x11),
+        &base,
+        final_offset,
+        16,
+        &mut untrusted,
+        || Ok(()),
+    )
+    .is_err());
+    assert!(untrusted.is_empty());
+
+    let start = BODY_CHUNK_PLAINTEXT_SIZE as u64 - 8;
+    let mut first = Vec::new();
+    read_envelope_seekable_range(
+        &mut Cursor::new(encoded.clone()),
+        &key(0x11),
+        &base,
+        start,
+        8,
+        &mut first,
+        || Ok(()),
+    )
+    .unwrap();
+    let mut second = Vec::new();
+    read_envelope_seekable_range(
+        &mut Cursor::new(encoded),
+        &key(0x11),
+        &base,
+        start + 8,
+        8,
+        &mut second,
+        || Ok(()),
+    )
+    .unwrap();
+    first.extend(second);
+    assert_eq!(first, body[start as usize..start as usize + 16]);
 }
 
 fn body_frame_ranges(bytes: &[u8]) -> Vec<std::ops::Range<usize>> {

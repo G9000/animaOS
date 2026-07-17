@@ -3,7 +3,7 @@
 // 9e552e9d15ba52bed7077d5357f3e18e330f8f38; implementation rewritten for explicit backends.
 
 use std::fmt;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 
 use crate::{BackendPath, FileToolError, OperationControl, ReadBackend, ReadSeek, ValidatedLimits};
 
@@ -64,14 +64,8 @@ pub fn read_stream<B: ReadBackend + ?Sized>(
         });
     }
 
-    let mut reader = backend.open_read(path.as_str())?;
-    reader
-        .seek(SeekFrom::Start(options.offset))
-        .map_err(|error| FileToolError::Backend {
-            operation: "seek",
-            path: path.as_str().to_string(),
-            message: error.to_string(),
-        })?;
+    let reader =
+        backend.open_read_at(path.as_str(), options.offset, options.max_bytes, &control)?;
 
     Ok(ReadStream {
         reader,
@@ -88,6 +82,21 @@ impl Iterator for ReadStream {
     type Item = Result<ReadChunk, FileToolError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        self.next_with_max_bytes(usize::MAX)
+    }
+}
+
+impl ReadStream {
+    /// Pulls the next chunk without consuming more than `max_bytes` of body.
+    /// This lets a result shaper reserve room for its own model-visible
+    /// metadata without changing the shared payload ceiling.
+    pub fn next_with_max_bytes(
+        &mut self,
+        max_bytes: usize,
+    ) -> Option<Result<ReadChunk, FileToolError>> {
+        if max_bytes == 0 {
+            return None;
+        }
         if self.finished || self.remaining == 0 {
             self.finished = true;
             return None;
@@ -97,7 +106,7 @@ impl Iterator for ReadStream {
             return Some(Err(error));
         }
 
-        let requested = self.chunk_bytes.min(self.remaining);
+        let requested = self.chunk_bytes.min(self.remaining).min(max_bytes);
         let mut bytes = vec![0; requested];
         let read = match self.reader.read(&mut bytes) {
             Ok(0) => {

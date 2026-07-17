@@ -1,0 +1,816 @@
+use anima_file_tools::{
+    glob, grep, read_stream, walk_page, BackendKind, BackendPath, EntryKind, FileToolError,
+    GlobCursor, GlobRequest, GrepCursor, GrepMode, GrepRequest, OperationControl, ReadOptions,
+    ReadStream, SkipReason, ValidatedLimits, WalkBackend, WalkCursor, WalkOptions,
+};
+
+use crate::crypto::ObjectKind;
+use crate::envelope::BodyEncoding;
+
+use super::backend::{CoreFsReadSnapshot, LogicalError, Node};
+use super::wire::logical_list_page_size;
+use super::{
+    model_wire_v1_max_read_payload, model_wire_v1_read_chunk_size, LogicalPath, ModelWireV1,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalEntry {
+    pub path: LogicalPath,
+    pub stable_id: String,
+    pub revision: Option<u64>,
+    pub content_hash: Option<String>,
+    pub kind: EntryKind,
+    pub object_kind: Option<ObjectKind>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalStat {
+    pub path: LogicalPath,
+    pub stable_id: String,
+    pub revision: Option<u64>,
+    pub content_hash: Option<String>,
+    pub kind: EntryKind,
+    pub object_kind: Option<ObjectKind>,
+    pub body_encoding: Option<BodyEncoding>,
+    pub content_type: Option<String>,
+    pub size: u64,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListCursor {
+    generation: u64,
+    after: String,
+}
+
+impl ListCursor {
+    pub fn new(generation: u64, after: impl Into<String>) -> Self {
+        Self {
+            generation,
+            after: after.into(),
+        }
+    }
+
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn after(&self) -> &str {
+        &self.after
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalListPage {
+    pub generation: u64,
+    pub entries: Vec<LogicalEntry>,
+    pub next_cursor: Option<ListCursor>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalWalkCursor {
+    generation: u64,
+    inner: WalkCursor,
+}
+
+impl LogicalWalkCursor {
+    pub fn new(generation: u64, after: impl Into<String>) -> Self {
+        Self {
+            generation,
+            inner: WalkCursor::after(after),
+        }
+    }
+
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn after(&self) -> &str {
+        self.inner.as_str()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalWalkOptions {
+    pub page_size: usize,
+    pub cursor: Option<LogicalWalkCursor>,
+    pub include_directories: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalWalkEntry {
+    pub path: LogicalPath,
+    pub stable_id: String,
+    pub revision: Option<u64>,
+    pub content_hash: Option<String>,
+    pub kind: EntryKind,
+    pub object_kind: Option<ObjectKind>,
+    pub depth: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalWalkPage {
+    pub generation: u64,
+    pub entries: Vec<LogicalWalkEntry>,
+    pub errors: Vec<(LogicalPath, String)>,
+    pub next_cursor: Option<LogicalWalkCursor>,
+    pub truncated: bool,
+    pub limit_reached: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGlobCursor {
+    generation: u64,
+    inner: GlobCursor,
+}
+
+impl LogicalGlobCursor {
+    pub fn new(generation: u64, after: impl Into<String>) -> Self {
+        Self {
+            generation,
+            inner: GlobCursor::after(after),
+        }
+    }
+
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn after(&self) -> &str {
+        self.inner.as_str()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGlobPage {
+    pub generation: u64,
+    pub matches: Vec<LogicalEntry>,
+    pub next_cursor: Option<LogicalGlobCursor>,
+    pub truncated: bool,
+    pub limit_reached: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGrepCursor {
+    generation: u64,
+    inner: GrepCursor,
+}
+
+impl LogicalGrepCursor {
+    pub fn new(
+        generation: u64,
+        path: impl Into<String>,
+        byte_offset: Option<u64>,
+        walk_after: Option<String>,
+    ) -> Self {
+        Self {
+            generation,
+            inner: GrepCursor::new(path, byte_offset, walk_after),
+        }
+    }
+
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn path(&self) -> &str {
+        self.inner.path()
+    }
+
+    pub const fn byte_offset(&self) -> Option<u64> {
+        self.inner.byte_offset()
+    }
+
+    pub fn walk_after(&self) -> Option<&str> {
+        self.inner.walk_after()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGrepRequest {
+    pub root: String,
+    pub query: String,
+    pub mode: GrepMode,
+    pub cursor: Option<LogicalGrepCursor>,
+    pub max_files: usize,
+    pub max_matches: usize,
+    pub max_line_bytes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGrepMatch {
+    pub path: LogicalPath,
+    pub stable_id: String,
+    pub revision: u64,
+    pub content_hash: String,
+    pub line_number: usize,
+    pub byte_offset: u64,
+    pub excerpt: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGrepSkipped {
+    pub path: LogicalPath,
+    pub stable_id: String,
+    pub revision: u64,
+    pub content_hash: String,
+    pub reason: SkipReason,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalGrepPage {
+    pub generation: u64,
+    pub matches: Vec<LogicalGrepMatch>,
+    pub skipped: Vec<LogicalGrepSkipped>,
+    pub next_cursor: Option<LogicalGrepCursor>,
+    pub truncated: bool,
+    pub limit_reached: bool,
+}
+
+#[derive(Debug)]
+pub struct LogicalReadStream {
+    generation: u64,
+    path: LogicalPath,
+    stable_id: String,
+    revision: u64,
+    content_hash: String,
+    inner: ReadStream,
+    response_bytes_remaining: usize,
+    next_offset: u64,
+    finished: bool,
+    failed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalReadChunk {
+    pub generation: u64,
+    pub path: LogicalPath,
+    pub stable_id: String,
+    pub revision: u64,
+    pub content_hash: String,
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl Iterator for LogicalReadStream {
+    type Item = Result<LogicalReadChunk, LogicalError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed || self.finished {
+            return None;
+        }
+        let max_payload = match model_wire_v1_max_read_payload(
+            self.generation,
+            &self.path,
+            &self.stable_id,
+            self.revision,
+            &self.content_hash,
+            self.next_offset,
+            self.response_bytes_remaining,
+        ) {
+            Ok(maximum) => maximum,
+            Err(error) => {
+                self.failed = true;
+                return Some(Err(error));
+            }
+        };
+        if max_payload == 0 {
+            self.finished = true;
+            return None;
+        }
+        let Some(result) = self.inner.next_with_max_bytes(max_payload) else {
+            self.finished = true;
+            return None;
+        };
+        match result {
+            Ok(chunk) => {
+                debug_assert!(!chunk.bytes.is_empty());
+                let logical = LogicalReadChunk {
+                    generation: self.generation,
+                    path: self.path.clone(),
+                    stable_id: self.stable_id.clone(),
+                    revision: self.revision,
+                    content_hash: self.content_hash.clone(),
+                    offset: chunk.offset,
+                    bytes: chunk.bytes,
+                };
+                let encoded = match logical.model_wire_v1_size() {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        self.failed = true;
+                        return Some(Err(error));
+                    }
+                };
+                debug_assert!(encoded <= self.response_bytes_remaining);
+                self.response_bytes_remaining -= encoded;
+                self.next_offset = logical.offset.saturating_add(logical.bytes.len() as u64);
+                Some(Ok(logical))
+            }
+            Err(error) => {
+                self.failed = true;
+                Some(Err(LogicalError::FileTool(error)))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeSearchState {
+    Missing,
+    Building { generation: u64 },
+    Ready { generation: u64 },
+    Degraded { generation: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchNotReadyReason {
+    Missing,
+    Building,
+    Degraded,
+    GenerationMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchReadinessStatus {
+    Ready,
+    NotReady(SearchNotReadyReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchReadinessReport {
+    pub catalog_generation: u64,
+    pub index_generation: Option<u64>,
+    pub status: SearchReadinessStatus,
+}
+
+impl CoreFsReadSnapshot {
+    pub fn stat(&self, path: &str) -> Result<LogicalStat, LogicalError> {
+        let node = self.parse_node(path)?;
+        let (body_encoding, content_type, size) = match node.object.as_ref() {
+            None => (None, None, 0),
+            Some(_) => {
+                let metadata = self.authenticated_metadata(node)?;
+                (
+                    Some(metadata.body_encoding),
+                    Some(metadata.content_type),
+                    metadata.body_length,
+                )
+            }
+        };
+        Ok(LogicalStat {
+            path: node.path.clone(),
+            stable_id: node.stable_id.clone(),
+            revision: node.revision(),
+            content_hash: node.content_hash().map(str::to_owned),
+            kind: node.entry_kind(),
+            object_kind: node.object_kind(),
+            body_encoding,
+            content_type,
+            size,
+            generation: self.generation(),
+        })
+    }
+
+    pub fn list(
+        &self,
+        path: &str,
+        cursor: Option<ListCursor>,
+        limit: usize,
+        limits: ValidatedLimits,
+        control: OperationControl,
+    ) -> Result<LogicalListPage, LogicalError> {
+        control.check()?;
+        ensure_cursor_generation(
+            self.generation(),
+            cursor.as_ref().map(|value| value.generation),
+        )?;
+        if limit == 0 || limit > limits.walk_entries() {
+            return Err(LogicalError::InvalidLimit(format!(
+                "list limit must be between 1 and {}",
+                limits.walk_entries()
+            )));
+        }
+        let directory = self.parse_node(path)?;
+        if directory.object.is_some() {
+            return Err(LogicalError::NotDirectory {
+                path: directory.path.as_str().to_owned(),
+            });
+        }
+        let listing = WalkBackend::read_directory(self, directory.path.as_str())?;
+        let mut available = Vec::new();
+        let mut after_cursor = cursor.is_none();
+        for child in listing.entries {
+            control.check()?;
+            if !after_cursor {
+                if cursor
+                    .as_ref()
+                    .is_some_and(|value| value.after == child.path.as_str())
+                {
+                    after_cursor = true;
+                }
+                continue;
+            }
+            let node = self.nodes.get(child.path.as_str()).ok_or_else(|| {
+                LogicalError::InvalidCatalogPath {
+                    stable_id: child.path.as_str().to_owned(),
+                }
+            })?;
+            available.push(node);
+        }
+
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        for (index, node) in available.iter().enumerate() {
+            control.check()?;
+            if entries.len() == limit {
+                truncated = true;
+                break;
+            }
+            entries.push(logical_entry(node));
+            let has_more = index + 1 < available.len();
+            let candidate_truncated = has_more && entries.len() == limit;
+            let candidate_cursor = candidate_truncated.then(|| {
+                ListCursor::new(
+                    self.generation(),
+                    entries
+                        .last()
+                        .expect("entry was just appended")
+                        .path
+                        .as_str(),
+                )
+            });
+            let required = logical_list_page_size(
+                self.generation(),
+                &entries,
+                candidate_cursor.as_ref(),
+                candidate_truncated,
+            )?;
+            if required > limits.response_bytes() {
+                entries.pop();
+                if entries.is_empty() {
+                    return Err(FileToolError::ResponseItemTooLarge {
+                        kind: "logical_list",
+                        required,
+                        maximum: limits.response_bytes(),
+                    }
+                    .into());
+                }
+                truncated = true;
+                break;
+            }
+            if candidate_truncated {
+                truncated = true;
+                break;
+            }
+        }
+        let next_cursor = truncated
+            .then(|| entries.last())
+            .flatten()
+            .map(|entry| ListCursor::new(self.generation(), entry.path.as_str()));
+        let mut page = LogicalListPage {
+            generation: self.generation(),
+            entries,
+            next_cursor,
+            truncated,
+        };
+        loop {
+            let required = page.model_wire_v1_size()?;
+            if required <= limits.response_bytes() {
+                break;
+            }
+            if page.entries.len() <= 1 {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "logical_list",
+                    required,
+                    maximum: limits.response_bytes(),
+                }
+                .into());
+            }
+            page.entries.pop();
+            page.truncated = true;
+            page.next_cursor = page
+                .entries
+                .last()
+                .map(|entry| ListCursor::new(self.generation(), entry.path.as_str()));
+        }
+        Ok(page)
+    }
+
+    pub fn walk(
+        &self,
+        root: &str,
+        options: LogicalWalkOptions,
+        limits: ValidatedLimits,
+        control: OperationControl,
+    ) -> Result<LogicalWalkPage, LogicalError> {
+        let root = backend_path(root)?;
+        ensure_cursor_generation(
+            self.generation(),
+            options.cursor.as_ref().map(|value| value.generation),
+        )?;
+        let page = walk_page(
+            self,
+            root,
+            WalkOptions {
+                page_size: options.page_size,
+                cursor: options.cursor.map(|value| value.inner),
+                include_directories: options.include_directories,
+            },
+            limits,
+            control,
+        )?;
+        let entries = page
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let node = &self.nodes[entry.path.as_str()];
+                LogicalWalkEntry {
+                    path: node.path.clone(),
+                    stable_id: node.stable_id.clone(),
+                    revision: node.revision(),
+                    content_hash: node.content_hash().map(str::to_owned),
+                    kind: entry.kind,
+                    object_kind: node.object_kind(),
+                    depth: entry.depth,
+                }
+            })
+            .collect();
+        let errors = page
+            .errors
+            .into_iter()
+            .map(|error| {
+                (
+                    LogicalPath::parse(error.path.as_str())
+                        .expect("backend returns canonical paths"),
+                    error.message,
+                )
+            })
+            .collect();
+        let logical = LogicalWalkPage {
+            generation: self.generation(),
+            entries,
+            errors,
+            next_cursor: page.next_cursor.map(|inner| LogicalWalkCursor {
+                generation: self.generation(),
+                inner,
+            }),
+            truncated: page.truncated,
+            limit_reached: page.limit_reached,
+        };
+        ensure_model_wire_cap(&logical, limits, "logical_walk")?;
+        Ok(logical)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn glob(
+        &self,
+        root: &str,
+        pattern: &str,
+        cursor: Option<LogicalGlobCursor>,
+        max_results: usize,
+        limits: ValidatedLimits,
+        control: OperationControl,
+    ) -> Result<LogicalGlobPage, LogicalError> {
+        ensure_cursor_generation(
+            self.generation(),
+            cursor.as_ref().map(|value| value.generation),
+        )?;
+        let page = glob(
+            self,
+            GlobRequest {
+                root: backend_path(root)?,
+                pattern: pattern.to_owned(),
+                cursor: cursor.map(|value| value.inner),
+                max_results,
+            },
+            limits,
+            control,
+        )?;
+        let logical = LogicalGlobPage {
+            generation: self.generation(),
+            matches: page
+                .matches
+                .into_iter()
+                .map(|path| logical_entry(&self.nodes[path.as_str()]))
+                .collect(),
+            next_cursor: page.next_cursor.map(|inner| LogicalGlobCursor {
+                generation: self.generation(),
+                inner,
+            }),
+            truncated: page.truncated,
+            limit_reached: page.limit_reached,
+        };
+        ensure_model_wire_cap(&logical, limits, "logical_glob")?;
+        Ok(logical)
+    }
+
+    pub fn grep(
+        &self,
+        request: LogicalGrepRequest,
+        limits: ValidatedLimits,
+        control: OperationControl,
+    ) -> Result<LogicalGrepPage, LogicalError> {
+        ensure_cursor_generation(
+            self.generation(),
+            request.cursor.as_ref().map(|value| value.generation),
+        )?;
+        let page = grep(
+            self,
+            GrepRequest {
+                root: backend_path(&request.root)?,
+                query: request.query,
+                mode: request.mode,
+                cursor: request.cursor.map(|value| value.inner),
+                max_files: request.max_files,
+                max_matches: request.max_matches,
+                max_line_bytes: request.max_line_bytes,
+            },
+            limits,
+            control,
+        )?;
+        let matches = page
+            .matches
+            .into_iter()
+            .map(|found| {
+                let node = &self.nodes[found.path.as_str()];
+                let object = node.object.as_ref().expect("grep returns files only");
+                LogicalGrepMatch {
+                    path: node.path.clone(),
+                    stable_id: node.stable_id.clone(),
+                    revision: object.revision,
+                    content_hash: object.content_hash.clone(),
+                    line_number: found.line_number,
+                    byte_offset: found.byte_offset,
+                    excerpt: found.excerpt,
+                }
+            })
+            .collect();
+        let skipped = page
+            .skipped
+            .into_iter()
+            .map(|skipped| {
+                let node = &self.nodes[skipped.path.as_str()];
+                let object = node.object.as_ref().expect("grep skips files only");
+                LogicalGrepSkipped {
+                    path: node.path.clone(),
+                    stable_id: node.stable_id.clone(),
+                    revision: object.revision,
+                    content_hash: object.content_hash.clone(),
+                    reason: skipped.reason,
+                }
+            })
+            .collect();
+        let logical = LogicalGrepPage {
+            generation: self.generation(),
+            matches,
+            skipped,
+            next_cursor: page.next_cursor.map(|inner| LogicalGrepCursor {
+                generation: self.generation(),
+                inner,
+            }),
+            truncated: page.truncated,
+            limit_reached: page.limit_reached,
+        };
+        ensure_model_wire_cap(&logical, limits, "logical_grep")?;
+        Ok(logical)
+    }
+
+    pub fn read(
+        &self,
+        path: &str,
+        options: ReadOptions,
+        limits: ValidatedLimits,
+        control: OperationControl,
+    ) -> Result<LogicalReadStream, LogicalError> {
+        let node = self.parse_node(path)?;
+        let object = node.object.as_ref().ok_or_else(|| LogicalError::NotFile {
+            path: node.path.as_str().to_owned(),
+        })?;
+        let body_length = self.authenticated_metadata(node)?.body_length;
+        if options.max_bytes > 0 && options.offset < body_length {
+            let required = model_wire_v1_read_chunk_size(
+                self.generation(),
+                &node.path,
+                &node.stable_id,
+                object.revision,
+                &object.content_hash,
+                options.offset,
+                1,
+            )?;
+            if required > limits.response_bytes() {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "logical_read",
+                    required,
+                    maximum: limits.response_bytes(),
+                }
+                .into());
+            }
+        }
+        let raw_options = ReadOptions {
+            offset: options.offset,
+            max_bytes: options.max_bytes.min(limits.response_bytes()),
+        };
+        let inner = read_stream(
+            self,
+            backend_path(node.path.as_str())?,
+            raw_options,
+            limits,
+            control,
+        )?;
+        Ok(LogicalReadStream {
+            generation: self.generation(),
+            path: node.path.clone(),
+            stable_id: node.stable_id.clone(),
+            revision: object.revision,
+            content_hash: object.content_hash.clone(),
+            inner,
+            response_bytes_remaining: limits.response_bytes(),
+            next_offset: options.offset,
+            finished: false,
+            failed: false,
+        })
+    }
+
+    pub fn search_readiness(&self, state: RuntimeSearchState) -> SearchReadinessReport {
+        let (index_generation, status) = match state {
+            RuntimeSearchState::Missing => (
+                None,
+                SearchReadinessStatus::NotReady(SearchNotReadyReason::Missing),
+            ),
+            RuntimeSearchState::Building { generation } => (
+                Some(generation),
+                SearchReadinessStatus::NotReady(if generation == self.generation() {
+                    SearchNotReadyReason::Building
+                } else {
+                    SearchNotReadyReason::GenerationMismatch
+                }),
+            ),
+            RuntimeSearchState::Degraded { generation } => (
+                Some(generation),
+                SearchReadinessStatus::NotReady(if generation == self.generation() {
+                    SearchNotReadyReason::Degraded
+                } else {
+                    SearchNotReadyReason::GenerationMismatch
+                }),
+            ),
+            RuntimeSearchState::Ready { generation } if generation == self.generation() => {
+                (Some(generation), SearchReadinessStatus::Ready)
+            }
+            RuntimeSearchState::Ready { generation } => (
+                Some(generation),
+                SearchReadinessStatus::NotReady(SearchNotReadyReason::GenerationMismatch),
+            ),
+        };
+        SearchReadinessReport {
+            catalog_generation: self.generation(),
+            index_generation,
+            status,
+        }
+    }
+}
+
+fn logical_entry(node: &Node) -> LogicalEntry {
+    LogicalEntry {
+        path: node.path.clone(),
+        stable_id: node.stable_id.clone(),
+        revision: node.revision(),
+        content_hash: node.content_hash().map(str::to_owned),
+        kind: node.entry_kind(),
+        object_kind: node.object_kind(),
+    }
+}
+
+fn backend_path(path: &str) -> Result<BackendPath, LogicalError> {
+    let path = LogicalPath::parse(path)?;
+    Ok(BackendPath::new(
+        BackendKind::CoreFs,
+        path.as_str().to_owned(),
+    )?)
+}
+
+fn ensure_cursor_generation(selected: u64, cursor: Option<u64>) -> Result<(), LogicalError> {
+    if let Some(cursor) = cursor {
+        if cursor != selected {
+            return Err(LogicalError::CursorGeneration { cursor, selected });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_model_wire_cap<T: ModelWireV1>(
+    result: &T,
+    limits: ValidatedLimits,
+    kind: &'static str,
+) -> Result<(), LogicalError> {
+    let required = result.model_wire_v1_size()?;
+    if required > limits.response_bytes() {
+        return Err(FileToolError::ResponseItemTooLarge {
+            kind,
+            required,
+            maximum: limits.response_bytes(),
+        }
+        .into());
+    }
+    Ok(())
+}

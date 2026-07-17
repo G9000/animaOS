@@ -7,7 +7,9 @@ use crate::{
     WalkBackend, WalkCursor, WalkOptions, MAX_PATTERN_BYTES,
 };
 
-const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 32;
+// Includes room for backend-enriched identity metadata in the public result.
+const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 192;
+const RESPONSE_PAGE_OVERHEAD_BYTES: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GlobCursor {
@@ -15,6 +17,10 @@ pub struct GlobCursor {
 }
 
 impl GlobCursor {
+    pub fn after(path: impl Into<String>) -> Self {
+        Self { after: path.into() }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.after
     }
@@ -84,12 +90,18 @@ pub fn glob<B: WalkBackend + ?Sized>(
         },
         limits,
         control.clone(),
-    )?;
+    )
+    .map_err(|error| match error {
+        FileToolError::PaginationCannotAdvance { .. } => {
+            FileToolError::PaginationCannotAdvance { operation: "glob" }
+        }
+        error => error,
+    })?;
     let walk_truncated = walk.truncated;
     let walk_limit_reached = walk.limit_reached;
     let walk_next_cursor = walk.next_cursor;
     let mut page = GlobPage::default();
-    let mut response_bytes = 0usize;
+    let mut response_bytes = RESPONSE_PAGE_OVERHEAD_BYTES;
     let mut output_truncated = false;
 
     for entry in walk.entries {
@@ -108,13 +120,28 @@ pub fn glob<B: WalkBackend + ?Sized>(
             .path
             .as_str()
             .len()
+            .saturating_mul(12)
             .saturating_add(RESPONSE_ITEM_OVERHEAD_BYTES);
         let Some(next_response_bytes) = response_bytes.checked_add(item_bytes) else {
+            if page.matches.is_empty() {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "glob",
+                    required: usize::MAX,
+                    maximum: limits.response_bytes(),
+                });
+            }
             page.truncated = true;
             output_truncated = true;
             break;
         };
         if next_response_bytes > limits.response_bytes() {
+            if page.matches.is_empty() {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "glob",
+                    required: next_response_bytes,
+                    maximum: limits.response_bytes(),
+                });
+            }
             page.truncated = true;
             output_truncated = true;
             break;
@@ -133,6 +160,9 @@ pub fn glob<B: WalkBackend + ?Sized>(
         page.next_cursor = walk_next_cursor.map(|cursor| GlobCursor {
             after: cursor.as_str().to_string(),
         });
+    }
+    if page.truncated && page.next_cursor.is_none() {
+        return Err(FileToolError::PaginationCannotAdvance { operation: "glob" });
     }
     Ok(page)
 }

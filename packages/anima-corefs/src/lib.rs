@@ -8,6 +8,7 @@ pub mod envelope;
 pub mod folders;
 pub mod head;
 pub mod id;
+pub mod logical;
 pub mod policy;
 pub mod publication;
 pub mod rotation;

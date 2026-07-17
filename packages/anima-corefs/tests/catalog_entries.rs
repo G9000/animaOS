@@ -3,8 +3,8 @@ use anima_corefs::catalog::{
     encrypt_catalog_generation, inspect_catalog_generation_envelope,
     validate_catalog_generation_encoding, CatalogClientMetadata, CatalogEntry, CatalogEntryCommon,
     CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject, CatalogPayload,
-    ContentHash, ObjectLifecycle, ObjectPhysicalName, TrashMetadata, WrappedObjectDekRecord,
-    MAX_CATALOG_DEPTH, MAX_CATALOG_ENTRIES,
+    ContentHash, FolderLifecycle, FolderTrashMetadata, ObjectLifecycle, ObjectPhysicalName,
+    TrashMetadata, WrappedObjectDekRecord, MAX_CATALOG_DEPTH, MAX_CATALOG_ENTRIES,
 };
 use anima_corefs::crypto::{
     derive_corefs_subkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
@@ -19,6 +19,7 @@ const ROOT_ID: &str = "01J00000000000000000000000";
 const OBJECT_ID: &str = "01J00000000000000000000001";
 const TRASH_ID: &str = "01J00000000000000000000002";
 const OTHER_ID: &str = "01J00000000000000000000003";
+const CHILD_ID: &str = "01J00000000000000000000004";
 
 fn common(id: &str, parent_id: Option<&str>, name: &str) -> CatalogEntryCommon {
     CatalogEntryCommon::new(
@@ -78,6 +79,126 @@ fn typed_empty_folder_roundtrips_as_authoritative_v2_catalog() {
     );
     assert_eq!(catalog.schema_version(), 2);
     assert!(catalog.entries()[0].is_folder());
+
+    let encoded = encode_catalog_generation(&catalog).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert!(wire["entries"][0].get("folderLifecycle").is_none());
+}
+
+#[test]
+fn authenticated_folder_trash_roundtrips_without_changing_live_v2_bytes() {
+    let trashed = common(OTHER_ID, Some(TRASH_ID), "Archive").with_folder_lifecycle(
+        FolderLifecycle::Trashed(
+            FolderTrashMetadata::new(
+                OpaqueId::parse(TRASH_ID).unwrap(),
+                OpaqueId::parse(ROOT_ID).unwrap(),
+                PortableName::parse("Notes").unwrap(),
+                1_700_000_000_000,
+            )
+            .unwrap(),
+        ),
+    );
+    let catalog = CatalogGeneration::new(
+        7,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(trashed),
+            CatalogGenerationEntry::folder(common(CHILD_ID, Some(OTHER_ID), "Child")),
+        ],
+    )
+    .unwrap();
+
+    let encoded = encode_catalog_generation(&catalog).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(wire["entries"][2]["folderLifecycle"]["state"], "trashed");
+    validate_catalog_generation_encoding(&encoded).unwrap();
+    let encrypted = encrypt_catalog_generation(&keys(0x13), "core-a", &catalog).unwrap();
+    assert_eq!(
+        decrypt_catalog_generation(&keys(0x13), "core-a", &encrypted).unwrap(),
+        catalog
+    );
+}
+
+#[test]
+fn folder_trash_graph_invariants_fail_closed() {
+    let metadata = |trash: &str, original: &str| {
+        FolderLifecycle::Trashed(
+            FolderTrashMetadata::new(
+                OpaqueId::parse(trash).unwrap(),
+                OpaqueId::parse(original).unwrap(),
+                PortableName::parse("Notes").unwrap(),
+                1,
+            )
+            .unwrap(),
+        )
+    };
+
+    let root_trashed =
+        common(ROOT_ID, None, "Core").with_folder_lifecycle(metadata(TRASH_ID, OTHER_ID));
+    assert!(CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(root_trashed),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(common(OTHER_ID, Some(ROOT_ID), "Other")),
+        ],
+    )
+    .is_err());
+
+    let same_boundary = common(OTHER_ID, Some(TRASH_ID), "Notes")
+        .with_folder_lifecycle(metadata(TRASH_ID, TRASH_ID));
+    assert!(CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(same_boundary),
+        ],
+    )
+    .is_err());
+
+    let trash_inside_source = common(OTHER_ID, Some(TRASH_ID), "Notes")
+        .with_folder_lifecycle(metadata(TRASH_ID, ROOT_ID));
+    assert!(CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(trash_inside_source),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(OTHER_ID), "Trash")),
+        ],
+    )
+    .is_err());
+
+    let trashed_original_parent = common(OTHER_ID, Some(TRASH_ID), "Parent")
+        .with_folder_lifecycle(metadata(TRASH_ID, ROOT_ID));
+    let trashed_child_with_historical_parent = common(CHILD_ID, Some(TRASH_ID), "Child")
+        .with_folder_lifecycle(metadata(TRASH_ID, OTHER_ID));
+    CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(trashed_original_parent),
+            CatalogGenerationEntry::folder(trashed_child_with_historical_parent),
+        ],
+    )
+    .unwrap();
+
+    let hidden_original_parent =
+        common(OTHER_ID, Some(TRASH_ID), "Archive").with_folder_lifecycle(metadata(
+            TRASH_ID, CHILD_ID,
+        ));
+    assert!(CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(hidden_original_parent),
+            CatalogGenerationEntry::folder(common(CHILD_ID, Some(OTHER_ID), "HiddenOriginal")),
+        ],
+    )
+    .is_err());
 }
 
 #[test]
@@ -138,6 +259,59 @@ fn typed_object_entry_roundtrips_with_all_authoritative_state() {
 
     assert_eq!(decoded, catalog);
     assert!(decoded.entries()[1].object_payload().is_some());
+}
+
+#[test]
+fn trashed_object_keeps_historical_parent_after_parent_is_trashed() {
+    let trashed_parent =
+        common(OTHER_ID, Some(TRASH_ID), "Notes").with_folder_lifecycle(FolderLifecycle::Trashed(
+            FolderTrashMetadata::new(
+                OpaqueId::parse(TRASH_ID).unwrap(),
+                OpaqueId::parse(ROOT_ID).unwrap(),
+                PortableName::parse("Notes").unwrap(),
+                1_700_000_000_000,
+            )
+            .unwrap(),
+        ));
+    let trashed_object = CatalogObject::new(
+        2,
+        physical_name(),
+        ContentHash::parse(&"ab".repeat(32)).unwrap(),
+        ObjectKind::Note,
+        WrappedObjectDekRecord::from_parts(
+            3,
+            2,
+            OBJECT_WRAP_ALGORITHM,
+            OBJECT_KEY_ENVELOPE_VERSION,
+            &[7; 12],
+            vec![9; 48],
+        )
+        .unwrap(),
+        ObjectLifecycle::Trashed(
+            TrashMetadata::new(
+                OpaqueId::parse(TRASH_ID).unwrap(),
+                OpaqueId::parse(OTHER_ID).unwrap(),
+                PortableName::parse("Entry.md").unwrap(),
+                1_700_000_000_001,
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+
+    CatalogGeneration::new(
+        7,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(trashed_parent),
+            CatalogGenerationEntry::object(
+                common(OBJECT_ID, Some(TRASH_ID), "Entry.md"),
+                trashed_object,
+            ),
+        ],
+    )
+    .unwrap();
 }
 
 #[test]

@@ -32,6 +32,14 @@ pub enum FileToolError {
     },
     #[error("requested {requested} response bytes exceeds maximum {maximum}")]
     ResponseLimitExceeded { requested: usize, maximum: usize },
+    #[error("{kind} response item requires {required} bytes; maximum is {maximum}")]
+    ResponseItemTooLarge {
+        kind: &'static str,
+        required: usize,
+        maximum: usize,
+    },
+    #[error("{operation} pagination cannot produce an advancing continuation cursor")]
+    PaginationCannotAdvance { operation: &'static str },
     #[error("invalid {mode} pattern: {message}")]
     InvalidPattern { mode: &'static str, message: String },
     #[error("cannot read {path} as text: {reason}")]

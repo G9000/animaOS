@@ -1,4 +1,6 @@
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anima_file_tools::{
@@ -38,6 +40,45 @@ impl ReadBackend for MemoryBackend {
         _path: &str,
     ) -> Result<Box<dyn anima_file_tools::ReadSeek + Send>, FileToolError> {
         Ok(Box::new(Cursor::new(self.bytes.clone())))
+    }
+}
+
+struct ControlledPositionBackend {
+    called: Arc<AtomicBool>,
+    cancellation: CancellationToken,
+}
+
+impl FileBackend for ControlledPositionBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(
+            BackendKind::CoreFs,
+            PathSemantics::PortableNfcCaseSensitive,
+            MutationAtomicity::CatalogGeneration,
+        )
+    }
+}
+
+impl ReadBackend for ControlledPositionBackend {
+    fn open_read(
+        &self,
+        _path: &str,
+    ) -> Result<Box<dyn anima_file_tools::ReadSeek + Send>, FileToolError> {
+        Ok(Box::new(Cursor::new(vec![0_u8; 32])))
+    }
+
+    fn open_read_at(
+        &self,
+        _path: &str,
+        offset: u64,
+        max_bytes: usize,
+        control: &OperationControl,
+    ) -> Result<Box<dyn anima_file_tools::ReadSeek + Send>, FileToolError> {
+        assert_eq!(offset, 17);
+        assert_eq!(max_bytes, 1);
+        self.called.store(true, Ordering::Release);
+        self.cancellation.cancel();
+        control.check()?;
+        unreachable!("cancelled positioning must not produce a reader")
     }
 }
 
@@ -162,4 +203,29 @@ fn expired_deadline_fails_before_the_backend_is_opened() {
     .unwrap_err();
 
     assert_eq!(error, FileToolError::DeadlineExceeded);
+}
+
+#[test]
+fn nonzero_offset_positioning_is_backend_aware_and_receives_operation_control() {
+    let cancellation = CancellationToken::new();
+    let called = Arc::new(AtomicBool::new(false));
+    let backend = ControlledPositionBackend {
+        called: Arc::clone(&called),
+        cancellation: cancellation.clone(),
+    };
+
+    let error = read_stream(
+        &backend,
+        BackendPath::new(BackendKind::CoreFs, "Notes/large.bin").unwrap(),
+        ReadOptions {
+            offset: 17,
+            max_bytes: 1,
+        },
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::new(cancellation, None),
+    )
+    .unwrap_err();
+
+    assert_eq!(error, FileToolError::Cancelled);
+    assert!(called.load(Ordering::Acquire));
 }

@@ -7,12 +7,16 @@ use std::io::{BufRead, BufReader};
 use regex::Regex;
 
 use crate::{
-    walk_page, BackendPath, EntryKind, FileToolError, OperationControl, SearchableBackend,
-    ValidatedLimits, WalkCursor, WalkEntry, WalkOptions, WalkPage, MAX_PATTERN_BYTES,
+    walk_page, BackendPath, ContentClassification, EntryKind, FileToolError, OperationControl,
+    SearchableBackend, ValidatedLimits, WalkCursor, WalkEntry, WalkOptions, WalkPage,
+    MAX_PATTERN_BYTES,
 };
 
-const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 96;
-const RESPONSE_SKIP_OVERHEAD_BYTES: usize = 64;
+// Reserves enough response budget for backend-enriched identity metadata such
+// as CoreFS stable IDs, revisions, content hashes, and catalog generation.
+const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 256;
+const RESPONSE_SKIP_OVERHEAD_BYTES: usize = 192;
+const RESPONSE_PAGE_OVERHEAD_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GrepMode {
@@ -24,6 +28,7 @@ pub enum GrepMode {
 pub struct GrepCursor {
     path: String,
     byte_offset: Option<u64>,
+    walk_after: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,12 +125,13 @@ pub fn grep(
     }
     validate_request(&request, limits)?;
     let matcher = Matcher::new(&request.query, request.mode)?;
-    let walk_cursor = request.cursor.as_ref().and_then(|cursor| {
-        cursor
-            .byte_offset
-            .is_none()
-            .then(|| WalkCursor::after(cursor.path.clone()))
-    });
+    let walk_cursor = request
+        .cursor
+        .as_ref()
+        .and_then(GrepCursor::resume_walk_cursor);
+    let initial_walk_after = walk_cursor
+        .as_ref()
+        .map(|cursor| cursor.as_str().to_owned());
     let root_metadata = backend.metadata(request.root.as_str())?;
     let walk = if root_metadata.kind == EntryKind::File {
         WalkPage {
@@ -134,6 +140,7 @@ pub fn grep(
                 kind: root_metadata.kind,
                 is_symlink: root_metadata.is_symlink,
                 size: root_metadata.size,
+                content: root_metadata.content,
                 depth: 0,
             }],
             ..WalkPage::default()
@@ -149,14 +156,22 @@ pub fn grep(
             },
             limits,
             control.clone(),
-        )?
+        )
+        .map_err(|error| match error {
+            FileToolError::PaginationCannotAdvance { .. } => {
+                FileToolError::PaginationCannotAdvance { operation: "grep" }
+            }
+            error => error,
+        })?
     };
     let walk_truncated = walk.truncated;
     let walk_limit_reached = walk.limit_reached;
     let walk_next_cursor = walk.next_cursor;
     let mut page = GrepPage::default();
-    let mut response_bytes = 0usize;
+    let mut response_bytes = RESPONSE_PAGE_OVERHEAD_BYTES;
     let mut output_truncated = false;
+    let mut last_progress = None;
+    let mut traversal_after = initial_walk_after;
     let offset_cursor = request
         .cursor
         .as_ref()
@@ -165,15 +180,37 @@ pub fn grep(
 
     'files: for entry in walk.entries {
         control.check()?;
+        let entry_path = entry.path.as_str().to_owned();
+        let entry_walk_after = traversal_after.clone();
         if entry.kind != EntryKind::File {
+            traversal_after = Some(entry_path);
             continue;
         }
         if !offset_cursor_reached {
             if offset_cursor.is_some_and(|cursor| cursor.path == entry.path.as_str()) {
                 offset_cursor_reached = true;
             } else {
+                traversal_after = Some(entry_path);
                 continue;
             }
+        }
+        let content = if entry.content == ContentClassification::Unknown {
+            backend.metadata(entry.path.as_str())?.content
+        } else {
+            entry.content
+        };
+        if content == ContentClassification::Binary {
+            let skipped = GrepSkipped {
+                path: entry.path,
+                reason: SkipReason::BinaryContent,
+            };
+            if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
+                output_truncated = true;
+                break 'files;
+            }
+            last_progress = Some(GrepCursor::after_file(entry_path.clone()));
+            traversal_after = Some(entry_path);
+            continue;
         }
         let mut reader = BufReader::new(backend.open_read(entry.path.as_str())?);
         let mut line_number = 0usize;
@@ -225,23 +262,54 @@ pub fn grep(
                         .path
                         .as_str()
                         .len()
-                        .saturating_add(text.len())
+                        .saturating_mul(12)
+                        .saturating_add(text.len().saturating_mul(6))
                         .saturating_add(RESPONSE_ITEM_OVERHEAD_BYTES);
                     let Some(next_file_response_bytes) =
                         file_response_bytes.checked_add(item_bytes)
                     else {
+                        if page.matches.is_empty()
+                            && page.skipped.is_empty()
+                            && file_matches.is_empty()
+                        {
+                            return Err(FileToolError::ResponseItemTooLarge {
+                                kind: "grep_match",
+                                required: usize::MAX,
+                                maximum: limits.response_bytes(),
+                            });
+                        }
                         file_truncated = true;
                         break;
                     };
                     let Some(next_response_bytes) =
                         response_bytes.checked_add(next_file_response_bytes)
                     else {
+                        if page.matches.is_empty()
+                            && page.skipped.is_empty()
+                            && file_matches.is_empty()
+                        {
+                            return Err(FileToolError::ResponseItemTooLarge {
+                                kind: "grep_match",
+                                required: usize::MAX,
+                                maximum: limits.response_bytes(),
+                            });
+                        }
                         file_truncated = true;
                         break;
                     };
                     if next_response_bytes > limits.response_bytes()
                         || page.matches.len() + file_matches.len() == request.max_matches
                     {
+                        if page.matches.is_empty()
+                            && page.skipped.is_empty()
+                            && file_matches.is_empty()
+                        {
+                            return Err(FileToolError::ResponseItemTooLarge {
+                                kind: "grep_match",
+                                required: next_response_bytes,
+                                maximum: limits.response_bytes(),
+                            });
+                        }
                         file_truncated = true;
                         break;
                     }
@@ -265,37 +333,52 @@ pub fn grep(
                 path: entry.path,
                 reason,
             };
-            if !push_skip(&mut page, &mut response_bytes, skipped, limits) {
+            if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
+                output_truncated = true;
                 break 'files;
             }
+            last_progress = Some(GrepCursor::after_file(entry_path.clone()));
+            traversal_after = Some(entry_path);
         } else {
             response_bytes += file_response_bytes;
+            let last_file_match = file_matches
+                .last()
+                .map(|found| (found.path.as_str().to_owned(), found.byte_offset));
             page.matches.extend(file_matches);
+            if let Some((path, byte_offset)) = last_file_match {
+                last_progress = Some(GrepCursor::within_file(
+                    path,
+                    byte_offset,
+                    entry_walk_after.clone(),
+                ));
+            }
             for skipped in file_skips {
-                if !push_skip(&mut page, &mut response_bytes, skipped, limits) {
+                if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
+                    output_truncated = true;
                     break 'files;
                 }
+                last_progress = Some(GrepCursor::after_file(entry_path.clone()));
             }
             if file_truncated {
                 page.truncated = true;
                 output_truncated = true;
                 break;
             }
+            last_progress = Some(GrepCursor::after_file(entry_path.clone()));
+            traversal_after = Some(entry_path);
         }
     }
 
     if output_truncated {
-        page.next_cursor = page.matches.last().map(|found| GrepCursor {
-            path: found.path.as_str().to_string(),
-            byte_offset: Some(found.byte_offset),
-        });
+        page.next_cursor = last_progress;
     } else if walk_truncated {
         page.truncated = true;
         page.limit_reached = walk_limit_reached;
-        page.next_cursor = walk_next_cursor.map(|cursor| GrepCursor {
-            path: cursor.as_str().to_string(),
-            byte_offset: None,
-        });
+        page.next_cursor =
+            walk_next_cursor.map(|cursor| GrepCursor::after_file(cursor.as_str().to_owned()));
+    }
+    if page.truncated && page.next_cursor.is_none() {
+        return Err(FileToolError::PaginationCannotAdvance { operation: "grep" });
     }
     Ok(page)
 }
@@ -305,25 +388,90 @@ fn push_skip(
     response_bytes: &mut usize,
     skipped: GrepSkipped,
     limits: ValidatedLimits,
-) -> bool {
+) -> Result<bool, FileToolError> {
     let item_bytes = skipped
         .path
         .as_str()
         .len()
+        .saturating_mul(12)
         .saturating_add(RESPONSE_SKIP_OVERHEAD_BYTES);
     let Some(next_response_bytes) = response_bytes.checked_add(item_bytes) else {
+        if page.matches.is_empty() && page.skipped.is_empty() {
+            return Err(FileToolError::ResponseItemTooLarge {
+                kind: "grep_skip",
+                required: usize::MAX,
+                maximum: limits.response_bytes(),
+            });
+        }
         page.truncated = true;
         page.limit_reached = true;
-        return false;
+        return Ok(false);
     };
     if next_response_bytes > limits.response_bytes() {
+        if page.matches.is_empty() && page.skipped.is_empty() {
+            return Err(FileToolError::ResponseItemTooLarge {
+                kind: "grep_skip",
+                required: next_response_bytes,
+                maximum: limits.response_bytes(),
+            });
+        }
         page.truncated = true;
         page.limit_reached = true;
-        return false;
+        return Ok(false);
     }
     *response_bytes = next_response_bytes;
     page.skipped.push(skipped);
-    true
+    Ok(true)
+}
+
+impl GrepCursor {
+    pub fn new(
+        path: impl Into<String>,
+        byte_offset: Option<u64>,
+        walk_after: Option<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            byte_offset,
+            walk_after,
+        }
+    }
+
+    fn within_file(path: String, byte_offset: u64, walk_after: Option<String>) -> Self {
+        Self {
+            path,
+            byte_offset: Some(byte_offset),
+            walk_after,
+        }
+    }
+
+    fn after_file(path: String) -> Self {
+        Self {
+            walk_after: Some(path.clone()),
+            path,
+            byte_offset: None,
+        }
+    }
+
+    fn resume_walk_cursor(&self) -> Option<WalkCursor> {
+        if self.byte_offset.is_some() {
+            self.walk_after.clone().map(WalkCursor::after)
+        } else {
+            Some(WalkCursor::after(self.path.clone()))
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub const fn byte_offset(&self) -> Option<u64> {
+        self.byte_offset
+    }
+
+    pub fn walk_after(&self) -> Option<&str> {
+        self.walk_after.as_deref()
+    }
 }
 
 fn validate_request(request: &GrepRequest, limits: ValidatedLimits) -> Result<(), FileToolError> {
