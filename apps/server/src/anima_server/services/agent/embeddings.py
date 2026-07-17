@@ -58,6 +58,7 @@ _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
     "doubleword": "Qwen/Qwen3-Embedding-8B",
+    "fastembed": "BAAI/bge-small-en-v1.5",
 }
 
 _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
@@ -124,6 +125,9 @@ def _resolve_embedding_model() -> str:
 def _resolve_embedding_base_url() -> str:
     """Resolve the base URL for the active embedding provider."""
     provider = _resolve_embedding_provider()
+    if provider == "fastembed":
+        # In-process ONNX backend — no HTTP endpoint of any kind.
+        return ""
     configured = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
     if configured:
         return configured.removesuffix("/v1") if provider == "ollama" else configured
@@ -380,7 +384,12 @@ async def generate_embedding(text: str) -> list[float] | None:
         return None
 
     try:
-        if provider == "ollama":
+        if provider == "fastembed":
+            from anima_server.services.agent.fastembed_backend import embed_texts
+
+            vectors = await asyncio.to_thread(embed_texts, [prepared_text], model_name=model)
+            result = vectors[0]
+        elif provider == "ollama":
             result = await _embed_ollama(prepared_text)
         else:
             # openrouter, vllm — all OpenAI-compatible
@@ -1356,6 +1365,30 @@ async def generate_embeddings_batch(
         validate_provider_configuration(provider)
     except LLMConfigError:
         return [None] * len(texts)
+
+    if provider == "fastembed":
+        from anima_server.services.agent.fastembed_backend import embed_texts
+
+        model = _resolve_embedding_model()
+        prepared_items = [
+            (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
+        ]
+        non_empty_items = [item for item in prepared_items if item[1]]
+        if not non_empty_items:
+            return [None] * len(texts)
+
+        vectors = await asyncio.to_thread(
+            embed_texts,
+            [text for _, text in non_empty_items],
+            model_name=model,
+        )
+
+        results: list[list[float] | None] = [None] * len(texts)
+        for (index, _text), embedding in zip(non_empty_items, vectors, strict=False):
+            results[index] = embedding
+
+        _note_first_embedding_dim(results)
+        return results
 
     if provider == "ollama":
         results = await _batch_embed_ollama(texts)

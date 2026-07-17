@@ -26,6 +26,7 @@ SUPPORTED_PROVIDERS: Final[tuple[str, ...]] = (
     "openai",
     "anthropic",
     "doubleword",
+    "fastembed",
 )
 DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "ollama": "http://127.0.0.1:11434/v1",

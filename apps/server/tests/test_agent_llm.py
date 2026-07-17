@@ -519,6 +519,93 @@ def test_resolve_embedding_dim_uses_doubleword_default(
     assert config_module.resolve_embedding_dim() == 4096
 
 
+def test_resolve_embedding_dim_knows_bundled_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="BAAI/bge-small-en-v1.5",
+            agent_extraction_model="",
+            agent_embedding_provider="fastembed",
+            agent_provider="fastembed",
+            agent_embedding_dim=768,
+        ),
+    )
+    config_module.clear_detected_embedding_dim()
+
+    assert config_module.resolve_embedding_dim() == 384
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_dispatches_to_fastembed_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+    from anima_server.services.agent import fastembed_backend
+
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None]:
+        calls.append((list(texts), model_name))
+        return [[0.5] * 384 for _ in texts]
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+    original_embedding_model = settings.agent_embedding_model
+
+    try:
+        settings.agent_embedding_provider = "fastembed"
+        settings.agent_embedding_model = "BAAI/bge-small-en-v1.5"
+        monkeypatch.setattr(fastembed_backend, "embed_texts", fake_embed_texts)
+        embeddings_module.clear_embedding_cache()
+
+        result = await embeddings_module.generate_embedding("hello world")
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+        settings.agent_embedding_model = original_embedding_model
+
+    assert result == [0.5] * 384
+    assert calls == [(["hello world"], "BAAI/bge-small-en-v1.5")]
+
+
+@pytest.mark.asyncio
+async def test_generate_embeddings_batch_dispatches_to_fastembed_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+    from anima_server.services.agent import fastembed_backend
+
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None]:
+        calls.append((list(texts), model_name))
+        return [[0.25] * 384 for _ in texts]
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+    original_embedding_model = settings.agent_embedding_model
+
+    try:
+        settings.agent_embedding_provider = "fastembed"
+        settings.agent_embedding_model = "BAAI/bge-small-en-v1.5"
+        monkeypatch.setattr(fastembed_backend, "embed_texts", fake_embed_texts)
+        embeddings_module.clear_embedding_cache()
+
+        result = await embeddings_module.generate_embeddings_batch(["hello", "world"])
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+        settings.agent_embedding_model = original_embedding_model
+
+    assert result == [[0.25] * 384, [0.25] * 384]
+    assert calls == [(["hello", "world"], "BAAI/bge-small-en-v1.5")]
+
+
 @pytest.mark.asyncio
 async def test_embed_ollama_uses_explicit_embedding_settings(
     monkeypatch: pytest.MonkeyPatch,
