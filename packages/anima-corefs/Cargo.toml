@@ -9,6 +9,7 @@ description = "Canonical cryptographic and filesystem primitives for ANIMA CORE.
 
 [dependencies]
 aes-gcm = "0.10"
+anima-file-tools = { path = "../anima-file-tools" }
 argon2 = "0.5"
 base64 = "0.22"
 # These exact crypto-graph pins preserve the workspace's Rust 1.75 MSRV.

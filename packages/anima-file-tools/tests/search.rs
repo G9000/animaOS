@@ -24,6 +24,8 @@ struct CountingSearchBackend {
     bytes_read: Arc<AtomicUsize>,
 }
 
+struct DeclaredBinaryBackend;
+
 struct CountingReader {
     inner: Cursor<Vec<u8>>,
     bytes_read: Arc<AtomicUsize>,
@@ -91,6 +93,34 @@ impl ReadBackend for CountingSearchBackend {
 impl WalkBackend for CountingSearchBackend {
     fn metadata(&self, _path: &str) -> Result<EntryMetadata, FileToolError> {
         Ok(EntryMetadata::file(self.bytes.len() as u64))
+    }
+
+    fn read_directory(&self, path: &str) -> Result<DirectoryListing, FileToolError> {
+        Err(backend_error("read_directory", path, "not a directory"))
+    }
+}
+
+impl FileBackend for DeclaredBinaryBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(
+            BackendKind::CoreFs,
+            PathSemantics::PortableNfcCaseSensitive,
+            MutationAtomicity::CatalogGeneration,
+        )
+    }
+}
+
+impl ReadBackend for DeclaredBinaryBackend {
+    fn open_read(&self, _path: &str) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        Ok(Box::new(Cursor::new(
+            b"needle but declared binary".to_vec(),
+        )))
+    }
+}
+
+impl WalkBackend for DeclaredBinaryBackend {
+    fn metadata(&self, _path: &str) -> Result<EntryMetadata, FileToolError> {
+        Ok(EntryMetadata::binary_file(26))
     }
 
     fn read_directory(&self, path: &str) -> Result<DirectoryListing, FileToolError> {
@@ -251,6 +281,24 @@ fn binary_and_invalid_utf8_files_are_skipped_with_typed_reasons() {
     assert_eq!(page.skipped.len(), 2);
     assert_eq!(page.skipped[0].reason, SkipReason::BinaryContent);
     assert_eq!(page.skipped[1].reason, SkipReason::InvalidUtf8);
+}
+
+#[test]
+fn declared_binary_files_are_skipped_without_inspecting_text_like_bytes() {
+    let mut binary = request("needle", GrepMode::Literal);
+    binary.root = BackendPath::new(BackendKind::CoreFs, "root/apparent.txt").unwrap();
+
+    let page = grep(
+        &DeclaredBinaryBackend,
+        binary,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert!(page.matches.is_empty());
+    assert_eq!(page.skipped.len(), 1);
+    assert_eq!(page.skipped[0].reason, SkipReason::BinaryContent);
 }
 
 #[test]

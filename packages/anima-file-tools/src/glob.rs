@@ -7,7 +7,8 @@ use crate::{
     WalkBackend, WalkCursor, WalkOptions, MAX_PATTERN_BYTES,
 };
 
-const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 32;
+// Includes room for backend-enriched identity metadata in the public result.
+const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 192;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GlobCursor {

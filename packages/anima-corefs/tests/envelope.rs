@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use anima_corefs::crypto::{ObjectBaseAad, ObjectKind, SecretBytes};
 use anima_corefs::envelope::{
-    decode_envelope, decode_envelope_range, encode_envelope, read_envelope,
+    decode_envelope, decode_envelope_range, encode_envelope, open_envelope_stream, read_envelope,
     rotate_object_key_envelope, write_envelope, BodyEncoding, EnvelopeError, EnvelopeMetadata,
     BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE, MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE,
     MAX_OBJECT_ID_LENGTH,
@@ -322,6 +322,25 @@ fn authenticated_wrong_body_hash_is_a_terminal_streaming_read_failure() {
         Err(EnvelopeError::InvalidFormat("body hash mismatch"))
     ));
     assert_eq!(output, body);
+}
+
+#[test]
+fn authenticated_stream_never_releases_bytes_from_a_late_failing_chunk() {
+    let body = vec![0x44; BODY_CHUNK_PLAINTEXT_SIZE + 9];
+    let meta = metadata(OBJECT_ID, 7, &body);
+    let base = aad("01JCORE", OBJECT_ID, 7, ObjectKind::Note, 3);
+    let mut encoded = encode_envelope(&key(0x11), &base, &meta, &body).unwrap();
+    *encoded.last_mut().unwrap() ^= 1;
+
+    let object_key = key(0x11);
+    let mut stream = open_envelope_stream(Cursor::new(encoded), &object_key, base).unwrap();
+    let mut first_authenticated_chunk = vec![0; BODY_CHUNK_PLAINTEXT_SIZE];
+    stream.read_exact(&mut first_authenticated_chunk).unwrap();
+    assert_eq!(first_authenticated_chunk, body[..BODY_CHUNK_PLAINTEXT_SIZE]);
+
+    let mut untrusted_tail = vec![0; 9];
+    assert!(stream.read_exact(&mut untrusted_tail).is_err());
+    assert_eq!(untrusted_tail, vec![0; 9]);
 }
 
 #[test]

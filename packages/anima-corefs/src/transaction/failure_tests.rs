@@ -738,7 +738,7 @@ fn helper_process_crashes_at_failure_point() {
         }
         Ok(())
     };
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let keys = keys();
     match scenario.to_str().unwrap() {
         "prepare" => {

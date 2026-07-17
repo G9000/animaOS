@@ -831,6 +831,14 @@ impl CoreCommitCoordinator {
         &self.objects_path
     }
 
+    pub(crate) fn core_id(&self) -> &str {
+        &self.core_id
+    }
+
+    pub(crate) fn clone_objects_dir(&self) -> io::Result<Dir> {
+        self.objects_dir.try_clone()
+    }
+
     pub fn lock_path(&self) -> &Path {
         &self.lock_path
     }
@@ -2509,7 +2517,7 @@ fn reject_symlink_in(dir: &Dir, name: &OsStr) -> Result<(), CommitError> {
     }
 }
 
-fn open_regular_file_in(dir: &Dir, name: &OsStr) -> io::Result<File> {
+pub(crate) fn open_regular_file_in(dir: &Dir, name: &OsStr) -> io::Result<File> {
     let file = dir.open(name)?.into_std();
     validate_opened_regular_file(dir, name, &file).map_err(|error| match error {
         CommitError::Io(error) => error,
@@ -2870,7 +2878,7 @@ mod tests {
         );
         let stale_stage = format!(".{target}.17.tmp");
         std::fs::write(root.join(target), b"catalog").unwrap();
-        std::fs::hard_link(root.join(target), root.join(&stale_stage)).unwrap();
+        std::fs::hard_link(root.join(target), root.join(stale_stage)).unwrap();
         let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
         let file = dir.open(target).unwrap().into_std();
 

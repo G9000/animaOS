@@ -558,6 +558,7 @@ fn metadata_for_path(path: &Path) -> Result<EntryMetadata, FileToolError> {
         kind,
         is_symlink,
         size: metadata.len(),
+        content: anima_file_tools::ContentClassification::Unknown,
     })
 }
 

@@ -37,7 +37,7 @@ impl OperationControl {
         }
     }
 
-    pub(crate) fn check(&self) -> Result<(), FileToolError> {
+    pub fn check(&self) -> Result<(), FileToolError> {
         if self.cancellation.is_cancelled() {
             return Err(FileToolError::Cancelled);
         }

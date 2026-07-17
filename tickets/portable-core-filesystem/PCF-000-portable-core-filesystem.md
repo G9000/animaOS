@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 11:24 MYT
+- Updated: 2026-07-17 12:13 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -108,6 +108,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-16 23:37 MYT - Closed the independent Step 8 protocol review findings: new receipts now publish only after durable authoritative `fs/HEAD`; post-HEAD marker I/O failures return committed outcomes with explicit recovery-pending state; every mixed unlocked cutover observation is re-read under the kernel lock before permanent corruption is classified; and the normative design plus architecture graph now document the persistent markers and recovery contract. Focused red/green regressions cover ordering, torn reads, and ordinary finalization failures.
 - 2026-07-17 10:34 MYT - PR #102 merged PCF-002 Step 8 into `main` at `f2f56825` after standalone CI passed and Codex reviewed the exact head with zero actionable threads. Began Step 9 catalog-bound key rotation from that merged head in isolated worktree `codex/pcf-002-key-rotation`. Scope is targeted object-key rotation, FRK catalog rewrap, pending-FRK `fs/HEAD` recovery/finalization, retained old-catalog decryption, and explicit retirement gates; blind-token switching remains deferred to Task 3 and physical key pruning remains gated by PCF-010.
 - 2026-07-17 11:24 MYT - Completed PCF-002 Step 9 with authenticated streaming Object-DEK replacement for live and recoverably trashed objects, exact-next-version FRK catalog rewrap across all retained wrappers, keyring-aware cutover recovery and later commits, explicit backup/retention retirement gates, and deterministic concurrent/crash regressions. Exact Rust 1.75 CoreFS, combined native and Python-feature checks, strict CoreFS clippy/format, workspace build, attribution, packaged notices, locked metadata, diff hygiene, and independent Critical/Important review passed. PCF-002 and the parent initiative remain `in_progress`; Step 10 logical CoreFS operations and bounded agent tools are next.
+
+- 2026-07-17 12:13 MYT - PR #103 merged PCF-002 Step 9 at `7d4cae3f`, and Step 10 began from that exact `origin/main` head in isolated worktree `codex/pcf-002-logical-tools`. Scope is logical CoreFS operations, bounded shared traversal/grep, explicit search-index readiness, internal atomic mutation planning, and migration-frozen Python agent wrappers; generic client API/grants and catalog benchmarking remain Steps 11 and 12. The exact Rust 1.75 baseline passed 211 tests with 3 subprocess helpers intentionally ignored.
 
 ## Validation
 

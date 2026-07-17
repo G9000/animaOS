@@ -7,12 +7,15 @@ use std::io::{BufRead, BufReader};
 use regex::Regex;
 
 use crate::{
-    walk_page, BackendPath, EntryKind, FileToolError, OperationControl, SearchableBackend,
-    ValidatedLimits, WalkCursor, WalkEntry, WalkOptions, WalkPage, MAX_PATTERN_BYTES,
+    walk_page, BackendPath, ContentClassification, EntryKind, FileToolError, OperationControl,
+    SearchableBackend, ValidatedLimits, WalkCursor, WalkEntry, WalkOptions, WalkPage,
+    MAX_PATTERN_BYTES,
 };
 
-const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 96;
-const RESPONSE_SKIP_OVERHEAD_BYTES: usize = 64;
+// Reserves enough response budget for backend-enriched identity metadata such
+// as CoreFS stable IDs, revisions, content hashes, and catalog generation.
+const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 256;
+const RESPONSE_SKIP_OVERHEAD_BYTES: usize = 192;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GrepMode {
@@ -134,6 +137,7 @@ pub fn grep(
                 kind: root_metadata.kind,
                 is_symlink: root_metadata.is_symlink,
                 size: root_metadata.size,
+                content: root_metadata.content,
                 depth: 0,
             }],
             ..WalkPage::default()
@@ -174,6 +178,21 @@ pub fn grep(
             } else {
                 continue;
             }
+        }
+        let content = if entry.content == ContentClassification::Unknown {
+            backend.metadata(entry.path.as_str())?.content
+        } else {
+            entry.content
+        };
+        if content == ContentClassification::Binary {
+            let skipped = GrepSkipped {
+                path: entry.path,
+                reason: SkipReason::BinaryContent,
+            };
+            if !push_skip(&mut page, &mut response_bytes, skipped, limits) {
+                break 'files;
+            }
+            continue;
         }
         let mut reader = BufReader::new(backend.open_read(entry.path.as_str())?);
         let mut line_number = 0usize;

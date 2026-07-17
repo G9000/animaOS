@@ -118,12 +118,23 @@ pub enum EntryKind {
     Other,
 }
 
+/// Backend-authenticated content classification used by text-only tools.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentClassification {
+    /// The backend has no authoritative declaration; bounded text probing is used.
+    Unknown,
+    Text,
+    Binary,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntryMetadata {
     pub kind: EntryKind,
     pub is_symlink: bool,
     pub size: u64,
+    pub content: ContentClassification,
 }
 
 impl EntryMetadata {
@@ -132,6 +143,25 @@ impl EntryMetadata {
             kind: EntryKind::File,
             is_symlink: false,
             size,
+            content: ContentClassification::Unknown,
+        }
+    }
+
+    pub const fn text_file(size: u64) -> Self {
+        Self {
+            kind: EntryKind::File,
+            is_symlink: false,
+            size,
+            content: ContentClassification::Text,
+        }
+    }
+
+    pub const fn binary_file(size: u64) -> Self {
+        Self {
+            kind: EntryKind::File,
+            is_symlink: false,
+            size,
+            content: ContentClassification::Binary,
         }
     }
 
@@ -140,6 +170,7 @@ impl EntryMetadata {
             kind: EntryKind::Directory,
             is_symlink,
             size: 0,
+            content: ContentClassification::Unknown,
         }
     }
 }

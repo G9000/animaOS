@@ -3,11 +3,12 @@
 // 9e552e9d15ba52bed7077d5357f3e18e330f8f38; implementation rewritten for backend cursors.
 
 use crate::{
-    BackendPath, DirectoryEntry, EntryKind, FileToolError, OperationControl, ValidatedLimits,
-    WalkBackend, MAX_WALK_ERRORS, MAX_WALK_ERROR_MESSAGE_BYTES,
+    BackendPath, ContentClassification, DirectoryEntry, EntryKind, FileToolError, OperationControl,
+    ValidatedLimits, WalkBackend, MAX_WALK_ERRORS, MAX_WALK_ERROR_MESSAGE_BYTES,
 };
 
-const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 64;
+// Includes room for backend-enriched identity metadata in the public result.
+const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 192;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WalkCursor {
@@ -37,6 +38,7 @@ pub struct WalkEntry {
     pub kind: EntryKind,
     pub is_symlink: bool,
     pub size: u64,
+    pub content: ContentClassification,
     pub depth: usize,
 }
 
@@ -183,6 +185,7 @@ pub fn walk_page<B: WalkBackend + ?Sized>(
             kind: metadata.kind,
             is_symlink: metadata.is_symlink,
             size: metadata.size,
+            content: metadata.content,
             depth: pending.depth,
         });
         if page.entries.len() > options.page_size {

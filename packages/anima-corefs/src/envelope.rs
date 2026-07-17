@@ -198,6 +198,118 @@ pub struct EnvelopeRead {
     pub whole_body_verified: bool,
 }
 
+/// Sequential reader that authenticates each immutable body chunk before it is
+/// returned. The final chunk is withheld until EOF and the whole-body hash has
+/// also been verified.
+pub struct AuthenticatedEnvelopeStream<R> {
+    reader: R,
+    aad: ObjectBaseAad,
+    state: MetadataRead,
+    next_index: u32,
+    body_hasher: Sha256,
+    plaintext: Cursor<Vec<u8>>,
+    finished: bool,
+    failed: bool,
+}
+
+impl<R: Read> AuthenticatedEnvelopeStream<R> {
+    pub fn metadata(&self) -> &EnvelopeMetadata {
+        &self.state.metadata
+    }
+
+    fn load_next_chunk(&mut self) -> Result<bool, EnvelopeError> {
+        if self.next_index == self.state.header.chunk_count {
+            if !self.finished {
+                require_eof(&mut self.reader)?;
+                if std::mem::take(&mut self.body_hasher).finalize().as_slice()
+                    != parse_sha256(&self.state.metadata.body_sha256)?
+                {
+                    return Err(EnvelopeError::InvalidFormat("body hash mismatch"));
+                }
+                self.finished = true;
+            }
+            return Ok(false);
+        }
+
+        let frame = read_and_validate_frame_header(
+            &mut self.reader,
+            &self.state.header,
+            self.next_index,
+            &mut self.state.nonces,
+        )?;
+        let mut ciphertext = vec![0_u8; frame.ciphertext_length];
+        self.reader.read_exact(&mut ciphertext)?;
+        let plaintext = decrypt_frame(
+            &self.state.cipher,
+            &self.aad,
+            &self.state.header,
+            self.state.frame_hash,
+            frame,
+            &ciphertext,
+        )?;
+        self.body_hasher.update(&plaintext);
+        self.next_index += 1;
+
+        if self.next_index == self.state.header.chunk_count {
+            require_eof(&mut self.reader)?;
+            if std::mem::take(&mut self.body_hasher).finalize().as_slice()
+                != parse_sha256(&self.state.metadata.body_sha256)?
+            {
+                return Err(EnvelopeError::InvalidFormat("body hash mismatch"));
+            }
+            self.finished = true;
+        }
+        self.plaintext = Cursor::new(plaintext);
+        Ok(true)
+    }
+}
+
+impl<R: Read> Read for AuthenticatedEnvelopeStream<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.failed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "authenticated envelope stream is invalid",
+            ));
+        }
+
+        let position = self.plaintext.position() as usize;
+        if position == self.plaintext.get_ref().len() {
+            self.plaintext = Cursor::new(Vec::new());
+            match self.load_next_chunk() {
+                Ok(true) => {}
+                Ok(false) => return Ok(0),
+                Err(error) => {
+                    self.failed = true;
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, error));
+                }
+            }
+        }
+        self.plaintext.read(output)
+    }
+}
+
+pub fn open_envelope_stream<R: Read>(
+    mut reader: R,
+    key: &SecretBytes,
+    aad: ObjectBaseAad,
+) -> Result<AuthenticatedEnvelopeStream<R>, EnvelopeError> {
+    let state = read_metadata(&mut reader, key, &aad)?;
+    Ok(AuthenticatedEnvelopeStream {
+        reader,
+        aad,
+        state,
+        next_index: 0,
+        body_hasher: Sha256::new(),
+        plaintext: Cursor::new(Vec::new()),
+        finished: false,
+        failed: false,
+    })
+}
+
 #[derive(Clone)]
 struct Header {
     object_key_epoch: u32,
