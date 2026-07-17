@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 02:10 MYT
+- Updated: 2026-07-18 02:30 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -134,6 +134,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-18 01:41 MYT - Addressed PR #107's eleventh current-head review pass for PCF-002 Step 11: dev-session snapshots now invalidate sessions that previously held CoreFS subkeys instead of restoring a misleading unlocked token without those keys; Soul-only sessions and the SQLCipher continuity key retain their existing restart behavior. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 01:51 MYT - Addressed PR #107's twelfth current-head review pass for PCF-002 Step 11: native validation-head races now map to retryable HTTP 409 `corefs_validation_snapshot_stale` responses instead of HTTP 500. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 02:10 MYT - Addressed PR #107's thirteenth current-head review pass for PCF-002 Step 11: scoped password rotation now clears CoreFS capability from replacement agent sessions, while atomic session replacement preserves intact Soul DEKs and revokes prior user tokens in one commit. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 02:30 MYT - Addressed PR #107's fourteenth current-head review pass for PCF-002 Step 11: URI-scheme detection now matches native ASCII-only semantics so valid Unicode colon-bearing logical names are not rejected at the API boundary. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 
 ## Validation
 
@@ -174,6 +175,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #107 eleventh review follow-up: red/green CoreFS-capable and legacy dev-session restore regressions; dev continuity tests passed (22), related auth/CoreFS/session tests passed (126), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 twelfth review follow-up: red/green stale validation-snapshot concurrency regression; focused CoreFS route/logical tests passed (39), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 thirteenth review follow-up: red/green Soul-/FS-scoped CoreFS-capability and replacement-DEK regressions; focused cases passed (3), related auth/keyslot/session/CoreFS tests passed (122), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PR #107 fourteenth review follow-up: red/green non-ASCII colon-name URI-scheme parity regressions; focused CoreFS route/logical tests passed (41), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

@@ -191,6 +191,8 @@ def test_logical_paths_preserve_surrounding_whitespace(
     [
         "Gallery/family\u200dphoto.png",
         "Notes/private\ue000.md",
+        "é:notes.md",
+        "aé:notes.md",
     ],
 )
 def test_logical_paths_allow_native_valid_unicode_categories(

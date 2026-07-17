@@ -101,8 +101,9 @@ def _has_uri_scheme(value: str) -> bool:
     scheme, separator, _rest = first_component.partition(":")
     if not separator or not scheme:
         return False
-    return scheme[0].isalpha() and all(
-        char.isalnum() or char in {"+", "-", "."} for char in scheme
+    return scheme[0].isascii() and scheme[0].isalpha() and all(
+        (char.isascii() and char.isalnum()) or char in {"+", "-", "."}
+        for char in scheme
     )
 
 
