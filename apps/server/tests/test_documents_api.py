@@ -354,6 +354,10 @@ def test_start_pdf_workflow_rejects_other_users_storage_path(
 
 def test_resume_pdf_workflow_search_chunks_and_approve_memory(monkeypatch: Any) -> None:
     _patch_pdf_edges(monkeypatch)
+    # This test asserts an exact single-result count against a hand-built
+    # vector-store fake; the cross-encoder rerank stage's candidate-pool
+    # over-fetch is covered separately in test_contextual_rerank.py.
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
 
     with managed_test_client("anima-documents-api-") as client:
         reg = _register_user(client)

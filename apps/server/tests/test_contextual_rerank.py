@@ -83,8 +83,10 @@ def _document_with_chunks(runtime_db, texts: list[str], *, indexed: bool = True)
 # ── Contextual blurbs ────────────────────────────────────────────────
 
 
-def test_blurb_generation_is_off_by_default(runtime_db) -> None:
-    assert settings.contextual_chunks == "off"
+def test_blurb_generation_is_noop_when_flag_off(
+    runtime_db, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "contextual_chunks", "off")
     document, chunks = _document_with_chunks(runtime_db, ["alpha body"])
 
     written = generate_document_chunk_blurbs(
@@ -203,18 +205,22 @@ def test_blurbs_prefix_embedding_text_but_not_stored_content(
     assert stored[0]["content"] == "relay housing body"
 
 
-def test_chunk_index_text_ignores_blurbs_when_flag_off(runtime_db) -> None:
+def test_chunk_index_text_ignores_blurbs_when_flag_off(
+    runtime_db, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "contextual_chunks", "off")
     _document, chunks = _document_with_chunks(runtime_db, ["body text"])
     chunk = chunks[0]
     chunk.metadata_json = {CONTEXT_BLURB_METADATA_KEY: "Stale blurb."}
 
-    assert settings.contextual_chunks == "off"
     # Section titles always join the index text; the LLM blurb is flag-gated.
     assert chunk_index_text(chunk) == "Section 0\n\nbody text"
 
 
-def test_section_titles_join_lexical_index_without_blurb_flag(runtime_db) -> None:
-    assert settings.contextual_chunks == "off"
+def test_section_titles_join_lexical_index_without_blurb_flag(
+    runtime_db, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "contextual_chunks", "off")
     document, chunks = _document_with_chunks(
         runtime_db, ["first body text", "second body text"]
     )
@@ -275,28 +281,42 @@ def _reset_reranker_cache():
     reranker_module._reset_model_cache_for_tests()
 
 
-def test_rerank_returns_none_when_off() -> None:
-    assert settings.retrieval_reranker == "off"
+def test_rerank_returns_none_when_off(monkeypatch: Any) -> None:
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
     assert rerank_chunk_ids("query", [(1, "a"), (2, "b")]) is None
 
 
-def test_rerank_degrades_to_none_when_extra_missing(monkeypatch: Any) -> None:
+def test_new_defaults_are_reranker_local_and_contextual_chunks_on() -> None:
+    # Untouched settings: this task flips both defaults on.
+    assert settings.retrieval_reranker == "local"
+    assert settings.contextual_chunks == "on"
+
+
+def test_rerank_degrades_to_none_when_model_load_fails(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
-    # The sentence-transformers extra is not installed in the test env, so
-    # model load fails and rerank degrades gracefully.
+    calls: list[int] = []
+
+    def _boom() -> Any:
+        calls.append(1)
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(reranker_module, "_create_model", _boom)
+
+    # Model load fails, so rerank degrades gracefully to the fused order.
     assert rerank_chunk_ids("query", [(1, "a"), (2, "b")]) is None
-    # Failure is cached; the second call short-circuits.
+    # Failure is cached; the second call short-circuits without retrying.
     assert rerank_chunk_ids("query", [(1, "a"), (2, "b")]) is None
+    assert calls == [1]
 
 
 def test_rerank_orders_by_model_scores(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 
     class _FakeModel:
-        def predict(self, pairs):
-            return [0.1 if "beta" in text else 0.9 for _query, text in pairs]
+        def rerank(self, query: str, documents: Any) -> Any:
+            return [0.1 if "beta" in text else 0.9 for text in documents]
 
-    monkeypatch.setattr(reranker_module, "_load_model", lambda: _FakeModel())
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: _FakeModel())
 
     ranked = rerank_chunk_ids(
         "relay", [(1, "beta text"), (2, "alpha relay text"), (3, "beta more")]
@@ -378,11 +398,11 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 
     class _ReverseModel:
-        def predict(self, pairs):
+        def rerank(self, query: str, documents: Any) -> Any:
             # Score the beta chunk highest, inverting the dense order.
-            return [1.0 if "beta" in text else 0.0 for _query, text in pairs]
+            return [1.0 if "beta" in text else 0.0 for text in documents]
 
-    monkeypatch.setattr(reranker_module, "_load_model", lambda: _ReverseModel())
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: _ReverseModel())
 
     results = search_document_chunks(
         runtime_db,
@@ -424,6 +444,10 @@ def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
     from anima_server.services.agent.vector_store import VectorSearchResult
     from anima_server.services.documents import rag as rag_module
     from anima_server.services.documents.rag import search_document_chunks
+
+    # This test asserts an exact single-result RRF-tie outcome; the
+    # cross-encoder rerank stage is covered separately above.
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
 
     document, chunks = _document_with_chunks(
         runtime_db, ["unrelated dense favorite", "the E-17 fault code chunk"]
@@ -492,6 +516,8 @@ def test_search_returns_lexical_hits_when_query_embedding_unavailable(
     )
     from anima_server.services.documents.rag import search_document_chunks
 
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
+
     document, chunks = _document_with_chunks(
         runtime_db, ["alpha filler body", "the E-17 fault code body"]
     )
@@ -526,9 +552,11 @@ def test_search_returns_lexical_hits_when_query_embedding_unavailable(
 
 
 def test_lexical_hits_hydrate_without_embedding_rows_during_outage(
-    runtime_db,
+    runtime_db, monkeypatch: Any
 ) -> None:
     from anima_server.services.documents.rag import search_document_chunks
+
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
 
     # Indexed document whose embedding rows were lost to a vector reset,
     # while the embedding provider is also down: BM25 must still surface

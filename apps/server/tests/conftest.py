@@ -7,6 +7,7 @@ import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from anima_server.db import runtime as runtime_mod
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
+from anima_server.services.documents import reranker as reranker_module
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, create_engine, event
@@ -30,6 +32,20 @@ os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
 # Tests exercise the deterministic knowledge compiler by default; LLM-path
 # tests opt in explicitly with a scripted client.
 settings.knowledge_compiler = "deterministic"
+
+
+def _reranker_model_unavailable_in_tests() -> Any:
+    # Belt-and-suspenders: retrieval_reranker defaults to "local" in
+    # production, and rag.py's rerank call site has no per-call override, so
+    # any test exercising the real search path would otherwise reach here
+    # and download the ONNX model over the network. Tests that want real
+    # reranker behavior monkeypatch ``reranker._create_model`` themselves
+    # (see test_contextual_rerank.py); everything else must degrade to the
+    # fused order exactly as it would if the model failed to load.
+    raise RuntimeError("Reranker model construction is stubbed out in tests")
+
+
+reranker_module._create_model = _reranker_model_unavailable_in_tests
 
 
 from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables

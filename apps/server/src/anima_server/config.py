@@ -86,16 +86,17 @@ class Settings(BaseSettings):
     # Contextual retrieval blurbs: when "on", each document chunk gets an
     # LLM-generated context line stored in chunk metadata and prepended to
     # the chunk text for embedding and lexical indexing only (never shown
-    # as evidence). Off by default until the eval harness justifies the
-    # ingestion cost.
-    contextual_chunks: Literal["off", "on"] = "off"
+    # as evidence). On by default; ingestion cost is one extra LLM call per
+    # chunk, and any failure degrades to no blurb rather than blocking.
+    contextual_chunks: Literal["off", "on"] = "on"
     # Skip blurb generation for documents with more chunks than this.
     contextual_chunks_max_chunks: int = 200
-    # Optional cross-encoder rerank stage after RRF fusion. "local" requires
-    # the reranker extra (sentence-transformers); anything unavailable
-    # degrades to the fused order.
-    retrieval_reranker: Literal["off", "local"] = "off"
-    retrieval_reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # Optional cross-encoder rerank stage after RRF fusion. "local" runs a
+    # bundled ONNX cross-encoder via fastembed (no extra install); any
+    # unavailability (model load or scoring failure) degrades to the fused
+    # order.
+    retrieval_reranker: Literal["off", "local"] = "local"
+    retrieval_reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     retrieval_rerank_candidates: int = 50
     # Knowledge compiler backend: "llm" uses the runtime's configured model
     # (falling back to deterministic when the model is unreachable);
