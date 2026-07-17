@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use anima_file_tools::{
     BackendCapabilities, BackendKind, BackendPath, DirectoryEntry, DirectoryListing, EntryKind,
-    EntryMetadata, FileBackend, FileToolError, MutationAtomicity, PathSemantics, ReadBackend,
-    ReadSeek, WalkBackend,
+    EntryMetadata, FileBackend, FileToolError, MutationAtomicity, OperationControl, PathSemantics,
+    ReadBackend, ReadSeek, WalkBackend,
 };
 use cap_std::fs::Dir;
 
@@ -266,6 +266,25 @@ impl FileBackend for CoreFsReadSnapshot {
 
 impl ReadBackend for CoreFsReadSnapshot {
     fn open_read(&self, path: &str) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        self.open_object_reader(path)
+            .map(|reader| Box::new(reader) as Box<dyn ReadSeek + Send>)
+    }
+
+    fn open_read_at(
+        &self,
+        path: &str,
+        offset: u64,
+        control: &OperationControl,
+    ) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        control.check()?;
+        let mut reader = self.open_object_reader(path)?;
+        reader.seek_to_controlled(offset, control)?;
+        Ok(Box::new(reader))
+    }
+}
+
+impl CoreFsReadSnapshot {
+    fn open_object_reader(&self, path: &str) -> Result<CoreFsObjectReader, FileToolError> {
         let node = self.backend_node(path)?;
         let object = node
             .object
@@ -276,7 +295,6 @@ impl ReadBackend for CoreFsReadSnapshot {
             .try_clone()
             .map_err(|_| backend_error("open_read", path, "object storage is unavailable"))?;
         CoreFsObjectReader::open(objects_dir, self.core_id.clone(), node, object)
-            .map(|reader| Box::new(reader) as Box<dyn ReadSeek + Send>)
     }
 }
 
@@ -448,27 +466,65 @@ impl CoreFsObjectReader {
     }
 
     fn seek_to(&mut self, target: u64) -> io::Result<u64> {
+        self.seek_to_controlled(target, &OperationControl::default())
+            .map_err(file_tool_to_io)
+    }
+
+    fn seek_to_controlled(
+        &mut self,
+        target: u64,
+        control: &OperationControl,
+    ) -> Result<u64, FileToolError> {
+        control.check()?;
         let readable_target = target.min(self.body_length);
         if readable_target < self.position {
-            self.reset()?;
+            self.reset().map_err(|error| {
+                backend_error("seek", self.node_path.as_str(), &error.to_string())
+            })?;
         }
-        let mut remaining = readable_target.saturating_sub(self.position);
-        let mut buffer = [0_u8; 64 * 1024];
-        while remaining > 0 {
-            let requested = remaining.min(buffer.len() as u64) as usize;
-            let read = self.stream.read(&mut buffer[..requested])?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "authenticated body ended before its declared length",
-                ));
-            }
-            self.position += read as u64;
-            remaining -= read as u64;
-        }
+        let remaining = readable_target.saturating_sub(self.position);
+        let discarded = discard_authenticated_with_control(
+            &mut self.stream,
+            remaining,
+            control,
+            self.node_path.as_str(),
+        )?;
+        self.position += discarded;
         self.position = target;
         Ok(target)
     }
+}
+
+fn discard_authenticated_with_control<R: Read>(
+    reader: &mut R,
+    mut remaining: u64,
+    control: &OperationControl,
+    logical_path: &str,
+) -> Result<u64, FileToolError> {
+    let mut discarded = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        control.check()?;
+        let requested = remaining.min(buffer.len() as u64) as usize;
+        let read = reader.read(&mut buffer[..requested]).map_err(|error| {
+            backend_error(
+                "seek",
+                logical_path,
+                &format!("authenticated read failed: {error}"),
+            )
+        })?;
+        if read == 0 {
+            return Err(backend_error(
+                "seek",
+                logical_path,
+                "authenticated body ended before its declared length",
+            ));
+        }
+        discarded += read as u64;
+        remaining -= read as u64;
+    }
+    control.check()?;
+    Ok(discarded)
 }
 
 impl Read for CoreFsObjectReader {
@@ -517,4 +573,48 @@ fn backend_error(operation: &'static str, path: &str, message: &str) -> FileTool
 
 fn file_tool_to_io(error: FileToolError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Read};
+
+    use anima_file_tools::{CancellationToken, FileToolError, OperationControl};
+
+    use super::discard_authenticated_with_control;
+
+    struct CancellingReader {
+        cancellation: CancellationToken,
+        reads: usize,
+    }
+
+    impl Read for CancellingReader {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            output.fill(0);
+            self.cancellation.cancel();
+            Ok(output.len())
+        }
+    }
+
+    #[test]
+    fn corefs_positioning_checks_control_between_authenticated_discards() {
+        let cancellation = CancellationToken::new();
+        let control = OperationControl::new(cancellation.clone(), None);
+        let mut reader = CancellingReader {
+            cancellation,
+            reads: 0,
+        };
+
+        let error = discard_authenticated_with_control(
+            &mut reader,
+            128 * 1024,
+            &control,
+            "Notes/large.bin",
+        )
+        .unwrap_err();
+
+        assert_eq!(error, FileToolError::Cancelled);
+        assert_eq!(reader.reads, 1);
+    }
 }

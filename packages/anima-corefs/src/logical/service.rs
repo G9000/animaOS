@@ -11,6 +11,10 @@ use super::backend::{CoreFsReadSnapshot, LogicalError, Node};
 use super::LogicalPath;
 
 const RESPONSE_ENTRY_OVERHEAD: usize = 192;
+// Field names, separators, string delimiters, and worst-case decimal forms of
+// generation, revision, and offset. Variable string and payload bytes are
+// added separately below.
+const LOGICAL_READ_CHUNK_STRUCTURAL_BYTES: usize = 160;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogicalEntry {
@@ -204,6 +208,9 @@ pub struct LogicalReadStream {
     revision: u64,
     content_hash: String,
     inner: ReadStream,
+    metadata_response_bytes: usize,
+    response_bytes_remaining: usize,
+    finished: bool,
     failed: bool,
 }
 
@@ -222,19 +229,34 @@ impl Iterator for LogicalReadStream {
     type Item = Result<LogicalReadChunk, LogicalError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.failed {
+        if self.failed || self.finished {
             return None;
         }
-        match self.inner.next()? {
-            Ok(chunk) => Some(Ok(LogicalReadChunk {
-                generation: self.generation,
-                path: self.path.clone(),
-                stable_id: self.stable_id.clone(),
-                revision: self.revision,
-                content_hash: self.content_hash.clone(),
-                offset: chunk.offset,
-                bytes: chunk.bytes,
-            })),
+        let max_payload = self
+            .response_bytes_remaining
+            .saturating_sub(self.metadata_response_bytes);
+        if max_payload == 0 {
+            self.finished = true;
+            return None;
+        }
+        let Some(result) = self.inner.next_with_max_bytes(max_payload) else {
+            self.finished = true;
+            return None;
+        };
+        match result {
+            Ok(chunk) => {
+                debug_assert!(!chunk.bytes.is_empty());
+                self.response_bytes_remaining -= self.metadata_response_bytes + chunk.bytes.len();
+                Some(Ok(LogicalReadChunk {
+                    generation: self.generation,
+                    path: self.path.clone(),
+                    stable_id: self.stable_id.clone(),
+                    revision: self.revision,
+                    content_hash: self.content_hash.clone(),
+                    offset: chunk.offset,
+                    bytes: chunk.bytes,
+                }))
+            }
             Err(error) => {
                 self.failed = true;
                 Some(Err(LogicalError::FileTool(error)))
@@ -563,6 +585,10 @@ impl CoreFsReadSnapshot {
             limits,
             control,
         )?;
+        let metadata_response_bytes = LOGICAL_READ_CHUNK_STRUCTURAL_BYTES
+            .saturating_add(node.path.as_str().len())
+            .saturating_add(node.stable_id.len())
+            .saturating_add(object.content_hash.len());
         Ok(LogicalReadStream {
             generation: self.generation(),
             path: node.path.clone(),
@@ -570,6 +596,9 @@ impl CoreFsReadSnapshot {
             revision: object.revision,
             content_hash: object.content_hash.clone(),
             inner,
+            metadata_response_bytes,
+            response_bytes_remaining: limits.response_bytes(),
+            finished: false,
             failed: false,
         })
     }

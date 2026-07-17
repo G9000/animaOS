@@ -14,7 +14,11 @@ const RESERVED_COMPONENTS: &[&str] = &[
     "head",
     "validation_head",
     "manifest.json",
+    "soul",
     "soul.db",
+    "CUTOVER_RECEIPT",
+    "CUTOVER_COMPLETE",
+    "commit.lock",
 ];
 
 /// A canonical root-relative CoreFS path.

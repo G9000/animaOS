@@ -26,6 +26,11 @@ fn logical_paths_reject_unsafe_or_non_canonical_forms() {
         "Notes/ambiguous\u{ff0f}name.md",
         "Notes/.anima",
         "Notes/objects",
+        "Notes/soul",
+        "Notes/SoUl",
+        "Notes/CUTOVER_RECEIPT",
+        "Notes/cutover_complete",
+        "Notes/COMMIT.LOCK",
         "notes\0hidden",
     ] {
         assert!(

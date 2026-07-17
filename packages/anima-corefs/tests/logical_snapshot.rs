@@ -200,7 +200,7 @@ fn reads_are_bounded_and_return_only_logical_identity_metadata() {
         CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
     let limits = OperationLimits {
         read_chunk_bytes: 8,
-        response_bytes: 32,
+        response_bytes: 1024,
         ..OperationLimits::default()
     }
     .validate()
@@ -231,6 +231,96 @@ fn reads_are_bounded_and_return_only_logical_identity_metadata() {
             .collect::<Vec<_>>(),
         b"caf\xc3\xa9\nneedle one\n"
     );
+}
+
+#[test]
+fn logical_read_response_budget_includes_repeated_identity_metadata() {
+    const CHUNK_STRUCTURAL_BYTES: usize = 160;
+    let fixture = fixture("read-response-budget");
+    let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
+    let snapshot =
+        CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
+    let response_bytes = 274;
+    let limits = OperationLimits {
+        read_chunk_bytes: 64,
+        response_bytes,
+        ..OperationLimits::default()
+    }
+    .validate()
+    .unwrap();
+    let body = b"caf\xc3\xa9\nneedle one\n";
+
+    let first = snapshot
+        .read(
+            "Notes/Alpha.md",
+            ReadOptions {
+                offset: 0,
+                max_bytes: body.len(),
+            },
+            limits,
+            OperationControl::default(),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let model_visible_bytes = first
+        .iter()
+        .map(|chunk| {
+            CHUNK_STRUCTURAL_BYTES
+                + chunk.path.as_str().len()
+                + chunk.stable_id.len()
+                + chunk.content_hash.len()
+                + chunk.bytes.len()
+        })
+        .sum::<usize>();
+    let first_body = first
+        .iter()
+        .flat_map(|chunk| chunk.bytes.iter().copied())
+        .collect::<Vec<_>>();
+
+    assert!(model_visible_bytes <= response_bytes);
+    assert!(first.iter().all(|chunk| !chunk.bytes.is_empty()));
+    assert!(!first_body.is_empty());
+    assert!(first_body.len() < body.len());
+
+    let second = snapshot
+        .read(
+            "Notes/Alpha.md",
+            ReadOptions {
+                offset: first_body.len() as u64,
+                max_bytes: body.len() - first_body.len(),
+            },
+            limits,
+            OperationControl::default(),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let mut combined = first_body;
+    combined.extend(second.iter().flat_map(|chunk| chunk.bytes.iter().copied()));
+    assert_eq!(combined, body);
+
+    let metadata_only_limit = CHUNK_STRUCTURAL_BYTES + "Notes/Alpha.md".len() + ALPHA_ID.len() + 64;
+    let no_payload_room = snapshot
+        .read(
+            "Notes/Alpha.md",
+            ReadOptions {
+                offset: 0,
+                max_bytes: 1,
+            },
+            OperationLimits {
+                read_chunk_bytes: 64,
+                response_bytes: metadata_only_limit,
+                ..OperationLimits::default()
+            }
+            .validate()
+            .unwrap(),
+            OperationControl::default(),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(no_payload_room.is_empty());
 }
 
 #[test]

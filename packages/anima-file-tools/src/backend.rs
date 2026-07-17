@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 
-use crate::FileToolError;
+use crate::{FileToolError, OperationControl};
 
 pub const MAX_BACKEND_PATH_BYTES: usize = 32 * 1024;
 
@@ -211,6 +211,29 @@ pub trait FileBackend: Send + Sync {
 /// Storage primitive required by the bounded read engine.
 pub trait ReadBackend: FileBackend {
     fn open_read(&self, path: &str) -> Result<Box<dyn ReadSeek + Send>, FileToolError>;
+
+    /// Opens and positions a reader while preserving the operation's
+    /// cancellation and deadline contract. Backends with expensive logical
+    /// positioning can override this; native files retain an efficient seek.
+    fn open_read_at(
+        &self,
+        path: &str,
+        offset: u64,
+        control: &OperationControl,
+    ) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
+        control.check()?;
+        let mut reader = self.open_read(path)?;
+        control.check()?;
+        reader
+            .seek(SeekFrom::Start(offset))
+            .map_err(|error| FileToolError::Backend {
+                operation: "seek",
+                path: path.to_owned(),
+                message: error.to_string(),
+            })?;
+        control.check()?;
+        Ok(reader)
+    }
 }
 
 /// Storage primitives required by the bounded directory walker.
