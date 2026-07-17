@@ -425,6 +425,18 @@ fn push_skip(
 }
 
 impl GrepCursor {
+    pub fn new(
+        path: impl Into<String>,
+        byte_offset: Option<u64>,
+        walk_after: Option<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            byte_offset,
+            walk_after,
+        }
+    }
+
     fn within_file(path: String, byte_offset: u64, walk_after: Option<String>) -> Self {
         Self {
             path,

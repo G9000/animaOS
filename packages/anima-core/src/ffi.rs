@@ -1197,7 +1197,7 @@ mod python {
     }
 
     #[pyfunction]
-    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, cursor_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
     fn corefs_glob_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1208,6 +1208,7 @@ mod python {
         root: &str,
         pattern: &str,
         max_results: usize,
+        cursor_after: Option<String>,
         read_chunk_bytes: Option<usize>,
         walk_depth: Option<usize>,
         walk_directories: Option<usize>,
@@ -1228,16 +1229,18 @@ mod python {
             selected_generation,
             selected_catalog_hash,
         )?;
+        let cursor = cursor_after
+            .map(|after| anima_corefs::logical::LogicalGlobCursor::new(selected_generation, after));
         corefs_wire_to_py(
             py,
             snapshot
-                .glob(root, pattern, None, max_results, limits, anima_file_tools::OperationControl::default())
+                .glob(root, pattern, cursor, max_results, limits, anima_file_tools::OperationControl::default())
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
-    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, cursor_path = None, cursor_byte_offset = None, cursor_walk_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
     fn corefs_grep_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1251,6 +1254,9 @@ mod python {
         max_files: usize,
         max_matches: usize,
         max_line_bytes: usize,
+        cursor_path: Option<String>,
+        cursor_byte_offset: Option<u64>,
+        cursor_walk_after: Option<String>,
         read_chunk_bytes: Option<usize>,
         walk_depth: Option<usize>,
         walk_directories: Option<usize>,
@@ -1279,7 +1285,14 @@ mod python {
             } else {
                 anima_file_tools::GrepMode::Literal
             },
-            cursor: None,
+            cursor: cursor_path.map(|path| {
+                anima_corefs::logical::LogicalGrepCursor::new(
+                    selected_generation,
+                    path,
+                    cursor_byte_offset,
+                    cursor_walk_after,
+                )
+            }),
             max_files,
             max_matches,
             max_line_bytes,

@@ -26,6 +26,18 @@ class CoreFsValidationSnapshot:
         return cls(generation=generation, catalog_hash=catalog_hash)
 
 
+@dataclass(frozen=True, slots=True)
+class CoreFsGlobCursor:
+    after: str
+
+
+@dataclass(frozen=True, slots=True)
+class CoreFsGrepCursor:
+    path: str
+    byte_offset: int | None = None
+    walk_after: str | None = None
+
+
 def select_validation_snapshot(
     *,
     core_root: str,
@@ -120,6 +132,7 @@ def glob_v1(
     root: str,
     pattern: str,
     max_results: int = 100,
+    cursor: CoreFsGlobCursor | None = None,
     response_bytes: int | None = None,
 ) -> bytes:
     return bytes(
@@ -132,6 +145,7 @@ def glob_v1(
             root,
             pattern,
             max_results,
+            cursor.after if cursor is not None else None,
             response_bytes=response_bytes,
         )
     )
@@ -149,6 +163,7 @@ def grep_v1(
     max_files: int = 1000,
     max_matches: int = 100,
     max_line_bytes: int = 4096,
+    cursor: CoreFsGrepCursor | None = None,
     response_bytes: int | None = None,
 ) -> bytes:
     return bytes(
@@ -164,6 +179,9 @@ def grep_v1(
             max_files,
             max_matches,
             max_line_bytes,
+            cursor.path if cursor is not None else None,
+            cursor.byte_offset if cursor is not None else None,
+            cursor.walk_after if cursor is not None else None,
             response_bytes=response_bytes,
         )
     )

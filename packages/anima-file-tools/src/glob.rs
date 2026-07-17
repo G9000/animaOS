@@ -17,6 +17,10 @@ pub struct GlobCursor {
 }
 
 impl GlobCursor {
+    pub fn after(path: impl Into<String>) -> Self {
+        Self { after: path.into() }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.after
     }

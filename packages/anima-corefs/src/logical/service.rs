@@ -126,6 +126,13 @@ pub struct LogicalGlobCursor {
 }
 
 impl LogicalGlobCursor {
+    pub fn new(generation: u64, after: impl Into<String>) -> Self {
+        Self {
+            generation,
+            inner: GlobCursor::after(after),
+        }
+    }
+
     pub const fn generation(&self) -> u64 {
         self.generation
     }
@@ -151,6 +158,18 @@ pub struct LogicalGrepCursor {
 }
 
 impl LogicalGrepCursor {
+    pub fn new(
+        generation: u64,
+        path: impl Into<String>,
+        byte_offset: Option<u64>,
+        walk_after: Option<String>,
+    ) -> Self {
+        Self {
+            generation,
+            inner: GrepCursor::new(path, byte_offset, walk_after),
+        }
+    }
+
     pub const fn generation(&self) -> u64 {
         self.generation
     }
