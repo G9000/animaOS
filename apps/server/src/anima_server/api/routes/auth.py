@@ -156,7 +156,7 @@ def register(
         raise HTTPException(status_code=422, detail="Name is required")
 
     try:
-        response, deks, recovery_phrase = register_account(
+        response, deks, recovery_phrase, corefs_keys = register_account(
             username=username,
             password=payload.password,
             display_name=display_name,
@@ -176,7 +176,11 @@ def register(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
-    response["unlockToken"] = unlock_session_store.create(int(response["id"]), deks)
+    response["unlockToken"] = unlock_session_store.create(
+        int(response["id"]),
+        deks,
+        corefs_keys=corefs_keys,
+    )
     response["recoveryPhrase"] = recovery_phrase
     return response
 
@@ -195,7 +199,7 @@ def login(
         return _rate_limited_login_response(retry_after)
 
     try:
-        response, deks = authenticate_account(username, payload.password)
+        response, deks, corefs_keys = authenticate_account(username, payload.password)
     except InvalidCredentialsError as exc:
         logger.warning("Login failed for %s: %s", username, exc)
         retry_after = _record_failed_login_attempt(username, now)
@@ -206,7 +210,11 @@ def login(
     _FAILED_LOGIN_ATTEMPTS.pop(username, None)
     return {
         **response,
-        "unlockToken": unlock_session_store.create(int(response["id"]), deks),
+        "unlockToken": unlock_session_store.create(
+            int(response["id"]),
+            deks,
+            corefs_keys=corefs_keys,
+        ),
         "message": "Login successful",
     }
 
@@ -249,6 +257,7 @@ def change_password(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    scope = PayloadScope(payload.scope)
     try:
         change_account_password_credential(
             db,
@@ -256,13 +265,16 @@ def change_password(
             old_password=payload.oldPassword,
             new_password=payload.newPassword,
             current_deks=session.deks,
-            scope=PayloadScope(payload.scope),
+            scope=scope,
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials") from None
 
-    unlock_session_store.revoke_user(user.id)
-    new_unlock_token = unlock_session_store.create(user.id, session.deks)
+    new_unlock_token = unlock_session_store.replace_user(
+        user.id,
+        session.deks,
+        corefs_keys=session.corefs_keys if scope is PayloadScope.FULL else None,
+    )
     return {"success": True, "unlockToken": new_unlock_token}
 
 
@@ -338,7 +350,7 @@ def recover(payload: RecoverRequest) -> dict[str, object]:
         raise HTTPException(status_code=422, detail="Recovery phrase is required")
 
     try:
-        response, deks = recover_account_with_phrase(
+        response, deks, corefs_keys = recover_account_with_phrase(
             phrase,
             payload.newPassword,
             scope=PayloadScope(payload.scope),
@@ -348,7 +360,11 @@ def recover(payload: RecoverRequest) -> dict[str, object]:
 
     return {
         **response,
-        "unlockToken": unlock_session_store.create(int(response["id"]), deks),
+        "unlockToken": unlock_session_store.create(
+            int(response["id"]),
+            deks,
+            corefs_keys=corefs_keys,
+        ),
         "message": "Account recovered successfully",
     }
 

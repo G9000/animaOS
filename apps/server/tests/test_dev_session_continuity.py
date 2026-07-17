@@ -26,8 +26,9 @@ def _payload(*, token: str = "token-one") -> dict[str, object]:
             {
                 "token": token,
                 "userId": 1,
-                "expiresAt": "2026-07-15T10:20:30.123456Z",
+                "expiresAt": "2099-07-15T10:20:30.123456Z",
                 "deks": {"memories": encoded_key},
+                "hadCorefsKeys": False,
             }
         ],
         "sqlcipherKey": encoded_key,
@@ -92,6 +93,19 @@ def test_snapshot_rejects_tampering_and_wrong_key(tmp_path: Path) -> None:
                     "userId": 1,
                     "expiresAt": "2026-07-15T10:20:30",
                     "deks": {"memories": base64.b64encode(b"short").decode("ascii")},
+                }
+            ],
+            "sqlcipherKey": None,
+        },
+        {
+            "version": 1,
+            "sessions": [
+                {
+                    "token": "token",
+                    "userId": 1,
+                    "expiresAt": "2099-07-15T10:20:30.123456Z",
+                    "deks": {"memories": base64.b64encode(b"a" * 32).decode("ascii")},
+                    "hadCorefsKeys": "yes",
                 }
             ],
             "sqlcipherKey": None,
@@ -162,6 +176,47 @@ def test_session_store_restores_unlock_and_sqlcipher_without_db_viewer_state(
     assert session.deks == {"memories": b"m" * 32, "files": b"f" * 32}
     assert restored.get_sqlcipher_key() == b"q" * 32
     assert restored.get_db_viewer_verified_at(token) is None
+
+
+def test_session_store_does_not_restore_session_that_had_corefs_keys(
+    tmp_path: Path,
+) -> None:
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    store = UnlockSessionStore(snapshot=snapshot)
+    store.set_sqlcipher_key(b"q" * 32)
+    token = store.create(
+        7,
+        {"memories": b"m" * 32},
+        corefs_keys=object(),
+    )
+
+    restored = UnlockSessionStore(snapshot=snapshot)
+
+    assert restored.resolve(token) is None
+    assert restored.get_sqlcipher_key() == b"q" * 32
+    assert snapshot.load() == {
+        "version": 1,
+        "sessions": [],
+        "sqlcipherKey": base64.b64encode(b"q" * 32).decode("ascii"),
+    }
+
+
+def test_session_store_does_not_restore_legacy_session_without_corefs_marker(
+    tmp_path: Path,
+) -> None:
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    payload = _payload(token="legacy-token")
+    sessions = payload["sessions"]
+    assert isinstance(sessions, list)
+    session = sessions[0]
+    assert isinstance(session, dict)
+    session.pop("hadCorefsKeys")
+    snapshot.write(payload)
+
+    restored = UnlockSessionStore(snapshot=snapshot)
+
+    assert restored.resolve("legacy-token") is None
+    assert snapshot.load() == {"version": 1, "sessions": [], "sqlcipherKey": payload["sqlcipherKey"]}
 
 
 def test_session_store_discards_expired_snapshot_sessions(tmp_path: Path) -> None:

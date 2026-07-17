@@ -9,6 +9,83 @@ function readClientSource(): string {
 }
 
 describe("createApiClient error handling", () => {
+  test("serializes CoreFS operations without caller-selected identity headers", async () => {
+    let requestedUrl = "";
+    let requestBody: unknown = null;
+    let requestHeaders: Headers | null = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestBody = JSON.parse(String(init?.body));
+        requestHeaders = new Headers(init?.headers);
+        return new Response(
+          JSON.stringify({
+            principal: {
+              kind: "user",
+              id: "42",
+              userId: 42,
+            },
+            operation: "stat",
+            selected: { generation: 3, catalogHash: "hash" },
+            result: { version: "corefs-logical-v1", result: {} },
+          }),
+        );
+      },
+    });
+
+    const result = await api.corefs.operation({
+      operation: "stat",
+      path: "Diary/today.md",
+    });
+
+    expect(requestedUrl).toBe("https://api.test/api/corefs/operation");
+    expect(requestBody).toEqual({ operation: "stat", path: "Diary/today.md" });
+    expect(requestHeaders?.get("x-anima-unlock")).toBe("unlock-token");
+    expect(requestHeaders?.get("x-anima-nonce")).toBe("sidecar-nonce");
+    expect(requestHeaders?.get("x-anima-corefs-principal")).toBeNull();
+    expect(requestHeaders?.get("x-anima-corefs-client-id")).toBeNull();
+    expect(requestHeaders?.get("x-anima-corefs-install-digest")).toBeNull();
+    expect(result.principal.kind).toBe("user");
+  });
+
+  test("preserves structured CoreFS error codes for caller recovery", async () => {
+    const detail = {
+      code: "corefs_cursor_generation_mismatch",
+      cursorGeneration: 8,
+      selectedGeneration: 9,
+    };
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ detail }), {
+          status: 409,
+          statusText: "Conflict",
+        }),
+    });
+
+    let caught: unknown;
+    try {
+      await api.corefs.operation({
+        operation: "list",
+        path: "Notes",
+        cursorAfter: "Notes/A.md",
+        cursorGeneration: 8,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error & { code?: string }).code).toBe(
+      "corefs_cursor_generation_mismatch",
+    );
+    expect((caught as Error & { status?: number }).status).toBe(409);
+    expect((caught as Error & { detail?: unknown }).detail).toEqual(detail);
+  });
+
   test("surfaces normalized validation details arrays", async () => {
     const api = createApiClient({
       baseUrl: "https://api.test/api",

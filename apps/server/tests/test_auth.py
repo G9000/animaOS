@@ -234,6 +234,7 @@ def test_change_password_rewraps_existing_dek_and_rotates_unlock_token() -> None
         old_unlock_token = str(register_payload["unlockToken"])
         old_dek = get_active_dek(user_id)
         assert old_dek is not None
+        old_dek = bytes(bytearray(old_dek))
 
         change_response = client.post(
             "/api/auth/change-password",

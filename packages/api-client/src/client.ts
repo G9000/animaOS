@@ -8,6 +8,8 @@ import type {
   AuthResponse,
   ChangePasswordResponse,
   CorefsCredentialResponse,
+  CoreFsOperationRequest,
+  CoreFsOperationResponse,
   ConfirmRecoveryCredentialResponse,
   PrepareRecoveryCredentialResponse,
   PrepareCorefsRecoveryCredentialResponse,
@@ -76,6 +78,7 @@ import type {
 interface ApiRequestOptions {
   method?: string;
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
 type StreamEventPayload = {
@@ -178,6 +181,10 @@ function extractErrorMessage(data: unknown, fallback: string): string {
 
 function extractDetailMessages(value: unknown): string | null {
   if (typeof value === "string" && value.trim()) return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const message = (value as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
   if (Array.isArray(value)) {
     const details = value
       .map((item) => {
@@ -189,6 +196,40 @@ function extractDetailMessages(value: unknown): string | null {
     if (details.length > 0) return details.join("; ");
   }
   return null;
+}
+
+function extractErrorCode(data: unknown): string | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const payload = data as {
+    code?: unknown;
+    detail?: unknown;
+    details?: unknown;
+  };
+  for (const value of [payload, payload.detail, payload.details]) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const code = (value as { code?: unknown }).code;
+    if (typeof code === "string" && code.trim()) return code;
+  }
+  return undefined;
+}
+
+export class ApiClientError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly detail?: unknown;
+  readonly payload: unknown;
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = status;
+    this.code = extractErrorCode(payload);
+    this.payload = payload;
+    if (payload && typeof payload === "object") {
+      const value = payload as { detail?: unknown; details?: unknown };
+      this.detail = value.detail ?? value.details;
+    }
+  }
 }
 
 export function createApiClient(options: ApiClientOptions) {
@@ -205,10 +246,11 @@ export function createApiClient(options: ApiClientOptions) {
     endpoint: string,
     requestOptions: ApiRequestOptions = {},
   ): Promise<T> {
-    const { method = "GET", body } = requestOptions;
+    const { method = "GET", body, headers: requestHeaders = {} } = requestOptions;
     const token = getUnlockToken?.() || null;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      ...requestHeaders,
     };
 
     if (token) {
@@ -230,7 +272,11 @@ export function createApiClient(options: ApiClientOptions) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(extractErrorMessage(data, "Something went wrong"));
+      throw new ApiClientError(
+        extractErrorMessage(data, "Something went wrong"),
+        response.status,
+        data,
+      );
     }
 
     return data as T;
@@ -646,6 +692,13 @@ export function createApiClient(options: ApiClientOptions) {
         request<User>(`/users/${id}`, { method: "PUT", body: data }),
       delete: (id: number) =>
         request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
+    },
+    corefs: {
+      operation: (payload: CoreFsOperationRequest) =>
+        request<CoreFsOperationResponse>("/corefs/operation", {
+          method: "POST",
+          body: payload,
+        }),
     },
     chat: {
       send: (

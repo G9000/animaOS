@@ -6,7 +6,7 @@ import contextlib
 import ctypes
 import logging
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import RLock
 from typing import Any
@@ -25,6 +25,7 @@ class UnlockSession:
     user_id: int
     deks: dict[str, bytes]
     expires_at: datetime
+    corefs_keys: object | None = field(default=None, repr=False, compare=False)
 
 
 class UnlockSessionStore:
@@ -37,17 +38,49 @@ class UnlockSessionStore:
         self._sqlcipher_key: bytes | None = None
         self._restore_snapshot()
 
-    def create(self, user_id: int, deks: dict[str, bytes]) -> str:
+    def create(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
         token = secrets.token_urlsafe(32)
         session = UnlockSession(
             user_id=user_id,
             deks={domain: _copy_key(dek) for domain, dek in deks.items()},
             expires_at=self._now() + SESSION_TTL,
+            corefs_keys=corefs_keys,
         )
         with self._lock:
             self._purge_expired_locked()
             next_sessions = dict(self._sessions)
             next_sessions[token] = session
+            self._commit_locked(next_sessions, self._sqlcipher_key)
+        return token
+
+    def replace_user(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
+        token = secrets.token_urlsafe(32)
+        replacement = UnlockSession(
+            user_id=user_id,
+            deks={domain: _copy_key(dek) for domain, dek in deks.items()},
+            expires_at=self._now() + SESSION_TTL,
+            corefs_keys=corefs_keys,
+        )
+        with self._lock:
+            self._purge_expired_locked()
+            next_sessions = {
+                current_token: session
+                for current_token, session in self._sessions.items()
+                if session.user_id != user_id
+            }
+            next_sessions[token] = replacement
             self._commit_locked(next_sessions, self._sqlcipher_key)
         return token
 
@@ -206,16 +239,16 @@ class UnlockSessionStore:
             payload = self._snapshot.load()
             if payload is None:
                 return
-            sessions, sqlcipher_key, discarded_expired = self._decode_snapshot(payload)
+            sessions, sqlcipher_key, discarded_sessions = self._decode_snapshot(payload)
             self._sessions = sessions
             self._sqlcipher_key = sqlcipher_key
             self._rebuild_latest_deks_locked()
-            if discarded_expired:
+            if discarded_sessions:
                 try:
                     self._snapshot.write(self._snapshot_payload(sessions, sqlcipher_key))
                 except Exception as exc:
                     logger.warning(
-                        "Failed to clean expired dev session snapshot: %s",
+                        "Failed to clean unusable dev session snapshot: %s",
                         type(exc).__name__,
                     )
         except Exception as exc:
@@ -236,7 +269,7 @@ class UnlockSessionStore:
             raise ValueError("Invalid snapshot sessions")
         now = self._now()
         sessions: dict[str, UnlockSession] = {}
-        discarded_expired = False
+        discarded_sessions = False
         for raw_session in raw_sessions:
             if not isinstance(raw_session, dict):
                 raise ValueError("Invalid snapshot session")
@@ -244,16 +277,19 @@ class UnlockSessionStore:
             user_id = raw_session["userId"]
             expires_at = _parse_expiry(raw_session["expiresAt"])
             raw_deks = raw_session["deks"]
+            had_corefs_keys = raw_session["hadCorefsKeys"]
             if not isinstance(token, str) or not isinstance(user_id, int):
                 raise ValueError("Invalid snapshot identity")
             if not isinstance(raw_deks, dict):
                 raise ValueError("Invalid snapshot DEKs")
+            if not isinstance(had_corefs_keys, bool):
+                raise ValueError("Invalid snapshot CoreFS marker")
             deks = {
                 str(domain): _decode_key(encoded_key)
                 for domain, encoded_key in raw_deks.items()
             }
-            if expires_at <= now:
-                discarded_expired = True
+            if expires_at <= now or had_corefs_keys:
+                discarded_sessions = True
                 _zero_deks(deks)
                 continue
             sessions[token] = UnlockSession(
@@ -265,7 +301,7 @@ class UnlockSessionStore:
         sqlcipher_key = (
             None if raw_sqlcipher_key is None else _decode_key(raw_sqlcipher_key)
         )
-        return sessions, sqlcipher_key, discarded_expired
+        return sessions, sqlcipher_key, discarded_sessions
 
     @staticmethod
     def _snapshot_payload(
@@ -283,6 +319,7 @@ class UnlockSessionStore:
                         domain: base64.b64encode(dek).decode("ascii")
                         for domain, dek in sorted(session.deks.items())
                     },
+                    "hadCorefsKeys": session.corefs_keys is not None,
                 }
                 for token, session in sessions.items()
             ],

@@ -141,8 +141,8 @@ def register_account(
     relationship: str = "companion",
     persona_template: str = "default",
     agent_type: str = "companion",
-) -> tuple[dict[str, object], dict[str, bytes], str]:
-    """Register a new account. Returns (user_data, deks, recovery_phrase)."""
+) -> tuple[dict[str, object], dict[str, bytes], str, object | None]:
+    """Register an account and return its unlocked runtime key material."""
     if is_provisioned():
         raise ValueError("Core is already provisioned")
     normalized = normalize_username(username)
@@ -160,6 +160,7 @@ def register_account(
     )
 
     recovery_phrase = generate_recovery_phrase()
+    corefs_keys: object | None = None
 
     with factory() as db:
         user, deks = create_user(
@@ -200,7 +201,7 @@ def register_account(
         if sqlcipher_raw_key is not None:
             from anima_server.services.corefs.keyslots import provision_initial_key_hierarchy
 
-            provision_initial_key_hierarchy(
+            corefs_keys = provision_initial_key_hierarchy(
                 db,
                 user_id=user_id,
                 password=password,
@@ -209,12 +210,12 @@ def register_account(
                 deks=deks,
             )
 
-    return serialize_user(user), deks, recovery_phrase
+    return serialize_user(user), deks, recovery_phrase, corefs_keys
 
 
 def authenticate_account(
     username: str, password: str
-) -> tuple[dict[str, object], dict[str, bytes]]:
+) -> tuple[dict[str, object], dict[str, bytes], object | None]:
     normalized = normalize_username(username)
     if not normalized:
         raise InvalidCredentialsError("Invalid credentials")
@@ -224,6 +225,7 @@ def authenticate_account(
         json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
     )
     from anima_server.services.corefs.keyslots import (
+        derive_active_corefs_subkeys,
         manifest_has_versioned_key_hierarchy,
         unlock_key_hierarchy,
         unlock_manifest_key_hierarchy,
@@ -260,7 +262,12 @@ def authenticate_account(
                     wrapping_path=WrappingPath.PASSWORD,
                     scope=roots.scope,
                 )
-                return serialize_user(user), unlocked.soul_domains
+                corefs_keys = (
+                    derive_active_corefs_subkeys(manifest, unlocked.frks)
+                    if roots.scope is PayloadScope.FULL
+                    else None
+                )
+                return serialize_user(user), unlocked.soul_domains, corefs_keys
         except (InvalidTag, KeyError, TypeError, ValueError) as exc:
             raise InvalidCredentialsError(
                 f"versioned key hierarchy authentication failed: {exc}"
@@ -295,7 +302,7 @@ def authenticate_account(
             raise InvalidCredentialsError(
                 f"authenticate_user failed for user_id={account_user_id}: {exc}"
             ) from exc
-        return serialize_user(user), deks
+        return serialize_user(user), deks, None
 
 
 def delete_account_storage(user_id: int) -> None:
@@ -394,14 +401,15 @@ def recover_account_with_phrase(
     new_password: str,
     *,
     scope: PayloadScope = PayloadScope.FULL,
-) -> tuple[dict[str, object], dict[str, bytes]]:
+) -> tuple[dict[str, object], dict[str, bytes], object | None]:
     """Recover an account using the recovery phrase and set a new password.
 
-    Returns (user_data, deks) on success.
+    Returns user data, Soul DEKs, and active CoreFS subkeys on success.
     """
     from cryptography.exceptions import InvalidTag
 
     from anima_server.services.corefs.keyslots import (
+        derive_active_corefs_subkeys,
         manifest_has_versioned_key_hierarchy,
         unlock_manifest_key_hierarchy,
     )
@@ -442,7 +450,12 @@ def recover_account_with_phrase(
                     new_password=new_password,
                     scope=scope,
                 )
-                return serialize_user(user), deks
+                corefs_keys = (
+                    derive_active_corefs_subkeys(manifest, roots.frks)
+                    if roots.scope is PayloadScope.FULL
+                    else None
+                )
+                return serialize_user(user), deks, corefs_keys
         except (InvalidTag, KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Versioned recovery failed: {exc}") from None
 
@@ -511,7 +524,7 @@ def recover_account_with_phrase(
         user = db.get(User, user_id)
         if user is None:
             raise ValueError("User not found after recovery")
-        return serialize_user(user), deks
+        return serialize_user(user), deks, None
 
 
 # ---------------------------------------------------------------------------

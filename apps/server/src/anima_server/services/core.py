@@ -275,6 +275,18 @@ def get_owner_id() -> str | None:
     return str(raw) if raw is not None else None
 
 
+def get_core_id() -> str:
+    """Return the stable Core identifier from the manifest."""
+    path = get_manifest_path()
+    if not path.is_file():
+        return str(_load_manifest(now=datetime.now(UTC).isoformat())["core_id"])
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    raw = manifest.get("core_id")
+    if raw is None:
+        return str(_load_manifest(now=datetime.now(UTC).isoformat())["core_id"])
+    return str(raw)
+
+
 def set_next_user_id(next_user_id: int) -> None:
     with _manifest_lock:
         manifest = _load_manifest(now=datetime.now(UTC).isoformat())

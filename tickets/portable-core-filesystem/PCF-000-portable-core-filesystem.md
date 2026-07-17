@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 19:13 MYT
+- Updated: 2026-07-18 02:30 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -118,6 +118,23 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass for PCF-002 Step 10: migration-frozen server mutation wrappers now preserve the native variadic frozen-write contract for realistic mutation inputs. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 18:59 MYT - Addressed PR #106's fifth current-head Codex review pass for PCF-002 Step 10: trashed folders now allow historical original-parent references to parents that are later trashed, while keeping live-trash-folder and hidden descendant-cycle validation fail-closed. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 19:13 MYT - Addressed PR #106's sixth current-head Codex review pass for PCF-002 Step 10: generic CoreFS directory listings now return authenticated file metadata from the encrypted envelope rather than zero-byte unknown placeholders. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 22:31 MYT - PR #106 merged PCF-002 Step 10 into `main` at `e0f249a6`; resumed PCF-002 Step 11 from that merged head in isolated worktree `codex/pcf-002-client-api`. The parent remains `in_progress` while the generic authenticated CoreFS API, principal resolution, migration-write gate, and device-local client/grant boundary are implemented before the Step 12 benchmark.
+- 2026-07-17 22:38 MYT - PCF-002 Step 11 progressed with the first generic CoreFS server route and tests for unlocked access, logical-path-only requests, distinct user/ANIMA/client principals, client fail-closed grant handling, and server-side migration-frozen writes. The parent remains `in_progress`; full folder-scoped grant storage/broker work and Step 12 benchmark remain.
+- 2026-07-17 22:42 MYT - PCF-002 Step 11 added typed `packages/api-client` bindings for the generic CoreFS operation route, including principal/client headers over the shared unlock/nonce request path.
+- 2026-07-17 22:58 MYT - Addressed PR #107 Codex review findings for PCF-002 Step 11: client identity headers now cannot default to owner scope, and API schema validation rejects native-invalid logical path forms before dispatch. The parent remains `in_progress` for the remaining grant/broker work and Step 12 benchmark.
+- 2026-07-17 23:06 MYT - Addressed PR #107's second Codex review pass for PCF-002 Step 11: logical path whitespace is preserved exactly, and non-`missing` search-readiness requests require an index generation before native dispatch.
+- 2026-07-17 23:28 MYT - Addressed PR #107's third current-head review pass for PCF-002 Step 11: non-user identities now require authenticated broker state instead of caller headers, search readiness is derived server-side, continuation cursors are catalog-generation-bound, and client-controlled native logical failures return stable 4xx responses. Focused server/API-client tests, scoped lint, desktop typechecking, and the workspace build passed; PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 00:05 MYT - Addressed PR #107's fourth current-head review pass for PCF-002 Step 11: unlock sessions now retain active FRK-derived native CoreFS subkeys rather than routing Soul DEKs into filesystem reads, Soul-only sessions remain valid and FS-locked, and the shared TypeScript client preserves structured CoreFS error codes/status/detail for grant and stale-cursor handling. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 00:20 MYT - Addressed PR #107's fifth current-head review pass for PCF-002 Step 11: missing validation snapshots now return stable 409 `corefs_validation_snapshot_missing` detail instead of escaping snapshot selection as HTTP 500. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 00:35 MYT - Addressed PR #107's sixth current-head review pass for PCF-002 Step 11: the versioned-login CoreFS-subkey regression now pins empty configured-passphrase mode and stays deterministic even when `ANIMA_CORE_PASSPHRASE` is exported. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 00:50 MYT - Addressed PR #107's seventh current-head review pass for PCF-002 Step 11: blocking CoreFS reads now run through FastAPI's sync-endpoint threadpool, and native glob/grep/grep-limit validation errors return stable 422 detail. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 01:05 MYT - Addressed PR #107's eighth current-head review pass for PCF-002 Step 11: broker-authenticated clients now hit the grant gate before both reads and migration-frozen write responses, preserving fail-closed behavior until folder-scoped grants exist. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 01:17 MYT - Addressed PR #107's ninth current-head review pass for PCF-002 Step 11: read and grep-cursor byte offsets now enforce the native `u64` upper bound and reject larger client integers with HTTP 422 before PyO3 conversion. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 01:27 MYT - Addressed PR #107's tenth current-head review pass for PCF-002 Step 11: API logical-path validation now matches native CoreFS control-character semantics and allows valid Unicode format/private-use characters without weakening ambiguous-character or canonicalization checks. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 01:41 MYT - Addressed PR #107's eleventh current-head review pass for PCF-002 Step 11: dev-session snapshots now invalidate sessions that previously held CoreFS subkeys instead of restoring a misleading unlocked token without those keys; Soul-only sessions and the SQLCipher continuity key retain their existing restart behavior. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 01:51 MYT - Addressed PR #107's twelfth current-head review pass for PCF-002 Step 11: native validation-head races now map to retryable HTTP 409 `corefs_validation_snapshot_stale` responses instead of HTTP 500. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 02:10 MYT - Addressed PR #107's thirteenth current-head review pass for PCF-002 Step 11: scoped password rotation now clears CoreFS capability from replacement agent sessions, while atomic session replacement preserves intact Soul DEKs and revokes prior user tokens in one commit. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 02:30 MYT - Addressed PR #107's fourteenth current-head review pass for PCF-002 Step 11: URI-scheme detection now matches native ASCII-only semantics so valid Unicode colon-bearing logical names are not rejected at the API boundary. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 
 ## Validation
 
@@ -143,6 +160,22 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #106 fourth review pass: mutation-wrapper argument-forwarding regression, focused Python logical tests, scoped Ruff, and `git diff --check` passed.
   - PR #106 fifth review pass: red/green `folder_trash_graph_invariants_fail_closed` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
   - PR #106 sixth review pass: red/green `read_directory_returns_authenticated_file_metadata` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
+  - PCF-002 Step 11 API boundary: focused Python route/logical tests (10 passed) and scoped Ruff across the new CoreFS API/schema plus touched server files passed.
+  - PCF-002 Step 11 API boundary: API-client Bun tests passed (18 tests) and `bun run build` passed after a frozen dependency install in the fresh worktree.
+  - PR #107 review follow-up: red/green client-principal and native-invalid-path regressions, focused Python route/logical tests (15 passed), scoped Ruff, API-client Bun tests (18 passed), and `bun run build` passed.
+  - PR #107 second review follow-up: red/green exact-whitespace and search-readiness-generation regressions, focused Python route/logical tests (17 passed), scoped Ruff, API-client Bun tests (18 passed), and `bun run build` passed.
+  - PR #107 third review follow-up: red/green authenticated-principal, server-readiness, cursor-generation, and logical-error-response regressions; focused Python route/logical tests (25 passed), scoped Ruff, API-client Bun tests (18 passed), desktop TypeScript lint, and `bun run build` passed. Full `bun run lint` remains blocked only by seven pre-existing Ruff findings in three untouched server test files.
+  - PR #107 fourth review follow-up: red/green real-login FRK-subkey/session-route regressions and structured API-client error regression; full CoreFS keyslot tests passed (49), related route/logical/auth/session-continuity tests passed (59, excluding one pre-existing fixed-date expiry test), API-client tests passed (19), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 fifth review follow-up: red/green missing-validation-snapshot response regression; focused CoreFS route/logical tests passed (28), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 sixth review follow-up: the versioned-login CoreFS-subkey regression passed with `ANIMA_CORE_PASSPHRASE` exported, the full CoreFS keyslot suite passed (49), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 seventh review follow-up: red/green sync-endpoint and native pattern-error regressions; focused CoreFS route/logical tests passed (32), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 eighth review follow-up: red/green broker-client read/write grant-order regression; focused CoreFS route/logical tests passed (34), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 ninth review follow-up: red/green native `u64` overflow regressions for read and grep-cursor offsets; focused CoreFS route/logical tests passed (36), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 tenth review follow-up: red/green native-valid Unicode format/private-use path regressions with invalid-control/ambiguous coverage retained; focused CoreFS route/logical tests passed (38), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 eleventh review follow-up: red/green CoreFS-capable and legacy dev-session restore regressions; dev continuity tests passed (22), related auth/CoreFS/session tests passed (126), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PR #107 twelfth review follow-up: red/green stale validation-snapshot concurrency regression; focused CoreFS route/logical tests passed (39), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PR #107 thirteenth review follow-up: red/green Soul-/FS-scoped CoreFS-capability and replacement-DEK regressions; focused cases passed (3), related auth/keyslot/session/CoreFS tests passed (122), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PR #107 fourteenth review follow-up: red/green non-ASCII colon-name URI-scheme parity regressions; focused CoreFS route/logical tests passed (41), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
@@ -169,7 +202,15 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `packages/anima-corefs/tests/{catalog_entries.rs,logical_snapshot.rs}`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}` and `Cargo.lock`
   - `apps/server/src/anima_server/services/corefs/{__init__.py,logical.py}`
+  - `apps/server/src/anima_server/api/routes/corefs.py`
+  - `apps/server/src/anima_server/schemas/corefs.py`
+  - `apps/server/src/anima_server/services/core.py`
+  - `apps/server/src/anima_server/main.py`
+  - `apps/server/tests/test_corefs_api.py`
   - `apps/server/tests/test_corefs_logical.py`
+  - `packages/api-client/src/client.ts`
+  - `packages/api-client/src/types.ts`
+  - `packages/api-client/tests/client.test.ts`
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
