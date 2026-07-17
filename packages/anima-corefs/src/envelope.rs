@@ -240,6 +240,135 @@ pub fn write_envelope<W: Write, R: Read>(
     write_envelope_with_nonce_source(writer, key, aad, metadata, body, &mut SystemNonceSource)
 }
 
+/// Re-encrypts one authenticated object into the next revision and key epoch.
+///
+/// Plaintext is held only for the currently authenticated body chunk. The output
+/// may be partial on error and must be discarded rather than published.
+#[allow(clippy::too_many_arguments)]
+pub fn rotate_object_key_envelope<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    old_key: &SecretBytes,
+    old_aad: &ObjectBaseAad,
+    new_key: &SecretBytes,
+    new_aad: &ObjectBaseAad,
+    updated_at: &str,
+) -> Result<EnvelopeMetadata, EnvelopeError> {
+    if old_key.as_slice() == new_key.as_slice() {
+        return Err(EnvelopeError::InvalidFormat(
+            "object-key rotation reused DEK",
+        ));
+    }
+    if old_aad.core_id() != new_aad.core_id()
+        || old_aad.object_id() != new_aad.object_id()
+        || old_aad.kind() != new_aad.kind()
+        || old_aad.envelope_version() != new_aad.envelope_version()
+        || old_aad.revision().checked_add(1) != Some(new_aad.revision())
+        || old_aad.object_key_epoch().checked_add(1) != Some(new_aad.object_key_epoch())
+    {
+        return Err(EnvelopeError::InvalidFormat("object-key rotation lineage"));
+    }
+    if updated_at.is_empty() {
+        return Err(EnvelopeError::InvalidFormat("rotation timestamp"));
+    }
+
+    let mut old_state = read_metadata(reader, old_key, old_aad)?;
+    let mut new_metadata = old_state.metadata.clone();
+    new_metadata.revision = new_aad.revision();
+    new_metadata.updated_at = updated_at.to_owned();
+    new_metadata.validate_for_aad(new_aad)?;
+    let metadata_plaintext = new_metadata.canonical_bytes()?;
+    let metadata_ciphertext_length = metadata_plaintext
+        .len()
+        .checked_add(TAG_LENGTH)
+        .ok_or(EnvelopeError::LimitExceeded("metadata ciphertext"))?;
+    let new_header = Header {
+        object_key_epoch: new_aad.object_key_epoch(),
+        object_id: new_aad.object_id().to_owned(),
+        metadata_ciphertext_length,
+        body_length: new_metadata.body_length,
+        chunk_count: new_metadata.chunk_count,
+    };
+    write_header(writer, &new_header)?;
+
+    let new_cipher = cipher(new_key)?;
+    let mut new_nonces = HashSet::new();
+    let mut nonce_source = SystemNonceSource;
+    let metadata_nonce = unique_nonce(&mut new_nonces, &mut nonce_source)?;
+    let metadata_aad = MetadataFrameAad::new(new_aad.clone(), CHUNKING_FIXED_V1 as u16)?;
+    let metadata_ciphertext = new_cipher
+        .encrypt(
+            Nonce::from_slice(&metadata_nonce),
+            Payload {
+                msg: &metadata_plaintext,
+                aad: &metadata_aad.to_bytes(),
+            },
+        )
+        .map_err(|_| CryptoError::Authentication)?;
+    writer.write_all(&metadata_nonce)?;
+    writer.write_all(&metadata_ciphertext)?;
+    let new_metadata_hash = metadata_frame_hash(&metadata_nonce, &metadata_ciphertext);
+
+    let mut body_hasher = Sha256::new();
+    for index in 0..old_state.header.chunk_count {
+        let old_frame = read_and_validate_frame_header(
+            reader,
+            &old_state.header,
+            index,
+            &mut old_state.nonces,
+        )?;
+        let mut old_ciphertext = vec![0_u8; old_frame.ciphertext_length];
+        reader.read_exact(&mut old_ciphertext)?;
+        let plaintext = decrypt_frame(
+            &old_state.cipher,
+            old_aad,
+            &old_state.header,
+            old_state.frame_hash,
+            old_frame,
+            &old_ciphertext,
+        )?;
+        body_hasher.update(&plaintext);
+
+        let new_frame_aad = BodyFrameAad::new(
+            new_aad.clone(),
+            new_metadata_hash,
+            old_frame.index,
+            new_metadata.chunk_count,
+            old_frame.offset,
+            u64::from(old_frame.plaintext_length),
+            new_metadata.body_length,
+            old_frame.final_chunk,
+        )?;
+        let nonce = unique_nonce(&mut new_nonces, &mut nonce_source)?;
+        let new_ciphertext = new_cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &plaintext,
+                    aad: &new_frame_aad.to_bytes(),
+                },
+            )
+            .map_err(|_| CryptoError::Authentication)?;
+        write_frame_header(
+            writer,
+            FrameHeader {
+                nonce,
+                index: old_frame.index,
+                offset: old_frame.offset,
+                plaintext_length: old_frame.plaintext_length,
+                final_chunk: old_frame.final_chunk,
+                ciphertext_length: new_ciphertext.len(),
+            },
+        )?;
+        writer.write_all(&new_ciphertext)?;
+    }
+    require_eof(reader)?;
+    if body_hasher.finalize().as_slice() != parse_sha256(&old_state.metadata.body_sha256)? {
+        return Err(EnvelopeError::InvalidFormat("body hash mismatch"));
+    }
+    Ok(new_metadata)
+}
+
 fn write_envelope_with_nonce_source<W: Write, R: Read, N: NonceSource>(
     writer: &mut W,
     key: &SecretBytes,

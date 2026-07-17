@@ -52,6 +52,9 @@ jobs:
       - name: Test shared file tools on Rust 1.75
         run: cargo +1.75.0 test --locked -p anima-file-tools
 
+      - name: Test CoreFS on Rust 1.75
+        run: cargo +1.75.0 test --locked -p anima-corefs
+
       - name: Test HostFS adapter on repository stable Rust
         run: cargo test --locked -p animus
 

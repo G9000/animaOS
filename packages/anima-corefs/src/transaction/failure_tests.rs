@@ -11,6 +11,7 @@ use crate::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_
 use crate::folders::{FolderOwner, PortableName};
 use crate::id::OpaqueId;
 use crate::policy::AnimaAccess;
+use crate::rotation::FrkKeyring;
 
 use super::{
     CatalogPrecondition, CommitCallbacks, CommitFailurePoint, CommitMode, CoreCommitCoordinator,
@@ -37,6 +38,10 @@ fn reset_root(name: &str) -> std::path::PathBuf {
 
 fn keys() -> FrkSubkeys {
     derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), 1).unwrap()
+}
+
+fn pending_keys() -> FrkSubkeys {
+    derive_corefs_subkeys(&SecretBytes::new(vec![0x43; 32]).unwrap(), 2).unwrap()
 }
 
 fn prepare(
@@ -405,6 +410,46 @@ fn assert_committed_generation(root: &Path, generation: u64) {
 }
 
 #[test]
+fn rotation_during_keyring_load_retries_the_current_head_under_lock() {
+    let root = reset_root("torn-rotation-observation");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let pending_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+    let committed = coordinator
+        .load_committed_with_keyring_observation_hook(&keyring, || {
+            coordinator
+                .rotate_frk(&keyring, &pending_keys, 2, |_| Ok(()))
+                .unwrap();
+        })
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.head().required_frk_version(), 2);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn assert_rotation_generation(root: &Path, generation: u64) {
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let pending_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+    let committed = coordinator
+        .load_committed_with_keyring(&keyring)
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.head().generation(), generation);
+    assert_eq!(
+        committed.head().required_frk_version(),
+        if generation == 2 { 1 } else { 2 }
+    );
+}
+
+#[test]
 fn object_publication_crashes_leave_only_unreferenced_data() {
     for (index, point) in publication_points(PublicationTarget::Object, true)
         .into_iter()
@@ -527,6 +572,55 @@ fn later_commit_crashes_preserve_prior_or_complete_next_generation() {
 }
 
 #[test]
+fn targeted_object_rotation_crashes_leave_the_prior_catalog_authoritative() {
+    for (index, point) in publication_points(PublicationTarget::Object, true)
+        .into_iter()
+        .enumerate()
+    {
+        let root = reset_root(&format!("object-rotation-{index}"));
+        seed_committed(&root);
+        run_crashing_child(&root, "object-rotation", point);
+        assert_committed_generation(&root, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn frk_rotation_crashes_preserve_old_head_or_recover_pending_head() {
+    let mut index = 0;
+    for point in publication_points(PublicationTarget::Catalog, true) {
+        let root = reset_root(&format!("rotation-catalog-{index}"));
+        seed_committed(&root);
+        run_crashing_child(&root, "rotation", point);
+        assert_rotation_generation(&root, 2);
+        std::fs::remove_dir_all(root).unwrap();
+        index += 1;
+    }
+    for (phase_index, point) in publication_points(PublicationTarget::AuthoritativeHead, false)
+        .into_iter()
+        .enumerate()
+    {
+        let root = reset_root(&format!("rotation-head-{index}"));
+        seed_committed(&root);
+        run_crashing_child(&root, "rotation", point);
+        assert_rotation_generation(&root, if phase_index >= 3 { 3 } else { 2 });
+        std::fs::remove_dir_all(root).unwrap();
+        index += 1;
+    }
+    for point in [
+        CommitFailurePoint::BeforeInvalidation,
+        CommitFailurePoint::AfterInvalidation,
+    ] {
+        let root = reset_root(&format!("rotation-invalidation-{index}"));
+        seed_committed(&root);
+        run_crashing_child(&root, "rotation", point);
+        assert_rotation_generation(&root, 3);
+        std::fs::remove_dir_all(root).unwrap();
+        index += 1;
+    }
+}
+
+#[test]
 fn cutover_recovery_is_retryable_at_every_publication_boundary() {
     let head_published = CommitFailurePoint::Publication {
         target: PublicationTarget::AuthoritativeHead,
@@ -591,6 +685,25 @@ fn helper_process_crashes_at_failure_point() {
                 )
                 .unwrap();
         }
+        "object-rotation" => {
+            let current = coordinator
+                .load_committed(&keys)
+                .unwrap()
+                .unwrap()
+                .catalog()
+                .clone();
+            let object_key = SecretBytes::new(vec![0x71; 32]).unwrap();
+            coordinator
+                .prepare_object_key_rotation_with_hook(
+                    &keys,
+                    &current,
+                    &OpaqueId::parse(OBJECT_ID).unwrap(),
+                    &object_key,
+                    "2026-07-17T02:00:00Z",
+                    &mut hook,
+                )
+                .unwrap();
+        }
         "initialize" => {
             let initial = prepare(&coordinator, &keys, 1, b"initial");
             coordinator
@@ -650,6 +763,13 @@ fn helper_process_crashes_at_failure_point() {
                         hook: &mut hook,
                     },
                 )
+                .unwrap();
+        }
+        "rotation" => {
+            let pending_keys = pending_keys();
+            let keyring = FrkKeyring::new([&keys, &pending_keys]).unwrap();
+            coordinator
+                .rotate_frk_with_hook(&keyring, &pending_keys, 2, |_| Ok(()), &mut hook)
                 .unwrap();
         }
         "recovery" => {

@@ -262,6 +262,39 @@ sequenceDiagram
     end
 ```
 
+### Catalog-bound key rotation
+
+FRK activation is split deliberately across the credential coordinator and CoreFS. The credential side must first durably write and independently verify both pending password and recovery keyslots. Only then may it pass session-owned old/pending FRK subkeys into the CoreFS rotation transaction; CoreFS never persists those raw keys and does not promote manifest state itself.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Auth as Credential coordinator
+    participant Core as anima-corefs
+    participant Lock as Core-wide commit lock
+    participant Store as Catalogs and fs/HEAD
+    participant Runtime as Runtime indexer
+
+    Auth->>Auth: Reload and verify pending password + recovery FRK slots
+    Auth->>Core: Old/pending in-memory keyring + expected generation
+    Core->>Lock: Acquire exclusive commit lock
+    Core->>Store: Reload and authenticate HEAD/catalog with declared FRK version
+    Core->>Core: Rewrap every retained Object DEK, including tombstones, under pending OKWK
+    Note over Core: Object ciphertext, revision, hash, and key epoch stay unchanged
+    Core->>Store: Publish complete encrypted catalog under pending FRK
+    Core->>Store: Atomically replace and flush fs/HEAD with pending FRK version
+    Core->>Lock: Release lock
+    Core-->>Runtime: Invalidate committed generation
+    Core-->>Auth: Published generation and required FRK version
+    Auth->>Auth: Promote pending FRK; retain prior FRK decrypt-only
+```
+
+`fs/HEAD.requiredFrkVersion` is only a key-selection hint until the referenced encrypted catalog authenticates. During activation, a versioned in-memory keyring authenticates the new HEAD/catalog and the older immutable cutover markers with their own keys. After an old cutover key is legitimately retired, a strictly later authenticated catalog carrying the irreversible cutover marker preserves lineage; equal-generation or rollback-only inputs still require the old key and fail closed.
+
+Targeted Object-DEK rotation is separate from FRK rewrap: it streams the authenticated current envelope into a complete new revision with a fresh Object DEK, fresh nonces, and incremented object-key epoch, then uses the normal prepared-revision/catalog commit path. A crash during FRK publication leaves the old HEAD authoritative or the complete pending-key HEAD readable—never a partially visible catalog generation.
+
+Old-key retirement is not implied by successful activation. Authenticated retention inventory must show that no retained catalog HEAD or wrapped Object DEK still requires the retiring version, and a verified backup under the active version must exist. Physical catalog/object pruning and keyslot deletion remain the separately authenticated PCF-010 operation.
+
 ## 5. Folder Ownership, ANIMA Access, and Client Trust
 
 Folder names and paths may change. Stable IDs and roles preserve app bindings; policy inheritance controls principals.
@@ -374,3 +407,4 @@ flowchart TD
 9. Export/import is local, streaming, authenticated, capacity-preflighted, and staged before activation.
 10. Memory promotion from CoreFS into Soul occurs only through the existing candidate, consolidation, and Soul Writer boundary with stable provenance.
 11. The transfer container derives an archive-specific key from bounded KDF parameters; it never reuses the Soul key, FRK, catalog key, or Object DEKs as its archive payload key.
+12. FRK activation publishes one complete next catalog/HEAD generation; old FRKs remain decrypt-only until authenticated retention and backup gates permit PCF-010 retirement.

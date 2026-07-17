@@ -3,9 +3,10 @@ use std::io::Cursor;
 
 use anima_corefs::crypto::{ObjectBaseAad, ObjectKind, SecretBytes};
 use anima_corefs::envelope::{
-    decode_envelope, decode_envelope_range, encode_envelope, read_envelope, write_envelope,
-    BodyEncoding, EnvelopeError, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE,
-    MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE, MAX_OBJECT_ID_LENGTH,
+    decode_envelope, decode_envelope_range, encode_envelope, read_envelope,
+    rotate_object_key_envelope, write_envelope, BodyEncoding, EnvelopeError, EnvelopeMetadata,
+    BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_HEADER_SIZE, MAX_BODY_CHUNKS, MAX_METADATA_PLAINTEXT_SIZE,
+    MAX_OBJECT_ID_LENGTH,
 };
 use serde_json::{json, Map, Value};
 
@@ -340,6 +341,74 @@ fn oversized_native_metadata_is_rejected_before_canonical_copy() {
             body,
         ),
         Err(EnvelopeError::LimitExceeded("metadata plaintext"))
+    ));
+}
+
+#[test]
+fn targeted_object_key_rotation_streams_a_new_revision_and_epoch() {
+    let old_key = key(0x31);
+    let new_key = key(0x32);
+    let old_aad = aad("core-a", OTHER_OBJECT_ID, 8, ObjectKind::Note, 4);
+    let new_aad = aad("core-a", OTHER_OBJECT_ID, 9, ObjectKind::Note, 5);
+    let body = vec![b'r'; BODY_CHUNK_PLAINTEXT_SIZE + 33];
+    let metadata = EnvelopeMetadata::for_body(
+        ObjectKind::Note.as_str(),
+        OTHER_OBJECT_ID,
+        8,
+        "2026-07-17T00:00:00Z",
+        "2026-07-17T00:00:00Z",
+        "text/markdown",
+        BTreeMap::new(),
+        BodyEncoding::Utf8,
+        &body,
+    )
+    .unwrap();
+    let encoded = encode_envelope(&old_key, &old_aad, &metadata, &body).unwrap();
+    let mut rotated = Vec::new();
+
+    let rotated_metadata = rotate_object_key_envelope(
+        &mut Cursor::new(encoded),
+        &mut rotated,
+        &old_key,
+        &old_aad,
+        &new_key,
+        &new_aad,
+        "2026-07-17T01:00:00Z",
+    )
+    .unwrap();
+
+    assert_eq!(rotated_metadata.revision, 9);
+    assert_eq!(rotated_metadata.updated_at, "2026-07-17T01:00:00Z");
+    let (decoded, reopened) = decode_envelope(&new_key, &new_aad, &rotated).unwrap();
+    assert_eq!(decoded.metadata, rotated_metadata);
+    assert_eq!(reopened, body);
+    assert!(decode_envelope(&old_key, &new_aad, &rotated).is_err());
+
+    let same_epoch = aad("core-a", OTHER_OBJECT_ID, 9, ObjectKind::Note, 4);
+    assert!(rotate_object_key_envelope(
+        &mut Cursor::new(encode_envelope(&old_key, &old_aad, &metadata, &body).unwrap()),
+        &mut Vec::new(),
+        &old_key,
+        &old_aad,
+        &new_key,
+        &same_epoch,
+        "2026-07-17T01:00:00Z",
+    )
+    .is_err());
+
+    assert!(matches!(
+        rotate_object_key_envelope(
+            &mut Cursor::new(encode_envelope(&old_key, &old_aad, &metadata, &body).unwrap()),
+            &mut Vec::new(),
+            &old_key,
+            &old_aad,
+            &old_key,
+            &new_aad,
+            "2026-07-17T01:00:00Z",
+        ),
+        Err(EnvelopeError::InvalidFormat(
+            "object-key rotation reused DEK"
+        ))
     ));
 }
 

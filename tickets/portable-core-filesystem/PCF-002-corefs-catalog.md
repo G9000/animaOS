@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-16 23:37 MYT
+- Updated: 2026-07-17 11:24 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -85,6 +85,8 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-16 22:51 MYT - Began Step 8 from merged `origin/main` at `14b23da6` in isolated worktree `codex/pcf-002-failure-injection`. Scope is deterministic crash/failure injection around every durable object/catalog/cutover-receipt/pointer/invalidation boundary, with restart validation proving the committed state is exactly the prior authoritative `fs/HEAD` or the complete next generation. Step 9 rotation and later logical/API/client/benchmark work remain separate. Dependency setup completed and the exact Rust 1.75 CoreFS baseline passed 127 tests with two helper-process entries intentionally ignored by the parent harness.
 - 2026-07-16 23:22 MYT - Completed Step 8 with test-only ordered hooks at every create/write/fsync/publish/directory-sync/cleanup boundary and 69 real child-process exits on Windows. Fresh coordinators prove object/catalog residue stays unreferenced, validation snapshots are absent or complete, normal commits expose generation N or N+1 only, first cutover and recovery converge to the authenticated next generation, and invalidation starts after authoritative publication. Authenticated post-HEAD receipt/completion markers make interrupted finalization retryable while preserving `fs/HEAD` as the irreversible event; compatibility recovery upgrades earlier receipt-only and higher-generation states without rollback, while deleted/divergent completed states still fail closed. PCF-002 remains `in_progress`; Step 9 rotation and later logical/API/client/benchmark work remain separate.
 - 2026-07-16 23:37 MYT - Addressed all four Important findings from the independent protocol review. Moved new receipt publication after durable authoritative HEAD; made fallible post-HEAD finalization return successful `CommitOutcome { recovery_pending: true }`; retry every mixed unlocked cutover snapshot under the kernel lock before classifying corruption; and synchronized the normative physical layout, transaction/cutover contract, failure table, and architecture graph. Red/green tests deterministically cover marker ordering, ordinary post-commit I/O failure, torn reads, legacy receipt-only recovery, and current head-only recovery.
+- 2026-07-17 10:34 MYT - PR #102 merged Step 8 into `main` at `f2f56825` after standalone CI passed and Codex reviewed the exact head with zero actionable threads. Started Step 9 in isolated worktree `codex/pcf-002-key-rotation`: targeted Object DEK rotation must publish a new encrypted revision/key epoch; FRK rotation must rewrap live Object DEKs into a complete next catalog and publish `fs/HEAD` with the pending FRK version; recovery must finalize an authenticated pending version after HEAD publication; retained catalogs must remain decryptable; and old-key retirement must fail closed until retention/backup gates pass. Blind-token generation switching and PCF-010 physical pruning remain out of scope.
+- 2026-07-17 11:24 MYT - Completed Step 9 catalog-bound key rotation. Targeted rotation now streams an authenticated immutable replacement under an internally generated Object DEK and higher key epoch for both live and recoverably trashed objects, preserving the old catalog until the generic preconditioned commit publishes the new revision; tombstoned content is not rewritten. FRK activation requires exact `N+1` distinct key material, rewraps every retained catalog Object DEK including tombstones, publishes catalog then `fs/HEAD`, supports mixed-version keyring recovery and later normal commits, and rejects retirement until retained HEAD/catalog references and the verified backup gate are clear. Windows subprocess failures cover targeted-object and FRK publication boundaries; concurrent keyring loads retry coherently under the commit lock. Independent production review found no remaining Critical or Important issues. PCF-002 remains `in_progress`; Step 10 logical operations/tools are next, while blind-token switching stays in Task 3 and physical pruning stays in PCF-010.
 
 ## Validation
 
@@ -128,6 +130,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 Step 8: `cargo test --locked -p anima-corefs -p anima-core` (356 passed; existing unrelated `anima-core` warnings only) and `cargo check --locked -p anima-core --features python --tests` (passed with existing warnings only)
   - PCF-002 Step 8: `cargo +1.75.0 check --locked -p anima-corefs --tests --target x86_64-unknown-linux-gnu`; `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
   - PCF-002 Step 8: `bun run build`; repository organization check and 34 tests; Codex attribution; staged legal resources; CoreFS release-notice hashes; locked Cargo metadata
+  - PCF-002 Step 9: `cargo +1.75.0 test --locked -p anima-corefs` (153 passed, 3 subprocess-helper entries ignored); focused targeted-object and FRK crash matrices, rotation/envelope integration suites, and strict lifecycle/key-binding regressions passed
+  - PCF-002 Step 9: `cargo test --locked -p anima-file-tools -p anima-corefs -p anima-core -p animus`; `cargo check --locked -p anima-core --features python --tests`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `cargo fmt -p anima-corefs -- --check`; `git diff --check`
+  - PCF-002 Step 9: `bun run build`; Codex attribution; staged legal resources and exact-hash release-notice check; locked Cargo metadata
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -149,6 +154,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/anima-corefs/tests/{folders.rs,policy.rs,catalog_entries.rs,head.rs}`
   - `packages/anima-corefs/src/{transaction.rs,publication.rs,envelope.rs,lib.rs}`
   - `packages/anima-corefs/src/transaction/failure_tests.rs`
+  - `packages/anima-corefs/src/rotation.rs` and `packages/anima-corefs/tests/rotation.rs`
   - `packages/anima-corefs/tests/{transaction.rs,publication.rs}`
   - `packages/anima-corefs/tests/opaque_id.rs`
   - `packages/anima-core/src/ffi.rs`
