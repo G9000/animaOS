@@ -296,24 +296,118 @@ def _advance(moment: datetime, hours: float) -> datetime:
     return (moment.astimezone(UTC) + timedelta(hours=hours)).astimezone(moment.tzinfo)
 
 
+def _accumulation_shift_segments(
+    load0: float,
+    shift0: float,
+    horizon: float,
+    config: AffectConfig,
+) -> list[tuple[float, float, float, float | None]]:
+    """Shift-law segments covering [0, horizon] under load accumulation.
+
+    While arousal is above the allostatic threshold, load accumulates at
+    +1 h/h, so the shift law over any such window is fully determined
+    without knowing where the window ends: segment boundaries fall at the
+    algebraic load crossings of the sustained threshold and the cap.
+    Returns `(duration, shift_initial, shift_slope, shift_decay_tau)`
+    tuples in `relax_with_shift_dynamics` terms, mirroring
+    `update_allostatic_shift`'s regimes (and `presence._segment_shift_law`
+    at rate +1): below sustained -> exponential decay of the carried
+    shift; at/above sustained -> shift pinned to f(load), linear in t; at
+    the cap -> constant max shift.
+    """
+    sustained = config.allostatic_sustained_hours
+    cap = config.high_arousal_hours_cap
+    span = cap - sustained
+    boundaries = sorted(
+        t for t in (sustained - load0, cap - load0) if 0.0 < t < horizon
+    )
+    segments: list[tuple[float, float, float, float | None]] = []
+    start = 0.0
+    load = load0
+    shift = _clamp(shift0, 0.0, config.allostatic_max_shift)
+    for end in [*boundaries, horizon]:
+        duration = end - start
+        if duration <= 0.0:
+            continue
+        if load >= cap:
+            initial, slope, decay_tau = config.allostatic_max_shift, 0.0, None
+        elif load >= sustained:
+            initial = config.allostatic_max_shift * _clamp(
+                (load - sustained) / span, 0.0, 1.0
+            )
+            slope = config.allostatic_max_shift / span
+            decay_tau = None
+        else:
+            initial, slope, decay_tau = shift, 0.0, config.allostatic_decay_tau_hours
+        segments.append((duration, initial, slope, decay_tau))
+        load = min(load + duration, cap)
+        if decay_tau is not None:
+            shift = initial * math.exp(-duration / decay_tau)
+        else:
+            shift = _clamp(initial + slope * duration, 0.0, config.allostatic_max_shift)
+        start = end
+    return segments
+
+
+def _arousal_after_accumulation(
+    state: AffectState, t_hours: float, config: AffectConfig
+) -> float:
+    """A(t): arousal after `t_hours` assuming it stays above threshold.
+
+    Composes `relax_with_shift_dynamics` over the accumulation-regime
+    shift segments — self-consistent on any [0, t] with t <= t*, because
+    the above-threshold assumption (and hence the +1 h/h load law) holds
+    exactly there.
+    """
+    if t_hours <= 0.0:
+        return state.arousal
+    current = state
+    elapsed = 0.0
+    for duration, initial, slope, decay_tau in _accumulation_shift_segments(
+        state.high_arousal_hours, state.arousal_baseline_shift, t_hours, config
+    ):
+        elapsed += duration
+        current = relax_with_shift_dynamics(
+            current,
+            _advance(state.updated_at, elapsed),
+            config,
+            shift_initial=initial,
+            shift_slope=slope,
+            shift_decay_tau_hours=decay_tau,
+        )
+    return current.arousal
+
+
 def arousal_threshold_crossing_time(
     state: AffectState,
     config: AffectConfig = DEFAULT_AFFECT_CONFIG,
     threshold: float | None = None,
 ) -> float:
-    """Hours until `relax`'s arousal trajectory first drops to `threshold`.
+    """Hours until the arousal trajectory first drops to `threshold`.
 
-    Solves x(t) = xp(t) + (x0 - xp(t0)) * exp(-t/tau) (the exact arousal
-    solution used by `relax`) for the first t with x(t) <= threshold
-    (default: the allostatic threshold). The above-threshold region is a
-    single leading interval [0, t*): the circadian equilibrium band tops
-    out well below the allostatic threshold, so at any crossing the
-    transient is decaying at (threshold - xp(t))/tau >= ~0.04/h while xp
-    itself moves at most amplitude * omega ~= 0.014/h — the trajectory
-    cannot re-cross once below. Bisection to 1e-9 h; bounded pure
-    arithmetic, O(1), no DB. Returns 0.0 when already at/below threshold
-    and +inf if the equilibrium band itself sits above the threshold
-    (impossible for the default config; guards custom thresholds).
+    Bisects A(t) = `_arousal_after_accumulation` — the arousal solution
+    with the shift evolving under the SAME segment laws the subsequent
+    relaxation uses (accumulation regime, since arousal is above
+    threshold on the whole candidate interval) — for the first t with
+    A(t) <= threshold (default: the allostatic threshold). Solving on the
+    law-consistent trajectory matters when the stored shift disagrees
+    with f(load) (e.g. shift 0.05 with load at the sustained threshold):
+    a frozen-shift solve would overestimate t* and over-accumulate load.
+
+    The above-threshold region is a single leading interval [0, t*): the
+    effective equilibrium band (circadian + shift <= ~0.46) tops out well
+    below the allostatic threshold, so at any crossing the transient is
+    decaying at (threshold - band)/tau >= ~0.04/h while the band itself
+    moves at most ~0.015/h (circadian amplitude * omega plus the shift
+    law's slope) — the trajectory cannot re-cross once below. Bisection
+    to 1e-9 h; bounded pure arithmetic, O(1), no DB. Returns 0.0 when
+    already at/below threshold and +inf if the equilibrium band itself
+    sits above the threshold (impossible for the default config; guards
+    custom thresholds).
+
+    The only remaining divergence vs per-minute composition is the tick
+    quantization already documented at the acceptance level (composition
+    quantizes the crossing and shift updates at 60 s boundaries).
 
     `state.updated_at`'s zone is honored exactly: elapsed time advances in
     UTC while circadian phase reads the wall clock at each probed instant,
@@ -324,17 +418,9 @@ def arousal_threshold_crossing_time(
         return 0.0
 
     tau = config.tau_arousal_hours
-    xp0 = _circadian_particular_arousal(
-        _local_hour(state.updated_at), state.arousal_baseline_shift, config
-    )
-    transient0 = state.arousal - xp0
 
     def arousal_at(t_hours: float) -> float:
-        moment = _advance(state.updated_at, t_hours)
-        xp_t = _circadian_particular_arousal(
-            _local_hour(moment), state.arousal_baseline_shift, config
-        )
-        return xp_t + transient0 * math.exp(-t_hours / tau)
+        return _arousal_after_accumulation(state, t_hours, config)
 
     hi = tau
     while arousal_at(hi) > thr:

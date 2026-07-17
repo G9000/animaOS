@@ -468,6 +468,64 @@ def test_catchup_decays_baseline_shift_over_gap(tmp_path: Path) -> None:
     assert abs(state.energy - composed.energy) < 1e-6
 
 
+def test_crossing_solver_uses_segment_consistent_shift_dynamics(
+    tmp_path: Path,
+) -> None:
+    # PR #104 regression: a boundary state whose STORED shift (0.05)
+    # disagrees with the law value f(load)=0 at load exactly 48 h. During
+    # [0, t*] load accumulates, so the shift law snaps to f(load) ~ 0 —
+    # but a frozen-shift solve keeps arousal 0.05 higher and overestimates
+    # t* by ~0.6 h, over-accumulating ~0.9 h vs composition. The solver
+    # must bisect A(t) composed over the same accumulation-regime shift
+    # segments the relaxation itself applies. (State likely unreachable
+    # via real dynamics — the shift is pinned to f(load) while draining —
+    # but stored state is untrusted input.)
+    factory = _factory(tmp_path)
+    start_updated_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)  # local noon
+    now = start_updated_at + timedelta(hours=8)
+    start = AffectState(
+        valence=0.0,
+        arousal=0.9,
+        energy=0.5,
+        updated_at=start_updated_at,
+        arousal_baseline_shift=0.05,
+        high_arousal_hours=48.0,
+    )
+
+    with factory() as db:
+        save_affect_state(db, user_id=1, state=start)
+        db.commit()
+
+    apply_offline_catchup(factory, now=now, min_gap_seconds=0)
+
+    composed = _compose_per_minute(start, start_updated_at, 480)
+
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+
+    assert abs(state.arousal - composed.arousal) <= 1e-4
+    assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
+    assert abs(state.arousal_baseline_shift - composed.arousal_baseline_shift) <= 1e-4
+
+    # RED evidence: the pre-fix frozen-shift solve (relax() freezes the
+    # stored shift, so bisecting it reproduces the old solver exactly)
+    # violates the accumulator bound by ~0.9 h.
+    lo, hi = 0.0, DEFAULT_AFFECT_CONFIG.tau_arousal_hours
+    while relax(start, start_updated_at + timedelta(hours=hi)).arousal > 0.7:
+        hi *= 2.0
+    while hi - lo > 1e-9:
+        mid = 0.5 * (lo + hi)
+        if relax(start, start_updated_at + timedelta(hours=mid)).arousal > 0.7:
+            lo = mid
+        else:
+            hi = mid
+    frozen_t_star = hi
+    prefix_high = 48.0 + frozen_t_star - 0.5 * (8.0 - frozen_t_star)
+    assert abs(prefix_high - composed.high_arousal_hours) > _TICK_QUANTUM_HOURS
+    # And the law-consistent solver lands well below the frozen estimate.
+    assert frozen_t_star - arousal_threshold_crossing_time(start) > 10 * _TICK_QUANTUM_HOURS
+
+
 def test_arousal_threshold_crossing_time_is_consistent_with_relax() -> None:
     # The solver must agree with relax(): arousal at t* equals the
     # threshold, and a state already at/below threshold has t* = 0.

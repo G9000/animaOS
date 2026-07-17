@@ -214,11 +214,10 @@ def apply_idle_gap(
     the discrete update falls into the decay branch while the continuous
     law says f(sustained) = 0.
 
-    Residual: t* is solved with the shift frozen at its stored value; the
-    shift moves by at most ~0.007 over the <= ~7 h an accumulate phase can
-    last, so the induced t* error is second-order (zero whenever the
-    stored shift is 0, i.e. any state that has never sustained high
-    arousal).
+    t* is solved on the law-consistent trajectory (the solver composes the
+    same accumulation-regime shift segments this function applies over
+    [0, t*]), so the only divergence vs per-minute composition is the tick
+    quantization documented at the acceptance level.
 
     `state` is the persisted (UTC-view) row; `local_now` must be aware and
     carry the zone circadian phase should be read in. Returns the UTC view
