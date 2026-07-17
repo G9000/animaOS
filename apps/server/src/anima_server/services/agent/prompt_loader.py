@@ -320,6 +320,14 @@ class PromptLoader:
             episodes=episodes,
         )
 
+    def latent_crystallization(self, *, topic_key: str, evidence: str) -> str:
+        """Render the IL4 latent-trace crystallization prompt."""
+        return self.render(
+            "latent_crystallization",
+            topic_key=topic_key,
+            evidence=evidence,
+        )
+
     # -----------------------------------------------------------------------
     # Predict-Calibrate (F3)
     # -----------------------------------------------------------------------

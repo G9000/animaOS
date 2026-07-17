@@ -1068,6 +1068,10 @@ class TestRunSleeptimeAgents:
                 return_value=False,
             ),
             patch(
+                "anima_server.services.agent.sleep_tasks._should_run_latent_decay",
+                return_value=False,
+            ),
+            patch(
                 "anima_server.services.agent.companion.get_companion",
                 return_value=None,
             ),

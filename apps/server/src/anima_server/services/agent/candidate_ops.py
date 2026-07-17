@@ -17,12 +17,23 @@ from anima_server.services.agent.memory_salience import (
 
 logger = logging.getLogger(__name__)
 
-_VALID_CATEGORIES = frozenset({"fact", "preference", "goal", "relationship"})
+_VALID_CATEGORIES = frozenset(
+    {"fact", "preference", "goal", "relationship", "minor_observation"}
+)
 _VALID_SOURCES = frozenset({"regex", "llm", "predict_calibrate", "tool", "feedback"})
 _VALID_IMPORTANCE_SOURCES = frozenset({
     "regex", "llm", "predict_calibrate", "user_explicit", "correction",
 })
-_TERMINAL_STATUSES = frozenset({"rejected", "reinforced", "superseded", "failed"})
+# "folded" (IL4: candidate scored below the promotion threshold and was
+# accumulated into a latent trace instead) is terminal like rejected/
+# reinforced/superseded/failed: each repeat mention of the same content
+# must create its OWN candidate row so it folds into the trace again —
+# that repeated accumulation is the entire point of IL4. Treating it as
+# non-terminal would instead merge repeats into the first folded row and
+# the trace would never receive more than one fold.
+_TERMINAL_STATUSES = frozenset(
+    {"rejected", "reinforced", "superseded", "failed", "folded"}
+)
 
 
 def compute_content_hash(

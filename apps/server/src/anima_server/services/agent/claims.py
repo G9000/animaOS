@@ -55,6 +55,27 @@ def derive_canonical_key(
     return None
 
 
+def derive_topic_key(content: str, category: str) -> str:
+    """Derive the same canonical grouping key ``upsert_claim`` would use,
+    without touching the DB.
+
+    Used by IL4 latent-trace folding (``latent_traces.py``) so that
+    duplicate-topic churn groups into one trace exactly the same way
+    claim dedup groups into one claim: a structured slot match wins
+    (``"user:{namespace}:{slot}"``), else content falls back to a
+    category + content-hash slug. This intentionally skips
+    ``upsert_claim``'s DB-backed fuzzy-paraphrase resolution
+    (``_find_similar_freeform_claim``) — a pure key derivation has no
+    session to query, so near-duplicate paraphrases may still land on
+    distinct topic keys; exact-duplicate content always collapses to one.
+    """
+    derived = derive_canonical_key(content, category)
+    if derived is None:
+        return f"user:{category}:{_content_slug(content)}"
+    namespace, slot, _polarity = derived
+    return f"user:{namespace}:{slot}"
+
+
 def upsert_claim(
     db: Session,
     *,

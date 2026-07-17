@@ -71,6 +71,10 @@ class ForgetResult:
     items_forgotten: int = 0
     derived_refs_affected: int = 0
     audit_log_id: int | None = None
+    # IL4 right-to-forget integration: latent traces whose evidence_refs
+    # were scrubbed or which were deleted outright because forgetting this
+    # memory's sources emptied them (PRD IL4 "right-to-forget integration").
+    latent_traces_scrubbed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +380,65 @@ def suppress_memory(
     return result
 
 
+# ── IL4 right-to-forget integration ────────────────────────────────────
+
+
+def _scrub_latent_traces_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    source_message_ids: Iterable[int],
+) -> int:
+    """Scrub latent-trace evidence_refs pointing at a forgotten memory's
+    sources (PRD IL4 "right-to-forget integration" — binding, P1 review
+    finding). A trace left with no surviving evidence is deleted outright.
+    """
+    from anima_server.services.agent.latent_traces import (
+        scrub_latent_traces_for_forgotten_sources,
+    )
+
+    return scrub_latent_traces_for_forgotten_sources(
+        db,
+        user_id=user_id,
+        source_message_ids=source_message_ids,
+    )
+
+
+def forget_latent_traces_for_topic(
+    db: Session,
+    *,
+    user_id: int,
+    topic_key: str,
+) -> int:
+    """Topic-scoped forget: delete the latent trace for ``topic_key``
+    outright (PRD IL4 — topic-scoped forget deletes matching topic_key
+    traces, distinct from the source-based scrub single-item forgets do).
+
+    ``topic_key`` is the same structural key
+    ``claims.derive_topic_key``/the IL4 fold path uses — callers doing a
+    topic-scoped forget (today: ``forget_by_topic`` search + a per-item
+    ``forget_memory`` confirm loop) derive it from the topic they are
+    forgetting and pass it here alongside the memory-item deletions.
+    """
+    from anima_server.services.agent.latent_traces import (
+        forget_latent_traces_by_topic,
+    )
+
+    count = forget_latent_traces_by_topic(db, user_id=user_id, topic_key=topic_key)
+    if count:
+        log = ForgetAuditLog(
+            user_id=user_id,
+            forgotten_at=datetime.now(UTC),
+            trigger="user_request",
+            scope="topic",
+            items_forgotten=0,
+            derived_refs_affected=count,
+        )
+        db.add(log)
+        db.flush()
+    return count
+
+
 # ── User-initiated forgetting ─────────────────────────────────────────
 
 
@@ -489,6 +552,11 @@ def forget_memory(
             df(user_id, item.content, table="memory_items", field="content")
             for item in chain_items
         ),
+    )
+    result.latent_traces_scrubbed = _scrub_latent_traces_for_forget(
+        db,
+        user_id=user_id,
+        source_message_ids=source_message_ids,
     )
     _delete_profile_fields_for_forget(
         db,

@@ -65,9 +65,11 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
 
 @dataclass(slots=True)
 class PromotionDecision:
-    action: str  # "promote" | "supersede" | "evolve" | "reinforce" | "rejected"
+    action: str  # "promote" | "supersede" | "evolve" | "reinforce" | "rejected" | "fold_to_trace"
     reason: str = ""
     old_item: object | None = None  # MemoryItem when action targets an existing item
+    topic_key: str | None = None  # set when action == "fold_to_trace"
+    score: float | None = None  # IL4 latent score, set whenever it was computed
 
 
 @dataclass(slots=True)
@@ -82,6 +84,7 @@ class SoulWriterResult:
     candidates_rejected: int = 0
     candidates_reinforced: int = 0
     candidates_superseded: int = 0
+    candidates_folded: int = 0
     candidates_failed: int = 0
     profile_updates_promoted: int = 0
     profile_updates_failed: int = 0
@@ -880,6 +883,28 @@ def _process_candidate(
             result.candidates_rejected += 1
             return
 
+        if decision.action == "fold_to_trace":
+            from anima_server.services.agent.latent_traces import (
+                fold_candidate_into_trace,
+            )
+
+            trace = fold_candidate_into_trace(
+                soul_db,
+                user_id=user_id,
+                candidate=candidate,
+                topic_key=decision.topic_key,
+                score=decision.score or 0.0,
+            )
+            soul_db.commit()
+
+            candidate.status = "folded"
+            candidate.processed_at = now
+            journal.target_table = "latent_traces"
+            journal.target_record_id = str(trace.id)
+            journal.journal_status = "confirmed"
+            result.candidates_folded += 1
+            return
+
         if decision.action == "reinforce":
             old_item = decision.old_item
             if old_item is not None:
@@ -1274,7 +1299,55 @@ def plan_candidate_promotion(
                     old_item=old,
                     reason=f"slot match supersedes item {old.id}",
                 )
-            return PromotionDecision(action="promote", reason="slot match but no target item found")
-        return PromotionDecision(action="promote", reason="similar but no structured slot — append")
+            return _gate_new_memory_decision(
+                candidate, reason="slot match but no target item found"
+            )
+        return _gate_new_memory_decision(
+            candidate, reason="similar but no structured slot — append"
+        )
 
-    return PromotionDecision(action="promote", reason="new memory")
+    return _gate_new_memory_decision(candidate, reason="new memory")
+
+
+def _gate_new_memory_decision(candidate, reason: str) -> PromotionDecision:
+    """IL4 scoring gate for a fresh "would-promote" decision.
+
+    Only candidates with no existing-memory match reach here — every
+    dedup/supersede/evolve branch above always wins over folding (a
+    duplicate score against a matched item is not a weak signal; a match
+    that already resolved to reinforcing/superseding/evolving something
+    real does not go through this gate at all). This keeps the IL4
+    scoring path behavior-preserving for every candidate that already
+    matched an existing memory, and only screens genuinely new content.
+    """
+    from anima_server.services.agent.claims import derive_topic_key
+    from anima_server.services.agent.inner_life.latent import classify_score, score_candidate
+    from anima_server.services.agent.latent_traces import get_latent_config
+
+    salience = getattr(candidate, "salience_json", None) or {}
+    score = score_candidate(
+        importance=candidate.importance,
+        emotional_salience=float(salience.get("emotional_salience", 0.0) or 0.0),
+        evidence_strength=float(salience.get("evidence_strength", 0.8) or 0.8),
+    )
+    config = get_latent_config()
+    classification = classify_score(score, config)
+
+    if classification == "reject":
+        return PromotionDecision(
+            action="rejected",
+            reason=f"latent score {score:.3f} below floor {config.floor:.3f}",
+            score=score,
+        )
+    if classification == "fold":
+        topic_key = derive_topic_key(candidate.content, candidate.category)
+        return PromotionDecision(
+            action="fold_to_trace",
+            reason=(
+                f"latent score {score:.3f} below promotion threshold "
+                f"{config.promotion_threshold:.3f} — folding into trace"
+            ),
+            topic_key=topic_key,
+            score=score,
+        )
+    return PromotionDecision(action="promote", reason=reason, score=score)

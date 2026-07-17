@@ -48,6 +48,7 @@ async def forget_single_memory(
         "forgotten": True,
         "items_forgotten": result.items_forgotten,
         "derived_refs_affected": result.derived_refs_affected,
+        "latent_traces_scrubbed": result.latent_traces_scrubbed,
     }
 
 

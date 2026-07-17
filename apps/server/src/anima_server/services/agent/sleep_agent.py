@@ -480,6 +480,22 @@ async def run_sleeptime_agents(
             except Exception:
                 logger.exception("Pattern synthesis task failed")
 
+        # IL4 crystallization is capped per-run (bounds LLM cost), so it
+        # rides the same heat/manual gate as the other expensive synthesis
+        # tasks rather than waiting for the weekly decay cadence below.
+        try:
+            rid = await _issue_background_task(
+                user_id=user_id,
+                task_type="latent_crystallization",
+                task_fn=_task_latent_crystallization,
+                db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+                _task_runtime_db_factory=runtime_db_factory,
+            )
+            run_ids.append(rid)
+        except Exception:
+            logger.exception("Latent trace crystallization task failed")
+
     # ── Time-gated: deep monologue ───────────────────────────────
 
     try:
@@ -500,6 +516,27 @@ async def run_sleeptime_agents(
             run_ids.append(rid)
     except Exception:
         logger.exception("Deep monologue task failed")
+
+    # ── Time-gated: IL4 latent trace weekly decay ────────────────
+
+    try:
+        from anima_server.services.agent.sleep_tasks import _should_run_latent_decay
+
+        if _should_run_latent_decay(
+            user_id,
+            db_factory=db_factory,
+            runtime_db_factory=runtime_db_factory,
+        ):
+            rid = await _issue_background_task(
+                user_id=user_id,
+                task_type="latent_decay",
+                task_fn=_task_latent_decay,
+                db_factory=db_factory,
+                runtime_db_factory=runtime_db_factory,
+            )
+            run_ids.append(rid)
+    except Exception:
+        logger.exception("Latent trace decay task failed")
 
     # Invalidate companion memory cache so the next turn sees fresh data.
     try:
@@ -1118,6 +1155,42 @@ async def _task_deep_monologue(
     if not monologue.errors:
         mark_deep_monologue_done(user_id)
     return {"errors": monologue.errors if monologue.errors else []}
+
+
+async def _task_latent_decay(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """IL4 weekly latent-trace decay + cap (soul-store)."""
+    from anima_server.db.helpers import session_scope
+    from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.latent_traces import decay_and_cap_traces
+    from anima_server.services.agent.sleep_tasks import mark_latent_decay_done
+
+    factory = db_factory or SessionLocal
+    with session_scope(factory) as soul_db:
+        stats = decay_and_cap_traces(soul_db, user_id=user_id)
+    mark_latent_decay_done(user_id)
+    return stats
+
+
+async def _task_latent_crystallization(
+    *,
+    user_id: int,
+    db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> dict:
+    """IL4 crystallization: synthesize durable memories from latent traces
+    that crossed the crystallization threshold (capped per run to bound
+    LLM cost — see ``latent_traces.crystallize_due_traces``)."""
+    from anima_server.services.agent.latent_traces import crystallize_due_traces
+
+    return await crystallize_due_traces(
+        user_id=user_id,
+        db_factory=db_factory,
+        runtime_db_factory=runtime_db_factory,
+    )
 
 
 # ── Restart cursor ───────────────────────────────────────────────────
