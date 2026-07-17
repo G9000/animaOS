@@ -4,8 +4,8 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use anima_corefs::catalog::{
-    CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, ObjectLifecycle,
-    TrashMetadata,
+    CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, FolderLifecycle,
+    FolderTrashMetadata, ObjectLifecycle, TrashMetadata,
 };
 use anima_corefs::crypto::{
     derive_corefs_subkeys, FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes,
@@ -37,6 +37,8 @@ const BETA_ID: &str = "01J00000000000000000000004";
 const BINARY_ID: &str = "01J00000000000000000000005";
 const TRASHED_ID: &str = "01J00000000000000000000006";
 const TOMBSTONE_ID: &str = "01J00000000000000000000007";
+const TRASHED_FOLDER_ID: &str = "01J00000000000000000000008";
+const HIDDEN_CHILD_ID: &str = "01J00000000000000000000009";
 
 struct Fixture {
     root: PathBuf,
@@ -83,6 +85,47 @@ fn snapshot_capabilities_and_normal_lookup_only_expose_live_entries() {
         .list("Trash", None, 10, limits, OperationControl::default())
         .unwrap();
     assert!(trash.entries.is_empty());
+}
+
+#[test]
+fn trashed_folder_hides_its_entire_still_parented_subtree() {
+    let fixture = fixture("trashed-folder-visibility");
+    let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
+    let snapshot =
+        CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
+    let limits = OperationLimits::default().validate().unwrap();
+
+    assert!(snapshot.stat("Trash/Archived").is_err());
+    assert!(snapshot.stat("Trash/Archived/secret.md").is_err());
+    let trash = snapshot
+        .walk(
+            "Trash",
+            LogicalWalkOptions {
+                page_size: 10,
+                cursor: None,
+                include_directories: true,
+            },
+            limits,
+            OperationControl::default(),
+        )
+        .unwrap();
+    assert!(trash.entries.is_empty());
+    let grep = snapshot
+        .grep(
+            LogicalGrepRequest {
+                root: "".to_string(),
+                query: "hidden needle".to_string(),
+                mode: GrepMode::Literal,
+                max_files: 10,
+                max_matches: 10,
+                max_line_bytes: 1024,
+                cursor: None,
+            },
+            limits,
+            OperationControl::default(),
+        )
+        .unwrap();
+    assert!(grep.matches.is_empty());
 }
 
 #[test]
@@ -581,8 +624,16 @@ fn fixture(name: &str) -> Fixture {
         b"needle tombstone",
         0x35,
     );
+    let hidden = prepare(
+        &coordinator,
+        &keys,
+        HIDDEN_CHILD_ID,
+        BodyEncoding::Utf8,
+        b"hidden needle",
+        0x36,
+    );
     let beta_physical_name = beta.physical_name().as_str().to_string();
-    let prepared = vec![alpha, beta, binary, trashed, tombstone];
+    let prepared = vec![alpha, beta, binary, trashed, tombstone, hidden];
 
     let validation = coordinator
         .initialize_validation_snapshot(&keys, &prepared, |generation| {
@@ -592,6 +643,22 @@ fn fixture(name: &str) -> Fixture {
                     CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
                     CatalogGenerationEntry::folder(common(NOTES_ID, Some(ROOT_ID), "Notes")),
                     CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+                    CatalogGenerationEntry::folder(
+                        common(TRASHED_FOLDER_ID, Some(TRASH_ID), "Archived")
+                            .with_folder_lifecycle(FolderLifecycle::Trashed(
+                                FolderTrashMetadata::new(
+                                    opaque(TRASH_ID),
+                                    opaque(NOTES_ID),
+                                    PortableName::parse("Archived").unwrap(),
+                                    3,
+                                )
+                                .unwrap(),
+                            )),
+                    ),
+                    CatalogGenerationEntry::object(
+                        common(HIDDEN_CHILD_ID, Some(TRASHED_FOLDER_ID), "secret.md"),
+                        object(&prepared[5], ObjectLifecycle::Live),
+                    ),
                     CatalogGenerationEntry::object(
                         common(ALPHA_ID, Some(NOTES_ID), "Alpha.md"),
                         object(&prepared[0], ObjectLifecycle::Live),

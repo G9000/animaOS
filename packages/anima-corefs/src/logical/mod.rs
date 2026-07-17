@@ -1,11 +1,17 @@
 //! Read-only logical CoreFS operations bound to an explicit catalog snapshot.
 
 mod backend;
+mod mutation;
 mod path;
 mod service;
 mod wire;
 
 pub use backend::{CoreFsReadSnapshot, LogicalError};
+pub use mutation::{
+    ContentFormatValidator, ContentValidationError, CoreFsMutationFacade, LogicalMutation,
+    MutationChange, MutationError, MutationResult, MutationStamp, MutationTarget, PatchAddFormat,
+    PublicMutationError, ValidatedContent, CORE_FS_MIGRATION_WRITE_FROZEN,
+};
 pub use path::{LogicalPath, LogicalPathError};
 pub use service::{
     ListCursor, LogicalEntry, LogicalGlobCursor, LogicalGlobPage, LogicalGrepCursor,

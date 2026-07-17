@@ -208,6 +208,58 @@ pub struct TrashMetadata {
     trashed_at_ms: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FolderTrashMetadata {
+    trash_folder_id: OpaqueId,
+    original_parent_id: OpaqueId,
+    original_name: PortableName,
+    trashed_at_ms: u64,
+}
+
+impl FolderTrashMetadata {
+    pub fn new(
+        trash_folder_id: OpaqueId,
+        original_parent_id: OpaqueId,
+        original_name: PortableName,
+        trashed_at_ms: u64,
+    ) -> Result<Self, CatalogError> {
+        if trashed_at_ms == 0 {
+            return Err(CatalogError::InvalidFormat(
+                "folder trash timestamp must be positive",
+            ));
+        }
+        Ok(Self {
+            trash_folder_id,
+            original_parent_id,
+            original_name,
+            trashed_at_ms,
+        })
+    }
+
+    pub fn trash_folder_id(&self) -> &OpaqueId {
+        &self.trash_folder_id
+    }
+
+    pub fn original_parent_id(&self) -> &OpaqueId {
+        &self.original_parent_id
+    }
+
+    pub fn original_name(&self) -> &PortableName {
+        &self.original_name
+    }
+
+    pub const fn trashed_at_ms(&self) -> u64 {
+        self.trashed_at_ms
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum FolderLifecycle {
+    #[default]
+    Live,
+    Trashed(FolderTrashMetadata),
+}
+
 impl TrashMetadata {
     pub fn new(
         trash_folder_id: OpaqueId,
@@ -226,6 +278,22 @@ impl TrashMetadata {
             original_name,
             trashed_at_ms,
         })
+    }
+
+    pub fn trash_folder_id(&self) -> &OpaqueId {
+        &self.trash_folder_id
+    }
+
+    pub fn original_parent_id(&self) -> &OpaqueId {
+        &self.original_parent_id
+    }
+
+    pub fn original_name(&self) -> &PortableName {
+        &self.original_name
+    }
+
+    pub const fn trashed_at_ms(&self) -> u64 {
+        self.trashed_at_ms
     }
 }
 
@@ -370,6 +438,7 @@ pub struct CatalogEntryCommon {
     anima_access: AnimaAccess,
     policy_override: LocalFolderPolicy,
     client_metadata: CatalogClientMetadata,
+    folder_lifecycle: FolderLifecycle,
 }
 
 impl CatalogEntryCommon {
@@ -394,11 +463,26 @@ impl CatalogEntryCommon {
             anima_access,
             policy_override,
             client_metadata: CatalogClientMetadata::empty(),
+            folder_lifecycle: FolderLifecycle::Live,
         }
     }
 
     pub fn with_client_metadata(mut self, client_metadata: CatalogClientMetadata) -> Self {
         self.client_metadata = client_metadata;
+        self
+    }
+
+    pub fn with_folder_lifecycle(mut self, lifecycle: FolderLifecycle) -> Self {
+        self.folder_lifecycle = lifecycle;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_policy_override_for_internal_mutation(
+        mut self,
+        policy_override: LocalFolderPolicy,
+    ) -> Self {
+        self.policy_override = policy_override;
         self
     }
 
@@ -412,6 +496,37 @@ impl CatalogEntryCommon {
 
     pub fn name(&self) -> &PortableName {
         &self.name
+    }
+
+    pub fn folder_lifecycle(&self) -> &FolderLifecycle {
+        &self.folder_lifecycle
+    }
+
+    pub(crate) fn owner_for_internal_mutation(&self) -> FolderOwner {
+        self.owner
+    }
+
+    pub(crate) fn anima_access_for_internal_mutation(&self) -> AnimaAccess {
+        self.anima_access
+    }
+
+    pub(crate) fn role_for_internal_mutation(&self) -> Option<&FolderRole> {
+        self.role.as_ref()
+    }
+
+    pub(crate) fn moved_for_internal_mutation(
+        mut self,
+        parent_id: OpaqueId,
+        name: PortableName,
+    ) -> Self {
+        self.parent_id = Some(parent_id);
+        self.name = name;
+        self
+    }
+
+    pub(crate) fn with_role_for_internal_mutation(mut self, role: FolderRole) -> Self {
+        self.role = Some(role);
+        self
     }
 }
 
@@ -453,10 +568,18 @@ impl CatalogGenerationEntry {
         self.common().name()
     }
 
+    pub fn common_folder_lifecycle(&self) -> &FolderLifecycle {
+        self.common().folder_lifecycle()
+    }
+
     fn common(&self) -> &CatalogEntryCommon {
         match self {
             Self::Folder(common) | Self::Object(common, _) => common,
         }
+    }
+
+    pub(crate) fn common_for_internal_mutation(&self) -> &CatalogEntryCommon {
+        self.common()
     }
 }
 
@@ -723,39 +846,98 @@ fn validate_lifecycle_references<'a>(
         Ok(entry)
     };
 
+    let require_live_folder = |id: &OpaqueId| -> Result<&CatalogGenerationEntry, CatalogError> {
+        let entry = require_folder(id)?;
+        if !matches!(entry.common().folder_lifecycle, FolderLifecycle::Live) {
+            return Err(CatalogError::InvalidFormat(
+                "lifecycle reference points into trashed folder state",
+            ));
+        }
+        Ok(entry)
+    };
+
     for entry in entries {
-        let CatalogGenerationEntry::Object(common, object) = entry else {
-            continue;
-        };
-        match &object.lifecycle {
-            ObjectLifecycle::Live => {}
-            ObjectLifecycle::Trashed(metadata) => {
-                require_folder(&metadata.trash_folder_id)?;
-                require_folder(&metadata.original_parent_id)?;
-                if metadata.trash_folder_id == metadata.original_parent_id {
+        let common = entry.common();
+        match entry {
+            CatalogGenerationEntry::Folder(_) => match &common.folder_lifecycle {
+                FolderLifecycle::Live => {}
+                FolderLifecycle::Trashed(metadata) => {
+                    if common.parent_id.is_none() {
+                        return Err(CatalogError::InvalidFormat(
+                            "catalog root cannot be trashed",
+                        ));
+                    }
+                    require_live_folder(&metadata.trash_folder_id)?;
+                    require_live_folder(&metadata.original_parent_id)?;
+                    if metadata.trash_folder_id == metadata.original_parent_id {
+                        return Err(CatalogError::InvalidFormat(
+                            "folder trash and original folders must differ",
+                        ));
+                    }
+                    if common.stable_id == metadata.trash_folder_id
+                        || common.stable_id == metadata.original_parent_id
+                    {
+                        return Err(CatalogError::InvalidFormat(
+                            "trashed folder cannot reference itself",
+                        ));
+                    }
+                    if common.parent_id.as_ref() != Some(&metadata.trash_folder_id) {
+                        return Err(CatalogError::InvalidFormat(
+                            "trashed folder is outside its trash folder",
+                        ));
+                    }
+                }
+            },
+            CatalogGenerationEntry::Object(_, object) => {
+                if !matches!(common.folder_lifecycle, FolderLifecycle::Live) {
                     return Err(CatalogError::InvalidFormat(
-                        "trash and original folders must differ",
+                        "object entry cannot carry folder lifecycle",
                     ));
                 }
-                if common.parent_id.as_ref() != Some(&metadata.trash_folder_id) {
-                    return Err(CatalogError::InvalidFormat(
-                        "trashed object is outside its trash folder",
-                    ));
-                }
-            }
-            ObjectLifecycle::Tombstone {
-                trash_folder_id, ..
-            } => {
-                require_folder(trash_folder_id)?;
-                if common.parent_id.as_ref() != Some(trash_folder_id) {
-                    return Err(CatalogError::InvalidFormat(
-                        "tombstone is outside its trash folder",
-                    ));
+                match &object.lifecycle {
+                    ObjectLifecycle::Live => {}
+                    ObjectLifecycle::Trashed(metadata) => {
+                        require_live_folder(&metadata.trash_folder_id)?;
+                        require_live_folder(&metadata.original_parent_id)?;
+                        if metadata.trash_folder_id == metadata.original_parent_id {
+                            return Err(CatalogError::InvalidFormat(
+                                "trash and original folders must differ",
+                            ));
+                        }
+                        if common.parent_id.as_ref() != Some(&metadata.trash_folder_id) {
+                            return Err(CatalogError::InvalidFormat(
+                                "trashed object is outside its trash folder",
+                            ));
+                        }
+                    }
+                    ObjectLifecycle::Tombstone {
+                        trash_folder_id, ..
+                    } => {
+                        require_live_folder(trash_folder_id)?;
+                        if common.parent_id.as_ref() != Some(trash_folder_id) {
+                            return Err(CatalogError::InvalidFormat(
+                                "tombstone is outside its trash folder",
+                            ));
+                        }
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+fn policy_parent_id(entry: &CatalogGenerationEntry) -> Option<&OpaqueId> {
+    match entry {
+        CatalogGenerationEntry::Folder(common) => match &common.folder_lifecycle {
+            FolderLifecycle::Trashed(metadata) => Some(&metadata.original_parent_id),
+            FolderLifecycle::Live => common.parent_id.as_ref(),
+        },
+        CatalogGenerationEntry::Object(common, object) => match &object.lifecycle {
+            ObjectLifecycle::Trashed(metadata) => Some(&metadata.original_parent_id),
+            ObjectLifecycle::Live | ObjectLifecycle::Tombstone { .. } => common.parent_id.as_ref(),
+        },
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -778,7 +960,7 @@ fn validate_effective_policies<'a>(
         let mut current = start;
         while !resolved.contains_key(current.common().stable_id.as_str()) {
             chain.push(current);
-            let Some(parent_id) = current.common().parent_id.as_ref() else {
+            let Some(parent_id) = policy_parent_id(current) else {
                 break;
             };
             current = by_id
@@ -877,6 +1059,8 @@ struct WireEntry {
     anima_access: String,
     policy_override: WirePolicyOverride,
     client_metadata: BTreeMap<String, Value>,
+    #[serde(default)]
+    folder_lifecycle: Option<WireFolderLifecycle>,
     payload: WirePayload,
 }
 
@@ -932,6 +1116,17 @@ enum WireLifecycle {
     Tombstone {
         trash_folder_id: String,
         deleted_at_ms: u64,
+    },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+enum WireFolderLifecycle {
+    Trashed {
+        trash_folder_id: String,
+        original_parent_id: String,
+        original_name: String,
+        trashed_at_ms: u64,
     },
 }
 
@@ -1247,7 +1442,7 @@ impl Serialize for WireEntryRef<'_> {
 
         let entry = self.entry;
         let common = entry.common();
-        let mut state = serializer.serialize_struct("WireEntry", 9)?;
+        let mut state = serializer.serialize_struct("WireEntry", 10)?;
         state.serialize_field("stableId", common.stable_id.as_str())?;
         state.serialize_field("parentId", &common.parent_id.as_ref().map(OpaqueId::as_str))?;
         state.serialize_field("name", common.name.as_str())?;
@@ -1262,6 +1457,17 @@ impl Serialize for WireEntryRef<'_> {
             },
         )?;
         state.serialize_field("clientMetadata", &common.client_metadata.values)?;
+        if let FolderLifecycle::Trashed(metadata) = &common.folder_lifecycle {
+            state.serialize_field(
+                "folderLifecycle",
+                &WireFolderLifecycleRef::Trashed {
+                    trash_folder_id: metadata.trash_folder_id.as_str(),
+                    original_parent_id: metadata.original_parent_id.as_str(),
+                    original_name: metadata.original_name.as_str(),
+                    trashed_at_ms: metadata.trashed_at_ms,
+                },
+            )?;
+        }
         state.serialize_field(
             "payload",
             &WirePayloadRef {
@@ -1271,6 +1477,17 @@ impl Serialize for WireEntryRef<'_> {
         )?;
         state.end()
     }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+enum WireFolderLifecycleRef<'a> {
+    Trashed {
+        trash_folder_id: &'a str,
+        original_parent_id: &'a str,
+        original_name: &'a str,
+        trashed_at_ms: u64,
+    },
 }
 
 #[derive(Serialize)]
@@ -1440,6 +1657,23 @@ fn from_wire(wire: WireCatalogGeneration) -> Result<CatalogGeneration, CatalogEr
             anima_access: parse_access(&entry.anima_access)?,
             policy_override,
             client_metadata: CatalogClientMetadata::from_wire(entry.client_metadata)?,
+            folder_lifecycle: match entry.folder_lifecycle {
+                None => FolderLifecycle::Live,
+                Some(WireFolderLifecycle::Trashed {
+                    trash_folder_id,
+                    original_parent_id,
+                    original_name,
+                    trashed_at_ms,
+                }) => FolderLifecycle::Trashed(FolderTrashMetadata::new(
+                    OpaqueId::parse(&trash_folder_id)
+                        .map_err(|_| CatalogError::InvalidFormat("folder trash folder ID"))?,
+                    OpaqueId::parse(&original_parent_id)
+                        .map_err(|_| CatalogError::InvalidFormat("folder original parent ID"))?,
+                    PortableName::parse(&original_name)
+                        .map_err(|_| CatalogError::InvalidFormat("folder original name"))?,
+                    trashed_at_ms,
+                )?),
+            },
         };
         let decoded = match entry.payload {
             WirePayload::Folder => CatalogGenerationEntry::folder(common),
@@ -1664,7 +1898,8 @@ mod tests {
     use super::{
         decode_catalog_generation, encode_catalog_generation, v2_generation_key,
         CatalogCutoverMarker, CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry,
-        CatalogObject, ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
+        CatalogObject, ContentHash, FolderLifecycle, FolderTrashMetadata, ObjectLifecycle,
+        ObjectPhysicalName, WrappedObjectDekRecord,
     };
 
     #[test]
@@ -1708,6 +1943,64 @@ mod tests {
 
         let encoded = encode_catalog_generation(&catalog).unwrap();
         assert_eq!(decode_catalog_generation(&encoded).unwrap(), catalog);
+    }
+
+    #[test]
+    fn trashed_folder_preserves_its_original_authenticated_policy_boundary() {
+        let root_id = OpaqueId::parse("01J00000000000000000000000").unwrap();
+        let notes_id = OpaqueId::parse("01J00000000000000000000001").unwrap();
+        let trash_id = OpaqueId::parse("01J00000000000000000000002").unwrap();
+        let archived_id = OpaqueId::parse("01J00000000000000000000003").unwrap();
+        let mut trash = CatalogEntryCommon::new(
+            trash_id.clone(),
+            Some(root_id.clone()),
+            PortableName::parse("Trash").unwrap(),
+            FolderOwner::Anima,
+            AnimaAccess::Manage,
+        );
+        trash.policy_override = LocalFolderPolicy::new(
+            Some(FolderOwner::Anima),
+            LocalAnimaAccess::Allow(AnimaAccess::Manage),
+        );
+        let archived = CatalogEntryCommon::new(
+            archived_id,
+            Some(trash_id.clone()),
+            PortableName::parse("Archived").unwrap(),
+            FolderOwner::User,
+            AnimaAccess::Write,
+        )
+        .with_folder_lifecycle(FolderLifecycle::Trashed(
+            FolderTrashMetadata::new(
+                trash_id,
+                notes_id.clone(),
+                PortableName::parse("Archived").unwrap(),
+                1,
+            )
+            .unwrap(),
+        ));
+
+        assert!(CatalogGeneration::new(
+            1,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    root_id.clone(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    notes_id,
+                    Some(root_id),
+                    PortableName::parse("Notes").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(trash),
+                CatalogGenerationEntry::folder(archived),
+            ],
+        )
+        .is_ok());
     }
 
     #[test]

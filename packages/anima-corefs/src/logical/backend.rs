@@ -12,7 +12,7 @@ use anima_file_tools::{
 use cap_std::fs::Dir;
 use zeroize::Zeroize;
 
-use crate::catalog::{CatalogGeneration, CatalogGenerationEntry, ObjectLifecycle};
+use crate::catalog::{CatalogGeneration, CatalogGenerationEntry, FolderLifecycle, ObjectLifecycle};
 use crate::crypto::{
     unwrap_object_dek, ObjectBaseAad, ObjectKeyAad, ObjectKind, SecretBytes,
     OBJECT_KEY_ENVELOPE_VERSION,
@@ -127,9 +127,17 @@ impl CoreFsReadSnapshot {
             .clone_objects_dir()
             .map_err(|_| LogicalError::StorageUnavailable)?;
         let paths = catalog_paths(catalog)?;
+        let by_id: HashMap<_, _> = catalog
+            .entries()
+            .iter()
+            .map(|entry| (entry.stable_id().as_str(), entry))
+            .collect();
         let mut nodes = BTreeMap::new();
 
         for entry in catalog.entries() {
+            if hidden_by_folder_trash(entry, &by_id) {
+                continue;
+            }
             let path = paths
                 .get(entry.stable_id().as_str())
                 .expect("every validated catalog entry has a path")
@@ -254,6 +262,29 @@ impl CoreFsReadSnapshot {
         self.nodes
             .get(canonical.as_str())
             .ok_or_else(|| backend_error("lookup", canonical.as_str(), "logical path not found"))
+    }
+}
+
+fn hidden_by_folder_trash(
+    entry: &CatalogGenerationEntry,
+    by_id: &HashMap<&str, &CatalogGenerationEntry>,
+) -> bool {
+    let mut current = entry;
+    loop {
+        if current.is_folder()
+            && matches!(
+                current.common_folder_lifecycle(),
+                FolderLifecycle::Trashed(_)
+            )
+        {
+            return true;
+        }
+        let Some(parent_id) = current.parent_id() else {
+            return false;
+        };
+        current = by_id
+            .get(parent_id.as_str())
+            .expect("validated catalog parent exists");
     }
 }
 

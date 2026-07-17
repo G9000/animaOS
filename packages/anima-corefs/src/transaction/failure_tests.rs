@@ -553,6 +553,30 @@ fn validation_publication_crashes_are_absent_or_complete() {
 }
 
 #[test]
+fn validation_advancement_crashes_preserve_prior_or_complete_next_shadow_generation() {
+    let mut index = 0;
+    for point in publication_points(PublicationTarget::Catalog, true) {
+        let root = reset_root(&format!("validation-advance-catalog-{index}"));
+        seed_validation(&root);
+        run_crashing_child(&root, "advance", point);
+        assert_no_committed_generation(&root, Some(1));
+        std::fs::remove_dir_all(root).unwrap();
+        index += 1;
+    }
+    for (phase_index, point) in publication_points(PublicationTarget::ValidationHead, false)
+        .into_iter()
+        .enumerate()
+    {
+        let root = reset_root(&format!("validation-advance-head-{index}"));
+        seed_validation(&root);
+        run_crashing_child(&root, "advance", point);
+        assert_no_committed_generation(&root, Some(if phase_index >= 3 { 2 } else { 1 }));
+        std::fs::remove_dir_all(root).unwrap();
+        index += 1;
+    }
+}
+
+#[test]
 fn first_commit_crashes_preserve_validation_or_recover_complete_cutover() {
     let mut index = 0;
     for point in publication_points(PublicationTarget::Catalog, true) {
@@ -779,6 +803,29 @@ fn helper_process_crashes_at_failure_point() {
                     &keys,
                     std::slice::from_ref(&initial),
                     |generation| Ok(catalog(generation, &initial)),
+                    &mut hook,
+                )
+                .unwrap();
+        }
+        "advance" => {
+            let selected = coordinator
+                .load_validation_snapshot(&keys)
+                .unwrap()
+                .unwrap();
+            let precondition = CatalogPrecondition::object(
+                selected.catalog(),
+                &OpaqueId::parse(OBJECT_ID).unwrap(),
+                1,
+            )
+            .unwrap();
+            let next = prepare(&coordinator, &keys, 2, b"next");
+            coordinator
+                .advance_validation_snapshot_with_hook(
+                    &keys,
+                    &selected,
+                    std::slice::from_ref(&next),
+                    &[precondition],
+                    |_, generation| Ok(catalog(generation, &next)),
                     &mut hook,
                 )
                 .unwrap();

@@ -6,6 +6,26 @@ pub const OPAQUE_ID_LENGTH: usize = 26;
 pub struct OpaqueId(String);
 
 impl OpaqueId {
+    pub fn generate() -> Result<Self, OpaqueIdError> {
+        const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        let mut random = [0_u8; 16];
+        getrandom::getrandom(&mut random).map_err(|_| OpaqueIdError)?;
+        let mut encoded = [0_u8; OPAQUE_ID_LENGTH];
+        for (index, output) in encoded.iter_mut().enumerate() {
+            let mut value = 0_u8;
+            for offset in 0..5 {
+                let bit = index * 5 + offset;
+                value <<= 1;
+                if bit >= 2 {
+                    let source = bit - 2;
+                    value |= (random[source / 8] >> (7 - source % 8)) & 1;
+                }
+            }
+            *output = CROCKFORD[value as usize];
+        }
+        Self::parse(std::str::from_utf8(&encoded).map_err(|_| OpaqueIdError)?)
+    }
+
     pub fn parse(value: &str) -> Result<Self, OpaqueIdError> {
         validate_opaque_id(value)?;
         Ok(Self(value.to_owned()))

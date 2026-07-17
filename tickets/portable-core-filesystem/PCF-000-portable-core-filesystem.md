@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 12:13 MYT
+- Updated: 2026-07-17 15:36 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -110,6 +110,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 11:24 MYT - Completed PCF-002 Step 9 with authenticated streaming Object-DEK replacement for live and recoverably trashed objects, exact-next-version FRK catalog rewrap across all retained wrappers, keyring-aware cutover recovery and later commits, explicit backup/retention retirement gates, and deterministic concurrent/crash regressions. Exact Rust 1.75 CoreFS, combined native and Python-feature checks, strict CoreFS clippy/format, workspace build, attribution, packaged notices, locked metadata, diff hygiene, and independent Critical/Important review passed. PCF-002 and the parent initiative remain `in_progress`; Step 10 logical CoreFS operations and bounded agent tools are next.
 
 - 2026-07-17 12:13 MYT - PR #103 merged PCF-002 Step 9 at `7d4cae3f`, and Step 10 began from that exact `origin/main` head in isolated worktree `codex/pcf-002-logical-tools`. Scope is logical CoreFS operations, bounded shared traversal/grep, explicit search-index readiness, internal atomic mutation planning, and migration-frozen Python agent wrappers; generic client API/grants and catalog benchmarking remain Steps 11 and 12. The exact Rust 1.75 baseline passed 211 tests with 3 subprocess helpers intentionally ignored.
+- 2026-07-17 15:36 MYT - PCF-002 Step 10 completed its Rust logical read and internal mutation layers in `codex/pcf-002-logical-tools`: live-only bounded logical operations, V1 wire accounting, catalog-bound range reads, folder-trash authenticated lifecycle and hiding, sealed one-generation validation-head mutation planning, public frozen write facade, and cross-policy preflight rejection. Exact Rust 1.75 CoreFS tests and strict clippy passed; independent review found no remaining Critical or Important issues. PCF-002 remains `in_progress` for Python/PyO3 wrappers, client API/grants, and benchmarks.
 
 ## Validation
 
@@ -127,6 +128,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 Step 7: 104 exact Rust 1.75 CoreFS test entries, combined `anima-corefs`/`anima-core`, Python-feature check, CoreFS format/strict clippy, workspace build, provenance/release notices, `cargo metadata --locked`, and `git diff --check`
   - PCF-002 Step 8: exact Rust 1.75 CoreFS suite (138 passed, 3 helper entries ignored), 69 injected Windows process crashes, stable combined native suite (356 passed), Python-feature check, Rust 1.75 Linux-target check, strict CoreFS format/clippy, workspace build, repository organization, provenance/release notices, locked metadata, and `git diff --check`
   - PCF-002 Step 9: exact Rust 1.75 CoreFS suite (153 passed, 3 subprocess-helper entries ignored), targeted-object and FRK crash matrices, combined `anima-file-tools`/`anima-corefs`/`anima-core`/`animus` tests, Python-feature check, strict CoreFS clippy/format, workspace build, attribution/release notices, locked metadata, independent review, and `git diff --check`
+  - PCF-002 Step 10 Layer 1/2: exact Rust 1.75 merged-head baseline (`anima-file-tools` + `anima-corefs`) passed 211 tests with 3 subprocess-helper entries ignored; focused logical mutation tests passed 6 tests; the cross-policy move/restore/patch regression passed; full `cargo +1.75.0 test --locked -p anima-corefs` passed; strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings` passed
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
@@ -146,6 +148,11 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `docs/architecture/README.md`
   - `docs/architecture/system/anima-core-filesystem.md`
   - `tickets/portable-core-filesystem/`
+  - `packages/anima-corefs/src/logical/`
+  - `packages/anima-corefs/src/catalog/v2.rs`
+  - `packages/anima-corefs/src/transaction.rs`
+  - `packages/anima-corefs/src/transaction/failure_tests.rs`
+  - `packages/anima-corefs/tests/{catalog_entries.rs,logical_snapshot.rs}`
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.

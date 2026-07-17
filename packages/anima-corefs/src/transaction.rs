@@ -1662,6 +1662,92 @@ impl CoreCommitCoordinator {
         Ok(ValidationSnapshot { head, catalog })
     }
 
+    pub(crate) fn advance_validation_snapshot<B>(
+        &self,
+        keys: &FrkSubkeys,
+        selected: &ValidationSnapshot,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        build_next: B,
+    ) -> Result<ValidationSnapshot, CommitError>
+    where
+        B: FnOnce(&CatalogGeneration, u64) -> Result<CatalogGeneration, CatalogError>,
+    {
+        self.advance_validation_snapshot_with_hook(
+            keys,
+            selected,
+            prepared_revisions,
+            preconditions,
+            build_next,
+            &mut |_| Ok(()),
+        )
+    }
+
+    fn advance_validation_snapshot_with_hook<B, H>(
+        &self,
+        keys: &FrkSubkeys,
+        selected: &ValidationSnapshot,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        build_next: B,
+        hook: &mut H,
+    ) -> Result<ValidationSnapshot, CommitError>
+    where
+        B: FnOnce(&CatalogGeneration, u64) -> Result<CatalogGeneration, CatalogError>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        if self.load_committed_recovering(keys)?.is_some() {
+            return Err(CommitError::CutoverAlreadyCommitted);
+        }
+        let current = self
+            .load_validation_snapshot(keys)?
+            .ok_or(CommitError::CoreNotInitialized)?;
+        if current.head != selected.head || current.catalog != selected.catalog {
+            return Err(CommitConflict::SelectedValidationChanged.into());
+        }
+        if current.catalog.cutover_marker().is_some() {
+            return Err(CommitError::InvalidCutoverTransition);
+        }
+        validate_preconditions(Some(&current.catalog), preconditions)?;
+        let next_generation = current
+            .head
+            .generation()
+            .checked_add(1)
+            .ok_or(CommitError::GenerationExhausted)?;
+        let next_catalog = build_next(&current.catalog, next_generation)?;
+        if next_catalog.generation() != next_generation {
+            return Err(CommitError::WrongNextGeneration {
+                expected: next_generation,
+                actual: next_catalog.generation(),
+            });
+        }
+        if next_catalog.cutover_marker().is_some() {
+            return Err(CommitError::InvalidCutoverTransition);
+        }
+        validate_precondition_coverage(&current.catalog, &next_catalog, preconditions)?;
+        validate_prepared_revisions(
+            &self.objects_dir,
+            keys,
+            &self.core_id,
+            Some(&current.catalog),
+            &next_catalog,
+            prepared_revisions,
+        )?;
+        let (head, _, _) = self.publish_catalog_pointer_with_hook(
+            keys,
+            &next_catalog,
+            VALIDATION_HEAD_FILE,
+            false,
+            hook,
+        )?;
+        Ok(ValidationSnapshot {
+            head,
+            catalog: next_catalog,
+        })
+    }
+
     pub fn commit_first_mutation<B, I>(
         &self,
         keys: &FrkSubkeys,
@@ -2680,6 +2766,8 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommitConflict {
+    #[error("selected validation snapshot changed before commit")]
+    SelectedValidationChanged,
     #[error("catalog path or revision changed for {stable_id}")]
     PathOrRevision { stable_id: String },
     #[error("catalog destination is occupied: parent={parent_id}, name={name}")]
