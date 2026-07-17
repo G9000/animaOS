@@ -60,6 +60,7 @@ from anima_server.models.runtime_consciousness import (
     ActiveIntention,
     AffectStateRow,
     CurrentEmotion,
+    PresenceCatchup,
     WorkingContext,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -107,6 +108,7 @@ __all__ = [
     "MemoryItemTag",
     "MemoryVector",
     "PendingMemoryOp",
+    "PresenceCatchup",
     "PresenceConfig",
     "RuntimeBackgroundTaskRun",
     "RuntimeDocument",

@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -135,6 +136,16 @@ class Settings(BaseSettings):
     inner_life_tau_valence_hours: float = 36.0
     inner_life_tau_arousal_hours: float = 6.0
     inner_life_tau_energy_hours: float = 18.0
+    # IL2 presence tick / offline catch-up (see
+    # services/agent/inner_life/presence.py and inner_life/catchup.py).
+    # ge=1: a non-positive tick interval would spin the loop hot.
+    presence_tick_interval_seconds: int = Field(default=60, ge=1)
+    presence_active_window_seconds: int = Field(default=120, ge=1)
+    presence_catchup_min_gap_seconds: int = Field(default=600, ge=1)
+    # In-flight RuntimeRuns older than this no longer count as "active"
+    # for the presence tick, so a crashed run stuck in status "running"
+    # cannot exclude a user from presence forever.
+    presence_run_stale_seconds: int = Field(default=1800, ge=1)
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30
