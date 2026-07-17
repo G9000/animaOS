@@ -368,15 +368,8 @@ def run_corefs_operation(
     session = require_unlocked_session(request)
     principal = _resolve_principal(request, session)
 
-    if payload.operation in _WRITE_OPERATIONS:
-        return CoreFsOperationResponse(
-            principal=principal.to_response(),
-            operation=payload.operation,
-            selected=None,
-            result=logical.frozen_mutation_result(payload.operation),
-        )
-
-    if payload.operation not in _READ_OPERATIONS:
+    is_write_operation = payload.operation in _WRITE_OPERATIONS
+    if not is_write_operation and payload.operation not in _READ_OPERATIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "corefs_unknown_operation"},
@@ -384,6 +377,14 @@ def run_corefs_operation(
 
     if principal.kind == "client":
         _client_grant_required(principal)
+
+    if is_write_operation:
+        return CoreFsOperationResponse(
+            principal=principal.to_response(),
+            operation=payload.operation,
+            selected=None,
+            result=logical.frozen_mutation_result(payload.operation),
+        )
 
     context = _resolve_request_context(session)
     try:

@@ -232,6 +232,40 @@ def test_authenticated_broker_can_derive_anima_principal(
     assert response.json()["principal"] == {"kind": "anima", "id": "anima:42", "userId": 42}
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"operation": "stat", "path": "Diary/today.md"},
+        {"operation": "mkdir", "path": "Diary/New"},
+    ],
+)
+def test_authenticated_client_requires_grant_before_any_dispatch(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+) -> None:
+    monkeypatch.setattr(
+        corefs_route,
+        "_principal_from_authenticated_broker",
+        lambda _request, session: corefs_route.CoreFsPrincipal(
+            kind="client",
+            id="notes-extension",
+            user_id=session.user_id,
+            install_digest="sha256:abc",
+        ),
+    )
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json=payload,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "corefs_client_grant_required"
+    assert corefs_client._corefs_calls == []  # type: ignore[attr-defined]
+
+
 def test_caller_cannot_supply_client_identity(corefs_client: TestClient) -> None:
     response = corefs_client.post(
         "/api/corefs/operation",
