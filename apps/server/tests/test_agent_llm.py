@@ -94,6 +94,52 @@ def test_legacy_piggyback_kept_when_embedding_model_configured(
     assert embeddings._resolve_embedding_provider() == "ollama"
 
 
+def test_resolve_embedding_model_ignores_extraction_model_for_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # agent_extraction_model is a CHAT model setting (e.g. "qwen2.5:3b").
+    # When no embedding config is present the resolved provider is the
+    # bundled fastembed default, and feeding it a chat model name would
+    # kill dense retrieval (TextEmbedding load fails -> failed latch).
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_provider() == "fastembed"
+    assert embeddings._resolve_embedding_model() == "BAAI/bge-small-en-v1.5"
+
+
+def test_resolve_embedding_model_explicit_wins_over_fastembed_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "fastembed")
+    monkeypatch.setattr(settings, "agent_embedding_model", "custom/embed-model")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_model() == "custom/embed-model"
+
+
+def test_resolve_embedding_model_keeps_extraction_fallback_for_non_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pre-existing behavior preserved: an explicit non-fastembed embedding
+    # provider (e.g. ollama) still falls back to agent_extraction_model when
+    # no dedicated agent_embedding_model is set.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_model() == "qwen2.5:3b"
+
+
 @pytest.mark.asyncio
 async def test_generate_embedding_skips_explicit_openrouter_embedding_provider(
     monkeypatch: pytest.MonkeyPatch,
@@ -598,6 +644,77 @@ def test_resolve_embedding_dim_knows_bundled_model(
     config_module.clear_detected_embedding_dim()
 
     assert config_module.resolve_embedding_dim() == 384
+
+
+def test_resolve_embedding_dim_ignores_extraction_model_for_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mirrors test_resolve_embedding_model_ignores_extraction_model_for_fastembed:
+    # extraction model is chat intent, not embedding intent, and must not leak
+    # into the dim lookup for the resolved fastembed provider either — else
+    # this resolves to the 768 fallback while the bundled default is 384.
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="",
+            agent_extraction_model="qwen2.5:3b",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_provider="ollama",
+            agent_embedding_dim=768,
+        ),
+    )
+    config_module.clear_detected_embedding_dim()
+
+    assert config_module.resolve_embedding_dim() == 384
+
+
+def test_resolve_embedding_dim_explicit_model_wins_over_fastembed_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="BAAI/bge-small-en-v1.5",
+            agent_extraction_model="qwen2.5:3b",
+            agent_embedding_provider="fastembed",
+            agent_embedding_base_url="",
+            agent_provider="fastembed",
+            agent_embedding_dim=768,
+        ),
+    )
+    config_module.clear_detected_embedding_dim()
+
+    assert config_module.resolve_embedding_dim() == 384
+
+
+def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pre-existing behavior preserved for an explicit non-fastembed provider.
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="",
+            agent_extraction_model="mxbai-embed-large",
+            agent_embedding_provider="ollama",
+            agent_embedding_base_url="",
+            agent_provider="ollama",
+            agent_embedding_dim=768,
+        ),
+    )
+    config_module.clear_detected_embedding_dim()
+
+    assert config_module.resolve_embedding_dim() == 1024
 
 
 @pytest.mark.asyncio

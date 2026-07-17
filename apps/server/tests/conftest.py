@@ -16,6 +16,7 @@ from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db import runtime as runtime_mod
 from anima_server.db.runtime_base import RuntimeBase
+from anima_server.services.agent import fastembed_backend as fastembed_backend_module
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
 from anima_server.services.documents import reranker as reranker_module
@@ -46,6 +47,21 @@ def _reranker_model_unavailable_in_tests() -> Any:
 
 
 reranker_module._create_model = _reranker_model_unavailable_in_tests
+
+
+def _fastembed_model_unavailable_in_tests(model_name: str) -> Any:
+    # Same belt-and-suspenders as the reranker stub above: fastembed is now
+    # the bundled default embedding provider, so any test exercising the real
+    # embedding path would otherwise reach here and download the ONNX model
+    # (~130MB) over the network mid-suite. Tests that want real fastembed
+    # behavior monkeypatch ``fastembed_backend._create_model`` (or
+    # ``embed_texts``) themselves (see test_fastembed_backend.py); everything
+    # else must degrade to the same "embedding unavailable" behavior as if
+    # the model failed to load.
+    raise RuntimeError("Fastembed model construction is stubbed out in tests")
+
+
+fastembed_backend_module._create_model = _fastembed_model_unavailable_in_tests
 
 
 from anima_server.models import runtime as _runtime_models  # noqa: F401 — register tables

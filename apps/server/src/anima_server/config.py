@@ -364,13 +364,29 @@ def resolve_embedding_dim() -> int:
     """Return the embedding dimension for the active model.
 
     Priority: detected at runtime > known lookup > config fallback.
+
+    ``agent_extraction_model`` is a CHAT model setting, not embedding intent
+    — it is only consulted as a legacy fallback when the resolved provider
+    is an explicitly-configured non-fastembed piggyback provider. For the
+    bundled ``fastembed`` provider it must be skipped entirely: a chat model
+    name (e.g. "qwen2.5:3b") isn't in ``KNOWN_EMBEDDING_DIMS``, so it would
+    silently fall through to the 768 config fallback while the bundled
+    default model is actually 384-dim.  (Rejected alternative: keep the old
+    unconditional piggyback for fastembed too — that reads chat config as
+    embedding config; the contract-migration machinery already moves such
+    installs onto the bundled default uniformly.)
+
+    KEEP IN SYNC with ``embeddings._resolve_embedding_model``, which
+    duplicates this same fastembed-skips-extraction-model rule for model
+    resolution.
     """
     if _detected_embedding_dim is not None:
         return _detected_embedding_dim
-    model = settings.agent_embedding_model.strip(
-    ) or settings.agent_extraction_model.strip()
+    embed_provider = _resolve_default_embedding_provider()
+    model = settings.agent_embedding_model.strip()
+    if not model and embed_provider != "fastembed":
+        model = settings.agent_extraction_model.strip()
     if not model:
-        embed_provider = _resolve_default_embedding_provider()
         model = _DEFAULT_EMBEDDING_MODELS.get(
             embed_provider, "nomic-embed-text")
     if model in KNOWN_EMBEDDING_DIMS:

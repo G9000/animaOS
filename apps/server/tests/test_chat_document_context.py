@@ -1107,3 +1107,75 @@ def test_build_document_context_block_ignores_unowned_document_ids(
     assert mixed is not None
     assert "mine.pdf" in mixed.value
     assert "theirs.pdf" not in mixed.value
+
+
+def test_full_document_texts_returns_none_when_all_ids_invalid(
+    runtime_db: Session,
+) -> None:
+    """Regression: _full_document_texts must return None (retrieval fallback),
+    not an empty list, when every document_id fails its own per-id ownership
+    check inside the loop. An empty list previously reached the caller's
+    ``is not None`` gate and shipped a "Full text of the selected documents"
+    block with zero document text.
+    """
+    result = agent_service._full_document_texts(
+        runtime_db,
+        user_id=7,
+        document_ids=[999_999, 999_998],
+    )
+    assert result is None
+
+
+def test_build_document_context_block_falls_back_to_retrieval_when_all_documents_vanish(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    """End-to-end regression for the same bug: the outer ownership check can
+    fail open (transient DB error keeps the stale, now-invalid ids), and by
+    the time ``_full_document_texts`` re-checks ownership per id every
+    document has vanished. That must fall back to the retrieval path rather
+    than shipping an empty full-document block.
+    """
+    calls = {"count": 0}
+
+    def flaky_get_document_for_user(*args: Any, **kwargs: Any) -> Any:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Outer ownership check in _build_document_context_block: fails
+            # open, keeping the original (stale) document_ids.
+            raise RuntimeError("transient DB error")
+        # Inner per-id check inside _full_document_texts: the document is
+        # gone by the time we get here.
+        return None
+
+    search_calls: list[list[int]] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        search_calls.append(list(document_ids))
+        return []
+
+    monkeypatch.setattr(
+        agent_service, "get_document_for_user", flaky_get_document_for_user
+    )
+    monkeypatch.setattr(
+        agent_service, "search_document_chunks", fake_search_document_chunks
+    )
+    monkeypatch.setattr(settings, "document_full_context", "auto")
+
+    result = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="question",
+        document_ids=[4],
+    )
+
+    # Retrieval was actually attempted (no full-doc marker shipped first).
+    assert search_calls == [[4]]
+    assert result is not None
+    assert "Full text of the selected documents" not in result.value

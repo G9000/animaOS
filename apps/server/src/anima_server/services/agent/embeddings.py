@@ -126,14 +126,36 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
 
 
 def _resolve_embedding_model() -> str:
-    """Return the embedding model to use, preferring the user-configured one."""
+    """Return the embedding model to use, preferring the user-configured one.
+
+    ``agent_extraction_model`` is a CHAT model setting (written by the
+    settings route for the background extraction LLM), not an embedding
+    setting. It is kept as a legacy fallback only for the piggyback case —
+    an explicitly-configured non-fastembed provider — where reusing the
+    chat model name was the pre-existing, documented behavior. It must
+    NOT be consulted when the resolved provider is the bundled
+    ``fastembed`` ONNX backend: fastembed can only load embedding-capable
+    ONNX models, so leaking a chat model name (e.g. "qwen2.5:3b") in here
+    would fail ``TextEmbedding`` construction and silently kill dense
+    retrieval. (Rejected alternative: keep treating extraction model as a
+    piggyback intent for fastembed too, preserving pre-branch behavior —
+    but that misreads chat config as embedding config, and the existing
+    contract-migration machinery already moves such installs onto the
+    bundled default uniformly, so there is no migration gap to bridge.)
+
+    KEEP IN SYNC with ``config._resolve_default_embedding_provider`` /
+    ``config.resolve_embedding_dim``, which duplicate this same
+    fastembed-skips-extraction-model rule for the dimension lookup.
+    """
     configured = _setting_text(getattr(settings, "agent_embedding_model", ""))
     if configured:
         return configured
-    configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
-    if configured:
-        return configured
-    return _DEFAULT_EMBEDDING_MODELS.get(_resolve_embedding_provider(), "nomic-embed-text")
+    provider = _resolve_embedding_provider()
+    if provider != "fastembed":
+        configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
+        if configured:
+            return configured
+    return _DEFAULT_EMBEDDING_MODELS.get(provider, "nomic-embed-text")
 
 
 def _resolve_embedding_base_url() -> str:

@@ -2001,6 +2001,14 @@ def _full_document_texts(
         if total_chars > budget_chars:
             return None
         documents.append((document, text))
+    if not documents:
+        # Every selected id was dropped by this loop's own ownership/existence
+        # check (e.g. the outer caller's ownership check failed open and kept
+        # stale ids). An empty list is indistinguishable from "no selection"
+        # to callers gating on `is not None`, which would otherwise ship a
+        # "Full text of the selected documents" block with zero document
+        # text. Signal the same retrieval fallback as any other rejection.
+        return None
     return documents
 
 
