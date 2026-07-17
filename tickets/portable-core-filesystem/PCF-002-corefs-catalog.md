@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 19:13 MYT
+- Updated: 2026-07-17 22:42 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -97,6 +97,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass: migration-frozen server mutation wrappers now accept and forward normal positional/keyword mutation inputs to the native frozen mutators instead of raising `TypeError` before returning `corefs_migration_write_frozen`.
 - 2026-07-17 18:59 MYT - Addressed PR #106's fifth current-head Codex review pass with a focused folder lifecycle regression: trashed folders may retain a historical `original_parent_id` after that original parent is itself trashed, while the active trash folder must remain live and hidden descendant original-parent cycles still fail closed.
 - 2026-07-17 19:13 MYT - Addressed PR #106's sixth current-head Codex review pass with a red/green shared-backend regression: CoreFS directory listings now return authenticated file size and text/binary classification from the object envelope instead of placeholder zero-byte unknown metadata.
+- 2026-07-17 22:31 MYT - PR #106 merged PCF-002 Step 10 into `main` at `e0f249a6`. Resumed PCF-002 on branch `codex/pcf-002-client-api` in worktree `.worktrees/pcf-002-client-api` for Step 11: register the generic authenticated CoreFS API route, resolve user/ANIMA/client principals distinctly, enforce migration-frozen writes server-side, and lay the device-local client/grant boundary without exposing host filesystem or physical CoreFS paths.
+- 2026-07-17 22:38 MYT - Added the first Step 11 server API boundary: `/api/corefs/operation` requires an unlocked session, accepts only logical CoreFS paths, derives the CoreFS context server-side, resolves user/ANIMA/client principals distinctly, rejects installed-client reads until grants are implemented, and returns `corefs_migration_write_frozen` before any native mutator is called.
+- 2026-07-17 22:42 MYT - Added typed `packages/api-client` CoreFS operation bindings, including per-call principal/client headers that preserve shared unlock and sidecar nonce behavior for future desktop/Animus consumers.
 
 ## Validation
 
@@ -163,6 +166,10 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #106 sixth review pass: red/green `read_directory_returns_authenticated_file_metadata` regression; full `cargo +1.75.0 test --locked -p anima-corefs`; strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`; and `git diff --check` passed.
   - PCF-002 Step 10 Layer 3: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py apps/server/src/anima_server/services/corefs/__init__.py`
   - PCF-002 Step 10 Layer 3: `git diff --check`
+  - PCF-002 Step 11 API boundary: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; $env:PYTHONPATH='C:\Users\leoca\OneDrive\Desktop\anima\animaOS\.worktrees\pcf-002-client-api\apps\server\src'; C:\Users\leoca\OneDrive\Desktop\anima\animaOS\.venv\Scripts\python.exe -m pytest apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py -q` (10 passed)
+  - PCF-002 Step 11 API boundary: `$env:PYTHONPATH='C:\Users\leoca\OneDrive\Desktop\anima\animaOS\.worktrees\pcf-002-client-api\apps\server\src'; C:\Users\leoca\OneDrive\Desktop\anima\animaOS\.venv\Scripts\python.exe -m ruff check apps/server/src/anima_server/api/routes/corefs.py apps/server/src/anima_server/schemas/corefs.py apps/server/src/anima_server/services/core.py apps/server/src/anima_server/main.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py` (passed)
+  - PCF-002 Step 11 API boundary: `bun test packages/api-client/tests/client.test.ts` (18 passed)
+  - PCF-002 Step 11 API boundary: `bun install --frozen-lockfile` was needed in the fresh worktree after `bun run build` initially failed on missing JS dependencies; rerun `bun run build` passed after frozen install.
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -194,7 +201,15 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/anima-core/src/ffi.rs`
   - `packages/anima-core/Cargo.toml` and `Cargo.lock`
   - `apps/server/src/anima_server/services/corefs/{__init__.py,logical.py}`
+  - `apps/server/src/anima_server/api/routes/corefs.py`
+  - `apps/server/src/anima_server/schemas/corefs.py`
+  - `apps/server/src/anima_server/services/core.py`
+  - `apps/server/src/anima_server/main.py`
+  - `apps/server/tests/test_corefs_api.py`
   - `apps/server/tests/test_corefs_logical.py`
+  - `packages/api-client/src/client.ts`
+  - `packages/api-client/src/types.ts`
+  - `packages/api-client/tests/client.test.ts`
   - `apps/server/tests/test_corefs_crypto.py`
   - `Cargo.lock`
   - `packages/anima-file-tools/`

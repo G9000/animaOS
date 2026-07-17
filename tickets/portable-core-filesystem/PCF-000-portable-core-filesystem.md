@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 19:13 MYT
+- Updated: 2026-07-17 22:42 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -118,6 +118,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass for PCF-002 Step 10: migration-frozen server mutation wrappers now preserve the native variadic frozen-write contract for realistic mutation inputs. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 18:59 MYT - Addressed PR #106's fifth current-head Codex review pass for PCF-002 Step 10: trashed folders now allow historical original-parent references to parents that are later trashed, while keeping live-trash-folder and hidden descendant-cycle validation fail-closed. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 19:13 MYT - Addressed PR #106's sixth current-head Codex review pass for PCF-002 Step 10: generic CoreFS directory listings now return authenticated file metadata from the encrypted envelope rather than zero-byte unknown placeholders. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 22:31 MYT - PR #106 merged PCF-002 Step 10 into `main` at `e0f249a6`; resumed PCF-002 Step 11 from that merged head in isolated worktree `codex/pcf-002-client-api`. The parent remains `in_progress` while the generic authenticated CoreFS API, principal resolution, migration-write gate, and device-local client/grant boundary are implemented before the Step 12 benchmark.
+- 2026-07-17 22:38 MYT - PCF-002 Step 11 progressed with the first generic CoreFS server route and tests for unlocked access, logical-path-only requests, distinct user/ANIMA/client principals, client fail-closed grant handling, and server-side migration-frozen writes. The parent remains `in_progress`; full folder-scoped grant storage/broker work and Step 12 benchmark remain.
+- 2026-07-17 22:42 MYT - PCF-002 Step 11 added typed `packages/api-client` bindings for the generic CoreFS operation route, including principal/client headers over the shared unlock/nonce request path.
 
 ## Validation
 
@@ -143,6 +146,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #106 fourth review pass: mutation-wrapper argument-forwarding regression, focused Python logical tests, scoped Ruff, and `git diff --check` passed.
   - PR #106 fifth review pass: red/green `folder_trash_graph_invariants_fail_closed` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
   - PR #106 sixth review pass: red/green `read_directory_returns_authenticated_file_metadata` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
+  - PCF-002 Step 11 API boundary: focused Python route/logical tests (10 passed) and scoped Ruff across the new CoreFS API/schema plus touched server files passed.
+  - PCF-002 Step 11 API boundary: API-client Bun tests passed (18 tests) and `bun run build` passed after a frozen dependency install in the fresh worktree.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
@@ -169,7 +174,15 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `packages/anima-corefs/tests/{catalog_entries.rs,logical_snapshot.rs}`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}` and `Cargo.lock`
   - `apps/server/src/anima_server/services/corefs/{__init__.py,logical.py}`
+  - `apps/server/src/anima_server/api/routes/corefs.py`
+  - `apps/server/src/anima_server/schemas/corefs.py`
+  - `apps/server/src/anima_server/services/core.py`
+  - `apps/server/src/anima_server/main.py`
+  - `apps/server/tests/test_corefs_api.py`
   - `apps/server/tests/test_corefs_logical.py`
+  - `packages/api-client/src/client.ts`
+  - `packages/api-client/src/types.ts`
+  - `packages/api-client/tests/client.test.ts`
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.

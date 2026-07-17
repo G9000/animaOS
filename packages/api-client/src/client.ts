@@ -8,6 +8,9 @@ import type {
   AuthResponse,
   ChangePasswordResponse,
   CorefsCredentialResponse,
+  CoreFsOperationRequest,
+  CoreFsOperationResponse,
+  CoreFsPrincipalOptions,
   ConfirmRecoveryCredentialResponse,
   PrepareRecoveryCredentialResponse,
   PrepareCorefsRecoveryCredentialResponse,
@@ -76,6 +79,7 @@ import type {
 interface ApiRequestOptions {
   method?: string;
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
 type StreamEventPayload = {
@@ -205,10 +209,11 @@ export function createApiClient(options: ApiClientOptions) {
     endpoint: string,
     requestOptions: ApiRequestOptions = {},
   ): Promise<T> {
-    const { method = "GET", body } = requestOptions;
+    const { method = "GET", body, headers: requestHeaders = {} } = requestOptions;
     const token = getUnlockToken?.() || null;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      ...requestHeaders,
     };
 
     if (token) {
@@ -524,6 +529,22 @@ export function createApiClient(options: ApiClientOptions) {
     }
   }
 
+  function buildCoreFsPrincipalHeaders(
+    options: CoreFsPrincipalOptions = {},
+  ): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (options.principal) {
+      headers["x-anima-corefs-principal"] = options.principal;
+    }
+    if (options.clientId) {
+      headers["x-anima-corefs-client-id"] = options.clientId;
+    }
+    if (options.installDigest) {
+      headers["x-anima-corefs-install-digest"] = options.installDigest;
+    }
+    return headers;
+  }
+
   return {
     auth: {
       login: (username: string, password: string) =>
@@ -646,6 +667,17 @@ export function createApiClient(options: ApiClientOptions) {
         request<User>(`/users/${id}`, { method: "PUT", body: data }),
       delete: (id: number) =>
         request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
+    },
+    corefs: {
+      operation: (
+        payload: CoreFsOperationRequest,
+        options?: CoreFsPrincipalOptions,
+      ) =>
+        request<CoreFsOperationResponse>("/corefs/operation", {
+          method: "POST",
+          body: payload,
+          headers: buildCoreFsPrincipalHeaders(options),
+        }),
     },
     chat: {
       send: (

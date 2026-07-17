@@ -62,6 +62,75 @@ export interface UserResponse extends ContractUserResponse {}
 export interface CreateAiChatRequest extends ContractCreateAiChatRequest {}
 export interface CreateAiChatResponse extends ContractCreateAiChatResponse {}
 
+export type CoreFsPrincipalKind = "user" | "anima" | "client";
+
+export type CoreFsOperation =
+  | "stat"
+  | "list"
+  | "walk"
+  | "glob"
+  | "grep"
+  | "read"
+  | "search_readiness"
+  | "mkdir"
+  | "create_file"
+  | "write_file"
+  | "apply_patch"
+  | "move"
+  | "trash"
+  | "restore";
+
+export interface CoreFsOperationRequest {
+  operation: CoreFsOperation;
+  path?: string | null;
+  root?: string | null;
+  pattern?: string | null;
+  query?: string | null;
+  cursorAfter?: string | null;
+  globCursorAfter?: string | null;
+  grepCursorPath?: string | null;
+  grepCursorByteOffset?: number | null;
+  grepCursorWalkAfter?: string | null;
+  limit?: number;
+  pageSize?: number;
+  maxResults?: number;
+  maxFiles?: number;
+  maxMatches?: number;
+  maxLineBytes?: number;
+  offset?: number;
+  maxBytes?: number;
+  responseBytes?: number | null;
+  regex?: boolean;
+  includeDirectories?: boolean;
+  searchState?: "missing" | "building" | "ready" | "degraded";
+  indexGeneration?: number | null;
+}
+
+export interface CoreFsPrincipal {
+  kind: CoreFsPrincipalKind;
+  id: string;
+  userId: number;
+  installDigest?: string | null;
+}
+
+export interface CoreFsSelectedSnapshot {
+  generation: number;
+  catalogHash: string;
+}
+
+export interface CoreFsOperationResponse {
+  principal: CoreFsPrincipal;
+  operation: CoreFsOperation;
+  selected?: CoreFsSelectedSnapshot | null;
+  result?: Record<string, unknown> | null;
+}
+
+export interface CoreFsPrincipalOptions {
+  principal?: CoreFsPrincipalKind;
+  clientId?: string;
+  installDigest?: string;
+}
+
 export type VaultTransferFormat = "vault_json" | "anima_capsule";
 
 export interface VaultExportResponse {
