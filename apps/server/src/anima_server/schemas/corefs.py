@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -25,20 +26,84 @@ CoreFsOperation = Literal[
 CoreFsPrincipalKind = Literal["user", "anima", "client"]
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_MAX_LOGICAL_PATH_BYTES = 32 * 1024
+_MAX_PORTABLE_NAME_BYTES = 255
+_RESERVED_COMPONENTS = frozenset(
+    {
+        ".anima",
+        ".corefs",
+        "objects",
+        "fs",
+        "catalogs",
+        "head",
+        "validation_head",
+        "manifest.json",
+        "soul",
+        "soul.db",
+        "cutover_receipt",
+        "cutover_complete",
+        "commit.lock",
+    }
+)
+_AMBIGUOUS_PATH_CHARACTERS = frozenset(
+    {
+        "\u2044",
+        "\u2215",
+        "\u29f8",
+        "\uff0f",
+        "\uff3c",
+        "\ufeff",
+    }
+)
 
 
 def normalize_logical_path(value: str | None, *, field_name: str) -> str | None:
     if value is None:
         return None
-    normalized = value.strip().replace("\\", "/")
-    if normalized in {"", "/"}:
+    stripped = value.strip()
+    if len(stripped.encode("utf-8")) > _MAX_LOGICAL_PATH_BYTES:
+        raise ValueError(f"{field_name} exceeds the CoreFS logical path byte limit.")
+    if stripped == "":
         return ""
-    if _WINDOWS_DRIVE_RE.match(normalized) or normalized.startswith("/"):
+    if _WINDOWS_DRIVE_RE.match(stripped) or stripped.startswith(("/", "\\")):
         raise ValueError(f"{field_name} must be a CoreFS logical path, not a host filesystem path.")
+    if "\x00" in stripped:
+        raise ValueError(f"{field_name} must not contain NUL.")
+    if "\\" in stripped:
+        raise ValueError(f"{field_name} must not contain host path separators.")
+    if _has_uri_scheme(stripped):
+        raise ValueError(f"{field_name} must not use a URI or foreign backend path form.")
+    normalized = stripped
     parts = [part for part in normalized.split("/") if part]
-    if any(part in {".", ".."} or "\x00" in part for part in parts):
-        raise ValueError(f"{field_name} must not contain traversal or NUL segments.")
+    if len(parts) != len(normalized.split("/")):
+        raise ValueError(f"{field_name} must not contain empty path components.")
+    for part in parts:
+        if part in {".", ".."}:
+            raise ValueError(f"{field_name} must not contain traversal segments.")
+        if len(part.encode("utf-8")) > _MAX_PORTABLE_NAME_BYTES:
+            raise ValueError(f"{field_name} contains a component over the byte limit.")
+        if any(char in _AMBIGUOUS_PATH_CHARACTERS for char in part) or any(
+            "\u202a" <= char <= "\u202e" or "\u2066" <= char <= "\u2069"
+            for char in part
+        ):
+            raise ValueError(f"{field_name} contains an ambiguous Unicode path character.")
+        if any(unicodedata.category(char).startswith("C") for char in part):
+            raise ValueError(f"{field_name} contains a control character.")
+        if unicodedata.normalize("NFC", part) != part:
+            raise ValueError(f"{field_name} must use Unicode NFC.")
+        if part.casefold() in _RESERVED_COMPONENTS:
+            raise ValueError(f"{field_name} contains a reserved CoreFS component.")
     return "/".join(parts)
+
+
+def _has_uri_scheme(value: str) -> bool:
+    first_component = value.split("/", 1)[0]
+    scheme, separator, _rest = first_component.partition(":")
+    if not separator or not scheme:
+        return False
+    return scheme[0].isalpha() and all(
+        char.isalnum() or char in {"+", "-", "."} for char in scheme
+    )
 
 
 class CoreFsOperationRequest(BaseModel):

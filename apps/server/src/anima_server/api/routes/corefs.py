@@ -71,14 +71,25 @@ def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
 
 
 def _resolve_principal(request: Request, session: UnlockSession) -> CoreFsPrincipal:
-    requested = (request.headers.get("x-anima-corefs-principal") or "user").strip().lower()
+    client_id = (request.headers.get("x-anima-corefs-client-id") or "").strip()
+    install_digest = (request.headers.get("x-anima-corefs-install-digest") or "").strip()
+    has_client_identity = bool(client_id or install_digest)
+    requested = (request.headers.get("x-anima-corefs-principal") or "").strip().lower()
+    if not requested:
+        requested = "client" if has_client_identity else "user"
+    if requested != "client" and has_client_identity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "corefs_conflicting_principal_identity",
+                "message": "Client identity headers require the client CoreFS principal.",
+            },
+        )
     if requested == "user":
         return CoreFsPrincipal(kind="user", id=str(session.user_id), user_id=session.user_id)
     if requested == "anima":
         return CoreFsPrincipal(kind="anima", id=f"anima:{session.user_id}", user_id=session.user_id)
     if requested == "client":
-        client_id = (request.headers.get("x-anima-corefs-client-id") or "").strip()
-        install_digest = (request.headers.get("x-anima-corefs-install-digest") or "").strip()
         if not client_id or not install_digest:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

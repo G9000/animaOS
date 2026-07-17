@@ -144,6 +144,49 @@ def test_client_principal_fails_closed_without_grant(corefs_client: TestClient) 
     }
 
 
+def test_client_identity_headers_imply_client_principal(corefs_client: TestClient) -> None:
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers={
+            **_unlock_headers(),
+            "x-anima-corefs-client-id": "notes-extension",
+            "x-anima-corefs-install-digest": "sha256:abc",
+        },
+        json={"operation": "stat", "path": "Diary/today.md"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "corefs_client_grant_required"
+    assert response.json()["detail"]["principal"] == {
+        "kind": "client",
+        "id": "notes-extension",
+        "userId": 42,
+        "installDigest": "sha256:abc",
+    }
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "file:///tmp/x",
+        "fs/secrets",
+        "Diary/\u202esecret.md",
+        "Diary/control\u0001.md",
+    ],
+)
+def test_rejects_native_invalid_logical_paths(
+    corefs_client: TestClient,
+    bad_path: str,
+) -> None:
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={"operation": "stat", "path": bad_path},
+    )
+
+    assert response.status_code == 422
+
+
 def test_write_operations_are_frozen_before_native_mutators(
     corefs_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
