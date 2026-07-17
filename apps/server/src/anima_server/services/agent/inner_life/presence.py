@@ -16,11 +16,13 @@ calls anywhere (this module and `catchup.py` are pure arithmetic + DB).
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from datetime import tzinfo as _tzinfo
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,8 +36,10 @@ from anima_server.models.runtime_consciousness import AffectStateRow
 from anima_server.services.agent.inner_life.affect import (
     AffectConfig,
     AffectState,
+    _advance,
     arousal_threshold_crossing_time,
     relax,
+    relax_with_shift_dynamics,
     update_allostatic_shift,
 )
 from anima_server.services.agent.inner_life.store import (
@@ -81,6 +85,7 @@ def to_utc_view(state: AffectState) -> AffectState:
     return replace(state, updated_at=state.updated_at.astimezone(UTC))
 
 
+@lru_cache(maxsize=1)
 def system_zoneinfo() -> _tzinfo:
     """Resolve the machine's real IANA timezone (DST-aware).
 
@@ -90,6 +95,10 @@ def system_zoneinfo() -> _tzinfo:
     eligibility and circadian phase. Resolution order: the TZ env var (if
     it names a valid zone), then the /etc/localtime symlink target, then —
     with a logged warning — the current fixed offset as a last resort.
+
+    Cached for the process lifetime (the tick calls this every cadence;
+    without caching the fixed-offset fallback would warn every 60 s).
+    Tests exercising resolution should call `system_zoneinfo.cache_clear()`.
     """
     tz_name = os.environ.get("TZ")
     if tz_name:
@@ -127,26 +136,89 @@ def resolve_local_now(now: datetime | None, tz: _tzinfo | None) -> datetime:
     return datetime.now(tz if tz is not None else system_zoneinfo())
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _shift_of_load(load: float, config: AffectConfig) -> float:
+    """The shift `update_allostatic_shift` pins while load exceeds sustained."""
+    span = config.high_arousal_hours_cap - config.allostatic_sustained_hours
+    excess = load - config.allostatic_sustained_hours
+    return config.allostatic_max_shift * _clamp(excess / span, 0.0, 1.0)
+
+
+def _load_crossing_offsets(
+    load0: float, rate: float, duration: float, config: AffectConfig
+) -> list[float]:
+    """Offsets in (0, duration) where the shift law changes regime.
+
+    Load moves linearly within a phase (`load0 + rate * t`), so crossings
+    of the sustained threshold and the cap are plain algebra.
+    """
+    offsets = []
+    for level in (config.allostatic_sustained_hours, config.high_arousal_hours_cap):
+        if (rate > 0 and load0 < level) or (rate < 0 and load0 > level):
+            t = (level - load0) / rate
+            if 0.0 < t < duration:
+                offsets.append(t)
+    return sorted(offsets)
+
+
+def _segment_shift_law(
+    load0: float, rate: float, shift0: float, config: AffectConfig
+) -> tuple[float, float, float | None]:
+    """(shift_initial, shift_slope, shift_decay_tau) for one gap segment.
+
+    Mirrors `update_allostatic_shift`'s regimes in continuous form: load
+    pinned at the cap -> constant max shift; load above sustained -> shift
+    is a linear function of the linearly-moving load (snapping to f(load)
+    regardless of the stored shift, exactly as the discrete update does);
+    otherwise -> exponential decay of the carried shift toward zero.
+    """
+    sustained = config.allostatic_sustained_hours
+    span = config.high_arousal_hours_cap - config.allostatic_sustained_hours
+    if rate > 0 and load0 >= config.high_arousal_hours_cap:
+        return (config.allostatic_max_shift, 0.0, None)
+    interior_above = load0 > sustained or (load0 == sustained and rate > 0)
+    if interior_above:
+        return (_shift_of_load(load0, config), config.allostatic_max_shift / span * rate, None)
+    return (shift0, 0.0, config.allostatic_decay_tau_hours)
+
+
 def apply_idle_gap(
     state: AffectState,
     local_now: datetime,
     config: AffectConfig,
 ) -> AffectState:
-    """Apply one idle gap in closed form: relax + piecewise-exact allostatic.
+    """Apply one idle gap in closed form: piecewise-exact relax + allostatic.
 
-    `update_allostatic_shift` branches on the arousal at call time, so a
-    single call spanning a gap in which arousal crosses the allostatic
-    threshold would pick one branch for the entire gap (using the
-    end-of-gap arousal — pure drain, no accumulation for the above-threshold
-    lead-in). The trajectory crosses at most once, downward, at
-    t* = `arousal_threshold_crossing_time`: accumulate over [0, t*] with the
-    starting (above-threshold) arousal, then drain over [t*, gap] with the
-    relaxed (below-threshold) arousal — two calls to the same pure function,
-    keeping its contract single-sourced. Residual quantization: if
-    `high_arousal_hours` crosses the 48 h sustained threshold *during the
-    drain phase*, the shift decay window covers the whole phase instead of
-    only the sub-sustained tail; a single gap accumulates far too little to
-    reach 48 h at current constants, so this is ignorable.
+    The gap is segmented wherever the piecewise dynamics change law, and
+    each segment is fully closed-form — O(1) in gap length throughout:
+
+    - t* — arousal's single downward crossing of the allostatic threshold
+      (`arousal_threshold_crossing_time`, bisection): accumulation before,
+      drain after;
+    - load crossings of the sustained threshold / cap within each phase —
+      algebraic, since load is linear per phase (+1 h/h accumulating,
+      -0.5 h/h draining).
+
+    Within each segment the shift follows one law (`_segment_shift_law`)
+    and `relax_with_shift_dynamics` absorbs it into the arousal solution
+    as a closed-form particular term — so a multi-week gap in which the
+    allostatic shift decays produces the same end arousal as tick
+    composition, instead of freezing the shift at its stored value.
+    `update_allostatic_shift` performs the per-segment load bookkeeping
+    (branch selected by the segment's phase); the carried shift is then
+    set to the law's own end value — identical to the update's result
+    except at a segment ending exactly ON the sustained threshold, where
+    the discrete update falls into the decay branch while the continuous
+    law says f(sustained) = 0.
+
+    Residual: t* is solved with the shift frozen at its stored value; the
+    shift moves by at most ~0.007 over the <= ~7 h an accumulate phase can
+    last, so the induced t* error is second-order (zero whenever the
+    stored shift is 0, i.e. any state that has never sustained high
+    arousal).
 
     `state` is the persisted (UTC-view) row; `local_now` must be aware and
     carry the zone circadian phase should be read in. Returns the UTC view
@@ -159,14 +231,63 @@ def apply_idle_gap(
     gap_hours = max(
         0.0, (local_now.astimezone(UTC) - state.updated_at).total_seconds() / 3600.0
     )
-    relaxed = to_utc_view(relax(local_state, local_now, config))
+    if gap_hours <= 0.0:
+        return to_utc_view(relax(local_state, local_now, config))
+
     t_star = min(arousal_threshold_crossing_time(local_state, config), gap_hours)
-    accumulated = update_allostatic_shift(
-        replace(relaxed, arousal=state.arousal), t_star, config
-    )
-    return update_allostatic_shift(
-        replace(accumulated, arousal=relaxed.arousal), gap_hours - t_star, config
-    )
+
+    # (end_offset, arousal_above) phases, then split at load-law changes.
+    phases: list[tuple[float, bool]] = []
+    if t_star > 0.0:
+        phases.append((t_star, True))
+    if gap_hours > t_star:
+        phases.append((gap_hours, False))
+
+    current = local_state
+    start_moment = local_state.updated_at
+    offset = 0.0
+    load = state.high_arousal_hours
+    shift = state.arousal_baseline_shift
+
+    for phase_end, above in phases:
+        rate = 1.0 if above else -config.allostatic_recovery_drain_rate
+        crossings = _load_crossing_offsets(load, rate, phase_end - offset, config)
+        for boundary in [*[offset + c for c in crossings], phase_end]:
+            duration = boundary - offset
+            if duration <= 0.0:
+                continue
+            initial, slope, decay_tau = _segment_shift_law(load, rate, shift, config)
+            moment = (
+                local_now
+                if boundary >= gap_hours
+                else _advance(start_moment, boundary)
+            )
+            relaxed = relax_with_shift_dynamics(
+                current,
+                moment,
+                config,
+                shift_initial=initial,
+                shift_slope=slope,
+                shift_decay_tau_hours=decay_tau,
+            )
+            stepped = update_allostatic_shift(
+                replace(relaxed, arousal=current.arousal if above else relaxed.arousal),
+                duration,
+                config,
+            )
+            load = stepped.high_arousal_hours
+            if decay_tau is not None:
+                shift = initial * math.exp(-duration / decay_tau)
+            else:
+                shift = _clamp(
+                    initial + slope * duration, 0.0, config.allostatic_max_shift
+                )
+            current = replace(
+                stepped, arousal=relaxed.arousal, arousal_baseline_shift=shift
+            )
+            offset = boundary
+
+    return to_utc_view(current)
 
 
 def _distinct_affect_user_ids(db: Session) -> list[int]:

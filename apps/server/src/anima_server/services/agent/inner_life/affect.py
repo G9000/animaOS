@@ -163,8 +163,14 @@ def relax(
     * exp(-dt/tau_x)`. Arousal's baseline oscillates (circadian), so it
     uses the exact solution of the linear ODE dx/dt = (b(t) - x)/tau:
     `x(t) = xp(t) + (x(t0) - xp(t0)) * exp(-dt/tau)` with the attenuated,
-    phase-lagged particular solution `xp` — exactly semigroup, so one gap
-    application equals any tick composition even across moving baseline.
+    phase-lagged particular solution `xp` — exactly semigroup *for fixed
+    shift dynamics*: one gap application equals any tick composition even
+    across the moving circadian baseline, as long as
+    `arousal_baseline_shift` is constant over the interval (this function
+    treats it as frozen). When the shift itself evolves across a long gap
+    (allostatic decay/accumulation), `presence.apply_idle_gap` owns
+    segmenting the gap so each segment has fixed dynamics, using
+    `relax_with_shift_dynamics` per segment.
     `now` is treated as already being in the local timezone the circadian
     baseline should use — timezone resolution is a side-effect concern and
     happens at the wiring edge, not here.
@@ -185,6 +191,84 @@ def relax(
     )
     arousal = xp_now + (state.arousal - xp_then) * math.exp(
         -dt_hours / config.tau_arousal_hours
+    )
+    energy = config.baseline_energy + (state.energy - config.baseline_energy) * math.exp(
+        -dt_hours / config.tau_energy_hours
+    )
+
+    return replace(
+        state,
+        valence=_clamp(valence, *VALENCE_BOUNDS),
+        arousal=_clamp(arousal, *AROUSAL_BOUNDS),
+        energy=_clamp(energy, *ENERGY_BOUNDS),
+        updated_at=now,
+    )
+
+
+def relax_with_shift_dynamics(
+    state: AffectState,
+    now: datetime,
+    config: AffectConfig = DEFAULT_AFFECT_CONFIG,
+    *,
+    shift_initial: float,
+    shift_slope: float = 0.0,
+    shift_decay_tau_hours: float | None = None,
+) -> AffectState:
+    """`relax`, but with the arousal baseline shift evolving in closed form.
+
+    Within one gap segment the allostatic shift follows a single law
+    (matching `update_allostatic_shift`'s regimes):
+
+    - exponential decay toward zero (load at/below the sustained
+      threshold): `s(t) = shift_initial * exp(-t/tau_s)` — pass
+      `shift_decay_tau_hours`;
+    - linear in time (load above the sustained threshold, where the shift
+      is a linear function of the linearly-moving load):
+      `s(t) = shift_initial + shift_slope * t`;
+    - constant is the degenerate linear case (`shift_slope=0`).
+
+    The linear arousal ODE dx/dt = (b(t) + s(t) - x)/tau absorbs each law
+    as one more closed-form particular term by superposition:
+
+    - exponential forcing `F * exp(-t/tau_s)` has particular
+      `F * exp(-t/tau_s) / (1 - tau_a/tau_s)` (well-conditioned at the
+      defaults: 1 - 6/168 = 0.9643);
+    - linear forcing `a + b*t` has particular `a + b*(t - tau_a)` (the
+      response lags the moving target by one time constant).
+
+    `state.arousal_baseline_shift` is ignored in favor of `shift_initial`
+    (the segment law's own s(0) — `update_allostatic_shift` snaps the shift
+    to f(load) in the above-sustained regime regardless of the stored
+    value). The returned state's `arousal_baseline_shift` is untouched;
+    the caller owns shift/load bookkeeping per segment.
+    """
+    dt_hours = _elapsed_hours(state.updated_at, now)
+    if dt_hours <= 0:
+        return state if dt_hours < 0 else replace(state, updated_at=now)
+
+    tau_a = config.tau_arousal_hours
+    xp_now = _circadian_particular_arousal(_local_hour(now), 0.0, config)
+    xp_then = _circadian_particular_arousal(_local_hour(state.updated_at), 0.0, config)
+
+    if shift_decay_tau_hours is not None:
+        denom = 1.0 - tau_a / shift_decay_tau_hours
+        if abs(denom) < 1e-9:
+            # Resonant tau_s == tau_a (never true at the defaults): fall
+            # back to treating the shift as frozen at its initial value.
+            xs_then = shift_initial
+            xs_now = shift_initial
+        else:
+            xs_then = shift_initial / denom
+            xs_now = shift_initial * math.exp(-dt_hours / shift_decay_tau_hours) / denom
+    else:
+        xs_then = shift_initial + shift_slope * (0.0 - tau_a)
+        xs_now = shift_initial + shift_slope * (dt_hours - tau_a)
+
+    valence = config.baseline_valence + (state.valence - config.baseline_valence) * math.exp(
+        -dt_hours / config.tau_valence_hours
+    )
+    arousal = (xp_now + xs_now) + (state.arousal - xp_then - xs_then) * math.exp(
+        -dt_hours / tau_a
     )
     energy = config.baseline_energy + (state.energy - config.baseline_energy) * math.exp(
         -dt_hours / config.tau_energy_hours

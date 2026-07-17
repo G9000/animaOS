@@ -330,6 +330,50 @@ def test_catchup_4h_gap_from_high_arousal_is_piecewise_exact(tmp_path: Path) -> 
     assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
 
 
+def test_catchup_decays_baseline_shift_over_gap(tmp_path: Path) -> None:
+    # Reviewer regression: the shift must not be frozen over the gap. With
+    # start arousal 0.5, shift 0.05, load 60 h and a 21-day gap, per-minute
+    # composition snaps the shift to f(load)=0.0125 at the first tick,
+    # tracks it linearly down to 0 as the load drains through the 48 h
+    # sustained threshold (t48 = 24 h), then decays it exponentially —
+    # ending at ~0. The pre-fix catch-up relaxed arousal with the shift
+    # frozen at 0.05, landing exactly 0.05 above composition. Arousal
+    # tolerance is 1e-4 (not 1e-6): discrete composition quantizes shift
+    # updates at tick boundaries, so in the nonzero-shift regime the
+    # composed reference itself carries O(tick) shift-feed-through noise —
+    # 1e-6 is not a coherent target here. Zero-shift regimes keep 1e-6
+    # (see the equivalence tests above).
+    factory = _factory(tmp_path)
+    start_updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start_updated_at + timedelta(days=21)
+    start = AffectState(
+        valence=0.0,
+        arousal=0.5,
+        energy=0.5,
+        updated_at=start_updated_at,
+        arousal_baseline_shift=0.05,
+        high_arousal_hours=60.0,
+    )
+
+    with factory() as db:
+        save_affect_state(db, user_id=1, state=start)
+        db.commit()
+
+    apply_offline_catchup(factory, now=now, min_gap_seconds=0)
+
+    composed = _compose_per_minute(start, start_updated_at, 30_240)
+
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+
+    assert abs(state.arousal - composed.arousal) <= 1e-4  # pre-fix diff: 0.050000
+    assert abs(state.arousal_baseline_shift - composed.arousal_baseline_shift) <= 1e-4
+    assert state.arousal_baseline_shift == pytest.approx(0.0, abs=1e-4)  # decayed away
+    assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
+    assert abs(state.valence - composed.valence) < 1e-6
+    assert abs(state.energy - composed.energy) < 1e-6
+
+
 def test_arousal_threshold_crossing_time_is_consistent_with_relax() -> None:
     # The solver must agree with relax(): arousal at t* equals the
     # threshold, and a state already at/below threshold has t* = 0.
@@ -433,6 +477,20 @@ def test_has_eligible_night_window_requires_four_hours_of_overlap() -> None:
     assert full is True
 
 
+def test_gap_entirely_inside_one_night_counts_overlap() -> None:
+    tz = UTC
+    # 00:30-05:00 lies wholly inside the 00:00-06:00 window: 4.5 h -> eligible.
+    inside_long = has_eligible_night_window(
+        datetime(2026, 1, 1, 0, 30, tzinfo=tz), datetime(2026, 1, 1, 5, 0, tzinfo=tz)
+    )
+    # 00:30-04:00 is also wholly inside but only 3.5 h -> not eligible.
+    inside_short = has_eligible_night_window(
+        datetime(2026, 1, 1, 0, 30, tzinfo=tz), datetime(2026, 1, 1, 4, 0, tzinfo=tz)
+    )
+    assert inside_long is True
+    assert inside_short is False
+
+
 def test_night_window_across_dst_spring_forward_uses_real_zone() -> None:
     # US spring-forward night (2026-03-08, America/New_York): the wall
     # clock jumps 02:00 EST -> 03:00 EDT, so the local 00:00-06:00 window
@@ -507,10 +565,16 @@ def test_catchup_dst_spanning_gap_defers_dream_correctly(tmp_path: Path) -> None
 
 
 def test_system_zoneinfo_prefers_tz_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # system_zoneinfo is lru_cached (so the fixed-offset fallback warning
+    # logs once per process, not per tick); clear around the env override.
     monkeypatch.setenv("TZ", "America/New_York")
-    zone = system_zoneinfo()
-    assert isinstance(zone, ZoneInfo)
-    assert zone.key == "America/New_York"
+    system_zoneinfo.cache_clear()
+    try:
+        zone = system_zoneinfo()
+        assert isinstance(zone, ZoneInfo)
+        assert zone.key == "America/New_York"
+    finally:
+        system_zoneinfo.cache_clear()
 
 
 def test_catchup_module_has_no_llm_references() -> None:
