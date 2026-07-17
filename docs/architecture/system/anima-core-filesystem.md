@@ -46,6 +46,7 @@ flowchart TB
         Manifest["manifest.json<br/>Core ID, opaque owner, wrapped root keyslots"]
         Soul["soul/soul.db<br/>SQLCipher agent identity and memory only"]
         Head["fs/HEAD<br/>authoritative catalog generation pointer"]
+        Cutover["fs/CUTOVER_RECEIPT + CUTOVER_COMPLETE<br/>post-HEAD first-cutover recovery markers"]
         Catalog["Encrypted immutable catalogs<br/>folders, roles, policy, object references"]
         Objects["Encrypted immutable objects<br/>Markdown, JSON, JSONL, HTML, binary"]
     end
@@ -82,6 +83,8 @@ flowchart TB
     Manifest -->|"contains wrapped SQLCipher keyslot for"| Soul
     Manifest -->|"contains wrapped Filesystem Root Keyslot for"| CoreEngine
     CoreBackend --> Head
+    CoreBackend -.->|"first cutover after HEAD"| Cutover
+    Cutover -.->|"binds exact marked"| Head
     Head --> Catalog
     Catalog --> Objects
 
@@ -227,7 +230,7 @@ sequenceDiagram
     participant Tools as anima-file-tools
     participant Core as anima-corefs
     participant Lock as Core-wide commit lock
-    participant Store as Objects, catalogs, and fs/HEAD
+    participant Store as Objects, catalogs, fs/HEAD, and cutover markers
     participant Index as Runtime indexer
 
     Caller->>Tools: write or multi-file apply_patch with expected revisions
@@ -248,6 +251,10 @@ sequenceDiagram
     else Complete plan remains valid
         Core->>Store: Publish encrypted catalog generation
         Core->>Store: Atomically replace and flush fs/HEAD
+        opt First accepted post-migration mutation
+            Core->>Store: Publish exact CUTOVER_RECEIPT then CUTOVER_COMPLETE
+            Note over Core,Store: HEAD is already authoritative; marker failure returns recovery pending.
+        end
         Core->>Lock: Release lock
         Core-->>Index: Invalidate committed generation
         Note over Core,Index: Index failure never rolls back the canonical commit.

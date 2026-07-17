@@ -877,7 +877,43 @@ fn cutover_receipt_prevents_missing_head_from_reactivating_the_shadow() {
 }
 
 #[test]
-fn load_committed_reports_an_in_flight_cutover_receipt_as_lock_busy() {
+fn missing_legacy_completion_marker_recovers_a_higher_authenticated_head() {
+    let root = reset_root("legacy-cutover-completion-marker");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            31,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.catalog().cutover_marker().unwrap().epoch(), 31);
+    assert!(coordinator.cutover_complete_path().is_file());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_committed_reports_an_in_flight_cutover_receipt_then_recovers_it() {
     let root = reset_root("cutover-receipt-in-flight");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let keys = keys();
@@ -940,11 +976,11 @@ fn load_committed_reports_an_in_flight_cutover_receipt_as_lock_busy() {
     assert!(matches!(in_flight, Err(CommitError::LockBusy)));
     reader.join().unwrap();
 
-    fs::copy(alternate.head_path(), coordinator.head_path()).unwrap();
     drop(guard);
     let committed = coordinator.load_committed(&keys).unwrap().unwrap();
     assert_eq!(committed.head().generation(), 2);
     assert_eq!(committed.catalog().cutover_marker().unwrap().epoch(), 51);
+    assert!(coordinator.cutover_complete_path().is_file());
 
     drop(alternate);
     drop(coordinator);

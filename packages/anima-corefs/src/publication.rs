@@ -20,6 +20,19 @@ const WINDOWS_TEMPORARY_CUSTOM_FLAGS: u32 =
 #[cfg(windows)]
 type RenameInfoStorageWord = usize;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PublicationPhase {
+    TemporaryCreated,
+    PayloadWritten,
+    PayloadSynced,
+    DestinationPublished,
+    DestinationSynced,
+    #[cfg(not(windows))]
+    StagingRemoved,
+    #[cfg(not(windows))]
+    CleanupSynced,
+}
+
 /// Atomically publish `payload` and return only after its directory entry is durable.
 pub fn atomic_publish(target: &Path, payload: &[u8]) -> io::Result<()> {
     let parent = target.parent().ok_or_else(|| {
@@ -57,12 +70,27 @@ pub fn publish_immutable(target: &Path, payload: &[u8]) -> io::Result<()> {
 }
 
 pub(crate) fn atomic_publish_in(dir: &Dir, target: &OsStr, payload: &[u8]) -> io::Result<()> {
+    atomic_publish_in_with_hook(dir, target, payload, &mut |_| Ok(()))
+}
+
+pub(crate) fn atomic_publish_in_with_hook<F>(
+    dir: &Dir,
+    target: &OsStr,
+    payload: &[u8],
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     validate_file_name(target)?;
     let (mut temporary, temporary_name) = create_temporary_in(dir, target)?;
+    hook(PublicationPhase::TemporaryCreated)?;
     let result = (|| {
         temporary.write_all(payload)?;
+        hook(PublicationPhase::PayloadWritten)?;
         temporary.sync_all()?;
-        replace_staged_in(dir, &temporary, &temporary_name, target)
+        hook(PublicationPhase::PayloadSynced)?;
+        replace_staged_in(dir, &temporary, &temporary_name, target, hook)
     })();
     drop(temporary);
     if result.is_err() {
@@ -72,11 +100,26 @@ pub(crate) fn atomic_publish_in(dir: &Dir, target: &OsStr, payload: &[u8]) -> io
 }
 
 pub(crate) fn publish_immutable_in(dir: &Dir, target: &OsStr, payload: &[u8]) -> io::Result<()> {
+    publish_immutable_in_with_hook(dir, target, payload, &mut |_| Ok(()))
+}
+
+pub(crate) fn publish_immutable_in_with_hook<F>(
+    dir: &Dir,
+    target: &OsStr,
+    payload: &[u8],
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     let (mut temporary, temporary_name) = create_temporary_in(dir, target)?;
+    hook(PublicationPhase::TemporaryCreated)?;
     let result = (|| {
         temporary.write_all(payload)?;
+        hook(PublicationPhase::PayloadWritten)?;
         temporary.sync_all()?;
-        publish_staged_immutable_in(dir, &temporary, &temporary_name, target)
+        hook(PublicationPhase::PayloadSynced)?;
+        publish_staged_immutable_in_with_hook(dir, &temporary, &temporary_name, target, hook)
     })();
     drop(temporary);
     if result.is_err() {
@@ -140,16 +183,20 @@ pub(crate) fn is_temporary_name_for_target(candidate: &OsStr, target: &OsStr) ->
         .is_ok_and(|value| value.to_string() == suffix)
 }
 
-pub(crate) fn publish_staged_immutable_in(
+pub(crate) fn publish_staged_immutable_in_with_hook<F>(
     dir: &Dir,
     temporary: &File,
     temporary_name: &OsStr,
     target: &OsStr,
-) -> io::Result<()> {
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     validate_file_name(temporary_name)?;
     validate_file_name(target)?;
 
-    publish_staged_immutable_platform(dir, temporary, temporary_name, target)
+    publish_staged_immutable_platform(dir, temporary, temporary_name, target, hook)
 }
 
 #[cfg(not(windows))]
@@ -175,52 +222,78 @@ fn validate_file_name(value: &OsStr) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_staged_in(
+fn replace_staged_in<F>(
     dir: &Dir,
     _temporary: &File,
     temporary_name: &OsStr,
     target: &OsStr,
-) -> io::Result<()> {
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     dir.rename(temporary_name, dir, target)?;
-    sync_directory(dir)
+    hook(PublicationPhase::DestinationPublished)?;
+    sync_directory(dir)?;
+    hook(PublicationPhase::DestinationSynced)
 }
 
 #[cfg(windows)]
-fn replace_staged_in(
+fn replace_staged_in<F>(
     dir: &Dir,
     temporary: &File,
     _temporary_name: &OsStr,
     target: &OsStr,
-) -> io::Result<()> {
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     rename_file_by_handle(temporary, dir, target, true)?;
-    temporary.sync_all()
+    hook(PublicationPhase::DestinationPublished)?;
+    temporary.sync_all()?;
+    hook(PublicationPhase::DestinationSynced)
 }
 
 #[cfg(not(windows))]
-fn publish_staged_immutable_platform(
+fn publish_staged_immutable_platform<F>(
     dir: &Dir,
     _temporary: &File,
     temporary_name: &OsStr,
     target: &OsStr,
-) -> io::Result<()> {
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     // Creating a hard link is an atomic no-replace publication primitive on
     // the same filesystem. It cannot overwrite a substituted destination, and
     // cleanup removes only the private staging entry.
     dir.hard_link(temporary_name, dir, target)?;
+    hook(PublicationPhase::DestinationPublished)?;
     sync_directory(dir)?;
+    hook(PublicationPhase::DestinationSynced)?;
     dir.remove_file(temporary_name)?;
-    sync_directory(dir)
+    hook(PublicationPhase::StagingRemoved)?;
+    sync_directory(dir)?;
+    hook(PublicationPhase::CleanupSynced)
 }
 
 #[cfg(windows)]
-fn publish_staged_immutable_platform(
+fn publish_staged_immutable_platform<F>(
     dir: &Dir,
     temporary: &File,
     _temporary_name: &OsStr,
     target: &OsStr,
-) -> io::Result<()> {
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PublicationPhase) -> io::Result<()>,
+{
     rename_file_by_handle(temporary, dir, target, false)?;
-    temporary.sync_all()
+    hook(PublicationPhase::DestinationPublished)?;
+    temporary.sync_all()?;
+    hook(PublicationPhase::DestinationSynced)
 }
 
 #[cfg(not(windows))]
@@ -405,9 +478,82 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
+    use cap_std::{ambient_authority, fs::Dir};
+
+    fn reset_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-publication-phases-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
     #[test]
     fn temporary_publications_use_owner_only_unix_permissions() {
         assert_eq!(super::TEMPORARY_FILE_MODE, 0o600);
+    }
+
+    #[test]
+    fn atomic_publication_reports_every_durable_boundary_in_order() {
+        let root = reset_root("atomic");
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let mut observed = Vec::new();
+
+        super::atomic_publish_in_with_hook(&dir, OsStr::new("HEAD"), b"payload", &mut |phase| {
+            observed.push(phase);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            observed,
+            vec![
+                super::PublicationPhase::TemporaryCreated,
+                super::PublicationPhase::PayloadWritten,
+                super::PublicationPhase::PayloadSynced,
+                super::PublicationPhase::DestinationPublished,
+                super::PublicationPhase::DestinationSynced,
+            ]
+        );
+        drop(dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn immutable_publication_reports_cleanup_boundaries_in_order() {
+        let root = reset_root("immutable");
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let mut observed = Vec::new();
+
+        super::publish_immutable_in_with_hook(
+            &dir,
+            OsStr::new("catalog.acore"),
+            b"payload",
+            &mut |phase| {
+                observed.push(phase);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let expected = vec![
+            super::PublicationPhase::TemporaryCreated,
+            super::PublicationPhase::PayloadWritten,
+            super::PublicationPhase::PayloadSynced,
+            super::PublicationPhase::DestinationPublished,
+            super::PublicationPhase::DestinationSynced,
+            #[cfg(not(windows))]
+            super::PublicationPhase::StagingRemoved,
+            #[cfg(not(windows))]
+            super::PublicationPhase::CleanupSynced,
+        ];
+        assert_eq!(observed, expected);
+        drop(dir);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

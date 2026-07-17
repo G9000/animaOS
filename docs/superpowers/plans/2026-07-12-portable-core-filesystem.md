@@ -317,7 +317,7 @@ Implement streaming envelopes/catalogs in `anima-corefs`, expose them through `a
 
 Prepare immutable object revisions outside the shared lock; acquire an OS-backed exclusive file lock (or atomic-create primitive with equivalent kernel exclusion) plus owner PID/process-start metadata; reload `fs/HEAD`; revalidate expected path/revision; publish catalog then `fs/HEAD`; emit invalidation after commit. Stale recovery must first prove the recorded process identity is gone; a check-then-write JSON file is not a lock.
 
-- [ ] **Step 8: Add failure injection around every publish boundary**
+- [x] **Step 8: Add failure injection around every publish boundary**
 
 Prove crashes leave the prior `fs/HEAD` authoritative or the complete next generation committed, never a partially visible mutation.
 
