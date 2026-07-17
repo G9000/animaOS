@@ -10,7 +10,6 @@ import type {
   CorefsCredentialResponse,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
-  CoreFsPrincipalOptions,
   ConfirmRecoveryCredentialResponse,
   PrepareRecoveryCredentialResponse,
   PrepareCorefsRecoveryCredentialResponse,
@@ -529,22 +528,6 @@ export function createApiClient(options: ApiClientOptions) {
     }
   }
 
-  function buildCoreFsPrincipalHeaders(
-    options: CoreFsPrincipalOptions = {},
-  ): Record<string, string> {
-    const headers: Record<string, string> = {};
-    if (options.principal) {
-      headers["x-anima-corefs-principal"] = options.principal;
-    }
-    if (options.clientId) {
-      headers["x-anima-corefs-client-id"] = options.clientId;
-    }
-    if (options.installDigest) {
-      headers["x-anima-corefs-install-digest"] = options.installDigest;
-    }
-    return headers;
-  }
-
   return {
     auth: {
       login: (username: string, password: string) =>
@@ -669,14 +652,10 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
     },
     corefs: {
-      operation: (
-        payload: CoreFsOperationRequest,
-        options?: CoreFsPrincipalOptions,
-      ) =>
+      operation: (payload: CoreFsOperationRequest) =>
         request<CoreFsOperationResponse>("/corefs/operation", {
           method: "POST",
           body: payload,
-          headers: buildCoreFsPrincipalHeaders(options),
         }),
     },
     chat: {

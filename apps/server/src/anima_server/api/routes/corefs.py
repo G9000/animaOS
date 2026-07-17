@@ -62,6 +62,12 @@ class CoreFsRequestContext:
     keys: object
 
 
+@dataclass(frozen=True, slots=True)
+class CoreFsSearchRuntimeState:
+    state: logical.CoreFsSearchState
+    index_generation: int | None = None
+
+
 def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
     return CoreFsRequestContext(
         core_root=str(get_core_dir()),
@@ -70,47 +76,66 @@ def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
     )
 
 
+def _principal_from_authenticated_broker(
+    request: Request,
+    session: UnlockSession,
+) -> CoreFsPrincipal | None:
+    principal = getattr(request.state, "corefs_principal", None)
+    if principal is None:
+        return None
+    if not isinstance(principal, CoreFsPrincipal):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "corefs_invalid_broker_principal"},
+        )
+    if principal.user_id != session.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "corefs_broker_principal_user_mismatch"},
+        )
+    if principal.kind not in {"user", "anima", "client"}:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "corefs_invalid_broker_principal"},
+        )
+    if principal.kind == "client" and (not principal.id or not principal.install_digest):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "corefs_invalid_broker_principal"},
+        )
+    return principal
+
+
 def _resolve_principal(request: Request, session: UnlockSession) -> CoreFsPrincipal:
-    client_id = (request.headers.get("x-anima-corefs-client-id") or "").strip()
-    install_digest = (request.headers.get("x-anima-corefs-install-digest") or "").strip()
-    has_client_identity = bool(client_id or install_digest)
-    requested = (request.headers.get("x-anima-corefs-principal") or "").strip().lower()
-    if not requested:
-        requested = "client" if has_client_identity else "user"
-    if requested != "client" and has_client_identity:
+    caller_identity_headers = (
+        "x-anima-corefs-principal",
+        "x-anima-corefs-client-id",
+        "x-anima-corefs-install-digest",
+    )
+    if any(request.headers.get(header) is not None for header in caller_identity_headers):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "code": "corefs_conflicting_principal_identity",
-                "message": "Client identity headers require the client CoreFS principal.",
+                "code": "corefs_caller_identity_forbidden",
+                "message": "CoreFS principals are derived from authenticated server state.",
             },
         )
-    if requested == "user":
-        return CoreFsPrincipal(kind="user", id=str(session.user_id), user_id=session.user_id)
-    if requested == "anima":
-        return CoreFsPrincipal(kind="anima", id=f"anima:{session.user_id}", user_id=session.user_id)
-    if requested == "client":
-        if not client_id or not install_digest:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "code": "corefs_client_identity_required",
-                    "message": "Client CoreFS requests require client id and install digest headers.",
-                },
-            )
-        return CoreFsPrincipal(
-            kind="client",
-            id=client_id,
-            user_id=session.user_id,
-            install_digest=install_digest,
-        )
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail={
-            "code": "corefs_unknown_principal",
-            "message": "CoreFS principal must be user, anima, or client.",
-        },
-    )
+
+    broker_principal = _principal_from_authenticated_broker(request, session)
+    if broker_principal is not None:
+        return broker_principal
+    return CoreFsPrincipal(kind="user", id=str(session.user_id), user_id=session.user_id)
+
+
+def _resolve_search_runtime_state(
+    *,
+    context: CoreFsRequestContext,
+    selected: logical.CoreFsValidationSnapshot,
+) -> CoreFsSearchRuntimeState:
+    del context, selected
+    # CoreFS runtime indexing is introduced by a later migration slice. Until
+    # that server-owned index exists, the truthful state is always missing.
+    return CoreFsSearchRuntimeState(state="missing")
 
 
 def _require_path(payload: CoreFsOperationRequest, *, field: str = "path") -> str:
@@ -162,12 +187,66 @@ def _selected_response(
     )
 
 
+def _validate_cursor_generation(
+    payload: CoreFsOperationRequest,
+    selected: logical.CoreFsValidationSnapshot,
+) -> None:
+    if payload.cursorGeneration is None:
+        return
+    if payload.cursorGeneration != selected.generation:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "corefs_cursor_generation_mismatch",
+                "cursorGeneration": payload.cursorGeneration,
+                "selectedGeneration": selected.generation,
+            },
+        )
+
+
+def _logical_http_exception(exc: ValueError) -> HTTPException | None:
+    message = str(exc)
+    mappings = (
+        ("logical path was not found:", status.HTTP_404_NOT_FOUND, "corefs_path_not_found"),
+        ("logical path is not a file:", status.HTTP_409_CONFLICT, "corefs_not_file"),
+        ("logical path is not a directory:", status.HTTP_409_CONFLICT, "corefs_not_directory"),
+        ("cursor generation ", status.HTTP_409_CONFLICT, "corefs_cursor_generation_mismatch"),
+        ("invalid operation limit:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("invalid path ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("path is for ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("invalid literal pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("invalid regex pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("cannot read ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+    )
+    for prefix, status_code, code in mappings:
+        if message.startswith(prefix):
+            return HTTPException(
+                status_code=status_code,
+                detail={"code": code, "message": message},
+            )
+    if (
+        " response item requires " in message
+        or (message.startswith("requested ") and " response bytes exceeds maximum " in message)
+    ):
+        return HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={"code": "corefs_response_too_large", "message": message},
+        )
+    if message.endswith("pagination cannot produce an advancing continuation cursor"):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_cursor_cannot_advance", "message": message},
+        )
+    return None
+
+
 def _dispatch_read(
     payload: CoreFsOperationRequest,
     *,
     context: CoreFsRequestContext,
     selected: logical.CoreFsValidationSnapshot,
 ) -> dict[str, Any] | None:
+    _validate_cursor_generation(payload, selected)
     common = {
         "core_root": context.core_root,
         "core_id": context.core_id,
@@ -247,11 +326,12 @@ def _dispatch_read(
             )
         )
     if payload.operation == "search_readiness":
+        runtime_state = _resolve_search_runtime_state(context=context, selected=selected)
         return _decode_logical_response(
             logical.search_readiness_v1(
                 **common,
-                state=payload.searchState,
-                index_generation=payload.indexGeneration,
+                state=runtime_state.state,
+                index_generation=runtime_state.index_generation,
             )
         )
     raise HTTPException(
@@ -295,7 +375,13 @@ async def run_corefs_operation(
         core_id=context.core_id,
         keys=context.keys,
     )
-    result = _dispatch_read(payload, context=context, selected=selected)
+    try:
+        result = _dispatch_read(payload, context=context, selected=selected)
+    except ValueError as exc:
+        http_error = _logical_http_exception(exc)
+        if http_error is None:
+            raise
+        raise http_error from exc
     return CoreFsOperationResponse(
         principal=principal.to_response(),
         operation=payload.operation,

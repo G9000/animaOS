@@ -91,6 +91,7 @@ export interface CoreFsOperationRequest {
   grepCursorPath?: string | null;
   grepCursorByteOffset?: number | null;
   grepCursorWalkAfter?: string | null;
+  cursorGeneration?: number | null;
   limit?: number;
   pageSize?: number;
   maxResults?: number;
@@ -102,8 +103,6 @@ export interface CoreFsOperationRequest {
   responseBytes?: number | null;
   regex?: boolean;
   includeDirectories?: boolean;
-  searchState?: "missing" | "building" | "ready" | "degraded";
-  indexGeneration?: number | null;
 }
 
 export interface CoreFsPrincipal {
@@ -123,12 +122,6 @@ export interface CoreFsOperationResponse {
   operation: CoreFsOperation;
   selected?: CoreFsSelectedSnapshot | null;
   result?: Record<string, unknown> | null;
-}
-
-export interface CoreFsPrincipalOptions {
-  principal?: CoreFsPrincipalKind;
-  clientId?: string;
-  installDigest?: string;
 }
 
 export type VaultTransferFormat = "vault_json" | "anima_capsule";

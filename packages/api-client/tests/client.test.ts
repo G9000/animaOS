@@ -9,7 +9,7 @@ function readClientSource(): string {
 }
 
 describe("createApiClient error handling", () => {
-  test("serializes CoreFS operation requests with principal headers", async () => {
+  test("serializes CoreFS operations without caller-selected identity headers", async () => {
     let requestedUrl = "";
     let requestBody: unknown = null;
     let requestHeaders: Headers | null = null;
@@ -24,10 +24,9 @@ describe("createApiClient error handling", () => {
         return new Response(
           JSON.stringify({
             principal: {
-              kind: "client",
-              id: "notes-extension",
+              kind: "user",
+              id: "42",
               userId: 42,
-              installDigest: "sha256:abc",
             },
             operation: "stat",
             selected: { generation: 3, catalogHash: "hash" },
@@ -37,23 +36,19 @@ describe("createApiClient error handling", () => {
       },
     });
 
-    const result = await api.corefs.operation(
-      { operation: "stat", path: "Diary/today.md" },
-      {
-        principal: "client",
-        clientId: "notes-extension",
-        installDigest: "sha256:abc",
-      },
-    );
+    const result = await api.corefs.operation({
+      operation: "stat",
+      path: "Diary/today.md",
+    });
 
     expect(requestedUrl).toBe("https://api.test/api/corefs/operation");
     expect(requestBody).toEqual({ operation: "stat", path: "Diary/today.md" });
     expect(requestHeaders?.get("x-anima-unlock")).toBe("unlock-token");
     expect(requestHeaders?.get("x-anima-nonce")).toBe("sidecar-nonce");
-    expect(requestHeaders?.get("x-anima-corefs-principal")).toBe("client");
-    expect(requestHeaders?.get("x-anima-corefs-client-id")).toBe("notes-extension");
-    expect(requestHeaders?.get("x-anima-corefs-install-digest")).toBe("sha256:abc");
-    expect(result.principal.kind).toBe("client");
+    expect(requestHeaders?.get("x-anima-corefs-principal")).toBeNull();
+    expect(requestHeaders?.get("x-anima-corefs-client-id")).toBeNull();
+    expect(requestHeaders?.get("x-anima-corefs-install-digest")).toBeNull();
+    expect(result.principal.kind).toBe("user");
   });
 
   test("surfaces normalized validation details arrays", async () => {

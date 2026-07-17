@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 23:06 MYT
+- Updated: 2026-07-17 23:28 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -102,6 +102,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-17 22:42 MYT - Added typed `packages/api-client` CoreFS operation bindings, including per-call principal/client headers that preserve shared unlock and sidecar nonce behavior for future desktop/Animus consumers.
 - 2026-07-17 22:58 MYT - Addressed PR #107 Codex review findings: client identity headers now imply the client principal or reject conflicting principal claims, and API schema validation mirrors native CoreFS logical-path rejection for URI/foreign backend forms, reserved components, control characters, non-NFC, ambiguous Unicode path characters, separators, traversal, and byte limits.
 - 2026-07-17 23:06 MYT - Addressed PR #107's second Codex review pass: CoreFS API validation now preserves exact logical path whitespace instead of trimming caller paths, and `search_readiness` requests require `indexGeneration` for non-`missing` states before native dispatch.
+- 2026-07-17 23:28 MYT - Addressed PR #107's third current-head Codex review pass with four red/green API regressions. Caller-selected ANIMA/client headers are now rejected and non-user principals can enter only through authenticated in-process broker state; search readiness uses server-owned Runtime state and truthfully remains `missing` until the later index slice exists; every continuation cursor carries and validates its catalog generation; and recognized native logical failures map to stable 4xx responses while unclassified internal failures remain server errors. The public TypeScript client no longer emits identity headers or accepts caller-supplied readiness state.
 
 ## Validation
 
@@ -174,6 +175,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 Step 11 API boundary: `bun install --frozen-lockfile` was needed in the fresh worktree after `bun run build` initially failed on missing JS dependencies; rerun `bun run build` passed after frozen install.
   - PR #107 review follow-up: red/green regressions for client identity headers defaulting to owner and native-invalid logical paths becoming server errors; focused Python route/logical tests passed (15 tests), scoped Ruff passed, API-client Bun tests passed (18 tests), and `bun run build` passed.
   - PR #107 second review follow-up: red/green regressions for preserving exact logical path whitespace and requiring `indexGeneration` for non-`missing` search readiness; focused Python route/logical tests passed (17 tests), scoped Ruff passed, API-client Bun tests passed (18 tests), and `bun run build` passed.
+  - PR #107 third review follow-up: red/green broker-principal, server-owned readiness, cursor-generation, and native-error translation regressions; focused Python route/logical tests passed (25 tests), scoped Ruff passed, API-client Bun tests passed (18 tests), desktop TypeScript lint passed, and `bun run build` passed. Repository-wide `bun run lint` remains blocked by seven pre-existing Ruff findings in untouched `test_db_helpers.py`, `test_pdf_text.py`, and `test_pdfium_text.py`.
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)

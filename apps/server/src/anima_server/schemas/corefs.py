@@ -4,7 +4,7 @@ import re
 import unicodedata
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CoreFsOperation = Literal[
     "stat",
@@ -106,6 +106,8 @@ def _has_uri_scheme(value: str) -> bool:
 
 
 class CoreFsOperationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     operation: CoreFsOperation
     path: str | None = None
     root: str | None = None
@@ -116,6 +118,7 @@ class CoreFsOperationRequest(BaseModel):
     grepCursorPath: str | None = None
     grepCursorByteOffset: int | None = Field(default=None, ge=0)
     grepCursorWalkAfter: str | None = None
+    cursorGeneration: int | None = Field(default=None, ge=1)
     limit: int = Field(default=100, ge=1, le=1000)
     pageSize: int = Field(default=100, ge=1, le=1000)
     maxResults: int = Field(default=100, ge=1, le=1000)
@@ -127,8 +130,6 @@ class CoreFsOperationRequest(BaseModel):
     responseBytes: int | None = Field(default=None, ge=1024, le=10485760)
     regex: bool = False
     includeDirectories: bool = True
-    searchState: Literal["missing", "building", "ready", "degraded"] = "missing"
-    indexGeneration: int | None = Field(default=None, ge=0)
 
     @field_validator(
         "path",
@@ -143,13 +144,21 @@ class CoreFsOperationRequest(BaseModel):
         return normalize_logical_path(value, field_name=str(info.field_name))
 
     @model_validator(mode="after")
-    def validate_search_readiness_generation(self) -> CoreFsOperationRequest:
-        if (
-            self.operation == "search_readiness"
-            and self.searchState != "missing"
-            and self.indexGeneration is None
+    def validate_cursor_generation(self) -> CoreFsOperationRequest:
+        if self.grepCursorPath is None and (
+            self.grepCursorByteOffset is not None or self.grepCursorWalkAfter is not None
         ):
-            raise ValueError("indexGeneration is required for non-missing search readiness states.")
+            raise ValueError("grep cursor offsets require grepCursorPath.")
+
+        cursor_present = (
+            (self.operation in {"list", "walk"} and self.cursorAfter is not None)
+            or (self.operation == "glob" and self.globCursorAfter is not None)
+            or (self.operation == "grep" and self.grepCursorPath is not None)
+        )
+        if cursor_present and self.cursorGeneration is None:
+            raise ValueError("cursorGeneration is required with a continuation cursor.")
+        if self.cursorGeneration is not None and not cursor_present:
+            raise ValueError("cursorGeneration requires a continuation cursor.")
         return self
 
 
