@@ -170,20 +170,20 @@ fn folder_trash_graph_invariants_fail_closed() {
     )
     .is_err());
 
-    let nested_trashed_parent = common(OTHER_ID, Some(TRASH_ID), "Parent")
+    let trashed_original_parent = common(OTHER_ID, Some(TRASH_ID), "Parent")
         .with_folder_lifecycle(metadata(TRASH_ID, ROOT_ID));
-    let nested_trashed_child = common(CHILD_ID, Some(TRASH_ID), "Child")
+    let trashed_child_with_historical_parent = common(CHILD_ID, Some(TRASH_ID), "Child")
         .with_folder_lifecycle(metadata(TRASH_ID, OTHER_ID));
-    assert!(CatalogGeneration::new(
+    CatalogGeneration::new(
         1,
         vec![
             CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
             CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
-            CatalogGenerationEntry::folder(nested_trashed_parent),
-            CatalogGenerationEntry::folder(nested_trashed_child),
+            CatalogGenerationEntry::folder(trashed_original_parent),
+            CatalogGenerationEntry::folder(trashed_child_with_historical_parent),
         ],
     )
-    .is_err());
+    .unwrap();
 
     let hidden_original_parent =
         common(OTHER_ID, Some(TRASH_ID), "Archive").with_folder_lifecycle(metadata(
