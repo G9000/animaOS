@@ -433,6 +433,40 @@ fn rotation_during_keyring_load_retries_the_current_head_under_lock() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn frk_rotation_recovers_pending_first_cutover_before_rotating() {
+    let root = reset_root("rotation-after-pending-cutover");
+    seed_validation(&root);
+    run_crashing_child(
+        &root,
+        "first",
+        CommitFailurePoint::Publication {
+            target: PublicationTarget::CutoverComplete,
+            phase: PublicationPhase::TemporaryCreated,
+        },
+    );
+
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let pending_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+    let outcome = coordinator
+        .rotate_frk(&keyring, &pending_keys, 2, |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 3);
+    assert!(coordinator.cutover_complete_path().is_file());
+    let committed = coordinator
+        .load_committed_with_keyring(&keyring)
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.head().required_frk_version(), 2);
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn assert_rotation_generation(root: &Path, generation: u64) {
     let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let old_keys = keys();

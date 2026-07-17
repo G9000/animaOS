@@ -1522,12 +1522,7 @@ impl CoreCommitCoordinator {
             let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
             let committed = self
-                .load_committed_once_with_keyring_heads(
-                    keyring,
-                    self.load_pointer_head(HEAD_FILE)?,
-                    self.load_pointer_head(CUTOVER_RECEIPT_FILE)?,
-                    self.load_pointer_head(CUTOVER_COMPLETE_FILE)?,
-                )?
+                .load_committed_recovering_with_keyring(keyring)?
                 .ok_or(CommitError::CoreNotInitialized)?;
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
