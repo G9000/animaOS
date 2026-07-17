@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 00:35 MYT
+- Updated: 2026-07-18 00:50 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -106,6 +106,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-18 00:05 MYT - Addressed PR #107's fourth current-head Codex review pass with red/green key-boundary and client-error regressions. Full-scope register/login/recovery now derive the active FRK's native `CorefsSubkeys` and retain them only in the unlock session; CoreFS reads fail locked when those keys are unavailable instead of substituting Soul DEKs. Soul-only sessions remain valid without filesystem keys. The shared TypeScript client now throws `ApiClientError` with structured CoreFS `code`, HTTP status, detail, and payload for grant/cursor recovery paths.
 - 2026-07-18 00:20 MYT - Addressed PR #107's fifth current-head Codex review pass with a red/green missing-snapshot regression. Validation-snapshot selection now shares the route's logical-error translation boundary, so an unlocked CoreFS that has not initialized or cut over a validation snapshot returns stable 409 `corefs_validation_snapshot_missing` detail instead of an internal 500.
 - 2026-07-18 00:35 MYT - Addressed PR #107's sixth current-head Codex review pass by pinning the versioned-login CoreFS-subkey regression to the intended empty configured-passphrase mode. The test now remains deterministic when the surrounding environment exports `ANIMA_CORE_PASSPHRASE`, while the separate unversioned-manifest tests continue to cover configured passphrase mode explicitly.
+- 2026-07-18 00:50 MYT - Addressed PR #107's seventh current-head Codex review pass with red/green event-loop and error-contract regressions. The CoreFS operation endpoint is now synchronous so FastAPI dispatches native validation and bounded disk reads through its worker threadpool, and native glob/grep/grep-limit validation failures map to stable 422 `corefs_invalid_request` responses instead of HTTP 500.
 
 ## Validation
 
@@ -182,6 +183,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #107 fourth review follow-up: red/green real-login FRK-subkey/session-route regressions and structured API-client error regression; full CoreFS keyslot tests passed (49), related route/logical/auth/session-continuity tests passed (59, with the independently expired fixed-date import test deselected), API-client tests passed (19), scoped Ruff passed, and `bun run build` passed.
   - PR #107 fifth review follow-up: the missing-validation-snapshot regression failed red with HTTP 500, then passed with stable 409 detail; focused CoreFS route/logical tests passed (28), scoped Ruff passed, and `bun run build` passed.
   - PR #107 sixth review follow-up: the versioned-login CoreFS-subkey test passed with `ANIMA_CORE_PASSPHRASE` exported after pinning `settings.core_passphrase` to empty; the full CoreFS keyslot suite passed (49), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 seventh review follow-up: red/green synchronous-endpoint and native glob/grep/grep-limit error regressions; focused CoreFS route/logical tests passed (32), scoped Ruff passed, and `bun run build` passed.
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)

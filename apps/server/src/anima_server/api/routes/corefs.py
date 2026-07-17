@@ -227,6 +227,9 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
         ("invalid operation limit:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid path ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("path is for ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("invalid glob pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("invalid grep pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        ("invalid grep_limit pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid literal pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid regex pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("cannot read ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
@@ -358,7 +361,7 @@ def _dispatch_read(
     response_model=CoreFsOperationResponse,
     response_model_exclude_none=True,
 )
-async def run_corefs_operation(
+def run_corefs_operation(
     payload: CoreFsOperationRequest,
     request: Request,
 ) -> CoreFsOperationResponse:

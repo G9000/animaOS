@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +51,10 @@ def test_corefs_operation_requires_unlocked_session(corefs_client: TestClient) -
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Session locked. Please sign in again."
+
+
+def test_corefs_operation_runs_sync_native_work_in_fastapi_threadpool() -> None:
+    assert not inspect.iscoroutinefunction(corefs_route.run_corefs_operation)
 
 
 def test_request_context_uses_corefs_session_subkeys(
@@ -398,6 +403,9 @@ def test_stale_cursor_generation_is_rejected_before_native_dispatch(
             "corefs_response_too_large",
         ),
         ("invalid operation limit: list limit must be between 1 and 100", 422, "corefs_invalid_request"),
+        ("invalid glob pattern: unterminated character class", 422, "corefs_invalid_request"),
+        ("invalid grep pattern: pattern exceeds maximum bytes", 422, "corefs_invalid_request"),
+        ("invalid grep_limit pattern: responseBytes below maxLineBytes", 422, "corefs_invalid_request"),
     ],
 )
 def test_native_logical_errors_map_to_stable_client_responses(
