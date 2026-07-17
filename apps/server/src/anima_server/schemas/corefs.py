@@ -28,6 +28,7 @@ CoreFsPrincipalKind = Literal["user", "anima", "client"]
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MAX_LOGICAL_PATH_BYTES = 32 * 1024
 _MAX_PORTABLE_NAME_BYTES = 255
+_MAX_NATIVE_U64 = (1 << 64) - 1
 _RESERVED_COMPONENTS = frozenset(
     {
         ".anima",
@@ -116,7 +117,7 @@ class CoreFsOperationRequest(BaseModel):
     cursorAfter: str | None = None
     globCursorAfter: str | None = None
     grepCursorPath: str | None = None
-    grepCursorByteOffset: int | None = Field(default=None, ge=0)
+    grepCursorByteOffset: int | None = Field(default=None, ge=0, le=_MAX_NATIVE_U64)
     grepCursorWalkAfter: str | None = None
     cursorGeneration: int | None = Field(default=None, ge=1)
     limit: int = Field(default=100, ge=1, le=1000)
@@ -125,7 +126,7 @@ class CoreFsOperationRequest(BaseModel):
     maxFiles: int = Field(default=1000, ge=1, le=10000)
     maxMatches: int = Field(default=100, ge=1, le=1000)
     maxLineBytes: int = Field(default=4096, ge=128, le=65536)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0, le=_MAX_NATIVE_U64)
     maxBytes: int = Field(default=65536, ge=1, le=1048576)
     responseBytes: int | None = Field(default=None, ge=1024, le=10485760)
     regex: bool = False

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 01:05 MYT
+- Updated: 2026-07-18 01:17 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -108,6 +108,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-18 00:35 MYT - Addressed PR #107's sixth current-head Codex review pass by pinning the versioned-login CoreFS-subkey regression to the intended empty configured-passphrase mode. The test now remains deterministic when the surrounding environment exports `ANIMA_CORE_PASSPHRASE`, while the separate unversioned-manifest tests continue to cover configured passphrase mode explicitly.
 - 2026-07-18 00:50 MYT - Addressed PR #107's seventh current-head Codex review pass with red/green event-loop and error-contract regressions. The CoreFS operation endpoint is now synchronous so FastAPI dispatches native validation and bounded disk reads through its worker threadpool, and native glob/grep/grep-limit validation failures map to stable 422 `corefs_invalid_request` responses instead of HTTP 500.
 - 2026-07-18 01:05 MYT - Addressed PR #107's eighth current-head Codex review pass with a red/green client-authorization ordering regression. Valid client reads and migration-frozen writes now both require the broker-derived installation principal to pass the grant gate before any CoreFS context resolution, native dispatch, or frozen mutation response; unknown operations preserve their existing rejection path.
+- 2026-07-18 01:17 MYT - Addressed PR #107's ninth current-head Codex review pass with red/green native-integer-boundary regressions. Read offsets and grep continuation byte offsets are now capped at `u64::MAX` in the request schema, so larger client integers return HTTP 422 before CoreFS context resolution or PyO3 conversion instead of overflowing into HTTP 500.
 
 ## Validation
 
@@ -186,6 +187,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #107 sixth review follow-up: the versioned-login CoreFS-subkey test passed with `ANIMA_CORE_PASSPHRASE` exported after pinning `settings.core_passphrase` to empty; the full CoreFS keyslot suite passed (49), scoped Ruff passed, and `bun run build` passed.
   - PR #107 seventh review follow-up: red/green synchronous-endpoint and native glob/grep/grep-limit error regressions; focused CoreFS route/logical tests passed (32), scoped Ruff passed, and `bun run build` passed.
   - PR #107 eighth review follow-up: red/green broker-authenticated client read/write grant-order regression; focused CoreFS route/logical tests passed (34), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 ninth review follow-up: red/green read and grep-cursor offset overflow regressions; focused CoreFS route/logical tests passed (36), scoped Ruff passed, and `bun run build` passed.
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 01:05 MYT
+- Updated: 2026-07-18 01:17 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -129,6 +129,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-18 00:35 MYT - Addressed PR #107's sixth current-head review pass for PCF-002 Step 11: the versioned-login CoreFS-subkey regression now pins empty configured-passphrase mode and stays deterministic even when `ANIMA_CORE_PASSPHRASE` is exported. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 00:50 MYT - Addressed PR #107's seventh current-head review pass for PCF-002 Step 11: blocking CoreFS reads now run through FastAPI's sync-endpoint threadpool, and native glob/grep/grep-limit validation errors return stable 422 detail. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 01:05 MYT - Addressed PR #107's eighth current-head review pass for PCF-002 Step 11: broker-authenticated clients now hit the grant gate before both reads and migration-frozen write responses, preserving fail-closed behavior until folder-scoped grants exist. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 01:17 MYT - Addressed PR #107's ninth current-head review pass for PCF-002 Step 11: read and grep-cursor byte offsets now enforce the native `u64` upper bound and reject larger client integers with HTTP 422 before PyO3 conversion. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 
 ## Validation
 
@@ -164,6 +165,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #107 sixth review follow-up: the versioned-login CoreFS-subkey regression passed with `ANIMA_CORE_PASSPHRASE` exported, the full CoreFS keyslot suite passed (49), scoped Ruff passed, and `bun run build` passed.
   - PR #107 seventh review follow-up: red/green sync-endpoint and native pattern-error regressions; focused CoreFS route/logical tests passed (32), scoped Ruff passed, and `bun run build` passed.
   - PR #107 eighth review follow-up: red/green broker-client read/write grant-order regression; focused CoreFS route/logical tests passed (34), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 ninth review follow-up: red/green native `u64` overflow regressions for read and grep-cursor offsets; focused CoreFS route/logical tests passed (36), scoped Ruff passed, and `bun run build` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

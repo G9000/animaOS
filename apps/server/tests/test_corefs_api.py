@@ -392,6 +392,38 @@ def test_cursor_requires_generation(corefs_client: TestClient) -> None:
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "operation": "read",
+            "path": "Notes/A.md",
+            "offset": 1 << 64,
+        },
+        {
+            "operation": "grep",
+            "root": "Notes",
+            "query": "ANIMA",
+            "grepCursorPath": "Notes/A.md",
+            "grepCursorByteOffset": 1 << 64,
+            "cursorGeneration": 9,
+        },
+    ],
+)
+def test_rejects_offsets_above_native_u64_before_dispatch(
+    corefs_client: TestClient,
+    payload: dict[str, object],
+) -> None:
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert corefs_client._corefs_calls == []  # type: ignore[attr-defined]
+
+
 def test_stale_cursor_generation_is_rejected_before_native_dispatch(
     corefs_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
