@@ -1366,54 +1366,55 @@ async def generate_embeddings_batch(
     except LLMConfigError:
         return [None] * len(texts)
 
-    if provider == "fastembed":
-        from anima_server.services.agent.fastembed_backend import embed_texts
-
-        model = _resolve_embedding_model()
-        prepared_items = [
-            (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
-        ]
-        non_empty_items = [item for item in prepared_items if item[1]]
-        if not non_empty_items:
-            return [None] * len(texts)
-
-        vectors = await asyncio.to_thread(
-            embed_texts,
-            [text for _, text in non_empty_items],
-            model_name=model,
-        )
-
-        results: list[list[float] | None] = [None] * len(texts)
-        for (index, _text), embedding in zip(non_empty_items, vectors, strict=False):
-            results[index] = embedding
-
-        _note_first_embedding_dim(results)
-        return results
-
     if provider == "ollama":
         results = await _batch_embed_ollama(texts)
         _note_first_embedding_dim(results)
         return results
 
-    prepared_items = [
-        (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
-    ]
-    non_empty_items = [item for item in prepared_items if item[1]]
+    non_empty_items = _prepare_non_empty_items(texts)
     if not non_empty_items:
         return [None] * len(texts)
 
-    prepared_results = await _batch_embed_openai_compatible(
-        [text for _, text in non_empty_items],
-        max_batch_size=max_batch_size,
-    )
+    if provider == "fastembed":
+        from anima_server.services.agent.fastembed_backend import embed_texts
 
-    results: list[list[float] | None] = [None] * len(texts)
-    for (index, _text), embedding in zip(non_empty_items, prepared_results, strict=False):
-        results[index] = embedding
+        prepared_results = await asyncio.to_thread(
+            embed_texts,
+            [text for _, text in non_empty_items],
+            model_name=_resolve_embedding_model(),
+        )
+    else:
+        prepared_results = await _batch_embed_openai_compatible(
+            [text for _, text in non_empty_items],
+            max_batch_size=max_batch_size,
+        )
+
+    results = _scatter_batch_results(non_empty_items, prepared_results, total=len(texts))
 
     # Same-scale contract check as the single path, so a model/dimension switch
     # is caught even when the first embedding work is a batch backfill.
     _note_first_embedding_dim(results)
+    return results
+
+
+def _prepare_non_empty_items(texts: list[str]) -> list[tuple[int, str]]:
+    """Return ``(original_index, prepared_text)`` pairs for non-empty texts."""
+    prepared_items = [
+        (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
+    ]
+    return [item for item in prepared_items if item[1]]
+
+
+def _scatter_batch_results(
+    non_empty_items: list[tuple[int, str]],
+    embeddings: list[list[float] | None],
+    *,
+    total: int,
+) -> list[list[float] | None]:
+    """Scatter per-prepared-text embeddings back to input positions."""
+    results: list[list[float] | None] = [None] * total
+    for (index, _text), embedding in zip(non_empty_items, embeddings, strict=False):
+        results[index] = embedding
     return results
 
 

@@ -107,7 +107,8 @@ def resolve_background_chat_targets(
         (resolved_primary_provider, resolved_primary_model),
     ):
         target = ChatTarget(provider=provider, model=model)
-        if provider == "scaffold" or not provider or not model or target in targets:
+        # "scaffold" is a no-op placeholder; "fastembed" is embeddings-only.
+        if provider in ("scaffold", "fastembed") or not provider or not model or target in targets:
             continue
         targets.append(target)
     return targets
@@ -187,6 +188,13 @@ def create_provider_chat_client(
 
 def resolve_base_url(provider: str) -> str:
     validate_provider(provider)
+    if provider not in DEFAULT_BASE_URLS:
+        # Embeddings-only providers (e.g. "fastembed") pass validate_provider
+        # but have no chat endpoint; fail cleanly instead of KeyError.
+        raise LLMConfigError(
+            f"Provider {provider!r} is not chat-capable (no chat base URL); "
+            "it cannot be used as agent_provider or extraction provider."
+        )
     configured_base_url = settings.agent_base_url.strip()
     if configured_base_url and provider == settings.agent_provider.strip():
         if provider == "ollama" and not configured_base_url.rstrip("/").endswith("/v1"):

@@ -48,6 +48,21 @@ def test_resolve_background_chat_targets_filters_empty_and_scaffold() -> None:
     ) == []
 
 
+def test_resolve_background_chat_targets_filters_fastembed() -> None:
+    # fastembed is embeddings-only; it must never surface as a chat target.
+    assert resolve_background_chat_targets(
+        extraction_provider="fastembed",
+        extraction_model="BAAI/bge-small-en-v1.5",
+        primary_provider="fastembed",
+        primary_model="BAAI/bge-small-en-v1.5",
+    ) == []
+
+
+def test_resolve_base_url_rejects_chat_incapable_fastembed() -> None:
+    with pytest.raises(LLMConfigError, match="not chat-capable"):
+        resolve_base_url("fastembed")
+
+
 @pytest.mark.asyncio
 async def test_generate_embedding_skips_openrouter_without_embedding_provider(
     monkeypatch: pytest.MonkeyPatch,
