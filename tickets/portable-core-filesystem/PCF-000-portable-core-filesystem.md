@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 17:18 MYT
+- Updated: 2026-07-17 18:24 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -114,6 +114,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 15:57 MYT - PCF-002 Step 10 completed its Python/PyO3 logical tool boundary: validation-snapshot selection, selected generation/catalog-hash guards on every read wrapper, shared CoreFS V1 wire output, server-side Python adapters, and migration-frozen public mutator wrappers. Focused PyO3, Python adapter, Python lint, Python-feature compile, and diff hygiene checks passed. PCF-002 remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 16:42 MYT - Addressed PR #106 current-head Codex review feedback for PCF-002 Step 10 by wiring logical glob/grep continuation cursors through the PyO3 and server Python wrappers, with focused Rust/Python validation passing. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 17:18 MYT - Addressed PR #106's second current-head Codex review pass for PCF-002 Step 10: logical reads now respect response-budget clamping before raw backend open, and trashed objects retain historical restore metadata even when their original parent folder is later trashed. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 18:24 MYT - Addressed PR #106's third current-head Codex review pass for PCF-002 Step 10: catalog validation now rejects hidden original-parent cycles for trashed folders, and CoreFS package initialization no longer eagerly imports native logical bindings. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 
 ## Validation
 
@@ -135,6 +136,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 Step 10 Layer 3: `cargo check --locked -p anima-core --features python`; focused PyO3 `cargo test --locked -p anima-core --features python corefs_`; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_logical.py -q`; scoped ruff check; `git diff --check`
   - PR #106 cursor follow-up: Python logical wrapper test, `cargo check --locked -p anima-core --features python`, `cargo +1.75.0 test --locked -p anima-file-tools -p anima-corefs`, focused PyO3 CoreFS tests, scoped Ruff, and `git diff --check`
   - PR #106 second review pass: red/green focused regressions, full `cargo +1.75.0 test --locked -p anima-corefs`, strict CoreFS clippy, and `git diff --check` passed; touched files were manually aligned with rustfmt output while unrelated pre-existing CoreFS format drift remains outside this PR fix.
+  - PR #106 third review pass: hidden-original-parent and native-binding package-import regressions, full CoreFS tests, strict CoreFS clippy, Python package/logical tests, scoped Ruff, and `git diff --check` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

@@ -184,6 +184,21 @@ fn folder_trash_graph_invariants_fail_closed() {
         ],
     )
     .is_err());
+
+    let hidden_original_parent =
+        common(OTHER_ID, Some(TRASH_ID), "Archive").with_folder_lifecycle(metadata(
+            TRASH_ID, CHILD_ID,
+        ));
+    assert!(CatalogGeneration::new(
+        1,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(hidden_original_parent),
+            CatalogGenerationEntry::folder(common(CHILD_ID, Some(OTHER_ID), "HiddenOriginal")),
+        ],
+    )
+    .is_err());
 }
 
 #[test]

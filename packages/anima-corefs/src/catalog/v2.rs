@@ -856,6 +856,18 @@ fn validate_lifecycle_references<'a>(
         Ok(entry)
     };
 
+    let folder_is_descendant_of =
+        |folder_id: &OpaqueId, ancestor_id: &OpaqueId| -> Result<bool, CatalogError> {
+            let mut current = require_folder(folder_id)?;
+            while let Some(parent_id) = current.common().parent_id.as_ref() {
+                if parent_id == ancestor_id {
+                    return Ok(true);
+                }
+                current = require_folder(parent_id)?;
+            }
+            Ok(false)
+        };
+
     for entry in entries {
         let common = entry.common();
         match entry {
@@ -879,6 +891,11 @@ fn validate_lifecycle_references<'a>(
                     {
                         return Err(CatalogError::InvalidFormat(
                             "trashed folder cannot reference itself",
+                        ));
+                    }
+                    if folder_is_descendant_of(&metadata.original_parent_id, &common.stable_id)? {
+                        return Err(CatalogError::InvalidFormat(
+                            "trashed folder original parent is hidden inside itself",
                         ));
                     }
                     if common.parent_id.as_ref() != Some(&metadata.trash_folder_id) {
