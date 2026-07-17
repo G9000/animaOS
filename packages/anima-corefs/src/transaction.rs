@@ -335,7 +335,8 @@ impl CoreCommitLock {
         #[cfg(unix)]
         secure_commit_lock_permissions(&file)?;
         #[cfg(not(windows))]
-        let anchor = root_dir.try_clone()?.into_std_file();
+        // cap-std uses O_PATH for Dir on Linux, which cannot be locked.
+        let anchor = root_dir.open(".")?.into_std();
         #[cfg(windows)]
         let anchor = file.try_clone()?;
         anchor.try_lock_exclusive().map_err(|error| {

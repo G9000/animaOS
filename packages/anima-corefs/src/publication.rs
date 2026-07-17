@@ -201,7 +201,8 @@ where
 
 #[cfg(not(windows))]
 pub(crate) fn sync_directory(dir: &Dir) -> io::Result<()> {
-    dir.try_clone()?.into_std_file().sync_all()
+    // cap-std uses O_PATH for Dir on Linux, which cannot be fsynced.
+    dir.open(".")?.into_std().sync_all()
 }
 
 pub(crate) fn durable_create_directory_in(dir: &Dir, target: &OsStr) -> io::Result<()> {
