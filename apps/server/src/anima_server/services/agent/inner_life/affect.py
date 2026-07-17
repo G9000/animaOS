@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 VALENCE_BOUNDS = (-1.0, 1.0)
 AROUSAL_BOUNDS = (0.0, 1.0)
@@ -138,6 +138,20 @@ def _local_hour(moment: datetime) -> float:
     )
 
 
+def _elapsed_hours(start: datetime, end: datetime) -> float:
+    """True elapsed hours between two datetimes.
+
+    Aware pairs are normalized to UTC first: CPython's intra-zone rule
+    makes subtraction of two aware datetimes sharing a tzinfo *wall-clock*
+    arithmetic, which mis-measures any interval spanning a DST transition
+    by the DST delta. Naive pairs subtract directly (pre-existing
+    behavior); mixed naive/aware raises, as before.
+    """
+    if start.tzinfo is not None and end.tzinfo is not None:
+        return (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() / 3600.0
+    return (end - start).total_seconds() / 3600.0
+
+
 def relax(
     state: AffectState,
     now: datetime,
@@ -155,7 +169,7 @@ def relax(
     baseline should use — timezone resolution is a side-effect concern and
     happens at the wiring edge, not here.
     """
-    dt_hours = (now - state.updated_at).total_seconds() / 3600.0
+    dt_hours = _elapsed_hours(state.updated_at, now)
     if dt_hours <= 0:
         return state if dt_hours < 0 else replace(state, updated_at=now)
 
@@ -183,6 +197,74 @@ def relax(
         energy=_clamp(energy, *ENERGY_BOUNDS),
         updated_at=now,
     )
+
+
+def _advance(moment: datetime, hours: float) -> datetime:
+    """Advance `moment` by absolute elapsed hours.
+
+    Aware datetimes advance in UTC and convert back, so the result carries
+    the correct wall clock even when the interval crosses a DST transition
+    (naive wall-clock addition would silently shift the instant by the DST
+    delta). Naive datetimes are advanced directly.
+    """
+    if moment.tzinfo is None:
+        return moment + timedelta(hours=hours)
+    return (moment.astimezone(UTC) + timedelta(hours=hours)).astimezone(moment.tzinfo)
+
+
+def arousal_threshold_crossing_time(
+    state: AffectState,
+    config: AffectConfig = DEFAULT_AFFECT_CONFIG,
+    threshold: float | None = None,
+) -> float:
+    """Hours until `relax`'s arousal trajectory first drops to `threshold`.
+
+    Solves x(t) = xp(t) + (x0 - xp(t0)) * exp(-t/tau) (the exact arousal
+    solution used by `relax`) for the first t with x(t) <= threshold
+    (default: the allostatic threshold). The above-threshold region is a
+    single leading interval [0, t*): the circadian equilibrium band tops
+    out well below the allostatic threshold, so at any crossing the
+    transient is decaying at (threshold - xp(t))/tau >= ~0.04/h while xp
+    itself moves at most amplitude * omega ~= 0.014/h — the trajectory
+    cannot re-cross once below. Bisection to 1e-9 h; bounded pure
+    arithmetic, O(1), no DB. Returns 0.0 when already at/below threshold
+    and +inf if the equilibrium band itself sits above the threshold
+    (impossible for the default config; guards custom thresholds).
+
+    `state.updated_at`'s zone is honored exactly: elapsed time advances in
+    UTC while circadian phase reads the wall clock at each probed instant,
+    so DST transitions inside the solve window land in the right place.
+    """
+    thr = config.allostatic_arousal_threshold if threshold is None else threshold
+    if state.arousal <= thr:
+        return 0.0
+
+    tau = config.tau_arousal_hours
+    xp0 = _circadian_particular_arousal(
+        _local_hour(state.updated_at), state.arousal_baseline_shift, config
+    )
+    transient0 = state.arousal - xp0
+
+    def arousal_at(t_hours: float) -> float:
+        moment = _advance(state.updated_at, t_hours)
+        xp_t = _circadian_particular_arousal(
+            _local_hour(moment), state.arousal_baseline_shift, config
+        )
+        return xp_t + transient0 * math.exp(-t_hours / tau)
+
+    hi = tau
+    while arousal_at(hi) > thr:
+        hi *= 2.0
+        if hi > 64.0 * tau:
+            return math.inf
+    lo = 0.0
+    while hi - lo > 1e-9:
+        mid = 0.5 * (lo + hi)
+        if arousal_at(mid) > thr:
+            lo = mid
+        else:
+            hi = mid
+    return hi
 
 
 def update_allostatic_shift(

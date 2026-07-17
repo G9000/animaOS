@@ -26,7 +26,7 @@ Run inner-life dynamics on a 60 s background tick and apply the entire offline g
 
 ## Acceptance
 
-- Simulated 3-week gap equals 30,240 individual ticks within float tolerance for closed-form state (dream effects excluded by design) (test — `test_catchup_equivalence_over_three_weeks`).
+- Simulated 3-week gap equals 30,240 individual ticks within float tolerance for closed-form state (threshold-indicator state — the allostatic accumulator — matches within one tick quantum, as it is quantization-dependent by construction; dream effects excluded by design) (tests — `test_catchup_equivalence_over_three_weeks` from arousal 0.9 exercising the threshold crossing, `test_catchup_equivalence_below_threshold_regime` at 1e-6 for the pure-exponential regime).
 - Catch-up completes < 50 ms, zero LLM calls, and generates no behavioral output (measured ~11 ms for 20 users with a 21-day gap each on SQLite; source-level no-LLM assertions in the test suite).
 - A multi-night gap defers exactly one catch-up dream marker (test — `test_catchup_writes_one_audit_row_with_correct_gap_and_dream_deferred`); a no-night gap leaves it `False` (test).
 - Tick loop is skipped cleanly while a turn is in flight: a user with an active `RuntimeThread` and `last_message_at` within `presence_active_window_seconds` (120 s default) is skipped entirely, not merely lock-avoided (test — `test_active_user_is_skipped`).
@@ -38,6 +38,7 @@ Run inner-life dynamics on a 60 s background tick and apply the entire offline g
 - 2026-07-15 19:20 MYT - IL-001 review: allostatic update is implemented in inner_life/affect.py but unwired by design; this tick is its caller.
 - 2026-07-16 11:42 MYT - Started implementation on branch feature/il-002-presence-tick.
 - 2026-07-16 13:30 MYT - Implemented `presence.py` (tick) and `catchup.py` (offline catch-up), migration 028, config fields, main.py wiring, eval_reset coverage, and `test_inner_life_presence.py`. Closed IL-001's deferred true-local-time item at the tick/catch-up wiring layer (see Deliverables). Pressure accumulation and dream eligibility intentionally excluded — not yet built (IL-003/IL-007). Focused suite green; full suite run before commit.
+- 2026-07-17 - Review fix round: (1) allostatic catch-up now piecewise-exact around the single downward threshold crossing — `arousal_threshold_crossing_time` solver added to `affect.py` (bisection on the closed-form arousal to 1e-9 h, O(1)), composed as two calls to `update_allostatic_shift` in `presence.apply_idle_gap`, used by both tick and catch-up; regression test for the 4h-gap-from-0.9 scenario. (2) DST-safe local time: `system_zoneinfo()` resolves the real IANA zone (TZ env, /etc/localtime, fixed-offset fallback with warning), threaded through tick/catch-up as an injectable `tz` seam; night-window and elapsed arithmetic normalized to UTC instants (CPython's intra-zone wall-clock rule mis-measured DST-spanning intervals); DST borderline tests added. PRD/ticket acceptance now states the allostatic accumulator matches within one tick quantum (quantization-dependent by construction).
 
 ## Validation
 

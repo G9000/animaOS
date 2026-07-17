@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from anima_server.db.runtime_base import RuntimeBase
@@ -15,6 +16,7 @@ from anima_server.services.agent.inner_life.affect import (
     DEFAULT_AFFECT_CONFIG,
     AffectState,
     _circadian_particular_arousal,
+    arousal_threshold_crossing_time,
     relax,
     update_allostatic_shift,
 )
@@ -22,7 +24,10 @@ from anima_server.services.agent.inner_life.catchup import (
     apply_offline_catchup,
     has_eligible_night_window,
 )
-from anima_server.services.agent.inner_life.presence import run_presence_tick
+from anima_server.services.agent.inner_life.presence import (
+    run_presence_tick,
+    system_zoneinfo,
+)
 from anima_server.services.agent.inner_life.store import get_affect_state, save_affect_state
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.engine import Engine
@@ -213,13 +218,61 @@ def test_tick_uses_local_hour_not_utc_hour_for_circadian_phase(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
+def _compose_per_minute(
+    start: AffectState, start_at: datetime, minutes: int
+) -> AffectState:
+    composed = start
+    t = start_at
+    for _ in range(minutes):
+        t = t + timedelta(seconds=60)
+        composed = relax(composed, t, DEFAULT_AFFECT_CONFIG)
+        composed = update_allostatic_shift(composed, 1.0 / 60.0, DEFAULT_AFFECT_CONFIG)
+    return composed
+
+
+# One tick quantum of allostatic divergence: per-minute composition
+# quantizes the threshold crossing at 60 s boundaries (the crossing minute
+# can flip from accumulate (+1/60 h) to drain (-0.5/60 h)), so exact
+# catch-up may differ from composition by up to 1.5 * (60 s in hours).
+_TICK_QUANTUM_HOURS = 1.5 * (60.0 / 3600.0)
+
+
 def test_catchup_equivalence_over_three_weeks(tmp_path: Path) -> None:
+    # Starts ABOVE the allostatic threshold (0.9 > 0.7) so the catch-up
+    # exercises the threshold-crossing path. Valence/arousal/energy are
+    # closed-form and must match per-minute composition to 1e-6; the
+    # allostatic accumulator is threshold-indicator state and is
+    # quantization-dependent by construction (composition itself quantizes
+    # the crossing at 60 s boundaries), so it must match within one tick
+    # quantum.
+    factory = _factory(tmp_path)
+    start_updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start_updated_at + timedelta(days=21)
+    start = AffectState(valence=0.8, arousal=0.9, energy=0.1, updated_at=start_updated_at)
+
+    with factory() as db:
+        save_affect_state(db, user_id=1, state=start)
+        db.commit()
+
+    apply_offline_catchup(factory, now=now, min_gap_seconds=0)
+
+    composed = _compose_per_minute(start, start_updated_at, 30_240)
+
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+
+    assert abs(state.valence - composed.valence) < 1e-6
+    assert abs(state.arousal - composed.arousal) < 1e-6
+    assert abs(state.energy - composed.energy) < 1e-6
+    assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
+    assert abs(state.arousal_baseline_shift - composed.arousal_baseline_shift) < 1e-6
+
+
+def test_catchup_equivalence_below_threshold_regime(tmp_path: Path) -> None:
     # Arousal starts (and stays) below the allostatic threshold for the
-    # whole gap, so the allostatic branch is identical in both the
-    # composed per-minute loop and the one-shot catch-up; this isolates
-    # the closed-form relaxation equivalence at the catch-up level (IL1's
-    # own equivalence test exercises `relax` directly — this exercises the
-    # `apply_offline_catchup` wiring on top of it).
+    # whole gap, so no crossing quantization exists and BOTH regimes —
+    # relaxation and allostatic drain — must match per-minute composition
+    # to 1e-6 (the pure-exponential regime).
     factory = _factory(tmp_path)
     start_updated_at = datetime(2026, 1, 1, tzinfo=UTC)
     now = start_updated_at + timedelta(days=21)
@@ -231,12 +284,7 @@ def test_catchup_equivalence_over_three_weeks(tmp_path: Path) -> None:
 
     apply_offline_catchup(factory, now=now, min_gap_seconds=0)
 
-    composed = start
-    t = start_updated_at
-    for _ in range(30_240):
-        t = t + timedelta(seconds=60)
-        composed = relax(composed, t, DEFAULT_AFFECT_CONFIG)
-        composed = update_allostatic_shift(composed, 1.0 / 60.0, DEFAULT_AFFECT_CONFIG)
+    composed = _compose_per_minute(start, start_updated_at, 30_240)
 
     with factory() as db:
         state = get_affect_state(db, user_id=1)
@@ -246,6 +294,62 @@ def test_catchup_equivalence_over_three_weeks(tmp_path: Path) -> None:
     assert abs(state.energy - composed.energy) < 1e-6
     assert abs(state.high_arousal_hours - composed.high_arousal_hours) < 1e-6
     assert abs(state.arousal_baseline_shift - composed.arousal_baseline_shift) < 1e-6
+
+
+def test_catchup_4h_gap_from_high_arousal_is_piecewise_exact(tmp_path: Path) -> None:
+    # Reviewer regression: a 4 h gap starting at arousal 0.9 crosses the
+    # allostatic threshold mid-gap (t* ~ 2.5-3 h). A single-branch
+    # application keyed off the END-of-gap arousal would pure-drain the
+    # whole gap (high_arousal_hours -> 0), diverging from composition by
+    # ~2+ accumulator-hours. Catch-up must instead accumulate over [0, t*]
+    # and drain over [t*, gap]: exactly t* - 0.5 * (gap - t*).
+    factory = _factory(tmp_path)
+    start_updated_at = datetime(2026, 1, 1, 5, 0, tzinfo=UTC)
+    now = start_updated_at + timedelta(hours=4)
+    start = AffectState(valence=0.0, arousal=0.9, energy=0.5, updated_at=start_updated_at)
+
+    with factory() as db:
+        save_affect_state(db, user_id=1, state=start)
+        db.commit()
+
+    apply_offline_catchup(factory, now=now, min_gap_seconds=0)
+
+    t_star = arousal_threshold_crossing_time(start, DEFAULT_AFFECT_CONFIG)
+    assert 0.0 < t_star < 4.0
+    expected_high = t_star - 0.5 * (4.0 - t_star)
+
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+
+    assert state.high_arousal_hours == pytest.approx(expected_high, abs=1e-6)
+    # The pre-fix behavior (pure drain over the whole gap) would clamp to 0;
+    # the exact value (~1.5-2.5 h) varies with circadian phase.
+    assert state.high_arousal_hours > 1.0
+    # And composition agrees within one tick quantum.
+    composed = _compose_per_minute(start, start_updated_at, 240)
+    assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
+
+
+def test_arousal_threshold_crossing_time_is_consistent_with_relax() -> None:
+    # The solver must agree with relax(): arousal at t* equals the
+    # threshold, and a state already at/below threshold has t* = 0.
+    start = AffectState(
+        valence=0.0, arousal=0.9, energy=0.5,
+        updated_at=datetime(2026, 1, 1, 5, 0, tzinfo=UTC),
+    )
+    t_star = arousal_threshold_crossing_time(start, DEFAULT_AFFECT_CONFIG)
+    at_crossing = relax(
+        start, start.updated_at + timedelta(hours=t_star), DEFAULT_AFFECT_CONFIG
+    )
+    assert at_crossing.arousal == pytest.approx(
+        DEFAULT_AFFECT_CONFIG.allostatic_arousal_threshold, abs=1e-6
+    )
+
+    calm = AffectState(
+        valence=0.0, arousal=0.5, energy=0.5,
+        updated_at=datetime(2026, 1, 1, 5, 0, tzinfo=UTC),
+    )
+    assert arousal_threshold_crossing_time(calm, DEFAULT_AFFECT_CONFIG) == 0.0
 
 
 def test_catchup_below_min_gap_is_skipped(tmp_path: Path) -> None:
@@ -327,6 +431,86 @@ def test_has_eligible_night_window_requires_four_hours_of_overlap() -> None:
     )
     assert short is False
     assert full is True
+
+
+def test_night_window_across_dst_spring_forward_uses_real_zone() -> None:
+    # US spring-forward night (2026-03-08, America/New_York): the wall
+    # clock jumps 02:00 EST -> 03:00 EDT, so the local 00:00-06:00 window
+    # spans only 5 REAL hours. A gap covering local 01:30 -> 06:00 that
+    # night holds 4.5 WALL hours but only 3.5 real idle hours — below the
+    # 4 h floor. A real IANA zone must say "not eligible"; the frozen
+    # fixed offset a datetime.now().astimezone() would have captured in
+    # winter (-05:00) misplaces the transition and wrongly says "eligible".
+    zone = ZoneInfo("America/New_York")
+    start_wall = datetime(2026, 3, 8, 1, 30)
+    end_wall = datetime(2026, 3, 8, 6, 0)
+
+    assert (
+        has_eligible_night_window(
+            start_wall.replace(tzinfo=zone), end_wall.replace(tzinfo=zone)
+        )
+        is False
+    )
+
+    frozen_winter_offset = timezone(timedelta(hours=-5))
+    assert (
+        has_eligible_night_window(
+            start_wall.replace(tzinfo=frozen_winter_offset),
+            end_wall.replace(tzinfo=frozen_winter_offset),
+        )
+        is True
+    )
+
+
+def test_catchup_dst_spanning_gap_defers_dream_correctly(tmp_path: Path) -> None:
+    # Catch-up level: the same borderline spring-forward gap, with the
+    # zone injected via the tz seam. 01:30 EST -> 07:00 EDT is 4.5 real
+    # hours (gap passes min-gap), but only 3.5 of them fall inside the
+    # real local 00:00-06:00 night window -> no deferred dream. Under the
+    # frozen winter offset the same instants read as 01:30 -> 06:00 local
+    # (4.5 h overlap) and would wrongly defer one.
+    zone = ZoneInfo("America/New_York")
+    start_utc = datetime(2026, 3, 8, 6, 30, tzinfo=UTC)  # 01:30 EST
+    now_utc = datetime(2026, 3, 8, 11, 0, tzinfo=UTC)  # 07:00 EDT
+
+    factory = _factory(tmp_path, "dst_zone.db")
+    with factory() as db:
+        save_affect_state(
+            db,
+            user_id=1,
+            state=AffectState(valence=0.0, arousal=0.4, energy=0.5, updated_at=start_utc),
+        )
+        db.commit()
+
+    results = apply_offline_catchup(factory, now=now_utc, tz=zone, min_gap_seconds=600)
+    assert len(results) == 1
+    assert results[0].dream_deferred is False
+
+    # Contrast: the frozen fixed winter offset gets it wrong.
+    frozen_factory = _factory(tmp_path, "dst_frozen.db")
+    with frozen_factory() as db:
+        save_affect_state(
+            db,
+            user_id=1,
+            state=AffectState(valence=0.0, arousal=0.4, energy=0.5, updated_at=start_utc),
+        )
+        db.commit()
+
+    frozen = apply_offline_catchup(
+        frozen_factory,
+        now=now_utc,
+        tz=timezone(timedelta(hours=-5)),
+        min_gap_seconds=600,
+    )
+    assert len(frozen) == 1
+    assert frozen[0].dream_deferred is True
+
+
+def test_system_zoneinfo_prefers_tz_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "America/New_York")
+    zone = system_zoneinfo()
+    assert isinstance(zone, ZoneInfo)
+    assert zone.key == "America/New_York"
 
 
 def test_catchup_module_has_no_llm_references() -> None:

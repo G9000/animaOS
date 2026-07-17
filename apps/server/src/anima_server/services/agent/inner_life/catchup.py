@@ -1,10 +1,12 @@
 """Offline catch-up (IL2): closed-form gap application, once, at startup.
 
-IL1's relaxation and allostatic accumulation are exact closed-form
-solutions in Δt, so a restart after any gap — five minutes or three weeks —
-applies the entire gap in a single call per user: no per-minute tick
-replay. This module is the only caller that ever passes a large Δt into
-`affect.relax`; the tick loop (`presence.py`) always sees small ones.
+IL1's relaxation is an exact closed-form solution in Δt (and the allostatic
+update is applied piecewise-exactly around its single threshold crossing —
+see `presence.apply_idle_gap`), so a restart after any gap — five minutes
+or three weeks — applies the entire gap in O(1) per user: no per-minute
+tick replay. This module is the only caller that ever passes a large Δt
+into the gap application; the tick loop (`presence.py`) always sees small
+ones.
 
 Catch-up never runs a dream pass. If the gap contained at least one
 eligible night window (>= 4h of idle time inside any local 00:00-06:00
@@ -12,8 +14,9 @@ span), it sets a `dream_deferred` marker on the audit row - a data flag,
 nothing else - for IL-007 to consume later. At most one marker is ever set
 per catch-up, regardless of how many nights the gap actually spanned.
 
-Zero LLM calls; no behavioral output. Pure arithmetic + one SELECT and one
-flush per user.
+Zero LLM calls; no behavioral output. Pure arithmetic plus a handful of
+statements per user: the state SELECT, the save path's SELECT + UPDATE,
+and the audit-row INSERT (linear in users, asserted by test).
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from datetime import tzinfo as _tzinfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,12 +33,11 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.db.helpers import session_scope
 from anima_server.models.runtime_consciousness import AffectStateRow, PresenceCatchup
-from anima_server.services.agent.inner_life.affect import (
-    AffectConfig,
-    relax,
-    update_allostatic_shift,
+from anima_server.services.agent.inner_life.affect import AffectConfig
+from anima_server.services.agent.inner_life.presence import (
+    apply_idle_gap,
+    resolve_local_now,
 )
-from anima_server.services.agent.inner_life.presence import to_local_view, to_utc_view
 from anima_server.services.agent.inner_life.store import (
     get_affect_config,
     get_affect_state,
@@ -61,11 +64,20 @@ class CatchupResult:
 
 
 def _night_overlap_hours(day: date, start: datetime, end: datetime) -> float:
-    """Idle hours of `[start, end)` that fall inside `day`'s 00:00-06:00 span."""
+    """Real idle hours of `[start, end)` inside `day`'s local 00:00-06:00 span.
+
+    The window boundaries are local-calendar wall times (intra-zone
+    wall-clock addition is exactly the "any local 00:00-06:00 span"
+    semantics), but the overlap arithmetic is done on UTC instants:
+    CPython's intra-zone rule makes subtraction/comparison of two aware
+    datetimes sharing a tzinfo *wall-clock*, which would miscount real
+    hours across a DST transition (a spring-forward night window holds
+    only 5 real hours).
+    """
     night_start = datetime.combine(day, time(hour=0), tzinfo=start.tzinfo)
     night_end = night_start + timedelta(hours=_NIGHT_WINDOW_HOURS)
-    overlap_start = max(start, night_start)
-    overlap_end = min(end, night_end)
+    overlap_start = max(start.astimezone(UTC), night_start.astimezone(UTC))
+    overlap_end = min(end.astimezone(UTC), night_end.astimezone(UTC))
     if overlap_end <= overlap_start:
         return 0.0
     return (overlap_end - overlap_start).total_seconds() / 3600.0
@@ -80,7 +92,7 @@ def has_eligible_night_window(start: datetime, end: datetime) -> bool:
     spans more than a day or two contains a full night entirely, so this
     loop almost always exits on its first or second iteration in practice.
     """
-    if end <= start:
+    if end.astimezone(UTC) <= start.astimezone(UTC):
         return False
     day = start.date()
     last_day = end.date()
@@ -119,9 +131,7 @@ def _catchup_one_user(
             local_start = state.updated_at.astimezone(local_now.tzinfo)
             dream_deferred = has_eligible_night_window(local_start, local_now)
 
-            relaxed = relax(to_local_view(state, local_now.tzinfo), local_now, config)
-            relaxed = to_utc_view(relaxed)
-            updated = update_allostatic_shift(relaxed, gap_seconds / 3600.0, config)
+            updated = apply_idle_gap(state, local_now, config)
             save_affect_state(db, user_id=user_id, state=updated)
 
             db.add(
@@ -147,15 +157,18 @@ def apply_offline_catchup(
     now: datetime | None = None,
     config: AffectConfig | None = None,
     min_gap_seconds: int | None = None,
+    tz: _tzinfo | None = None,
 ) -> list[CatchupResult]:
     """Apply the entire offline gap for every user with affect state, once.
 
-    Users whose gap since `updated_at` is below `min_gap_seconds` (default
-    `settings.presence_catchup_min_gap_seconds`) are skipped silently: no
-    write, no audit row. Meant to be called once at startup, before the
-    presence-tick loop starts.
+    Users whose gap since `updated_at` is below `min_gap_seconds` are
+    skipped silently: no write, no audit row. Meant to be called once at
+    startup, before the presence-tick loop starts. `min_gap_seconds` is a
+    test seam; it defaults from `settings.presence_catchup_min_gap_seconds`.
+    `tz` is a test seam for the local zone; it defaults from
+    `presence.system_zoneinfo()` (or `now`'s own zone when `now` is aware).
     """
-    local_now = now if now is not None else datetime.now().astimezone()
+    local_now = resolve_local_now(now, tz)
     now_utc = local_now.astimezone(UTC)
     resolved_config = config or get_affect_config()
     resolved_min_gap = (
