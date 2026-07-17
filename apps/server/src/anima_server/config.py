@@ -330,6 +330,27 @@ def _normalize_embedding_model_name(model: str) -> str:
     return normalized
 
 
+def _resolve_default_embedding_provider() -> str:
+    """Mirror ``embeddings._resolve_embedding_provider()``'s resolution order.
+
+    Duplicated (rather than imported) to avoid a circular import between
+    ``config`` and ``services.agent.embeddings``. Keep both in sync: explicit
+    ``agent_embedding_provider`` wins; otherwise the bundled ``fastembed``
+    provider is the default, except when the user configured embedding
+    details (model or base URL) against their chat provider without naming
+    an embedding provider — that legacy piggyback is preserved as a real
+    signal of intent.
+    """
+    configured = settings.agent_embedding_provider.strip()
+    if configured:
+        return configured
+    embedding_model = settings.agent_embedding_model.strip()
+    embedding_base_url = getattr(settings, "agent_embedding_base_url", "").strip()
+    if embedding_model or embedding_base_url:
+        return settings.agent_provider.strip() or "ollama"
+    return "fastembed"
+
+
 def resolve_embedding_dim() -> int:
     """Return the embedding dimension for the active model.
 
@@ -340,7 +361,7 @@ def resolve_embedding_dim() -> int:
     model = settings.agent_embedding_model.strip(
     ) or settings.agent_extraction_model.strip()
     if not model:
-        embed_provider = settings.agent_embedding_provider.strip() or settings.agent_provider
+        embed_provider = _resolve_default_embedding_provider()
         model = _DEFAULT_EMBEDDING_MODELS.get(
             embed_provider, "nomic-embed-text")
     if model in KNOWN_EMBEDDING_DIMS:

@@ -81,10 +81,24 @@ def _setting_text(value: Any) -> str:
 
 
 def _resolve_embedding_provider() -> str:
+    """Resolve which provider generates embeddings.
+
+    Order: explicit ``agent_embedding_provider`` wins. Otherwise the bundled
+    ``fastembed`` ONNX provider is the default — dense retrieval must work
+    regardless of which chat LLM the user has configured. The old implicit
+    piggyback onto ``agent_provider`` is preserved only when the user has
+    configured embedding-specific details (model or base URL) against their
+    chat provider without naming an embedding provider explicitly; that is a
+    real signal of intent, not an accident of the old fallback.
+    """
     configured = _setting_text(getattr(settings, "agent_embedding_provider", ""))
     if configured:
         return configured
-    return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
+    embedding_model = _setting_text(getattr(settings, "agent_embedding_model", ""))
+    embedding_base_url = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
+    if embedding_model or embedding_base_url:
+        return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
+    return "fastembed"
 
 
 def _resolve_embedding_api_key(provider: str | None = None) -> str:

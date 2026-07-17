@@ -64,7 +64,11 @@ pytest_plugins = ("conftest_runtime",)
 USER_ID = 1
 FIXTURES = Path(__file__).parent / "fixtures" / "retrieval_eval"
 CHUNK_TARGET_CHARS = 600
-EMBED_DIM = 768  # matches the embeddings column dimension
+# Derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 RECALL_LIMIT = 15
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-]*")

@@ -132,8 +132,15 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+# Dim derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
+
+
 def _embedding(x: float, y: float = 0.0) -> list[float]:
-    return [x, y, *([0.0] * 766)]
+    return [x, y, *([0.0] * (_EMBED_DIM - 2))]
 
 
 @contextmanager
@@ -2051,8 +2058,8 @@ def test_search_knowledge_bundle_tool_returns_concepts_and_evidence(
 
     def fake_embedding(text: str) -> list[float]:
         if "portable" in text.lower():
-            return [1.0, *([0.0] * 767)]
-        return [0.0, 1.0, *([0.0] * 766)]
+            return [1.0, *([0.0] * (_EMBED_DIM - 1))]
+        return [0.0, 1.0, *([0.0] * (_EMBED_DIM - 2))]
 
     monkeypatch.setattr(knowledge_retrieval, "generate_embedding", fake_embedding)
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:

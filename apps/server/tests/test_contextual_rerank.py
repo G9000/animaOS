@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocumentChunk
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents import reranker as reranker_module
 from anima_server.services.documents.contextual import (
     CONTEXT_BLURB_METADATA_KEY,
@@ -26,6 +27,13 @@ from anima_server.services.documents.store import (
 )
 
 pytest_plugins = ("conftest_runtime",)
+
+# Dim derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
+
 
 USER_ID = 1
 
@@ -180,7 +188,7 @@ def test_blurbs_prefix_embedding_text_but_not_stored_content(
 
     def embedding_fn(text: str):
         embedded_texts.append(text)
-        return [1.0] + [0.0] * 767
+        return [1.0] + [0.0] * (_EMBED_DIM - 1)
 
     embed_document_chunks(
         runtime_db,
@@ -311,7 +319,7 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
         runtime_db, ["alpha relay body", "beta coil body"]
     )
     for chunk in chunks:
-        vector = [1.0] + [0.0] * 767
+        vector = [1.0] + [0.0] * (_EMBED_DIM - 1)
         runtime_db.add(
             RuntimeEmbedding(
                 user_id=USER_ID,
@@ -365,7 +373,7 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
     )
 
     def fake_embedding(text: str):
-        return [1.0] + [0.0] * 767
+        return [1.0] + [0.0] * (_EMBED_DIM - 1)
 
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 
@@ -421,7 +429,7 @@ def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
         runtime_db, ["unrelated dense favorite", "the E-17 fault code chunk"]
     )
     for chunk in chunks:
-        vector = [1.0] + [0.0] * 767
+        vector = [1.0] + [0.0] * (_EMBED_DIM - 1)
         runtime_db.add(
             RuntimeEmbedding(
                 user_id=USER_ID,
@@ -466,7 +474,7 @@ def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
         "E-17",
         document_ids=[document.id],
         limit=1,
-        embedding_fn=lambda text: [1.0] + [0.0] * 767,
+        embedding_fn=lambda text: [1.0] + [0.0] * (_EMBED_DIM - 1),
     )
 
     # Both arms rank their hit first (an RRF tie); the exact-token lexical
@@ -488,7 +496,7 @@ def test_search_returns_lexical_hits_when_query_embedding_unavailable(
         runtime_db, ["alpha filler body", "the E-17 fault code body"]
     )
     for chunk in chunks:
-        vector = [1.0] + [0.0] * 767
+        vector = [1.0] + [0.0] * (_EMBED_DIM - 1)
         runtime_db.add(
             RuntimeEmbedding(
                 user_id=USER_ID,
@@ -566,7 +574,7 @@ def test_blurb_generation_invalidates_stale_chunk_vectors(
     monkeypatch.setattr(settings, "contextual_chunks", "on")
     document, chunks = _document_with_chunks(runtime_db, ["relay housing body"])
     chunk = chunks[0]
-    vector = [1.0] + [0.0] * 767
+    vector = [1.0] + [0.0] * (_EMBED_DIM - 1)
     runtime_db.add(
         RuntimeEmbedding(
             user_id=USER_ID,

@@ -21,7 +21,11 @@ from sqlalchemy import ForeignKeyConstraint, func, inspect, select
 
 pytest_plugins = ("conftest_runtime",)
 
-_TEST_EMBEDDING_DIM = 768
+# Derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_TEST_EMBEDDING_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
 def _embedding(*values: float) -> list[float]:

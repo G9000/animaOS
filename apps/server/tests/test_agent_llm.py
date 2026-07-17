@@ -63,22 +63,57 @@ def test_resolve_base_url_rejects_chat_incapable_fastembed() -> None:
         resolve_base_url("fastembed")
 
 
-@pytest.mark.asyncio
-async def test_generate_embedding_skips_openrouter_without_embedding_provider(
+def test_embedding_provider_defaults_to_fastembed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+
+    assert embeddings._resolve_embedding_provider() == "fastembed"
+
+
+def test_explicit_embedding_provider_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+
+    assert embeddings._resolve_embedding_provider() == "openai"
+
+
+def test_legacy_piggyback_kept_when_embedding_model_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "nomic-embed-text")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+
+    assert embeddings._resolve_embedding_provider() == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_skips_explicit_openrouter_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # fastembed is the bundled default when no embedding provider is
+    # configured at all, so the meaningful case for openrouter (which has no
+    # embeddings endpoint) is a user/legacy config that names it explicitly.
     from anima_server.services.agent import embeddings as embeddings_module
 
     async def unexpected_embed(text: str) -> list[float] | None:
         raise AssertionError(
-            "OpenRouter embeddings should be skipped without an explicit embedding provider")
+            "OpenRouter has no embeddings endpoint; it must be skipped even "
+            "when explicitly configured as the embedding provider")
 
     original_provider = settings.agent_provider
     original_embedding_provider = settings.agent_embedding_provider
 
     try:
         settings.agent_provider = "openrouter"
-        settings.agent_embedding_provider = ""
+        settings.agent_embedding_provider = "openrouter"
         monkeypatch.setattr(embeddings_module,
                             "_embed_ollama", unexpected_embed)
         monkeypatch.setattr(embeddings_module,
@@ -93,14 +128,18 @@ async def test_generate_embedding_skips_openrouter_without_embedding_provider(
 
 
 @pytest.mark.asyncio
-async def test_generate_embedding_skips_anthropic_without_embedding_provider(
+async def test_generate_embedding_skips_explicit_anthropic_embedding_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # fastembed is the bundled default when no embedding provider is
+    # configured at all, so the meaningful case for anthropic (which has no
+    # embeddings endpoint) is a user/legacy config that names it explicitly.
     from anima_server.services.agent import embeddings as embeddings_module
 
     async def unexpected_embed(text: str) -> list[float] | None:
         raise AssertionError(
-            "Anthropic embeddings should be skipped without an explicit embedding provider"
+            "Anthropic has no embeddings endpoint; it must be skipped even "
+            "when explicitly configured as the embedding provider"
         )
 
     original_provider = settings.agent_provider
@@ -108,7 +147,7 @@ async def test_generate_embedding_skips_anthropic_without_embedding_provider(
 
     try:
         settings.agent_provider = "anthropic"
-        settings.agent_embedding_provider = ""
+        settings.agent_embedding_provider = "anthropic"
         monkeypatch.setattr(embeddings_module, "_embed_ollama", unexpected_embed)
         monkeypatch.setattr(
             embeddings_module, "_embed_openai_compatible", unexpected_embed
@@ -167,7 +206,9 @@ async def test_embed_ollama_prefers_native_embed_endpoint(
             agent_provider="ollama",
             agent_base_url="http://127.0.0.1:11434",
             agent_api_key="",
-            agent_embedding_provider="",
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising the ollama backend.
+            agent_embedding_provider="ollama",
             agent_embedding_base_url="",
             agent_embedding_model="",
             agent_embedding_api_key="",
@@ -335,7 +376,9 @@ def test_doubleword_embedding_defaults_and_headers(
             agent_provider="doubleword",
             agent_base_url="",
             agent_api_key="test-doubleword-key",
-            agent_embedding_provider="",
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising doubleword's defaults.
+            agent_embedding_provider="doubleword",
             agent_embedding_base_url="",
             agent_embedding_model="",
             agent_embedding_api_key="",
@@ -524,7 +567,9 @@ def test_resolve_embedding_dim_uses_doubleword_default(
         SimpleNamespace(
             agent_embedding_model="",
             agent_extraction_model="",
-            agent_embedding_provider="",
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising doubleword's default.
+            agent_embedding_provider="doubleword",
             agent_provider="doubleword",
             agent_embedding_dim=768,
         ),
@@ -706,7 +751,9 @@ async def test_generate_embedding_cools_down_unreachable_ollama(
             agent_provider="ollama",
             agent_base_url="http://127.0.0.1:11434",
             agent_api_key="",
-            agent_embedding_provider="",
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising the ollama backend.
+            agent_embedding_provider="ollama",
             agent_embedding_base_url="",
             agent_embedding_model="",
             agent_embedding_api_key="",
@@ -754,7 +801,9 @@ async def test_batch_embed_ollama_skips_remainder_when_provider_is_cooling_down(
             agent_provider="ollama",
             agent_base_url="http://127.0.0.1:11434",
             agent_api_key="",
-            agent_embedding_provider="",
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising the ollama backend.
+            agent_embedding_provider="ollama",
             agent_embedding_base_url="",
             agent_embedding_model="",
             agent_embedding_api_key="",
@@ -790,7 +839,9 @@ async def test_generate_embedding_normalizes_cache_key_for_equivalent_text(
             agent_provider="ollama",
             agent_base_url="http://127.0.0.1:11434",
             agent_api_key="",
-            agent_embedding_provider="",
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising the ollama backend.
+            agent_embedding_provider="ollama",
             agent_embedding_base_url="",
             agent_embedding_model="",
             agent_embedding_api_key="",
