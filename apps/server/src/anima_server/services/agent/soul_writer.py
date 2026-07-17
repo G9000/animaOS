@@ -1312,14 +1312,24 @@ def plan_candidate_promotion(
 def _gate_new_memory_decision(candidate, reason: str) -> PromotionDecision:
     """IL4 scoring gate for a fresh "would-promote" decision.
 
+    The gate applies ONLY to importance-1 candidates: importance >= 2
+    promotes exactly as it did before IL4 existed — verbatim
+    behavior-preservation, regardless of what emotional_salience or
+    evidence_strength the extractor reported (an LLM can explicitly emit
+    near-zero salience values on the normal extraction path, and those
+    must never change an importance >= 2 outcome). Only genuinely weak
+    signals — the ``minor_observation`` lane and other importance-1
+    extractions — are scored and may fold into a latent trace.
+
     Only candidates with no existing-memory match reach here — every
     dedup/supersede/evolve branch above always wins over folding (a
-    duplicate score against a matched item is not a weak signal; a match
-    that already resolved to reinforcing/superseding/evolving something
-    real does not go through this gate at all). This keeps the IL4
-    scoring path behavior-preserving for every candidate that already
-    matched an existing memory, and only screens genuinely new content.
+    duplicate of a weak signal reinforcing something already promoted is
+    not itself a weak signal), and the user_explicit/correction
+    high-authority fast paths return even earlier.
     """
+    if candidate.importance >= 2:
+        return PromotionDecision(action="promote", reason=reason)
+
     from anima_server.services.agent.claims import derive_topic_key
     from anima_server.services.agent.inner_life.latent import classify_score, score_candidate
     from anima_server.services.agent.latent_traces import get_latent_config

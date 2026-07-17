@@ -268,12 +268,24 @@ def _resolve_trace_evidence(
     return texts, surviving, stale
 
 
-def _clean_crystallized_response(response: object) -> dict[str, object] | None:
+def _clean_crystallized_response(
+    response: object,
+) -> tuple[str, dict[str, object] | None]:
+    """Classify the synthesis response.
+
+    Returns ``("too_thin", None)`` only for the LLM's explicit
+    ``content: null`` verdict (the prompt's authored "not enough signal"
+    answer) — that is a decision and clears the trace. Anything else
+    non-conforming is ``("invalid", None)``: transient garbage that must
+    NOT consume the trace, so the next sleep run retries.
+    """
     if not isinstance(response, dict):
-        return None
+        return "invalid", None
+    if "content" in response and response.get("content") is None:
+        return "too_thin", None
     content = response.get("content")
     if not isinstance(content, str) or not content.strip():
-        return None
+        return "invalid", None
     category = response.get("category")
     if category not in _VALID_CRYSTALLIZED_CATEGORIES:
         category = _DEFAULT_CRYSTALLIZED_CATEGORY
@@ -282,7 +294,7 @@ def _clean_crystallized_response(response: object) -> dict[str, object] | None:
     except (TypeError, ValueError):
         importance = _DEFAULT_CRYSTALLIZED_IMPORTANCE
     importance = max(1, min(5, importance))
-    return {"content": content.strip(), "category": category, "importance": importance}
+    return "ok", {"content": content.strip(), "category": category, "importance": importance}
 
 
 async def _synthesize_and_store_crystallized_memory(
@@ -292,7 +304,16 @@ async def _synthesize_and_store_crystallized_memory(
     topic_key: str,
     evidence_texts: list[str],
     surviving_refs: list[dict[str, object]],
-) -> MemoryItem | None:
+) -> tuple[str, MemoryItem | None]:
+    """Synthesize and store one crystallized memory.
+
+    Returns ``(outcome, item)`` where outcome is ``"stored"`` (item +
+    evidence rows are staged in the session, ready to commit),
+    ``"too_thin"`` (LLM-authored verdict — nothing staged), or
+    ``"invalid"`` (unusable response or store miss — the caller must
+    roll the session back; a flushed-but-unevidenced MemoryItem must
+    never reach a commit).
+    """
     from anima_server.services.agent.memory_store import store_memory_item
     from anima_server.services.agent.prompt_loader import PromptLoader
     from anima_server.services.agent.provenance import add_memory_item_evidence
@@ -307,9 +328,9 @@ async def _synthesize_and_store_crystallized_memory(
         prompt,
         expect="object",
     )
-    parsed = _clean_crystallized_response(response)
-    if parsed is None:
-        return None
+    verdict, parsed = _clean_crystallized_response(response)
+    if verdict != "ok" or parsed is None:
+        return verdict, None
 
     result = store_memory_item(
         soul_db,
@@ -323,7 +344,7 @@ async def _synthesize_and_store_crystallized_memory(
     )
     item = result.item or result.matched_item
     if item is None:
-        return None
+        return "invalid", None
 
     add_memory_item_evidence(
         soul_db,
@@ -339,7 +360,7 @@ async def _synthesize_and_store_crystallized_memory(
             "contributing_evidence_refs": surviving_refs,
         },
     )
-    return item
+    return "stored", item
 
 
 async def crystallize_due_traces(
@@ -358,7 +379,13 @@ async def crystallize_due_traces(
     its refs still resolve) is deleted WITHOUT synthesizing anything.
     """
     if settings.agent_provider == "scaffold":
-        return {"crystallized": 0, "dropped_stale": 0, "skipped_empty": 0}
+        return {
+            "crystallized": 0,
+            "dropped_stale": 0,
+            "skipped_empty": 0,
+            "too_thin": 0,
+            "kept_for_retry": 0,
+        }
 
     from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.db.session import SessionLocal
@@ -370,6 +397,8 @@ async def crystallize_due_traces(
     crystallized = 0
     dropped_stale = 0
     skipped_empty = 0
+    too_thin = 0
+    kept_for_retry = 0
 
     with factory() as soul_db:
         due = list(
@@ -406,7 +435,7 @@ async def crystallize_due_traces(
                 continue
 
             try:
-                item = await _synthesize_and_store_crystallized_memory(
+                outcome, _item = await _synthesize_and_store_crystallized_memory(
                     soul_db,
                     user_id=user_id,
                     topic_key=trace.topic_key,
@@ -419,19 +448,36 @@ async def crystallize_due_traces(
                     user_id,
                     trace.topic_key,
                 )
-                item = None
+                # Discard anything staged mid-synthesis (a flushed
+                # MemoryItem without its evidence rows must never reach a
+                # commit) and keep the trace — the next sleep run retries.
+                soul_db.rollback()
+                kept_for_retry += 1
+                continue
 
-            if item is not None:
+            if outcome == "stored":
+                # Item + evidence rows are staged in this session; deleting
+                # the trace and committing persists all three atomically.
                 crystallized += 1
-            # Clear the topic regardless of synthesis success — a failed
-            # synthesis still consumed the evidence and should not retry
-            # forever against a possibly-broken LLM response; the fold path
-            # will rebuild weight from any new evidence.
-            soul_db.delete(trace)
-            soul_db.commit()
+                soul_db.delete(trace)
+                soul_db.commit()
+            elif outcome == "too_thin":
+                # LLM-authored verdict: the accumulated evidence cannot
+                # support a durable memory. Clearing here is the decision,
+                # not an accident of failure handling.
+                too_thin += 1
+                soul_db.delete(trace)
+                soul_db.commit()
+            else:
+                # "invalid": transient garbage (malformed response, store
+                # miss). Keep the trace intact for the next run.
+                soul_db.rollback()
+                kept_for_retry += 1
 
     return {
         "crystallized": crystallized,
         "dropped_stale": dropped_stale,
         "skipped_empty": skipped_empty,
+        "too_thin": too_thin,
+        "kept_for_retry": kept_for_retry,
     }
