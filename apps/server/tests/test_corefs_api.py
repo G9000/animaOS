@@ -496,6 +496,11 @@ def test_stale_cursor_generation_is_rejected_before_native_dispatch(
         ("logical path was not found: Diary/missing.md", 404, "corefs_path_not_found"),
         ("logical path is not a directory: Diary/today.md", 409, "corefs_not_directory"),
         (
+            "CoreFS validation snapshot no longer matches selected generation/catalog hash",
+            409,
+            "corefs_validation_snapshot_stale",
+        ),
+        (
             "logical_list response item requires 2048 bytes; maximum is 1024",
             413,
             "corefs_response_too_large",

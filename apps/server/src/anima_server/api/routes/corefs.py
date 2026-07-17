@@ -220,6 +220,11 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
             status.HTTP_409_CONFLICT,
             "corefs_validation_snapshot_missing",
         ),
+        (
+            "CoreFS validation snapshot no longer matches selected generation/catalog hash",
+            status.HTTP_409_CONFLICT,
+            "corefs_validation_snapshot_stale",
+        ),
         ("logical path was not found:", status.HTTP_404_NOT_FOUND, "corefs_path_not_found"),
         ("logical path is not a file:", status.HTTP_409_CONFLICT, "corefs_not_file"),
         ("logical path is not a directory:", status.HTTP_409_CONFLICT, "corefs_not_directory"),

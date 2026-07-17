@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 01:41 MYT
+- Updated: 2026-07-18 01:51 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -111,6 +111,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-18 01:17 MYT - Addressed PR #107's ninth current-head Codex review pass with red/green native-integer-boundary regressions. Read offsets and grep continuation byte offsets are now capped at `u64::MAX` in the request schema, so larger client integers return HTTP 422 before CoreFS context resolution or PyO3 conversion instead of overflowing into HTTP 500.
 - 2026-07-18 01:27 MYT - Addressed PR #107's tenth current-head Codex review pass with red/green Unicode path-parity regressions. API validation now mirrors Rust `char::is_control` by rejecting only Unicode `Cc` control characters, while allowing native-valid format and private-use characters such as U+200D emoji joiners and U+E000; the explicit ambiguous-codepoint, NFC, and reserved-component gates remain unchanged.
 - 2026-07-18 01:41 MYT - Addressed PR #107's eleventh current-head Codex review pass by marking snapshots whose sessions held CoreFS subkeys and refusing to restore those sessions without their intentionally unpersisted keys. Soul-only session continuity and the encrypted SQLCipher key remain restorable; legacy snapshots without the marker fail closed and are cleaned after restore.
+- 2026-07-18 01:51 MYT - Addressed PR #107's twelfth current-head Codex review pass with a red/green validation-head race regression. A native read that detects the selected generation/catalog hash has gone stale now returns retryable HTTP 409 with `corefs_validation_snapshot_stale` instead of escaping as HTTP 500.
 
 ## Validation
 
@@ -192,6 +193,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #107 ninth review follow-up: red/green read and grep-cursor offset overflow regressions; focused CoreFS route/logical tests passed (36), scoped Ruff passed, and `bun run build` passed.
   - PR #107 tenth review follow-up: red/green native-valid Unicode format/private-use path regressions plus existing invalid-control/ambiguous coverage; focused CoreFS route/logical tests passed (38), scoped Ruff passed, and `bun run build` passed.
   - PR #107 eleventh review follow-up: red/green CoreFS-capable and legacy dev-session restore regressions; dev continuity tests passed (22), related auth/CoreFS/session tests passed (126), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PR #107 twelfth review follow-up: red/green stale validation-snapshot concurrency regression; focused CoreFS route/logical tests passed (39), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
