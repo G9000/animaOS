@@ -156,11 +156,11 @@ class Settings(BaseSettings):
     # cannot exclude a user from presence forever.
     presence_run_stale_seconds: int = Field(default=1800, ge=1)
     # IL4 latent trace crystallization (see services/agent/inner_life/latent.py
-    # for the pure scoring/fold/decay math). ``latent_promotion_threshold`` is
-    # calibrated so importance >= 2 candidates promote exactly as they did
-    # before IL4 existed (worst case imp-2, zero salience, default evidence
-    # strength: 0.6*2/5 + 0.1*0.8 = 0.32 > 0.30) — do not change this default
-    # without re-checking that behavior-preservation property.
+    # for the pure scoring/fold/decay math). Importance >= 2 candidates bypass
+    # the gate entirely (behavior-preservation by construction — see
+    # _gate_new_memory_decision in soul_writer.py), so these thresholds only
+    # govern the importance-1 weak-signal lane: score >= threshold promotes,
+    # [floor_ratio * threshold, threshold) folds into a trace, below rejects.
     latent_promotion_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
     latent_floor_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
     latent_crystallization_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
