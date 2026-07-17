@@ -273,6 +273,16 @@ def test_stamped_soul_database_migration_repairs_missing_new_tables(
     assert inspect(engine).has_table("presence_configs")
 
 
+def test_runtime_alembic_has_single_head() -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    cfg = Config(str(runtime_module._ALEMBIC_RUNTIME_INI))
+    heads = ScriptDirectory.from_config(cfg).get_heads()
+
+    assert len(heads) == 1, f"runtime migrations must have one head, found {heads}"
+
+
 def test_runtime_migration_repairs_missing_profile_candidates_after_bad_stamp(
     managed_tmp_path: Path,
 ) -> None:
