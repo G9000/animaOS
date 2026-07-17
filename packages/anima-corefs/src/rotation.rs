@@ -63,6 +63,15 @@ impl<'a> FrkKeyring<'a> {
         }
         Ok(selected)
     }
+
+    pub(crate) fn reuses_material_from_other_version(&self, keys: &FrkSubkeys) -> bool {
+        self.by_version.iter().any(|(version, existing)| {
+            *version != keys.frk_version()
+                && (existing.object_wrap().as_slice() == keys.object_wrap().as_slice()
+                    || existing.catalog().as_slice() == keys.catalog().as_slice()
+                    || existing.search().as_slice() == keys.search().as_slice())
+        })
+    }
 }
 
 /// Failures while selecting or activating FRK material.
@@ -84,7 +93,7 @@ pub enum RotationError {
         "pending FRK version {pending} must be the direct successor of active version {active}"
     )]
     PendingVersionNotSuccessor { active: u32, pending: u32 },
-    #[error("pending FRK reuses the active derived key material")]
+    #[error("pending FRK reuses existing derived key material")]
     PendingKeyMaterialReused,
     #[error("FRK version is exhausted")]
     VersionExhausted,

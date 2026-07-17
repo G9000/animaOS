@@ -1533,7 +1533,7 @@ impl CoreCommitCoordinator {
                 .into());
             }
             let active_version = committed.head.required_frk_version();
-            let active_keys = keyring.require(active_version)?;
+            keyring.require(active_version)?;
             if keyring.contains(pending_keys.frk_version()) {
                 keyring.require_matching(pending_keys)?;
             }
@@ -1554,10 +1554,7 @@ impl CoreCommitCoordinator {
                 }
                 .into());
             }
-            if active_keys.object_wrap().as_slice() == pending_keys.object_wrap().as_slice()
-                || active_keys.catalog().as_slice() == pending_keys.catalog().as_slice()
-                || active_keys.search().as_slice() == pending_keys.search().as_slice()
-            {
+            if keyring.reuses_material_from_other_version(pending_keys) {
                 return Err(RotationError::PendingKeyMaterialReused.into());
             }
             let next_generation = actual_generation

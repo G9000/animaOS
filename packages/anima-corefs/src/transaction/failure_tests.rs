@@ -11,11 +11,11 @@ use crate::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_
 use crate::folders::{FolderOwner, PortableName};
 use crate::id::OpaqueId;
 use crate::policy::AnimaAccess;
-use crate::rotation::FrkKeyring;
+use crate::rotation::{FrkKeyring, RotationError};
 
 use super::{
-    CatalogPrecondition, CommitCallbacks, CommitFailurePoint, CommitMode, CoreCommitCoordinator,
-    PreparedObjectRevision, PublicationTarget,
+    CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode,
+    CoreCommitCoordinator, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
 
@@ -456,6 +456,40 @@ fn frk_rotation_recovers_pending_first_cutover_before_rotating() {
 
     assert_eq!(outcome.generation(), 3);
     assert!(coordinator.cutover_complete_path().is_file());
+    let committed = coordinator
+        .load_committed_with_keyring(&keyring)
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.head().required_frk_version(), 2);
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn frk_rotation_rejects_pending_material_reused_from_retained_version() {
+    let root = reset_root("rotation-reused-retained-material");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let retained_keys = keys();
+    let active_keys = pending_keys();
+    let first_keyring = FrkKeyring::new([&retained_keys, &active_keys]).unwrap();
+    coordinator
+        .rotate_frk(&first_keyring, &active_keys, 2, |_| Ok(()))
+        .unwrap();
+
+    let reused_pending_keys =
+        derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), 3).unwrap();
+    let keyring = FrkKeyring::new([&retained_keys, &active_keys, &reused_pending_keys]).unwrap();
+    let error = coordinator
+        .rotate_frk(&keyring, &reused_pending_keys, 3, |_| Ok(()))
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CommitError::Rotation(RotationError::PendingKeyMaterialReused)
+    ));
     let committed = coordinator
         .load_committed_with_keyring(&keyring)
         .unwrap()
