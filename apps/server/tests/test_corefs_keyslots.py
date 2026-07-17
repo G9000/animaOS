@@ -679,6 +679,47 @@ def test_versioned_login_session_carries_frk_derived_corefs_subkeys(
         )
 
 
+@pytest.mark.parametrize("scope", ["soul", "fs"])
+def test_scoped_password_change_clears_corefs_session_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    monkeypatch.setattr(settings, "core_passphrase", "")
+
+    with managed_test_client(f"anima-corefs-password-{scope}-session-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        original = unlock_session_store.resolve(registered["unlockToken"])
+        assert original is not None
+        assert isinstance(original.corefs_keys, anima_core.CorefsSubkeys)
+        expected_deks = {
+            domain: bytes(bytearray(dek)) for domain, dek in original.deks.items()
+        }
+        make_scoped = _make_soul_only if scope == "soul" else _make_filesystem_only
+        make_scoped(
+            password="password-123",
+            recovery_phrase=str(registered["recoveryPhrase"]),
+        )
+
+        changed = client.post(
+            "/api/auth/change-password",
+            headers={"x-anima-unlock": registered["unlockToken"]},
+            json={
+                "oldPassword": "password-123",
+                "newPassword": "password-456",
+                "scope": scope,
+            },
+        )
+
+        assert changed.status_code == 200
+        replacement = unlock_session_store.resolve(changed.json()["unlockToken"])
+        assert replacement is not None
+        assert replacement.deks == expected_deks
+        assert replacement.corefs_keys is None
+
+
 def test_registration_publishes_legacy_locators_before_hierarchy_activation(
     monkeypatch,
 ) -> None:

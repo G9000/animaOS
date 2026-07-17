@@ -257,6 +257,7 @@ def change_password(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    scope = PayloadScope(payload.scope)
     try:
         change_account_password_credential(
             db,
@@ -264,16 +265,15 @@ def change_password(
             old_password=payload.oldPassword,
             new_password=payload.newPassword,
             current_deks=session.deks,
-            scope=PayloadScope(payload.scope),
+            scope=scope,
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid credentials") from None
 
-    unlock_session_store.revoke_user(user.id)
-    new_unlock_token = unlock_session_store.create(
+    new_unlock_token = unlock_session_store.replace_user(
         user.id,
         session.deks,
-        corefs_keys=session.corefs_keys,
+        corefs_keys=session.corefs_keys if scope is PayloadScope.FULL else None,
     )
     return {"success": True, "unlockToken": new_unlock_token}
 

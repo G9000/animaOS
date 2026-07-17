@@ -59,6 +59,31 @@ class UnlockSessionStore:
             self._commit_locked(next_sessions, self._sqlcipher_key)
         return token
 
+    def replace_user(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
+        token = secrets.token_urlsafe(32)
+        replacement = UnlockSession(
+            user_id=user_id,
+            deks={domain: _copy_key(dek) for domain, dek in deks.items()},
+            expires_at=self._now() + SESSION_TTL,
+            corefs_keys=corefs_keys,
+        )
+        with self._lock:
+            self._purge_expired_locked()
+            next_sessions = {
+                current_token: session
+                for current_token, session in self._sessions.items()
+                if session.user_id != user_id
+            }
+            next_sessions[token] = replacement
+            self._commit_locked(next_sessions, self._sqlcipher_key)
+        return token
+
     def resolve(self, token: str | None) -> UnlockSession | None:
         if token is None:
             return None
