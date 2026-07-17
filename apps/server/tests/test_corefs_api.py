@@ -134,6 +134,28 @@ def test_user_read_operation_dispatches_with_selected_snapshot(
     assert stat_kwargs["path"] == "Diary/today.md"
 
 
+def test_missing_validation_snapshot_maps_to_stable_not_ready_response(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_select(**_kwargs: object) -> logical.CoreFsValidationSnapshot:
+        raise ValueError("CoreFS validation snapshot is missing")
+
+    monkeypatch.setattr(corefs_route.logical, "select_validation_snapshot", fail_select)
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={"operation": "stat", "path": "Diary/today.md"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "corefs_validation_snapshot_missing",
+        "message": "CoreFS validation snapshot is missing",
+    }
+
+
 def test_logical_paths_preserve_surrounding_whitespace(
     corefs_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

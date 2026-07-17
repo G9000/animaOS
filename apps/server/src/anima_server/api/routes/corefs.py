@@ -215,6 +215,11 @@ def _validate_cursor_generation(
 def _logical_http_exception(exc: ValueError) -> HTTPException | None:
     message = str(exc)
     mappings = (
+        (
+            "CoreFS validation snapshot is missing",
+            status.HTTP_409_CONFLICT,
+            "corefs_validation_snapshot_missing",
+        ),
         ("logical path was not found:", status.HTTP_404_NOT_FOUND, "corefs_path_not_found"),
         ("logical path is not a file:", status.HTTP_409_CONFLICT, "corefs_not_file"),
         ("logical path is not a directory:", status.HTTP_409_CONFLICT, "corefs_not_directory"),
@@ -378,12 +383,12 @@ async def run_corefs_operation(
         _client_grant_required(principal)
 
     context = _resolve_request_context(session)
-    selected = logical.select_validation_snapshot(
-        core_root=context.core_root,
-        core_id=context.core_id,
-        keys=context.keys,
-    )
     try:
+        selected = logical.select_validation_snapshot(
+            core_root=context.core_root,
+            core_id=context.core_id,
+            keys=context.keys,
+        )
         result = _dispatch_read(payload, context=context, selected=selected)
     except ValueError as exc:
         http_error = _logical_http_exception(exc)
