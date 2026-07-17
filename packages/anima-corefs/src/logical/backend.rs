@@ -453,7 +453,7 @@ impl WalkBackend for CoreFsReadSnapshot {
             .map(|child| {
                 let node = &self.nodes[child];
                 let metadata = if node.object.is_some() {
-                    EntryMetadata::file(0)
+                    self.metadata(node.path.as_str())?
                 } else {
                     EntryMetadata::directory(false)
                 };

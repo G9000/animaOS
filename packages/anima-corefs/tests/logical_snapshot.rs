@@ -24,8 +24,9 @@ use anima_corefs::transaction::{
     CoreCommitCoordinator, PreparedObjectRevision, ValidationSnapshot,
 };
 use anima_file_tools::{
-    walk_page, BackendKind, BackendPath, FileBackend, FileToolError, GrepMode, MutationAtomicity,
-    OperationControl, OperationLimits, PathSemantics, ReadOptions, SkipReason, WalkOptions,
+    walk_page, BackendKind, BackendPath, ContentClassification, EntryKind, FileBackend,
+    FileToolError, GrepMode, MutationAtomicity, OperationControl, OperationLimits, PathSemantics,
+    ReadOptions, SkipReason, WalkBackend, WalkOptions,
 };
 
 const CORE_ID: &str = "logical-core";
@@ -126,6 +127,37 @@ fn trashed_folder_hides_its_entire_still_parented_subtree() {
         )
         .unwrap();
     assert!(grep.matches.is_empty());
+}
+
+#[test]
+fn read_directory_returns_authenticated_file_metadata() {
+    let fixture = fixture("directory-metadata");
+    let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
+    let snapshot =
+        CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
+
+    let notes = snapshot.read_directory("Notes").unwrap();
+    let mut entries = notes.entries;
+    entries.sort_by(|left, right| left.path.as_str().cmp(right.path.as_str()));
+
+    let alpha = entries
+        .iter()
+        .find(|entry| entry.path.as_str() == "Notes/Alpha.md")
+        .unwrap();
+    assert_eq!(alpha.metadata.kind, EntryKind::File);
+    assert_eq!(alpha.metadata.size, b"caf\xc3\xa9\nneedle one\n".len() as u64);
+    assert_eq!(alpha.metadata.content, ContentClassification::Text);
+
+    let binary = entries
+        .iter()
+        .find(|entry| entry.path.as_str() == "Notes/apparent.txt")
+        .unwrap();
+    assert_eq!(binary.metadata.kind, EntryKind::File);
+    assert_eq!(
+        binary.metadata.size,
+        b"needle but declared binary".len() as u64
+    );
+    assert_eq!(binary.metadata.content, ContentClassification::Binary);
 }
 
 #[test]

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 18:59 MYT
+- Updated: 2026-07-17 19:13 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -117,6 +117,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 18:24 MYT - Addressed PR #106's third current-head Codex review pass for PCF-002 Step 10: catalog validation now rejects hidden original-parent cycles for trashed folders, and CoreFS package initialization no longer eagerly imports native logical bindings. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass for PCF-002 Step 10: migration-frozen server mutation wrappers now preserve the native variadic frozen-write contract for realistic mutation inputs. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 - 2026-07-17 18:59 MYT - Addressed PR #106's fifth current-head Codex review pass for PCF-002 Step 10: trashed folders now allow historical original-parent references to parents that are later trashed, while keeping live-trash-folder and hidden descendant-cycle validation fail-closed. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
+- 2026-07-17 19:13 MYT - Addressed PR #106's sixth current-head Codex review pass for PCF-002 Step 10: generic CoreFS directory listings now return authenticated file metadata from the encrypted envelope rather than zero-byte unknown placeholders. The parent remains `in_progress` for Step 11 client API/grants and Step 12 benchmarks.
 
 ## Validation
 
@@ -141,6 +142,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #106 third review pass: hidden-original-parent and native-binding package-import regressions, full CoreFS tests, strict CoreFS clippy, Python package/logical tests, scoped Ruff, and `git diff --check` passed.
   - PR #106 fourth review pass: mutation-wrapper argument-forwarding regression, focused Python logical tests, scoped Ruff, and `git diff --check` passed.
   - PR #106 fifth review pass: red/green `folder_trash_graph_invariants_fail_closed` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
+  - PR #106 sixth review pass: red/green `read_directory_returns_authenticated_file_metadata` regression, full `cargo +1.75.0 test --locked -p anima-corefs`, strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`, and `git diff --check` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 18:59 MYT
+- Updated: 2026-07-17 19:13 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -96,6 +96,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-17 18:24 MYT - Addressed PR #106's third current-head Codex review pass with focused regressions: trashed folders now reject original-parent references hidden under their own live subtree before policy resolution, and the server CoreFS package exports logical helpers lazily so importing type-only CoreFS modules does not require the native `anima_core` extension.
 - 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass: migration-frozen server mutation wrappers now accept and forward normal positional/keyword mutation inputs to the native frozen mutators instead of raising `TypeError` before returning `corefs_migration_write_frozen`.
 - 2026-07-17 18:59 MYT - Addressed PR #106's fifth current-head Codex review pass with a focused folder lifecycle regression: trashed folders may retain a historical `original_parent_id` after that original parent is itself trashed, while the active trash folder must remain live and hidden descendant original-parent cycles still fail closed.
+- 2026-07-17 19:13 MYT - Addressed PR #106's sixth current-head Codex review pass with a red/green shared-backend regression: CoreFS directory listings now return authenticated file size and text/binary classification from the object envelope instead of placeholder zero-byte unknown metadata.
 
 ## Validation
 
@@ -159,6 +160,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #106 third review pass: red/green hidden-original-parent regression in `folder_trash_graph_invariants_fail_closed`; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_package.py -q`; full `cargo +1.75.0 test --locked -p anima-corefs`; strict CoreFS clippy; Python package/corefs logical tests; scoped Ruff; and `git diff --check` passed.
   - PR #106 fourth review pass: red/green `test_mutation_wrappers_return_migration_frozen_code` argument-forwarding regression; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_logical.py -q`; scoped Ruff; and `git diff --check` passed.
   - PR #106 fifth review pass: red/green `folder_trash_graph_invariants_fail_closed` regression for trashed-folder historical original parents; full `cargo +1.75.0 test --locked -p anima-corefs`; strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`; and `git diff --check` passed.
+  - PR #106 sixth review pass: red/green `read_directory_returns_authenticated_file_metadata` regression; full `cargo +1.75.0 test --locked -p anima-corefs`; strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`; and `git diff --check` passed.
   - PCF-002 Step 10 Layer 3: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py apps/server/src/anima_server/services/corefs/__init__.py`
   - PCF-002 Step 10 Layer 3: `git diff --check`
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
