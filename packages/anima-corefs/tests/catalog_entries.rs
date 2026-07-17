@@ -247,6 +247,59 @@ fn typed_object_entry_roundtrips_with_all_authoritative_state() {
 }
 
 #[test]
+fn trashed_object_keeps_historical_parent_after_parent_is_trashed() {
+    let trashed_parent =
+        common(OTHER_ID, Some(TRASH_ID), "Notes").with_folder_lifecycle(FolderLifecycle::Trashed(
+            FolderTrashMetadata::new(
+                OpaqueId::parse(TRASH_ID).unwrap(),
+                OpaqueId::parse(ROOT_ID).unwrap(),
+                PortableName::parse("Notes").unwrap(),
+                1_700_000_000_000,
+            )
+            .unwrap(),
+        ));
+    let trashed_object = CatalogObject::new(
+        2,
+        physical_name(),
+        ContentHash::parse(&"ab".repeat(32)).unwrap(),
+        ObjectKind::Note,
+        WrappedObjectDekRecord::from_parts(
+            3,
+            2,
+            OBJECT_WRAP_ALGORITHM,
+            OBJECT_KEY_ENVELOPE_VERSION,
+            &[7; 12],
+            vec![9; 48],
+        )
+        .unwrap(),
+        ObjectLifecycle::Trashed(
+            TrashMetadata::new(
+                OpaqueId::parse(TRASH_ID).unwrap(),
+                OpaqueId::parse(OTHER_ID).unwrap(),
+                PortableName::parse("Entry.md").unwrap(),
+                1_700_000_000_001,
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+
+    CatalogGeneration::new(
+        7,
+        vec![
+            CatalogGenerationEntry::folder(common(ROOT_ID, None, "Core")),
+            CatalogGenerationEntry::folder(common(TRASH_ID, Some(ROOT_ID), "Trash")),
+            CatalogGenerationEntry::folder(trashed_parent),
+            CatalogGenerationEntry::object(
+                common(OBJECT_ID, Some(TRASH_ID), "Entry.md"),
+                trashed_object,
+            ),
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
 fn typed_object_fields_reject_noncanonical_or_zero_values() {
     assert!(ContentHash::parse(&"AB".repeat(32)).is_err());
     assert!(ContentHash::parse("ab").is_err());

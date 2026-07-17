@@ -406,6 +406,46 @@ fn logical_read_response_budget_includes_repeated_identity_metadata() {
 }
 
 #[test]
+fn logical_read_clamps_raw_request_to_response_budget_before_open() {
+    let fixture = fixture("read-response-clamp");
+    let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
+    let snapshot =
+        CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
+    let limits = OperationLimits {
+        response_bytes: 1024,
+        ..OperationLimits::default()
+    }
+    .validate()
+    .unwrap();
+
+    let chunks = snapshot
+        .read(
+            "Notes/Alpha.md",
+            ReadOptions {
+                offset: 0,
+                max_bytes: 65_536,
+            },
+            limits,
+            OperationControl::default(),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert!(!chunks.is_empty());
+    assert!(chunks
+        .iter()
+        .all(|chunk| chunk.model_wire_v1_size().unwrap() <= 1024));
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        b"caf\xc3\xa9\nneedle one\n"
+    );
+}
+
+#[test]
 fn logical_read_rejects_a_cap_that_cannot_encode_one_payload_byte() {
     let fixture = fixture("read-progress");
     let keyring = FrkKeyring::new([&fixture.keys]).unwrap();

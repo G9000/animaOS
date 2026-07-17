@@ -707,10 +707,14 @@ impl CoreFsReadSnapshot {
                 .into());
             }
         }
+        let raw_options = ReadOptions {
+            offset: options.offset,
+            max_bytes: options.max_bytes.min(limits.response_bytes()),
+        };
         let inner = read_stream(
             self,
             backend_path(node.path.as_str())?,
-            options,
+            raw_options,
             limits,
             control,
         )?;

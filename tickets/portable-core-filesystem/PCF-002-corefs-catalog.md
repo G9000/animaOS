@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 16:42 MYT
+- Updated: 2026-07-17 17:18 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -92,6 +92,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-17 15:36 MYT - Completed Step 10's Rust CoreFS logical read layer and internal mutation layer in `codex/pcf-002-logical-tools`. Logical snapshots now expose live-only list/walk/glob/grep/read/stat with bounded V1 wire responses, catalog-bound range reads, deterministic cursors, and search-readiness reporting. The internal sealed mutation planner handles mkdir/create/write/move/trash/restore/apply-patch against selected validation snapshots, publishes exactly one next `VALIDATION_HEAD` generation or none, keeps public writes frozen with `corefs_migration_write_frozen`, adds authenticated folder trash lifecycle, hides trashed subtrees, and rejects cross-policy moves/restores before immutable object preparation. Independent review found no remaining Critical or Important issues after the policy-boundary regression. PCF-002 remains `in_progress` for Step 10 Python/PyO3 tool wrappers, Step 11 client API/grants, and Step 12 benchmarks.
 - 2026-07-17 15:57 MYT - Completed Step 10's Python/PyO3 logical tool boundary. `anima_core` now exposes validation-snapshot selection plus V1-wire `corefs_stat/list/walk/glob/grep/read_chunk/search_readiness` wrappers that require the caller's selected validation generation and catalog hash before opening objects. Server-side `anima_server.services.corefs.logical` wraps those calls without exposing physical object/catalog paths or key material. Public Python mutators (`corefs_mkdir`, `corefs_create_file`, `corefs_write_file`, `corefs_apply_patch`, `corefs_move`, `corefs_trash`, `corefs_restore`) return `corefs_migration_write_frozen` while Step 11 API/grants remain unimplemented.
 - 2026-07-17 16:42 MYT - Addressed PR #106 Codex review feedback by accepting logical glob and grep continuation cursors through the PyO3 and server Python bindings, preserving the already exposed V1 `nextCursor` contract across resumed pages. Added a Python wrapper regression proving glob `after` and grep `path`/`byteOffset`/`walkAfter` reach the Rust boundary.
+- 2026-07-17 17:18 MYT - Addressed PR #106's second current-head Codex review pass with red/green regressions: logical reads now clamp the raw backend read size to the model-visible response budget after proving one byte can fit, and trashed objects may retain a historical original parent that has since been trashed while still requiring the active trash folder to be live.
 
 ## Validation
 
@@ -151,6 +152,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #106 cursor follow-up: `cargo +1.75.0 test --locked -p anima-file-tools -p anima-corefs` (passed)
   - PR #106 cursor follow-up: `$base='<uv CPython 3.12.9 home>'; $env:PATH='.venv/Scripts;' + $base + ';' + $base + '/DLLs;' + $env:PATH; cargo test --locked -p anima-core --features python corefs_ -- --nocapture` (6 focused PyO3 CoreFS tests passed)
   - PR #106 cursor follow-up: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py` and `git diff --check`
+  - PR #106 second review pass: red/green focused regressions for `logical_read_clamps_raw_request_to_response_budget_before_open` and `trashed_object_keeps_historical_parent_after_parent_is_trashed`; `cargo +1.75.0 test --locked -p anima-corefs` (passed); `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings` (passed); `git diff --check` (passed). `cargo +1.75.0 fmt -p anima-corefs -- --check` still reports pre-existing unrelated drift in `packages/anima-corefs/src/logical/mutation/tests.rs`; touched files were manually aligned with rustfmt output.
   - PCF-002 Step 10 Layer 3: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py apps/server/src/anima_server/services/corefs/__init__.py`
   - PCF-002 Step 10 Layer 3: `git diff --check`
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)

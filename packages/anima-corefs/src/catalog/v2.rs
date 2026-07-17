@@ -898,7 +898,7 @@ fn validate_lifecycle_references<'a>(
                     ObjectLifecycle::Live => {}
                     ObjectLifecycle::Trashed(metadata) => {
                         require_live_folder(&metadata.trash_folder_id)?;
-                        require_live_folder(&metadata.original_parent_id)?;
+                        require_folder(&metadata.original_parent_id)?;
                         if metadata.trash_folder_id == metadata.original_parent_id {
                             return Err(CatalogError::InvalidFormat(
                                 "trash and original folders must differ",
