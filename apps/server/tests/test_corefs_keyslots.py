@@ -650,6 +650,31 @@ def test_registration_provisions_complete_password_and_recovery_hierarchy() -> N
         assert all("raw" not in key for key in manifest["keyslots"] for key in key)
 
 
+def test_versioned_login_session_carries_frk_derived_corefs_subkeys() -> None:
+    with managed_test_client("anima-corefs-login-subkeys-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "password-123", "name": "Alice"},
+        ).json()
+        client.post(
+            "/api/auth/logout",
+            headers={"x-anima-unlock": registered["unlockToken"]},
+        )
+
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "password-123"},
+        )
+
+        assert login.status_code == 200
+        session = unlock_session_store.resolve(login.json()["unlockToken"])
+        assert session is not None
+        assert isinstance(
+            getattr(session, "corefs_keys", None),
+            anima_core.CorefsSubkeys,
+        )
+
+
 def test_registration_publishes_legacy_locators_before_hierarchy_activation(
     monkeypatch,
 ) -> None:

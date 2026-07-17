@@ -6,7 +6,7 @@ import contextlib
 import ctypes
 import logging
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import RLock
 from typing import Any
@@ -25,6 +25,7 @@ class UnlockSession:
     user_id: int
     deks: dict[str, bytes]
     expires_at: datetime
+    corefs_keys: object | None = field(default=None, repr=False, compare=False)
 
 
 class UnlockSessionStore:
@@ -37,12 +38,19 @@ class UnlockSessionStore:
         self._sqlcipher_key: bytes | None = None
         self._restore_snapshot()
 
-    def create(self, user_id: int, deks: dict[str, bytes]) -> str:
+    def create(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
         token = secrets.token_urlsafe(32)
         session = UnlockSession(
             user_id=user_id,
             deks={domain: _copy_key(dek) for domain, dek in deks.items()},
             expires_at=self._now() + SESSION_TTL,
+            corefs_keys=corefs_keys,
         )
         with self._lock:
             self._purge_expired_locked()

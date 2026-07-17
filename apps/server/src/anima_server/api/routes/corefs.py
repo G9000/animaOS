@@ -69,10 +69,18 @@ class CoreFsSearchRuntimeState:
 
 
 def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
+    if session.corefs_keys is None:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail={
+                "code": "corefs_key_material_unavailable",
+                "message": "CoreFS key material is unavailable. Please sign in again.",
+            },
+        )
     return CoreFsRequestContext(
         core_root=str(get_core_dir()),
         core_id=get_core_id(),
-        keys=session.deks,
+        keys=session.corefs_keys,
     )
 
 

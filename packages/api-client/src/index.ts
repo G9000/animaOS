@@ -1,2 +1,2 @@
 export * from "./types";
-export { createApiClient, type ApiClient } from "./client";
+export { ApiClientError, createApiClient, type ApiClient } from "./client";

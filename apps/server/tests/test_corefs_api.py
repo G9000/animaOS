@@ -8,7 +8,7 @@ import pytest
 from anima_server.api.routes import corefs as corefs_route
 from anima_server.services.corefs import logical
 from anima_server.services.sessions import unlock_session_store
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -50,6 +50,41 @@ def test_corefs_operation_requires_unlocked_session(corefs_client: TestClient) -
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Session locked. Please sign in again."
+
+
+def test_request_context_uses_corefs_session_subkeys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    corefs_keys = object()
+    session = SimpleNamespace(
+        deks={"memories": b"soul-domain-dek"},
+        corefs_keys=corefs_keys,
+    )
+    monkeypatch.setattr(corefs_route, "get_core_dir", lambda: tmp_path / "core")
+    monkeypatch.setattr(corefs_route, "get_core_id", lambda: "core-test")
+
+    context = corefs_route._resolve_request_context(session)  # type: ignore[arg-type]
+
+    assert context.keys is corefs_keys
+
+
+def test_request_context_rejects_session_without_corefs_subkeys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session = SimpleNamespace(
+        deks={"memories": b"soul-domain-dek"},
+        corefs_keys=None,
+    )
+    monkeypatch.setattr(corefs_route, "get_core_dir", lambda: tmp_path / "core")
+    monkeypatch.setattr(corefs_route, "get_core_id", lambda: "core-test")
+
+    with pytest.raises(HTTPException) as exc_info:
+        corefs_route._resolve_request_context(session)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 423
+    assert exc_info.value.detail["code"] == "corefs_key_material_unavailable"
 
 
 def test_user_read_operation_dispatches_with_selected_snapshot(

@@ -74,9 +74,9 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
     # Try username/password auth
     if username and password:
         try:
-            response, deks = authenticate_account(username, password)
+            response, deks, corefs_keys = authenticate_account(username, password)
             user_id = int(response["id"])
-            unlock_session_store.create(user_id, deks)
+            unlock_session_store.create(user_id, deks, corefs_keys=corefs_keys)
             return ClientConnection(
                 websocket=ws,
                 user_id=user_id,

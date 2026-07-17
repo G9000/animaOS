@@ -478,7 +478,7 @@ def provision_initial_key_hierarchy(
     recovery_phrase: str,
     sqlcipher_key: bytes,
     deks: dict[str, bytes],
-) -> None:
+) -> object:
     manifest = ensure_core_manifest()
     core_id = str(manifest["core_id"])
     owner_id = str(manifest["owner_id"])
@@ -535,6 +535,26 @@ def provision_initial_key_hierarchy(
         }
 
     update_core_manifest(_activate)
+    return anima_core.corefs_derive_subkeys(frk, 1)
+
+
+def derive_active_corefs_subkeys(
+    manifest: dict[str, object],
+    frks: dict[int, object],
+) -> object:
+    rotation = manifest.get("frk_rotation")
+    if not isinstance(rotation, dict):
+        raise ValueError("invalid FRK rotation state")
+    try:
+        active_version = int(rotation["active_version"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid FRK rotation state") from exc
+    if active_version <= 0:
+        raise ValueError("invalid FRK rotation state")
+    active_frk = frks.get(active_version)
+    if active_frk is None:
+        raise ValueError(f"active FRK version {active_version} is unavailable")
+    return anima_core.corefs_derive_subkeys(active_frk, active_version)
 
 
 def _manifest_slots(manifest: dict[str, object]) -> list[ManifestKeyslot]:

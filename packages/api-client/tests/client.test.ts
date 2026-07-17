@@ -51,6 +51,41 @@ describe("createApiClient error handling", () => {
     expect(result.principal.kind).toBe("user");
   });
 
+  test("preserves structured CoreFS error codes for caller recovery", async () => {
+    const detail = {
+      code: "corefs_cursor_generation_mismatch",
+      cursorGeneration: 8,
+      selectedGeneration: 9,
+    };
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ detail }), {
+          status: 409,
+          statusText: "Conflict",
+        }),
+    });
+
+    let caught: unknown;
+    try {
+      await api.corefs.operation({
+        operation: "list",
+        path: "Notes",
+        cursorAfter: "Notes/A.md",
+        cursorGeneration: 8,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error & { code?: string }).code).toBe(
+      "corefs_cursor_generation_mismatch",
+    );
+    expect((caught as Error & { status?: number }).status).toBe(409);
+    expect((caught as Error & { detail?: unknown }).detail).toEqual(detail);
+  });
+
   test("surfaces normalized validation details arrays", async () => {
     const api = createApiClient({
       baseUrl: "https://api.test/api",
