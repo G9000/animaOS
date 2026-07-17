@@ -1159,6 +1159,199 @@ async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypat
         runtime_engine.dispose()
 
 
+def test_explicit_zero_evidence_strength_is_honored_not_defaulted():
+    """An explicit evidence_strength of 0.0 is an honest signal — the 0.8
+    default applies only when the key is absent. Score at imp-1,
+    es=0.55, evs=0.0 is 0.285 < 0.30 (fold); the old `or 0.8` bug would
+    have promoted at 0.365."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Soft observation with explicit zero evidence",
+            category="minor_observation",
+            importance=1,
+            salience_json={"emotional_salience": 0.55, "evidence_strength": 0.0},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "fold_to_trace"
+
+
+def test_fold_caps_evidence_refs_per_trace():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for _i in range(60):
+            fold_candidate_into_trace(
+                soul_db,
+                user_id=user.id,
+                candidate=FakeCandidate(
+                    content="Recurring topic", category="minor_observation", importance=1
+                ),
+                topic_key="user:minor_observation:recurring",
+                score=0.2,
+            )
+        soul_db.commit()
+        trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id))
+        assert trace is not None
+        assert len(trace.evidence_refs) == 50
+
+
+def test_fold_enforces_cap_opportunistically_past_double_cap():
+    from anima_server.services.agent.inner_life.latent import LatentConfig
+
+    small_cfg = LatentConfig(
+        promotion_threshold=0.30,
+        floor_ratio=0.25,
+        crystallization_threshold=0.60,
+        fold_rate=0.5,
+        weekly_decay=0.98,
+        max_traces_per_user=5,
+    )
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for i in range(11):
+            fold_candidate_into_trace(
+                soul_db,
+                user_id=user.id,
+                candidate=FakeCandidate(
+                    content=f"Topic {i}", category="minor_observation", importance=1
+                ),
+                topic_key=f"user:minor_observation:topic_{i}",
+                score=0.1 + i * 0.01,
+                config=small_cfg,
+            )
+        soul_db.commit()
+        count = len(
+            soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user.id)).all()
+        )
+        assert count <= small_cfg.max_traces_per_user + 1
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_deletes_all_contentless_trace_via_stale_path(monkeypatch):
+    """A resolvable-but-contentless ref counts as stale: an all-contentless
+    trace is deleted through the no-survivors path instead of occupying a
+    crystallization slot forever."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            empty = _runtime_candidate(runtime_db, user_id=user_id, content="x")
+            empty_id = empty.id
+            runtime_db.get(type(empty), empty_id).content = ""
+            runtime_db.commit()
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:contentless",
+                    kind="observation",
+                    weight=0.9,
+                    evidence_refs=[{"candidate_id": empty_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("synthesis must not run for contentless traces")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _should_not_be_called)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["dropped_stale"] == 1
+
+        with soul_factory() as soul_db:
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_forget_memory_deletes_same_topic_trace():
+    """Forgetting a confirmed memory about X takes the latent buffer for X
+    with it — even when the trace shares no source message ids with the
+    forgotten item (topic-key derivation, minor_observation namespace)."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        item = MemoryItem(
+            user_id=user.id,
+            content="Commute stress mentioned",
+            category="fact",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+
+        trace_key = derive_topic_key("Commute stress mentioned", "minor_observation")
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key=trace_key,
+                weight=0.5,
+                evidence_refs=[{"candidate_id": None, "source_message_ids": [777]}],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+
+        result = forget_memory(soul_db, memory_id=item.id, user_id=user.id)
+        assert result.latent_traces_scrubbed >= 1
+        assert (
+            soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id)) is None
+        )
+
+
+def test_purge_latent_traces_matching_topic_removes_fold_only_topics():
+    from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
+
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:commute_stress_again",
+                weight=0.4,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:garden_hobby",
+                weight=0.4,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+
+        purged = purge_latent_traces_matching_topic(
+            soul_db, user_id=user.id, topic="commute stress"
+        )
+        assert purged == 1
+        remaining = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user.id)
+        ).all()
+        assert [t.topic_key for t in remaining] == ["user:minor_observation:garden_hobby"]
+
+
 # ---------------------------------------------------------------------------
 # 8. End-to-end via run_soul_writer (dedup precedence + full fold pipeline)
 # ---------------------------------------------------------------------------

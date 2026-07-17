@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 CRYSTALLIZED_SOURCE = "latent_crystallization"
 _VALID_CRYSTALLIZED_CATEGORIES = frozenset({"fact", "preference", "goal", "relationship"})
 _DEFAULT_CRYSTALLIZED_CATEGORY = "fact"
+_MAX_EVIDENCE_REFS_PER_TRACE = 50
 _DEFAULT_CRYSTALLIZED_IMPORTANCE = 3
 
 
@@ -112,7 +113,29 @@ def fold_candidate_into_trace(
     trace.weight = fold_weight(trace.weight, score, cfg)
     refs = list(trace.evidence_refs or [])
     refs.append(evidence_ref_for_candidate(candidate))
-    trace.evidence_refs = refs
+    # Weight caps at 1.0 but refs would otherwise append forever on a
+    # recurring topic that never crystallizes (e.g. scaffold provider) —
+    # keep the newest window only.
+    trace.evidence_refs = refs[-_MAX_EVIDENCE_REFS_PER_TRACE:]
+
+    # The weekly sweep enforces the per-user cap, but a burst of
+    # minor_observation extractions could grow the table well past it
+    # between sweeps — enforce opportunistically once clearly over.
+    from sqlalchemy import func as _func
+
+    count = soul_db.scalar(
+        select(_func.count()).select_from(LatentTrace).where(LatentTrace.user_id == user_id)
+    )
+    if count is not None and count > 2 * cfg.max_traces_per_user:
+        surplus = soul_db.scalars(
+            select(LatentTrace)
+            .where(LatentTrace.user_id == user_id)
+            .order_by(LatentTrace.weight.asc(), LatentTrace.id.asc())
+            .limit(int(count) - cfg.max_traces_per_user)
+        ).all()
+        for stale_trace in surplus:
+            if stale_trace.id != trace.id:
+                soul_db.delete(stale_trace)
     trace.last_seen = now
     soul_db.flush()
     return trace
@@ -261,10 +284,16 @@ def _resolve_trace_evidence(
         if candidate is None or candidate.user_id != user_id:
             stale += 1
             continue
-        surviving.append(ref)
         content = (candidate.content or "").strip()
-        if content:
-            texts.append(content)
+        if not content:
+            # A ref that can't contribute text can't contribute to
+            # synthesis — treat it as stale so an all-contentless trace is
+            # deleted via the no-survivors path instead of permanently
+            # occupying a per-run crystallization slot.
+            stale += 1
+            continue
+        surviving.append(ref)
+        texts.append(content)
     return texts, surviving, stale
 
 
@@ -425,12 +454,6 @@ async def crystallize_due_traces(
                 # synthesizing anything (never crystallize from evidence
                 # the user asked to remove).
                 soul_db.delete(trace)
-                soul_db.commit()
-                continue
-
-            if not evidence_texts:
-                skipped_empty += 1
-                trace.evidence_refs = surviving_refs
                 soul_db.commit()
                 continue
 

@@ -1110,11 +1110,18 @@ def _process_candidate(
         # action == "promote"
         from anima_server.services.agent.memory_store import store_memory_item
 
+        # Downstream consumers (overview counts, contradiction scan, memory
+        # tools) enumerate only the four canonical categories, so a promoted
+        # minor_observation must be remapped — mirroring the crystallization
+        # path's category normalization.
+        promote_category = (
+            "fact" if candidate.category == "minor_observation" else candidate.category
+        )
         write_result = store_memory_item(
             soul_db,
             user_id=user_id,
             content=candidate.content,
-            category=candidate.category,
+            category=promote_category,
             importance=candidate.importance,
             source="extraction",
             allow_update=True,
@@ -1335,10 +1342,14 @@ def _gate_new_memory_decision(candidate, reason: str) -> PromotionDecision:
     from anima_server.services.agent.latent_traces import get_latent_config
 
     salience = getattr(candidate, "salience_json", None) or {}
+    # Defaults apply only when the value is ABSENT — an explicit 0.0 is an
+    # honest signal and must not be replaced (`or` would discard it).
+    es_raw = salience.get("emotional_salience")
+    evs_raw = salience.get("evidence_strength")
     score = score_candidate(
         importance=candidate.importance,
-        emotional_salience=float(salience.get("emotional_salience", 0.0) or 0.0),
-        evidence_strength=float(salience.get("evidence_strength", 0.8) or 0.8),
+        emotional_salience=float(0.0 if es_raw is None else es_raw),
+        evidence_strength=float(0.8 if evs_raw is None else evs_raw),
     )
     config = get_latent_config()
     classification = classify_score(score, config)

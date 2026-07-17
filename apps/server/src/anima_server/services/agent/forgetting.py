@@ -439,6 +439,51 @@ def forget_latent_traces_for_topic(
     return count
 
 
+def purge_latent_traces_matching_topic(
+    db: Session,
+    *,
+    user_id: int,
+    topic: str,
+) -> int:
+    """Delete every latent trace whose topic_key contains the topic's slug.
+
+    This is the user-facing topic-scoped trace forget (PRD IL4): fold-only
+    topics — weak signals that never promoted or crystallized any
+    confirmable MemoryItem — have no per-item confirm path, so an explicit
+    topic purge is the only way a user can remove them. Traces are
+    sub-threshold signals, never surfaced as memories, so immediate
+    deletion on an explicit request is proportionate. Audited without
+    recording the topic content.
+    """
+    from anima_server.models.agent_runtime import LatentTrace
+    from anima_server.services.agent.claims import _content_slug
+
+    slug = _content_slug(topic)
+    if not slug:
+        return 0
+    traces = db.scalars(
+        select(LatentTrace).where(
+            LatentTrace.user_id == user_id,
+            LatentTrace.topic_key.contains(slug),
+        )
+    ).all()
+    for trace in traces:
+        db.delete(trace)
+    if traces:
+        db.add(
+            ForgetAuditLog(
+                user_id=user_id,
+                forgotten_at=datetime.now(UTC),
+                trigger="user_request",
+                scope="topic",
+                items_forgotten=0,
+                derived_refs_affected=len(traces),
+            )
+        )
+        db.flush()
+    return len(traces)
+
+
 # ── User-initiated forgetting ─────────────────────────────────────────
 
 
@@ -558,6 +603,20 @@ def forget_memory(
         user_id=user_id,
         source_message_ids=source_message_ids,
     )
+    # Also delete traces for the forgotten items' own topics: forgetting a
+    # confirmed memory about X must take the latent buffer for X with it,
+    # not just the refs that shared source messages. The fold lane writes
+    # minor_observation-namespaced keys, so probe that namespace too.
+    from anima_server.services.agent.claims import derive_topic_key
+    from anima_server.services.agent.latent_traces import forget_latent_traces_by_topic
+
+    for item in chain_items:
+        content_plain = df(user_id, item.content, table="memory_items", field="content")
+        for category in {item.category, "minor_observation"}:
+            topic_key = derive_topic_key(content_plain, category)
+            result.latent_traces_scrubbed += forget_latent_traces_by_topic(
+                db, user_id=user_id, topic_key=topic_key
+            )
     _delete_profile_fields_for_forget(
         db,
         user_id=user_id,
