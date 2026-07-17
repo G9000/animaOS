@@ -14,8 +14,9 @@ use anima_corefs::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, EN
 use anima_corefs::folders::{FolderOwner, PortableName};
 use anima_corefs::id::OpaqueId;
 use anima_corefs::logical::{
-    CoreFsReadSnapshot, LogicalGrepRequest, LogicalWalkCursor, LogicalWalkOptions,
-    RuntimeSearchState, SearchNotReadyReason, SearchReadinessStatus,
+    model_wire_v1_read_chunk_size, CoreFsReadSnapshot, ListCursor, LogicalGrepRequest,
+    LogicalListPage, LogicalWalkCursor, LogicalWalkOptions, ModelWireV1, RuntimeSearchState,
+    SearchNotReadyReason, SearchReadinessStatus,
 };
 use anima_corefs::policy::AnimaAccess;
 use anima_corefs::rotation::FrkKeyring;
@@ -82,6 +83,75 @@ fn snapshot_capabilities_and_normal_lookup_only_expose_live_entries() {
         .list("Trash", None, 10, limits, OperationControl::default())
         .unwrap();
     assert!(trash.entries.is_empty());
+}
+
+#[test]
+fn logical_list_first_item_too_large_is_typed_and_later_truncation_advances() {
+    let fixture = fixture("list-progress");
+    let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
+    let snapshot =
+        CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
+
+    let error = snapshot
+        .list(
+            "",
+            None,
+            10,
+            OperationLimits {
+                response_bytes: 1,
+                ..OperationLimits::default()
+            }
+            .validate()
+            .unwrap(),
+            OperationControl::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        anima_corefs::logical::LogicalError::FileTool(FileToolError::ResponseItemTooLarge {
+            kind: "logical_list",
+            ..
+        })
+    ));
+
+    let full = snapshot
+        .list(
+            "",
+            None,
+            10,
+            OperationLimits::default().validate().unwrap(),
+            OperationControl::default(),
+        )
+        .unwrap();
+    let expected = LogicalListPage {
+        generation: full.generation,
+        entries: vec![full.entries[0].clone()],
+        next_cursor: Some(ListCursor::new(
+            full.generation,
+            full.entries[0].path.as_str(),
+        )),
+        truncated: true,
+    };
+    let exact_limit = expected.model_wire_v1_size().unwrap();
+    let page = snapshot
+        .list(
+            "",
+            None,
+            10,
+            OperationLimits {
+                response_bytes: exact_limit,
+                ..OperationLimits::default()
+            }
+            .validate()
+            .unwrap(),
+            OperationControl::default(),
+        )
+        .unwrap();
+
+    assert_eq!(page.entries.len(), 1);
+    assert!(page.truncated);
+    assert!(page.next_cursor.is_some());
+    assert!(page.model_wire_v1_size().unwrap() <= exact_limit);
 }
 
 #[test]
@@ -235,12 +305,27 @@ fn reads_are_bounded_and_return_only_logical_identity_metadata() {
 
 #[test]
 fn logical_read_response_budget_includes_repeated_identity_metadata() {
-    const CHUNK_STRUCTURAL_BYTES: usize = 160;
     let fixture = fixture("read-response-budget");
     let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
     let snapshot =
         CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
-    let response_bytes = 274;
+    let stat = snapshot.stat("Notes/Alpha.md").unwrap();
+    let body = b"caf\xc3\xa9\nneedle one\n";
+    let response_bytes = (0..body.len() as u64)
+        .map(|offset| {
+            model_wire_v1_read_chunk_size(
+                stat.generation,
+                &stat.path,
+                &stat.stable_id,
+                stat.revision.unwrap(),
+                stat.content_hash.as_deref().unwrap(),
+                offset,
+                3,
+            )
+            .unwrap()
+        })
+        .max()
+        .unwrap();
     let limits = OperationLimits {
         read_chunk_bytes: 64,
         response_bytes,
@@ -248,60 +333,43 @@ fn logical_read_response_budget_includes_repeated_identity_metadata() {
     }
     .validate()
     .unwrap();
-    let body = b"caf\xc3\xa9\nneedle one\n";
-
-    let first = snapshot
-        .read(
-            "Notes/Alpha.md",
-            ReadOptions {
-                offset: 0,
-                max_bytes: body.len(),
-            },
-            limits,
-            OperationControl::default(),
-        )
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    let model_visible_bytes = first
-        .iter()
-        .map(|chunk| {
-            CHUNK_STRUCTURAL_BYTES
-                + chunk.path.as_str().len()
-                + chunk.stable_id.len()
-                + chunk.content_hash.len()
-                + chunk.bytes.len()
-        })
-        .sum::<usize>();
-    let first_body = first
-        .iter()
-        .flat_map(|chunk| chunk.bytes.iter().copied())
-        .collect::<Vec<_>>();
-
-    assert!(model_visible_bytes <= response_bytes);
-    assert!(first.iter().all(|chunk| !chunk.bytes.is_empty()));
-    assert!(!first_body.is_empty());
-    assert!(first_body.len() < body.len());
-
-    let second = snapshot
-        .read(
-            "Notes/Alpha.md",
-            ReadOptions {
-                offset: first_body.len() as u64,
-                max_bytes: body.len() - first_body.len(),
-            },
-            limits,
-            OperationControl::default(),
-        )
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    let mut combined = first_body;
-    combined.extend(second.iter().flat_map(|chunk| chunk.bytes.iter().copied()));
+    let mut combined = Vec::new();
+    while combined.len() < body.len() {
+        let chunks = snapshot
+            .read(
+                "Notes/Alpha.md",
+                ReadOptions {
+                    offset: combined.len() as u64,
+                    max_bytes: body.len() - combined.len(),
+                },
+                limits,
+                OperationControl::default(),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|chunk| !chunk.bytes.is_empty()));
+        assert!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.model_wire_v1_size().unwrap())
+                .sum::<usize>()
+                <= response_bytes
+        );
+        combined.extend(chunks.iter().flat_map(|chunk| chunk.bytes.iter().copied()));
+    }
     assert_eq!(combined, body);
+}
 
-    let metadata_only_limit = CHUNK_STRUCTURAL_BYTES + "Notes/Alpha.md".len() + ALPHA_ID.len() + 64;
-    let no_payload_room = snapshot
+#[test]
+fn logical_read_rejects_a_cap_that_cannot_encode_one_payload_byte() {
+    let fixture = fixture("read-progress");
+    let keyring = FrkKeyring::new([&fixture.keys]).unwrap();
+    let snapshot =
+        CoreFsReadSnapshot::open(&fixture.coordinator, &fixture.validation, &keyring).unwrap();
+
+    let error = snapshot
         .read(
             "Notes/Alpha.md",
             ReadOptions {
@@ -309,18 +377,22 @@ fn logical_read_response_budget_includes_repeated_identity_metadata() {
                 max_bytes: 1,
             },
             OperationLimits {
-                read_chunk_bytes: 64,
-                response_bytes: metadata_only_limit,
+                response_bytes: 1,
                 ..OperationLimits::default()
             }
             .validate()
             .unwrap(),
             OperationControl::default(),
         )
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert!(no_payload_room.is_empty());
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        anima_corefs::logical::LogicalError::FileTool(FileToolError::ResponseItemTooLarge {
+            kind: "logical_read",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -337,7 +409,7 @@ fn late_object_authentication_failure_returns_no_untrusted_read_chunk() {
     *encoded.last_mut().unwrap() ^= 1;
     fs::write(object_path, encoded).unwrap();
 
-    let mut read = snapshot
+    let error = snapshot
         .read(
             "Notes/beta.md",
             ReadOptions {
@@ -347,9 +419,11 @@ fn late_object_authentication_failure_returns_no_untrusted_read_chunk() {
             OperationLimits::default().validate().unwrap(),
             OperationControl::default(),
         )
-        .unwrap();
-    assert!(read.next().unwrap().is_err());
-    assert!(read.next().is_none());
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        anima_corefs::logical::LogicalError::FileTool(FileToolError::Backend { .. })
+    ));
 }
 
 #[test]
@@ -400,7 +474,7 @@ fn logical_grep_response_budget_includes_identity_metadata() {
     .validate()
     .unwrap();
 
-    let page = snapshot
+    let error = snapshot
         .grep(
             LogicalGrepRequest {
                 root: "Notes/Alpha.md".to_string(),
@@ -414,10 +488,15 @@ fn logical_grep_response_budget_includes_identity_metadata() {
             limits,
             OperationControl::default(),
         )
-        .unwrap();
+        .unwrap_err();
 
-    assert!(page.matches.is_empty());
-    assert!(page.truncated);
+    assert!(matches!(
+        error,
+        anima_corefs::logical::LogicalError::FileTool(FileToolError::ResponseItemTooLarge {
+            kind: "grep_match",
+            ..
+        })
+    ));
 }
 
 #[test]

@@ -1,20 +1,17 @@
 use anima_file_tools::{
-    glob, grep, read_stream, walk_page, BackendKind, BackendPath, EntryKind, GlobCursor,
-    GlobRequest, GrepCursor, GrepMode, GrepRequest, OperationControl, ReadOptions, ReadStream,
-    SkipReason, ValidatedLimits, WalkBackend, WalkCursor, WalkOptions,
+    glob, grep, read_stream, walk_page, BackendKind, BackendPath, EntryKind, FileToolError,
+    GlobCursor, GlobRequest, GrepCursor, GrepMode, GrepRequest, OperationControl, ReadOptions,
+    ReadStream, SkipReason, ValidatedLimits, WalkBackend, WalkCursor, WalkOptions,
 };
 
 use crate::crypto::ObjectKind;
 use crate::envelope::BodyEncoding;
 
 use super::backend::{CoreFsReadSnapshot, LogicalError, Node};
-use super::LogicalPath;
-
-const RESPONSE_ENTRY_OVERHEAD: usize = 192;
-// Field names, separators, string delimiters, and worst-case decimal forms of
-// generation, revision, and offset. Variable string and payload bytes are
-// added separately below.
-const LOGICAL_READ_CHUNK_STRUCTURAL_BYTES: usize = 160;
+use super::wire::logical_list_page_size;
+use super::{
+    model_wire_v1_max_read_payload, model_wire_v1_read_chunk_size, LogicalPath, ModelWireV1,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogicalEntry {
@@ -157,6 +154,14 @@ impl LogicalGrepCursor {
     pub const fn generation(&self) -> u64 {
         self.generation
     }
+
+    pub fn path(&self) -> &str {
+        self.inner.path()
+    }
+
+    pub const fn byte_offset(&self) -> Option<u64> {
+        self.inner.byte_offset()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -208,8 +213,8 @@ pub struct LogicalReadStream {
     revision: u64,
     content_hash: String,
     inner: ReadStream,
-    metadata_response_bytes: usize,
     response_bytes_remaining: usize,
+    next_offset: u64,
     finished: bool,
     failed: bool,
 }
@@ -232,9 +237,21 @@ impl Iterator for LogicalReadStream {
         if self.failed || self.finished {
             return None;
         }
-        let max_payload = self
-            .response_bytes_remaining
-            .saturating_sub(self.metadata_response_bytes);
+        let max_payload = match model_wire_v1_max_read_payload(
+            self.generation,
+            &self.path,
+            &self.stable_id,
+            self.revision,
+            &self.content_hash,
+            self.next_offset,
+            self.response_bytes_remaining,
+        ) {
+            Ok(maximum) => maximum,
+            Err(error) => {
+                self.failed = true;
+                return Some(Err(error));
+            }
+        };
         if max_payload == 0 {
             self.finished = true;
             return None;
@@ -246,8 +263,7 @@ impl Iterator for LogicalReadStream {
         match result {
             Ok(chunk) => {
                 debug_assert!(!chunk.bytes.is_empty());
-                self.response_bytes_remaining -= self.metadata_response_bytes + chunk.bytes.len();
-                Some(Ok(LogicalReadChunk {
+                let logical = LogicalReadChunk {
                     generation: self.generation,
                     path: self.path.clone(),
                     stable_id: self.stable_id.clone(),
@@ -255,7 +271,18 @@ impl Iterator for LogicalReadStream {
                     content_hash: self.content_hash.clone(),
                     offset: chunk.offset,
                     bytes: chunk.bytes,
-                }))
+                };
+                let encoded = match logical.model_wire_v1_size() {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        self.failed = true;
+                        return Some(Err(error));
+                    }
+                };
+                debug_assert!(encoded <= self.response_bytes_remaining);
+                self.response_bytes_remaining -= encoded;
+                self.next_offset = logical.offset.saturating_add(logical.bytes.len() as u64);
+                Some(Ok(logical))
             }
             Err(error) => {
                 self.failed = true;
@@ -348,10 +375,8 @@ impl CoreFsReadSnapshot {
             });
         }
         let listing = WalkBackend::read_directory(self, directory.path.as_str())?;
-        let mut entries = Vec::new();
-        let mut response_bytes = 0usize;
+        let mut available = Vec::new();
         let mut after_cursor = cursor.is_none();
-        let mut truncated = false;
         for child in listing.entries {
             control.check()?;
             if !after_cursor {
@@ -363,35 +388,90 @@ impl CoreFsReadSnapshot {
                 }
                 continue;
             }
-            let node = self
-                .nodes
-                .get(child.path.as_str())
-                .expect("backend paths come from the selected catalog");
-            let item_bytes = node
-                .path
-                .as_str()
-                .len()
-                .saturating_add(node.stable_id.len())
-                .saturating_add(RESPONSE_ENTRY_OVERHEAD);
-            if entries.len() == limit
-                || response_bytes.saturating_add(item_bytes) > limits.response_bytes()
-            {
+            let node = self.nodes.get(child.path.as_str()).ok_or_else(|| {
+                LogicalError::InvalidCatalogPath {
+                    stable_id: child.path.as_str().to_owned(),
+                }
+            })?;
+            available.push(node);
+        }
+
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        for (index, node) in available.iter().enumerate() {
+            control.check()?;
+            if entries.len() == limit {
                 truncated = true;
                 break;
             }
-            response_bytes += item_bytes;
             entries.push(logical_entry(node));
+            let has_more = index + 1 < available.len();
+            let candidate_truncated = has_more && entries.len() == limit;
+            let candidate_cursor = candidate_truncated.then(|| {
+                ListCursor::new(
+                    self.generation(),
+                    entries
+                        .last()
+                        .expect("entry was just appended")
+                        .path
+                        .as_str(),
+                )
+            });
+            let required = logical_list_page_size(
+                self.generation(),
+                &entries,
+                candidate_cursor.as_ref(),
+                candidate_truncated,
+            )?;
+            if required > limits.response_bytes() {
+                entries.pop();
+                if entries.is_empty() {
+                    return Err(FileToolError::ResponseItemTooLarge {
+                        kind: "logical_list",
+                        required,
+                        maximum: limits.response_bytes(),
+                    }
+                    .into());
+                }
+                truncated = true;
+                break;
+            }
+            if candidate_truncated {
+                truncated = true;
+                break;
+            }
         }
         let next_cursor = truncated
             .then(|| entries.last())
             .flatten()
             .map(|entry| ListCursor::new(self.generation(), entry.path.as_str()));
-        Ok(LogicalListPage {
+        let mut page = LogicalListPage {
             generation: self.generation(),
             entries,
             next_cursor,
             truncated,
-        })
+        };
+        loop {
+            let required = page.model_wire_v1_size()?;
+            if required <= limits.response_bytes() {
+                break;
+            }
+            if page.entries.len() <= 1 {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "logical_list",
+                    required,
+                    maximum: limits.response_bytes(),
+                }
+                .into());
+            }
+            page.entries.pop();
+            page.truncated = true;
+            page.next_cursor = page
+                .entries
+                .last()
+                .map(|entry| ListCursor::new(self.generation(), entry.path.as_str()));
+        }
+        Ok(page)
     }
 
     pub fn walk(
@@ -444,7 +524,7 @@ impl CoreFsReadSnapshot {
                 )
             })
             .collect();
-        Ok(LogicalWalkPage {
+        let logical = LogicalWalkPage {
             generation: self.generation(),
             entries,
             errors,
@@ -454,7 +534,9 @@ impl CoreFsReadSnapshot {
             }),
             truncated: page.truncated,
             limit_reached: page.limit_reached,
-        })
+        };
+        ensure_model_wire_cap(&logical, limits, "logical_walk")?;
+        Ok(logical)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -482,7 +564,7 @@ impl CoreFsReadSnapshot {
             limits,
             control,
         )?;
-        Ok(LogicalGlobPage {
+        let logical = LogicalGlobPage {
             generation: self.generation(),
             matches: page
                 .matches
@@ -495,7 +577,9 @@ impl CoreFsReadSnapshot {
             }),
             truncated: page.truncated,
             limit_reached: page.limit_reached,
-        })
+        };
+        ensure_model_wire_cap(&logical, limits, "logical_glob")?;
+        Ok(logical)
     }
 
     pub fn grep(
@@ -554,7 +638,7 @@ impl CoreFsReadSnapshot {
                 }
             })
             .collect();
-        Ok(LogicalGrepPage {
+        let logical = LogicalGrepPage {
             generation: self.generation(),
             matches,
             skipped,
@@ -564,7 +648,9 @@ impl CoreFsReadSnapshot {
             }),
             truncated: page.truncated,
             limit_reached: page.limit_reached,
-        })
+        };
+        ensure_model_wire_cap(&logical, limits, "logical_grep")?;
+        Ok(logical)
     }
 
     pub fn read(
@@ -578,6 +664,26 @@ impl CoreFsReadSnapshot {
         let object = node.object.as_ref().ok_or_else(|| LogicalError::NotFile {
             path: node.path.as_str().to_owned(),
         })?;
+        let body_length = self.authenticated_metadata(node)?.body_length;
+        if options.max_bytes > 0 && options.offset < body_length {
+            let required = model_wire_v1_read_chunk_size(
+                self.generation(),
+                &node.path,
+                &node.stable_id,
+                object.revision,
+                &object.content_hash,
+                options.offset,
+                1,
+            )?;
+            if required > limits.response_bytes() {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "logical_read",
+                    required,
+                    maximum: limits.response_bytes(),
+                }
+                .into());
+            }
+        }
         let inner = read_stream(
             self,
             backend_path(node.path.as_str())?,
@@ -585,10 +691,6 @@ impl CoreFsReadSnapshot {
             limits,
             control,
         )?;
-        let metadata_response_bytes = LOGICAL_READ_CHUNK_STRUCTURAL_BYTES
-            .saturating_add(node.path.as_str().len())
-            .saturating_add(node.stable_id.len())
-            .saturating_add(object.content_hash.len());
         Ok(LogicalReadStream {
             generation: self.generation(),
             path: node.path.clone(),
@@ -596,8 +698,8 @@ impl CoreFsReadSnapshot {
             revision: object.revision,
             content_hash: object.content_hash.clone(),
             inner,
-            metadata_response_bytes,
             response_bytes_remaining: limits.response_bytes(),
+            next_offset: options.offset,
             finished: false,
             failed: false,
         })
@@ -665,6 +767,23 @@ fn ensure_cursor_generation(selected: u64, cursor: Option<u64>) -> Result<(), Lo
         if cursor != selected {
             return Err(LogicalError::CursorGeneration { cursor, selected });
         }
+    }
+    Ok(())
+}
+
+fn ensure_model_wire_cap<T: ModelWireV1>(
+    result: &T,
+    limits: ValidatedLimits,
+    kind: &'static str,
+) -> Result<(), LogicalError> {
+    let required = result.model_wire_v1_size()?;
+    if required > limits.response_bytes() {
+        return Err(FileToolError::ResponseItemTooLarge {
+            kind,
+            required,
+            maximum: limits.response_bytes(),
+        }
+        .into());
     }
     Ok(())
 }

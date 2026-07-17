@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use anima_file_tools::{
@@ -17,8 +17,8 @@ use crate::crypto::{
     OBJECT_KEY_ENVELOPE_VERSION,
 };
 use crate::envelope::{
-    open_envelope_stream, AuthenticatedEnvelopeStream, BodyEncoding, EnvelopeMetadata,
-    ENVELOPE_VERSION,
+    open_envelope_stream, read_envelope_seekable_range, AuthenticatedEnvelopeStream, BodyEncoding,
+    EnvelopeMetadata, ENVELOPE_VERSION,
 };
 use crate::rotation::FrkKeyring;
 use crate::transaction::{open_regular_file_in, CoreCommitCoordinator, ValidationSnapshot};
@@ -47,6 +47,8 @@ pub enum LogicalError {
     StorageUnavailable,
     #[error("invalid operation limit: {0}")]
     InvalidLimit(String),
+    #[error("logical model wire encoding failed")]
+    ModelEncoding,
 }
 
 #[derive(Clone)]
@@ -274,12 +276,62 @@ impl ReadBackend for CoreFsReadSnapshot {
         &self,
         path: &str,
         offset: u64,
+        max_bytes: usize,
         control: &OperationControl,
     ) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
         control.check()?;
-        let mut reader = self.open_object_reader(path)?;
-        reader.seek_to_controlled(offset, control)?;
-        Ok(Box::new(reader))
+        let node = self.backend_node(path)?;
+        let object = node
+            .object
+            .as_ref()
+            .ok_or_else(|| backend_error("open_read", path, "logical path is not a file"))?;
+        let metadata = open_object_stream(&self.objects_dir, &self.core_id, node, object)?
+            .metadata()
+            .clone();
+        if offset >= metadata.body_length || max_bytes == 0 {
+            return Ok(Box::new(Cursor::new(Vec::new())));
+        }
+
+        let mut file = open_regular_file_in(&self.objects_dir, OsStr::new(&object.physical_name))
+            .map_err(|_| {
+            backend_error(
+                "open_read",
+                node.path.as_str(),
+                "authorized object revision is unavailable",
+            )
+        })?;
+        let aad = ObjectBaseAad::new(
+            &self.core_id,
+            &node.stable_id,
+            object.kind,
+            ENVELOPE_VERSION,
+            object.object_key_epoch,
+            object.revision,
+        )
+        .map_err(|_| backend_error("open_read", node.path.as_str(), "invalid object authority"))?;
+        let mut bytes = Vec::new();
+        let result = read_envelope_seekable_range(
+            &mut file,
+            object.key.as_ref(),
+            &aad,
+            offset,
+            max_bytes,
+            &mut bytes,
+            || {
+                control
+                    .check()
+                    .map_err(|error| io::Error::new(io::ErrorKind::Interrupted, error.to_string()))
+            },
+        );
+        if let Err(error) = result {
+            control.check()?;
+            return Err(backend_error(
+                "open_read",
+                node.path.as_str(),
+                &format!("object range authentication failed: {error}"),
+            ));
+        }
+        Ok(Box::new(Cursor::new(bytes)))
     }
 }
 

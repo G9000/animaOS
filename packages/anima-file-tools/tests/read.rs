@@ -70,9 +70,11 @@ impl ReadBackend for ControlledPositionBackend {
         &self,
         _path: &str,
         offset: u64,
+        max_bytes: usize,
         control: &OperationControl,
     ) -> Result<Box<dyn anima_file_tools::ReadSeek + Send>, FileToolError> {
         assert_eq!(offset, 17);
+        assert_eq!(max_bytes, 1);
         self.called.store(true, Ordering::Release);
         self.cancellation.cancel();
         control.check()?;

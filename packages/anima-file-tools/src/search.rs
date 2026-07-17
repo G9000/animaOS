@@ -16,6 +16,7 @@ use crate::{
 // as CoreFS stable IDs, revisions, content hashes, and catalog generation.
 const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 256;
 const RESPONSE_SKIP_OVERHEAD_BYTES: usize = 192;
+const RESPONSE_PAGE_OVERHEAD_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GrepMode {
@@ -153,14 +154,21 @@ pub fn grep(
             },
             limits,
             control.clone(),
-        )?
+        )
+        .map_err(|error| match error {
+            FileToolError::PaginationCannotAdvance { .. } => {
+                FileToolError::PaginationCannotAdvance { operation: "grep" }
+            }
+            error => error,
+        })?
     };
     let walk_truncated = walk.truncated;
     let walk_limit_reached = walk.limit_reached;
     let walk_next_cursor = walk.next_cursor;
     let mut page = GrepPage::default();
-    let mut response_bytes = 0usize;
+    let mut response_bytes = RESPONSE_PAGE_OVERHEAD_BYTES;
     let mut output_truncated = false;
+    let mut last_progress = None;
     let offset_cursor = request
         .cursor
         .as_ref()
@@ -189,9 +197,14 @@ pub fn grep(
                 path: entry.path,
                 reason: SkipReason::BinaryContent,
             };
-            if !push_skip(&mut page, &mut response_bytes, skipped, limits) {
+            if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
+                output_truncated = true;
                 break 'files;
             }
+            last_progress = page.skipped.last().map(|skipped| GrepCursor {
+                path: skipped.path.as_str().to_owned(),
+                byte_offset: None,
+            });
             continue;
         }
         let mut reader = BufReader::new(backend.open_read(entry.path.as_str())?);
@@ -244,23 +257,54 @@ pub fn grep(
                         .path
                         .as_str()
                         .len()
-                        .saturating_add(text.len())
+                        .saturating_mul(12)
+                        .saturating_add(text.len().saturating_mul(6))
                         .saturating_add(RESPONSE_ITEM_OVERHEAD_BYTES);
                     let Some(next_file_response_bytes) =
                         file_response_bytes.checked_add(item_bytes)
                     else {
+                        if page.matches.is_empty()
+                            && page.skipped.is_empty()
+                            && file_matches.is_empty()
+                        {
+                            return Err(FileToolError::ResponseItemTooLarge {
+                                kind: "grep_match",
+                                required: usize::MAX,
+                                maximum: limits.response_bytes(),
+                            });
+                        }
                         file_truncated = true;
                         break;
                     };
                     let Some(next_response_bytes) =
                         response_bytes.checked_add(next_file_response_bytes)
                     else {
+                        if page.matches.is_empty()
+                            && page.skipped.is_empty()
+                            && file_matches.is_empty()
+                        {
+                            return Err(FileToolError::ResponseItemTooLarge {
+                                kind: "grep_match",
+                                required: usize::MAX,
+                                maximum: limits.response_bytes(),
+                            });
+                        }
                         file_truncated = true;
                         break;
                     };
                     if next_response_bytes > limits.response_bytes()
                         || page.matches.len() + file_matches.len() == request.max_matches
                     {
+                        if page.matches.is_empty()
+                            && page.skipped.is_empty()
+                            && file_matches.is_empty()
+                        {
+                            return Err(FileToolError::ResponseItemTooLarge {
+                                kind: "grep_match",
+                                required: next_response_bytes,
+                                maximum: limits.response_bytes(),
+                            });
+                        }
                         file_truncated = true;
                         break;
                     }
@@ -284,16 +328,32 @@ pub fn grep(
                 path: entry.path,
                 reason,
             };
-            if !push_skip(&mut page, &mut response_bytes, skipped, limits) {
+            if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
+                output_truncated = true;
                 break 'files;
             }
+            last_progress = page.skipped.last().map(|skipped| GrepCursor {
+                path: skipped.path.as_str().to_owned(),
+                byte_offset: None,
+            });
         } else {
             response_bytes += file_response_bytes;
             page.matches.extend(file_matches);
+            if let Some(found) = page.matches.last() {
+                last_progress = Some(GrepCursor {
+                    path: found.path.as_str().to_owned(),
+                    byte_offset: Some(found.byte_offset),
+                });
+            }
             for skipped in file_skips {
-                if !push_skip(&mut page, &mut response_bytes, skipped, limits) {
+                if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
+                    output_truncated = true;
                     break 'files;
                 }
+                last_progress = page.skipped.last().map(|skipped| GrepCursor {
+                    path: skipped.path.as_str().to_owned(),
+                    byte_offset: None,
+                });
             }
             if file_truncated {
                 page.truncated = true;
@@ -304,10 +364,7 @@ pub fn grep(
     }
 
     if output_truncated {
-        page.next_cursor = page.matches.last().map(|found| GrepCursor {
-            path: found.path.as_str().to_string(),
-            byte_offset: Some(found.byte_offset),
-        });
+        page.next_cursor = last_progress;
     } else if walk_truncated {
         page.truncated = true;
         page.limit_reached = walk_limit_reached;
@@ -315,6 +372,9 @@ pub fn grep(
             path: cursor.as_str().to_string(),
             byte_offset: None,
         });
+    }
+    if page.truncated && page.next_cursor.is_none() {
+        return Err(FileToolError::PaginationCannotAdvance { operation: "grep" });
     }
     Ok(page)
 }
@@ -324,25 +384,50 @@ fn push_skip(
     response_bytes: &mut usize,
     skipped: GrepSkipped,
     limits: ValidatedLimits,
-) -> bool {
+) -> Result<bool, FileToolError> {
     let item_bytes = skipped
         .path
         .as_str()
         .len()
+        .saturating_mul(12)
         .saturating_add(RESPONSE_SKIP_OVERHEAD_BYTES);
     let Some(next_response_bytes) = response_bytes.checked_add(item_bytes) else {
+        if page.matches.is_empty() && page.skipped.is_empty() {
+            return Err(FileToolError::ResponseItemTooLarge {
+                kind: "grep_skip",
+                required: usize::MAX,
+                maximum: limits.response_bytes(),
+            });
+        }
         page.truncated = true;
         page.limit_reached = true;
-        return false;
+        return Ok(false);
     };
     if next_response_bytes > limits.response_bytes() {
+        if page.matches.is_empty() && page.skipped.is_empty() {
+            return Err(FileToolError::ResponseItemTooLarge {
+                kind: "grep_skip",
+                required: next_response_bytes,
+                maximum: limits.response_bytes(),
+            });
+        }
         page.truncated = true;
         page.limit_reached = true;
-        return false;
+        return Ok(false);
     }
     *response_bytes = next_response_bytes;
     page.skipped.push(skipped);
-    true
+    Ok(true)
+}
+
+impl GrepCursor {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub const fn byte_offset(&self) -> Option<u64> {
+        self.byte_offset
+    }
 }
 
 fn validate_request(request: &GrepRequest, limits: ValidatedLimits) -> Result<(), FileToolError> {

@@ -219,6 +219,7 @@ pub trait ReadBackend: FileBackend {
         &self,
         path: &str,
         offset: u64,
+        _max_bytes: usize,
         control: &OperationControl,
     ) -> Result<Box<dyn ReadSeek + Send>, FileToolError> {
         control.check()?;

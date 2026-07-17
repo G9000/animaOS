@@ -64,7 +64,8 @@ pub fn read_stream<B: ReadBackend + ?Sized>(
         });
     }
 
-    let reader = backend.open_read_at(path.as_str(), options.offset, &control)?;
+    let reader =
+        backend.open_read_at(path.as_str(), options.offset, options.max_bytes, &control)?;
 
     Ok(ReadStream {
         reader,

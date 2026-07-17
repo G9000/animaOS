@@ -9,6 +9,7 @@ use crate::{
 
 // Includes room for backend-enriched identity metadata in the public result.
 const RESPONSE_ITEM_OVERHEAD_BYTES: usize = 192;
+const RESPONSE_PAGE_OVERHEAD_BYTES: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WalkCursor {
@@ -84,7 +85,7 @@ pub fn walk_page<B: WalkBackend + ?Sized>(
     }
 
     let mut page = WalkPage::default();
-    let mut response_bytes = 0usize;
+    let mut response_bytes = RESPONSE_PAGE_OVERHEAD_BYTES;
     let mut examined_entries = 0usize;
     let mut visited_directories = 1usize;
     let mut resumable = true;
@@ -167,13 +168,28 @@ pub fn walk_page<B: WalkBackend + ?Sized>(
             .path
             .as_str()
             .len()
+            .saturating_mul(12)
             .saturating_add(RESPONSE_ITEM_OVERHEAD_BYTES);
         let Some(next_response_bytes) = response_bytes.checked_add(item_bytes) else {
+            if page.entries.is_empty() {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "walk",
+                    required: usize::MAX,
+                    maximum: limits.response_bytes(),
+                });
+            }
             page.truncated = true;
             page.limit_reached = true;
             break;
         };
         if next_response_bytes > limits.response_bytes() {
+            if page.entries.is_empty() {
+                return Err(FileToolError::ResponseItemTooLarge {
+                    kind: "walk",
+                    required: next_response_bytes,
+                    maximum: limits.response_bytes(),
+                });
+            }
             page.truncated = true;
             page.limit_reached = true;
             break;
@@ -199,6 +215,9 @@ pub fn walk_page<B: WalkBackend + ?Sized>(
         page.next_cursor = page.entries.last().map(|entry| WalkCursor {
             after: entry.path.as_str().to_string(),
         });
+    }
+    if page.truncated && page.next_cursor.is_none() {
+        return Err(FileToolError::PaginationCannotAdvance { operation: "walk" });
     }
     Ok(page)
 }
@@ -236,6 +255,7 @@ fn push_children<B: WalkBackend + ?Sized>(
             let item_bytes = directory
                 .as_str()
                 .len()
+                .saturating_mul(6)
                 .saturating_add(message.len())
                 .saturating_add(RESPONSE_ITEM_OVERHEAD_BYTES);
             let Some(next_response_bytes) = response_bytes.checked_add(item_bytes) else {

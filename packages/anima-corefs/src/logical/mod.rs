@@ -3,6 +3,7 @@
 mod backend;
 mod path;
 mod service;
+mod wire;
 
 pub use backend::{CoreFsReadSnapshot, LogicalError};
 pub use path::{LogicalPath, LogicalPathError};
@@ -12,4 +13,7 @@ pub use service::{
     LogicalReadChunk, LogicalReadStream, LogicalStat, LogicalWalkCursor, LogicalWalkEntry,
     LogicalWalkOptions, LogicalWalkPage, RuntimeSearchState, SearchNotReadyReason,
     SearchReadinessReport, SearchReadinessStatus,
+};
+pub use wire::{
+    model_wire_v1_max_read_payload, model_wire_v1_read_chunk_size, ModelWireV1, MODEL_WIRE_V1,
 };

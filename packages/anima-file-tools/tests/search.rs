@@ -191,6 +191,87 @@ fn literal_grep_reports_stable_line_and_utf8_byte_offsets() {
 }
 
 #[test]
+fn first_grep_match_that_cannot_fit_is_a_typed_error() {
+    let backend = backend_with_files(&[("root/notes.md", b"needle\n")]);
+    let mut request = request("needle", GrepMode::Literal);
+    request.root = BackendPath::new(BackendKind::CoreFs, "root/notes.md").unwrap();
+    request.max_line_bytes = 64;
+
+    let error = grep(
+        &backend,
+        request,
+        OperationLimits {
+            response_bytes: 300,
+            ..OperationLimits::default()
+        }
+        .validate()
+        .unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        FileToolError::ResponseItemTooLarge {
+            kind: "grep_match",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn first_binary_skip_that_cannot_fit_is_a_typed_error() {
+    let mut request = request("needle", GrepMode::Literal);
+    request.root = BackendPath::new(BackendKind::CoreFs, "root/binary.bin").unwrap();
+    request.max_line_bytes = 64;
+
+    let error = grep(
+        &DeclaredBinaryBackend,
+        request,
+        OperationLimits {
+            response_bytes: 300,
+            ..OperationLimits::default()
+        }
+        .validate()
+        .unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        FileToolError::ResponseItemTooLarge {
+            kind: "grep_skip",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn later_binary_skip_truncates_with_an_advancing_cursor() {
+    let backend = backend_with_files(&[("root/a.bin", b"\0"), ("root/b.bin", b"\0")]);
+
+    let mut request = request("needle", GrepMode::Literal);
+    request.max_line_bytes = 64;
+    let page = grep(
+        &backend,
+        request,
+        OperationLimits {
+            response_bytes: 390,
+            ..OperationLimits::default()
+        }
+        .validate()
+        .unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(page.skipped.len(), 1);
+    assert!(page.truncated);
+    assert!(page.next_cursor.is_some());
+}
+
+#[test]
 fn grep_searches_a_file_root_without_requiring_a_directory_walk() {
     let backend = backend_with_files(&[("root/notes.md", b"needle in one file\n")]);
     let mut single_file = request("needle", GrepMode::Literal);

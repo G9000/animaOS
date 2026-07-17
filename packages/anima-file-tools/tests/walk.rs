@@ -85,6 +85,60 @@ fn walk_pages_are_deterministic_and_resume_after_the_cursor() {
 }
 
 #[test]
+fn first_walk_item_that_cannot_fit_is_a_typed_error() {
+    let error = walk_page(
+        &sample_tree(),
+        BackendPath::new(BackendKind::CoreFs, "root").unwrap(),
+        WalkOptions {
+            page_size: 10,
+            cursor: None,
+            include_directories: true,
+        },
+        OperationLimits {
+            response_bytes: 1,
+            ..OperationLimits::default()
+        }
+        .validate()
+        .unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        FileToolError::ResponseItemTooLarge { kind: "walk", .. }
+    ));
+}
+
+#[test]
+fn later_walk_item_truncates_with_an_advancing_cursor() {
+    let page = walk_page(
+        &sample_tree(),
+        BackendPath::new(BackendKind::CoreFs, "root").unwrap(),
+        WalkOptions {
+            page_size: 10,
+            cursor: None,
+            include_directories: true,
+        },
+        OperationLimits {
+            response_bytes: 380,
+            ..OperationLimits::default()
+        }
+        .validate()
+        .unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+
+    assert_eq!(page.entries.len(), 1);
+    assert!(page.truncated);
+    assert_eq!(
+        page.next_cursor.unwrap().as_str(),
+        page.entries[0].path.as_str()
+    );
+}
+
+#[test]
 fn cursor_resumes_preorder_instead_of_filtering_paths_lexicographically() {
     let mut children = BTreeMap::new();
     children.insert(
@@ -127,7 +181,7 @@ fn cursor_resumes_preorder_instead_of_filtering_paths_lexicographically() {
 }
 
 #[test]
-fn entry_ceiling_truncates_before_examining_unbounded_trees() {
+fn entry_ceiling_without_a_resumable_position_is_a_typed_error() {
     let tree = sample_tree();
     let limits = OperationLimits {
         walk_entries: 2,
@@ -136,7 +190,7 @@ fn entry_ceiling_truncates_before_examining_unbounded_trees() {
     .validate()
     .unwrap();
 
-    let page = walk_page(
+    let error = walk_page(
         &tree,
         BackendPath::new(BackendKind::CoreFs, "root").unwrap(),
         WalkOptions {
@@ -147,12 +201,12 @@ fn entry_ceiling_truncates_before_examining_unbounded_trees() {
         limits,
         OperationControl::default(),
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(paths(&page.entries), vec!["root/a.txt", "root/b"]);
-    assert!(page.truncated);
-    assert!(page.limit_reached);
-    assert!(page.next_cursor.is_none());
+    assert!(matches!(
+        error,
+        FileToolError::PaginationCannotAdvance { operation: "walk" }
+    ));
 }
 
 #[test]
@@ -222,14 +276,14 @@ impl WalkBackend for FailingTree {
 }
 
 #[test]
-fn traversal_errors_are_counted_truncated_and_terminally_bounded() {
+fn traversal_error_ceiling_without_a_resumable_position_is_a_typed_error() {
     let tree = FailingTree {
         children: (0..MAX_WALK_ERRORS + 5)
             .map(|index| directory(&format!("root/dir-{index:03}")))
             .collect(),
     };
 
-    let page = walk_page(
+    let error = walk_page(
         &tree,
         BackendPath::new(BackendKind::CoreFs, "root").unwrap(),
         WalkOptions {
@@ -240,16 +294,12 @@ fn traversal_errors_are_counted_truncated_and_terminally_bounded() {
         OperationLimits::default().validate().unwrap(),
         OperationControl::default(),
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(page.errors.len(), MAX_WALK_ERRORS);
-    assert!(page
-        .errors
-        .iter()
-        .all(|error| error.message.len() <= MAX_WALK_ERROR_MESSAGE_BYTES));
-    assert!(page.truncated);
-    assert!(page.limit_reached);
-    assert!(page.next_cursor.is_none());
+    assert!(matches!(
+        error,
+        FileToolError::PaginationCannotAdvance { operation: "walk" }
+    ));
 }
 
 struct TruncatedDirectoryTree;
@@ -282,8 +332,8 @@ impl WalkBackend for TruncatedDirectoryTree {
 }
 
 #[test]
-fn backend_directory_truncation_is_a_terminal_safety_limit() {
-    let page = walk_page(
+fn backend_directory_truncation_without_a_resumable_position_is_a_typed_error() {
+    let error = walk_page(
         &TruncatedDirectoryTree,
         BackendPath::new(BackendKind::CoreFs, "root").unwrap(),
         WalkOptions {
@@ -294,12 +344,12 @@ fn backend_directory_truncation_is_a_terminal_safety_limit() {
         OperationLimits::default().validate().unwrap(),
         OperationControl::default(),
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(paths(&page.entries), vec!["root/first.txt"]);
-    assert!(page.truncated);
-    assert!(page.limit_reached);
-    assert!(page.next_cursor.is_none());
+    assert!(matches!(
+        error,
+        FileToolError::PaginationCannotAdvance { operation: "walk" }
+    ));
 }
 
 fn sample_tree() -> MemoryTree {
