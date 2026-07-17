@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.db.helpers import session_scope
-from anima_server.models.runtime import RuntimeThread
+from anima_server.models.runtime import RuntimeRun, RuntimeThread
 from anima_server.models.runtime_consciousness import AffectStateRow
 from anima_server.services.agent.inner_life.affect import (
     AffectConfig,
@@ -300,15 +300,31 @@ def _distinct_affect_user_ids(db: Session) -> list[int]:
 def _active_user_ids(
     db: Session, *, now_utc: datetime, active_window_seconds: int
 ) -> set[int]:
-    cutoff = now_utc - timedelta(seconds=active_window_seconds)
-    rows = db.scalars(
+    """Users the tick must skip: recent message activity OR a turn in flight.
+
+    `last_message_at` alone misses turns running longer than the active
+    window (it goes stale while the turn is still generating), so users
+    with a RuntimeRun in status "running" are also counted — capped by
+    `presence_run_stale_seconds` on `started_at` (the freshest timestamp
+    the model carries for a live run), so a crashed run stuck in
+    "running" cannot exclude a user from presence forever.
+    """
+    message_cutoff = now_utc - timedelta(seconds=active_window_seconds)
+    recent = db.scalars(
         select(RuntimeThread.user_id).where(
             RuntimeThread.status == "active",
             RuntimeThread.last_message_at.isnot(None),
-            RuntimeThread.last_message_at >= cutoff,
+            RuntimeThread.last_message_at >= message_cutoff,
         )
     ).all()
-    return {int(user_id) for user_id in rows}
+    run_cutoff = now_utc - timedelta(seconds=settings.presence_run_stale_seconds)
+    in_flight = db.scalars(
+        select(RuntimeRun.user_id).where(
+            RuntimeRun.status == "running",
+            RuntimeRun.started_at >= run_cutoff,
+        )
+    ).all()
+    return {int(user_id) for user_id in recent} | {int(user_id) for user_id in in_flight}
 
 
 def _tick_one_user(
@@ -349,10 +365,13 @@ def run_presence_tick(
     """Relax and accumulate allostatic load for every idle user.
 
     Enumerates distinct `user_id`s from `affect_state` (users with no
-    affect row have nothing to tick). A user with an active `RuntimeThread`
-    whose `last_message_at` falls within `active_window_seconds` is skipped
-    entirely — not just lock-avoided, skipped by design, since
-    consolidation owns their affect movement while a turn is live.
+    affect row have nothing to tick). A user is skipped entirely — not
+    just lock-avoided, skipped by design, since consolidation owns their
+    affect movement while a turn is live — when they have an active
+    `RuntimeThread` with `last_message_at` within `active_window_seconds`
+    OR a `RuntimeRun` in flight (status "running", started within
+    `settings.presence_run_stale_seconds` — the cap keeps a crashed run
+    from excluding a user from presence forever).
 
     `now` must be timezone-aware when given; production omits it and gets
     the current instant in the machine's real IANA zone (machine-local IS

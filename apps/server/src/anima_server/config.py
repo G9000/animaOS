@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     presence_tick_interval_seconds: int = Field(default=60, ge=1)
     presence_active_window_seconds: int = Field(default=120, ge=1)
     presence_catchup_min_gap_seconds: int = Field(default=600, ge=1)
+    # In-flight RuntimeRuns older than this no longer count as "active"
+    # for the presence tick, so a crashed run stuck in status "running"
+    # cannot exclude a user from presence forever.
+    presence_run_stale_seconds: int = Field(default=1800, ge=1)
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30

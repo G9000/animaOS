@@ -10,7 +10,7 @@ import pytest
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models import runtime as _runtime_models  # noqa: F401
 from anima_server.models import runtime_consciousness as _runtime_consciousness_models  # noqa: F401
-from anima_server.models.runtime import RuntimeThread
+from anima_server.models.runtime import RuntimeRun, RuntimeThread
 from anima_server.models.runtime_consciousness import PresenceCatchup
 from anima_server.services.agent.inner_life.affect import (
     DEFAULT_AFFECT_CONFIG,
@@ -112,6 +112,100 @@ def test_active_user_is_skipped(tmp_path: Path) -> None:
 
     assert state.updated_at == original_updated_at
     assert state.arousal == pytest.approx(0.9)
+
+
+def test_long_turn_in_flight_is_skipped_despite_stale_last_message(
+    tmp_path: Path,
+) -> None:
+    # A turn running longer than the active window leaves last_message_at
+    # stale while the run is still generating; the tick must still treat
+    # the user as active (skip by design, not just FOR UPDATE lock-safety).
+    factory = _factory(tmp_path)
+    now = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    original_updated_at = now - timedelta(hours=6)
+
+    with factory() as db:
+        save_affect_state(
+            db,
+            user_id=1,
+            state=AffectState(
+                valence=0.0, arousal=0.9, energy=0.5, updated_at=original_updated_at
+            ),
+        )
+        thread = RuntimeThread(
+            user_id=1,
+            status="active",
+            last_message_at=now - timedelta(minutes=10),  # outside the 120 s window
+        )
+        db.add(thread)
+        db.flush()
+        db.add(
+            RuntimeRun(
+                thread_id=thread.id,
+                user_id=1,
+                provider="anthropic",
+                model="test-model",
+                mode="chat",
+                status="running",
+                started_at=now - timedelta(seconds=30),  # fresh in-flight run
+            )
+        )
+        db.commit()
+
+    result = run_presence_tick(factory, now=now)
+
+    assert result.users_ticked == 0
+    assert result.users_skipped_active == 1
+
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+    assert state.updated_at == original_updated_at  # untouched mid-turn
+
+
+def test_stale_running_run_does_not_block_tick(tmp_path: Path) -> None:
+    # Crashed-run recovery: a run stuck in status "running" longer than
+    # presence_run_stale_seconds must not exclude the user from presence
+    # forever — the tick proceeds.
+    factory = _factory(tmp_path)
+    now = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    original_updated_at = now - timedelta(hours=6)
+
+    with factory() as db:
+        save_affect_state(
+            db,
+            user_id=1,
+            state=AffectState(
+                valence=0.0, arousal=0.9, energy=0.5, updated_at=original_updated_at
+            ),
+        )
+        thread = RuntimeThread(
+            user_id=1,
+            status="active",
+            last_message_at=now - timedelta(hours=3),
+        )
+        db.add(thread)
+        db.flush()
+        db.add(
+            RuntimeRun(
+                thread_id=thread.id,
+                user_id=1,
+                provider="anthropic",
+                model="test-model",
+                mode="chat",
+                status="running",
+                started_at=now - timedelta(hours=2),  # older than the 1800 s cap
+            )
+        )
+        db.commit()
+
+    result = run_presence_tick(factory, now=now)
+
+    assert result.users_ticked == 1
+    assert result.users_skipped_active == 0
+
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+    assert state.updated_at == now
 
 
 def test_per_user_failure_does_not_abort_sweep(
