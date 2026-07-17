@@ -15,7 +15,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::OpenOptionsExt as _;
 #[cfg(windows)]
 use cap_std::fs::OpenOptionsExt as _;
-use cap_std::fs::{Dir, Metadata, OpenOptions};
+use cap_std::fs::{Dir, File as CapFile, Metadata, OpenOptions};
 use fs4::FileExt;
 use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
@@ -24,13 +24,17 @@ use sha2::{Digest, Sha256};
 use crate::catalog::{
     catalog_generation_physical_name, decrypt_catalog_generation, encrypt_catalog_generation,
     CatalogCutoverMarker, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
-    ContentHash, ObjectPhysicalName, WrappedObjectDekRecord, MAX_CATALOG_ENVELOPE_SIZE,
+    ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
+    MAX_CATALOG_ENVELOPE_SIZE,
 };
 use crate::crypto::{
-    unwrap_object_dek, wrap_object_dek, CryptoError, ObjectKeyAad, OBJECT_KEY_ENVELOPE_VERSION,
+    generate_object_dek, unwrap_object_dek, wrap_object_dek, CryptoError, ObjectKeyAad,
+    OBJECT_KEY_ENVELOPE_VERSION,
 };
 use crate::crypto::{FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes};
-use crate::envelope::{read_envelope, EnvelopeError, MAX_ENVELOPE_SIZE};
+use crate::envelope::{
+    read_envelope, rotate_object_key_envelope, EnvelopeError, MAX_ENVELOPE_SIZE,
+};
 use crate::folders::PortableName;
 use crate::head::{decode_head, encode_head, HeadError, HeadRecord, MAX_HEAD_SIZE};
 use crate::id::OpaqueId;
@@ -40,6 +44,7 @@ use crate::publication::{
     atomic_publish_in_with_hook, create_temporary_in, durable_create_directory_in,
     publish_immutable_in_with_hook, publish_staged_immutable_in_with_hook, PublicationPhase,
 };
+use crate::rotation::{FrkKeyring, RotationError};
 
 const LOCK_SCHEMA_VERSION: u16 = 1;
 const MAX_LOCK_METADATA_SIZE: usize = 4096;
@@ -330,7 +335,8 @@ impl CoreCommitLock {
         #[cfg(unix)]
         secure_commit_lock_permissions(&file)?;
         #[cfg(not(windows))]
-        let anchor = root_dir.try_clone()?.into_std_file();
+        // cap-std uses O_PATH for Dir on Linux, which cannot be locked.
+        let anchor = root_dir.open(".")?.into_std();
         #[cfg(windows)]
         let anchor = file.try_clone()?;
         anchor.try_lock_exclusive().map_err(|error| {
@@ -629,6 +635,10 @@ impl PreparedObjectRevision {
     pub fn wrapped_dek(&self) -> &WrappedObjectDekRecord {
         &self.wrapped_dek
     }
+
+    pub const fn object_key_epoch(&self) -> u32 {
+        self.object_key_epoch
+    }
 }
 
 #[derive(Debug)]
@@ -871,56 +881,16 @@ impl CoreCommitCoordinator {
                 target: PublicationTarget::Object,
                 phase: PublicationPhase::PayloadSynced,
             })?;
-            staged.seek(SeekFrom::Start(0))?;
-            let envelope = read_envelope(&mut staged, object_key, aad, &mut io::sink())?;
-            let object_id = OpaqueId::parse(&envelope.metadata.object_id)
-                .map_err(|_| CommitError::InvalidObjectRevision)?;
-            let content_hash = ContentHash::parse(&envelope.metadata.body_sha256)?;
-            let key_aad = ObjectKeyAad::from_base(aad.clone(), keys.frk_version())?;
-            let wrapped_dek = wrap_object_dek(object_key, keys, &key_aad)?;
-            let wrapped_dek = WrappedObjectDekRecord::from_parts(
-                keys.frk_version(),
-                aad.object_key_epoch(),
-                wrapped_dek.algorithm(),
-                wrapped_dek.envelope_version(),
-                wrapped_dek.nonce(),
-                wrapped_dek.ciphertext().to_vec(),
-            )?;
-
-            for _ in 0..16 {
-                let physical_name = random_object_physical_name()?;
-                let mut publication_hook = |phase| {
-                    hook(CommitFailurePoint::Publication {
-                        target: PublicationTarget::Object,
-                        phase,
-                    })
-                };
-                match publish_staged_immutable_in_with_hook(
-                    &self.objects_dir,
-                    &staged,
-                    &staged_name,
-                    OsStr::new(physical_name.as_str()),
-                    &mut publication_hook,
-                ) {
-                    Ok(()) => {
-                        return Ok(PreparedObjectRevision {
-                            object_id,
-                            revision: envelope.metadata.revision,
-                            kind: aad.kind(),
-                            object_key_epoch: aad.object_key_epoch(),
-                            physical_name,
-                            content_hash,
-                            encoded_size,
-                            encrypted_hash,
-                            object_key_binding: object_key_binding(object_key),
-                            wrapped_dek,
-                        })
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            Err(CommitError::ObjectNameExhausted)
+            self.finalize_staged_object_revision(
+                keys,
+                object_key,
+                aad,
+                &mut staged,
+                &staged_name,
+                encoded_size,
+                encrypted_hash,
+                hook,
+            )
         })();
         drop(staged);
         if result.is_err() {
@@ -929,11 +899,324 @@ impl CoreCommitCoordinator {
         result
     }
 
+    /// Prepares a targeted object-key replacement outside the commit lock.
+    ///
+    /// The new Object DEK is generated internally. The returned immutable
+    /// revision remains unreferenced until a normal preconditioned catalog
+    /// commit publishes it.
+    pub fn prepare_object_key_rotation(
+        &self,
+        active_keys: &FrkSubkeys,
+        current: &CatalogGeneration,
+        object_id: &OpaqueId,
+        old_object_key: &SecretBytes,
+        updated_at: &str,
+    ) -> Result<PreparedObjectRevision, CommitError> {
+        self.prepare_object_key_rotation_with_hook(
+            active_keys,
+            current,
+            object_id,
+            old_object_key,
+            updated_at,
+            &mut |_| Ok(()),
+        )
+    }
+
+    fn prepare_object_key_rotation_with_hook<H>(
+        &self,
+        active_keys: &FrkSubkeys,
+        current: &CatalogGeneration,
+        object_id: &OpaqueId,
+        old_object_key: &SecretBytes,
+        updated_at: &str,
+        hook: &mut H,
+    ) -> Result<PreparedObjectRevision, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        self.validate_pinned_layout()?;
+        let source = current
+            .entries()
+            .iter()
+            .find(|entry| entry.stable_id() == object_id)
+            .and_then(CatalogGenerationEntry::object_payload)
+            .ok_or_else(|| CommitError::ObjectKeyRotationSourceMissing {
+                stable_id: object_id.as_str().to_owned(),
+            })?;
+        if matches!(source.lifecycle(), ObjectLifecycle::Tombstone { .. }) {
+            return Err(CommitError::ObjectKeyRotationTombstone {
+                stable_id: object_id.as_str().to_owned(),
+            });
+        }
+        if catalog_object_key_binding(active_keys, &self.core_id, object_id, source)?
+            != object_key_binding(old_object_key)
+        {
+            return Err(CommitError::ReferencedObjectKeyMismatch {
+                stable_id: object_id.as_str().to_owned(),
+            });
+        }
+        let next_revision = source
+            .revision()
+            .checked_add(1)
+            .ok_or(CommitError::ObjectRevisionExhausted)?;
+        let next_epoch = source
+            .object_key_epoch()
+            .checked_add(1)
+            .ok_or(CommitError::ObjectKeyEpochExhausted)?;
+        let old_aad = ObjectBaseAad::new(
+            &self.core_id,
+            object_id.as_str(),
+            source.kind(),
+            OBJECT_KEY_ENVELOPE_VERSION,
+            source.object_key_epoch(),
+            source.revision(),
+        )?;
+        let new_aad = ObjectBaseAad::new(
+            &self.core_id,
+            object_id.as_str(),
+            source.kind(),
+            OBJECT_KEY_ENVELOPE_VERSION,
+            next_epoch,
+            next_revision,
+        )?;
+        let new_object_key = generate_object_dek()?;
+        let mut source_file = open_regular_file_in(
+            &self.objects_dir,
+            OsStr::new(source.physical_name().as_str()),
+        )?;
+        let (mut staged, staged_name) =
+            create_temporary_in(&self.objects_dir, OsStr::new("object"))?;
+        hook(CommitFailurePoint::Publication {
+            target: PublicationTarget::Object,
+            phase: PublicationPhase::TemporaryCreated,
+        })?;
+        let result = (|| {
+            let rotated_metadata = rotate_object_key_envelope(
+                &mut source_file,
+                &mut staged,
+                old_object_key,
+                &old_aad,
+                &new_object_key,
+                &new_aad,
+                updated_at,
+            )?;
+            if rotated_metadata.body_sha256 != source.content_hash().as_str() {
+                return Err(CommitError::ObjectKeyRotationSourceMismatch {
+                    stable_id: object_id.as_str().to_owned(),
+                });
+            }
+            hook(CommitFailurePoint::Publication {
+                target: PublicationTarget::Object,
+                phase: PublicationPhase::PayloadWritten,
+            })?;
+            staged.sync_all()?;
+            hook(CommitFailurePoint::Publication {
+                target: PublicationTarget::Object,
+                phase: PublicationPhase::PayloadSynced,
+            })?;
+            staged.seek(SeekFrom::Start(0))?;
+            let (encoded_size, encrypted_hash) =
+                copy_bounded(&mut staged, &mut io::sink(), MAX_ENVELOPE_SIZE)?;
+            self.finalize_staged_object_revision(
+                active_keys,
+                &new_object_key,
+                &new_aad,
+                &mut staged,
+                &staged_name,
+                encoded_size,
+                encrypted_hash,
+                hook,
+            )
+        })();
+        drop(staged);
+        if result.is_err() {
+            let _ = self.objects_dir.remove_file(&staged_name);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_staged_object_revision<H>(
+        &self,
+        keys: &FrkSubkeys,
+        object_key: &SecretBytes,
+        aad: &ObjectBaseAad,
+        staged: &mut CapFile,
+        staged_name: &OsStr,
+        encoded_size: u64,
+        encrypted_hash: [u8; 32],
+        hook: &mut H,
+    ) -> Result<PreparedObjectRevision, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        staged.seek(SeekFrom::Start(0))?;
+        let envelope = read_envelope(staged, object_key, aad, &mut io::sink())?;
+        let object_id = OpaqueId::parse(&envelope.metadata.object_id)
+            .map_err(|_| CommitError::InvalidObjectRevision)?;
+        let content_hash = ContentHash::parse(&envelope.metadata.body_sha256)?;
+        let key_aad = ObjectKeyAad::from_base(aad.clone(), keys.frk_version())?;
+        let wrapped_dek = wrap_object_dek(object_key, keys, &key_aad)?;
+        let wrapped_dek = WrappedObjectDekRecord::from_parts(
+            keys.frk_version(),
+            aad.object_key_epoch(),
+            wrapped_dek.algorithm(),
+            wrapped_dek.envelope_version(),
+            wrapped_dek.nonce(),
+            wrapped_dek.ciphertext().to_vec(),
+        )?;
+
+        for _ in 0..16 {
+            let physical_name = random_object_physical_name()?;
+            let mut publication_hook = |phase| {
+                hook(CommitFailurePoint::Publication {
+                    target: PublicationTarget::Object,
+                    phase,
+                })
+            };
+            match publish_staged_immutable_in_with_hook(
+                &self.objects_dir,
+                staged,
+                staged_name,
+                OsStr::new(physical_name.as_str()),
+                &mut publication_hook,
+            ) {
+                Ok(()) => {
+                    return Ok(PreparedObjectRevision {
+                        object_id,
+                        revision: envelope.metadata.revision,
+                        kind: aad.kind(),
+                        object_key_epoch: aad.object_key_epoch(),
+                        physical_name,
+                        content_hash,
+                        encoded_size,
+                        encrypted_hash,
+                        object_key_binding: object_key_binding(object_key),
+                        wrapped_dek,
+                    })
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(CommitError::ObjectNameExhausted)
+    }
+
     pub fn load_committed(
         &self,
         keys: &FrkSubkeys,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
         self.load_committed_with_hook(keys, &mut |_| Ok(()))
+    }
+
+    /// Reads the version declared by the current HEAD so the session can select
+    /// matching pending or active key material before authenticating the catalog.
+    /// The returned value is an untrusted selection hint until a load verifies
+    /// the referenced encrypted catalog.
+    pub fn required_frk_version(&self) -> Result<Option<u32>, CommitError> {
+        self.validate_pinned_layout()?;
+        Ok(self
+            .load_pointer_head(HEAD_FILE)?
+            .map(|head| head.required_frk_version()))
+    }
+
+    /// Loads the committed catalog across an FRK activation boundary.
+    ///
+    /// The current HEAD is always authenticated with its declared key. Retained
+    /// cutover markers use their own older version while it remains available.
+    pub fn load_committed_with_keyring(
+        &self,
+        keyring: &FrkKeyring<'_>,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        self.load_committed_with_keyring_observation_hook(keyring, || {})
+    }
+
+    fn load_committed_with_keyring_observation_hook<R>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        after_head_read: R,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        R: FnOnce(),
+    {
+        self.validate_pinned_layout()?;
+        let committed_head = self.load_pointer_head(HEAD_FILE)?;
+        after_head_read();
+        let receipt_head = self.load_pointer_head(CUTOVER_RECEIPT_FILE)?;
+        let complete_head = self.load_pointer_head(CUTOVER_COMPLETE_FILE)?;
+        if self.load_pointer_head(HEAD_FILE)? != committed_head {
+            let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            self.validate_pinned_layout()?;
+            return self.load_committed_recovering_with_keyring(keyring);
+        }
+        let committed = self.load_committed_once_with_keyring_heads(
+            keyring,
+            committed_head,
+            receipt_head,
+            complete_head,
+        );
+        if !matches!(
+            &committed,
+            Err(CommitError::CutoverRecoveryRequired
+                | CommitError::AuthoritativeHeadMissingAfterCutover
+                | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+        ) {
+            return committed;
+        }
+        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        self.load_committed_recovering_with_keyring(keyring)
+    }
+
+    fn load_committed_once_with_keyring_heads(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        committed_head: Option<HeadRecord>,
+        receipt_head: Option<HeadRecord>,
+        complete_head: Option<HeadRecord>,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        if committed_head.is_none() && receipt_head.is_none() && complete_head.is_none() {
+            return Ok(None);
+        }
+        let Some(committed_head) = committed_head else {
+            return if receipt_head.is_some() && complete_head.is_some() {
+                Err(CommitError::AuthoritativeHeadMissingAfterCutover)
+            } else {
+                Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+            };
+        };
+        let committed = self.load_pointer_for_head(keyring, committed_head)?;
+        let (Some(receipt_head), Some(complete_head)) = (receipt_head, complete_head) else {
+            return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
+        };
+        if receipt_head != complete_head {
+            return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
+        }
+
+        if keyring.contains(receipt_head.required_frk_version()) {
+            let receipt = self.load_pointer_for_head(keyring, receipt_head.clone())?;
+            let complete = self.load_pointer_for_head(keyring, complete_head)?;
+            if complete.0 != receipt.0
+                || complete.1.cutover_marker() != receipt.1.cutover_marker()
+                || !cutover_lineage_is_valid(&committed.0, &committed.1, &receipt.0, &receipt.1)
+            {
+                return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
+            }
+            return Ok(Some(CommittedCatalog {
+                head: committed.0,
+                catalog: committed.1,
+            }));
+        }
+
+        if committed.1.cutover_marker().is_none()
+            || committed.0.generation() <= receipt_head.generation()
+        {
+            return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
+        }
+        Ok(Some(CommittedCatalog {
+            head: committed.0,
+            catalog: committed.1,
+        }))
     }
 
     fn load_committed_with_hook<H>(
@@ -1039,6 +1322,34 @@ impl CoreCommitCoordinator {
         self.load_committed_recovering_with_hook(keys, &mut |_| Ok(()))
     }
 
+    fn load_committed_recovering_with_keyring(
+        &self,
+        keyring: &FrkKeyring<'_>,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        let committed_head = self.load_pointer_head(HEAD_FILE)?;
+        let receipt_head = self.load_pointer_head(CUTOVER_RECEIPT_FILE)?;
+        let complete_head = self.load_pointer_head(CUTOVER_COMPLETE_FILE)?;
+        let mut versions = HashSet::new();
+        for head in [&committed_head, &receipt_head, &complete_head]
+            .into_iter()
+            .flatten()
+        {
+            versions.insert(head.required_frk_version());
+        }
+        if versions.len() <= 1 {
+            return match versions.into_iter().next() {
+                Some(version) => self.load_committed_recovering(keyring.require(version)?),
+                None => Ok(None),
+            };
+        }
+        self.load_committed_once_with_keyring_heads(
+            keyring,
+            committed_head,
+            receipt_head,
+            complete_head,
+        )
+    }
+
     fn load_committed_recovering_with_hook<H>(
         &self,
         keys: &FrkSubkeys,
@@ -1136,13 +1447,29 @@ impl CoreCommitCoordinator {
         keys: &FrkSubkeys,
         pointer_name: &str,
     ) -> Result<Option<(HeadRecord, CatalogGeneration)>, CommitError> {
+        let Some(head) = self.load_pointer_head(pointer_name)? else {
+            return Ok(None);
+        };
+        self.load_pointer_for_head(&FrkKeyring::single(keys), head)
+            .map(Some)
+    }
+
+    fn load_pointer_head(&self, pointer_name: &str) -> Result<Option<HeadRecord>, CommitError> {
         let encoded_head =
             match read_bounded_in(&self.fs_dir, OsStr::new(pointer_name), MAX_HEAD_SIZE) {
                 Ok(encoded) => encoded,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error.into()),
             };
-        let head = decode_head(&encoded_head)?;
+        Ok(Some(decode_head(&encoded_head)?))
+    }
+
+    fn load_pointer_for_head(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        head: HeadRecord,
+    ) -> Result<(HeadRecord, CatalogGeneration), CommitError> {
+        let keys = keyring.require(head.required_frk_version())?;
         let catalog_name = format!(
             "catalog-{:020}-{}.acore",
             head.generation(),
@@ -1155,7 +1482,113 @@ impl CoreCommitCoordinator {
         )?;
         head.verify_catalog(keys, &self.core_id, &encrypted_catalog)?;
         let catalog = decrypt_catalog_generation(keys, &self.core_id, &encrypted_catalog)?;
-        Ok(Some((head, catalog)))
+        Ok((head, catalog))
+    }
+
+    /// Rewraps recoverable Object DEKs into a complete next catalog generation
+    /// and atomically activates the pending FRK version in HEAD.
+    pub fn rotate_frk<I>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+        expected_generation: u64,
+        invalidate: I,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+    {
+        self.rotate_frk_with_hook(
+            keyring,
+            pending_keys,
+            expected_generation,
+            invalidate,
+            &mut |_| Ok(()),
+        )
+    }
+
+    fn rotate_frk_with_hook<I, H>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+        expected_generation: u64,
+        invalidate: I,
+        hook: &mut H,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let event = {
+            let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            self.validate_pinned_layout()?;
+            let committed = self
+                .load_committed_recovering_with_keyring(keyring)?
+                .ok_or(CommitError::CoreNotInitialized)?;
+            let actual_generation = committed.head.generation();
+            if actual_generation != expected_generation {
+                return Err(RotationError::GenerationMismatch {
+                    expected: expected_generation,
+                    actual: actual_generation,
+                }
+                .into());
+            }
+            let active_version = committed.head.required_frk_version();
+            keyring.require(active_version)?;
+            if keyring.contains(pending_keys.frk_version()) {
+                keyring.require_matching(pending_keys)?;
+            }
+            if pending_keys.frk_version() <= active_version {
+                return Err(RotationError::PendingVersionNotNewer {
+                    active: active_version,
+                    pending: pending_keys.frk_version(),
+                }
+                .into());
+            }
+            let expected_pending_version = active_version
+                .checked_add(1)
+                .ok_or(RotationError::VersionExhausted)?;
+            if pending_keys.frk_version() != expected_pending_version {
+                return Err(RotationError::PendingVersionNotSuccessor {
+                    active: active_version,
+                    pending: pending_keys.frk_version(),
+                }
+                .into());
+            }
+            if keyring.reuses_material_from_other_version(pending_keys) {
+                return Err(RotationError::PendingKeyMaterialReused.into());
+            }
+            let next_generation = actual_generation
+                .checked_add(1)
+                .ok_or(RotationError::GenerationExhausted)?;
+            let next_catalog = committed.catalog.rewrap_for_frk_rotation(
+                &self.core_id,
+                keyring,
+                pending_keys,
+                next_generation,
+            )?;
+            let (head, _, recovery_pending) = self.publish_catalog_pointer_with_hook(
+                pending_keys,
+                &next_catalog,
+                HEAD_FILE,
+                false,
+                hook,
+            )?;
+            debug_assert!(!recovery_pending);
+            InvalidationEvent {
+                generation: head.generation(),
+                catalog_hash: head.catalog_hash().to_owned(),
+                required_frk_version: head.required_frk_version(),
+            }
+        };
+
+        hook(CommitFailurePoint::BeforeInvalidation)?;
+        let invalidation_delivered = invalidate(event.clone()).is_ok();
+        hook(CommitFailurePoint::AfterInvalidation)?;
+        Ok(CommitOutcome {
+            event,
+            invalidation_delivered,
+            recovery_pending: false,
+        })
     }
 
     pub fn initialize_validation_snapshot<B>(
@@ -1266,6 +1699,37 @@ impl CoreCommitCoordinator {
         )
     }
 
+    /// Commits a normal catalog generation while retained cutover pointers may
+    /// still require older FRK versions. `active_keys` encrypts the new catalog.
+    pub fn commit_with_keyring<B, I>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        build_next: B,
+        invalidate: I,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+    {
+        keyring.require_matching(active_keys)?;
+        let mut hook = |_| Ok(());
+        self.commit_internal_with_keyring_and_hook(
+            keyring,
+            active_keys,
+            prepared_revisions,
+            preconditions,
+            CommitMode::Normal,
+            build_next,
+            CommitCallbacks {
+                invalidate,
+                hook: &mut hook,
+            },
+        )
+    }
+
     fn commit_internal<B, I>(
         &self,
         keys: &FrkSubkeys,
@@ -1307,17 +1771,45 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let keyring = FrkKeyring::single(keys);
+        self.commit_internal_with_keyring_and_hook(
+            &keyring,
+            keys,
+            prepared_revisions,
+            preconditions,
+            mode,
+            build_next,
+            callbacks,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_internal_with_keyring_and_hook<B, I, H>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        mode: CommitMode,
+        build_next: B,
+        callbacks: CommitCallbacks<'_, I, H>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
         let (event, recovery_pending) = {
             let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
-            let authoritative = self.load_committed_recovering(keys)?;
+            let authoritative = self.load_committed_recovering_with_keyring(keyring)?;
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
                         return Err(CommitError::CutoverAlreadyCommitted);
                     }
                     let validation = self
-                        .load_validation_snapshot(keys)?
+                        .load_validation_snapshot(active_keys)?
                         .ok_or(CommitError::CoreNotInitialized)?;
                     CommittedCatalog {
                         head: validation.head,
@@ -1327,13 +1819,20 @@ impl CoreCommitCoordinator {
                 CommitMode::Normal => {
                     if let Some(authoritative) = authoritative {
                         authoritative
-                    } else if self.load_validation_snapshot(keys)?.is_some() {
+                    } else if self.load_validation_snapshot(active_keys)?.is_some() {
                         return Err(CommitError::CutoverAuthorizationRequired);
                     } else {
                         return Err(CommitError::CoreNotInitialized);
                     }
                 }
             };
+            if active_keys.frk_version() != current.head.required_frk_version() {
+                return Err(RotationError::ActiveVersionMismatch {
+                    expected: current.head.required_frk_version(),
+                    actual: active_keys.frk_version(),
+                }
+                .into());
+            }
             mode.validate_current(&current)?;
             validate_preconditions(Some(current.catalog()), preconditions)?;
             let next_generation = current
@@ -1352,14 +1851,14 @@ impl CoreCommitCoordinator {
             validate_precondition_coverage(current.catalog(), &next_catalog, preconditions)?;
             validate_prepared_revisions(
                 &self.objects_dir,
-                keys,
+                active_keys,
                 &self.core_id,
                 Some(current.catalog()),
                 &next_catalog,
                 prepared_revisions,
             )?;
             let (head, _, recovery_pending) = self.publish_catalog_pointer_with_hook(
-                keys,
+                active_keys,
                 &next_catalog,
                 HEAD_FILE,
                 matches!(mode, CommitMode::FirstMutation { .. }),
@@ -2205,6 +2704,16 @@ pub enum CommitError {
     ObjectEnvelopeTooLarge,
     #[error("could not allocate an opaque object revision name")]
     ObjectNameExhausted,
+    #[error("object revision is exhausted during targeted key rotation")]
+    ObjectRevisionExhausted,
+    #[error("object-key epoch is exhausted during targeted key rotation")]
+    ObjectKeyEpochExhausted,
+    #[error("targeted key-rotation source object is missing: {stable_id}")]
+    ObjectKeyRotationSourceMissing { stable_id: String },
+    #[error("targeted key rotation cannot rewrite tombstoned content: {stable_id}")]
+    ObjectKeyRotationTombstone { stable_id: String },
+    #[error("targeted key-rotation source content does not match the catalog: {stable_id}")]
+    ObjectKeyRotationSourceMismatch { stable_id: String },
     #[error("CoreFS generation is exhausted")]
     GenerationExhausted,
     #[error("CoreFS validation snapshot is already initialized")]
@@ -2254,6 +2763,8 @@ pub enum CommitError {
     Head(#[from] HeadError),
     #[error("CoreFS cryptography failed: {0}")]
     Crypto(#[from] CryptoError),
+    #[error("CoreFS key rotation failed: {0}")]
+    Rotation(#[from] RotationError),
 }
 
 #[cfg(test)]

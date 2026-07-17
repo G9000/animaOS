@@ -321,7 +321,7 @@ Prepare immutable object revisions outside the shared lock; acquire an OS-backed
 
 Prove crashes leave the prior `fs/HEAD` authoritative or the complete next generation committed, never a partially visible mutation.
 
-- [ ] **Step 9: Implement catalog-bound key rotation**
+- [x] **Step 9: Implement catalog-bound key rotation**
 
 Add targeted object-key rotation, FRK catalog rewrap, pending-FRK `fs/HEAD` recovery, old catalog decryptability, and explicit old-key retirement gates. Leave blind-token generation switching incomplete until Task 3.
 

@@ -17,11 +17,14 @@ use crate::bounded::{
     bounded_json_preflight, json_to_vec as bounded_json_to_vec, BoundedJsonError,
 };
 use crate::crypto::{
-    CryptoError, FrkSubkeys, ObjectKind, SecretBytes, WrappedObjectDek, KEY_LENGTH, NONCE_LENGTH,
+    unwrap_object_dek, wrap_object_dek, CryptoError, FrkSubkeys, ObjectBaseAad, ObjectKeyAad,
+    ObjectKind, SecretBytes, WrappedObjectDek, KEY_LENGTH, NONCE_LENGTH,
+    OBJECT_KEY_ENVELOPE_VERSION,
 };
 use crate::folders::{ClientId, FolderOwner, FolderRole, PortableName};
 use crate::id::OpaqueId;
 use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
+use crate::rotation::FrkKeyring;
 
 pub const CATALOG_GENERATION_SCHEMA_VERSION: u16 = 2;
 pub const MAX_CATALOG_ENTRIES: usize = 50_000;
@@ -351,6 +354,10 @@ impl CatalogObject {
     pub fn wrapped_dek(&self) -> &WrappedObjectDekRecord {
         &self.wrapped_dek
     }
+
+    pub fn lifecycle(&self) -> &ObjectLifecycle {
+        &self.lifecycle
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -501,6 +508,81 @@ impl CatalogGeneration {
 
     pub fn cutover_marker(&self) -> Option<&CatalogCutoverMarker> {
         self.cutover_marker.as_ref()
+    }
+
+    pub(crate) fn rewrap_for_frk_rotation(
+        &self,
+        core_id: &str,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+        next_generation: u64,
+    ) -> Result<Self, CatalogError> {
+        let expected_generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(CatalogError::LimitExceeded("catalog generation"))?;
+        if next_generation != expected_generation {
+            return Err(CatalogError::InvalidFormat(
+                "FRK rotation generation must advance exactly once",
+            ));
+        }
+
+        let mut entries = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let rotated = match entry {
+                CatalogGenerationEntry::Folder(common) => {
+                    CatalogGenerationEntry::Folder(common.clone())
+                }
+                CatalogGenerationEntry::Object(common, object) => {
+                    let old_version = object.wrapped_dek.frk_version();
+                    let old_keys = keyring
+                        .require(old_version)
+                        .map_err(|_| CatalogError::InvalidFormat("missing retained FRK"))?;
+                    let base = ObjectBaseAad::new(
+                        core_id,
+                        common.stable_id.as_str(),
+                        object.kind,
+                        OBJECT_KEY_ENVELOPE_VERSION,
+                        object.object_key_epoch(),
+                        object.revision,
+                    )?;
+                    let old_aad = ObjectKeyAad::from_base(base.clone(), old_version)?;
+                    let object_dek = unwrap_object_dek(
+                        old_keys,
+                        &object.wrapped_dek.to_wrapped_object_dek()?,
+                        &old_aad,
+                    )?;
+                    let pending_aad = ObjectKeyAad::from_base(base, pending_keys.frk_version())?;
+                    let wrapped = wrap_object_dek(&object_dek, pending_keys, &pending_aad)?;
+                    let wrapped_dek = WrappedObjectDekRecord::from_parts(
+                        pending_keys.frk_version(),
+                        object.object_key_epoch(),
+                        wrapped.algorithm(),
+                        wrapped.envelope_version(),
+                        wrapped.nonce(),
+                        wrapped.ciphertext().to_vec(),
+                    )?;
+                    CatalogGenerationEntry::object(
+                        common.clone(),
+                        CatalogObject::new(
+                            object.revision,
+                            object.physical_name.clone(),
+                            object.content_hash.clone(),
+                            object.kind,
+                            wrapped_dek,
+                            object.lifecycle.clone(),
+                        )?,
+                    )
+                }
+            };
+            entries.push(rotated);
+        }
+
+        let catalog = Self::new(next_generation, entries)?;
+        match self.cutover_marker.clone() {
+            Some(marker) => catalog.with_cutover_marker(marker),
+            None => Ok(catalog),
+        }
     }
 
     fn validate(&self) -> Result<(), CatalogError> {
