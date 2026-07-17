@@ -4,6 +4,7 @@ import pytest
 from anima_server.config import settings
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.prompt_budget import (
+    _DOCUMENT_CONTEXT_RESERVE_CHARS,
     DEFAULT_BUDGET,
     PROMPT_SCAFFOLDING_RESERVE_TOKENS,
     BudgetConfig,
@@ -214,6 +215,95 @@ class TestDocumentContextBudget:
         )
         assert decision.status == "truncated"
         assert decision.reason == "per_block_cap"
+
+    def test_budget_clamps_below_total_budget_by_the_reserve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Codex P2 (PR #109, service.py:1842): with default budgets the
+        unclamped document budget equals `resolve_budget_config()`'s
+        total_budget whenever the hard char cap isn't binding, so an
+        at-budget document_context block has no headroom left for the
+        user_directive/today_user_context blocks that plan alongside it on
+        a document turn and gets tail-truncated instead of the service
+        falling back to retrieval. The budget must leave that headroom."""
+        monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+        monkeypatch.setattr(settings, "agent_max_tokens", 4096)
+
+        total_budget = resolve_budget_config().total_budget
+        budget = resolve_document_context_budget_chars()
+
+        assert budget == total_budget - _DOCUMENT_CONTEXT_RESERVE_CHARS
+
+    def test_high_document_ratio_still_respects_the_reserve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A generous document_full_context_budget_ratio must not be able to
+        claim the whole total_budget: the clamp bounds ANY ratio config,
+        not just the defaults."""
+        monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+        monkeypatch.setattr(settings, "agent_max_tokens", 4096)
+        monkeypatch.setattr(settings, "document_full_context_budget_ratio", 0.9)
+        monkeypatch.setattr(settings, "document_full_context_char_cap", 120_000)
+
+        total_budget = resolve_budget_config().total_budget
+        budget = resolve_document_context_budget_chars()
+
+        assert budget <= total_budget - _DOCUMENT_CONTEXT_RESERVE_CHARS
+
+    def test_at_budget_document_block_survives_with_directive_and_today_siblings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The clamp restores the all-or-nothing guarantee end to end: since
+        both the service's fit check and this planner call use the same
+        `resolve_document_context_budget_chars()`, a document_context block
+        sized exactly at that budget must survive `plan_prompt_budget`
+        byte-identical even alongside the real user_directive and
+        today_user_context blocks a document turn actually builds
+        (`service._build_document_turn_directive` /
+        `service._build_today_context_block`)."""
+        from datetime import date
+
+        from anima_server.schemas.chat import TodayContext
+        from anima_server.services.agent import service as agent_service
+
+        monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+        monkeypatch.setattr(settings, "agent_max_tokens", 4096)
+
+        directive_block = agent_service._build_document_turn_directive(
+            document_ids=[1]
+        )
+        assert directive_block is not None
+
+        today_block = agent_service._build_today_context_block(
+            TodayContext(
+                date=date.today().isoformat(),
+                mood="m" * 80,
+                energy="e" * 40,
+                note="n" * 280,
+            )
+        )
+        assert today_block is not None
+
+        budget_chars = resolve_document_context_budget_chars()
+        doc_value = ("Document body line for the fit check. " * 2000)[:budget_chars]
+        document_block = MemoryBlock(
+            label="document_context",
+            description="Selected PDF full text",
+            value=doc_value,
+        )
+
+        plan = plan_prompt_budget(
+            [directive_block, document_block, today_block],
+            budget=resolve_budget_config(),
+        )
+
+        decision = next(
+            d for d in plan.trace.decisions if d.label == "document_context"
+        )
+        assert decision.status == "kept"
+        assert decision.reason == "within_budget"
+        kept_block = next(b for b in plan.blocks if b.label == "document_context")
+        assert kept_block.value == document_block.value
 
 
 class TestBlockPriority:

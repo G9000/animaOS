@@ -59,6 +59,30 @@ class PromptBudgetPlan:
     trace: PromptBudgetTrace
 
 
+# Headroom reserved below the total block budget for the tier-0 siblings
+# that plan before/alongside `document_context` on a document turn:
+# `service._build_document_turn_directive`'s `user_directive` block (678
+# chars, measured for the single-document phrasing) and
+# `service._build_today_context_block`'s `today_user_context` block (up to
+# 458 chars at `TodayContext`'s max field lengths: mood<=80 + energy<=40 +
+# note<=280, per anima_server.schemas.chat.TodayContext). Combined that's
+# ~1,136 chars; 4,000 leaves roughly 3x margin so directive copy changes or
+# a future sibling block don't reopen this constant. Without this reserve,
+# `resolve_document_context_budget_chars()` can equal `resolve_budget_config()`'s
+# total_budget (whenever the hard char cap isn't binding), so an at-budget
+# "(complete document)" block passes the service's fit check but then gets
+# tail-truncated by total-budget enforcement in `plan_prompt_budget` once a
+# sibling block is counted first — silently violating the all-or-nothing
+# full-document guarantee (Codex P2, PR #109 service.py:1842).
+_DOCUMENT_CONTEXT_RESERVE_CHARS = 4000
+
+# Sane floor so a squeezed total_budget (tiny context window) never drives
+# the clamped ceiling to zero or negative; the document budget can still be
+# smaller than this when a smaller value comes from the ratio/char-cap
+# calculation itself (that is a deliberate config choice, not this clamp).
+_DOCUMENT_CONTEXT_MIN_BUDGET_CHARS = 2000
+
+
 def resolve_document_context_budget_chars() -> int:
     """Character budget for the ``document_context`` block, scaled to the
     resolved context budget and bounded by a hard character ceiling.
@@ -70,12 +94,24 @@ def resolve_document_context_budget_chars() -> int:
     conservative 3-chars-per-token ratio so the token and character budgets
     describe the same amount of text (same convention as
     ``resolve_budget_config``).
+
+    The result is clamped below `resolve_budget_config()`'s total_budget by
+    `_DOCUMENT_CONTEXT_RESERVE_CHARS` so this function stays the single
+    source of truth for BOTH the service's fit check and the planner's
+    per-block cap while guaranteeing a block sized at this budget still
+    fits after its tier-0 siblings are counted — for any ratio/window
+    configuration, not just the current defaults.
     """
     from anima_server.config import settings
 
     ratio = settings.document_full_context_budget_ratio
     budget_tokens = int(resolve_context_budget_tokens() * ratio)
-    return min(budget_tokens * 3, settings.document_full_context_char_cap)
+    raw_budget_chars = min(budget_tokens * 3, settings.document_full_context_char_cap)
+    ceiling = max(
+        _DOCUMENT_CONTEXT_MIN_BUDGET_CHARS,
+        resolve_budget_config().total_budget - _DOCUMENT_CONTEXT_RESERVE_CHARS,
+    )
+    return min(raw_budget_chars, ceiling)
 
 
 _DEFAULT_POLICY = BlockBudgetPolicy(tier=3, order=999, max_chars=1000)
