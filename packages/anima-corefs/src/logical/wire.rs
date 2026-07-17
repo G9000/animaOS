@@ -252,6 +252,7 @@ impl ModelWireV1 for LogicalGrepPage {
                 "generation": cursor.generation(),
                 "path": cursor.path(),
                 "byteOffset": cursor.byte_offset(),
+                "walkAfter": cursor.walk_after(),
             })),
             "truncated": self.truncated,
             "limitReached": self.limit_reached,

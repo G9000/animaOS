@@ -28,6 +28,7 @@ pub enum GrepMode {
 pub struct GrepCursor {
     path: String,
     byte_offset: Option<u64>,
+    walk_after: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,12 +125,13 @@ pub fn grep(
     }
     validate_request(&request, limits)?;
     let matcher = Matcher::new(&request.query, request.mode)?;
-    let walk_cursor = request.cursor.as_ref().and_then(|cursor| {
-        cursor
-            .byte_offset
-            .is_none()
-            .then(|| WalkCursor::after(cursor.path.clone()))
-    });
+    let walk_cursor = request
+        .cursor
+        .as_ref()
+        .and_then(GrepCursor::resume_walk_cursor);
+    let initial_walk_after = walk_cursor
+        .as_ref()
+        .map(|cursor| cursor.as_str().to_owned());
     let root_metadata = backend.metadata(request.root.as_str())?;
     let walk = if root_metadata.kind == EntryKind::File {
         WalkPage {
@@ -169,6 +171,7 @@ pub fn grep(
     let mut response_bytes = RESPONSE_PAGE_OVERHEAD_BYTES;
     let mut output_truncated = false;
     let mut last_progress = None;
+    let mut traversal_after = initial_walk_after;
     let offset_cursor = request
         .cursor
         .as_ref()
@@ -177,13 +180,17 @@ pub fn grep(
 
     'files: for entry in walk.entries {
         control.check()?;
+        let entry_path = entry.path.as_str().to_owned();
+        let entry_walk_after = traversal_after.clone();
         if entry.kind != EntryKind::File {
+            traversal_after = Some(entry_path);
             continue;
         }
         if !offset_cursor_reached {
             if offset_cursor.is_some_and(|cursor| cursor.path == entry.path.as_str()) {
                 offset_cursor_reached = true;
             } else {
+                traversal_after = Some(entry_path);
                 continue;
             }
         }
@@ -201,10 +208,8 @@ pub fn grep(
                 output_truncated = true;
                 break 'files;
             }
-            last_progress = page.skipped.last().map(|skipped| GrepCursor {
-                path: skipped.path.as_str().to_owned(),
-                byte_offset: None,
-            });
+            last_progress = Some(GrepCursor::after_file(entry_path.clone()));
+            traversal_after = Some(entry_path);
             continue;
         }
         let mut reader = BufReader::new(backend.open_read(entry.path.as_str())?);
@@ -332,34 +337,35 @@ pub fn grep(
                 output_truncated = true;
                 break 'files;
             }
-            last_progress = page.skipped.last().map(|skipped| GrepCursor {
-                path: skipped.path.as_str().to_owned(),
-                byte_offset: None,
-            });
+            last_progress = Some(GrepCursor::after_file(entry_path.clone()));
+            traversal_after = Some(entry_path);
         } else {
             response_bytes += file_response_bytes;
+            let last_file_match = file_matches
+                .last()
+                .map(|found| (found.path.as_str().to_owned(), found.byte_offset));
             page.matches.extend(file_matches);
-            if let Some(found) = page.matches.last() {
-                last_progress = Some(GrepCursor {
-                    path: found.path.as_str().to_owned(),
-                    byte_offset: Some(found.byte_offset),
-                });
+            if let Some((path, byte_offset)) = last_file_match {
+                last_progress = Some(GrepCursor::within_file(
+                    path,
+                    byte_offset,
+                    entry_walk_after.clone(),
+                ));
             }
             for skipped in file_skips {
                 if !push_skip(&mut page, &mut response_bytes, skipped, limits)? {
                     output_truncated = true;
                     break 'files;
                 }
-                last_progress = page.skipped.last().map(|skipped| GrepCursor {
-                    path: skipped.path.as_str().to_owned(),
-                    byte_offset: None,
-                });
+                last_progress = Some(GrepCursor::after_file(entry_path.clone()));
             }
             if file_truncated {
                 page.truncated = true;
                 output_truncated = true;
                 break;
             }
+            last_progress = Some(GrepCursor::after_file(entry_path.clone()));
+            traversal_after = Some(entry_path);
         }
     }
 
@@ -368,10 +374,8 @@ pub fn grep(
     } else if walk_truncated {
         page.truncated = true;
         page.limit_reached = walk_limit_reached;
-        page.next_cursor = walk_next_cursor.map(|cursor| GrepCursor {
-            path: cursor.as_str().to_string(),
-            byte_offset: None,
-        });
+        page.next_cursor =
+            walk_next_cursor.map(|cursor| GrepCursor::after_file(cursor.as_str().to_owned()));
     }
     if page.truncated && page.next_cursor.is_none() {
         return Err(FileToolError::PaginationCannotAdvance { operation: "grep" });
@@ -421,12 +425,40 @@ fn push_skip(
 }
 
 impl GrepCursor {
+    fn within_file(path: String, byte_offset: u64, walk_after: Option<String>) -> Self {
+        Self {
+            path,
+            byte_offset: Some(byte_offset),
+            walk_after,
+        }
+    }
+
+    fn after_file(path: String) -> Self {
+        Self {
+            walk_after: Some(path.clone()),
+            path,
+            byte_offset: None,
+        }
+    }
+
+    fn resume_walk_cursor(&self) -> Option<WalkCursor> {
+        if self.byte_offset.is_some() {
+            self.walk_after.clone().map(WalkCursor::after)
+        } else {
+            Some(WalkCursor::after(self.path.clone()))
+        }
+    }
+
     pub fn path(&self) -> &str {
         &self.path
     }
 
     pub const fn byte_offset(&self) -> Option<u64> {
         self.byte_offset
+    }
+
+    pub fn walk_after(&self) -> Option<&str> {
+        self.walk_after.as_deref()
     }
 }
 

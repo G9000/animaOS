@@ -162,6 +162,10 @@ impl LogicalGrepCursor {
     pub const fn byte_offset(&self) -> Option<u64> {
         self.inner.byte_offset()
     }
+
+    pub fn walk_after(&self) -> Option<&str> {
+        self.inner.walk_after()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -10,6 +10,7 @@ use anima_file_tools::{
     ReadBackend, ReadSeek, WalkBackend,
 };
 use cap_std::fs::Dir;
+use zeroize::Zeroize;
 
 use crate::catalog::{CatalogGeneration, CatalogGenerationEntry, ObjectLifecycle};
 use crate::crypto::{
@@ -285,45 +286,75 @@ impl ReadBackend for CoreFsReadSnapshot {
             .object
             .as_ref()
             .ok_or_else(|| backend_error("open_read", path, "logical path is not a file"))?;
-        let metadata = open_object_stream(&self.objects_dir, &self.core_id, node, object)?
-            .metadata()
-            .clone();
-        if offset >= metadata.body_length || max_bytes == 0 {
-            return Ok(Box::new(Cursor::new(Vec::new())));
-        }
-
-        let mut file = open_regular_file_in(&self.objects_dir, OsStr::new(&object.physical_name))
-            .map_err(|_| {
-            backend_error(
-                "open_read",
-                node.path.as_str(),
-                "authorized object revision is unavailable",
-            )
-        })?;
-        let aad = ObjectBaseAad::new(
-            &self.core_id,
-            &node.stable_id,
-            object.kind,
-            ENVELOPE_VERSION,
-            object.object_key_epoch,
-            object.revision,
-        )
-        .map_err(|_| backend_error("open_read", node.path.as_str(), "invalid object authority"))?;
         let mut bytes = Vec::new();
-        let result = read_envelope_seekable_range(
-            &mut file,
-            object.key.as_ref(),
-            &aad,
+        read_catalog_bound_range_with_opener(
+            || {
+                open_regular_file_in(&self.objects_dir, OsStr::new(&object.physical_name)).map_err(
+                    |_| {
+                        backend_error(
+                            "open_read",
+                            node.path.as_str(),
+                            "authorized object revision is unavailable",
+                        )
+                    },
+                )
+            },
+            &self.core_id,
+            node,
+            object,
             offset,
             max_bytes,
+            control,
             &mut bytes,
-            || {
-                control
-                    .check()
-                    .map_err(|error| io::Error::new(io::ErrorKind::Interrupted, error.to_string()))
-            },
-        );
-        if let Err(error) = result {
+        )?;
+        Ok(Box::new(Cursor::new(bytes)))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_catalog_bound_range_with_opener<R, O>(
+    mut open: O,
+    core_id: &str,
+    node: &Node,
+    object: &ObjectNode,
+    offset: u64,
+    max_bytes: usize,
+    control: &OperationControl,
+    output: &mut Vec<u8>,
+) -> Result<(), FileToolError>
+where
+    R: Read + Seek,
+    O: FnMut() -> Result<R, FileToolError>,
+{
+    control.check()?;
+    let mut reader = open()?;
+    let aad = ObjectBaseAad::new(
+        core_id,
+        &node.stable_id,
+        object.kind,
+        ENVELOPE_VERSION,
+        object.object_key_epoch,
+        object.revision,
+    )
+    .map_err(|_| backend_error("open_read", node.path.as_str(), "invalid object authority"))?;
+    let mut staged = Vec::new();
+    let result = read_envelope_seekable_range(
+        &mut reader,
+        object.key.as_ref(),
+        &aad,
+        offset,
+        max_bytes,
+        &mut staged,
+        || {
+            control
+                .check()
+                .map_err(|error| io::Error::new(io::ErrorKind::Interrupted, error.to_string()))
+        },
+    );
+    let authenticated = match result {
+        Ok(authenticated) => authenticated,
+        Err(error) => {
+            staged.zeroize();
             control.check()?;
             return Err(backend_error(
                 "open_read",
@@ -331,8 +362,18 @@ impl ReadBackend for CoreFsReadSnapshot {
                 &format!("object range authentication failed: {error}"),
             ));
         }
-        Ok(Box::new(Cursor::new(bytes)))
+    };
+    if authenticated.metadata.body_sha256 != object.content_hash {
+        staged.zeroize();
+        return Err(backend_error(
+            "open_read",
+            node.path.as_str(),
+            "catalog content hash does not match authenticated object metadata",
+        ));
     }
+    output.extend_from_slice(&staged);
+    staged.zeroize();
+    Ok(())
 }
 
 impl CoreFsReadSnapshot {
@@ -629,11 +670,79 @@ fn file_tool_to_io(error: FileToolError) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Read};
+    use std::cell::Cell;
+    use std::collections::BTreeMap;
+    use std::io::{self, Cursor, Read};
+    use std::sync::Arc;
 
     use anima_file_tools::{CancellationToken, FileToolError, OperationControl};
 
-    use super::discard_authenticated_with_control;
+    use crate::crypto::{ObjectBaseAad, ObjectKind, SecretBytes};
+    use crate::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION};
+
+    use super::{
+        discard_authenticated_with_control, read_catalog_bound_range_with_opener, LogicalPath,
+        Node, ObjectNode,
+    };
+
+    const OBJECT_ID: &str = "01J00000000000000000000000";
+
+    fn catalog_bound_fixture(
+        authorized_body: &[u8],
+        replacement_body: &[u8],
+    ) -> (Node, Vec<u8>, Vec<u8>) {
+        let key = SecretBytes::new(vec![0x44; 32]).unwrap();
+        let aad = ObjectBaseAad::new(
+            "01JCORE",
+            OBJECT_ID,
+            ObjectKind::Note,
+            ENVELOPE_VERSION,
+            1,
+            1,
+        )
+        .unwrap();
+        let authorized_metadata = EnvelopeMetadata::for_body(
+            ObjectKind::Note.as_str(),
+            OBJECT_ID,
+            1,
+            "2026-07-17T00:00:00Z",
+            "2026-07-17T00:00:00Z",
+            "application/octet-stream",
+            BTreeMap::new(),
+            BodyEncoding::Binary,
+            authorized_body,
+        )
+        .unwrap();
+        let replacement_metadata = EnvelopeMetadata::for_body(
+            ObjectKind::Note.as_str(),
+            OBJECT_ID,
+            1,
+            "2026-07-17T00:00:00Z",
+            "2026-07-17T00:00:00Z",
+            "application/octet-stream",
+            BTreeMap::new(),
+            BodyEncoding::Binary,
+            replacement_body,
+        )
+        .unwrap();
+        let authorized =
+            encode_envelope(&key, &aad, &authorized_metadata, authorized_body).unwrap();
+        let replacement =
+            encode_envelope(&key, &aad, &replacement_metadata, replacement_body).unwrap();
+        let node = Node {
+            path: LogicalPath::parse("Notes/object.bin").unwrap(),
+            stable_id: OBJECT_ID.to_owned(),
+            object: Some(ObjectNode {
+                revision: 1,
+                kind: ObjectKind::Note,
+                physical_name: "object.acore".to_owned(),
+                content_hash: authorized_metadata.body_sha256,
+                object_key_epoch: 1,
+                key: Arc::new(key),
+            }),
+        };
+        (node, authorized, replacement)
+    }
 
     struct CancellingReader {
         cancellation: CancellationToken,
@@ -668,5 +777,69 @@ mod tests {
 
         assert_eq!(error, FileToolError::Cancelled);
         assert_eq!(reader.reads, 1);
+    }
+
+    #[test]
+    fn catalog_bound_range_uses_one_handle_when_a_second_open_would_be_a_replacement() {
+        let authorized_body = b"catalog-authorized bytes";
+        let replacement_body = b"different valid envelope";
+        let (node, authorized, replacement) =
+            catalog_bound_fixture(authorized_body, replacement_body);
+        let object = node.object.as_ref().unwrap();
+        let opens = Cell::new(0);
+        let mut output = Vec::new();
+
+        read_catalog_bound_range_with_opener(
+            || {
+                let current = opens.get() + 1;
+                opens.set(current);
+                Ok(Cursor::new(if current == 1 {
+                    authorized.clone()
+                } else {
+                    replacement.clone()
+                }))
+            },
+            "01JCORE",
+            &node,
+            object,
+            0,
+            authorized_body.len(),
+            &OperationControl::default(),
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(opens.get(), 1);
+        assert_eq!(output, authorized_body);
+    }
+
+    #[test]
+    fn catalog_hash_mismatch_discards_authenticated_range_bytes_with_a_typed_error() {
+        let (node, _authorized, replacement) =
+            catalog_bound_fixture(b"catalog-authorized bytes", b"different valid envelope");
+        let object = node.object.as_ref().unwrap();
+        let mut output = Vec::new();
+
+        let error = read_catalog_bound_range_with_opener(
+            || Ok(Cursor::new(replacement.clone())),
+            "01JCORE",
+            &node,
+            object,
+            0,
+            8,
+            &OperationControl::default(),
+            &mut output,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            FileToolError::Backend {
+                operation: "open_read",
+                ref message,
+                ..
+            } if message.contains("catalog content hash")
+        ));
+        assert!(output.is_empty());
     }
 }

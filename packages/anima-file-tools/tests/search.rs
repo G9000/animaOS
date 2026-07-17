@@ -442,6 +442,10 @@ fn file_limit_cursor_advances_to_later_files_even_when_first_page_has_no_matches
     .unwrap();
     assert!(first.matches.is_empty());
     assert!(first.truncated);
+    let first_cursor = first.next_cursor.as_ref().unwrap();
+    assert_eq!(first_cursor.path(), "root/a.txt");
+    assert_eq!(first_cursor.byte_offset(), None);
+    assert_eq!(first_cursor.walk_after(), Some("root/a.txt"));
     assert!(first.next_cursor.is_some());
 
     let mut second_request = request("needle", GrepMode::Literal);
@@ -457,6 +461,96 @@ fn file_limit_cursor_advances_to_later_files_even_when_first_page_has_no_matches
 
     assert_eq!(second.matches.len(), 1);
     assert_eq!(second.matches[0].path.as_str(), "root/b.txt");
+}
+
+#[test]
+fn byte_cursor_preserves_the_walk_position_across_match_and_response_truncation() {
+    let backend = backend_with_files(&[
+        ("root/a.txt", b"nothing here"),
+        ("root/b.txt", b"needle b1\nneedle b2\nneedle b3\n"),
+    ]);
+
+    let mut first_request = request("needle", GrepMode::Literal);
+    first_request.max_files = 1;
+    let first = grep(
+        &backend,
+        first_request,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert!(first.matches.is_empty());
+    assert!(first.truncated);
+
+    let mut second_request = request("needle", GrepMode::Literal);
+    second_request.max_files = 1;
+    second_request.max_matches = 1;
+    second_request.cursor = first.next_cursor;
+    let second = grep(
+        &backend,
+        second_request,
+        OperationLimits::default().validate().unwrap(),
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(second.matches.len(), 1);
+    assert_eq!(second.matches[0].path.as_str(), "root/b.txt");
+    assert_eq!(second.matches[0].byte_offset, 0);
+    assert!(second.truncated);
+    let second_cursor = second.next_cursor.as_ref().unwrap();
+    assert_eq!(second_cursor.path(), "root/b.txt");
+    assert_eq!(second_cursor.byte_offset(), Some(0));
+    assert_eq!(second_cursor.walk_after(), Some("root/a.txt"));
+
+    let response_limited = OperationLimits {
+        response_bytes: 500,
+        ..OperationLimits::default()
+    }
+    .validate()
+    .unwrap();
+    let mut third_request = request("needle", GrepMode::Literal);
+    third_request.max_files = 1;
+    third_request.max_line_bytes = 64;
+    third_request.cursor = second.next_cursor;
+    let third = grep(
+        &backend,
+        third_request,
+        response_limited,
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(third.matches.len(), 1);
+    assert_eq!(third.matches[0].path.as_str(), "root/b.txt");
+    assert_eq!(third.matches[0].byte_offset, 10);
+    assert!(third.truncated);
+    let third_cursor = third.next_cursor.as_ref().unwrap();
+    assert_eq!(third_cursor.path(), "root/b.txt");
+    assert_eq!(third_cursor.byte_offset(), Some(10));
+    assert_eq!(third_cursor.walk_after(), Some("root/a.txt"));
+
+    let mut fourth_request = request("needle", GrepMode::Literal);
+    fourth_request.max_files = 1;
+    fourth_request.max_line_bytes = 64;
+    fourth_request.cursor = third.next_cursor;
+    let fourth = grep(
+        &backend,
+        fourth_request,
+        response_limited,
+        OperationControl::default(),
+    )
+    .unwrap();
+    assert_eq!(fourth.matches.len(), 1);
+    assert_eq!(fourth.matches[0].path.as_str(), "root/b.txt");
+    assert_eq!(fourth.matches[0].byte_offset, 20);
+    assert!(!fourth.truncated);
+    assert!(fourth.next_cursor.is_none());
+
+    let offsets = [
+        second.matches[0].byte_offset,
+        third.matches[0].byte_offset,
+        fourth.matches[0].byte_offset,
+    ];
+    assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 #[test]
