@@ -15,6 +15,7 @@ Create Date: 2026-07-18
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "029_folded_candidate_hash"
@@ -23,9 +24,17 @@ branch_labels = None
 depends_on = None
 
 
+def _memory_candidates_exists() -> bool:
+    bind = op.get_bind()
+    return sa.inspect(bind).has_table("memory_candidates")
+
+
 def upgrade() -> None:
-    # IF EXISTS: repair paths replay migrations over metadata-created
-    # schemas where the 019 index was never present.
+    # Guards: repair paths replay migrations over partially-built schemas
+    # where the table (bad-stamp repair) or the 019 index
+    # (metadata-created test DBs) may not exist.
+    if not _memory_candidates_exists():
+        return
     op.execute("DROP INDEX IF EXISTS uq_memory_candidates_active_hash")
     op.execute(
         "CREATE UNIQUE INDEX uq_memory_candidates_active_hash "
@@ -35,6 +44,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _memory_candidates_exists():
+        return
     op.execute("DROP INDEX IF EXISTS uq_memory_candidates_active_hash")
     op.execute(
         "CREATE UNIQUE INDEX uq_memory_candidates_active_hash "
