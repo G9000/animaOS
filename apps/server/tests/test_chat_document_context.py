@@ -907,6 +907,66 @@ def test_oversized_selection_falls_back_to_retrieval(
     assert "(complete document)" not in block.value
 
 
+def test_assembled_block_over_budget_falls_back_to_retrieval(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    """The fit decision must be made on the ASSEMBLED block value: preamble,
+    per-document markers, and knowledge-hit entries add real characters on
+    top of the document text. A selection whose raw text fits the budget but
+    whose assembled block exceeds it must use retrieval (all-or-nothing)."""
+    document_text = "Document body sentence for the fit check. " * 23  # ~966 chars
+    monkeypatch.setattr(settings, "document_full_context_char_cap", 1200)
+    document_id = _document_with_chunks(runtime_db, chunk_texts=[document_text.strip()])
+
+    def fake_document_knowledge_hits(*args: Any, **kwargs: Any) -> list[KnowledgeConceptHit]:
+        return [
+            KnowledgeConceptHit(
+                concept_id=22,
+                title="Pump Maintenance",
+                slug="document-pump-maintenance",
+                concept_type="topic",
+                summary="Knowledge summary padding. " * 25,
+                score=1.0,
+            )
+        ]
+
+    monkeypatch.setattr(
+        agent_service,
+        "_document_knowledge_hits",
+        fake_document_knowledge_hits,
+        raising=False,
+    )
+
+    calls: list[list[int]] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        calls.append(document_ids)
+        return []
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="Summarize this document.",
+        document_ids=[document_id],
+    )
+
+    # Raw document text alone fits the budget...
+    assert len(document_text) <= settings.document_full_context_char_cap
+    # ...but the assembled block would not, so the turn uses retrieval.
+    assert calls == [[document_id]]
+    assert block is not None
+    assert "(complete document)" not in block.value
+
+
 def test_full_context_off_uses_retrieval(monkeypatch: Any, runtime_db: Session) -> None:
     monkeypatch.setattr(settings, "document_full_context", "off")
     document_id = _document_with_chunks(

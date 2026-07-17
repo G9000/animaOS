@@ -1827,11 +1827,20 @@ def _build_document_context_block(
             full_document_texts = None
 
     if full_document_texts is not None:
-        return _build_full_document_memory_block(
+        full_document_block = _build_full_document_memory_block(
             runtime_db,
             user_id=user_id,
             document_texts=full_document_texts,
         )
+        # The final fit decision is made on the ASSEMBLED value: the
+        # preamble, per-document markers, and knowledge-hit entries add
+        # real characters on top of the document text, and the planner's
+        # per-block cap is this same budget — so only a block that fits
+        # fully assembled is guaranteed to survive prompt assembly
+        # untruncated. Over-budget assembly falls back to retrieval
+        # (all-or-nothing: no mixed full+retrieved evidence).
+        if len(full_document_block.value) <= resolve_document_context_budget_chars():
+            return full_document_block
 
     try:
         results = search_document_chunks(
@@ -1964,10 +1973,11 @@ def _full_document_texts(
     Returns ``None`` (all-or-nothing) when the combined length of every
     selected document exceeds the full-document budget: mixed full and
     retrieved evidence in the same turn is confusing, so any overflow sends
-    the whole turn back through the retrieval path. The budget comes from
-    ``prompt_budget.resolve_document_context_budget_chars`` — the same
-    number the planner uses as the block's cap — so a block built here is
-    never re-truncated by prompt assembly.
+    the whole turn back through the retrieval path. This text-only check is
+    a cheap pre-filter that can only reject; the caller makes the final fit
+    decision on the fully ASSEMBLED block value against the same budget
+    (``prompt_budget.resolve_document_context_budget_chars``), so a block
+    that ships is never re-truncated by prompt assembly.
     """
     budget_chars = resolve_document_context_budget_chars()
     documents: list[tuple[RuntimeDocument, str]] = []
@@ -2383,6 +2393,13 @@ def _inject_memory_pressure_warning(
 
     companion._memory_pressure_alerted = True  # type: ignore[attr-defined]
 
+    # Note: this block has no dedicated budget policy (default tier 3), so
+    # on a near-budget document turn — where a window-scaled
+    # document_context block may consume most of the total block budget —
+    # the planner can now drop it with total_budget_exhausted, whereas the
+    # old static 4000-char document cap left room for it. Acceptable: the
+    # warning is advisory, and genuine context overflow is still handled by
+    # _proactive_compact_if_needed.
     warning_block = MemoryBlock(
         label="memory_pressure_warning",
         value=_MEMORY_PRESSURE_WARNING,

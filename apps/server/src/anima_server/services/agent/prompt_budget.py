@@ -311,7 +311,13 @@ def plan_prompt_budget(
             )
         )
         total_chars += final_chars
-        tier_usage[policy.tier] += final_chars
+        # Dynamically-capped blocks are exempt from the tier slice, so they
+        # must not be charged to it either: charging their (much larger)
+        # window-scaled budget against the tier would silently starve any
+        # later block in the same tier. The trace's tier_usage therefore
+        # sums to retained_chars minus dynamically-budgeted blocks.
+        if policy.resolve_max_chars is None:
+            tier_usage[policy.tier] += final_chars
         decisions.append(
             PromptBudgetBlockDecision(
                 label=block.label,
