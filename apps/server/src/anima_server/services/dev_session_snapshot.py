@@ -134,12 +134,20 @@ def _validate_payload(payload: Any) -> dict[str, object]:
                 raise DevSessionSnapshotError("Snapshot DEK domain must be non-empty")
             deks[domain] = _validate_encoded_key(encoded_key)
 
+        # Legacy snapshots did not record whether a session also held CoreFS
+        # subkeys. Treat an absent marker as true so those sessions cannot be
+        # restored as unlocked without the intentionally unpersisted keys.
+        had_corefs_keys = raw_session.get("hadCorefsKeys", True)
+        if not isinstance(had_corefs_keys, bool):
+            raise DevSessionSnapshotError("Snapshot hadCorefsKeys must be a boolean")
+
         sessions.append(
             {
                 "token": token,
                 "userId": user_id,
                 "expiresAt": expires_at,
                 "deks": deks,
+                "hadCorefsKeys": had_corefs_keys,
             }
         )
 
