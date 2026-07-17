@@ -98,6 +98,31 @@ def test_user_read_operation_dispatches_with_selected_snapshot(
     assert stat_kwargs["path"] == "Diary/today.md"
 
 
+def test_logical_paths_preserve_surrounding_whitespace(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    selected = logical.CoreFsValidationSnapshot(generation=9, catalog_hash="catalog-hash")
+
+    monkeypatch.setattr(corefs_route.logical, "select_validation_snapshot", lambda **_: selected)
+
+    def fake_stat(**kwargs: object) -> bytes:
+        calls.append(kwargs)
+        return b'{"version":"corefs-logical-v1","result":{"path":"Diary/Secret "}}'
+
+    monkeypatch.setattr(corefs_route.logical, "stat_v1", fake_stat)
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={"operation": "stat", "path": "Diary/Secret "},
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["path"] == "Diary/Secret "
+
+
 def test_anima_principal_is_distinct_from_user(
     corefs_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -182,6 +207,18 @@ def test_rejects_native_invalid_logical_paths(
         "/api/corefs/operation",
         headers=_unlock_headers(),
         json={"operation": "stat", "path": bad_path},
+    )
+
+    assert response.status_code == 422
+
+
+def test_search_readiness_requires_generation_for_non_missing_state(
+    corefs_client: TestClient,
+) -> None:
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={"operation": "search_readiness", "searchState": "ready"},
     )
 
     assert response.status_code == 422

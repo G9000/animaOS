@@ -4,7 +4,7 @@ import re
 import unicodedata
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 CoreFsOperation = Literal[
     "stat",
@@ -60,20 +60,19 @@ _AMBIGUOUS_PATH_CHARACTERS = frozenset(
 def normalize_logical_path(value: str | None, *, field_name: str) -> str | None:
     if value is None:
         return None
-    stripped = value.strip()
-    if len(stripped.encode("utf-8")) > _MAX_LOGICAL_PATH_BYTES:
+    if len(value.encode("utf-8")) > _MAX_LOGICAL_PATH_BYTES:
         raise ValueError(f"{field_name} exceeds the CoreFS logical path byte limit.")
-    if stripped == "":
+    if value == "":
         return ""
-    if _WINDOWS_DRIVE_RE.match(stripped) or stripped.startswith(("/", "\\")):
+    if _WINDOWS_DRIVE_RE.match(value) or value.startswith(("/", "\\")):
         raise ValueError(f"{field_name} must be a CoreFS logical path, not a host filesystem path.")
-    if "\x00" in stripped:
+    if "\x00" in value:
         raise ValueError(f"{field_name} must not contain NUL.")
-    if "\\" in stripped:
+    if "\\" in value:
         raise ValueError(f"{field_name} must not contain host path separators.")
-    if _has_uri_scheme(stripped):
+    if _has_uri_scheme(value):
         raise ValueError(f"{field_name} must not use a URI or foreign backend path form.")
-    normalized = stripped
+    normalized = value
     parts = [part for part in normalized.split("/") if part]
     if len(parts) != len(normalized.split("/")):
         raise ValueError(f"{field_name} must not contain empty path components.")
@@ -142,6 +141,16 @@ class CoreFsOperationRequest(BaseModel):
     @classmethod
     def validate_logical_paths(cls, value: str | None, info: Any) -> str | None:
         return normalize_logical_path(value, field_name=str(info.field_name))
+
+    @model_validator(mode="after")
+    def validate_search_readiness_generation(self) -> CoreFsOperationRequest:
+        if (
+            self.operation == "search_readiness"
+            and self.searchState != "missing"
+            and self.indexGeneration is None
+        ):
+            raise ValueError("indexGeneration is required for non-missing search readiness states.")
+        return self
 
 
 class CoreFsPrincipalResponse(BaseModel):

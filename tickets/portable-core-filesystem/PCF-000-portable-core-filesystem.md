@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 22:58 MYT
+- Updated: 2026-07-17 23:06 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -122,6 +122,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 22:38 MYT - PCF-002 Step 11 progressed with the first generic CoreFS server route and tests for unlocked access, logical-path-only requests, distinct user/ANIMA/client principals, client fail-closed grant handling, and server-side migration-frozen writes. The parent remains `in_progress`; full folder-scoped grant storage/broker work and Step 12 benchmark remain.
 - 2026-07-17 22:42 MYT - PCF-002 Step 11 added typed `packages/api-client` bindings for the generic CoreFS operation route, including principal/client headers over the shared unlock/nonce request path.
 - 2026-07-17 22:58 MYT - Addressed PR #107 Codex review findings for PCF-002 Step 11: client identity headers now cannot default to owner scope, and API schema validation rejects native-invalid logical path forms before dispatch. The parent remains `in_progress` for the remaining grant/broker work and Step 12 benchmark.
+- 2026-07-17 23:06 MYT - Addressed PR #107's second Codex review pass for PCF-002 Step 11: logical path whitespace is preserved exactly, and non-`missing` search-readiness requests require an index generation before native dispatch.
 
 ## Validation
 
@@ -150,6 +151,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 Step 11 API boundary: focused Python route/logical tests (10 passed) and scoped Ruff across the new CoreFS API/schema plus touched server files passed.
   - PCF-002 Step 11 API boundary: API-client Bun tests passed (18 tests) and `bun run build` passed after a frozen dependency install in the fresh worktree.
   - PR #107 review follow-up: red/green client-principal and native-invalid-path regressions, focused Python route/logical tests (15 passed), scoped Ruff, API-client Bun tests (18 passed), and `bun run build` passed.
+  - PR #107 second review follow-up: red/green exact-whitespace and search-readiness-generation regressions, focused Python route/logical tests (17 passed), scoped Ruff, API-client Bun tests (18 passed), and `bun run build` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
