@@ -1315,6 +1315,118 @@ def test_forget_memory_deletes_same_topic_trace():
         )
 
 
+def test_repeated_identical_weak_signal_after_folded_creates_new_candidate():
+    """With the production partial unique index in place (029: folded is
+    excluded from active hashes), an exact repeat of a folded weak signal
+    must create a NEW candidate row — not die on IntegrityError — or exact
+    repeats can never accumulate to crystallization."""
+    from sqlalchemy import text
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with runtime_factory() as runtime_db:
+            # Recreate the production partial index exactly as migration
+            # 029 defines it (metadata.create_all doesn't create it).
+            runtime_db.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_memory_candidates_active_hash "
+                    "ON memory_candidates(content_hash) "
+                    "WHERE status NOT IN "
+                    "('rejected', 'reinforced', 'superseded', 'failed', 'folded')"
+                )
+            )
+            runtime_db.commit()
+
+            first = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+            )
+            assert first is not None
+            first.status = "folded"
+            runtime_db.commit()
+
+            repeat = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+            )
+            assert repeat is not None, (
+                "identical weak signal after fold must create a new candidate "
+                "(would fail with the pre-029 index predicate)"
+            )
+            assert repeat.id != first.id
+    finally:
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_treats_hash_mismatched_ref_as_stale(monkeypatch):
+    """Vault-imported traces carry runtime-local candidate ids: after import
+    into a different runtime the same id can name an unrelated candidate.
+    The stored content_hash must gate resolution — a mismatch is stale."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            unrelated = _runtime_candidate(
+                runtime_db, user_id=user_id, content="Totally unrelated content"
+            )
+            unrelated_id = unrelated.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:imported_topic",
+                    kind="observation",
+                    weight=0.9,
+                    evidence_refs=[
+                        {
+                            "candidate_id": unrelated_id,
+                            "content_hash": "hash-from-the-old-runtime",
+                            "source_message_ids": [],
+                        }
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("must not synthesize from an unrelated candidate")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _should_not_be_called)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["dropped_stale"] == 1
+
+        with soul_factory() as soul_db:
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
 def test_purge_latent_traces_matching_topic_removes_fold_only_topics():
     from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
 

@@ -284,6 +284,17 @@ def _resolve_trace_evidence(
         if candidate is None or candidate.user_id != user_id:
             stale += 1
             continue
+        # Candidate ids are runtime-local, but traces are soul-store
+        # portable: after a vault import into a different runtime, the same
+        # numeric id can name an unrelated candidate. The fold path stores
+        # the candidate's content_hash in the ref — a mismatch means this
+        # is not the evidence that was folded, so treat it as stale.
+        # (Refs written before hashes existed carry None and pass — bounded
+        # legacy grace; every new fold records the hash.)
+        ref_hash = ref.get("content_hash")
+        if ref_hash is not None and ref_hash != candidate.content_hash:
+            stale += 1
+            continue
         content = (candidate.content or "").strip()
         if not content:
             # A ref that can't contribute text can't contribute to
