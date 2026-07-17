@@ -13,7 +13,7 @@ from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 revision = "028_presence_catchup"
-down_revision = "027_affect_state"
+down_revision = "028_merge_runtime_heads"
 branch_labels = None
 depends_on = None
 
