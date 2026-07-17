@@ -787,6 +787,171 @@ def test_build_document_context_block_emits_tool_primer_when_retrieval_raises(
     assert "read_document_section" in block.value
 
 
+def _document_with_chunks(
+    runtime_db: Session,
+    *,
+    user_id: int = 7,
+    filename: str = "manual.pdf",
+    sha256: str = "3" * 64,
+    chunk_texts: list[str],
+) -> int:
+    from anima_server.services.documents.models import (
+        DocumentRegistration,
+        ExtractedDocumentChunk,
+    )
+    from anima_server.services.documents.store import (
+        register_document,
+        replace_document_chunks,
+    )
+
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=user_id,
+            filename=filename,
+            mime_type="application/pdf",
+            storage_path=f".anima/documents/{user_id}/{filename}",
+            sha256=sha256,
+            size_bytes=100,
+        ),
+    )
+    replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(chunk_index=index, content_text=text)
+            for index, text in enumerate(chunk_texts)
+        ],
+        parse_quality="docling",
+    )
+    return document.id
+
+
+def test_small_document_injected_whole(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    document_id = _document_with_chunks(
+        runtime_db,
+        chunk_texts=[
+            "First chunk covers the installation steps for the relay.",
+            "Second chunk covers the calibration window for the pump.",
+        ],
+    )
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> list[DocumentRagResult]:
+        raise AssertionError("search_document_chunks must not be called for full-doc mode")
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fail_if_called)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="Summarize this document.",
+        document_ids=[document_id],
+    )
+
+    assert block is not None
+    assert block.label == "document_context"
+    assert "(complete document)" in block.value
+    first_index = block.value.index("First chunk covers the installation steps")
+    second_index = block.value.index("Second chunk covers the calibration window")
+    assert first_index < second_index
+
+
+def test_oversized_selection_falls_back_to_retrieval(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    monkeypatch.setattr(settings, "document_full_context_char_cap", 50)
+    document_id = _document_with_chunks(
+        runtime_db,
+        chunk_texts=[
+            "A chunk with enough text to blow past a fifty character cap easily.",
+        ],
+    )
+
+    calls: list[list[int]] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        calls.append(document_ids)
+        return [
+            DocumentRagResult(
+                chunk_id=1,
+                document_id=document_id,
+                filename="manual.pdf",
+                content="A chunk with enough text to blow past a fifty character cap easily.",
+                similarity=0.5,
+                page_start=None,
+                page_end=None,
+                section_title=None,
+            )
+        ]
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="Summarize this document.",
+        document_ids=[document_id],
+    )
+
+    assert calls == [[document_id]]
+    assert block is not None
+    assert "(complete document)" not in block.value
+
+
+def test_full_context_off_uses_retrieval(monkeypatch: Any, runtime_db: Session) -> None:
+    monkeypatch.setattr(settings, "document_full_context", "off")
+    document_id = _document_with_chunks(
+        runtime_db,
+        chunk_texts=["Tiny chunk well under any budget."],
+    )
+
+    calls: list[list[int]] = []
+
+    def fake_search_document_chunks(
+        runtime_db: object,
+        user_id: int,
+        query: str,
+        *,
+        document_ids: list[int],
+        limit: int,
+    ) -> list[DocumentRagResult]:
+        calls.append(document_ids)
+        return []
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="Summarize this document.",
+        document_ids=[document_id],
+    )
+
+    assert calls == [[document_id]]
+    assert block is not None
+    assert "(complete document)" not in block.value
+
+
+def test_budget_scales_with_context_window(monkeypatch: Any) -> None:
+    monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+    small_window_budget = agent_service._full_document_context_budget_chars()
+
+    monkeypatch.setattr(settings, "agent_context_window_tokens", 200_000)
+    large_window_budget = agent_service._full_document_context_budget_chars()
+
+    assert small_window_budget != large_window_budget
+    assert large_window_budget > small_window_budget
+
+
 def test_build_document_context_block_ignores_unowned_document_ids(
     monkeypatch: Any, runtime_db: Session
 ) -> None:

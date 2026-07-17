@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     # Single read_document_section call cap; longer sections continue via
     # the start_chunk parameter.
     document_tool_read_char_limit: int = 6_000
+    # Full-document context: when every selected document's text fits the
+    # budget, inject whole documents instead of retrieved chunks (matches
+    # cloud-assistant file-upload behavior; retrieval covers what doesn't fit).
+    document_full_context: Literal["off", "auto"] = "auto"
+    # Fraction of the resolved context budget the full-doc block may use.
+    document_full_context_budget_ratio: float = 0.5
+    # Hard ceiling in characters regardless of window size.
+    document_full_context_char_cap: int = 120_000
     # Contextual retrieval blurbs: when "on", each document chunk gets an
     # LLM-generated context line stored in chunk metadata and prepended to
     # the chunk text for embedding and lexical indexing only (never shown

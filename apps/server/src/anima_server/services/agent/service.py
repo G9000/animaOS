@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import (
+    RuntimeDocument,
     RuntimeImageMessageLink,
     RuntimeKnowledgeConcept,
     RuntimeKnowledgeConceptSource,
@@ -131,7 +132,7 @@ from anima_server.services.agent.tools import get_tools, prepare_action_tool_sch
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
-from anima_server.services.documents.store import get_document_for_user
+from anima_server.services.documents.store import get_document_for_user, list_document_chunks
 from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
 
@@ -1801,6 +1802,36 @@ def _build_document_context_block(
         cleaned_document_ids
     )
 
+    # Full-document context: when the combined text of every selected
+    # document fits the window-scaled budget, inject the whole documents
+    # instead of retrieved chunks (matches "paste the doc in" quality for
+    # small selections). All-or-nothing: any overflow falls back to the
+    # retrieval path below so a turn never mixes full and retrieved
+    # evidence. Fails open (falls back to retrieval) on any load error.
+    full_document_texts: list[tuple[RuntimeDocument, str]] | None = None
+    if settings.document_full_context == "auto":
+        try:
+            full_document_texts = _full_document_texts(
+                runtime_db,
+                user_id=user_id,
+                document_ids=cleaned_document_ids,
+            )
+        except Exception:
+            logger.debug(
+                "Full-document context load failed for user %s documents %s",
+                user_id,
+                cleaned_document_ids,
+                exc_info=True,
+            )
+            full_document_texts = None
+
+    if full_document_texts is not None:
+        return _build_full_document_memory_block(
+            runtime_db,
+            user_id=user_id,
+            document_texts=full_document_texts,
+        )
+
     try:
         results = search_document_chunks(
             runtime_db,
@@ -1917,6 +1948,115 @@ def _build_document_context_block(
             "Compiled source knowledge and query-relevant excerpts from PDFs the user explicitly "
             "selected for this chat turn. Ground answers in these snippets when they apply; "
             "do not treat them as long-term memory."
+        ),
+    )
+
+
+def _full_document_context_budget_chars() -> int:
+    """Character budget for full-document injection, scaled to the resolved
+    context window.
+
+    Mirrors ``estimate_char_tokens``'s conservative 3-chars-per-token ratio
+    (inverted) so the token and character budgets describe the same amount
+    of text, then bounds the result with a hard character ceiling so a huge
+    configured window cannot blow the prompt up unreasonably.
+    """
+    ratio = settings.document_full_context_budget_ratio
+    budget_tokens = int(resolve_context_budget_tokens() * ratio)
+    budget_chars = budget_tokens * 3
+    return min(budget_chars, settings.document_full_context_char_cap)
+
+
+def _full_document_texts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+) -> list[tuple[RuntimeDocument, str]] | None:
+    """Load each selected document's full text in chunk order.
+
+    Returns ``None`` (all-or-nothing) when the combined length of every
+    selected document exceeds the full-document budget: mixed full and
+    retrieved evidence in the same turn is confusing, so any overflow sends
+    the whole turn back through the retrieval path.
+    """
+    budget_chars = _full_document_context_budget_chars()
+    documents: list[tuple[RuntimeDocument, str]] = []
+    total_chars = 0
+    for document_id in document_ids:
+        document = get_document_for_user(
+            runtime_db,
+            user_id=user_id,
+            document_id=document_id,
+        )
+        if document is None:
+            continue
+        chunks = list_document_chunks(runtime_db, document_id=document_id)
+        if not chunks:
+            # No chunked text to inject (document not yet processed through
+            # the chunking pipeline) — fall back to retrieval rather than
+            # silently injecting an empty document.
+            return None
+        text = "\n\n".join(chunk.content_text for chunk in chunks)
+        total_chars += len(text)
+        if total_chars > budget_chars:
+            return None
+        documents.append((document, text))
+    return documents
+
+
+def _build_full_document_memory_block(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_texts: Sequence[tuple[RuntimeDocument, str]],
+) -> MemoryBlock:
+    try:
+        knowledge_hits = _document_knowledge_hits(
+            runtime_db,
+            user_id=user_id,
+            document_ids=[document.id for document, _ in document_texts],
+            document_chunk_ids=[],
+            limit=8,
+        )
+    except Exception:
+        logger.debug(
+            "Document knowledge retrieval failed for user %s during full-document context",
+            user_id,
+            exc_info=True,
+        )
+        knowledge_hits = []
+
+    lines = [
+        "Selected document context from indexed PDFs. Use this only when it is relevant.",
+    ]
+    if knowledge_hits:
+        lines.append("")
+        lines.append("Compiled knowledge from selected PDFs:")
+        for index, hit in enumerate(knowledge_hits, start=1):
+            lines.append(
+                f"[K{index}] {hit.title} "
+                f"({hit.concept_type}, concept {hit.concept_id}, selected source)"
+            )
+            lines.append(_truncate_document_chunk(hit.summary, limit=700))
+
+    lines.append("")
+    lines.append(
+        "Full text of the selected documents (small enough to include in full "
+        "instead of retrieved excerpts):"
+    )
+    for document, text in document_texts:
+        lines.append("")
+        lines.append(f"--- {document.filename} (complete document) ---")
+        lines.append(text)
+
+    return MemoryBlock(
+        label="document_context",
+        value="\n".join(lines),
+        description=(
+            "Complete text of PDFs the user explicitly selected for this chat turn, "
+            "injected in full because the selection fits the context budget. Ground "
+            "answers in this text when it applies; do not treat it as long-term memory."
         ),
     )
 
