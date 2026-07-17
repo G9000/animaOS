@@ -94,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anima-corefs",
+ "anima-file-tools",
  "argon2",
  "blake3",
  "chrono",

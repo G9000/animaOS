@@ -9,7 +9,7 @@ mod python {
     #![allow(clippy::useless_conversion)]
 
     use pyo3::prelude::*;
-    use pyo3::types::{PyBytes, PyDict, PyList};
+    use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
     use pyo3::IntoPy;
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -221,6 +221,77 @@ mod python {
 
     fn corefs_catalog_error(error: anima_corefs::catalog::CatalogError) -> PyErr {
         pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn corefs_commit_error(error: anima_corefs::transaction::CommitError) -> PyErr {
+        match error {
+            anima_corefs::transaction::CommitError::Io(error) => {
+                pyo3::exceptions::PyOSError::new_err(error.to_string())
+            }
+            error => pyo3::exceptions::PyValueError::new_err(error.to_string()),
+        }
+    }
+
+    fn corefs_logical_error(error: anima_corefs::logical::LogicalError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn corefs_validated_limits(
+        read_chunk_bytes: Option<usize>,
+        walk_depth: Option<usize>,
+        walk_directories: Option<usize>,
+        walk_entries: Option<usize>,
+        response_bytes: Option<usize>,
+    ) -> PyResult<anima_file_tools::ValidatedLimits> {
+        let defaults = anima_file_tools::OperationLimits::default();
+        anima_file_tools::OperationLimits {
+            read_chunk_bytes: read_chunk_bytes.unwrap_or(defaults.read_chunk_bytes),
+            walk_depth: walk_depth.unwrap_or(defaults.walk_depth),
+            walk_directories: walk_directories.unwrap_or(defaults.walk_directories),
+            walk_entries: walk_entries.unwrap_or(defaults.walk_entries),
+            response_bytes: response_bytes.unwrap_or(defaults.response_bytes),
+        }
+        .validate()
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    fn corefs_open_read_snapshot(
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+    ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+        let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
+            .map_err(corefs_commit_error)?;
+        let selected = coordinator
+            .load_validation_snapshot(&keys.inner)
+            .map_err(corefs_commit_error)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+            })?;
+        let head = selected.head();
+        if head.generation() != selected_generation
+            || head.catalog_hash() != selected_catalog_hash
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS validation snapshot no longer matches selected generation/catalog hash",
+            ));
+        }
+        let keyring = anima_corefs::rotation::FrkKeyring::new([&keys.inner])
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        anima_corefs::logical::CoreFsReadSnapshot::open(&coordinator, &selected, &keyring)
+            .map_err(corefs_logical_error)
+    }
+
+    fn corefs_wire_to_py(
+        py: Python<'_>,
+        result: impl anima_corefs::logical::ModelWireV1,
+    ) -> PyResult<PyObject> {
+        let wire = result
+            .to_model_wire_v1()
+            .map_err(corefs_logical_error)?;
+        Ok(PyBytes::new_bound(py, &wire).into_py(py))
     }
 
     #[pyclass(name = "CorefsSubkeys")]
@@ -992,6 +1063,410 @@ mod python {
         enforce_corefs_catalog_envelope_limit(envelope.len())?;
         anima_corefs::catalog::catalog_physical_name(generation, envelope)
             .map_err(corefs_catalog_error)
+    }
+
+    #[pyfunction]
+    fn corefs_validation_snapshot(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+    ) -> PyResult<PyObject> {
+        let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
+            .map_err(corefs_commit_error)?;
+        let selected = coordinator
+            .load_validation_snapshot(&keys.inner)
+            .map_err(corefs_commit_error)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+            })?;
+        let head = selected.head();
+        json_value_to_py(py, json!({
+            "generation": head.generation(),
+            "catalogHash": head.catalog_hash(),
+        }))
+    }
+
+    #[pyfunction]
+    fn corefs_stat_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        path: &str,
+    ) -> PyResult<PyObject> {
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        corefs_wire_to_py(py, snapshot.stat(path).map_err(corefs_logical_error)?)
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, path, cursor_after = None, limit = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    fn corefs_list_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        path: &str,
+        cursor_after: Option<String>,
+        limit: usize,
+        read_chunk_bytes: Option<usize>,
+        walk_depth: Option<usize>,
+        walk_directories: Option<usize>,
+        walk_entries: Option<usize>,
+        response_bytes: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let limits = corefs_validated_limits(
+            read_chunk_bytes,
+            walk_depth,
+            walk_directories,
+            walk_entries,
+            response_bytes,
+        )?;
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        let cursor = cursor_after
+            .map(|after| anima_corefs::logical::ListCursor::new(selected_generation, after));
+        corefs_wire_to_py(
+            py,
+            snapshot
+                .list(path, cursor, limit, limits, anima_file_tools::OperationControl::default())
+                .map_err(corefs_logical_error)?,
+        )
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, cursor_after = None, page_size = 100, include_directories = true, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    fn corefs_walk_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        root: &str,
+        cursor_after: Option<String>,
+        page_size: usize,
+        include_directories: bool,
+        read_chunk_bytes: Option<usize>,
+        walk_depth: Option<usize>,
+        walk_directories: Option<usize>,
+        walk_entries: Option<usize>,
+        response_bytes: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let limits = corefs_validated_limits(
+            read_chunk_bytes,
+            walk_depth,
+            walk_directories,
+            walk_entries,
+            response_bytes,
+        )?;
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        let options = anima_corefs::logical::LogicalWalkOptions {
+            page_size,
+            cursor: cursor_after
+                .map(|after| anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)),
+            include_directories,
+        };
+        corefs_wire_to_py(
+            py,
+            snapshot
+                .walk(root, options, limits, anima_file_tools::OperationControl::default())
+                .map_err(corefs_logical_error)?,
+        )
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    fn corefs_glob_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        root: &str,
+        pattern: &str,
+        max_results: usize,
+        read_chunk_bytes: Option<usize>,
+        walk_depth: Option<usize>,
+        walk_directories: Option<usize>,
+        walk_entries: Option<usize>,
+        response_bytes: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let limits = corefs_validated_limits(
+            read_chunk_bytes,
+            walk_depth,
+            walk_directories,
+            walk_entries,
+            response_bytes,
+        )?;
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        corefs_wire_to_py(
+            py,
+            snapshot
+                .glob(root, pattern, None, max_results, limits, anima_file_tools::OperationControl::default())
+                .map_err(corefs_logical_error)?,
+        )
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    fn corefs_grep_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        root: &str,
+        query: &str,
+        regex: bool,
+        max_files: usize,
+        max_matches: usize,
+        max_line_bytes: usize,
+        read_chunk_bytes: Option<usize>,
+        walk_depth: Option<usize>,
+        walk_directories: Option<usize>,
+        walk_entries: Option<usize>,
+        response_bytes: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let limits = corefs_validated_limits(
+            read_chunk_bytes,
+            walk_depth,
+            walk_directories,
+            walk_entries,
+            response_bytes,
+        )?;
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        let request = anima_corefs::logical::LogicalGrepRequest {
+            root: root.to_owned(),
+            query: query.to_owned(),
+            mode: if regex {
+                anima_file_tools::GrepMode::Regex
+            } else {
+                anima_file_tools::GrepMode::Literal
+            },
+            cursor: None,
+            max_files,
+            max_matches,
+            max_line_bytes,
+        };
+        corefs_wire_to_py(
+            py,
+            snapshot
+                .grep(request, limits, anima_file_tools::OperationControl::default())
+                .map_err(corefs_logical_error)?,
+        )
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, path, offset = 0, max_bytes = 65536, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    fn corefs_read_chunk_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        path: &str,
+        offset: u64,
+        max_bytes: usize,
+        read_chunk_bytes: Option<usize>,
+        walk_depth: Option<usize>,
+        walk_directories: Option<usize>,
+        walk_entries: Option<usize>,
+        response_bytes: Option<usize>,
+    ) -> PyResult<Option<PyObject>> {
+        let limits = corefs_validated_limits(
+            read_chunk_bytes,
+            walk_depth,
+            walk_directories,
+            walk_entries,
+            response_bytes,
+        )?;
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        let mut stream = snapshot
+            .read(
+                path,
+                anima_file_tools::ReadOptions { offset, max_bytes },
+                limits,
+                anima_file_tools::OperationControl::default(),
+            )
+            .map_err(corefs_logical_error)?;
+        stream
+            .next()
+            .transpose()
+            .map_err(corefs_logical_error)?
+            .map(|chunk| corefs_wire_to_py(py, chunk))
+            .transpose()
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, state, index_generation = None))]
+    fn corefs_search_readiness_v1(
+        py: Python<'_>,
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+        state: &str,
+        index_generation: Option<u64>,
+    ) -> PyResult<PyObject> {
+        let snapshot = corefs_open_read_snapshot(
+            core_root,
+            core_id,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )?;
+        let state = match state {
+            "missing" => anima_corefs::logical::RuntimeSearchState::Missing,
+            "building" => anima_corefs::logical::RuntimeSearchState::Building {
+                generation: index_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS search state building requires index_generation",
+                    )
+                })?,
+            },
+            "ready" => anima_corefs::logical::RuntimeSearchState::Ready {
+                generation: index_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS search state ready requires index_generation",
+                    )
+                })?,
+            },
+            "degraded" => anima_corefs::logical::RuntimeSearchState::Degraded {
+                generation: index_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS search state degraded requires index_generation",
+                    )
+                })?,
+            },
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CoreFS search state must be missing, building, ready, or degraded",
+                ))
+            }
+        };
+        corefs_wire_to_py(py, snapshot.search_readiness(state))
+    }
+
+    fn corefs_frozen_result(py: Python<'_>, operation: &str) -> PyResult<PyObject> {
+        json_value_to_py(py, json!({
+            "ok": false,
+            "operation": operation,
+            "code": anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN,
+        }))
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_mkdir(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "mkdir")
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_create_file(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "create_file")
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_write_file(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "write_file")
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_apply_patch(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "apply_patch")
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_move(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "move")
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_trash(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "trash")
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn corefs_restore(
+        py: Python<'_>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        corefs_frozen_result(py, "restore")
     }
 
     fn json_value_to_py(py: Python<'_>, value: Value) -> PyResult<PyObject> {
@@ -2440,6 +2915,21 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decrypt_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_catalog_physical_name, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_validation_snapshot, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_stat_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_list_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_walk_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_glob_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_grep_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_read_chunk_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_search_readiness_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_mkdir, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_create_file, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_write_file, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_apply_patch, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_move, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_trash, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_restore, m)?)?;
 
         // SIMD functions
         m.add_function(wrap_pyfunction!(l2_distance, m)?)?;
@@ -2517,7 +3007,26 @@ mod python {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::fs;
+        use std::io::Cursor;
         use std::sync::Once;
+
+        use anima_corefs::catalog::{
+            CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
+            ObjectLifecycle,
+        };
+        use anima_corefs::crypto::{
+            derive_corefs_subkeys, FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes,
+        };
+        use anima_corefs::envelope::{
+            encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION,
+        };
+        use anima_corefs::folders::{FolderOwner, PortableName};
+        use anima_corefs::id::OpaqueId;
+        use anima_corefs::policy::AnimaAccess;
+        use anima_corefs::transaction::{
+            CoreCommitCoordinator, PreparedObjectRevision, ValidationSnapshot,
+        };
 
         use crate::capsule::{CapsuleWriter, SectionKind};
         use crate::frame::{Frame, FrameKind, FrameSource};
@@ -2526,11 +3035,259 @@ mod python {
         const OBJECT_ID: &str = "01J00000000000000000000000";
         const STREAM_ID: &str = "01J00000000000000000000001";
         const CATALOG_ID: &str = "01J00000000000000000000002";
+        const LOGICAL_CORE_ID: &str = "ffi-logical-core";
+        const LOGICAL_ROOT_ID: &str = "01J20000000000000000000000";
+        const LOGICAL_NOTES_ID: &str = "01J20000000000000000000001";
+        const LOGICAL_OBJECT_ID: &str = "01J20000000000000000000002";
+
+        struct LogicalFixture {
+            _root: tempfile::TempDir,
+            core_root: String,
+            keys: PyCorefsSubkeys,
+            selected: ValidationSnapshot,
+            physical_name: String,
+        }
+
+        impl LogicalFixture {
+            fn root_path(&self) -> &str {
+                &self.core_root
+            }
+        }
 
         fn with_python<T>(f: impl FnOnce(Python<'_>) -> T) -> T {
             static INIT: Once = Once::new();
             INIT.call_once(|| pyo3::prepare_freethreaded_python());
             Python::with_gil(f)
+        }
+
+        #[test]
+        fn corefs_logical_bindings_use_validation_snapshot_and_model_wire_v1() {
+            with_python(|py| {
+                let fixture = logical_fixture("read-bindings");
+                let selected = corefs_validation_snapshot(
+                    py,
+                    fixture.root_path(),
+                    LOGICAL_CORE_ID,
+                    &fixture.keys,
+                )
+                .unwrap();
+                let selected = selected.bind(py).downcast::<PyDict>().unwrap();
+                let generation = selected
+                    .get_item("generation")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap();
+                let catalog_hash = selected
+                    .get_item("catalogHash")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap();
+                assert_eq!(generation, fixture.selected.head().generation());
+                assert_eq!(catalog_hash, fixture.selected.head().catalog_hash());
+
+                let stat = corefs_stat_v1(
+                    py,
+                    fixture.root_path(),
+                    LOGICAL_CORE_ID,
+                    &fixture.keys,
+                    generation,
+                    &catalog_hash,
+                    "Notes/Alpha.md",
+                )
+                .unwrap();
+                let stat = serde_json::from_slice::<serde_json::Value>(
+                    stat.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                )
+                .unwrap();
+                assert_eq!(stat["version"], anima_corefs::logical::MODEL_WIRE_V1);
+                assert_eq!(stat["result"]["path"], "Notes/Alpha.md");
+                assert_eq!(stat["result"]["stableId"], LOGICAL_OBJECT_ID);
+                assert!(stat.to_string().contains("contentHash"));
+                assert!(!stat.to_string().contains(&fixture.physical_name));
+
+                let read = corefs_read_chunk_v1(
+                    py,
+                    fixture.root_path(),
+                    LOGICAL_CORE_ID,
+                    &fixture.keys,
+                    generation,
+                    &catalog_hash,
+                    "Notes/Alpha.md",
+                    0,
+                    64,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .expect("object has one logical read chunk");
+                let read = serde_json::from_slice::<serde_json::Value>(
+                    read.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                )
+                .unwrap();
+                assert_eq!(read["version"], anima_corefs::logical::MODEL_WIRE_V1);
+                assert_eq!(
+                    read["result"]["bytesBase64"],
+                    "cG9ydGFibGUgbG9naWNhbCBub3Rl"
+                );
+                assert!(!read.to_string().contains(&fixture.physical_name));
+
+                let stale = corefs_stat_v1(
+                    py,
+                    fixture.root_path(),
+                    LOGICAL_CORE_ID,
+                    &fixture.keys,
+                    generation + 1,
+                    &catalog_hash,
+                    "Notes/Alpha.md",
+                )
+                .unwrap_err();
+                assert!(stale
+                    .to_string()
+                    .contains("validation snapshot no longer matches"));
+            });
+        }
+
+        #[test]
+        fn corefs_public_python_mutators_return_frozen_migration_code() {
+            with_python(|py| {
+                let args = PyTuple::new_bound(py, ["ignored-path"]);
+                let kwargs = PyDict::new_bound(py);
+                kwargs.set_item("content", "ignored").unwrap();
+                for result in [
+                    corefs_mkdir(py, &args, Some(&kwargs)).unwrap(),
+                    corefs_create_file(py, &args, Some(&kwargs)).unwrap(),
+                    corefs_write_file(py, &args, Some(&kwargs)).unwrap(),
+                    corefs_apply_patch(py, &args, Some(&kwargs)).unwrap(),
+                    corefs_move(py, &args, Some(&kwargs)).unwrap(),
+                    corefs_trash(py, &args, Some(&kwargs)).unwrap(),
+                    corefs_restore(py, &args, Some(&kwargs)).unwrap(),
+                ] {
+                    let result = result.bind(py).downcast::<PyDict>().unwrap();
+                    assert!(!result
+                        .get_item("ok")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap());
+                    assert_eq!(
+                        result
+                            .get_item("code")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN
+                    );
+                }
+            });
+        }
+
+        fn logical_fixture(name: &str) -> LogicalFixture {
+            let root = tempfile::tempdir().unwrap();
+            let core_root = root.path().join(name);
+            fs::create_dir_all(&core_root).unwrap();
+            let coordinator =
+                CoreCommitCoordinator::new(&core_root, LOGICAL_CORE_ID).unwrap();
+            let root_key = SecretBytes::new(vec![0x83; 32]).unwrap();
+            let keys = derive_corefs_subkeys(&root_key, 1).unwrap();
+            let prepared = prepare_logical_object(
+                &coordinator,
+                &keys,
+                LOGICAL_OBJECT_ID,
+                b"portable logical note",
+            );
+            let physical_name = prepared.physical_name().as_str().to_owned();
+            let selected = coordinator
+                .initialize_validation_snapshot(&keys, std::slice::from_ref(&prepared), |generation| {
+                    CatalogGeneration::new(
+                        generation,
+                        vec![
+                            CatalogGenerationEntry::folder(logical_common(
+                                LOGICAL_ROOT_ID,
+                                None,
+                                "Core",
+                            )),
+                            CatalogGenerationEntry::folder(logical_common(
+                                LOGICAL_NOTES_ID,
+                                Some(LOGICAL_ROOT_ID),
+                                "Notes",
+                            )),
+                            CatalogGenerationEntry::object(
+                                logical_common(
+                                    LOGICAL_OBJECT_ID,
+                                    Some(LOGICAL_NOTES_ID),
+                                    "Alpha.md",
+                                ),
+                                CatalogObject::new(
+                                    prepared.revision(),
+                                    prepared.physical_name().clone(),
+                                    prepared.content_hash().clone(),
+                                    ObjectKind::Note,
+                                    prepared.wrapped_dek().clone(),
+                                    ObjectLifecycle::Live,
+                                )
+                                .unwrap(),
+                            ),
+                        ],
+                    )
+                })
+                .unwrap();
+            LogicalFixture {
+                _root: root,
+                core_root: core_root.to_str().expect("tempdir path is utf-8").to_owned(),
+                keys: PyCorefsSubkeys { inner: keys },
+                selected,
+                physical_name,
+            }
+        }
+
+        fn prepare_logical_object(
+            coordinator: &CoreCommitCoordinator,
+            keys: &FrkSubkeys,
+            object_id: &str,
+            body: &[u8],
+        ) -> PreparedObjectRevision {
+            let object_key = SecretBytes::new(vec![0x84; 32]).unwrap();
+            let aad = ObjectBaseAad::new(
+                LOGICAL_CORE_ID,
+                object_id,
+                ObjectKind::Note,
+                ENVELOPE_VERSION,
+                1,
+                1,
+            )
+            .unwrap();
+            let metadata = EnvelopeMetadata::for_body(
+                ObjectKind::Note.as_str(),
+                object_id,
+                1,
+                "2026-07-17T00:00:00Z",
+                "2026-07-17T00:00:00Z",
+                "text/markdown",
+                std::collections::BTreeMap::new(),
+                BodyEncoding::Utf8,
+                body,
+            )
+            .unwrap();
+            let encoded = encode_envelope(&object_key, &aad, &metadata, body).unwrap();
+            coordinator
+                .prepare_object_revision(keys, &object_key, &aad, &mut Cursor::new(encoded))
+                .unwrap()
+        }
+
+        fn logical_common(id: &str, parent_id: Option<&str>, name: &str) -> CatalogEntryCommon {
+            CatalogEntryCommon::new(
+                OpaqueId::parse(id).unwrap(),
+                parent_id.map(|value| OpaqueId::parse(value).unwrap()),
+                PortableName::parse(name).unwrap(),
+                FolderOwner::User,
+                AnimaAccess::Write,
+            )
         }
 
         #[test]

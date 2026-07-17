@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 15:36 MYT
+- Updated: 2026-07-17 15:57 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -90,6 +90,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 
 - 2026-07-17 12:13 MYT - PR #103 merged Step 9 into `main` at `7d4cae3f` after current-head Codex review and CI were clean. Began Step 10 from that exact merged head in isolated worktree `codex/pcf-002-logical-tools`. The slice is ordered as: Rust logical snapshot reads and bounded traversal/grep with index-readiness reporting; an internal one-generation atomic mutation planner while public writes remain migration-frozen; then PyO3/Python `corefs_*` agent tools bound to an explicitly selected validation snapshot. Step 11 client API/grants and Step 12 catalog benchmark remain separate. The exact Rust 1.75 baseline passed 211 tests (155 CoreFS and 56 shared file tools), with 3 subprocess helpers intentionally ignored.
 - 2026-07-17 15:36 MYT - Completed Step 10's Rust CoreFS logical read layer and internal mutation layer in `codex/pcf-002-logical-tools`. Logical snapshots now expose live-only list/walk/glob/grep/read/stat with bounded V1 wire responses, catalog-bound range reads, deterministic cursors, and search-readiness reporting. The internal sealed mutation planner handles mkdir/create/write/move/trash/restore/apply-patch against selected validation snapshots, publishes exactly one next `VALIDATION_HEAD` generation or none, keeps public writes frozen with `corefs_migration_write_frozen`, adds authenticated folder trash lifecycle, hides trashed subtrees, and rejects cross-policy moves/restores before immutable object preparation. Independent review found no remaining Critical or Important issues after the policy-boundary regression. PCF-002 remains `in_progress` for Step 10 Python/PyO3 tool wrappers, Step 11 client API/grants, and Step 12 benchmarks.
+- 2026-07-17 15:57 MYT - Completed Step 10's Python/PyO3 logical tool boundary. `anima_core` now exposes validation-snapshot selection plus V1-wire `corefs_stat/list/walk/glob/grep/read_chunk/search_readiness` wrappers that require the caller's selected validation generation and catalog hash before opening objects. Server-side `anima_server.services.corefs.logical` wraps those calls without exposing physical object/catalog paths or key material. Public Python mutators (`corefs_mkdir`, `corefs_create_file`, `corefs_write_file`, `corefs_apply_patch`, `corefs_move`, `corefs_trash`, `corefs_restore`) return `corefs_migration_write_frozen` while Step 11 API/grants remain unimplemented.
 
 ## Validation
 
@@ -141,6 +142,11 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 Step 10 Layer 1/2: `cargo +1.75.0 test --locked -p anima-corefs cross_policy_moves_restores_and_patch_moves_fail_before_advancing_or_preparing` (1 passed)
   - PCF-002 Step 10 Layer 1/2: `cargo +1.75.0 test --locked -p anima-corefs` (64 passed, 1 ignored in the lib harness plus integration/doc suites)
   - PCF-002 Step 10 Layer 1/2: `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings`
+  - PCF-002 Step 10 Layer 3: `cargo check --locked -p anima-core --features python` (passed with existing unrelated anima-core warnings)
+  - PCF-002 Step 10 Layer 3: `$base='<uv CPython 3.12.9 home>'; $env:PATH='.venv/Scripts;' + $base + ';' + $base + '/DLLs;' + $env:PATH; cargo test --locked -p anima-core --features python corefs_ -- --nocapture` (6 focused PyO3 CoreFS tests passed)
+  - PCF-002 Step 10 Layer 3: `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_logical.py -q` (3 passed)
+  - PCF-002 Step 10 Layer 3: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py apps/server/src/anima_server/services/corefs/__init__.py`
+  - PCF-002 Step 10 Layer 3: `git diff --check`
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -170,6 +176,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/anima-corefs/src/catalog/v2.rs`
   - `packages/anima-corefs/src/transaction.rs` and `packages/anima-corefs/src/transaction/failure_tests.rs`
   - `packages/anima-core/src/ffi.rs`
+  - `packages/anima-core/Cargo.toml` and `Cargo.lock`
+  - `apps/server/src/anima_server/services/corefs/{__init__.py,logical.py}`
+  - `apps/server/tests/test_corefs_logical.py`
   - `apps/server/tests/test_corefs_crypto.py`
   - `Cargo.lock`
   - `packages/anima-file-tools/`
