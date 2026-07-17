@@ -650,7 +650,11 @@ def test_registration_provisions_complete_password_and_recovery_hierarchy() -> N
         assert all("raw" not in key for key in manifest["keyslots"] for key in key)
 
 
-def test_versioned_login_session_carries_frk_derived_corefs_subkeys() -> None:
+def test_versioned_login_session_carries_frk_derived_corefs_subkeys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "core_passphrase", "")
+
     with managed_test_client("anima-corefs-login-subkeys-") as client:
         registered = client.post(
             "/api/auth/register",

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 00:20 MYT
+- Updated: 2026-07-18 00:35 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -126,6 +126,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-17 23:28 MYT - Addressed PR #107's third current-head review pass for PCF-002 Step 11: non-user identities now require authenticated broker state instead of caller headers, search readiness is derived server-side, continuation cursors are catalog-generation-bound, and client-controlled native logical failures return stable 4xx responses. Focused server/API-client tests, scoped lint, desktop typechecking, and the workspace build passed; PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 00:05 MYT - Addressed PR #107's fourth current-head review pass for PCF-002 Step 11: unlock sessions now retain active FRK-derived native CoreFS subkeys rather than routing Soul DEKs into filesystem reads, Soul-only sessions remain valid and FS-locked, and the shared TypeScript client preserves structured CoreFS error codes/status/detail for grant and stale-cursor handling. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 00:20 MYT - Addressed PR #107's fifth current-head review pass for PCF-002 Step 11: missing validation snapshots now return stable 409 `corefs_validation_snapshot_missing` detail instead of escaping snapshot selection as HTTP 500. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 00:35 MYT - Addressed PR #107's sixth current-head review pass for PCF-002 Step 11: the versioned-login CoreFS-subkey regression now pins empty configured-passphrase mode and stays deterministic even when `ANIMA_CORE_PASSPHRASE` is exported. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 
 ## Validation
 
@@ -158,6 +159,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #107 third review follow-up: red/green authenticated-principal, server-readiness, cursor-generation, and logical-error-response regressions; focused Python route/logical tests (25 passed), scoped Ruff, API-client Bun tests (18 passed), desktop TypeScript lint, and `bun run build` passed. Full `bun run lint` remains blocked only by seven pre-existing Ruff findings in three untouched server test files.
   - PR #107 fourth review follow-up: red/green real-login FRK-subkey/session-route regressions and structured API-client error regression; full CoreFS keyslot tests passed (49), related route/logical/auth/session-continuity tests passed (59, excluding one pre-existing fixed-date expiry test), API-client tests passed (19), scoped Ruff passed, and `bun run build` passed.
   - PR #107 fifth review follow-up: red/green missing-validation-snapshot response regression; focused CoreFS route/logical tests passed (28), scoped Ruff passed, and `bun run build` passed.
+  - PR #107 sixth review follow-up: the versioned-login CoreFS-subkey regression passed with `ANIMA_CORE_PASSPHRASE` exported, the full CoreFS keyslot suite passed (49), scoped Ruff passed, and `bun run build` passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
