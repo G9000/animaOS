@@ -197,7 +197,12 @@ def corpus(runtime_db, monkeypatch: Any) -> dict[str, Any]:
                 size_bytes=1024,
             ),
         )
-        replace_document_chunks(runtime_db, document_id=document.id, chunks=chunks)
+        replace_document_chunks(
+            runtime_db,
+            document_id=document.id,
+            chunks=chunks,
+            parse_quality="docling",
+        )
         embedded = embed_document_chunks(
             runtime_db,
             user_id=USER_ID,

@@ -288,6 +288,9 @@ class RuntimeDocument(RuntimeBase):
         default="registered",
         server_default=text("'registered'"),
     )
+    parse_quality: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="legacy", default="legacy"
+    )
     metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -338,6 +341,9 @@ class RuntimeDocumentChunk(RuntimeBase):
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     section_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parse_quality: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="legacy", default="legacy"
+    )
     metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

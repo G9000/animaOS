@@ -1,265 +1,175 @@
 from __future__ import annotations
 
-import sys
-from types import ModuleType, SimpleNamespace
-from typing import Any
+from pathlib import Path
 
 import pytest
 from anima_server.services.documents import parsing
-from anima_server.services.documents.chunking import chunk_pages_structured
+from anima_server.services.documents.parsing_pack import ParsingPackStatus
 from anima_server.services.documents.pdf_text import PageText
-
-_DENSE_PAGE = PageText(
-    page_number=1,
-    text=" ".join(["word"] * 120),
-)
-_SPARSE_PAGE = PageText(page_number=2, text="only three words")
+from pdf_fixtures import write_text_pdf
 
 
-def _set_tier(monkeypatch: Any, tier: str) -> None:
-    monkeypatch.setattr(parsing.settings, "document_parser_tier", tier)
-
-
-def test_should_escalate_when_most_pages_sparse() -> None:
-    assert parsing.should_escalate_extraction([_SPARSE_PAGE, _SPARSE_PAGE])
-    assert parsing.should_escalate_extraction([])
-    assert not parsing.should_escalate_extraction([_DENSE_PAGE, _DENSE_PAGE])
-    # Exactly half sparse escalates (>= threshold).
-    assert parsing.should_escalate_extraction([_DENSE_PAGE, _SPARSE_PAGE])
-
-
-def test_fast_tier_never_escalates(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "fast")
-    monkeypatch.setattr(parsing, "extract_pdf_text", lambda path: [_SPARSE_PAGE])
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
+def test_uses_docling_when_pack_ready(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: True)
     monkeypatch.setattr(
-        parsing,
-        "_convert_with_docling",
-        lambda path: pytest.fail("docling must not run in fast tier"),
+        parsing, "_docling_pages", lambda path: [PageText(page_number=1, text="# Title\n\nBody")]
     )
 
-    outcome = parsing.extract_document_text_with_tier("doc.pdf")
+    outcome = parsing.extract_document_text(str(tmp_path / "doc.pdf"))
 
-    assert outcome.tier == "fast"
-    assert outcome.pages == [_SPARSE_PAGE]
-
-
-def test_auto_tier_keeps_fast_result_when_dense(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "auto")
-    monkeypatch.setattr(parsing, "extract_pdf_text", lambda path: [_DENSE_PAGE])
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
-    monkeypatch.setattr(
-        parsing,
-        "_convert_with_docling",
-        lambda path: pytest.fail("docling must not run for dense extraction"),
-    )
-
-    outcome = parsing.extract_document_text_with_tier("doc.pdf")
-
-    assert outcome.tier == "fast"
-    assert outcome.pages == [_DENSE_PAGE]
+    assert outcome.parse_quality == "docling"
+    assert outcome.pages[0].text.startswith("# Title")
 
 
-def test_auto_tier_escalates_sparse_extraction_to_docling(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "auto")
-    monkeypatch.setattr(parsing, "extract_pdf_text", lambda path: [_SPARSE_PAGE])
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
-    monkeypatch.setattr(
-        parsing,
-        "_convert_with_docling",
-        lambda path: "# Section One\n\nRecovered body text.\f## Section Two\n\nMore text.",
-    )
+def test_falls_back_to_preview_and_triggers_pack_download(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    ensured: list[bool] = []
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: ensured.append(True))
+    pdf_path = tmp_path / "doc.pdf"
+    write_text_pdf(pdf_path, "preview body text")
 
-    outcome = parsing.extract_document_text_with_tier("doc.pdf")
+    outcome = parsing.extract_document_text(str(pdf_path))
 
-    assert outcome.tier == "quality"
-    assert [page.page_number for page in outcome.pages] == [1, 2]
-    assert outcome.pages[0].text.startswith("# Section One")
+    assert outcome.parse_quality == "preview"
+    assert outcome.pages == [PageText(page_number=1, text="preview body text")]
+    assert ensured == [True]
 
 
-def test_auto_tier_escalates_scanned_pdf_to_docling(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "auto")
+def test_docling_crash_falls_back_to_preview(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: True)
 
-    def raise_no_text(path: str) -> list[PageText]:
-        raise RuntimeError(f"PDF contains no extractable text: {path}")
+    def boom(path: str) -> list[PageText]:
+        raise RuntimeError("docling exploded")
 
-    monkeypatch.setattr(parsing, "extract_pdf_text", raise_no_text)
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
-    monkeypatch.setattr(
-        parsing,
-        "_convert_with_docling",
-        lambda path: "OCR recovered this scanned page.",
-    )
+    monkeypatch.setattr(parsing, "_docling_pages", boom)
+    pdf_path = tmp_path / "doc.pdf"
+    write_text_pdf(pdf_path, "fallback body")
 
-    outcome = parsing.extract_document_text_with_tier("scan.pdf")
+    outcome = parsing.extract_document_text(str(pdf_path))
 
-    assert outcome.tier == "quality"
-    assert outcome.pages[0].text == "OCR recovered this scanned page."
+    assert outcome.parse_quality == "preview"
+    assert outcome.pages == [PageText(page_number=1, text="fallback body")]
 
 
-def test_docling_markdown_export_includes_picture_ocr_text(
-    monkeypatch: Any,
+def test_docling_producing_nothing_raises_parsing_error(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: True)
+    monkeypatch.setattr(parsing, "_convert_with_docling", lambda path: "")
+
+    with pytest.raises(parsing.DocumentParsingError):
+        parsing.extract_document_text(str(tmp_path / "doc.pdf"))
+
+
+def test_scanned_pdf_pack_downloading_raises_awaiting_parser(
+    monkeypatch, tmp_path: Path
 ) -> None:
-    export_kwargs: dict[str, Any] = {}
-
-    class FakePdfPipelineOptions:
-        def __init__(self, *, do_ocr: bool) -> None:
-            assert do_ocr is True
-
-    class FakePdfFormatOption:
-        def __init__(self, *, pipeline_options: Any) -> None:
-            assert isinstance(pipeline_options, FakePdfPipelineOptions)
-
-    class FakeDocument:
-        def export_to_markdown(self, **kwargs: Any) -> str:
-            export_kwargs.update(kwargs)
-            return "OCR recovered from a picture item."
-
-    class FakeDocumentConverter:
-        def __init__(self, *, format_options: dict[Any, Any]) -> None:
-            assert "pdf" in format_options
-
-        def convert(self, path: str) -> Any:
-            assert path == "scan.pdf"
-            return SimpleNamespace(document=FakeDocument())
-
-    docling = ModuleType("docling")
-    docling.__path__ = []  # type: ignore[attr-defined]
-    datamodel = ModuleType("docling.datamodel")
-    datamodel.__path__ = []  # type: ignore[attr-defined]
-    base_models = ModuleType("docling.datamodel.base_models")
-    base_models.InputFormat = SimpleNamespace(PDF="pdf")  # type: ignore[attr-defined]
-    pipeline_options = ModuleType("docling.datamodel.pipeline_options")
-    pipeline_options.PdfPipelineOptions = FakePdfPipelineOptions  # type: ignore[attr-defined]
-    document_converter = ModuleType("docling.document_converter")
-    document_converter.DocumentConverter = FakeDocumentConverter  # type: ignore[attr-defined]
-    document_converter.PdfFormatOption = FakePdfFormatOption  # type: ignore[attr-defined]
-
-    monkeypatch.setitem(sys.modules, "docling", docling)
-    monkeypatch.setitem(sys.modules, "docling.datamodel", datamodel)
-    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
-    monkeypatch.setitem(
-        sys.modules,
-        "docling.datamodel.pipeline_options",
-        pipeline_options,
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    monkeypatch.setattr(
+        parsing, "pack_status", lambda: ParsingPackStatus(state="downloading")
     )
-    monkeypatch.setitem(sys.modules, "docling.document_converter", document_converter)
+    ensured: list[bool] = []
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: ensured.append(True))
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
 
-    markdown = parsing._convert_with_docling("scan.pdf")
+    with pytest.raises(parsing.DocumentAwaitingParserError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
 
-    assert markdown == "OCR recovered from a picture item."
-    assert export_kwargs == {
-        "page_break_placeholder": parsing._DOCLING_PAGE_BREAK,
-        "traverse_pictures": True,
-    }
-
-
-def test_scanned_pdf_without_docling_reports_actionable_error(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "auto")
-
-    def raise_no_text(path: str) -> list[PageText]:
-        raise RuntimeError(f"PDF contains no extractable text: {path}")
-
-    monkeypatch.setattr(parsing, "extract_pdf_text", raise_no_text)
-    monkeypatch.setattr(parsing, "docling_available", lambda: False)
-
-    with pytest.raises(parsing.DocumentParsingError, match="docling"):
-        parsing.extract_document_text_with_tier("scan.pdf")
+    assert ensured == [True]
+    assert "parsing pack" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
-def test_other_fast_errors_pass_through_unchanged(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "auto")
+def test_scanned_pdf_pack_absent_raises_parsing_error_not_awaiting(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    monkeypatch.setattr(parsing, "pack_status", lambda: ParsingPackStatus(state="absent"))
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: None)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
 
-    def raise_encrypted(path: str) -> list[PageText]:
-        raise RuntimeError("PDF is encrypted and requires a password: locked.pdf")
+    with pytest.raises(parsing.DocumentParsingError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
 
-    monkeypatch.setattr(parsing, "extract_pdf_text", raise_encrypted)
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    message = str(exc_info.value)
+    assert "docling extra" in message
+    assert "parsing pack" in message
 
-    with pytest.raises(RuntimeError, match="encrypted"):
-        parsing.extract_document_text_with_tier("locked.pdf")
 
-
-def test_quality_tier_uses_docling_directly(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "quality")
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
+def test_scanned_pdf_pack_error_raises_parsing_error_with_pack_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
     monkeypatch.setattr(
         parsing,
-        "extract_pdf_text",
-        lambda path: pytest.fail("fast parser must not run in quality tier"),
+        "pack_status",
+        lambda: ParsingPackStatus(state="error", error="network down"),
     )
-    monkeypatch.setattr(parsing, "_convert_with_docling", lambda path: "Quality text.")
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: None)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
 
-    outcome = parsing.extract_document_text_with_tier("doc.pdf")
+    with pytest.raises(parsing.DocumentParsingError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
 
-    assert outcome.tier == "quality"
-    assert outcome.pages == [PageText(page_number=1, text="Quality text.")]
-
-
-def test_quality_tier_falls_back_to_fast_when_docling_missing(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "quality")
-    monkeypatch.setattr(parsing, "docling_available", lambda: False)
-    monkeypatch.setattr(parsing, "extract_pdf_text", lambda path: [_DENSE_PAGE])
-
-    outcome = parsing.extract_document_text_with_tier("doc.pdf")
-
-    assert outcome.tier == "fast"
-    assert outcome.pages == [_DENSE_PAGE]
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    message = str(exc_info.value)
+    assert "network down" in message
+    assert "parsing-pack/download" in message
 
 
-def test_unknown_tier_raises(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "turbo")
+def test_scanned_pdf_pack_error_snapshot_survives_auto_retry_start(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A prior download failure must be reported even though ensure_parsing_pack()
+    (called for its auto-retry side effect) clears the error and flips
+    pack_status() to "downloading" for anyone who queries it afterwards.
 
-    with pytest.raises(ValueError, match="document_parser_tier"):
-        parsing.extract_document_text_with_tier("doc.pdf")
+    This mirrors the real parsing_pack module: ensure_parsing_pack() resets
+    the recorded error and starts a new download thread, so a fresh
+    pack_status() call made *after* ensure has run can no longer see the
+    failure. The fix must snapshot status *before* calling ensure.
+    """
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    ensure_called = {"value": False}
 
+    def fake_pack_status() -> ParsingPackStatus:
+        if ensure_called["value"]:
+            return ParsingPackStatus(state="downloading")
+        return ParsingPackStatus(state="error", error="network down")
 
-def test_docling_empty_output_raises(monkeypatch: Any) -> None:
-    _set_tier(monkeypatch, "quality")
-    monkeypatch.setattr(parsing, "docling_available", lambda: True)
-    monkeypatch.setattr(parsing, "_convert_with_docling", lambda path: " \f \f ")
+    def fake_ensure() -> None:
+        ensure_called["value"] = True
 
-    with pytest.raises(parsing.DocumentParsingError, match="could not extract"):
-        parsing.extract_document_text_with_tier("doc.pdf")
+    monkeypatch.setattr(parsing, "pack_status", fake_pack_status)
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", fake_ensure)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
 
+    with pytest.raises(parsing.DocumentParsingError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
 
-def test_structured_chunking_preserves_docling_sections() -> None:
-    install_body = " ".join(["Mount the relay before wiring the pump."] * 8)
-    calibrate_body = " ".join(["Calibrate at 40 PSI before sealing."] * 8)
-    pages = [
-        PageText(page_number=1, text=f"# Installation\n\n{install_body}"),
-        PageText(
-            page_number=2,
-            text=(
-                f"## Calibration\n\n{calibrate_body}\n\n"
-                "| knob | value |\n| - | - |\n| A | 40 |"
-            ),
-        ),
-    ]
-
-    chunks = chunk_pages_structured(pages, target_chars=200)
-
-    titles = [chunk.section_title for chunk in chunks]
-    assert "Installation" in titles[0]
-    assert any(
-        title is not None and "Calibration" in title for title in titles
-    )
-    assert all(chunk.page_start is not None for chunk in chunks)
-    table_chunks = [
-        chunk for chunk in chunks if "| knob |" in chunk.content_text
-    ]
-    assert len(table_chunks) == 1
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    message = str(exc_info.value)
+    assert "network down" in message
+    assert "parsing-pack/download" in message
 
 
-def test_plain_pypdf_pages_get_conservative_heading_detection() -> None:
-    pages = [
-        PageText(
-            page_number=1,
-            text="2.1 Safety Procedures\n\nAlways disconnect power before servicing.",
-        ),
-    ]
+def test_scanned_pdf_while_pack_ready_is_plain_runtime_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: True)
 
-    chunks = chunk_pages_structured(pages, target_chars=500)
+    def boom(path: str) -> list[PageText]:
+        raise RuntimeError("docling exploded")
 
-    assert chunks[0].section_title == "2.1 Safety Procedures"
-    assert chunks[0].page_start == 1
+    monkeypatch.setattr(parsing, "_docling_pages", boom)
+    pdf_path = tmp_path / "scanned.pdf"
+    write_text_pdf(pdf_path, "")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        parsing.extract_document_text(str(pdf_path))
+
+    assert not isinstance(exc_info.value, parsing.DocumentAwaitingParserError)
+    assert "no extractable text" in str(exc_info.value)

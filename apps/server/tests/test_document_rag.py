@@ -66,6 +66,7 @@ def _document_with_chunks(
             ExtractedDocumentChunk(chunk_index=index, content_text=content)
             for index, content in enumerate(chunk_texts)
         ],
+        parse_quality="docling",
     )
     return document, inserted
 
@@ -104,6 +105,7 @@ def _document_with_extracted_chunks(
         runtime_db,
         document_id=document.id,
         chunks=chunks,
+        parse_quality="docling",
     )
     return document, inserted
 

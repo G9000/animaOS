@@ -1,109 +1,134 @@
-"""Tiered PDF text extraction: pypdf fast path, optional Docling quality tier.
+"""Docling-first document parsing.
 
-The fast path (pypdf) is the default for born-digital PDFs. When the
-``docling`` extra is installed, poor fast-path output — scanned pages, near-
-empty extractions — escalates to Docling, which runs layout analysis plus OCR
-and exports per-page markdown. Both tiers return the same ``PageText`` shape,
-so workflow checkpoints and chunking stay tier-agnostic; the quality tier's
-markdown headings are picked up downstream by the structured chunker.
+Docling (layout analysis + table structure + OCR) is the only durable
+parser; there are no quality tiers and no escalation heuristics. When the
+parsing pack is not ready yet, extraction falls back to the pdfium preview
+path and the result is marked ``parse_quality="preview"`` so reparse can
+upgrade it later. Docling markdown headings feed the structured chunker.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 
-from anima_server.config import settings
+from anima_server.services.documents.parsing_pack import (
+    ParsingPackStatus,
+    ensure_parsing_pack,
+    pack_status,
+    parsing_pack_ready,
+)
 from anima_server.services.documents.pdf_text import PageText, extract_pdf_text
 
 logger = logging.getLogger(__name__)
 
-PARSER_TIER_FAST = "fast"
-PARSER_TIER_QUALITY = "quality"
-PARSER_TIER_AUTO = "auto"
-
 _DOCLING_PAGE_BREAK = "\f"
 
-# Escalation heuristics (auto tier): a page this sparse suggests a scan or a
-# layout pypdf could not read; escalate when at least this share of pages is
-# sparse.
-_SPARSE_PAGE_WORD_COUNT = 15
-_SPARSE_PAGE_SHARE_THRESHOLD = 0.5
+PARSE_QUALITY_PREVIEW = "preview"
+PARSE_QUALITY_DOCLING = "docling"
 
 
 class DocumentParsingError(RuntimeError):
-    """Raised when no parsing tier can extract text from a document."""
+    """Raised when no parser can extract text from a document."""
+
+
+class DocumentAwaitingParserError(DocumentParsingError):
+    """Raised when a scanned/image-only document needs the quality parser.
+
+    The pdfium preview path has no OCR, so it cannot extract text from a
+    scanned PDF. When the Docling parsing pack (which does OCR) is not yet
+    ready, that is a transient condition, not a permanent failure — the
+    caller should let the ingest retry once the pack finishes downloading,
+    rather than treating this as an unrecoverable error.
+    """
 
 
 @dataclass(frozen=True, slots=True)
 class ExtractionOutcome:
     pages: list[PageText]
-    tier: str
+    parse_quality: str
 
 
-def docling_available() -> bool:
-    return importlib.util.find_spec("docling") is not None
-
-
-def extract_document_text(path: str) -> list[PageText]:
-    """ExtractTextFn-compatible entry point for the PDF workflow."""
-    return extract_document_text_with_tier(path).pages
-
-
-def extract_document_text_with_tier(path: str) -> ExtractionOutcome:
-    tier = (settings.document_parser_tier or PARSER_TIER_AUTO).strip().lower()
-    if tier not in {PARSER_TIER_FAST, PARSER_TIER_QUALITY, PARSER_TIER_AUTO}:
-        raise ValueError(f"Unknown document_parser_tier: {tier!r}")
-
-    if tier == PARSER_TIER_QUALITY:
-        if docling_available():
-            return ExtractionOutcome(pages=_docling_pages(path), tier=PARSER_TIER_QUALITY)
-        logger.warning(
-            "document_parser_tier=quality but the docling extra is not "
-            "installed; falling back to the fast parser."
-        )
-        return ExtractionOutcome(pages=extract_pdf_text(path), tier=PARSER_TIER_FAST)
-
+def extract_document_text(path: str) -> ExtractionOutcome:
+    prior_status: ParsingPackStatus | None = None
+    if parsing_pack_ready():
+        try:
+            return ExtractionOutcome(
+                pages=_docling_pages(path), parse_quality=PARSE_QUALITY_DOCLING
+            )
+        except DocumentParsingError:
+            raise
+        except Exception:
+            # Spec §Error handling: a Docling crash must not fail the ingest —
+            # fall back to preview quality (visible via parse_quality) so the
+            # document stays usable and reparse can retry later.
+            logger.warning("Docling parse failed for %s; using preview", path, exc_info=True)
+    else:
+        # Snapshot status BEFORE triggering the retry below. ensure_parsing_pack()
+        # clears any recorded download error and starts a fresh attempt, so if we
+        # queried status only *after* calling it, a persistent failure would look
+        # identical to "still downloading" and its actionable error message (see
+        # commit debe594) would become permanently unreachable. We still call
+        # ensure_parsing_pack() every time — auto-retry is desired — we just must
+        # not let it erase the evidence of the failure it's about to retry.
+        prior_status = pack_status()
+        ensure_parsing_pack()
+        logger.info("Parsing pack not ready; extracting preview text for %s", path)
     try:
         pages = extract_pdf_text(path)
     except RuntimeError as exc:
-        if tier == PARSER_TIER_AUTO and _is_no_text_error(exc) and docling_available():
-            logger.info("Fast PDF parse found no text; escalating to Docling OCR.")
-            return ExtractionOutcome(pages=_docling_pages(path), tier=PARSER_TIER_QUALITY)
-        if _is_no_text_error(exc) and not docling_available():
-            raise DocumentParsingError(
-                f"{exc} The document may be scanned; install the server's "
-                "'docling' extra to enable layout parsing and OCR."
+        if "no extractable text" in str(exc) and not parsing_pack_ready():
+            # Use the pre-retry snapshot, not a fresh pack_status() call: by now
+            # ensure_parsing_pack() has run and may have cleared an "error" state
+            # into "downloading", which would hide the failure below.
+            status = prior_status if prior_status is not None else pack_status()
+            if status.state == "error":
+                # The download already failed; ensure_parsing_pack() above has
+                # just kicked off a new attempt (auto-retry), but the caller
+                # still needs to know the previous one failed rather than
+                # silently waiting on a retry it doesn't know is happening.
+                raise DocumentParsingError(
+                    f"{exc} The document appears to be scanned (no text layer); "
+                    f"the parsing pack download previously failed ({status.error}) "
+                    "— a new download attempt has been started automatically; "
+                    "check GET /documents/parsing-pack for progress, or retry it "
+                    "explicitly via POST /documents/parsing-pack/download."
+                ) from exc
+            if status.state == "absent":
+                # "absent" alone is ambiguous: it means either "docling isn't
+                # installed" or "docling is installed but no download has ever
+                # been attempted" — both read the same before ensure runs.
+                # Disambiguate by checking status again now that
+                # ensure_parsing_pack() has had a chance to act: it only leaves
+                # the pack "absent" when docling isn't installed (it no-ops in
+                # that case), so still-absent here means truly not installed —
+                # telling the caller to "wait" would be a permanent lie, so tell
+                # them what to actually do instead. Any other post-ensure state
+                # means this was genuinely the first download attempt, just
+                # kicked off above, so we fall through to the awaiting-parser
+                # branch below.
+                post_ensure_status = pack_status()
+                if post_ensure_status.state == "absent":
+                    raise DocumentParsingError(
+                        f"{exc} The document appears to be scanned (no text layer) "
+                        "and the quality parser with OCR is not installed — install "
+                        "the server's docling extra (or download the parsing pack) "
+                        "to ingest scanned PDFs."
+                    ) from exc
+            # state == "downloading" (the common case), the first-download-just-
+            # started case falling through from "absent" above, or "ready" in the
+            # rare race where the pack finished between our parsing_pack_ready()
+            # check above and this one — either way it's safe to treat as
+            # transient: a "ready" race just means the caller retries once
+            # more than strictly necessary before the next ingest picks up
+            # docling, whereas any other verdict here would be unsafe.
+            raise DocumentAwaitingParserError(
+                f"{exc} The document appears to be scanned (no text layer); "
+                "the quality parser with OCR is not ready yet — wait for the "
+                "parsing pack download to finish, then resume or re-upload."
             ) from exc
         raise
-
-    if (
-        tier == PARSER_TIER_AUTO
-        and should_escalate_extraction(pages)
-        and docling_available()
-    ):
-        logger.info(
-            "Fast PDF parse looks sparse (%d pages); escalating to Docling.",
-            len(pages),
-        )
-        return ExtractionOutcome(pages=_docling_pages(path), tier=PARSER_TIER_QUALITY)
-    return ExtractionOutcome(pages=pages, tier=PARSER_TIER_FAST)
-
-
-def should_escalate_extraction(pages: Sequence[PageText]) -> bool:
-    """Deterministic quality score: escalate when most pages are near-empty."""
-    if not pages:
-        return True
-    sparse = sum(
-        1 for page in pages if len(page.text.split()) < _SPARSE_PAGE_WORD_COUNT
-    )
-    return (sparse / len(pages)) >= _SPARSE_PAGE_SHARE_THRESHOLD
-
-
-def _is_no_text_error(exc: RuntimeError) -> bool:
-    return "no extractable text" in str(exc)
+    return ExtractionOutcome(pages=pages, parse_quality=PARSE_QUALITY_PREVIEW)
 
 
 def _docling_pages(path: str) -> list[PageText]:
@@ -130,7 +155,7 @@ def _convert_with_docling(path: str) -> str:
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.document_converter import DocumentConverter, PdfFormatOption
-    except ImportError as exc:  # pragma: no cover - guarded by docling_available
+    except ImportError as exc:  # pragma: no cover - guarded by parsing_pack_ready
         raise DocumentParsingError(
             "The docling extra is not installed; cannot run the quality parser."
         ) from exc
@@ -149,13 +174,10 @@ def _convert_with_docling(path: str) -> str:
 
 
 __all__ = [
-    "PARSER_TIER_AUTO",
-    "PARSER_TIER_FAST",
-    "PARSER_TIER_QUALITY",
+    "PARSE_QUALITY_DOCLING",
+    "PARSE_QUALITY_PREVIEW",
+    "DocumentAwaitingParserError",
     "DocumentParsingError",
     "ExtractionOutcome",
-    "docling_available",
     "extract_document_text",
-    "extract_document_text_with_tier",
-    "should_escalate_extraction",
 ]

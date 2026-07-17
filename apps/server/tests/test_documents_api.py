@@ -12,7 +12,10 @@ from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.vector_store import VectorSearchResult
 from anima_server.services.documents import ExtractedDocumentChunk, pdf_workflow
+from anima_server.services.documents.parsing import ExtractionOutcome
+from anima_server.services.documents.parsing_pack import ParsingPackStatus
 from anima_server.services.documents.pdf_text import PageText
+from anima_server.services.documents.reparse import ReparseResult
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
@@ -91,10 +94,13 @@ def _patch_pdf_edges(
             ]
 
         return pdf_workflow.PDFIngestionDependencies(
-            extract_text=lambda _path: [
-                PageText(page_number=1, text="alpha installation guide"),
-                PageText(page_number=2, text="beta usage notes"),
-            ],
+            extract_text=lambda _path: ExtractionOutcome(
+                pages=[
+                    PageText(page_number=1, text="alpha installation guide"),
+                    PageText(page_number=2, text="beta usage notes"),
+                ],
+                parse_quality="docling",
+            ),
             chunk_text=lambda _pages: [
                 ExtractedDocumentChunk(
                     chunk_index=0,
@@ -118,10 +124,13 @@ def _patch_pdf_edges(
     monkeypatch.setattr(
         pdf_workflow,
         "extract_document_text",
-        lambda _path: [
-            PageText(page_number=1, text="alpha installation guide"),
-            PageText(page_number=2, text="beta usage notes"),
-        ],
+        lambda _path: ExtractionOutcome(
+            pages=[
+                PageText(page_number=1, text="alpha installation guide"),
+                PageText(page_number=2, text="beta usage notes"),
+            ],
+            parse_quality="docling",
+        ),
     )
 
     def fake_upsert_source(
@@ -639,3 +648,259 @@ def test_document_workflows_are_hidden_from_other_unlocked_users() -> None:
             json={"userId": int(owner["id"]) + 999, "query": "manual"},
         )
         assert search_response.status_code == 403
+
+
+def test_get_parsing_pack_status_requires_auth() -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        response = client.get("/api/documents/parsing-pack")
+        assert response.status_code == 401
+
+
+def test_get_parsing_pack_status_returns_pack_state(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "pack_status",
+        lambda: ParsingPackStatus(state="downloading", progress=0.42),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="parsing-pack-status-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.get("/api/documents/parsing-pack", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "state": "downloading",
+            "progress": 0.42,
+            "error": None,
+        }
+
+
+def test_download_parsing_pack_triggers_ensure_and_returns_state(
+    monkeypatch: Any,
+) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    calls: list[bool] = []
+
+    def fake_ensure() -> ParsingPackStatus:
+        calls.append(True)
+        return ParsingPackStatus(state="downloading", progress=0.0)
+
+    monkeypatch.setattr(documents_route, "ensure_parsing_pack", fake_ensure)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="parsing-pack-download-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/parsing-pack/download", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json() == {"state": "downloading", "progress": 0.0, "error": None}
+        assert calls == [True]
+
+
+def test_download_parsing_pack_requires_auth() -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        response = client.post("/api/documents/parsing-pack/download")
+        assert response.status_code == 401
+
+
+def test_reparse_document_returns_upgraded_payload(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    captured: dict[str, object] = {}
+
+    def fake_reparse_document(
+        runtime_db: Any,
+        *,
+        user_id: int,
+        document_id: int,
+    ) -> ReparseResult:
+        captured["user_id"] = user_id
+        captured["document_id"] = document_id
+        return ReparseResult(status="upgraded", chunk_count=3)
+
+    monkeypatch.setattr(documents_route, "reparse_document", fake_reparse_document)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-upgraded-user")
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/55/reparse", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "upgraded", "chunk_count": 3}
+        assert captured == {"user_id": user_id, "document_id": 55}
+
+
+def test_reparse_document_returns_404_when_not_found(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(status="not_found"),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-missing-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/999/reparse", headers=headers)
+
+        assert response.status_code == 404
+        assert response.json()["error"] == "Document not found"
+
+
+def test_reparse_document_returns_409_when_pack_not_ready(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(status="pack_not_ready"),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-pack-not-ready-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "Parsing pack is not ready."
+
+
+def test_reparse_document_returns_upgraded_unembedded_payload(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(
+            status="upgraded_unembedded", chunk_count=2
+        ),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-unembedded-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "upgraded_unembedded", "chunk_count": 2}
+
+
+def test_reparse_document_returns_502_when_parse_degraded(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(status="parse_degraded"),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-degraded-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 502
+        assert (
+            response.json()["error"]
+            == "Quality parsing failed for this document; try again."
+        )
+
+
+def test_reparse_document_returns_503_when_parser_unavailable(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(
+            status="parser_unavailable",
+            detail="the quality parser is not installed; install the docling extra",
+        ),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-parser-unavailable-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 503
+        assert (
+            "the quality parser is not installed; install the docling extra"
+            in response.json()["error"]
+        )
+
+
+def test_reparse_document_returns_503_for_runtime_error(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    def raise_runtime_error(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("Failed to read PDF file /tmp/x.pdf: corrupt")
+
+    monkeypatch.setattr(documents_route, "reparse_document", raise_runtime_error)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-runtime-error-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 503
+        assert "PDF parsing is unavailable" in response.json()["error"]
+
+
+def test_reparse_document_returns_503_for_document_parsing_error(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+    from anima_server.services.documents.parsing import DocumentParsingError
+
+    def raise_parsing_error(*args: Any, **kwargs: Any) -> Any:
+        raise DocumentParsingError("Docling could not extract any text from x.pdf.")
+
+    monkeypatch.setattr(documents_route, "reparse_document", raise_parsing_error)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-parsing-error-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 503
+        assert "PDF parsing is unavailable" in response.json()["error"]
+
+
+def test_reparse_document_requires_auth() -> None:
+    with managed_test_client("anima-documents-api-") as client:
+        response = client.post("/api/documents/1/reparse")
+        assert response.status_code == 401
+
+
+def test_reparse_document_returns_400_for_storage_path_error(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+    from anima_server.services.documents import DocumentStoragePathError
+
+    def raise_storage_error(*args: Any, **kwargs: Any) -> Any:
+        raise DocumentStoragePathError("Invalid document storage path.")
+
+    monkeypatch.setattr(documents_route, "reparse_document", raise_storage_error)
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-storage-error-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid document storage path."

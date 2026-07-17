@@ -28,7 +28,12 @@ from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
-from anima_server.services.documents.parsing import extract_document_text
+from anima_server.services.documents.parsing import (
+    PARSE_QUALITY_DOCLING,
+    PARSE_QUALITY_PREVIEW,
+    ExtractionOutcome,
+    extract_document_text,
+)
 from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.documents.store import (
     get_document_for_user,
@@ -65,7 +70,7 @@ PDF_WORKFLOW_TYPE = "pdf_ingestion"
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 JsonObject = dict[str, Any]
-ExtractTextFn = Callable[[str], Sequence[PageText]]
+ExtractTextFn = Callable[[str], ExtractionOutcome]
 ChunkTextFn = Callable[[Sequence[PageText]], Sequence[ExtractedDocumentChunk]]
 EmbeddingFn = Callable[[str], list[float] | None]
 SummarizeFn = Callable[[RuntimeDocument, list[RuntimeDocumentChunk]], JsonObject]
@@ -340,15 +345,22 @@ def run_pdf_ingestion_until_wait_or_done(
                     document.storage_path,
                     user_id=run.user_id,
                 )
-                pages = list(dependencies.extract_text(str(storage_path)))
+                outcome = dependencies.extract_text(str(storage_path))
+                pages = list(outcome.pages)
+                parse_quality = outcome.parse_quality
             else:
                 context.chunks = reusable_chunks
                 pages = []
+                parse_quality = PARSE_QUALITY_PREVIEW
             _append_completed(
                 db,
                 run,
                 "text_extracted",
-                output_json={"document_id": document.id, "pages": _json_safe(pages)},
+                output_json={
+                    "document_id": document.id,
+                    "pages": _json_safe(pages),
+                    "parse_quality": parse_quality,
+                },
                 artifact_refs_json={"document_id": document.id},
             )
 
@@ -366,6 +378,7 @@ def run_pdf_ingestion_until_wait_or_done(
                     db,
                     document_id=document.id,
                     chunks=extracted_chunks,
+                    parse_quality=context.require_parse_quality(),
                 )
             else:
                 chunks = reusable_chunks
@@ -411,6 +424,7 @@ def run_pdf_ingestion_until_wait_or_done(
                 db,
                 document=document,
                 embedding_fn=dependencies.embedding_fn if sync_source_embeddings else None,
+                compile_knowledge=document.parse_quality == PARSE_QUALITY_DOCLING,
             )
             _append_completed(
                 db,
@@ -536,6 +550,12 @@ class _WorkflowContext:
         if checkpoint is None or checkpoint.output_json is None:
             raise ValueError("Cannot chunk PDF before text_extracted checkpoint.")
         return _pages_from_checkpoint_payload(checkpoint.output_json.get("pages", []))
+
+    def require_parse_quality(self) -> str:
+        checkpoint = self._checkpoint("text_extracted")
+        if checkpoint is None or checkpoint.output_json is None:
+            raise ValueError("Cannot chunk PDF before text_extracted checkpoint.")
+        return _parse_quality_from_checkpoint_payload(checkpoint.output_json)
 
     def require_chunks(self) -> list[RuntimeDocumentChunk]:
         if self.chunks is not None:
@@ -1039,6 +1059,16 @@ def _pages_from_checkpoint_payload(payload: object) -> list[PageText]:
             continue
         pages.append(PageText(page_number=int(page_number), text=str(text)))
     return pages
+
+
+def _parse_quality_from_checkpoint_payload(payload: object) -> str:
+    """Old checkpoints predate ``parse_quality``; default to preview quality."""
+    if not isinstance(payload, dict):
+        return PARSE_QUALITY_PREVIEW
+    value = payload.get("parse_quality")
+    if not isinstance(value, str) or not value:
+        return PARSE_QUALITY_PREVIEW
+    return value
 
 
 def _json_safe(value: object) -> Any:

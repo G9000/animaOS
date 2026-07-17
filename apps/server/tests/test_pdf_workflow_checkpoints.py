@@ -29,6 +29,7 @@ from anima_server.services.documents import (
     register_document,
     replace_document_chunks,
 )
+from anima_server.services.documents.parsing import ExtractionOutcome
 from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.documents.pdf_workflow import (
     PDF_WORKFLOW_STATES,
@@ -152,19 +153,23 @@ def _dependencies(
     fail_summarize: bool = False,
     fail_propose: bool = False,
     embedding_override: Any | None = None,
+    parse_quality: str = "docling",
 ) -> PDFIngestionDependencies:
     calls.embedded = []
     embedding_fn_override = embedding_override
 
-    def extract_text(path: str) -> list[PageText]:
+    def extract_text(path: str) -> ExtractionOutcome:
         if fail_extract:
             raise AssertionError("extract_text should not run")
         calls.extracted += 1
         filename = Path(path).name
-        return [
-            PageText(page_number=1, text=f"{filename} alpha"),
-            PageText(page_number=2, text="beta"),
-        ]
+        return ExtractionOutcome(
+            pages=[
+                PageText(page_number=1, text=f"{filename} alpha"),
+                PageText(page_number=2, text="beta"),
+            ],
+            parse_quality=parse_quality,
+        )
 
     def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
         if fail_chunk:
@@ -368,6 +373,44 @@ def test_pdf_workflow_compiles_indexed_document_source_to_knowledge(
     assert compile_run.source_id == source.id
 
 
+def test_pdf_workflow_preview_quality_indexes_without_compiling_knowledge(
+    runtime_db: Session,
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _patch_pgvec_upsert(monkeypatch)
+    calls = _Calls()
+    run = start_pdf_ingestion_workflow(runtime_db, _request(thread_id=None))
+
+    result = run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(calls, parse_quality="preview"),
+    )
+
+    source = runtime_db.scalar(
+        select(RuntimeSource).where(
+            RuntimeSource.user_id == 7,
+            RuntimeSource.kind == "document",
+        )
+    )
+    spans = list(
+        runtime_db.scalars(
+            select(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)
+        ).all()
+    )
+    concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
+    citations = list(runtime_db.scalars(select(RuntimeKnowledgeConceptSource)).all())
+
+    assert result.status == "awaiting_input"
+    assert source is not None
+    assert source.status == "indexed"
+    assert len(spans) == 2
+    assert concepts == []
+    assert citations == []
+
+
 def _checkpoint(
     runtime_db: Session,
     *,
@@ -456,6 +499,7 @@ def _seed_chunked(
             ExtractedDocumentChunk(chunk_index=0, content_text="seed alpha"),
             ExtractedDocumentChunk(chunk_index=1, content_text="seed beta"),
         ],
+        parse_quality="docling",
     )
     _checkpoint(
         runtime_db,
@@ -593,12 +637,15 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     page_one_text = " ".join(["alpha"] * 280)
     page_two_text = " ".join(["beta"] * 50)
 
-    def fake_extract_pdf_text(path: str) -> list[PageText]:
+    def fake_extract_pdf_text(path: str) -> ExtractionOutcome:
         extracted_paths.append(path)
-        return [
-            PageText(page_number=1, text=page_one_text),
-            PageText(page_number=2, text=page_two_text),
-        ]
+        return ExtractionOutcome(
+            pages=[
+                PageText(page_number=1, text=page_one_text),
+                PageText(page_number=2, text=page_two_text),
+            ],
+            parse_quality="docling",
+        )
 
     def fake_embedding(text: str) -> list[float]:
         embedded_texts.append(text)
@@ -964,7 +1011,7 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
     document.indexed_at = None
     runtime_db.flush()
 
-    def extract_text(_path: str) -> list[PageText]:
+    def extract_text(_path: str) -> ExtractionOutcome:
         raise RuntimeError("re-extract")
 
     def chunk_text(_pages: list[PageText]) -> list[ExtractedDocumentChunk]:
@@ -1032,8 +1079,8 @@ def test_resume_reused_text_checkpoint_replaces_stale_pages_payload(
 
     restored_pages = [PageText(page_number=1, text="restored page")]
 
-    def extract_text(_path: str) -> list[PageText]:
-        return restored_pages
+    def extract_text(_path: str) -> ExtractionOutcome:
+        return ExtractionOutcome(pages=restored_pages, parse_quality="docling")
 
     def chunk_text(pages: list[PageText]) -> list[ExtractedDocumentChunk]:
         assert [page.text for page in pages] == ["restored page"]
@@ -1072,6 +1119,7 @@ def test_resume_reused_text_checkpoint_replaces_stale_pages_payload(
     assert text_extracted.output_json == {
         "document_id": document.id,
         "pages": [{"page_number": 1, "text": "restored page"}],
+        "parse_quality": "docling",
     }
     chunks = list_document_chunks(runtime_db, document_id=document.id)
     assert [chunk.content_text for chunk in chunks] == ["restored page"]
@@ -1322,7 +1370,6 @@ def test_resume_from_text_extracted_reuses_staged_pages(
     assert result.status == "awaiting_input"
     assert calls.extracted == 0
     assert calls.chunked == 1
-    _assert_pdf_embedding_calls(calls.embedded, ["seed alpha", "seed beta"])
     chunk_texts = [
         chunk.content_text
         for chunk in list_document_chunks(runtime_db, document_id=document.id)
@@ -1331,6 +1378,23 @@ def test_resume_from_text_extracted_reuses_staged_pages(
         "seed alpha",
         "seed beta",
     ]
+    # The seeded checkpoint predates "parse_quality"; resuming through it must
+    # default to preview quality rather than erroring or assuming docling.
+    runtime_db.refresh(document)
+    assert document.parse_quality == "preview"
+    # Preview-quality (unconfirmed) output must still land as searchable
+    # chunk/source-span embeddings, but must NOT be promoted into OKF
+    # knowledge concepts — only docling-quality output feeds the compiler.
+    assert calls.embedded == [
+        "seed alpha",
+        "seed beta",
+        "seed alpha",
+        "seed beta",
+    ]
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 0
+    assert (
+        runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
+    )
 
 
 def test_resume_from_chunked_reuses_stored_chunks(
@@ -1431,6 +1495,7 @@ def test_resume_from_indexed_reembeds_unindexed_document_before_summary(
             ExtractedDocumentChunk(chunk_index=0, content_text="replacement alpha"),
             ExtractedDocumentChunk(chunk_index=1, content_text="replacement beta"),
         ],
+        parse_quality="docling",
     )
     calls = _Calls()
 

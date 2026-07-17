@@ -306,7 +306,7 @@ def structure_pages_markdown(pages: Sequence[PageText]) -> StructuredDocument:
 
     Each page is parsed as markdown — explicit headings, tables, and code
     survive — and plain single-line paragraphs still get the conservative
-    page-heading detection, so fast-path pypdf text works through the same
+    page-heading detection, so preview text works through the same
     function. Blocks carry page locators instead of line locators.
     """
     blocks: list[StructuredBlock] = []

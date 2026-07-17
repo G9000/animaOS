@@ -68,6 +68,7 @@ def _make_document(
             runtime_db,
             document_id=document.id,
             chunks=chunks,
+            parse_quality="docling",
         )
     return document
 

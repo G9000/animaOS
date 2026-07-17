@@ -615,6 +615,7 @@ def test_sync_document_source_preserves_chunks_and_writes_page_spans(runtime_db)
                 section_title="Details",
             ),
         ],
+        parse_quality="docling",
     )
 
     source, artifacts, spans = sync_document_source(runtime_db, document=document)
@@ -634,6 +635,52 @@ def test_sync_document_source_preserves_chunks_and_writes_page_spans(runtime_db)
     }
     assert spans[0].metadata_json["section_title"] == "Opening"
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
+
+
+def test_sync_document_source_with_compile_knowledge_false_skips_concepts(
+    runtime_db,
+) -> None:
+    from anima_server.services.ingestion.adapters.documents import sync_document_source
+
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=1,
+            filename="preview-guide.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/1/preview-guide.pdf",
+            sha256=_sha("preview pdf bytes"),
+            size_bytes=2048,
+            metadata_json={"origin": "upload"},
+        ),
+    )
+    replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text="Provisional page one claim.",
+                page_start=1,
+                page_end=1,
+                section_title="Opening",
+                token_count=4,
+            ),
+        ],
+        parse_quality="preview",
+    )
+
+    source, artifacts, spans = sync_document_source(
+        runtime_db,
+        document=document,
+        compile_knowledge=False,
+    )
+
+    assert source.status == "indexed"
+    assert len(artifacts) == 1
+    assert len(spans) == 1
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 0
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
 
 
 def test_sync_image_source_preserves_annotations_and_writes_image_locators(

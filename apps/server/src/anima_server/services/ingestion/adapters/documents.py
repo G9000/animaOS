@@ -29,6 +29,7 @@ def sync_document_source(
     *,
     document: RuntimeDocument,
     embedding_fn: EmbeddingFn | None = None,
+    compile_knowledge: bool = True,
 ) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
     chunks = list(
         db.scalars(
@@ -91,7 +92,7 @@ def sync_document_source(
             artifacts=artifacts,
             spans=spans,
             embedding_fn=embedding_fn,
-            compile_knowledge=True,
+            compile_knowledge=compile_knowledge,
         ),
     )
 
