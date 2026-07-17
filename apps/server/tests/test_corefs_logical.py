@@ -132,13 +132,17 @@ def test_glob_and_grep_wrappers_pass_continuation_cursors(monkeypatch) -> None:
 
 
 def test_mutation_wrappers_return_migration_frozen_code(monkeypatch) -> None:
-    def fake_mkdir() -> dict[str, object]:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_mkdir(*args: object, **kwargs: object) -> dict[str, object]:
+        calls.append((args, kwargs))
         return logical.frozen_mutation_result("mkdir")
 
     monkeypatch.setattr(logical.anima_core, "corefs_mkdir", fake_mkdir, raising=False)
 
-    assert logical.mkdir() == {
+    assert logical.mkdir("Notes", recursive=True) == {
         "ok": False,
         "operation": "mkdir",
         "code": logical.CORE_FS_MIGRATION_WRITE_FROZEN,
     }
+    assert calls == [(("Notes",), {"recursive": True})]

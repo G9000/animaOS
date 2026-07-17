@@ -242,29 +242,29 @@ def frozen_mutation_result(operation: str) -> dict[str, object]:
     }
 
 
-def mkdir() -> dict[str, object]:
-    return dict(anima_core.corefs_mkdir())
+def mkdir(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_mkdir(*args, **kwargs))
 
 
-def create_file() -> dict[str, object]:
-    return dict(anima_core.corefs_create_file())
+def create_file(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_create_file(*args, **kwargs))
 
 
-def write_file() -> dict[str, object]:
-    return dict(anima_core.corefs_write_file())
+def write_file(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_write_file(*args, **kwargs))
 
 
-def apply_patch() -> dict[str, object]:
-    return dict(anima_core.corefs_apply_patch())
+def apply_patch(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_apply_patch(*args, **kwargs))
 
 
-def move() -> dict[str, object]:
-    return dict(anima_core.corefs_move())
+def move(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_move(*args, **kwargs))
 
 
-def trash() -> dict[str, object]:
-    return dict(anima_core.corefs_trash())
+def trash(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_trash(*args, **kwargs))
 
 
-def restore() -> dict[str, object]:
-    return dict(anima_core.corefs_restore())
+def restore(*args: object, **kwargs: object) -> dict[str, object]:
+    return dict(anima_core.corefs_restore(*args, **kwargs))

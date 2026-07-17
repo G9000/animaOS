@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-17 18:24 MYT
+- Updated: 2026-07-17 18:36 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -94,6 +94,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-17 16:42 MYT - Addressed PR #106 Codex review feedback by accepting logical glob and grep continuation cursors through the PyO3 and server Python bindings, preserving the already exposed V1 `nextCursor` contract across resumed pages. Added a Python wrapper regression proving glob `after` and grep `path`/`byteOffset`/`walkAfter` reach the Rust boundary.
 - 2026-07-17 17:18 MYT - Addressed PR #106's second current-head Codex review pass with red/green regressions: logical reads now clamp the raw backend read size to the model-visible response budget after proving one byte can fit, and trashed objects may retain a historical original parent that has since been trashed while still requiring the active trash folder to be live.
 - 2026-07-17 18:24 MYT - Addressed PR #106's third current-head Codex review pass with focused regressions: trashed folders now reject original-parent references hidden under their own live subtree before policy resolution, and the server CoreFS package exports logical helpers lazily so importing type-only CoreFS modules does not require the native `anima_core` extension.
+- 2026-07-17 18:36 MYT - Addressed PR #106's fourth current-head Codex review pass: migration-frozen server mutation wrappers now accept and forward normal positional/keyword mutation inputs to the native frozen mutators instead of raising `TypeError` before returning `corefs_migration_write_frozen`.
 
 ## Validation
 
@@ -155,6 +156,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #106 cursor follow-up: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py` and `git diff --check`
   - PR #106 second review pass: red/green focused regressions for `logical_read_clamps_raw_request_to_response_budget_before_open` and `trashed_object_keeps_historical_parent_after_parent_is_trashed`; `cargo +1.75.0 test --locked -p anima-corefs` (passed); `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings` (passed); `git diff --check` (passed). `cargo +1.75.0 fmt -p anima-corefs -- --check` still reports pre-existing unrelated drift in `packages/anima-corefs/src/logical/mutation/tests.rs`; touched files were manually aligned with rustfmt output.
   - PR #106 third review pass: red/green hidden-original-parent regression in `folder_trash_graph_invariants_fail_closed`; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_package.py -q`; full `cargo +1.75.0 test --locked -p anima-corefs`; strict CoreFS clippy; Python package/corefs logical tests; scoped Ruff; and `git diff --check` passed.
+  - PR #106 fourth review pass: red/green `test_mutation_wrappers_return_migration_frozen_code` argument-forwarding regression; `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; .venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_logical.py -q`; scoped Ruff; and `git diff --check` passed.
   - PCF-002 Step 10 Layer 3: `.venv/Scripts/python.exe -m ruff check apps/server/src/anima_server/services/corefs/logical.py apps/server/tests/test_corefs_logical.py apps/server/src/anima_server/services/corefs/__init__.py`
   - PCF-002 Step 10 Layer 3: `git diff --check`
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
