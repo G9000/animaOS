@@ -332,7 +332,7 @@ def test_retrieval_eval(runtime_db, corpus: dict[str, Any], monkeypatch: Any) ->
         monkeypatch.setattr(settings, "retrieval_reranker", "off")
     else:
         report["configurations"]["hybrid_rerank"] = {
-            "skipped": "requires ANIMA_EVAL_EMBEDDINGS=real and the reranker extra"
+            "skipped": "requires ANIMA_EVAL_EMBEDDINGS=real (reranker model downloads on first use)"
         }
 
     output_path = Path(

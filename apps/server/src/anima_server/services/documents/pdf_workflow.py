@@ -396,7 +396,7 @@ def run_pdf_ingestion_until_wait_or_done(
 
         elif next_state == "embedded":
             document = context.require_document()
-            # Contextual blurbs (flag-gated, default off) must land before
+            # Contextual blurbs (flag-gated, default on) must land before
             # embedding so the vectors and lexical index include them.
             from anima_server.services.documents.contextual import (
                 generate_document_chunk_blurbs,
