@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-16 00:26 MYT
+- Updated: 2026-07-16 23:37 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -103,6 +103,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-15 19:29 MYT - Began PCF-002 Step 7 from merged `origin/main` in `codex/pcf-002-commit-coordinator`; the parent remains `in_progress` while the Core-wide commit coordinator is implemented and validated separately from Step 8 failure injection.
 - 2026-07-15 20:55 MYT - Completed PCF-002 Step 7 with a review-clean Core-wide commit coordinator: exact prepared object/wrapped-key binding, root-anchored kernel exclusion, pinned-layout validation, complete mutation preconditions, shadow-only validation publication, authenticated irreversible cutover receipts, ordered catalog/HEAD publication, and post-unlock invalidation. Exact Rust 1.75, combined native, Python-feature, strict clippy, workspace build, provenance, and release-notice gates passed. The initiative and PCF-002 remain `in_progress`; Step 8 crash-boundary failure injection is next.
 - 2026-07-16 00:26 MYT - Synchronized `Owner: Codex` from the recorded PCF-002 claim/start history and active PR lineage; preserved the parent and PCF-002 `in_progress` state without inventing or transferring ownership.
+- 2026-07-16 22:51 MYT - Began PCF-002 Step 8 from merged `origin/main` at `14b23da6` in isolated worktree `codex/pcf-002-failure-injection`. This slice is limited to deterministic crash/failure injection at every durable CoreFS publication boundary and restart proofs that only the prior authoritative `fs/HEAD` or the complete next generation is visible. Rotation, logical operations/APIs, client grants, and benchmarks remain deferred. The Rust 1.75 CoreFS baseline passed 127 tests with two helper-process entries intentionally ignored by the parent harness.
+- 2026-07-16 23:22 MYT - Completed PCF-002 Step 8 with ordered durable-boundary hooks and 69 Windows child-process crash points covering immutable objects, catalogs, validation and authoritative pointers, cutover receipt/completion, invalidation, and both current and legacy recovery paths. Authenticated post-HEAD receipt/completion markers make interrupted first-cutover finalization retryable while preserving `fs/HEAD` as the single irreversible event and upgrading legacy receipt-only or higher-generation states without rollback. Exact Rust 1.75 CoreFS, stable combined native/Python-feature checks, Windows and Linux-target compilation, strict clippy/format, workspace build, repository organization, provenance, release notices, locked metadata, and diff gates passed. PCF-002 remains `in_progress`; Step 9 key rotation is next.
+- 2026-07-16 23:37 MYT - Closed the independent Step 8 protocol review findings: new receipts now publish only after durable authoritative `fs/HEAD`; post-HEAD marker I/O failures return committed outcomes with explicit recovery-pending state; every mixed unlocked cutover observation is re-read under the kernel lock before permanent corruption is classified; and the normative design plus architecture graph now document the persistent markers and recovery contract. Focused red/green regressions cover ordering, torn reads, and ordinary finalization failures.
 
 ## Validation
 
@@ -118,6 +121,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - final slice-two allocation follow-up: compile-red clone-tracking preflight regression, focused native envelope/catalog oversize regressions, 35 Rust 1.75 CoreFS tests, 253 combined native tests, CoreFS format and strict clippy, and `git diff --check`
   - PR #94 review follow-up: 7 canonical-ID backend FFI tests, unsorted public catalog canonicalization regression, 36 Rust 1.75 CoreFS tests, and 254 combined native tests
   - PCF-002 Step 7: 104 exact Rust 1.75 CoreFS test entries, combined `anima-corefs`/`anima-core`, Python-feature check, CoreFS format/strict clippy, workspace build, provenance/release notices, `cargo metadata --locked`, and `git diff --check`
+  - PCF-002 Step 8: exact Rust 1.75 CoreFS suite (138 passed, 3 helper entries ignored), 69 injected Windows process crashes, stable combined native suite (356 passed), Python-feature check, Rust 1.75 Linux-target check, strict CoreFS format/clippy, workspace build, repository organization, provenance/release notices, locked metadata, and `git diff --check`
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

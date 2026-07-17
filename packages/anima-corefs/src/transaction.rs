@@ -37,8 +37,8 @@ use crate::id::OpaqueId;
 #[cfg(any(unix, test))]
 use crate::publication::is_temporary_name_for_target;
 use crate::publication::{
-    atomic_publish_in, create_temporary_in, durable_create_directory_in, publish_immutable_in,
-    publish_staged_immutable_in,
+    atomic_publish_in_with_hook, create_temporary_in, durable_create_directory_in,
+    publish_immutable_in_with_hook, publish_staged_immutable_in_with_hook, PublicationPhase,
 };
 
 const LOCK_SCHEMA_VERSION: u16 = 1;
@@ -50,6 +50,7 @@ const OBJECTS_DIRECTORY: &str = "objects";
 const HEAD_FILE: &str = "HEAD";
 const VALIDATION_HEAD_FILE: &str = "VALIDATION_HEAD";
 const CUTOVER_RECEIPT_FILE: &str = "CUTOVER_RECEIPT";
+const CUTOVER_COMPLETE_FILE: &str = "CUTOVER_COMPLETE";
 const COMMIT_LOCK_FILE: &str = "commit.lock";
 #[cfg(any(unix, test))]
 const COMMIT_LOCK_FILE_MODE: u32 = 0o600;
@@ -687,6 +688,7 @@ impl InvalidationEvent {
 pub struct CommitOutcome {
     event: InvalidationEvent,
     invalidation_delivered: bool,
+    recovery_pending: bool,
 }
 
 impl CommitOutcome {
@@ -701,6 +703,35 @@ impl CommitOutcome {
     pub const fn invalidation_delivered(&self) -> bool {
         self.invalidation_delivered
     }
+
+    pub const fn recovery_pending(&self) -> bool {
+        self.recovery_pending
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationTarget {
+    Object,
+    Catalog,
+    CutoverReceipt,
+    CutoverComplete,
+    AuthoritativeHead,
+    ValidationHead,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommitFailurePoint {
+    Publication {
+        target: PublicationTarget,
+        phase: PublicationPhase,
+    },
+    BeforeInvalidation,
+    AfterInvalidation,
+}
+
+struct CommitCallbacks<'a, I, H> {
+    invalidate: I,
+    hook: &'a mut H,
 }
 
 pub struct CoreCommitCoordinator {
@@ -711,6 +742,7 @@ pub struct CoreCommitCoordinator {
     head_path: PathBuf,
     validation_head_path: PathBuf,
     cutover_receipt_path: PathBuf,
+    cutover_complete_path: PathBuf,
     lock_path: PathBuf,
     root_dir: Dir,
     fs_dir: Dir,
@@ -753,6 +785,7 @@ impl CoreCommitCoordinator {
             head_path: fs_path.join(HEAD_FILE),
             validation_head_path: fs_path.join(VALIDATION_HEAD_FILE),
             cutover_receipt_path: fs_path.join(CUTOVER_RECEIPT_FILE),
+            cutover_complete_path: fs_path.join(CUTOVER_COMPLETE_FILE),
             lock_path: fs_path.join(COMMIT_LOCK_FILE),
             core_root,
             catalogs_path,
@@ -776,6 +809,10 @@ impl CoreCommitCoordinator {
         &self.cutover_receipt_path
     }
 
+    pub fn cutover_complete_path(&self) -> &Path {
+        &self.cutover_complete_path
+    }
+
     pub fn catalogs_path(&self) -> &Path {
         &self.catalogs_path
     }
@@ -795,16 +832,45 @@ impl CoreCommitCoordinator {
         aad: &ObjectBaseAad,
         encrypted_object: &mut R,
     ) -> Result<PreparedObjectRevision, CommitError> {
+        self.prepare_object_revision_with_hook(keys, object_key, aad, encrypted_object, &mut |_| {
+            Ok(())
+        })
+    }
+
+    fn prepare_object_revision_with_hook<R, H>(
+        &self,
+        keys: &FrkSubkeys,
+        object_key: &SecretBytes,
+        aad: &ObjectBaseAad,
+        encrypted_object: &mut R,
+        hook: &mut H,
+    ) -> Result<PreparedObjectRevision, CommitError>
+    where
+        R: Read,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
         self.validate_pinned_layout()?;
         if aad.core_id() != self.core_id {
             return Err(CommitError::InvalidObjectRevision);
         }
         let (mut staged, staged_name) =
             create_temporary_in(&self.objects_dir, OsStr::new("object"))?;
+        hook(CommitFailurePoint::Publication {
+            target: PublicationTarget::Object,
+            phase: PublicationPhase::TemporaryCreated,
+        })?;
         let result = (|| {
             let (encoded_size, encrypted_hash) =
                 copy_bounded(encrypted_object, &mut staged, MAX_ENVELOPE_SIZE)?;
+            hook(CommitFailurePoint::Publication {
+                target: PublicationTarget::Object,
+                phase: PublicationPhase::PayloadWritten,
+            })?;
             staged.sync_all()?;
+            hook(CommitFailurePoint::Publication {
+                target: PublicationTarget::Object,
+                phase: PublicationPhase::PayloadSynced,
+            })?;
             staged.seek(SeekFrom::Start(0))?;
             let envelope = read_envelope(&mut staged, object_key, aad, &mut io::sink())?;
             let object_id = OpaqueId::parse(&envelope.metadata.object_id)
@@ -823,11 +889,18 @@ impl CoreCommitCoordinator {
 
             for _ in 0..16 {
                 let physical_name = random_object_physical_name()?;
-                match publish_staged_immutable_in(
+                let mut publication_hook = |phase| {
+                    hook(CommitFailurePoint::Publication {
+                        target: PublicationTarget::Object,
+                        phase,
+                    })
+                };
+                match publish_staged_immutable_in_with_hook(
                     &self.objects_dir,
                     &staged,
                     &staged_name,
                     OsStr::new(physical_name.as_str()),
+                    &mut publication_hook,
                 ) {
                     Ok(()) => {
                         return Ok(PreparedObjectRevision {
@@ -860,34 +933,93 @@ impl CoreCommitCoordinator {
         &self,
         keys: &FrkSubkeys,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
+        self.load_committed_with_hook(keys, &mut |_| Ok(()))
+    }
+
+    fn load_committed_with_hook<H>(
+        &self,
+        keys: &FrkSubkeys,
+        hook: &mut H,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        self.load_committed_with_observation_hook(keys, hook, || {})
+    }
+
+    fn load_committed_with_observation_hook<H, R>(
+        &self,
+        keys: &FrkSubkeys,
+        hook: &mut H,
+        after_head_read: R,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+        R: FnOnce(),
+    {
         self.validate_pinned_layout()?;
-        let committed = self.load_committed_once(keys);
+        let committed = self.load_committed_once_with_hook(keys, after_head_read);
         if !matches!(
             &committed,
-            Err(CommitError::AuthoritativeHeadMissingAfterCutover)
+            Err(CommitError::CutoverRecoveryRequired
+                | CommitError::AuthoritativeHeadMissingAfterCutover
+                | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
         ) {
             return committed;
         }
 
         let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_once(keys)
+        self.load_committed_recovering_with_hook(keys, hook)
     }
 
     fn load_committed_once(
         &self,
         keys: &FrkSubkeys,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
+        self.load_committed_once_with_hook(keys, || {})
+    }
+
+    fn load_committed_once_with_hook<R>(
+        &self,
+        keys: &FrkSubkeys,
+        after_head_read: R,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        R: FnOnce(),
+    {
         let committed = self.load_pointer(keys, HEAD_FILE)?;
+        after_head_read();
         let receipt = self.load_pointer(keys, CUTOVER_RECEIPT_FILE)?;
-        match (committed, receipt) {
-            (None, None) => Ok(None),
-            (None, Some(_)) => Err(CommitError::AuthoritativeHeadMissingAfterCutover),
-            (Some(_), None) => Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt),
-            (Some((head, catalog)), Some((receipt_head, receipt_catalog))) => {
+        let complete = self.load_pointer(keys, CUTOVER_COMPLETE_FILE)?;
+        match (committed, receipt, complete) {
+            (None, None, None) => Ok(None),
+            (None, Some(_), None) => Err(CommitError::CutoverRecoveryRequired),
+            (Some((_head, catalog)), None, None) => {
+                if catalog.cutover_marker().is_some() {
+                    Err(CommitError::CutoverRecoveryRequired)
+                } else {
+                    Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+                }
+            }
+            (Some((head, catalog)), Some((receipt_head, receipt_catalog)), None) => {
+                if cutover_lineage_is_valid(&head, &catalog, &receipt_head, &receipt_catalog) {
+                    Err(CommitError::CutoverRecoveryRequired)
+                } else {
+                    Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+                }
+            }
+            (None, Some(_), Some(_)) => Err(CommitError::AuthoritativeHeadMissingAfterCutover),
+            (
+                Some((head, catalog)),
+                Some((receipt_head, receipt_catalog)),
+                Some((complete_head, complete_catalog)),
+            ) => {
                 let receipt_marker = receipt_catalog.cutover_marker();
                 let committed_marker = catalog.cutover_marker();
                 if receipt_marker.is_none()
+                    || complete_catalog.cutover_marker() != receipt_marker
+                    || complete_head != receipt_head
                     || committed_marker != receipt_marker
                     || head.generation() < receipt_head.generation()
                     || (head.generation() == receipt_head.generation() && head != receipt_head)
@@ -896,7 +1028,96 @@ impl CoreCommitCoordinator {
                 }
                 Ok(Some(CommittedCatalog { head, catalog }))
             }
+            _ => Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt),
         }
+    }
+
+    fn load_committed_recovering(
+        &self,
+        keys: &FrkSubkeys,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        self.load_committed_recovering_with_hook(keys, &mut |_| Ok(()))
+    }
+
+    fn load_committed_recovering_with_hook<H>(
+        &self,
+        keys: &FrkSubkeys,
+        hook: &mut H,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        match self.load_committed_once(keys) {
+            Err(CommitError::CutoverRecoveryRequired) => {}
+            other => return other,
+        }
+
+        let committed = self.load_pointer(keys, HEAD_FILE)?;
+        let receipt = self.load_pointer(keys, CUTOVER_RECEIPT_FILE)?;
+        let receipt_head = match (committed, receipt) {
+            (None, Some((receipt_head, receipt_catalog)))
+                if receipt_catalog.cutover_marker().is_some() =>
+            {
+                let encoded_head = encode_head(&receipt_head)?;
+                self.publish_pointer_and_revalidate(
+                    HEAD_FILE,
+                    &encoded_head,
+                    |dir, target, payload| {
+                        let mut pointer_hook = |phase| {
+                            hook(CommitFailurePoint::Publication {
+                                target: PublicationTarget::AuthoritativeHead,
+                                phase,
+                            })
+                        };
+                        atomic_publish_in_with_hook(dir, target, payload, &mut pointer_hook)?;
+                        Ok(())
+                    },
+                    Self::validate_pinned_layout,
+                )?;
+                receipt_head
+            }
+            (Some((head, catalog)), Some((receipt_head, receipt_catalog)))
+                if cutover_lineage_is_valid(&head, &catalog, &receipt_head, &receipt_catalog) =>
+            {
+                receipt_head
+            }
+            (Some((head, catalog)), None) if catalog.cutover_marker().is_some() => {
+                let encoded_head = encode_head(&head)?;
+                self.validate_pinned_layout()?;
+                let mut receipt_hook = |phase| {
+                    hook(CommitFailurePoint::Publication {
+                        target: PublicationTarget::CutoverReceipt,
+                        phase,
+                    })
+                };
+                publish_immutable_in_with_hook(
+                    &self.fs_dir,
+                    OsStr::new(CUTOVER_RECEIPT_FILE),
+                    &encoded_head,
+                    &mut receipt_hook,
+                )?;
+                self.validate_pinned_layout()?;
+                head
+            }
+            _ => return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt),
+        };
+
+        let encoded_head = encode_head(&receipt_head)?;
+        self.validate_pinned_layout()?;
+        let mut complete_hook = |phase| {
+            hook(CommitFailurePoint::Publication {
+                target: PublicationTarget::CutoverComplete,
+                phase,
+            })
+        };
+        publish_immutable_in_with_hook(
+            &self.fs_dir,
+            OsStr::new(CUTOVER_COMPLETE_FILE),
+            &encoded_head,
+            &mut complete_hook,
+        )?;
+        self.validate_pinned_layout()?;
+        self.load_committed_once(keys)
     }
 
     pub fn load_validation_snapshot(
@@ -946,9 +1167,28 @@ impl CoreCommitCoordinator {
     where
         B: FnOnce(u64) -> Result<CatalogGeneration, CatalogError>,
     {
+        self.initialize_validation_snapshot_with_hook(
+            keys,
+            prepared_revisions,
+            build_next,
+            &mut |_| Ok(()),
+        )
+    }
+
+    fn initialize_validation_snapshot_with_hook<B, H>(
+        &self,
+        keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        build_next: B,
+        hook: &mut H,
+    ) -> Result<ValidationSnapshot, CommitError>
+    where
+        B: FnOnce(u64) -> Result<CatalogGeneration, CatalogError>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
         let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        if self.load_committed_once(keys)?.is_some()
+        if self.load_committed_recovering(keys)?.is_some()
             || self.load_validation_snapshot(keys)?.is_some()
         {
             return Err(CommitError::CoreAlreadyInitialized);
@@ -971,8 +1211,13 @@ impl CoreCommitCoordinator {
             &catalog,
             prepared_revisions,
         )?;
-        let (head, _) =
-            self.publish_catalog_pointer(keys, &catalog, VALIDATION_HEAD_FILE, false)?;
+        let (head, _, _) = self.publish_catalog_pointer_with_hook(
+            keys,
+            &catalog,
+            VALIDATION_HEAD_FILE,
+            false,
+            hook,
+        )?;
         Ok(ValidationSnapshot { head, catalog })
     }
 
@@ -1034,10 +1279,38 @@ impl CoreCommitCoordinator {
         B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
     {
-        let event = {
+        let mut hook = |_| Ok(());
+        self.commit_internal_with_hook(
+            keys,
+            prepared_revisions,
+            preconditions,
+            mode,
+            build_next,
+            CommitCallbacks {
+                invalidate,
+                hook: &mut hook,
+            },
+        )
+    }
+
+    fn commit_internal_with_hook<B, I, H>(
+        &self,
+        keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        mode: CommitMode,
+        build_next: B,
+        callbacks: CommitCallbacks<'_, I, H>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let (event, recovery_pending) = {
             let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
-            let authoritative = self.load_committed_once(keys)?;
+            let authoritative = self.load_committed_recovering(keys)?;
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
@@ -1085,40 +1358,58 @@ impl CoreCommitCoordinator {
                 &next_catalog,
                 prepared_revisions,
             )?;
-            let (head, _) = self.publish_catalog_pointer(
+            let (head, _, recovery_pending) = self.publish_catalog_pointer_with_hook(
                 keys,
                 &next_catalog,
                 HEAD_FILE,
                 matches!(mode, CommitMode::FirstMutation { .. }),
+                callbacks.hook,
             )?;
-            InvalidationEvent {
-                generation: head.generation(),
-                catalog_hash: head.catalog_hash().to_owned(),
-                required_frk_version: head.required_frk_version(),
-            }
+            (
+                InvalidationEvent {
+                    generation: head.generation(),
+                    catalog_hash: head.catalog_hash().to_owned(),
+                    required_frk_version: head.required_frk_version(),
+                },
+                recovery_pending,
+            )
         };
 
-        let invalidation_delivered = invalidate(event.clone()).is_ok();
+        (callbacks.hook)(CommitFailurePoint::BeforeInvalidation)?;
+        let invalidation_delivered = (callbacks.invalidate)(event.clone()).is_ok();
+        (callbacks.hook)(CommitFailurePoint::AfterInvalidation)?;
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
+            recovery_pending,
         })
     }
 
-    fn publish_catalog_pointer(
+    fn publish_catalog_pointer_with_hook<H>(
         &self,
         keys: &FrkSubkeys,
         catalog: &CatalogGeneration,
         pointer_name: &str,
         publish_cutover_receipt: bool,
-    ) -> Result<(HeadRecord, String), CommitError> {
+        hook: &mut H,
+    ) -> Result<(HeadRecord, String, bool), CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
         let encrypted_catalog = encrypt_catalog_generation(keys, &self.core_id, catalog)?;
         let catalog_name = catalog_generation_physical_name(&encrypted_catalog)?;
         self.validate_pinned_layout()?;
-        publish_immutable_in(
+        let mut catalog_hook = |phase| {
+            hook(CommitFailurePoint::Publication {
+                target: PublicationTarget::Catalog,
+                phase,
+            })
+        };
+        publish_immutable_in_with_hook(
             &self.catalogs_dir,
             OsStr::new(&catalog_name),
             &encrypted_catalog,
+            &mut catalog_hook,
         )?;
         let head = HeadRecord::new_for_catalog(
             keys,
@@ -1127,24 +1418,59 @@ impl CoreCommitCoordinator {
             keys.frk_version(),
         )?;
         let encoded_head = encode_head(&head)?;
-        if publish_cutover_receipt {
-            self.validate_pinned_layout()?;
-            publish_immutable_in(
-                &self.fs_dir,
-                OsStr::new(CUTOVER_RECEIPT_FILE),
-                &encoded_head,
-            )?;
-        }
+        let pointer_target = if pointer_name == HEAD_FILE {
+            PublicationTarget::AuthoritativeHead
+        } else {
+            PublicationTarget::ValidationHead
+        };
         self.publish_pointer_and_revalidate(
             pointer_name,
             &encoded_head,
             |dir, target, payload| {
-                atomic_publish_in(dir, target, payload)?;
+                let mut pointer_hook = |phase| {
+                    hook(CommitFailurePoint::Publication {
+                        target: pointer_target,
+                        phase,
+                    })
+                };
+                atomic_publish_in_with_hook(dir, target, payload, &mut pointer_hook)?;
                 Ok(())
             },
             Self::validate_pinned_layout,
         )?;
-        Ok((head, catalog_name))
+        let recovery_pending = publish_cutover_receipt
+            && (|| -> Result<(), CommitError> {
+                self.validate_pinned_layout()?;
+                let mut receipt_hook = |phase| {
+                    hook(CommitFailurePoint::Publication {
+                        target: PublicationTarget::CutoverReceipt,
+                        phase,
+                    })
+                };
+                publish_immutable_in_with_hook(
+                    &self.fs_dir,
+                    OsStr::new(CUTOVER_RECEIPT_FILE),
+                    &encoded_head,
+                    &mut receipt_hook,
+                )?;
+                self.validate_pinned_layout()?;
+                let mut complete_hook = |phase| {
+                    hook(CommitFailurePoint::Publication {
+                        target: PublicationTarget::CutoverComplete,
+                        phase,
+                    })
+                };
+                publish_immutable_in_with_hook(
+                    &self.fs_dir,
+                    OsStr::new(CUTOVER_COMPLETE_FILE),
+                    &encoded_head,
+                    &mut complete_hook,
+                )?;
+                self.validate_pinned_layout()?;
+                Ok(())
+            })()
+            .is_err();
+        Ok((head, catalog_name, recovery_pending))
     }
 
     fn publish_pointer_and_revalidate<P, V>(
@@ -1169,6 +1495,19 @@ impl CoreCommitCoordinator {
         validate_linked_directory(&self.fs_dir, CATALOGS_DIRECTORY, &self.catalogs_dir)?;
         validate_linked_directory(&self.root_dir, OBJECTS_DIRECTORY, &self.objects_dir)
     }
+}
+
+fn cutover_lineage_is_valid(
+    head: &HeadRecord,
+    catalog: &CatalogGeneration,
+    receipt_head: &HeadRecord,
+    receipt_catalog: &CatalogGeneration,
+) -> bool {
+    let receipt_marker = receipt_catalog.cutover_marker();
+    receipt_marker.is_some()
+        && catalog.cutover_marker() == receipt_marker
+        && head.generation() >= receipt_head.generation()
+        && (head.generation() != receipt_head.generation() || head == receipt_head)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1728,7 +2067,10 @@ fn has_known_crash_stale_immutable_stage(
 #[cfg(any(unix, test))]
 fn immutable_staging_target(target: &OsStr) -> Option<&OsStr> {
     let target_text = target.to_str()?;
-    if target_text == CUTOVER_RECEIPT_FILE || is_catalog_physical_name(target_text) {
+    if target_text == CUTOVER_RECEIPT_FILE
+        || target_text == CUTOVER_COMPLETE_FILE
+        || is_catalog_physical_name(target_text)
+    {
         return Some(target);
     }
     ObjectPhysicalName::parse(target_text)
@@ -1873,6 +2215,8 @@ pub enum CommitError {
     AuthoritativeHeadMissingAfterCutover,
     #[error("authoritative CoreFS HEAD violates the irreversible cutover receipt")]
     AuthoritativeHeadViolatesCutoverReceipt,
+    #[error("an interrupted first CoreFS cutover requires recovery under the commit lock")]
+    CutoverRecoveryRequired,
     #[error("the first CoreFS mutation requires explicit cutover authorization")]
     CutoverAuthorizationRequired,
     #[error("the irreversible CoreFS cutover has already committed")]
@@ -1924,7 +2268,7 @@ mod tests {
     use crate::folders::{FolderOwner, PortableName};
     use crate::id::OpaqueId;
     use crate::policy::AnimaAccess;
-    use crate::publication::{atomic_publish_in, durable_create_directory_in};
+    use crate::publication::durable_create_directory_in;
 
     use super::{copy_bounded, ensure_child_directory_with, CommitError, CoreCommitCoordinator};
 
@@ -2123,7 +2467,13 @@ mod tests {
         .unwrap();
 
         let error = coordinator
-            .publish_catalog_pointer(&keys, &catalog, "VALIDATION_HEAD", false)
+            .publish_catalog_pointer_with_hook(
+                &keys,
+                &catalog,
+                "VALIDATION_HEAD",
+                false,
+                &mut |_| Ok(()),
+            )
             .unwrap_err();
 
         assert!(matches!(error, CommitError::InvalidCoreLayout));
@@ -2148,7 +2498,7 @@ mod tests {
                 "VALIDATION_HEAD",
                 b"head",
                 |dir, target, payload| {
-                    atomic_publish_in(dir, target, payload)?;
+                    crate::publication::atomic_publish_in(dir, target, payload)?;
                     pointer_published.set(true);
                     Ok(())
                 },
@@ -2169,3 +2519,6 @@ mod tests {
         std::fs::remove_dir_all(pinned_root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod failure_tests;

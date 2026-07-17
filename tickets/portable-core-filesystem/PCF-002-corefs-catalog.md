@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-16 00:26 MYT
+- Updated: 2026-07-16 23:37 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -82,6 +82,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-15 19:29 MYT - Began PCF-002 Step 7 in isolated worktree `codex/pcf-002-commit-coordinator` from merged `origin/main` at `408d9b64`. Scope is the Core-wide commit coordinator: prepared immutable revisions, kernel-backed exclusive locking with PID/process-start ownership metadata, authenticated HEAD/catalog reload, typed path/revision revalidation, ordered catalog-to-HEAD publication, and post-commit invalidation. Step 8 crash-boundary injection remains deferred. Dependency setup completed and the Rust 1.75 CoreFS baseline passed all 86 tests.
 - 2026-07-15 20:55 MYT - Completed PCF-002 Step 7 after two requirements and production/security review passes. The coordinator now prepares bounded authenticated object revisions and their exact wrapped DEKs outside the lock; anchors interprocess exclusion to non-replaceable handles; validates pinned Core layout identity; reloads authenticated state; requires complete source/destination precondition coverage; keeps converter output on `VALIDATION_HEAD`; publishes catalog, cutover receipt, then authoritative `HEAD`; preserves irreversible marker continuity; and emits invalidation only after unlock. Adversarial tests cover PID reuse, lock/path replacement, wrapper mismatch, stale paths, omitted preconditions, replayed validation HEAD, and invalidation failure. Step 8 failure injection remains separate, so PCF-002 stays `in_progress`.
 - 2026-07-16 00:26 MYT - Synchronized `Owner: Codex` from this ticket's explicit claim/start entries and active PR #91/#94/#96 lineage; preserved `in_progress` because later PCF-002 slices remain open.
+- 2026-07-16 22:51 MYT - Began Step 8 from merged `origin/main` at `14b23da6` in isolated worktree `codex/pcf-002-failure-injection`. Scope is deterministic crash/failure injection around every durable object/catalog/cutover-receipt/pointer/invalidation boundary, with restart validation proving the committed state is exactly the prior authoritative `fs/HEAD` or the complete next generation. Step 9 rotation and later logical/API/client/benchmark work remain separate. Dependency setup completed and the exact Rust 1.75 CoreFS baseline passed 127 tests with two helper-process entries intentionally ignored by the parent harness.
+- 2026-07-16 23:22 MYT - Completed Step 8 with test-only ordered hooks at every create/write/fsync/publish/directory-sync/cleanup boundary and 69 real child-process exits on Windows. Fresh coordinators prove object/catalog residue stays unreferenced, validation snapshots are absent or complete, normal commits expose generation N or N+1 only, first cutover and recovery converge to the authenticated next generation, and invalidation starts after authoritative publication. Authenticated post-HEAD receipt/completion markers make interrupted finalization retryable while preserving `fs/HEAD` as the irreversible event; compatibility recovery upgrades earlier receipt-only and higher-generation states without rollback, while deleted/divergent completed states still fail closed. PCF-002 remains `in_progress`; Step 9 rotation and later logical/API/client/benchmark work remain separate.
+- 2026-07-16 23:37 MYT - Addressed all four Important findings from the independent protocol review. Moved new receipt publication after durable authoritative HEAD; made fallible post-HEAD finalization return successful `CommitOutcome { recovery_pending: true }`; retry every mixed unlocked cutover snapshot under the kernel lock before classifying corruption; and synchronized the normative physical layout, transaction/cutover contract, failure table, and architecture graph. Red/green tests deterministically cover marker ordering, ordinary post-commit I/O failure, torn reads, legacy receipt-only recovery, and current head-only recovery.
 
 ## Validation
 
@@ -121,6 +124,10 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 Step 7: `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
   - PCF-002 Step 7: `bun run build`; Codex attribution; staged legal resources; CoreFS release-notice hashes; locked Cargo metadata
   - PCF-002 Step 7: independent requirements and production/security re-reviews returned clean after all actionable findings were covered by regressions
+  - PCF-002 Step 8: `cargo +1.75.0 test --locked -p anima-corefs` (138 passed, 3 helper entries ignored; five matrix tests drove 69 Windows child-process crashes)
+  - PCF-002 Step 8: `cargo test --locked -p anima-corefs -p anima-core` (356 passed; existing unrelated `anima-core` warnings only) and `cargo check --locked -p anima-core --features python --tests` (passed with existing warnings only)
+  - PCF-002 Step 8: `cargo +1.75.0 check --locked -p anima-corefs --tests --target x86_64-unknown-linux-gnu`; `cargo fmt -p anima-corefs -- --check`; `cargo clippy --locked -p anima-corefs --all-targets -- -D warnings`; `git diff --check`
+  - PCF-002 Step 8: `bun run build`; repository organization check and 34 tests; Codex attribution; staged legal resources; CoreFS release-notice hashes; locked Cargo metadata
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -141,6 +148,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/anima-corefs/src/{folders.rs,policy.rs,head.rs}` and `packages/anima-corefs/src/catalog/v2.rs`
   - `packages/anima-corefs/tests/{folders.rs,policy.rs,catalog_entries.rs,head.rs}`
   - `packages/anima-corefs/src/{transaction.rs,publication.rs,envelope.rs,lib.rs}`
+  - `packages/anima-corefs/src/transaction/failure_tests.rs`
   - `packages/anima-corefs/tests/{transaction.rs,publication.rs}`
   - `packages/anima-corefs/tests/opaque_id.rs`
   - `packages/anima-core/src/ffi.rs`
@@ -156,6 +164,8 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `scripts/check_codex_attribution.py`, `scripts/check_corefs_release_notices.py`, and `scripts/prepare-desktop-release.ts`
   - `.github/workflows/corefs-provenance.yml`
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
+  - `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md`
+  - `docs/architecture/system/anima-core-filesystem.md`
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-002-corefs-catalog.md}`
 - Notes:
   - PCF-001 is complete. PCF-002 is being delivered through reviewable PR slices while retaining this ticket as the milestone tracker.

@@ -78,6 +78,8 @@ Embedded PostgreSQL remains the operational engine, but its data directory moves
     soul.db                        # SQLCipher: agent internal continuity only
   fs/
     HEAD                           # generation, catalog hash, envelope version, required FRK version
+    CUTOVER_RECEIPT                # authenticated first-cutover HEAD receipt, published after HEAD
+    CUTOVER_COMPLETE               # authenticated proof that first-cutover marker finalization completed
     catalogs/
       <generation>.catalog.acore   # encrypted logical-path/object map
   objects/
@@ -319,9 +321,10 @@ Catalog publication uses one short Core-wide commit lock in V1. Per-object locks
 6. Build the next encrypted catalog generation from the reloaded catalog plus the mutation.
 7. Flush and atomically publish the catalog generation.
 8. Atomically replace `fs/HEAD` with the new generation number, catalog hash, envelope version, and required FRK version, then flush the directory.
-9. Release the commit lock and emit runtime invalidation for the newly committed generation.
+9. For the first accepted post-migration mutation only, publish an immutable authenticated `fs/CUTOVER_RECEIPT` containing the exact committed HEAD, then publish the matching immutable `fs/CUTOVER_COMPLETE` marker. These are recovery records after the irreversible HEAD publication, not an earlier authority pointer.
+10. Release the commit lock and emit runtime invalidation for the newly committed generation.
 
-Create, write, patch, move, trash, restore, and message append all commit through this protocol. A move changes the catalog mapping without rewriting an unchanged body. Trash publishes a recoverable trash entry/tombstone in the next catalog; restore publishes a new live mapping without pretending retained history vanished. If the process crashes before step 8 publishes `fs/HEAD`, the prior catalog remains authoritative and newly written objects/catalogs are recoverable garbage. If invalidation fails after `fs/HEAD` publication, startup sees the higher committed generation and reconciles it. Garbage collection is implemented only by the separately gated `PCF-010` maintenance slice and cannot run until older retained catalog generations no longer reference an object.
+Create, write, patch, move, trash, restore, and message append all commit through this protocol. A move changes the catalog mapping without rewriting an unchanged body. Trash publishes a recoverable trash entry/tombstone in the next catalog; restore publishes a new live mapping without pretending retained history vanished. If the process crashes before step 8 publishes `fs/HEAD`, the prior catalog remains authoritative and newly written objects/catalogs are recoverable garbage. If the first-cutover HEAD commits but either post-HEAD marker is interrupted, startup re-reads the mixed state under the Core-wide lock, authenticates the marked HEAD/catalog, and completes only its exact receipt and completion marker. A marker-finalization I/O error reports a successful canonical commit with recovery pending; retry does not pretend the already-published HEAD rolled back. Compatibility recovery may finish an exact authenticated receipt-only state written by an earlier receipt-before-HEAD build, but new writers never make the receipt the irreversible event. If invalidation fails after `fs/HEAD` publication, startup sees the higher committed generation and reconciles it. Garbage collection is implemented only by the separately gated `PCF-010` maintenance slice and cannot run until older retained catalog generations no longer reference an object.
 
 `CoreFS generation` means the generation named by `fs/HEAD`; it is not inferred from filesystem modification time or an eventually delivered event.
 
@@ -765,8 +768,8 @@ Current `RuntimeMessage.is_internal` behavior is a starting point, not the compl
 7. Run smoke checks for auth, chat, diary, notes, gallery, memory, settings, and health.
 8. Keep CoreFS writes frozen while the operator/user accepts or rejects the verified cutover. Rejection restores `legacy-authoritative` state.
 9. If accepted, set state `corefs-approved-pending-first-write` and enable writes. Rollback remains available while no mutation has committed.
-10. The first successful CoreFS mutation publishes an encrypted authenticated catalog containing `legacyRollbackDisabled=true` and a stable cutover epoch, then points `fs/HEAD` at that catalog. Publication of that `fs/HEAD` is the single irreversible event.
-11. After the marked catalog/`fs/HEAD` commits, update manifest state to `corefs-authoritative-forward-only`. If a crash occurs between steps 10 and 11, startup follows `fs/HEAD`, authenticates the catalog marker, and finalizes the manifest state; it never re-enables legacy rollback.
+10. The first successful CoreFS mutation publishes an encrypted authenticated catalog containing `legacyRollbackDisabled=true` and a stable cutover epoch, then points `fs/HEAD` at that catalog. Publication of that `fs/HEAD` is the single irreversible event. After the HEAD is durable, publish the exact authenticated `CUTOVER_RECEIPT` and matching `CUTOVER_COMPLETE`; interruption of either marker is recovery-pending success, never rollback of the committed HEAD.
+11. After the marked catalog/`fs/HEAD` commits, update manifest state to `corefs-authoritative-forward-only`. If a crash occurs between steps 10 and 11, startup re-reads under the Core-wide lock, follows `fs/HEAD`, authenticates the catalog marker, completes any missing post-HEAD cutover markers, and finalizes the manifest state; it never re-enables legacy rollback.
 12. Retain source databases/files as read-only recovery material until an explicit later cleanup release.
 
 Rollback is supported in `migrating-write-frozen`, `corefs-validation-readonly`, and `corefs-approved-pending-first-write`, provided the catalog referenced by committed `fs/HEAD` does not contain the authenticated cutover marker. Rollback restores the previous manifest/layout pointer and leaves newly created encrypted objects unreferenced for later cleanup. Once the marked first mutation commits, automatic legacy rollback is permanently disabled; recovery is forward-only using CoreFS repair, verified backup restore, or export/import. This avoids maintaining a second mutation compatibility system.
@@ -795,6 +798,7 @@ Rollback is supported in `migrating-write-frozen`, `corefs-validation-readonly`,
 | Migration interrupted | reopen migration journal and resume verified batches |
 | Insufficient disk space | fail before cutover and keep legacy authority active |
 | Rollback requested with no committed cutover marker | restore legacy manifest/layout authority from any allowed pre-write migration state |
+| Crash or I/O failure after marked `fs/HEAD` but before cutover receipt/completion | preserve successful commit semantics, report recovery pending, then authenticate and complete the exact post-HEAD markers under the Core-wide lock; never republish a divergent HEAD |
 | Crash after marked `fs/HEAD` but before manifest finalization | derive forward-only authority from authenticated `fs/HEAD`/catalog marker and finalize manifest; never roll back |
 | Rollback requested after marked first CoreFS mutation | reject automatic legacy rollback and use forward repair or verified CoreFS backup restore |
 
