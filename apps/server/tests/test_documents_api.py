@@ -819,6 +819,31 @@ def test_reparse_document_returns_502_when_parse_degraded(monkeypatch: Any) -> N
         )
 
 
+def test_reparse_document_returns_503_when_parser_unavailable(monkeypatch: Any) -> None:
+    from anima_server.api.routes import documents as documents_route
+
+    monkeypatch.setattr(
+        documents_route,
+        "reparse_document",
+        lambda runtime_db, *, user_id, document_id: ReparseResult(
+            status="parser_unavailable",
+            detail="the quality parser is not installed; install the docling extra",
+        ),
+    )
+
+    with managed_test_client("anima-documents-api-") as client:
+        reg = _register_user(client, username="reparse-parser-unavailable-user")
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+
+        response = client.post("/api/documents/1/reparse", headers=headers)
+
+        assert response.status_code == 503
+        assert (
+            "the quality parser is not installed; install the docling extra"
+            in response.json()["error"]
+        )
+
+
 def test_reparse_document_returns_503_for_runtime_error(monkeypatch: Any) -> None:
     from anima_server.api.routes import documents as documents_route
 

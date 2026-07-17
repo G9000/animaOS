@@ -20,6 +20,8 @@ from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import EmbeddingFn, embed_document_chunks
 from anima_server.services.documents.parsing import (
     PARSE_QUALITY_DOCLING,
+    DocumentAwaitingParserError,
+    DocumentParsingError,
     extract_document_text,
 )
 from anima_server.services.documents.parsing_pack import parsing_pack_ready
@@ -36,9 +38,12 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class ReparseResult:
     # "upgraded" | "upgraded_unembedded" | "parse_degraded"
-    # | "pack_not_ready" | "not_found"
+    # | "pack_not_ready" | "parser_unavailable" | "not_found"
     status: str
     chunk_count: int = 0
+    # Actionable detail carried alongside "parser_unavailable" so the API
+    # route can surface it without re-deriving the exception message.
+    detail: str | None = None
 
 
 def reparse_document(
@@ -63,7 +68,29 @@ def reparse_document(
     effective_embedding_fn = embedding_fn or generate_embedding
 
     storage_path = resolve_document_storage_path(document.storage_path, user_id=user_id)
-    outcome = extract_document_text(str(storage_path))
+    try:
+        outcome = extract_document_text(str(storage_path))
+    except DocumentAwaitingParserError:
+        # Scanned/textless PDF and the parsing pack is still downloading (or
+        # just started its first download) — this is the same "wait and
+        # retry" condition as the non-raising preview path below, just
+        # reached via extract_document_text's exception path instead of a
+        # preview-quality outcome. Map it onto the same status so callers
+        # don't have to special-case it.
+        return ReparseResult(status="pack_not_ready")
+    except DocumentParsingError as exc:
+        # DocumentAwaitingParserError is a DocumentParsingError subclass, so
+        # this branch only catches the *other* variants: the docling extra
+        # isn't installed, or a prior pack download failed outright. Those
+        # are actionable, not transient — surface the message so the caller
+        # knows what to actually do (install the extra / retry the download)
+        # instead of getting a generic 503.
+        logger.warning(
+            "Reparse of document %s cannot run the quality parser: %s",
+            document.id,
+            exc,
+        )
+        return ReparseResult(status="parser_unavailable", detail=str(exc))
     if outcome.parse_quality != PARSE_QUALITY_DOCLING:
         if parsing_pack_ready():
             # The pack is ready but docling crashed on this specific file

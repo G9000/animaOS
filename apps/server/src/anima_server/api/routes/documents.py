@@ -365,6 +365,11 @@ async def reparse_document_route(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Quality parsing failed for this document; try again.",
         )
+    if result.status == "parser_unavailable":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"PDF parsing is unavailable: {result.detail}",
+        )
     runtime_db.flush()
     return {"status": result.status, "chunk_count": result.chunk_count}
 

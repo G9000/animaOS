@@ -17,7 +17,11 @@ from anima_server.services.documents import (
     reparse,
     replace_document_chunks,
 )
-from anima_server.services.documents.parsing import ExtractionOutcome
+from anima_server.services.documents.parsing import (
+    DocumentAwaitingParserError,
+    DocumentParsingError,
+    ExtractionOutcome,
+)
 from anima_server.services.documents.pdf_text import PageText
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -277,6 +281,66 @@ def test_reparse_noop_when_pack_not_ready(
 
     assert result.status == "pack_not_ready"
     assert preview_document.parse_quality == "preview"
+
+
+def test_reparse_returns_pack_not_ready_when_extraction_raises_awaiting_parser(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+    monkeypatch: Any,
+) -> None:
+    """A scanned/textless PDF makes extract_document_text raise
+    DocumentAwaitingParserError (pack still downloading) instead of
+    returning a preview outcome. reparse_document must translate that into
+    the same "pack_not_ready" status as the non-raising preview path, and
+    must leave the document's existing chunks/quality untouched — the
+    caller is expected to wait and retry, not to see any partial update."""
+
+    def raise_awaiting(path: str) -> Any:
+        raise DocumentAwaitingParserError("no extractable text; pack downloading")
+
+    monkeypatch.setattr(reparse, "extract_document_text", raise_awaiting)
+
+    result = reparse.reparse_document(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+    )
+
+    assert result.status == "pack_not_ready"
+    assert preview_document.parse_quality == "preview"
+    assert preview_document.status == "indexed"
+
+
+def test_reparse_returns_parser_unavailable_when_extraction_raises_parsing_error(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+    monkeypatch: Any,
+) -> None:
+    """When the pack is absent/errored (docling extra not installed, or a
+    prior download failed), extract_document_text raises a plain
+    DocumentParsingError with an actionable message. reparse_document must
+    surface that as a distinct "parser_unavailable" status carrying the
+    message, rather than letting the exception bypass the structured
+    status mapping."""
+
+    def raise_parsing_error(path: str) -> Any:
+        raise DocumentParsingError(
+            "the quality parser is not installed; install the docling extra"
+        )
+
+    monkeypatch.setattr(reparse, "extract_document_text", raise_parsing_error)
+
+    result = reparse.reparse_document(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+    )
+
+    assert result.status == "parser_unavailable"
+    assert result.detail is not None
+    assert "docling extra" in result.detail
+    assert preview_document.parse_quality == "preview"
+    assert preview_document.status == "indexed"
 
 
 def test_reparse_returns_not_found_for_missing_document(
