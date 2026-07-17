@@ -186,6 +186,38 @@ def test_logical_paths_preserve_surrounding_whitespace(
     assert calls[0]["path"] == "Diary/Secret "
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Gallery/family\u200dphoto.png",
+        "Notes/private\ue000.md",
+    ],
+)
+def test_logical_paths_allow_native_valid_unicode_categories(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    selected = logical.CoreFsValidationSnapshot(generation=9, catalog_hash="catalog-hash")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(corefs_route.logical, "select_validation_snapshot", lambda **_: selected)
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "stat_v1",
+        lambda **kwargs: calls.append(kwargs)
+        or b'{"version":"corefs-logical-v1","result":{"kind":"file"}}',
+    )
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={"operation": "stat", "path": path},
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["path"] == path
+
+
 def test_caller_cannot_claim_anima_principal(
     corefs_client: TestClient,
 ) -> None:

@@ -87,7 +87,7 @@ def normalize_logical_path(value: str | None, *, field_name: str) -> str | None:
             for char in part
         ):
             raise ValueError(f"{field_name} contains an ambiguous Unicode path character.")
-        if any(unicodedata.category(char).startswith("C") for char in part):
+        if any(unicodedata.category(char) == "Cc" for char in part):
             raise ValueError(f"{field_name} contains a control character.")
         if unicodedata.normalize("NFC", part) != part:
             raise ValueError(f"{field_name} must use Unicode NFC.")
