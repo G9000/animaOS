@@ -2,6 +2,7 @@
 
 mod bounded;
 
+pub mod benchmark;
 pub mod catalog;
 pub mod crypto;
 pub mod envelope;

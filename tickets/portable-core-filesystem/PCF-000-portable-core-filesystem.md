@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: in_progress
+- Status: blocked
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 02:30 MYT
+- Updated: 2026-07-18 03:57 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | blocked | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -135,6 +135,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-18 01:51 MYT - Addressed PR #107's twelfth current-head review pass for PCF-002 Step 11: native validation-head races now map to retryable HTTP 409 `corefs_validation_snapshot_stale` responses instead of HTTP 500. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 02:10 MYT - Addressed PR #107's thirteenth current-head review pass for PCF-002 Step 11: scoped password rotation now clears CoreFS capability from replacement agent sessions, while atomic session replacement preserves intact Soul DEKs and revokes prior user tokens in one commit. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
 - 2026-07-18 02:30 MYT - Addressed PR #107's fourteenth current-head review pass for PCF-002 Step 11: URI-scheme detection now matches native ASCII-only semantics so valid Unicode colon-bearing logical names are not rejected at the API boundary. PCF-002 remains `in_progress` for the capability broker/grants and Step 12 benchmark.
+- 2026-07-18 03:24 MYT - PR #107 merged PCF-002 Step 11 into `main` at `5f41101a`; resumed PCF-002 Step 12 in isolated worktree `codex/pcf-002-catalog-benchmark`. The parent remains `in_progress` while the deterministic full durable-path catalog benchmark and checked reference artifact are implemented and validated before PCF-002 closeout.
+- 2026-07-18 03:57 MYT - PCF-002 recorded the approved 30/200 fixed NTFS/NVMe catalog reference run. The 4-KiB durable-write p95 (0.8358 ms) and maximum-live size (7,512,577 bytes) passed, while medium (231.2637 ms), maximum-live (1,017.7567 ms), and exact-16-MiB (1,266.1310 ms) commit p95 failed their required timing gates.
+- 2026-07-18 03:57 MYT - Marked PCF-002 and this initiative blocked. No other child is eligible: PCF-003 depends on PCF-002 and every later child depends on PCF-003 or the downstream chain. Clearance requires an approved CoreFS catalog performance optimization or catalog-design revision that preserves the full durable commit semantics, followed by the same fixed-profile 30/200 rerun with all catalog timing gates passing.
 
 ## Validation
 
@@ -176,6 +179,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #107 twelfth review follow-up: red/green stale validation-snapshot concurrency regression; focused CoreFS route/logical tests passed (39), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 thirteenth review follow-up: red/green Soul-/FS-scoped CoreFS-capability and replacement-DEK regressions; focused cases passed (3), related auth/keyslot/session/CoreFS tests passed (122), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 fourteenth review follow-up: red/green non-ASCII colon-name URI-scheme parity regressions; focused CoreFS route/logical tests passed (41), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PCF-002 Step 12 reference evidence: 30 warm-ups plus 200 measured commits per fixture completed on the approved fixed NTFS/NVMe profile. The durable-write and maximum-live size gates passed; all three commit-time gates failed and blocked PCF-002 plus the dependent initiative.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
@@ -211,6 +215,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `packages/api-client/src/client.ts`
   - `packages/api-client/src/types.ts`
   - `packages/api-client/tests/client.test.ts`
+  - `packages/anima-corefs/src/{benchmark.rs,lib.rs,transaction.rs}`
+  - `packages/anima-corefs/src/bin/catalog_benchmark.rs`
+  - `packages/anima-corefs/tests/catalog_benchmark.rs`
+  - `apps/server/scripts/benchmark_corefs_catalog.py`
+  - `apps/server/tests/test_corefs_catalog_benchmark.py`
+  - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.

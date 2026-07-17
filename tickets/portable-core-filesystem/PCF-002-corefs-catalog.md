@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: in_progress
+- Status: blocked
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 02:30 MYT
+- Updated: 2026-07-18 03:57 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -114,6 +114,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-18 01:51 MYT - Addressed PR #107's twelfth current-head Codex review pass with a red/green validation-head race regression. A native read that detects the selected generation/catalog hash has gone stale now returns retryable HTTP 409 with `corefs_validation_snapshot_stale` instead of escaping as HTTP 500.
 - 2026-07-18 02:10 MYT - Addressed PR #107's thirteenth current-head Codex review pass with scoped password-rotation capability regressions. Soul- and FS-scoped rotations now issue replacement agent sessions without CoreFS subkeys; full-scope rotation retains them. Session replacement is one atomic store commit so prior user tokens are revoked only after intact Soul DEKs have been copied, eliminating the adjacent zeroed-DEK replacement bug.
 - 2026-07-18 02:30 MYT - Addressed PR #107's fourteenth current-head Codex review pass with red/green URI-scheme parity cases. API path validation now recognizes schemes using the same ASCII-only alphabetic/alphanumeric rules as native CoreFS, allowing valid colon-bearing Unicode names such as `é:notes.md` and `aé:notes.md` without weakening rejection of real URI/backend forms.
+- 2026-07-18 03:24 MYT - PR #107 merged PCF-002 Step 11 into `main` at `5f41101a`; resumed PCF-002 Step 12 from that exact merged head on branch `codex/pcf-002-catalog-benchmark` in worktree `.worktrees/pcf-002-catalog-benchmark`. This final implementation slice is limited to the deterministic medium, maximum-live, and 16-MiB fixtures, the complete durable commit-path benchmark, and the checked reference artifact required before PCF-002 closeout.
+- 2026-07-18 03:57 MYT - Implemented the deterministic Step 12 benchmark matrix, fail-closed Windows reference-target validation, full `CoreCommitCoordinator` durable-path measurement, percentile/report validation, and checked reference artifact. The approved fixed NTFS/NVMe run completed 30 warm-ups plus 200 measured commits per fixture; the 4-KiB durable-write p95 passed at 0.8358 ms and the maximum-live size passed at 7,512,577 bytes, but commit p95 failed at 231.2637 ms for medium, 1,017.7567 ms for maximum-live, and 1,266.1310 ms for the exact 16-MiB fixture.
+- 2026-07-18 03:57 MYT - Blocked PCF-002 because the recorded reference timings fail the required 100-ms medium and both 250-ms maximum acceptance gates. Step 12 remains open and Step 13 cannot close the ticket. Clearance requires an approved performance optimization or catalog-design revision that preserves the full durable commit semantics, followed by the same fixed-profile 30/200 rerun with every catalog timing gate passing.
 
 ## Validation
 
@@ -198,6 +201,9 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #107 twelfth review follow-up: red/green stale validation-snapshot concurrency regression; focused CoreFS route/logical tests passed (39), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 thirteenth review follow-up: red/green Soul-/FS-scoped CoreFS-capability and replacement-DEK regressions; focused cases passed (3), related auth/keyslot/session/CoreFS tests passed (122), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 fourteenth review follow-up: red/green non-ASCII colon-name URI-scheme parity regressions; focused CoreFS route/logical tests passed (41), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
+  - PCF-002 Step 12 red phase: `cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark` failed because `anima_corefs::benchmark` did not exist; `.venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_catalog_benchmark.py -q` failed all 8 contract tests because the benchmark runner did not exist.
+  - PCF-002 Step 12 implementation: focused Rust benchmark tests passed 4 tests; focused Python benchmark tests passed 8 tests; scoped Ruff passed; strict `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets -- -D warnings` passed; full `cargo +1.75.0 test --locked -p anima-corefs` passed all active tests with only the expected crash-helper entries ignored.
+  - PCF-002 Step 12 reference run: `benchmark_corefs_catalog.py --reference` completed the approved fixed NTFS/NVMe profile with 30 warm-ups and 200 samples per fixture, wrote `catalog-reference-v1.json`, and exited nonzero because `allPassed` was false. Durable-write and maximum-live size gates passed; medium, maximum-live, and exact-16-MiB commit-time gates failed at p95 231.2637 ms, 1,017.7567 ms, and 1,266.1310 ms respectively.
   - `cargo +1.75.0 test --locked -p anima-file-tools` (56 tests)
   - `cargo test --locked -p animus` (128 local tests; 129 on Unix)
   - `cargo test --locked -p anima-corefs -p anima-core` (229 tests)
@@ -238,6 +244,13 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `packages/api-client/src/client.ts`
   - `packages/api-client/src/types.ts`
   - `packages/api-client/tests/client.test.ts`
+  - `packages/anima-corefs/src/{benchmark.rs,lib.rs,transaction.rs}`
+  - `packages/anima-corefs/src/bin/catalog_benchmark.rs`
+  - `packages/anima-corefs/tests/catalog_benchmark.rs`
+  - `apps/server/scripts/benchmark_corefs_catalog.py`
+  - `apps/server/tests/test_corefs_catalog_benchmark.py`
+  - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`
+  - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `apps/server/tests/test_corefs_crypto.py`
   - `Cargo.lock`
   - `packages/anima-file-tools/`

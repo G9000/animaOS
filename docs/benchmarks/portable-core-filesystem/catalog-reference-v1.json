@@ -1,0 +1,150 @@
+{
+  "benchmarkCommand": "cargo +1.75.0 run --release --locked -p anima-corefs --bin catalog_benchmark -- --target C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1 --warmups 30 --samples 200",
+  "fixtures": [
+    {
+      "bytesWritten": 1502787,
+      "commitMs": {
+        "p50": 176.6552,
+        "p95": 231.2637,
+        "p99": 330.8602
+      },
+      "finalHeadGeneration": 232,
+      "fixtureSha256": "4d995f8d7f2d7a9e36d3d03e28af93e667281387aa32c356f093cddc45a6c649",
+      "liveCount": 5000,
+      "lockHoldMs": {
+        "p50": 174.2475,
+        "p95": 229.09959999999998,
+        "p99": 328.09450000000004
+      },
+      "name": "medium",
+      "publicationPath": [
+        "serialize",
+        "encrypt",
+        "temporary-file-write",
+        "durable-flush",
+        "atomic-rename",
+        "directory-durability",
+        "fs-head-write-flush",
+        "commit-lock"
+      ],
+      "sampleCount": 200,
+      "serializedSizeBytes": 1502577,
+      "tombstoneCount": 500,
+      "totalBytesWritten": 300557266,
+      "totalCount": 5500,
+      "warmupCommits": 30
+    },
+    {
+      "bytesWritten": 7512787,
+      "commitMs": {
+        "p50": 863.5494,
+        "p95": 1017.7567,
+        "p99": 1373.3021
+      },
+      "finalHeadGeneration": 232,
+      "fixtureSha256": "efdd2b6f700341f70cd7397b50f94b45d212a641f94feb73064714feadff025e",
+      "liveCount": 25000,
+      "lockHoldMs": {
+        "p50": 858.0095,
+        "p95": 1008.5580999999999,
+        "p99": 1362.335
+      },
+      "name": "maximum-live",
+      "publicationPath": [
+        "serialize",
+        "encrypt",
+        "temporary-file-write",
+        "durable-flush",
+        "atomic-rename",
+        "directory-durability",
+        "fs-head-write-flush",
+        "commit-lock"
+      ],
+      "sampleCount": 200,
+      "serializedSizeBytes": 7512577,
+      "tombstoneCount": 2500,
+      "totalBytesWritten": 1502557266,
+      "totalCount": 27500,
+      "warmupCommits": 30
+    },
+    {
+      "bytesWritten": 16777426,
+      "commitMs": {
+        "p50": 970.7114,
+        "p95": 1266.131,
+        "p99": 1736.5444
+      },
+      "finalHeadGeneration": 232,
+      "fixtureSha256": "0ba88ec0759a5b17d4e6374be96d4dd504755bdd0a33304d4256eba7e490b8b4",
+      "liveCount": 25000,
+      "lockHoldMs": {
+        "p50": 964.4962,
+        "p95": 1254.1351,
+        "p99": 1723.2406
+      },
+      "name": "serialized-limit",
+      "publicationPath": [
+        "serialize",
+        "encrypt",
+        "temporary-file-write",
+        "durable-flush",
+        "atomic-rename",
+        "directory-durability",
+        "fs-head-write-flush",
+        "commit-lock"
+      ],
+      "sampleCount": 200,
+      "serializedSizeBytes": 16777216,
+      "tombstoneCount": 0,
+      "totalBytesWritten": 3355485066,
+      "totalCount": 25000,
+      "warmupCommits": 30
+    }
+  ],
+  "gates": {
+    "allPassed": false,
+    "durableWrite4KiBP95Le5Ms": true,
+    "maximumLiveP95Le250Ms": false,
+    "maximumLiveSerializedSizeLe16MiB": true,
+    "mediumP95Le100Ms": false,
+    "serializedLimitP95Le250Ms": false
+  },
+  "generatedAt": "2026-07-17T19:56:37.689051Z",
+  "measuredCommits": 200,
+  "profile": {
+    "architecture": "AMD64",
+    "cpu": "AMD Ryzen 9 9900X (12C/24T)",
+    "driveType": "fixed",
+    "durableWrite4KiB": {
+      "p50Ms": 0.6052,
+      "p95Ms": 0.8358,
+      "p99Ms": 0.9526,
+      "sampleCount": 200,
+      "warmupCount": 30
+    },
+    "durableWrite4KiBP95Ms": 0.8358,
+    "excludedStorageClasses": [
+      "OneDrive-synchronized",
+      "network",
+      "removable",
+      "RAM-disk",
+      "write-cache-without-durability"
+    ],
+    "filesystem": "NTFS",
+    "mode": "reference",
+    "os": "Windows 11 Pro 10.0.26200 x64",
+    "physicalCores": 12,
+    "ramGiB": 61.61,
+    "storage": "WD_BLACK SN850X NVMe",
+    "target": "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1"
+  },
+  "schemaVersion": 1,
+  "versions": {
+    "aesGcm": "0.10.3",
+    "animaCorefs": "0.1.0",
+    "argon2": "0.5.3",
+    "rust": "rustc 1.75.0 (82e1608df 2023-12-21)",
+    "serdeJson": "1.0.150"
+  },
+  "warmupCommits": 30
+}
