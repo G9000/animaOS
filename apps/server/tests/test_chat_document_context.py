@@ -943,13 +943,53 @@ def test_full_context_off_uses_retrieval(monkeypatch: Any, runtime_db: Session) 
 
 def test_budget_scales_with_context_window(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "agent_context_window_tokens", None)
-    small_window_budget = agent_service._full_document_context_budget_chars()
+    small_window_budget = agent_service.resolve_document_context_budget_chars()
 
     monkeypatch.setattr(settings, "agent_context_window_tokens", 200_000)
-    large_window_budget = agent_service._full_document_context_budget_chars()
+    large_window_budget = agent_service.resolve_document_context_budget_chars()
 
     assert small_window_budget != large_window_budget
     assert large_window_budget > small_window_budget
+
+
+def test_full_document_block_survives_prompt_budget(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    """End-to-end: a full-document block above the old static 4000-char
+    per-block cap must survive plan_prompt_budget untruncated (the prompt
+    assembly path every chat turn runs through)."""
+    from anima_server.services.agent.prompt_budget import (
+        plan_prompt_budget,
+        resolve_budget_config,
+    )
+
+    monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+    chunk_texts = [
+        f"Chunk {index} sentinel text. " + ("Body sentence for padding. " * 55)
+        for index in range(8)
+    ]
+    document_id = _document_with_chunks(runtime_db, chunk_texts=chunk_texts)
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> list[DocumentRagResult]:
+        raise AssertionError("search_document_chunks must not be called for full-doc mode")
+
+    monkeypatch.setattr(agent_service, "search_document_chunks", fail_if_called)
+
+    block = agent_service._build_document_context_block(
+        runtime_db,
+        user_id=7,
+        user_message="Summarize this document.",
+        document_ids=[document_id],
+    )
+
+    assert block is not None
+    assert len(block.value) > 4000
+
+    plan = plan_prompt_budget([block], budget=resolve_budget_config())
+
+    assert len(plan.blocks) == 1
+    assert plan.blocks[0].value == block.value
+    assert "Chunk 7 sentinel text." in plan.blocks[0].value
 
 
 def test_build_document_context_block_ignores_unowned_document_ids(

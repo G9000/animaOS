@@ -78,6 +78,7 @@ from anima_server.services.agent.persistence import (
 from anima_server.services.agent.prompt_budget import (
     estimate_char_tokens,
     resolve_context_budget_tokens,
+    resolve_document_context_budget_chars,
 )
 from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
@@ -1952,21 +1953,6 @@ def _build_document_context_block(
     )
 
 
-def _full_document_context_budget_chars() -> int:
-    """Character budget for full-document injection, scaled to the resolved
-    context window.
-
-    Mirrors ``estimate_char_tokens``'s conservative 3-chars-per-token ratio
-    (inverted) so the token and character budgets describe the same amount
-    of text, then bounds the result with a hard character ceiling so a huge
-    configured window cannot blow the prompt up unreasonably.
-    """
-    ratio = settings.document_full_context_budget_ratio
-    budget_tokens = int(resolve_context_budget_tokens() * ratio)
-    budget_chars = budget_tokens * 3
-    return min(budget_chars, settings.document_full_context_char_cap)
-
-
 def _full_document_texts(
     runtime_db: Session,
     *,
@@ -1978,9 +1964,12 @@ def _full_document_texts(
     Returns ``None`` (all-or-nothing) when the combined length of every
     selected document exceeds the full-document budget: mixed full and
     retrieved evidence in the same turn is confusing, so any overflow sends
-    the whole turn back through the retrieval path.
+    the whole turn back through the retrieval path. The budget comes from
+    ``prompt_budget.resolve_document_context_budget_chars`` — the same
+    number the planner uses as the block's cap — so a block built here is
+    never re-truncated by prompt assembly.
     """
-    budget_chars = _full_document_context_budget_chars()
+    budget_chars = resolve_document_context_budget_chars()
     documents: list[tuple[RuntimeDocument, str]] = []
     total_chars = 0
     for document_id in document_ids:

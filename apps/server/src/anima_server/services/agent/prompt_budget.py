@@ -8,7 +8,7 @@ truncated, or dropped so prompt-quality regressions are debuggable.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import ceil
 
@@ -20,6 +20,11 @@ class BlockBudgetPolicy:
     tier: int
     order: int
     max_chars: int | None = None
+    # When set, the block's cap is computed at plan time (window-scaled)
+    # and the block is bounded by that cap and the TOTAL budget only: the
+    # static tier slices are sized for identity/memory blocks, not for
+    # document payloads that legitimately dwarf them.
+    resolve_max_chars: Callable[[], int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +59,25 @@ class PromptBudgetPlan:
     trace: PromptBudgetTrace
 
 
+def resolve_document_context_budget_chars() -> int:
+    """Character budget for the ``document_context`` block, scaled to the
+    resolved context budget and bounded by a hard character ceiling.
+
+    Single source of truth for the document budget: the service layer uses
+    it to decide whether full-document injection fits, and the planner uses
+    it as the block's per-block cap, so what the service builds is what the
+    prompt keeps. The ``* 3`` inverts ``estimate_char_tokens``'s
+    conservative 3-chars-per-token ratio so the token and character budgets
+    describe the same amount of text (same convention as
+    ``resolve_budget_config``).
+    """
+    from anima_server.config import settings
+
+    ratio = settings.document_full_context_budget_ratio
+    budget_tokens = int(resolve_context_budget_tokens() * ratio)
+    return min(budget_tokens * 3, settings.document_full_context_char_cap)
+
+
 _DEFAULT_POLICY = BlockBudgetPolicy(tier=3, order=999, max_chars=1000)
 _BLOCK_POLICIES: dict[str, BlockBudgetPolicy] = {
     "soul": BlockBudgetPolicy(tier=0, order=0, max_chars=None),
@@ -61,7 +85,12 @@ _BLOCK_POLICIES: dict[str, BlockBudgetPolicy] = {
     "human": BlockBudgetPolicy(tier=0, order=2, max_chars=None),
     "user_profile": BlockBudgetPolicy(tier=0, order=3, max_chars=1800),
     "user_directive": BlockBudgetPolicy(tier=0, order=4, max_chars=None),
-    "document_context": BlockBudgetPolicy(tier=0, order=5, max_chars=4000),
+    # Cap resolved at plan time from the window-scaled document budget so
+    # full-document injection survives prompt assembly (a static cap here
+    # silently mangled any document selection larger than it).
+    "document_context": BlockBudgetPolicy(
+        tier=0, order=5, resolve_max_chars=resolve_document_context_budget_chars
+    ),
     "self_identity": BlockBudgetPolicy(tier=1, order=0, max_chars=1600),
     "current_focus": BlockBudgetPolicy(tier=1, order=1, max_chars=1400),
     "thread_summary": BlockBudgetPolicy(tier=1, order=2, max_chars=1800),
@@ -210,11 +239,23 @@ def plan_prompt_budget(
             )
             continue
 
-        capped_value = _apply_block_cap(block.value, policy.max_chars)
+        max_chars = (
+            policy.resolve_max_chars()
+            if policy.resolve_max_chars is not None
+            else policy.max_chars
+        )
+        capped_value = _apply_block_cap(block.value, max_chars)
         capped_chars = len(capped_value)
-        tier_remaining = tier_budgets[policy.tier] - tier_usage[policy.tier]
         total_remaining = budget.total_budget - total_chars
-        available = min(tier_remaining, total_remaining)
+        if policy.resolve_max_chars is not None:
+            # Dynamically-budgeted blocks carry their own window-scaled cap
+            # and share only the total budget with everything else; the
+            # static tier slice would re-truncate them to a fraction of the
+            # budget they were deliberately sized for.
+            available = total_remaining
+        else:
+            tier_remaining = tier_budgets[policy.tier] - tier_usage[policy.tier]
+            available = min(tier_remaining, total_remaining)
 
         if available <= 0:
             decisions.append(

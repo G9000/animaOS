@@ -12,6 +12,7 @@ from anima_server.services.agent.prompt_budget import (
     plan_prompt_budget,
     resolve_budget_config,
     resolve_context_budget_tokens,
+    resolve_document_context_budget_chars,
 )
 
 
@@ -118,6 +119,101 @@ class TestBoundaryTruncation:
         decision = next(d for d in plan.trace.decisions if d.label == "facts")
         assert decision.status == "truncated"
         assert decision.final_chars == len("- user is vegetarian")
+
+
+class TestDocumentContextBudget:
+    def test_document_block_above_static_cap_survives_untruncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A document_context block bigger than the old static 4000-char cap
+        but within the resolved document budget must pass through the
+        planner untouched (full-document context mode depends on it)."""
+        monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+        monkeypatch.setattr(settings, "agent_max_tokens", 4096)
+        value = "\n".join(
+            f"Line {index} of the selected document." for index in range(400)
+        )
+        assert 4000 < len(value) <= resolve_document_context_budget_chars()
+        block = MemoryBlock(
+            label="document_context",
+            description="Selected PDF full text",
+            value=value,
+        )
+
+        plan = plan_prompt_budget([block], budget=resolve_budget_config())
+
+        assert len(plan.blocks) == 1
+        assert plan.blocks[0].value == value
+        decision = next(
+            d for d in plan.trace.decisions if d.label == "document_context"
+        )
+        assert decision.status == "kept"
+        assert decision.reason == "within_budget"
+
+    def test_document_budget_scales_with_context_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "agent_max_tokens", 4096)
+        monkeypatch.setattr(settings, "document_full_context_budget_ratio", 0.5)
+        monkeypatch.setattr(settings, "document_full_context_char_cap", 120_000)
+
+        monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+        small = resolve_document_context_budget_chars()
+        monkeypatch.setattr(settings, "agent_context_window_tokens", 200_000)
+        large = resolve_document_context_budget_chars()
+
+        assert small < large
+        # The hard character ceiling bounds huge windows.
+        assert large == 120_000
+
+    def test_total_budget_still_trims_oversized_document_block(self) -> None:
+        value = ("Sentence about the selected document. " * 200).strip()
+        block = MemoryBlock(
+            label="document_context",
+            description="Selected PDF full text",
+            value=value,
+        )
+
+        plan = plan_prompt_budget(
+            [block],
+            budget=BudgetConfig(
+                total_budget=1000,
+                tier_0_budget=1000,
+                tier_1_budget=0,
+                tier_2_budget=0,
+                tier_3_budget=0,
+            ),
+        )
+
+        assert len(plan.blocks) == 1
+        assert len(plan.blocks[0].value) <= 1000
+        decision = next(
+            d for d in plan.trace.decisions if d.label == "document_context"
+        )
+        assert decision.status == "truncated"
+        assert decision.reason == "budget_truncation"
+
+    def test_document_char_cap_still_caps_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "agent_context_window_tokens", None)
+        monkeypatch.setattr(settings, "document_full_context_char_cap", 100)
+        value = ("Docs sentence one. " * 20).strip()
+        block = MemoryBlock(
+            label="document_context",
+            description="Selected PDF full text",
+            value=value,
+        )
+
+        plan = plan_prompt_budget([block], budget=DEFAULT_BUDGET)
+
+        assert len(plan.blocks) == 1
+        assert len(plan.blocks[0].value) <= 100
+        decision = next(
+            d for d in plan.trace.decisions if d.label == "document_context"
+        )
+        assert decision.status == "truncated"
+        assert decision.reason == "per_block_cap"
 
 
 class TestBlockPriority:
