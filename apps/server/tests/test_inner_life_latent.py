@@ -939,6 +939,9 @@ def test_forget_scrubs_ref_but_keeps_trace_when_other_evidence_survives():
         assert trace is not None
         assert len(trace.evidence_refs) == 1
         assert trace.evidence_refs[0]["source_message_ids"] == [202]
+        # Right-to-forget takes the forgotten evidence's WEIGHT too: the
+        # trace requalifies at the survival-scaled value (0.4 x 1/2).
+        assert trace.weight == pytest.approx(0.2)
 
 
 def test_topic_scoped_forget_deletes_matching_trace():
@@ -1183,17 +1186,22 @@ async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypat
             soul_db.commit()
         with runtime_factory() as runtime_db:
             keep = _runtime_candidate(runtime_db, user_id=user_id, content="Surviving signal")
+            keep2 = _runtime_candidate(runtime_db, user_id=user_id, content="Another survivor")
             gone = _runtime_candidate(runtime_db, user_id=user_id, content="Forgotten signal")
-            keep_id, gone_id = keep.id, gone.id
+            keep_id, keep2_id, gone_id = keep.id, keep2.id, gone.id
         with soul_factory() as soul_db:
+            # Three refs at weight 0.95: scrubbing one requalifies to
+            # 0.95 x 2/3 ≈ 0.633, still over the 0.6 threshold — the
+            # crystallization must proceed from the two survivors only.
             soul_db.add(
                 LatentTrace(
                     user_id=user_id,
                     topic_key="user:minor_observation:partial_forget",
                     kind="observation",
-                    weight=0.75,
+                    weight=0.95,
                     evidence_refs=[
                         {"candidate_id": keep_id, "source_message_ids": [11]},
+                        {"candidate_id": keep2_id, "source_message_ids": [12]},
                         {"candidate_id": gone_id, "source_message_ids": [99]},
                     ],
                     first_seen=datetime.now(UTC),
@@ -1225,7 +1233,7 @@ async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypat
                 select(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id == item.id)
             ).all()
             refs = evidence[0].metadata_json["contributing_evidence_refs"]
-            assert {ref["candidate_id"] for ref in refs} == {keep_id}
+            assert {ref["candidate_id"] for ref in refs} == {keep_id, keep2_id}
             flat_sources = [mid for ref in refs for mid in ref["source_message_ids"]]
             assert 99 not in flat_sources
     finally:
@@ -1602,6 +1610,20 @@ def test_active_repeat_merges_with_repeat_count_and_fold_multiplies():
             runtime_db.refresh(first)
             assert first.salience_json.get("repeat_count") == 2
             assert set(first.source_message_ids) == {1, 2}
+            third = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                source_message_ids=[3],
+            )
+            assert third is None
+            runtime_db.refresh(first)
+            # The counter must survive _merge_candidate_salience's payload
+            # rebuild — a reset here would cap accumulation at 2 forever.
+            assert first.salience_json.get("repeat_count") == 3
+            assert set(first.source_message_ids) == {1, 2, 3}
             merged_salience = dict(first.salience_json)
             merged_ids = list(first.source_message_ids)
     finally:
@@ -1622,9 +1644,10 @@ def test_active_repeat_merges_with_repeat_count_and_fold_multiplies():
             topic_key="user:minor_observation:window_repeats",
             score=0.2,
         )
-        single = fold_weight(0.0, 0.2, DEFAULT_LATENT_CONFIG)
-        double = fold_weight(single, 0.2, DEFAULT_LATENT_CONFIG)
-        assert trace.weight == pytest.approx(double)
+        expected = 0.0
+        for _ in range(3):  # repeat_count == 3 after the third extraction
+            expected = fold_weight(expected, 0.2, DEFAULT_LATENT_CONFIG)
+        assert trace.weight == pytest.approx(expected)
 
 
 @pytest.mark.asyncio()

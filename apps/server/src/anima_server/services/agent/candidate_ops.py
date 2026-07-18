@@ -92,6 +92,13 @@ def create_memory_candidate(
             existing.status = "superseded"
             runtime_db.flush()
         else:
+            # Capture BEFORE the merge: _merge_candidate_salience rebuilds
+            # the payload from known salience fields and drops repeat_count,
+            # so reading it afterwards would reset the counter to 1 on
+            # every third-and-later repeat.
+            prior_repeats = int(
+                (existing.salience_json or {}).get("repeat_count", 1) or 1
+            )
             existing.salience_json = _merge_candidate_salience(
                 existing.salience_json,
                 salience_json,
@@ -102,9 +109,7 @@ def create_memory_candidate(
                 # once per repeat, and keep the repeat's source messages for
                 # trace evidence provenance.
                 merged_salience = dict(existing.salience_json or {})
-                merged_salience["repeat_count"] = int(
-                    merged_salience.get("repeat_count", 1) or 1
-                ) + 1
+                merged_salience["repeat_count"] = prior_repeats + 1
                 existing.salience_json = merged_salience
                 merged_ids = list(existing.source_message_ids or [])
                 for message_id in source_message_ids or []:

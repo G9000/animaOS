@@ -240,6 +240,11 @@ def scrub_latent_traces_for_forgotten_sources(
             continue
         scrubbed += 1
         if surviving:
+            # Right-to-forget must take the WEIGHT the forgotten evidence
+            # earned, not just its refs — otherwise a trace mostly built by
+            # forgotten sources stays over the crystallization threshold
+            # and the forgotten material keeps influencing synthesis.
+            trace.weight = trace.weight * (len(surviving) / len(refs))
             trace.evidence_refs = surviving
         else:
             soul_db.delete(trace)
