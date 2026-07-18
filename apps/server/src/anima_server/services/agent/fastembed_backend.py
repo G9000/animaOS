@@ -87,12 +87,17 @@ def warm_up_retrieval_models() -> None:
     failures here just mean the latch above starts its retry-after-TTL
     cooldown, same as if the load had been triggered lazily.
     """
-    from anima_server.services.agent.embeddings import _resolve_embedding_model
+    from anima_server.services.agent.embeddings import (
+        _resolve_embedding_model,
+        _resolve_embedding_provider,
+    )
 
-    try:
-        _load_model(_resolve_embedding_model())
-    except Exception:
-        logger.warning("Embedding model warm-up failed", exc_info=True)
+    # Only warm up the embedding model if the provider is fastembed
+    if _resolve_embedding_provider() == "fastembed":
+        try:
+            _load_model(_resolve_embedding_model())
+        except Exception:
+            logger.warning("Embedding model warm-up failed", exc_info=True)
 
     if settings.retrieval_reranker == "local":
         try:

@@ -105,13 +105,41 @@ def test_warmup_never_raises_when_reranker_loader_fails(monkeypatch: Any) -> Non
     fastembed_backend.warm_up_retrieval_models()  # must not raise
 
 
-def test_warmup_never_downloads_models_via_conftest_stubs() -> None:
+def test_warmup_skips_embedding_load_when_provider_not_fastembed(
+    monkeypatch: Any,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    # Provider is "ollama", not "fastembed", so embedding model load should be skipped
+    monkeypatch.setattr(embeddings_module, "_resolve_embedding_provider", lambda: "ollama")
+    monkeypatch.setattr(settings, "retrieval_reranker", "local")
+
+    embedding_calls: list[str] = []
+    reranker_calls: list[int] = []
+
+    monkeypatch.setattr(
+        fastembed_backend,
+        "_load_model",
+        lambda model_name: embedding_calls.append(model_name),
+    )
+    monkeypatch.setattr(
+        reranker_module,
+        "_load_model",
+        lambda: reranker_calls.append(1),
+    )
+
+    fastembed_backend.warm_up_retrieval_models()
+
+    # Embedding load should be skipped when provider is not fastembed
+    assert embedding_calls == []
+    # Reranker should still be loaded
+    assert reranker_calls == [1]
+
+
+def test_warmup_never_downloads_models_via_conftest_stubs(monkeypatch: Any) -> None:
     # No monkeypatching of loaders at all: this exercises the real
     # _load_model path, which hits the conftest raiser stubs for
     # _create_model. Warm-up must swallow that and never raise or attempt
     # a network download.
-    settings.retrieval_reranker = "local"
-    try:
-        fastembed_backend.warm_up_retrieval_models()
-    finally:
-        settings.retrieval_reranker = "local"
+    monkeypatch.setattr(settings, "retrieval_reranker", "local")
+    fastembed_backend.warm_up_retrieval_models()  # must not raise
