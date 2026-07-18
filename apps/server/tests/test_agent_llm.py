@@ -195,6 +195,62 @@ def test_resolve_embedding_model_keeps_extraction_fallback_for_non_fastembed(
     assert embeddings._resolve_embedding_model() == "qwen2.5:3b"
 
 
+def test_resolve_embedding_base_url_explicit_local_ollama_falls_back_to_agent_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression: an explicit local embedding provider (ollama) with no
+    # dedicated embedding base URL must reuse the configured local server
+    # address (agent_base_url) instead of silently reverting to the
+    # hardcoded localhost default — the API has no field to set a distinct
+    # embedding base URL, so agent_base_url is the only real signal.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+
+    assert embeddings._resolve_embedding_base_url() == "http://192.168.1.5:11434"
+
+
+def test_resolve_embedding_base_url_explicit_local_vllm_falls_back_to_agent_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:8000/v1")
+
+    assert embeddings._resolve_embedding_base_url() == "http://192.168.1.5:8000/v1"
+
+
+def test_resolve_embedding_base_url_explicit_embedding_base_url_still_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "http://10.0.0.9:11434")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+
+    assert embeddings._resolve_embedding_base_url() == "http://10.0.0.9:11434"
+
+
+def test_resolve_embedding_base_url_non_local_explicit_provider_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # openai (non-local, fixed cloud endpoint) must keep its default base URL
+    # even when agent_base_url happens to be set to some local server address
+    # (e.g. left over from a prior ollama chat-provider configuration).
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+
+    assert embeddings._resolve_embedding_base_url() == "https://api.openai.com/v1"
+
+
 @pytest.mark.asyncio
 async def test_generate_embedding_skips_explicit_openrouter_embedding_provider(
     monkeypatch: pytest.MonkeyPatch,

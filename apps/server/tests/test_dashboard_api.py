@@ -947,6 +947,140 @@ def test_config_update_accepts_fastembed_as_embedding_provider_but_not_chat_prov
             _restore_config_settings(original)
 
 
+def test_valid_embedding_providers_is_derived_from_skip_reason() -> None:
+    """VALID_EMBEDDING_PROVIDERS must be computed from
+    ``embeddings._embedding_skip_reason`` rather than a hand-maintained list,
+    so a provider gaining/losing embeddings support can't drift silently."""
+    from anima_server.api.routes.config import VALID_EMBEDDING_PROVIDERS
+    from anima_server.services.agent.embeddings import _embedding_skip_reason
+    from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
+
+    expected = {
+        provider
+        for provider in SUPPORTED_PROVIDERS
+        if _embedding_skip_reason(provider) is None
+    }
+    assert expected == VALID_EMBEDDING_PROVIDERS
+    # openrouter/anthropic have no embeddings endpoint (real skip reasons) —
+    # assert against the derivation rule, not a hardcoded name list.
+    assert "openrouter" not in VALID_EMBEDDING_PROVIDERS
+    assert "anthropic" not in VALID_EMBEDDING_PROVIDERS
+    assert "ollama" in VALID_EMBEDDING_PROVIDERS
+    assert "fastembed" in VALID_EMBEDDING_PROVIDERS
+
+
+def test_config_update_rejects_anthropic_as_embedding_provider() -> None:
+    """anthropic has no embeddings endpoint; selecting it for embeddings must
+    not silently disable dense retrieval (P2 regression guard)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "anthropic",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_rejects_openrouter_as_embedding_provider() -> None:
+    """openrouter has no embeddings endpoint; selecting it for embeddings must
+    not silently disable dense retrieval (P2 regression guard)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "openrouter",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_accepts_ollama_as_embedding_provider() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "ollama",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "ollama"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_openrouter_valid_as_chat_provider_but_not_embedding() -> None:
+    """Regression guard for the asymmetry: openrouter is a fine chat provider
+    (it just can't serve embeddings)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openrouter",
+                    "model": "google/gemma-3-27b-it",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_provider == "openrouter"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openrouter",
+                    "model": "google/gemma-3-27b-it",
+                    "embeddingProvider": "openrouter",
+                },
+            )
+            assert resp.status_code == 400
+        finally:
+            _restore_config_settings(original)
+
+
 def test_config_update_applies_embedding_model_without_provider_field() -> None:
     """A PUT carrying only embeddingModel must update the current embedding
     config — not silently no-op because embeddingProvider was omitted."""

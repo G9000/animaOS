@@ -69,6 +69,14 @@ _EMBEDDING_API_KEY_ENV: dict[str, str] = {
     "doubleword": "DOUBLEWORD_API_KEY",
 }
 
+# Providers backed by a locally-run server (as opposed to a fixed cloud
+# endpoint). The config API has no dedicated field for a distinct embedding
+# base URL, so when one of these is explicitly selected for embeddings with
+# no ``agent_embedding_base_url`` set, ``_resolve_embedding_base_url`` must
+# reuse the configured local server address (``agent_base_url``) rather than
+# silently reverting to the hardcoded localhost default.
+LOCAL_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"ollama", "vllm"})
+
 
 def _setting_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
@@ -138,7 +146,19 @@ def _resolve_embedding_base_url() -> str:
         return configured.removesuffix("/v1") if provider == "ollama" else configured
 
     configured_agent = _setting_text(getattr(settings, "agent_base_url", ""))
-    if configured_agent and not _setting_text(getattr(settings, "agent_embedding_provider", "")):
+    embedding_provider_explicit = _setting_text(
+        getattr(settings, "agent_embedding_provider", ""))
+    # Fall back to the configured local-server URL (agent_base_url) when
+    # either: no embedding provider was named explicitly (legacy piggyback —
+    # the resolved provider mirrors the chat provider), or an explicit LOCAL
+    # embedding provider (ollama/vllm) was named. The config API has no field
+    # to set a distinct embedding base URL, so for a local provider
+    # agent_base_url is the only real signal of where that server lives —
+    # without this, an explicit local embedding provider with a custom/remote
+    # server silently reverts to the hardcoded localhost default.
+    if configured_agent and (
+        not embedding_provider_explicit or provider in LOCAL_EMBEDDING_PROVIDERS
+    ):
         if provider == "openrouter":
             return _DEFAULT_EMBEDDING_BASE_URLS[provider]
         return configured_agent.removesuffix("/v1") if provider == "ollama" else configured_agent

@@ -22,6 +22,7 @@ from anima_server.services.agent.embedding_resolution import (
     resolve_embedding_model,
     resolve_embedding_provider,
 )
+from anima_server.services.agent.embeddings import _embedding_skip_reason
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -118,6 +119,18 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
 # "fastembed" is embeddings-only (no chat completion) and must never be
 # selectable as the chat provider via this endpoint.
 VALID_PROVIDERS = ({"scaffold"} | set(SUPPORTED_PROVIDERS)) - {"fastembed"}
+
+# Embedding providers the embedding implementation can actually call.
+# Derived from `_embedding_skip_reason` — the same gate `generate_embedding`
+# checks at call time — rather than hardcoded, so this can never drift from
+# runtime behavior: openrouter/anthropic have no embeddings endpoint and are
+# excluded here (they are still valid chat providers, see VALID_PROVIDERS
+# above). Accepting them for embeddings would silently disable dense
+# retrieval, since the embedding call is a no-op skip for those providers.
+VALID_EMBEDDING_PROVIDERS = frozenset(
+    provider for provider in SUPPORTED_PROVIDERS
+    if _embedding_skip_reason(provider) is None
+)
 
 
 def _normalize_ollama_base_url(
@@ -360,12 +373,12 @@ async def update_config(
     embedding_provider = (
         payload.embeddingProvider.strip() if payload.embeddingProvider is not None else None
     )
-    if embedding_provider and embedding_provider not in SUPPORTED_PROVIDERS:
+    if embedding_provider and embedding_provider not in VALID_EMBEDDING_PROVIDERS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"Unsupported embedding provider: {embedding_provider!r}. "
-                f"Valid: {', '.join(sorted(SUPPORTED_PROVIDERS))} or ''"
+                f"Valid: {', '.join(sorted(VALID_EMBEDDING_PROVIDERS))} or ''"
             ),
         )
 
