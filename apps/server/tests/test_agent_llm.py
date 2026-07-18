@@ -623,6 +623,44 @@ def test_embedding_provider_key_map_prevents_legacy_key_leakage(
         settings.agent_embedding_api_key = original_embedding_api_key
 
 
+def test_legacy_chat_key_not_reused_for_different_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flat legacy ``agent_api_key`` field predates the per-provider key
+    store and always held the CHAT provider's key. Falling back to it for an
+    embedding provider that differs from the chat provider would silently
+    authorize the NEW embedding provider's requests with the OLD chat
+    provider's secret — a cross-provider key leak. It must only be reused
+    when the resolved embedding provider is the SAME as the chat provider
+    (the legitimate piggyback case)."""
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    original_provider = settings.agent_provider
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+    original_embedding_api_key = settings.agent_embedding_api_key
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+
+    try:
+        settings.agent_provider = "openai"
+        settings.agent_api_key = "sk-openai"
+        settings.agent_api_keys_json = "{}"
+        settings.agent_embedding_api_key = ""
+
+        # Embedding provider differs from the chat provider — must NOT leak
+        # the openai chat key to doubleword.
+        assert embeddings_module._resolve_embedding_api_key("doubleword") == ""
+
+        # Embedding provider equals the chat provider — legitimate piggyback,
+        # the chat key is preserved.
+        assert embeddings_module._resolve_embedding_api_key("openai") == "sk-openai"
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_api_key = original_api_key
+        settings.agent_api_keys_json = original_api_keys_json
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+
 def test_create_llm_uses_anthropic_client() -> None:
     from anima_server.services.agent.anthropic_client import AnthropicChatClient
 

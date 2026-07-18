@@ -419,14 +419,39 @@ async def update_config(
         if embedding_provider is not None:
             provider_changed = embedding_provider != settings.agent_embedding_provider
             settings.agent_embedding_provider = embedding_provider
-            if provider_changed and payload.embeddingApiKey is None:
-                # Switching to a different cloud provider without supplying
-                # a fresh key must not let the OLD provider's stored key be
-                # silently reused against the NEW provider — that would send
-                # the wrong secret. Clear it; the user must re-enter a key
-                # for the new provider (unless the payload provides one
-                # below, in which case that overrides this clear).
-                settings.agent_embedding_api_key = ""
+            if provider_changed:
+                # An embedding-provider switch without an explicit override
+                # for a given field must reset that field to the NEW
+                # provider's default rather than silently carrying over
+                # state left over from the OLD provider.
+                if payload.embeddingApiKey is None:
+                    # Switching to a different cloud provider without
+                    # supplying a fresh key must not let the OLD provider's
+                    # stored key be silently reused against the NEW
+                    # provider — that would send the wrong secret. Clear it;
+                    # the user must re-enter a key for the new provider
+                    # (unless the payload provides one below, in which case
+                    # that overrides this clear).
+                    settings.agent_embedding_api_key = ""
+                if payload.embeddingModel is None:
+                    # A stale model name left over from the OLD provider
+                    # (e.g. "text-embedding-3-small" from openai) would
+                    # otherwise be treated by resolve_embedding_model as an
+                    # explicit override for the NEW provider — which
+                    # usually can't serve it, silently disabling dense
+                    # embeddings until manually corrected. Clear it so the
+                    # new provider's own default model applies.
+                    settings.agent_embedding_model = ""
+                # There is no dedicated request field to supply a distinct
+                # embedding base URL, so any provider change is inherently
+                # "without an explicit override" for it. A base URL left
+                # over from a previous (possibly local/custom) provider
+                # must not be replayed against the new one:
+                # _resolve_embedding_base_url returns agent_embedding_base_url
+                # verbatim whenever it is set, regardless of which provider
+                # is now active, so an un-cleared stale value would
+                # silently misroute the new provider's requests.
+                settings.agent_embedding_base_url = ""
         if payload.embeddingModel is not None:
             settings.agent_embedding_model = payload.embeddingModel.strip()
         if payload.embeddingApiKey is not None:

@@ -109,11 +109,23 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
 
     from anima_server.config import get_provider_api_key, has_provider_api_keys
 
+    # The per-provider store is keyed by provider name, so this lookup only
+    # ever returns a key that was actually saved *for this exact provider*
+    # (e.g. as a past chat-provider key) — safe regardless of which provider
+    # is currently configured for chat.
     configured = get_provider_api_key(resolved_provider).strip()
     if configured:
         return configured
 
-    if not has_provider_api_keys():
+    # The flat legacy ``agent_api_key`` field predates the per-provider
+    # store and is not provider-scoped at all — it was always just "the
+    # chat provider's key". Falling back to it here is only a legitimate
+    # piggyback when the embedding provider IS the configured chat
+    # provider; otherwise it would authorize a DIFFERENT embedding
+    # provider's requests with the chat provider's secret (a cross-provider
+    # key leak).
+    chat_provider = _setting_text(getattr(settings, "agent_provider", ""))
+    if not has_provider_api_keys() and resolved_provider == chat_provider:
         configured = _setting_text(getattr(settings, "agent_api_key", ""))
         if configured:
             return configured
