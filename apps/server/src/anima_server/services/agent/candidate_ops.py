@@ -109,19 +109,22 @@ def create_memory_candidate(
             # importance >= 2 bypass to the strongest observation.
             if int(importance or 0) > int(existing.importance or 0):
                 existing.importance = int(importance)
+            # Every merged mention's source ids join the row regardless of
+            # importance: the promoted memory's evidence and F7 forget
+            # cleanup must identify ALL contributing messages, including a
+            # later stronger one that lifted the importance.
+            merged_ids = list(existing.source_message_ids or [])
+            for message_id in source_message_ids or []:
+                if message_id not in merged_ids:
+                    merged_ids.append(message_id)
+            existing.source_message_ids = merged_ids
             if int(existing.importance or 0) == 1:
                 # Weak-signal lane (IL4): an active repeat must still count
                 # toward latent accumulation — record it so the fold applies
-                # once per repeat, and keep the repeat's source messages for
-                # trace evidence provenance.
+                # once per repeat.
                 merged_salience = dict(existing.salience_json or {})
                 merged_salience["repeat_count"] = prior_repeats + 1
                 existing.salience_json = merged_salience
-                merged_ids = list(existing.source_message_ids or [])
-                for message_id in source_message_ids or []:
-                    if message_id not in merged_ids:
-                        merged_ids.append(message_id)
-                existing.source_message_ids = merged_ids
             runtime_db.flush()
             return None
 

@@ -1807,10 +1807,14 @@ def test_stronger_repeat_raises_active_candidate_importance():
                 content="Works at the observatory",
                 category="fact",
                 importance=3,
+                source_message_ids=[42],
             )
             assert stronger is None  # merged
             runtime_db.refresh(weak)
             assert weak.importance == 3
+            # The lifting message's source ids must join the row — F7
+            # forgetting of message 42 has to find the promoted memory.
+            assert 42 in (weak.source_message_ids or [])
     finally:
         runtime_engine.dispose()
 
