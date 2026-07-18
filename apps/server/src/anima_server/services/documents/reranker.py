@@ -99,10 +99,23 @@ def _load_model() -> Any | None:
     return _model
 
 
+def backend_status() -> str:
+    """Read-only snapshot of the local reranker model latch.
+
+    Never triggers a load. See ``fastembed_backend.backend_status`` for the
+    equivalent embeddings-side helper and the shared TTL-cooldown rationale.
+    """
+    if _model is not None:
+        return "ready"
+    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
+        return "failed_retrying"
+    return "cold"
+
+
 def _reset_model_cache_for_tests() -> None:
     global _model, _failed_at
     _model = None
     _failed_at = None
 
 
-__all__ = ["rerank_chunk_ids"]
+__all__ = ["backend_status", "rerank_chunk_ids"]

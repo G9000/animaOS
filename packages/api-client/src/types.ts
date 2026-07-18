@@ -409,6 +409,37 @@ export interface DocumentWorkflowActionResponse {
   document?: DocumentUploadInfo;
 }
 
+export interface ParsingPackStatus {
+  state: string; // "absent" | "downloading" | "ready" | "error"
+  progress: number | null;
+  error: string | null;
+}
+
+export interface ReparseResult {
+  status: string; // "upgraded" | "upgraded_unembedded"
+  chunk_count: number;
+}
+
+export interface CapabilitiesResponse {
+  parsingPack: ParsingPackStatus;
+  embeddings: {
+    provider: string;
+    model: string;
+    dim: number;
+    backend: string; // "ready" | "cold" | "failed_retrying"
+  };
+  reranker: {
+    enabled: boolean;
+    model: string;
+    backend: string; // "ready" | "cold" | "failed_retrying"
+  };
+  llm: {
+    configured: boolean;
+  };
+  contextualChunks: boolean;
+  fullDocumentContext: boolean;
+}
+
 export interface KnowledgeSource {
   id: number;
   kind: string;

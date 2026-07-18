@@ -78,6 +78,22 @@ def _load_model(model_name: str) -> Any | None:
     return _model
 
 
+def backend_status() -> str:
+    """Read-only snapshot of the in-process embedding model latch.
+
+    Never triggers a load — purely observes the state ``_load_model`` already
+    set: ``"ready"`` once a model is loaded, ``"failed_retrying"`` while a
+    prior load failure's TTL cooldown is still active, ``"cold"`` otherwise
+    (never attempted, or the cooldown has lapsed and the next call will
+    retry the load).
+    """
+    if _model is not None:
+        return "ready"
+    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
+        return "failed_retrying"
+    return "cold"
+
+
 def warm_up_retrieval_models() -> None:
     """Load the bundled retrieval models off the request/chat path.
 
@@ -118,4 +134,4 @@ def _reset_backend_for_tests() -> None:
         _failed_at = None
 
 
-__all__ = ["embed_texts", "warm_up_retrieval_models"]
+__all__ = ["backend_status", "embed_texts", "warm_up_retrieval_models"]

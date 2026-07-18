@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .api.routes.auth import router as auth_router
+from .api.routes.capabilities import router as capabilities_router
 from .api.routes.chat import router as chat_router
 from .api.routes.config import router as config_router
 from .api.routes.consciousness import router as consciousness_router
@@ -359,6 +360,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(auth_router)
+    app.include_router(capabilities_router)
     app.include_router(chat_router)
     app.include_router(config_router)
     app.include_router(consciousness_router)
