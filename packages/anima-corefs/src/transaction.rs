@@ -394,6 +394,11 @@ impl Drop for CoreCommitLock {
     }
 }
 
+fn measure_lock_hold_through_release(lock_started: Instant, release: impl FnOnce()) -> Duration {
+    release();
+    lock_started.elapsed()
+}
+
 fn read_lock_metadata(file: &mut File) -> Result<Option<LockOwnerMetadata>, CommitError> {
     let length = file.metadata()?.len();
     if length == 0 {
@@ -1608,8 +1613,8 @@ impl CoreCommitCoordinator {
                 catalog_hash: head.catalog_hash().to_owned(),
                 required_frk_version: head.required_frk_version(),
             };
-            let lock_hold_duration = lock_started.elapsed();
-            drop(commit_lock);
+            let lock_hold_duration =
+                measure_lock_hold_through_release(lock_started, || drop(commit_lock));
             (
                 event,
                 lock_hold_duration,
@@ -1997,8 +2002,8 @@ impl CoreCommitCoordinator {
                 catalog_hash: head.catalog_hash().to_owned(),
                 required_frk_version: head.required_frk_version(),
             };
-            let lock_hold_duration = lock_started.elapsed();
-            drop(commit_lock);
+            let lock_hold_duration =
+                measure_lock_hold_through_release(lock_started, || drop(commit_lock));
             (
                 event,
                 recovery_pending,
@@ -2929,6 +2934,8 @@ pub enum CommitError {
 mod tests {
     use std::cell::Cell;
     use std::io::{self, Cursor};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use cap_std::{ambient_authority, fs::Dir};
 
@@ -2952,6 +2959,18 @@ mod tests {
     #[test]
     fn commit_lock_files_use_owner_only_unix_permissions() {
         assert_eq!(super::COMMIT_LOCK_FILE_MODE, 0o600);
+    }
+
+    #[test]
+    fn lock_hold_measurement_includes_release_cleanup() {
+        let release_delay = Duration::from_millis(25);
+        let started = Instant::now();
+
+        let measured = super::measure_lock_hold_through_release(started, || {
+            thread::sleep(release_delay);
+        });
+
+        assert!(measured >= release_delay);
     }
 
     #[test]
