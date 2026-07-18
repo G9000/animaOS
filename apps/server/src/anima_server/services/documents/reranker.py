@@ -1,11 +1,12 @@
 """Optional local cross-encoder rerank stage for document retrieval.
 
-Gated by ``ANIMA_RETRIEVAL_RERANKER`` (default off) and the ``reranker``
-extra (sentence-transformers). Any unavailability — flag off, extra not
-installed, model load or scoring failure — degrades to the fused order by
-returning ``None``. Expect roughly 30-80ms per query for ~50 candidates on
-CPU with the default BGE-reranker-v2-m3; the model loads lazily on first
-use and is cached for the process lifetime.
+Gated by ``ANIMA_RETRIEVAL_RERANKER`` (default "local"). The model is a
+bundled ONNX cross-encoder run through fastembed — no extra install, no
+external service. Any unavailability — flag off, model load failure, or
+scoring failure — degrades to the fused order by returning ``None``. Expect
+roughly 30-80ms per query for ~50 candidates on CPU with the default
+MiniLM-based reranker; the model loads lazily on first use and is cached
+for the process lifetime.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def rerank_chunk_ids(
     if model is None:
         return None
     try:
-        scores = model.predict([(query, text) for _chunk_id, text in candidates])
+        scores = list(model.rerank(query, [text for _chunk_id, text in candidates]))
         ranked = sorted(
             zip(candidates, scores, strict=True),
             key=lambda pair: float(pair[1]),
@@ -49,6 +50,16 @@ def rerank_chunk_ids(
     except Exception:
         logger.warning("Reranker scoring failed; using fused order", exc_info=True)
         return None
+
+
+def _create_model() -> Any:
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+    cache_dir = settings.data_dir / "models" / "fastembed"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return TextCrossEncoder(
+        model_name=settings.retrieval_reranker_model, cache_dir=str(cache_dir)
+    )
 
 
 def _load_model() -> Any | None:
@@ -61,16 +72,15 @@ def _load_model() -> Any | None:
         if _model is not None or _model_failed:
             return _model
         try:
-            # Heavy import (torch); only paid when the flag is on.
-            from sentence_transformers import CrossEncoder
-
-            _model = CrossEncoder(settings.retrieval_reranker_model)
+            _model = _create_model()
         except Exception:
             _model_failed = True
+            cache_dir = settings.data_dir / "models" / "fastembed"
             logger.warning(
-                "Local reranker unavailable (install the 'reranker' extra "
-                "for %s); retrieval keeps the fused order",
+                "Local reranker unavailable for %s (the model download to "
+                "%s may not have completed); retrieval keeps the fused order",
                 settings.retrieval_reranker_model,
+                cache_dir,
                 exc_info=True,
             )
             return None

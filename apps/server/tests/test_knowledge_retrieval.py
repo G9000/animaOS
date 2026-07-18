@@ -3,10 +3,17 @@ from __future__ import annotations
 import hashlib
 
 from anima_server.models.runtime import RuntimeKnowledgeConcept
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.ingestion.adapters.text import ingest_text_content
 from sqlalchemy import select
 
 pytest_plugins = ("conftest_runtime",)
+
+# Dim derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
 def _sha(value: str) -> str:
@@ -16,10 +23,10 @@ def _sha(value: str) -> str:
 def _embedding_for(text: str) -> list[float]:
     lowered = text.lower()
     if "portable" in lowered or "continuity" in lowered:
-        return [1.0, *([0.0] * 767)]
+        return [1.0, *([0.0] * (_EMBED_DIM - 1))]
     if "citation" in lowered or "evidence" in lowered:
-        return [0.5, 0.5, *([0.0] * 766)]
-    return [0.0, 0.0, 1.0, *([0.0] * 765)]
+        return [0.5, 0.5, *([0.0] * (_EMBED_DIM - 2))]
+    return [0.0, 0.0, 1.0, *([0.0] * (_EMBED_DIM - 3))]
 
 
 def _concept(runtime_db, *, user_id: int, slug: str, title: str, body: str):
@@ -275,7 +282,7 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
     )
     runtime_db.add_all([embedded_span, unembedded_span])
     runtime_db.flush()
-    vector = [1.0] + [0.0] * 767
+    vector = [1.0] + [0.0] * (_EMBED_DIM - 1)
     runtime_db.add(
         RuntimeEmbedding(
             user_id=7,
@@ -295,7 +302,7 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
         runtime_db,
         user_id=7,
         query="E-17",
-        embedding_fn=lambda text: [1.0] + [0.0] * 767,
+        embedding_fn=lambda text: [1.0] + [0.0] * (_EMBED_DIM - 1),
         limit_concepts=0,
         limit_spans=5,
     )

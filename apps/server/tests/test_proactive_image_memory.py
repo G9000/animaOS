@@ -9,6 +9,7 @@ from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.models import User
 from anima_server.models.runtime import RuntimeImageMessageLink, RuntimeMessage, RuntimeThread
+from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.indexing import index_image_asset
 from anima_server.services.images.store import register_image_asset
@@ -27,7 +28,11 @@ PNG_BYTES = (
     b"\x90wS\xde"
 )
 
-_TEST_DIM = 768
+# Derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_TEST_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
 @contextmanager

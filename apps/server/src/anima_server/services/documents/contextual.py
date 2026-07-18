@@ -6,7 +6,7 @@ chunk is from section X of document Y and covers Z" — stored in the chunk's
 metadata and prepended to the chunk text for embedding and lexical indexing
 only. Evidence text shown to the model or user never includes the blurb.
 
-Gated by ``ANIMA_CONTEXTUAL_CHUNKS`` (default off).
+Gated by ``ANIMA_CONTEXTUAL_CHUNKS`` (default on).
 """
 
 from __future__ import annotations

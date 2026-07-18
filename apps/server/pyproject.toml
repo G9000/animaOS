@@ -32,6 +32,7 @@ dependencies = [
   "json-repair>=0.30.0",
   "pypdfium2>=4.30",
   "trafilatura>=2.0",
+  "fastembed>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -41,9 +42,6 @@ dependencies = [
 # docling-core floor: export_to_markdown gained page_break_placeholder in
 # 2.24.0 and traverse_pictures in 2.70.2 — parsing.py passes both.
 docling = ["docling>=2.0.0", "docling-core>=2.70.2"]
-# Local cross-encoder rerank stage for document retrieval. Heavy (PyTorch);
-# install with `uv sync --extra reranker` or `pip install anima-server[reranker]`.
-reranker = ["sentence-transformers>=3.0.0"]
 
 [dependency-groups]
 postgres = ["psycopg[binary]>=3.2.9"]

@@ -93,7 +93,9 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
     ),
 ]
 
-VALID_PROVIDERS = {"scaffold"} | set(SUPPORTED_PROVIDERS)
+# "fastembed" is embeddings-only (no chat completion) and must never be
+# selectable as the chat provider via this endpoint.
+VALID_PROVIDERS = ({"scaffold"} | set(SUPPORTED_PROVIDERS)) - {"fastembed"}
 
 
 def _normalize_ollama_base_url(

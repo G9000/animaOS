@@ -571,6 +571,10 @@ class TestBatchEmbeddings:
 
         with patch("anima_server.services.agent.embeddings.settings") as mock_settings:
             mock_settings.agent_provider = "scaffold"
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly since a bare MagicMock attribute isn't a
+            # str and would otherwise fall through to that default.
+            mock_settings.agent_embedding_provider = "scaffold"
             result = await generate_embeddings_batch(["hello", "world"])
             assert result == [None, None]
 
@@ -595,6 +599,9 @@ class TestBatchEmbeddings:
             ),
         ):
             mock_settings.agent_provider = "ollama"
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising the ollama gather path.
+            mock_settings.agent_embedding_provider = "ollama"
             result = await generate_embeddings_batch(["a", "b", "c"])
             assert len(result) == 3
             assert call_count == 3
@@ -625,6 +632,9 @@ class TestBatchEmbeddings:
             ),
         ):
             mock_settings.agent_provider = "ollama"
+            # fastembed is the bundled default now; pin the embedding
+            # provider explicitly to keep exercising the ollama gather path.
+            mock_settings.agent_embedding_provider = "ollama"
             result = await generate_embeddings_batch(["hello", "world"])
             assert len(result) == 2
             assert all(r is not None for r in result)

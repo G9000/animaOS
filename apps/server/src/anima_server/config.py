@@ -75,19 +75,28 @@ class Settings(BaseSettings):
     # Single read_document_section call cap; longer sections continue via
     # the start_chunk parameter.
     document_tool_read_char_limit: int = 6_000
+    # Full-document context: when every selected document's text fits the
+    # budget, inject whole documents instead of retrieved chunks (matches
+    # cloud-assistant file-upload behavior; retrieval covers what doesn't fit).
+    document_full_context: Literal["off", "auto"] = "auto"
+    # Fraction of the resolved context budget the full-doc block may use.
+    document_full_context_budget_ratio: float = 0.5
+    # Hard ceiling in characters regardless of window size.
+    document_full_context_char_cap: int = 120_000
     # Contextual retrieval blurbs: when "on", each document chunk gets an
     # LLM-generated context line stored in chunk metadata and prepended to
     # the chunk text for embedding and lexical indexing only (never shown
-    # as evidence). Off by default until the eval harness justifies the
-    # ingestion cost.
-    contextual_chunks: Literal["off", "on"] = "off"
+    # as evidence). On by default; ingestion cost is one extra LLM call per
+    # chunk, and any failure degrades to no blurb rather than blocking.
+    contextual_chunks: Literal["off", "on"] = "on"
     # Skip blurb generation for documents with more chunks than this.
     contextual_chunks_max_chunks: int = 200
-    # Optional cross-encoder rerank stage after RRF fusion. "local" requires
-    # the reranker extra (sentence-transformers); anything unavailable
-    # degrades to the fused order.
-    retrieval_reranker: Literal["off", "local"] = "off"
-    retrieval_reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # Optional cross-encoder rerank stage after RRF fusion. "local" runs a
+    # bundled ONNX cross-encoder via fastembed (no extra install); any
+    # unavailability (model load or scoring failure) degrades to the fused
+    # order.
+    retrieval_reranker: Literal["off", "local"] = "local"
+    retrieval_reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     retrieval_rerank_candidates: int = 50
     # Knowledge compiler backend: "llm" uses the runtime's configured model
     # (falling back to deterministic when the model is unreachable);
@@ -296,6 +305,7 @@ KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "openai/text-embedding-3-small": 1536,
     "openai/text-embedding-3-large": 3072,
     "Qwen/Qwen3-Embedding-8B": 4096,
+    "BAAI/bge-small-en-v1.5": 384,
 }
 
 _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
@@ -304,6 +314,7 @@ _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
     "doubleword": "Qwen/Qwen3-Embedding-8B",
+    "fastembed": "BAAI/bge-small-en-v1.5",
 }
 
 _detected_embedding_dim: int | None = None
@@ -328,17 +339,58 @@ def _normalize_embedding_model_name(model: str) -> str:
     return normalized
 
 
+def _resolve_default_embedding_provider() -> str:
+    """Mirror ``embeddings._resolve_embedding_provider()``'s resolution order.
+
+    Duplicated (rather than imported) to avoid a circular import between
+    ``config`` and ``services.agent.embeddings``. Keep both in sync: explicit
+    ``agent_embedding_provider`` wins; otherwise the bundled ``fastembed``
+    provider is the default, except when the user configured embedding
+    details (model, base URL, or API key) against their chat provider
+    without naming an embedding provider — that legacy piggyback is
+    preserved as a real signal of intent.
+
+    KEEP IN SYNC with ``embeddings._resolve_embedding_provider``, which
+    duplicates this same piggyback-signal rule.
+    """
+    configured = settings.agent_embedding_provider.strip()
+    if configured:
+        return configured
+    embedding_model = settings.agent_embedding_model.strip()
+    embedding_base_url = getattr(settings, "agent_embedding_base_url", "").strip()
+    embedding_api_key = getattr(settings, "agent_embedding_api_key", "").strip()
+    if embedding_model or embedding_base_url or embedding_api_key:
+        return settings.agent_provider.strip() or "ollama"
+    return "fastembed"
+
+
 def resolve_embedding_dim() -> int:
     """Return the embedding dimension for the active model.
 
     Priority: detected at runtime > known lookup > config fallback.
+
+    ``agent_extraction_model`` is a CHAT model setting, not embedding intent
+    — it is only consulted as a legacy fallback when the resolved provider
+    is an explicitly-configured non-fastembed piggyback provider. For the
+    bundled ``fastembed`` provider it must be skipped entirely: a chat model
+    name (e.g. "qwen2.5:3b") isn't in ``KNOWN_EMBEDDING_DIMS``, so it would
+    silently fall through to the 768 config fallback while the bundled
+    default model is actually 384-dim.  (Rejected alternative: keep the old
+    unconditional piggyback for fastembed too — that reads chat config as
+    embedding config; the contract-migration machinery already moves such
+    installs onto the bundled default uniformly.)
+
+    KEEP IN SYNC with ``embeddings._resolve_embedding_model``, which
+    duplicates this same fastembed-skips-extraction-model rule for model
+    resolution.
     """
     if _detected_embedding_dim is not None:
         return _detected_embedding_dim
-    model = settings.agent_embedding_model.strip(
-    ) or settings.agent_extraction_model.strip()
+    embed_provider = _resolve_default_embedding_provider()
+    model = settings.agent_embedding_model.strip()
+    if not model and embed_provider != "fastembed":
+        model = settings.agent_extraction_model.strip()
     if not model:
-        embed_provider = settings.agent_embedding_provider.strip() or settings.agent_provider
         model = _DEFAULT_EMBEDDING_MODELS.get(
             embed_provider, "nomic-embed-text")
     if model in KNOWN_EMBEDDING_DIMS:

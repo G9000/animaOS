@@ -26,6 +26,13 @@ from sqlalchemy import func, select, text
 
 pytest_plugins = ("conftest_runtime",)
 
+# Dim derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
+
+
 
 @pytest.fixture(autouse=True)
 def _enable_foreign_keys_for_compiler_tests(runtime_db) -> None:
@@ -37,7 +44,7 @@ def _sha(value: str) -> str:
 
 
 def _embedding_for(text: str) -> list[float]:
-    return [1.0, *([0.0] * 767)]
+    return [1.0, *([0.0] * (_EMBED_DIM - 1))]
 
 
 def _source_with_spans(runtime_db) -> tuple[RuntimeSource, list[RuntimeSourceSpan]]:

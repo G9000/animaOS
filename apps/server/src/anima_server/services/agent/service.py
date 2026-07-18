@@ -10,11 +10,13 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import (
+    RuntimeDocument,
+    RuntimeDocumentChunk,
     RuntimeImageMessageLink,
     RuntimeKnowledgeConcept,
     RuntimeKnowledgeConceptSource,
@@ -77,6 +79,7 @@ from anima_server.services.agent.persistence import (
 from anima_server.services.agent.prompt_budget import (
     estimate_char_tokens,
     resolve_context_budget_tokens,
+    resolve_document_context_budget_chars,
 )
 from anima_server.services.agent.reflection import schedule_reflection
 from anima_server.services.agent.runtime import AgentRuntime, build_loop_runtime
@@ -131,7 +134,7 @@ from anima_server.services.agent.tools import get_tools, prepare_action_tool_sch
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.data_crypto import df, get_active_dek
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
-from anima_server.services.documents.store import get_document_for_user
+from anima_server.services.documents.store import get_document_for_user, list_document_chunks
 from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
 
@@ -1801,6 +1804,45 @@ def _build_document_context_block(
         cleaned_document_ids
     )
 
+    # Full-document context: when the combined text of every selected
+    # document fits the window-scaled budget, inject the whole documents
+    # instead of retrieved chunks (matches "paste the doc in" quality for
+    # small selections). All-or-nothing: any overflow falls back to the
+    # retrieval path below so a turn never mixes full and retrieved
+    # evidence. Fails open (falls back to retrieval) on any load error.
+    full_document_texts: list[tuple[RuntimeDocument, str]] | None = None
+    if settings.document_full_context == "auto":
+        try:
+            full_document_texts = _full_document_texts(
+                runtime_db,
+                user_id=user_id,
+                document_ids=cleaned_document_ids,
+            )
+        except Exception:
+            logger.debug(
+                "Full-document context load failed for user %s documents %s",
+                user_id,
+                cleaned_document_ids,
+                exc_info=True,
+            )
+            full_document_texts = None
+
+    if full_document_texts is not None:
+        full_document_block = _build_full_document_memory_block(
+            runtime_db,
+            user_id=user_id,
+            document_texts=full_document_texts,
+        )
+        # The final fit decision is made on the ASSEMBLED value: the
+        # preamble, per-document markers, and knowledge-hit entries add
+        # real characters on top of the document text, and the planner's
+        # per-block cap is this same budget — so only a block that fits
+        # fully assembled is guaranteed to survive prompt assembly
+        # untruncated. Over-budget assembly falls back to retrieval
+        # (all-or-nothing: no mixed full+retrieved evidence).
+        if len(full_document_block.value) <= resolve_document_context_budget_chars():
+            return full_document_block
+
     try:
         results = search_document_chunks(
             runtime_db,
@@ -1917,6 +1959,143 @@ def _build_document_context_block(
             "Compiled source knowledge and query-relevant excerpts from PDFs the user explicitly "
             "selected for this chat turn. Ground answers in these snippets when they apply; "
             "do not treat them as long-term memory."
+        ),
+    )
+
+
+def _full_document_texts(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_ids: Sequence[int],
+) -> list[tuple[RuntimeDocument, str]] | None:
+    """Load each selected document's full text in chunk order.
+
+    Returns ``None`` (all-or-nothing) when the combined length of every
+    selected document exceeds the full-document budget: mixed full and
+    retrieved evidence in the same turn is confusing, so any overflow sends
+    the whole turn back through the retrieval path. This text-only check is
+    a cheap pre-filter that can only reject; the caller makes the final fit
+    decision on the fully ASSEMBLED block value against the same budget
+    (``prompt_budget.resolve_document_context_budget_chars``), so a block
+    that ships is never re-truncated by prompt assembly.
+    """
+    budget_chars = resolve_document_context_budget_chars()
+
+    # Cheap admission check: reject an oversized selection via a SQL length
+    # aggregate BEFORE loading any chunk body. `SUM(LENGTH(content_text))` is
+    # a strict lower bound of the assembled text length (assembly still adds
+    # "\n\n" separators between chunks and per-document markers on top), so
+    # rejecting when the aggregate alone exceeds budget is always correct.
+    # This only rejects — it never admits on its own; a selection that
+    # passes still runs the existing per-document load/measure loop below
+    # unchanged, and the caller still makes the final fit decision on the
+    # fully assembled block value. Works on both Postgres (prod) and sqlite
+    # (tests): LENGTH/SUM are standard on both backends. Fails open (falls
+    # through to the existing path) on any query error rather than crash.
+    try:
+        chunk_length_sum = runtime_db.scalar(
+            select(func.sum(func.length(RuntimeDocumentChunk.content_text))).where(
+                RuntimeDocumentChunk.document_id.in_(document_ids),
+                RuntimeDocumentChunk.user_id == user_id,
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Full-document length aggregate failed for user %s documents %s; "
+            "falling back to per-document loading",
+            user_id,
+            document_ids,
+            exc_info=True,
+        )
+    else:
+        if chunk_length_sum is not None and chunk_length_sum > budget_chars:
+            return None
+
+    documents: list[tuple[RuntimeDocument, str]] = []
+    total_chars = 0
+    for document_id in document_ids:
+        document = get_document_for_user(
+            runtime_db,
+            user_id=user_id,
+            document_id=document_id,
+        )
+        if document is None:
+            continue
+        chunks = list_document_chunks(runtime_db, document_id=document_id)
+        if not chunks:
+            # No chunked text to inject (document not yet processed through
+            # the chunking pipeline) — fall back to retrieval rather than
+            # silently injecting an empty document.
+            return None
+        text = "\n\n".join(chunk.content_text for chunk in chunks)
+        total_chars += len(text)
+        if total_chars > budget_chars:
+            return None
+        documents.append((document, text))
+    if not documents:
+        # Every selected id was dropped by this loop's own ownership/existence
+        # check (e.g. the outer caller's ownership check failed open and kept
+        # stale ids). An empty list is indistinguishable from "no selection"
+        # to callers gating on `is not None`, which would otherwise ship a
+        # "Full text of the selected documents" block with zero document
+        # text. Signal the same retrieval fallback as any other rejection.
+        return None
+    return documents
+
+
+def _build_full_document_memory_block(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    document_texts: Sequence[tuple[RuntimeDocument, str]],
+) -> MemoryBlock:
+    try:
+        knowledge_hits = _document_knowledge_hits(
+            runtime_db,
+            user_id=user_id,
+            document_ids=[document.id for document, _ in document_texts],
+            document_chunk_ids=[],
+            limit=8,
+        )
+    except Exception:
+        logger.debug(
+            "Document knowledge retrieval failed for user %s during full-document context",
+            user_id,
+            exc_info=True,
+        )
+        knowledge_hits = []
+
+    lines = [
+        "Selected document context from indexed PDFs. Use this only when it is relevant.",
+    ]
+    if knowledge_hits:
+        lines.append("")
+        lines.append("Compiled knowledge from selected PDFs:")
+        for index, hit in enumerate(knowledge_hits, start=1):
+            lines.append(
+                f"[K{index}] {hit.title} "
+                f"({hit.concept_type}, concept {hit.concept_id}, selected source)"
+            )
+            lines.append(_truncate_document_chunk(hit.summary, limit=700))
+
+    lines.append("")
+    lines.append(
+        "Full text of the selected documents (small enough to include in full "
+        "instead of retrieved excerpts):"
+    )
+    for document, text in document_texts:
+        lines.append("")
+        lines.append(f"--- {document.filename} [doc:{document.id}] (complete document) ---")
+        lines.append(text)
+
+    return MemoryBlock(
+        label="document_context",
+        value="\n".join(lines),
+        description=(
+            "Complete text of PDFs the user explicitly selected for this chat turn, "
+            "injected in full because the selection fits the context budget. Ground "
+            "answers in this text when it applies; do not treat it as long-term memory."
         ),
     )
 
@@ -2254,6 +2433,13 @@ def _inject_memory_pressure_warning(
 
     companion._memory_pressure_alerted = True  # type: ignore[attr-defined]
 
+    # Note: this block has no dedicated budget policy (default tier 3), so
+    # on a near-budget document turn — where a window-scaled
+    # document_context block may consume most of the total block budget —
+    # the planner can now drop it with total_budget_exhausted, whereas the
+    # old static 4000-char document cap left room for it. Acceptable: the
+    # warning is advisory, and genuine context overflow is still handled by
+    # _proactive_compact_if_needed.
     warning_block = MemoryBlock(
         label="memory_pressure_warning",
         value=_MEMORY_PRESSURE_WARNING,

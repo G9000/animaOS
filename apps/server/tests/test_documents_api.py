@@ -21,7 +21,11 @@ from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-_TEST_EMBEDDING_DIM = 768
+# Derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_TEST_EMBEDDING_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
 def _register_user(
@@ -350,6 +354,10 @@ def test_start_pdf_workflow_rejects_other_users_storage_path(
 
 def test_resume_pdf_workflow_search_chunks_and_approve_memory(monkeypatch: Any) -> None:
     _patch_pdf_edges(monkeypatch)
+    # This test asserts an exact single-result count against a hand-built
+    # vector-store fake; the cross-encoder rerank stage's candidate-pool
+    # over-fetch is covered separately in test_contextual_rerank.py.
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
 
     with managed_test_client("anima-documents-api-") as client:
         reg = _register_user(client)

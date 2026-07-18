@@ -58,6 +58,7 @@ _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
     "doubleword": "Qwen/Qwen3-Embedding-8B",
+    "fastembed": "BAAI/bge-small-en-v1.5",
 }
 
 _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
@@ -80,10 +81,29 @@ def _setting_text(value: Any) -> str:
 
 
 def _resolve_embedding_provider() -> str:
+    """Resolve which provider generates embeddings.
+
+    Order: explicit ``agent_embedding_provider`` wins. Otherwise the bundled
+    ``fastembed`` ONNX provider is the default — dense retrieval must work
+    regardless of which chat LLM the user has configured. The old implicit
+    piggyback onto ``agent_provider`` is preserved only when the user has
+    configured embedding-specific details (model, base URL, or API key)
+    against their chat provider without naming an embedding provider
+    explicitly; that is a real signal of intent, not an accident of the old
+    fallback.
+
+    KEEP IN SYNC with ``config._resolve_default_embedding_provider``, which
+    duplicates this same piggyback-signal rule.
+    """
     configured = _setting_text(getattr(settings, "agent_embedding_provider", ""))
     if configured:
         return configured
-    return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
+    embedding_model = _setting_text(getattr(settings, "agent_embedding_model", ""))
+    embedding_base_url = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
+    embedding_api_key = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
+    if embedding_model or embedding_base_url or embedding_api_key:
+        return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
+    return "fastembed"
 
 
 def _resolve_embedding_api_key(provider: str | None = None) -> str:
@@ -111,19 +131,44 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
 
 
 def _resolve_embedding_model() -> str:
-    """Return the embedding model to use, preferring the user-configured one."""
+    """Return the embedding model to use, preferring the user-configured one.
+
+    ``agent_extraction_model`` is a CHAT model setting (written by the
+    settings route for the background extraction LLM), not an embedding
+    setting. It is kept as a legacy fallback only for the piggyback case —
+    an explicitly-configured non-fastembed provider — where reusing the
+    chat model name was the pre-existing, documented behavior. It must
+    NOT be consulted when the resolved provider is the bundled
+    ``fastembed`` ONNX backend: fastembed can only load embedding-capable
+    ONNX models, so leaking a chat model name (e.g. "qwen2.5:3b") in here
+    would fail ``TextEmbedding`` construction and silently kill dense
+    retrieval. (Rejected alternative: keep treating extraction model as a
+    piggyback intent for fastembed too, preserving pre-branch behavior —
+    but that misreads chat config as embedding config, and the existing
+    contract-migration machinery already moves such installs onto the
+    bundled default uniformly, so there is no migration gap to bridge.)
+
+    KEEP IN SYNC with ``config._resolve_default_embedding_provider`` /
+    ``config.resolve_embedding_dim``, which duplicate this same
+    fastembed-skips-extraction-model rule for the dimension lookup.
+    """
     configured = _setting_text(getattr(settings, "agent_embedding_model", ""))
     if configured:
         return configured
-    configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
-    if configured:
-        return configured
-    return _DEFAULT_EMBEDDING_MODELS.get(_resolve_embedding_provider(), "nomic-embed-text")
+    provider = _resolve_embedding_provider()
+    if provider != "fastembed":
+        configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
+        if configured:
+            return configured
+    return _DEFAULT_EMBEDDING_MODELS.get(provider, "nomic-embed-text")
 
 
 def _resolve_embedding_base_url() -> str:
     """Resolve the base URL for the active embedding provider."""
     provider = _resolve_embedding_provider()
+    if provider == "fastembed":
+        # In-process ONNX backend — no HTTP endpoint of any kind.
+        return ""
     configured = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
     if configured:
         return configured.removesuffix("/v1") if provider == "ollama" else configured
@@ -380,7 +425,12 @@ async def generate_embedding(text: str) -> list[float] | None:
         return None
 
     try:
-        if provider == "ollama":
+        if provider == "fastembed":
+            from anima_server.services.agent.fastembed_backend import embed_texts
+
+            vectors = await asyncio.to_thread(embed_texts, [prepared_text], model_name=model)
+            result = vectors[0]
+        elif provider == "ollama":
             result = await _embed_ollama(prepared_text)
         else:
             # openrouter, vllm — all OpenAI-compatible
@@ -1362,25 +1412,50 @@ async def generate_embeddings_batch(
         _note_first_embedding_dim(results)
         return results
 
-    prepared_items = [
-        (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
-    ]
-    non_empty_items = [item for item in prepared_items if item[1]]
+    non_empty_items = _prepare_non_empty_items(texts)
     if not non_empty_items:
         return [None] * len(texts)
 
-    prepared_results = await _batch_embed_openai_compatible(
-        [text for _, text in non_empty_items],
-        max_batch_size=max_batch_size,
-    )
+    if provider == "fastembed":
+        from anima_server.services.agent.fastembed_backend import embed_texts
 
-    results: list[list[float] | None] = [None] * len(texts)
-    for (index, _text), embedding in zip(non_empty_items, prepared_results, strict=False):
-        results[index] = embedding
+        prepared_results = await asyncio.to_thread(
+            embed_texts,
+            [text for _, text in non_empty_items],
+            model_name=_resolve_embedding_model(),
+        )
+    else:
+        prepared_results = await _batch_embed_openai_compatible(
+            [text for _, text in non_empty_items],
+            max_batch_size=max_batch_size,
+        )
+
+    results = _scatter_batch_results(non_empty_items, prepared_results, total=len(texts))
 
     # Same-scale contract check as the single path, so a model/dimension switch
     # is caught even when the first embedding work is a batch backfill.
     _note_first_embedding_dim(results)
+    return results
+
+
+def _prepare_non_empty_items(texts: list[str]) -> list[tuple[int, str]]:
+    """Return ``(original_index, prepared_text)`` pairs for non-empty texts."""
+    prepared_items = [
+        (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
+    ]
+    return [item for item in prepared_items if item[1]]
+
+
+def _scatter_batch_results(
+    non_empty_items: list[tuple[int, str]],
+    embeddings: list[list[float] | None],
+    *,
+    total: int,
+) -> list[list[float] | None]:
+    """Scatter per-prepared-text embeddings back to input positions."""
+    results: list[list[float] | None] = [None] * total
+    for (index, _text), embedding in zip(non_empty_items, embeddings, strict=False):
+        results[index] = embedding
     return results
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from anima_server.config import settings
 from anima_server.db import runtime as runtime_module
 from anima_server.models.runtime import (
     RuntimeDocument,
@@ -28,7 +30,21 @@ from sqlalchemy.orm import Session
 
 pytest_plugins = ("conftest_runtime",)
 
-_TEST_EMBEDDING_DIM = 768
+
+@pytest.fixture(autouse=True)
+def _pin_reranker_off(monkeypatch: Any) -> None:
+    # This module exercises the dense/lexical fusion and over-fetch limits
+    # directly; the cross-encoder rerank stage (and its candidate-pool
+    # widening) is covered separately in test_contextual_rerank.py. Pin the
+    # setting so this module's exact-limit and exact-order assertions stay
+    # valid regardless of the reranker's default.
+    monkeypatch.setattr(settings, "retrieval_reranker", "off")
+
+# Derived from the actual bound column rather than hardcoded: the pgvector
+# column dimension is fixed once per process (baked in at first import of
+# RuntimeEmbedding from the then-current default embedding provider), so a
+# literal here would drift out of sync whenever that default changes.
+_TEST_EMBEDDING_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
 def _embedding(*values: float) -> list[float]:
