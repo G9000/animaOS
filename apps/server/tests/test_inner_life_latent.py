@@ -116,7 +116,9 @@ class FakeCandidate:
         source: str = "llm",
         supersedes_item_id: int | None = None,
         salience_json: dict[str, object] | None = None,
+        source_message_ids: list[int] | None = None,
     ) -> None:
+        self.source_message_ids = source_message_ids or []
         self.content = content
         self.category = category
         self.importance = importance
@@ -1564,6 +1566,121 @@ async def test_crystallize_conflicting_synthesis_never_grafts_onto_old_memory(mo
             assert evidence == []  # nothing grafted onto the old memory
             assert (
                 soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_active_repeat_merges_with_repeat_count_and_fold_multiplies():
+    """An identical weak signal extracted while the previous candidate is
+    still active merges with repeat_count (and unioned source ids), and the
+    fold applies once per mention — the IL4 accumulation contract holds
+    within a processing window, not just across folds."""
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with runtime_factory() as runtime_db:
+            first = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                source_message_ids=[1],
+            )
+            assert first is not None
+            repeat = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                source_message_ids=[2],
+            )
+            assert repeat is None  # merged into the active row
+            runtime_db.refresh(first)
+            assert first.salience_json.get("repeat_count") == 2
+            assert set(first.source_message_ids) == {1, 2}
+            merged_salience = dict(first.salience_json)
+            merged_ids = list(first.source_message_ids)
+    finally:
+        runtime_engine.dispose()
+
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        trace = fold_candidate_into_trace(
+            soul_db,
+            user_id=user.id,
+            candidate=FakeCandidate(
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                salience_json=merged_salience,
+                source_message_ids=merged_ids,
+            ),
+            topic_key="user:minor_observation:window_repeats",
+            score=0.2,
+        )
+        single = fold_weight(0.0, 0.2, DEFAULT_LATENT_CONFIG)
+        double = fold_weight(single, 0.2, DEFAULT_LATENT_CONFIG)
+        assert trace.weight == pytest.approx(double)
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_requalifies_when_stale_refs_carried_the_weight(monkeypatch):
+    """A trace whose threshold crossing was mostly backed by now-stale refs
+    must NOT crystallize from the single survivor: it requalifies at the
+    survival-scaled weight and waits for future folds."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            survivor = _runtime_candidate(runtime_db, user_id=user_id, content="One real mention")
+            survivor_id = survivor.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:mostly_stale",
+                    kind="observation",
+                    weight=0.9,
+                    evidence_refs=[
+                        {"candidate_id": survivor_id, "source_message_ids": []},
+                        {"candidate_id": 999901, "source_message_ids": []},
+                        {"candidate_id": 999902, "source_message_ids": []},
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("must not synthesize from under-backed evidence")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _should_not_be_called)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["requalified"] == 1
+        assert stats["dropped_stale"] == 2
+
+        with soul_factory() as soul_db:
+            trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id))
+            assert trace is not None
+            assert trace.weight == pytest.approx(0.9 * (1 / 3))
+            assert len(trace.evidence_refs) == 1
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
             )
     finally:
         soul_engine.dispose()

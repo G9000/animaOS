@@ -96,6 +96,21 @@ def create_memory_candidate(
                 existing.salience_json,
                 salience_json,
             )
+            if int(existing.importance or 0) == 1:
+                # Weak-signal lane (IL4): an active repeat must still count
+                # toward latent accumulation — record it so the fold applies
+                # once per repeat, and keep the repeat's source messages for
+                # trace evidence provenance.
+                merged_salience = dict(existing.salience_json or {})
+                merged_salience["repeat_count"] = int(
+                    merged_salience.get("repeat_count", 1) or 1
+                ) + 1
+                existing.salience_json = merged_salience
+                merged_ids = list(existing.source_message_ids or [])
+                for message_id in source_message_ids or []:
+                    if message_id not in merged_ids:
+                        merged_ids.append(message_id)
+                existing.source_message_ids = merged_ids
             runtime_db.flush()
             return None
 

@@ -110,7 +110,13 @@ def fold_candidate_into_trace(
         soul_db.add(trace)
         soul_db.flush()
 
-    trace.weight = fold_weight(trace.weight, score, cfg)
+    # An active-window repeat merged into one candidate row still counts
+    # once per mention (candidate_ops records repeat_count on merge) —
+    # bounded so a runaway extractor can't leap a trace to the cap.
+    salience = getattr(candidate, "salience_json", None) or {}
+    repeats = max(1, min(10, int(salience.get("repeat_count", 1) or 1)))
+    for _ in range(repeats):
+        trace.weight = fold_weight(trace.weight, score, cfg)
     refs = list(trace.evidence_refs or [])
     refs.append(evidence_ref_for_candidate(candidate))
     # Weight caps at 1.0 but refs would otherwise append forever on a
@@ -436,6 +442,7 @@ async def crystallize_due_traces(
             "too_thin": 0,
             "kept_for_retry": 0,
             "conflicted": 0,
+            "requalified": 0,
         }
 
     from anima_server.db.runtime import get_runtime_session_factory
@@ -450,6 +457,7 @@ async def crystallize_due_traces(
     skipped_empty = 0
     too_thin = 0
     conflicted = 0
+    requalified = 0
     kept_for_retry = 0
 
     with factory() as soul_db:
@@ -479,6 +487,21 @@ async def crystallize_due_traces(
                 soul_db.delete(trace)
                 soul_db.commit()
                 continue
+
+            total_refs = len(trace.evidence_refs or [])
+            if stale and total_refs:
+                # The threshold crossing was partly backed by refs that no
+                # longer resolve (vault import, runtime cleanup). Requalify
+                # at the survival-scaled weight: if the surviving evidence
+                # alone wouldn't have crossed, keep the trace (pruned to
+                # survivors) and let future folds rebuild before synthesis.
+                effective_weight = trace.weight * (len(surviving_refs) / total_refs)
+                if effective_weight < cfg.crystallization_threshold:
+                    trace.weight = effective_weight
+                    trace.evidence_refs = surviving_refs
+                    requalified += 1
+                    soul_db.commit()
+                    continue
 
             try:
                 outcome, _item = await _synthesize_and_store_crystallized_memory(
@@ -535,4 +558,5 @@ async def crystallize_due_traces(
         "too_thin": too_thin,
         "kept_for_retry": kept_for_retry,
         "conflicted": conflicted,
+        "requalified": requalified,
     }
