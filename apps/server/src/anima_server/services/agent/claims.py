@@ -59,21 +59,27 @@ def derive_topic_key(content: str, category: str) -> str:
     """Derive the same canonical grouping key ``upsert_claim`` would use,
     without touching the DB.
 
-    Used by IL4 latent-trace folding (``latent_traces.py``) so that
-    duplicate-topic churn groups into one trace exactly the same way
-    claim dedup groups into one claim: a structured slot match wins
-    (``"user:{namespace}:{slot}"``), else content falls back to a
-    category + content-hash slug. This intentionally skips
+    Used by IL4 latent-trace folding (``latent_traces.py``). Structured
+    matches include the captured VALUE's slug
+    (``"user:{namespace}:{slot}:{value_slug}"``): claims group by slot
+    alone because one claim per slot is the point (the value updates in
+    place), but a latent topic must distinguish values — otherwise
+    unrelated weak signals ("likes sushi" / "likes hiking") would
+    accumulate weight onto one trace and crystallize from mixed
+    evidence. Verb variants over the same value still collapse ("likes
+    sushi" / "loves sushi" → the same key). Freeform content falls back
+    to a category + content-hash slug. This intentionally skips
     ``upsert_claim``'s DB-backed fuzzy-paraphrase resolution
     (``_find_similar_freeform_claim``) — a pure key derivation has no
     session to query, so near-duplicate paraphrases may still land on
     distinct topic keys; exact-duplicate content always collapses to one.
     """
-    derived = derive_canonical_key(content, category)
-    if derived is None:
-        return f"user:{category}:{_content_slug(content)}"
-    namespace, slot, _polarity = derived
-    return f"user:{namespace}:{slot}"
+    stripped = content.strip()
+    for pattern, namespace, slot in _SLOT_PATTERNS:
+        m = pattern.match(stripped)
+        if m:
+            return f"user:{namespace}:{slot}:{_content_slug(m.group('v'))}"
+    return f"user:{category}:{_content_slug(content)}"
 
 
 def upsert_claim(

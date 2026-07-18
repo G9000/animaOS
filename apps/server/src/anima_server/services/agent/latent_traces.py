@@ -382,6 +382,16 @@ async def _synthesize_and_store_crystallized_memory(
         allow_update=False,
         defer_on_similar=False,
     )
+    if result.action in ("conflict", "rejected"):
+        # The synthesized aggregate CONTRADICTS (or was rejected against)
+        # an established memory. matched_item is the OLD memory — grafting
+        # crystallized evidence onto it would misattribute provenance, and
+        # retrying forever would burn a crystallization slot every run. The
+        # trace is cleared as a decision: established memories win over
+        # sub-threshold accumulation (genuine contradictions between real
+        # memories are the contradiction scan's job, not this path's).
+        return "conflicted", None
+
     item = result.item or result.matched_item
     if item is None:
         return "invalid", None
@@ -425,6 +435,7 @@ async def crystallize_due_traces(
             "skipped_empty": 0,
             "too_thin": 0,
             "kept_for_retry": 0,
+            "conflicted": 0,
         }
 
     from anima_server.db.runtime import get_runtime_session_factory
@@ -438,6 +449,7 @@ async def crystallize_due_traces(
     dropped_stale = 0
     skipped_empty = 0
     too_thin = 0
+    conflicted = 0
     kept_for_retry = 0
 
     with factory() as soul_db:
@@ -502,6 +514,14 @@ async def crystallize_due_traces(
                 too_thin += 1
                 soul_db.delete(trace)
                 soul_db.commit()
+            elif outcome == "conflicted":
+                # Synthesis clashed with an established memory — nothing
+                # stored (see _synthesize_and_store_crystallized_memory);
+                # clear the trace so it can't retry into the same wall.
+                conflicted += 1
+                soul_db.rollback()
+                soul_db.delete(trace)
+                soul_db.commit()
             else:
                 # "invalid": transient garbage (malformed response, store
                 # miss). Keep the trace intact for the next run.
@@ -514,4 +534,5 @@ async def crystallize_due_traces(
         "skipped_empty": skipped_empty,
         "too_thin": too_thin,
         "kept_for_retry": kept_for_retry,
+        "conflicted": conflicted,
     }

@@ -387,8 +387,18 @@ def test_high_authority_correction_never_folds():
 # ---------------------------------------------------------------------------
 
 
-def test_derive_topic_key_matches_claim_slot_for_structured_content():
-    assert derive_topic_key("Likes hiking", "preference") == "user:preference:likes"
+def test_derive_topic_key_structured_content_is_slot_and_value_scoped():
+    """Structured matches carry the claims slot PLUS the value slug: claims
+    group by slot alone (one claim per slot), but a latent topic must
+    distinguish values or unrelated weak signals would accumulate onto one
+    trace and crystallize from mixed evidence."""
+    hiking = derive_topic_key("Likes hiking", "preference")
+    sushi = derive_topic_key("Likes sushi", "preference")
+    assert hiking.startswith("user:preference:likes:")
+    assert sushi.startswith("user:preference:likes:")
+    assert hiking != sushi
+    # Verb variants over the same value collapse to one topic.
+    assert derive_topic_key("Loves sushi", "preference") == sushi
 
 
 def test_derive_topic_key_same_content_same_key():
@@ -1421,6 +1431,77 @@ async def test_crystallize_treats_hash_mismatched_ref_as_stale(monkeypatch):
             )
             assert (
                 soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_conflicting_synthesis_never_grafts_onto_old_memory(monkeypatch):
+    """A synthesized aggregate that CONFLICTS with an established memory
+    (same slot, different value) must not attach crystallized evidence to
+    the old item, must not count as crystallized, and clears the trace so
+    it can't retry into the same wall every run."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            existing = MemoryItem(
+                user_id=user_id,
+                content="Lives in London",
+                category="fact",
+                importance=4,
+                source="extraction",
+            )
+            soul_db.add(existing)
+            soul_db.commit()
+            existing_id = existing.id
+        with runtime_factory() as runtime_db:
+            c1 = _runtime_candidate(runtime_db, user_id=user_id, content="Mentioned Paris again")
+            c1_id = c1.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:paris_mentions",
+                    kind="observation",
+                    weight=0.7,
+                    evidence_refs=[{"candidate_id": c1_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _conflicting(*_args, **_kwargs):
+            return {"content": "Lives in Paris", "category": "fact", "importance": 3}
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _conflicting)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["conflicted"] == 1
+
+        with soul_factory() as soul_db:
+            items = soul_db.scalars(
+                select(MemoryItem).where(MemoryItem.user_id == user_id)
+            ).all()
+            assert [i.id for i in items] == [existing_id]  # no new memory
+            evidence = soul_db.scalars(
+                select(MemoryItemEvidence).where(
+                    MemoryItemEvidence.memory_item_id == existing_id
+                )
+            ).all()
+            assert evidence == []  # nothing grafted onto the old memory
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
             )
     finally:
         soul_engine.dispose()
