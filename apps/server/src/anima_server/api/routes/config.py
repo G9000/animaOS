@@ -387,19 +387,22 @@ async def update_config(
         # Clear base_url for providers with fixed endpoints.
         settings.agent_base_url = ""
 
-    if embedding_provider is not None:
-        if embedding_provider == "":
-            # Reset to bundled default: clear the explicit provider/model/key
-            # so resolution falls through to the bundled fastembed default.
-            settings.agent_embedding_provider = ""
-            settings.agent_embedding_model = ""
-            settings.agent_embedding_api_key = ""
-        else:
+    if embedding_provider == "":
+        # Reset to bundled default: clear the explicit provider/model/key
+        # so resolution falls through to the bundled fastembed default.
+        settings.agent_embedding_provider = ""
+        settings.agent_embedding_model = ""
+        settings.agent_embedding_api_key = ""
+    else:
+        # embeddingProvider may be omitted while model and/or key are sent —
+        # those still apply, against the currently-configured embedding
+        # provider. Only fields present in the payload are touched.
+        if embedding_provider is not None:
             settings.agent_embedding_provider = embedding_provider
-            if payload.embeddingModel is not None:
-                settings.agent_embedding_model = payload.embeddingModel.strip()
-            if payload.embeddingApiKey is not None:
-                settings.agent_embedding_api_key = payload.embeddingApiKey.strip()
+        if payload.embeddingModel is not None:
+            settings.agent_embedding_model = payload.embeddingModel.strip()
+        if payload.embeddingApiKey is not None:
+            settings.agent_embedding_api_key = payload.embeddingApiKey.strip()
 
     try:
         persist_runtime_settings()

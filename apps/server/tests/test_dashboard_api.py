@@ -947,6 +947,104 @@ def test_config_update_accepts_fastembed_as_embedding_provider_but_not_chat_prov
             _restore_config_settings(original)
 
 
+def test_config_update_applies_embedding_model_without_provider_field() -> None:
+    """A PUT carrying only embeddingModel must update the current embedding
+    config — not silently no-op because embeddingProvider was omitted."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "vllm"
+            settings.agent_embedding_model = "old-embed-model"
+            settings.agent_embedding_api_key = ""
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingModel": "new-embed-model",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "vllm"
+            assert settings.agent_embedding_model == "new-embed-model"
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "vllm"
+            assert config["embeddingModel"] == "new-embed-model"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_applies_embedding_api_key_without_provider_field() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = ""
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingApiKey": "sk-embed-new",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "openai"
+            assert settings.agent_embedding_api_key == "sk-embed-new"
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "openai"
+            assert config["hasEmbeddingApiKey"] is True
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_without_embedding_fields_leaves_embedding_config_alone() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "vllm"
+            settings.agent_embedding_model = "keep-this-model"
+            settings.agent_embedding_api_key = "sk-keep-this"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={"provider": "openai", "model": "gpt-4o-mini"},
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "vllm"
+            assert settings.agent_embedding_model == "keep-this-model"
+            assert settings.agent_embedding_api_key == "sk-keep-this"
+        finally:
+            _restore_config_settings(original)
+
+
 def test_runtime_settings_persist_and_reload(tmp_path) -> None:
     original_data_dir = settings.data_dir
     original_provider = settings.agent_provider
