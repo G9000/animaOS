@@ -673,3 +673,32 @@ def test_distillation_scrubs_tombstone_tags(db: Session) -> None:
     assert db.scalars(
         select(MemoryItemTag).where(MemoryItemTag.item_id == item.id)
     ).all() == []
+
+
+def test_one_contribution_per_tombstone_is_enforced(db: Session) -> None:
+    """The unique constraint on tombstone_item_id makes concurrent sleep
+    pipelines safe: a second ledger row for the same tombstone is rejected,
+    so a single item can never double-count toward a tendency's strength."""
+    from sqlalchemy.exc import IntegrityError
+
+    item = _make_item(db, memory_class="casual", content="stressed about the commute")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    claim = db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency"))
+    assert claim is not None
+    db.add(
+        TendencyContribution(
+            user_id=1,
+            tombstone_item_id=item.id,
+            tendency_claim_id=claim.id,
+            contribution_vector={"strength": 0.5, "valence_hint": 0.0},
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db.flush()
+    db.rollback()

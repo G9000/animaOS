@@ -160,6 +160,13 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
             "evolution_kind",
             "ALTER TABLE memory_items ADD COLUMN evolution_kind VARCHAR(32)",
         ),
+        (
+            # IL5: legacy DBs stamped past migrations still need this column,
+            # since IL5 queries filter on it (a missing column would raise
+            # "no such column: memory_items.distilled_at" on every retrieval).
+            "distilled_at",
+            "ALTER TABLE memory_items ADD COLUMN distilled_at DATETIME",
+        ),
     ):
         if column_name not in memory_columns:
             connection.exec_driver_sql(ddl)

@@ -1224,6 +1224,13 @@ class TendencyContribution(Base):
 
     __tablename__ = "tendency_contributions"
     __table_args__ = (
+        # One tombstone distills into exactly one tendency — makes
+        # concurrent sleep pipelines safe (loser's insert fails, per-item
+        # transaction rolls back) instead of double-counting.
+        UniqueConstraint(
+            "tombstone_item_id",
+            name="uq_tendency_contributions_tombstone_item_id",
+        ),
         Index("ix_tendency_contributions_user_id", "user_id"),
         Index("ix_tendency_contributions_claim", "tendency_claim_id"),
     )

@@ -53,6 +53,16 @@ def upgrade() -> None:
                 nullable=False,
             ),
             sa.PrimaryKeyConstraint("id"),
+            # One tombstone distills into exactly one tendency: a unique
+            # tombstone_item_id makes concurrent sleep pipelines that both
+            # select the same not-yet-distilled item safe — the loser's
+            # ledger insert fails and its per-item transaction rolls back,
+            # instead of double-counting the contribution and inflating the
+            # tendency's strength (which would break exact right-to-forget).
+            sa.UniqueConstraint(
+                "tombstone_item_id",
+                name=op.f("uq_tendency_contributions_tombstone_item_id"),
+            ),
             sa.ForeignKeyConstraint(
                 ["user_id"],
                 ["users.id"],

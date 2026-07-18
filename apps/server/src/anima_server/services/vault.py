@@ -1289,15 +1289,13 @@ def restore_database_snapshot(
                     subject_type=str(record.get("subject_type", "user")),
                     namespace=str(record["namespace"]),
                     slot=str(record["slot"]),
-                    value_text=str(
-                        _re_encrypt_field_value(
-                            record.get("value_text"),
-                            int(record["user_id"]),
-                            table="memory_items",
-                            field="content",
-                        )
-                        or ""
-                    ),
+                    # Value is already in its final form here: authenticated
+                    # user-scoped imports re-encrypted it in
+                    # _re_encrypt_snapshot_fields; full snapshots (no user_id)
+                    # carry field values as-is, matching how memoryItems and
+                    # profile fields restore. Re-encrypting inline would
+                    # double-encrypt a full-restore claim.
+                    value_text=str(record.get("value_text") or ""),
                     value_json=record.get("value_json"),
                     polarity=str(record.get("polarity", "positive")),
                     confidence=float(record.get("confidence", 0.8)),
@@ -2587,6 +2585,17 @@ def _re_encrypt_snapshot_fields(
                 user_id,
                 table="memory_item_evidence",
                 field="evidence_text",
+            )
+
+    for claim in snapshot.get("memoryClaims", []):
+        if isinstance(claim, dict) and claim.get("value_text"):
+            # Claim value_text encrypts under table="memory_items" (see the
+            # decrypt path in _serialize_memory_claim) — keep it consistent.
+            claim["value_text"] = _re_encrypt_field_value(
+                claim["value_text"],
+                user_id,
+                table="memory_items",
+                field="content",
             )
 
     for field in snapshot.get("userProfileFields", []):
