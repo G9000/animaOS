@@ -40,7 +40,14 @@ const CREDENTIAL: &str = "anima-corefs-catalog-reference-v1";
 const CREDENTIAL_AAD: &[u8] = b"anima-corefs:catalog-reference-v1";
 const SERIALIZED_SIZE_GENERATION: u64 = 100;
 const CUTOVER_EPOCH: u64 = 1;
-const FIXTURE_FINGERPRINT_DOMAIN: &str = "anima-corefs-catalog-benchmark-fixture-v2";
+const FIXTURE_MANIFEST_FINGERPRINT_DOMAIN: &str =
+    "anima-corefs-catalog-benchmark-fixture-manifest-v1";
+const BENCHMARK_OBJECT_KEY_DOMAIN: &[u8] = b"anima-corefs-catalog-benchmark-object-key-v1\0";
+const BENCHMARK_OBJECT_BODY: &[u8] = b"benchmark tombstone\n";
+const BENCHMARK_OBJECT_TIMESTAMP: &str = "2026-07-18T00:00:00Z";
+const BENCHMARK_OBJECT_MEDIA_TYPE: &str = "text/plain";
+const BENCHMARK_OBJECT_REVISION: u64 = 1;
+const BENCHMARK_OBJECT_KEY_EPOCH: u32 = 1;
 const REFERENCE_GENERATION_WIDTHS: [(usize, u64); 3] = [(1, 9), (2, 99), (3, 100)];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -97,7 +104,7 @@ pub struct CatalogBenchmarkFixture {
     padding_by_generation_width: BTreeMap<usize, usize>,
     precalibrated_generation_widths: Vec<usize>,
     serialized_size: usize,
-    fingerprint: String,
+    manifest_fingerprint: String,
 }
 
 impl CatalogBenchmarkFixture {
@@ -121,8 +128,8 @@ impl CatalogBenchmarkFixture {
         self.serialized_size
     }
 
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
+    pub fn manifest_fingerprint(&self) -> &str {
+        &self.manifest_fingerprint
     }
 
     pub fn lifecycle_counts(&self) -> Result<(usize, usize), BenchmarkError> {
@@ -257,18 +264,18 @@ pub fn needs_serialized_limit_fixture(maximum_live_size: usize) -> Result<bool, 
     Ok(maximum_live_size < MAX_CATALOG_PLAINTEXT_BYTES)
 }
 
-pub fn expected_reference_fixture_fingerprint(
+pub fn expected_reference_fixture_manifest_fingerprint(
     kind: FixtureKind,
 ) -> Result<&'static str, BenchmarkError> {
     match kind {
         FixtureKind::Medium => {
-            Ok("2c55af03723c2f10f40790b894c421fde0f9cd10f9b2355f128aad66d7cfc1d5")
+            Ok("d1f8817ba635359cc10208d86b79652dc0e2180c2514f1e1d0634a96ebcb40c4")
         }
         FixtureKind::MaximumLive => {
-            Ok("95e6a054dee2fa09b48743429c37f1e4a54ba32008136755393e0341913b2857")
+            Ok("1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5")
         }
         FixtureKind::SerializedLimit => {
-            Ok("f24864db4cefda29bf71975cd71da21c0564ec44eee9e59dada04aba82c20df4")
+            Ok("26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87")
         }
         FixtureKind::TestOnly => Err(BenchmarkError::InvalidFixture(
             "test-only fixtures have no release fingerprint",
@@ -276,15 +283,65 @@ pub fn expected_reference_fixture_fingerprint(
     }
 }
 
-fn fixture_fingerprint(spec: &CatalogFixtureSpec) -> String {
+fn fixture_manifest_fingerprint(
+    spec: &CatalogFixtureSpec,
+    entries: &[CatalogGenerationEntry],
+    padding_by_generation_width: &BTreeMap<usize, usize>,
+) -> Result<String, BenchmarkError> {
     let target = spec
         .target_serialized_size
         .map_or_else(|| "none".to_owned(), |value| value.to_string());
-    let material = format!(
-        "{FIXTURE_FINGERPRINT_DOMAIN}\0name={}\0live={}\0tombstones={}\0target={target}\0object-ids=sequential-after-live\0tombstone-lifecycle=object-tombstone-v1\0",
-        spec.kind.name(), spec.live_count, spec.tombstone_count
+    let mut hasher = Sha256::new();
+    hasher.update(format!(
+        "{FIXTURE_MANIFEST_FINGERPRINT_DOMAIN}\0name={}\0live={}\0tombstones={}\0target={target}\0",
+        spec.kind.name(),
+        spec.live_count,
+        spec.tombstone_count
+    ));
+    hasher.update(b"object-preparation-recipe\0");
+    hasher.update(BENCHMARK_OBJECT_KEY_DOMAIN);
+    hasher.update(BENCHMARK_OBJECT_BODY);
+    hasher.update(BENCHMARK_OBJECT_TIMESTAMP.as_bytes());
+    hasher.update(BENCHMARK_OBJECT_MEDIA_TYPE.as_bytes());
+    hasher.update(BENCHMARK_OBJECT_REVISION.to_le_bytes());
+    hasher.update(BENCHMARK_OBJECT_KEY_EPOCH.to_le_bytes());
+    hasher.update(ObjectKind::Note.as_str().as_bytes());
+    hasher.update(ENVELOPE_VERSION.to_le_bytes());
+    hasher.update(OBJECT_KEY_ENVELOPE_VERSION.to_le_bytes());
+    hasher.update(OBJECT_WRAP_ALGORITHM.as_bytes());
+    let unpadded = encode_fixture(entries)?;
+    hasher.update(b"logical-catalog-generation-100\0");
+    hasher.update(
+        u64::try_from(unpadded.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
     );
-    hex_sha256(material.as_bytes())
+    hasher.update(&unpadded);
+    for (width, generation) in REFERENCE_GENERATION_WIDTHS {
+        let Some(padding) = padding_by_generation_width.get(&width) else {
+            continue;
+        };
+        let padded_entries = entries_with_padding(entries, *padding)?;
+        let catalog = catalog_from_entries(generation, padded_entries, true)?;
+        let encoded = encode_catalog_generation(&catalog)?;
+        hasher.update(b"calibrated-generation-variant\0");
+        hasher.update(u64::try_from(width).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(generation.to_le_bytes());
+        hasher.update(u64::try_from(*padding).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(
+            u64::try_from(encoded.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hasher.update(&encoded);
+    }
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    Ok(output)
 }
 
 pub fn build_fixture(spec: &CatalogFixtureSpec) -> Result<CatalogBenchmarkFixture, BenchmarkError> {
@@ -330,7 +387,7 @@ pub fn build_fixture(spec: &CatalogFixtureSpec) -> Result<CatalogBenchmarkFixtur
         padding_by_generation_width: BTreeMap::new(),
         precalibrated_generation_widths: Vec::new(),
         serialized_size: 0,
-        fingerprint: fixture_fingerprint(spec),
+        manifest_fingerprint: String::new(),
     };
     if let Some(target) = spec.target_serialized_size {
         for (width, generation) in REFERENCE_GENERATION_WIDTHS {
@@ -354,6 +411,8 @@ pub fn build_fixture(spec: &CatalogFixtureSpec) -> Result<CatalogBenchmarkFixtur
             fixture.precalibrated_generation_widths.push(width);
         }
     }
+    fixture.manifest_fingerprint =
+        fixture_manifest_fingerprint(spec, &fixture.entries, &fixture.padding_by_generation_width)?;
     let encoded = encode_catalog_generation(&fixture.catalog(
         &fixture.entries,
         SERIALIZED_SIZE_GENERATION,
@@ -427,7 +486,7 @@ fn placeholder_tombstone_object(
         "object-{}.acore",
         hex_sha256(&digest)[..32].to_owned()
     ))?;
-    let content_hash = ContentHash::parse(&hex_sha256(b"benchmark tombstone\n"))?;
+    let content_hash = ContentHash::parse(&hex_sha256(BENCHMARK_OBJECT_BODY))?;
     let wrapped_dek = WrappedObjectDekRecord::from_parts(
         1,
         1,
@@ -510,7 +569,6 @@ fn prepare_fixture_entries(
     coordinator: &CoreCommitCoordinator,
     keys: &FrkSubkeys,
 ) -> Result<(Vec<CatalogGenerationEntry>, Vec<PreparedObjectRevision>), BenchmarkError> {
-    let body = b"benchmark tombstone\n";
     let mut entries = Vec::with_capacity(fixture.entries.len());
     let mut prepared_revisions = Vec::with_capacity(fixture.tombstone_count);
     for entry in &fixture.entries {
@@ -529,7 +587,7 @@ fn prepare_fixture_entries(
         };
         let stable_id = common.stable_id();
         let mut hasher = Sha256::new();
-        hasher.update(b"anima-corefs-catalog-benchmark-object-key-v1\0");
+        hasher.update(BENCHMARK_OBJECT_KEY_DOMAIN);
         hasher.update(stable_id.as_str().as_bytes());
         let object_key = SecretBytes::new(hasher.finalize().to_vec())?;
         let aad = ObjectBaseAad::new(
@@ -537,21 +595,21 @@ fn prepare_fixture_entries(
             stable_id.as_str(),
             ObjectKind::Note,
             ENVELOPE_VERSION,
-            1,
-            1,
+            BENCHMARK_OBJECT_KEY_EPOCH,
+            BENCHMARK_OBJECT_REVISION,
         )?;
         let metadata = EnvelopeMetadata::for_body(
             ObjectKind::Note.as_str(),
             stable_id.as_str(),
-            1,
-            "2026-07-18T00:00:00Z",
-            "2026-07-18T00:00:00Z",
-            "text/plain",
+            BENCHMARK_OBJECT_REVISION,
+            BENCHMARK_OBJECT_TIMESTAMP,
+            BENCHMARK_OBJECT_TIMESTAMP,
+            BENCHMARK_OBJECT_MEDIA_TYPE,
             BTreeMap::new(),
             BodyEncoding::Utf8,
-            body,
+            BENCHMARK_OBJECT_BODY,
         )?;
-        let encoded = encode_envelope(&object_key, &aad, &metadata, body)?;
+        let encoded = encode_envelope(&object_key, &aad, &metadata, BENCHMARK_OBJECT_BODY)?;
         let prepared = coordinator.prepare_object_revision(
             keys,
             &object_key,
@@ -570,6 +628,71 @@ fn prepare_fixture_entries(
         prepared_revisions.push(prepared);
     }
     Ok((entries, prepared_revisions))
+}
+
+fn verify_prepared_fixture_manifest(
+    fixture: &CatalogBenchmarkFixture,
+    prepared_entries: &[CatalogGenerationEntry],
+    prepared_revisions: &[PreparedObjectRevision],
+) -> Result<(), BenchmarkError> {
+    if fixture.entries.len() != prepared_entries.len()
+        || fixture.tombstone_count != prepared_revisions.len()
+    {
+        return Err(BenchmarkError::InvalidFixture(
+            "prepared fixture does not match manifest cardinality",
+        ));
+    }
+    let expected_content_hash = ContentHash::parse(&hex_sha256(BENCHMARK_OBJECT_BODY))?;
+    let mut revisions = prepared_revisions.iter();
+    for (manifest_entry, actual_entry) in fixture.entries.iter().zip(prepared_entries) {
+        match (manifest_entry, actual_entry) {
+            (CatalogGenerationEntry::Folder(expected), CatalogGenerationEntry::Folder(actual))
+                if expected == actual => {}
+            (
+                CatalogGenerationEntry::Object(expected_common, expected_object),
+                CatalogGenerationEntry::Object(actual_common, actual_object),
+            ) => {
+                let Some(prepared) = revisions.next() else {
+                    return Err(BenchmarkError::InvalidFixture(
+                        "prepared fixture is missing an object revision",
+                    ));
+                };
+                let wrapped = actual_object.wrapped_dek();
+                let wrapped_payload = wrapped.to_wrapped_object_dek()?;
+                if expected_common != actual_common
+                    || expected_object.lifecycle() != actual_object.lifecycle()
+                    || actual_object.revision() != BENCHMARK_OBJECT_REVISION
+                    || actual_object.kind() != ObjectKind::Note
+                    || actual_object.content_hash() != &expected_content_hash
+                    || actual_object.physical_name() != prepared.physical_name()
+                    || actual_object.content_hash() != prepared.content_hash()
+                    || actual_object.wrapped_dek() != prepared.wrapped_dek()
+                    || prepared.object_id() != actual_common.stable_id()
+                    || prepared.revision() != BENCHMARK_OBJECT_REVISION
+                    || prepared.object_key_epoch() != BENCHMARK_OBJECT_KEY_EPOCH
+                    || wrapped.frk_version() != 1
+                    || wrapped.object_key_epoch() != BENCHMARK_OBJECT_KEY_EPOCH
+                    || wrapped_payload.algorithm() != OBJECT_WRAP_ALGORITHM
+                    || wrapped_payload.envelope_version() != OBJECT_KEY_ENVELOPE_VERSION
+                {
+                    return Err(BenchmarkError::InvalidFixture(
+                        "prepared object does not project to the fixture manifest",
+                    ));
+                }
+            }
+            _ => {
+                return Err(BenchmarkError::InvalidFixture(
+                    "prepared fixture entry kind or content changed",
+                ));
+            }
+        }
+    }
+    if revisions.next().is_some() {
+        return Err(BenchmarkError::InvalidFixture(
+            "prepared fixture has an extra object revision",
+        ));
+    }
+    Ok(())
 }
 
 fn common(
@@ -605,6 +728,30 @@ fn hex_sha256(value: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    #[test]
+    fn fixture_manifest_fingerprint_changes_when_logical_entry_content_changes() {
+        let spec = CatalogFixtureSpec::new(FixtureKind::TestOnly, 3, 0, None);
+        let entries = fixture_entries(3, 0, None).unwrap();
+        let original = fixture_manifest_fingerprint(&spec, &entries, &BTreeMap::new()).unwrap();
+        let mut renamed = entries.clone();
+        renamed[2] = CatalogGenerationEntry::folder(
+            common(
+                fixture_id(2).unwrap(),
+                Some(fixture_id(0).unwrap()),
+                "renamed",
+            )
+            .unwrap(),
+        );
+        let changed = fixture_manifest_fingerprint(&spec, &renamed, &BTreeMap::new()).unwrap();
+
+        assert_ne!(original, changed);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -686,7 +833,7 @@ pub struct FixtureBenchmarkReport {
     serialized_size_bytes: usize,
     warmup_serialized_size_bytes: Option<ByteRange>,
     measured_serialized_size_bytes: ByteRange,
-    fixture_sha256: String,
+    fixture_manifest_sha256: String,
     warmup_commits: usize,
     sample_count: usize,
     final_head_generation: u64,
@@ -751,6 +898,7 @@ pub fn run_fixture_benchmark(
     let keys = derive_corefs_subkeys(&unlocked, 1)?;
     let root_id = fixture_id(0)?;
     let (entries, prepared_revisions) = prepare_fixture_entries(fixture, &coordinator, &keys)?;
+    verify_prepared_fixture_manifest(fixture, &entries, &prepared_revisions)?;
     if derive_lifecycle_counts_from_entries(&entries)?
         != (fixture.live_count, fixture.tombstone_count)
     {
@@ -867,7 +1015,7 @@ pub fn run_fixture_benchmark(
         serialized_size_bytes: measured_serialized_size_bytes.max,
         warmup_serialized_size_bytes: ByteRange::from_samples(&warmup_sizes),
         measured_serialized_size_bytes,
-        fixture_sha256: fixture.fingerprint().to_owned(),
+        fixture_manifest_sha256: fixture.manifest_fingerprint().to_owned(),
         warmup_commits: config.warmup_commits,
         sample_count: config.measured_commits,
         final_head_generation,

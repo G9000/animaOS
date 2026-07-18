@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anima_corefs::benchmark::{
     build_fixture, build_fixture_matrix, derive_fixture_lifecycle_counts,
-    expected_reference_fixture_fingerprint, needs_serialized_limit_fixture,
+    expected_reference_fixture_manifest_fingerprint, needs_serialized_limit_fixture,
     percentile_nearest_rank, run_fixture_benchmark, BenchmarkRunConfig, CatalogFixtureSpec,
     FixtureKind, MAX_CATALOG_PLAINTEXT_BYTES,
 };
@@ -43,15 +43,20 @@ fn fixture_matrix_is_deterministic_and_preserves_advertised_counts() {
     assert!(first[2].live_count() <= 25_000);
     assert_eq!(first[2].serialized_size(), MAX_CATALOG_PLAINTEXT_BYTES);
 
-    let first_fingerprints: Vec<_> = first.iter().map(|value| value.fingerprint()).collect();
-    let second_fingerprints: Vec<_> = second.iter().map(|value| value.fingerprint()).collect();
+    let first_fingerprints: Vec<_> = first
+        .iter()
+        .map(|value| value.manifest_fingerprint())
+        .collect();
+    let second_fingerprints: Vec<_> = second
+        .iter()
+        .map(|value| value.manifest_fingerprint())
+        .collect();
     assert_eq!(first_fingerprints, second_fingerprints);
-    for fixture in &first {
-        assert_eq!(
-            fixture.fingerprint(),
-            expected_reference_fixture_fingerprint(fixture.kind()).unwrap()
-        );
-    }
+    let expected_fingerprints: Vec<_> = first
+        .iter()
+        .map(|fixture| expected_reference_fixture_manifest_fingerprint(fixture.kind()).unwrap())
+        .collect();
+    assert_eq!(first_fingerprints, expected_fingerprints);
 }
 
 #[test]

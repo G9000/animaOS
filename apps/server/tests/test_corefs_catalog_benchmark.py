@@ -3,6 +3,9 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,10 +29,14 @@ REFERENCE_TARGET = Path(
 SOURCE_COMMIT = "b" * 40
 BINARY_PATH = Path(r"C:\repo\target\release\catalog_benchmark.exe")
 BINARY_SHA256 = "c" * 64
-EXPECTED_FIXTURE_FINGERPRINTS = {
-    "medium": "2c55af03723c2f10f40790b894c421fde0f9cd10f9b2355f128aad66d7cfc1d5",
-    "maximum-live": "95e6a054dee2fa09b48743429c37f1e4a54ba32008136755393e0341913b2857",
-    "serialized-limit": "f24864db4cefda29bf71975cd71da21c0564ec44eee9e59dada04aba82c20df4",
+BINARY_VOLUME_SERIAL = 17
+BINARY_FILE_ID = 23
+BUILD_TARGET = Path(r"C:\Temp\anima-corefs-catalog-build-test")
+CARGO_LOCK_SHA256 = "e" * 64
+EXPECTED_FIXTURE_MANIFEST_FINGERPRINTS = {
+    "medium": "d1f8817ba635359cc10208d86b79652dc0e2180c2514f1e1d0634a96ebcb40c4",
+    "maximum-live": "1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5",
+    "serialized-limit": "26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87",
 }
 
 
@@ -239,22 +246,22 @@ def test_removed_override_flags_cannot_spoof_live_profile() -> None:
             "--reference",
             "--target",
             r"C:\benchmarks\corefs-catalog-reference-v1",
-            "--clean-target",
         ]
     )
     assert args.reference is True
 
-    with pytest.raises(SystemExit):
-        benchmark.parse_args(
-            [
-                "--reference",
-                "--target",
-                r"C:\benchmarks\corefs-catalog-reference-v1",
-                "--clean-target",
-                "--cpu",
-                "spoofed",
-            ]
-        )
+    for removed_flag in ("--clean-target", "--cpu"):
+        with pytest.raises(SystemExit):
+            extra = [] if removed_flag == "--clean-target" else ["spoofed"]
+            benchmark.parse_args(
+                [
+                    "--reference",
+                    "--target",
+                    r"C:\benchmarks\corefs-catalog-reference-v1",
+                    removed_flag,
+                    *extra,
+                ]
+            )
 
 
 def test_reference_warmups_are_exact_and_samples_are_a_floor() -> None:
@@ -290,7 +297,7 @@ def fixture_record(
             "min": serialized_size,
             "max": serialized_size,
         },
-        "fixtureSha256": EXPECTED_FIXTURE_FINGERPRINTS.get(name, "0" * 64),
+        "fixtureManifestSha256": EXPECTED_FIXTURE_MANIFEST_FINGERPRINTS.get(name, "0" * 64),
         "productionSerializationsPerCommit": 1,
         "warmupCommits": 30,
         "sampleCount": 200,
@@ -313,9 +320,33 @@ def complete_report() -> dict[str, object]:
         "schemaVersion": 1,
         "generatedAt": "2026-07-17T20:00:00Z",
         "sourceCommit": SOURCE_COMMIT,
+        "benchmarkBuild": {
+            "sourceCommit": SOURCE_COMMIT,
+            "command": [
+                "cargo",
+                "+1.75.0",
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "anima-corefs",
+                "--bin",
+                "catalog_benchmark",
+                "--target-dir",
+                str(BUILD_TARGET),
+            ],
+            "targetDirectory": str(BUILD_TARGET),
+            "cargoLockSha256": CARGO_LOCK_SHA256,
+            "rustc": "rustc 1.75.0 (82e1608df 2023-12-21)",
+            "sanitizedEnvironmentRemoved": ["RUSTFLAGS"],
+            "forcedEnvironment": {"CARGO_INCREMENTAL": "0"},
+            "preservedForAudit": True,
+        },
         "benchmarkBinary": {
             "path": str(BINARY_PATH),
             "sha256": BINARY_SHA256,
+            "volumeSerial": BINARY_VOLUME_SERIAL,
+            "fileId": BINARY_FILE_ID,
         },
         "benchmarkCommand": [
             str(BINARY_PATH),
@@ -420,6 +451,10 @@ def validate_report(benchmark, report: dict[str, object]):
         expected_source_commit=SOURCE_COMMIT,
         expected_binary_path=BINARY_PATH,
         expected_binary_sha256=BINARY_SHA256,
+        expected_binary_volume_serial=BINARY_VOLUME_SERIAL,
+        expected_binary_file_id=BINARY_FILE_ID,
+        expected_reference_target=REFERENCE_TARGET,
+        expected_benchmark_build=complete_report()["benchmarkBuild"],
     )
 
 
@@ -448,6 +483,7 @@ def test_complete_reference_report_schema_is_accepted() -> None:
     "missing_path",
     [
         "versions",
+        "benchmarkBuild",
         "profile.architecture",
         "profile.target",
         "profile.hostEvidence",
@@ -465,7 +501,7 @@ def test_complete_reference_report_schema_is_accepted() -> None:
         "fixtures.0.bytesWritten",
         "fixtures.0.totalBytesWritten",
         "fixtures.0.liveCount",
-        "fixtures.0.fixtureSha256",
+        "fixtures.0.fixtureManifestSha256",
         "fixtures.0.serializedSizeBytes",
         "fixtures.0.measuredSerializedSizeBytes",
         "gates",
@@ -617,12 +653,16 @@ def test_report_rejects_bool_float_integer_fields_and_non_finite_numbers(
         "arbitrary-hash",
         "duplicate-hash",
         "wrong-command-target",
+        "joint-target-spoof",
         "missing-command-target",
         "duplicate-command-target",
         "extra-command-argument",
         "stale-source",
         "stale-binary",
         "wrong-binary-path",
+        "wrong-binary-volume",
+        "wrong-binary-file-id",
+        "spoofed-build-command",
     ],
 )
 def test_report_is_bound_to_exact_fixtures_command_source_and_binary(mutation: str) -> None:
@@ -633,11 +673,15 @@ def test_report_is_bound_to_exact_fixtures_command_source_and_binary(mutation: s
     assert isinstance(fixtures, list)
     assert isinstance(command, list)
     if mutation == "arbitrary-hash":
-        fixtures[0]["fixtureSha256"] = "d" * 64
+        fixtures[0]["fixtureManifestSha256"] = "d" * 64
     elif mutation == "duplicate-hash":
-        fixtures[1]["fixtureSha256"] = fixtures[0]["fixtureSha256"]
+        fixtures[1]["fixtureManifestSha256"] = fixtures[0]["fixtureManifestSha256"]
     elif mutation == "wrong-command-target":
         command[2] = str(REFERENCE_TARGET.parent / "other")
+    elif mutation == "joint-target-spoof":
+        spoofed = REFERENCE_TARGET.parent / "other"
+        command[2] = str(spoofed)
+        report["profile"]["target"] = str(spoofed)
     elif mutation == "missing-command-target":
         del command[1:3]
     elif mutation == "duplicate-command-target":
@@ -650,6 +694,12 @@ def test_report_is_bound_to_exact_fixtures_command_source_and_binary(mutation: s
         report["benchmarkBinary"]["sha256"] = "d" * 64
     elif mutation == "wrong-binary-path":
         report["benchmarkBinary"]["path"] = str(BINARY_PATH.parent / "other.exe")
+    elif mutation == "wrong-binary-volume":
+        report["benchmarkBinary"]["volumeSerial"] = BINARY_VOLUME_SERIAL + 1
+    elif mutation == "wrong-binary-file-id":
+        report["benchmarkBinary"]["fileId"] = BINARY_FILE_ID + 1
+    elif mutation == "spoofed-build-command":
+        report["benchmarkBuild"]["command"].append("--features=untrusted")
 
     with pytest.raises(benchmark.ReportValidationError):
         validate_report(benchmark, report)
@@ -721,7 +771,6 @@ def test_first_creation_writes_versioned_runner_sentinel(tmp_path: Path) -> None
     benchmark.prepare_reference_target(
         target,
         REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
-        clean_target=True,
         local_app_data_probe=lambda: local,
         sync_roots_probe=lambda: (),
         path_probe=safe_path_probe(benchmark),
@@ -731,8 +780,11 @@ def test_first_creation_writes_versioned_runner_sentinel(tmp_path: Path) -> None
     assert sentinel.read_bytes() == benchmark.TARGET_SENTINEL_CONTENT
 
 
-@pytest.mark.parametrize("sentinel", [None, b"wrong-owner-or-version\n"])
-def test_cleanup_rejects_missing_or_mismatched_sentinel(
+@pytest.mark.parametrize(
+    "sentinel",
+    [None, b"wrong-owner-or-version\n", b"animaOS CoreFS catalog benchmark target v1\n"],
+)
+def test_existing_target_is_never_deleted_even_with_owned_sentinel(
     tmp_path: Path, sentinel: bytes | None
 ) -> None:
     benchmark = load_benchmark_module()
@@ -741,17 +793,18 @@ def test_cleanup_rejects_missing_or_mismatched_sentinel(
     target.mkdir(parents=True)
     if sentinel is not None:
         (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(sentinel)
+    retained = target / "retained.txt"
+    retained.write_text("must survive", encoding="utf-8")
 
-    with pytest.raises(benchmark.ReferenceTargetError, match="sentinel"):
+    with pytest.raises(benchmark.ReferenceTargetError, match=r"already exists|archive"):
         benchmark.prepare_reference_target(
             target,
             REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
-            clean_target=True,
             local_app_data_probe=lambda: local,
             sync_roots_probe=lambda: (),
             path_probe=safe_path_probe(benchmark),
         )
-    assert target.is_dir()
+    assert target.is_dir() and retained.read_text(encoding="utf-8") == "must survive"
 
 
 @pytest.mark.parametrize(
@@ -763,58 +816,27 @@ def test_cleanup_rejects_missing_or_mismatched_sentinel(
         0x00400000,  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
     ],
 )
-def test_cleanup_rejects_reparse_offline_or_cloud_files_tree_entries(
+def test_creation_rejects_reparse_offline_or_cloud_files_ancestors(
     tmp_path: Path, attribute: int
 ) -> None:
     benchmark = load_benchmark_module()
     local = tmp_path / "LocalAppData"
     target = reference_target(local)
-    child = target / "fixture"
-    child.mkdir(parents=True)
-    (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(benchmark.TARGET_SENTINEL_CONTENT)
+    ancestor = local / "animaOS"
+    ancestor.mkdir(parents=True)
 
     with pytest.raises(benchmark.ReferenceTargetError, match=r"reparse|offline|Cloud Files"):
         benchmark.prepare_reference_target(
             target,
             REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
-            clean_target=True,
             local_app_data_probe=lambda: local,
             sync_roots_probe=lambda: (),
-            path_probe=safe_path_probe(benchmark, attributes={child: attribute}),
+            path_probe=safe_path_probe(benchmark, attributes={ancestor: attribute}),
         )
-    assert target.is_dir() and child.is_dir()
+    assert not target.exists()
 
 
-def test_cleanup_fails_closed_when_target_identity_changes_before_delete(tmp_path: Path) -> None:
-    benchmark = load_benchmark_module()
-    local = tmp_path / "LocalAppData"
-    target = reference_target(local)
-    target.mkdir(parents=True)
-    (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(benchmark.TARGET_SENTINEL_CONTENT)
-    safe_probe = safe_path_probe(benchmark)
-    target_calls = 0
-
-    def swapped_probe(path: Path):
-        nonlocal target_calls
-        evidence = safe_probe(path)
-        if path.resolve() != target.resolve():
-            return evidence
-        target_calls += 1
-        return evidence._replace(file_id=1 if target_calls == 1 else 2)
-
-    with pytest.raises(benchmark.ReferenceTargetError, match=r"replaced|identity"):
-        benchmark.prepare_reference_target(
-            target,
-            REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
-            clean_target=True,
-            local_app_data_probe=lambda: local,
-            sync_roots_probe=lambda: (),
-            path_probe=swapped_probe,
-        )
-    assert target.is_dir()
-
-
-def test_cleanup_fails_closed_when_path_probe_fails(tmp_path: Path) -> None:
+def test_creation_fails_closed_when_path_probe_fails(tmp_path: Path) -> None:
     benchmark = load_benchmark_module()
     local = tmp_path / "LocalAppData"
     target = reference_target(local)
@@ -828,11 +850,137 @@ def test_cleanup_fails_closed_when_path_probe_fails(tmp_path: Path) -> None:
         benchmark.prepare_reference_target(
             target,
             REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
-            clean_target=True,
             local_app_data_probe=lambda: local,
             sync_roots_probe=lambda: (),
             path_probe=failed_probe,
         )
+
+
+def test_post_run_binary_provenance_rejects_identity_or_hash_changes() -> None:
+    benchmark = load_benchmark_module()
+    initial = benchmark.ReferencePathEvidence(
+        canonical_path=BINARY_PATH,
+        volume_serial=BINARY_VOLUME_SERIAL,
+        file_id=BINARY_FILE_ID,
+        attributes=0,
+    )
+
+    benchmark.verify_benchmark_binary_after_run(
+        BINARY_PATH,
+        initial,
+        BINARY_SHA256,
+        path_probe=lambda _path: initial,
+        hash_probe=lambda: BINARY_SHA256,
+    )
+
+    for current, digest in (
+        (initial._replace(file_id=BINARY_FILE_ID + 1), BINARY_SHA256),
+        (initial, "d" * 64),
+    ):
+        with pytest.raises(benchmark.ReportValidationError, match=r"identity|changed"):
+            benchmark.verify_benchmark_binary_after_run(
+                BINARY_PATH,
+                initial,
+                BINARY_SHA256,
+                path_probe=lambda _path, value=current: value,
+                hash_probe=lambda value=digest: value,
+            )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reference runner is Windows-only")
+def test_held_binary_can_execute_and_remains_bound_to_the_same_file() -> None:
+    benchmark = load_benchmark_module()
+    binary = Path(sys.executable).resolve()
+
+    with benchmark.hold_benchmark_binary(binary) as held:
+        completed = subprocess.run(
+            [str(binary), "-c", "print('held-binary-ok')"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        benchmark.verify_benchmark_binary_after_run(
+            binary,
+            held.evidence,
+            held.sha256,
+            hash_probe=held.hash_probe,
+        )
+
+    assert completed.stdout.strip() == "held-binary-ok"
+
+
+def test_reference_target_chain_revalidation_rejects_identity_changes() -> None:
+    benchmark = load_benchmark_module()
+    local = Path(r"C:\Users\test\AppData\Local")
+    target = local / "animaOS" / "benchmarks" / "corefs-catalog-reference-v1"
+    paths = (local, local / "animaOS", target)
+    evidence = tuple(
+        benchmark.ReferencePathEvidence(path, 7, index + 1, 0) for index, path in enumerate(paths)
+    )
+    held = benchmark.HeldReferenceTargetChain(paths, evidence)
+
+    benchmark.verify_reference_target_chain(
+        held,
+        path_probe=lambda path: evidence[paths.index(path)],
+    )
+    with pytest.raises(benchmark.ReferenceTargetError, match="identity changed"):
+        benchmark.verify_reference_target_chain(
+            held,
+            path_probe=lambda path: (
+                evidence[paths.index(path)]._replace(file_id=99)
+                if path == target
+                else evidence[paths.index(path)]
+            ),
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reference runner is Windows-only")
+def test_held_reference_target_chain_blocks_target_rename(tmp_path: Path) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+    target.mkdir(parents=True)
+
+    with benchmark.hold_reference_target_chain(local, target) as held:
+        benchmark.verify_reference_target_chain(held)
+        with pytest.raises(OSError):
+            target.rename(target.with_name("replaced"))
+
+    assert target.is_dir()
+
+
+def test_release_build_uses_fresh_private_target_and_sanitized_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    benchmark = load_benchmark_module()
+    private_target = tmp_path / "private-cargo-target"
+    monkeypatch.setattr(benchmark.tempfile, "mkdtemp", lambda **_kwargs: str(private_target))
+    monkeypatch.setenv("RUSTFLAGS", "-C target-cpu=native")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "shared"))
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command, **kwargs):
+        command = list(command)
+        calls.append((command, kwargs))
+        if "build" in command:
+            suffix = ".exe" if os.name == "nt" else ""
+            binary = private_target / "release" / f"catalog_benchmark{suffix}"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"private-build")
+            return SimpleNamespace(stdout="", returncode=0)
+        return SimpleNamespace(stdout="rustc 1.75.0\nhost: x86_64-pc-windows-msvc\n", returncode=0)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", runner)
+    build = benchmark.build_rust_benchmark_binary()
+
+    assert build.target_directory == private_target
+    assert build.binary.parent == private_target / "release"
+    assert build.command[-2:] == ("--target-dir", str(private_target))
+    build_environment = calls[0][1]["env"]
+    assert build_environment["CARGO_INCREMENTAL"] == "0"
+    assert "RUSTFLAGS" not in build_environment
+    assert "CARGO_TARGET_DIR" not in build_environment
+    assert build.sanitized_environment_removed == ("CARGO_TARGET_DIR", "RUSTFLAGS")
 
 
 def test_registered_sync_roots_cover_multiple_accounts_and_alternate_providers() -> None:

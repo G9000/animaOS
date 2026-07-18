@@ -9,13 +9,13 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from ctypes import wintypes
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,10 +33,10 @@ DEFAULT_ARTIFACT = (
 REFERENCE_TARGET_RELATIVE = Path("animaOS") / "benchmarks" / "corefs-catalog-reference-v1"
 TARGET_SENTINEL_NAME = ".anima-corefs-catalog-benchmark-target-v1"
 TARGET_SENTINEL_CONTENT = b"animaOS CoreFS catalog benchmark target v1\n"
-EXPECTED_FIXTURE_FINGERPRINTS = {
-    "medium": "2c55af03723c2f10f40790b894c421fde0f9cd10f9b2355f128aad66d7cfc1d5",
-    "maximum-live": "95e6a054dee2fa09b48743429c37f1e4a54ba32008136755393e0341913b2857",
-    "serialized-limit": "f24864db4cefda29bf71975cd71da21c0564ec44eee9e59dada04aba82c20df4",
+EXPECTED_FIXTURE_MANIFEST_FINGERPRINTS = {
+    "medium": "d1f8817ba635359cc10208d86b79652dc0e2180c2514f1e1d0634a96ebcb40c4",
+    "maximum-live": "1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5",
+    "serialized-limit": "26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87",
 }
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
@@ -117,6 +117,26 @@ class ReferencePathEvidence(NamedTuple):
     volume_serial: int
     file_id: int
     attributes: int
+
+
+class HeldBenchmarkBinary(NamedTuple):
+    evidence: ReferencePathEvidence
+    sha256: str
+    hash_probe: Callable[[], str]
+
+
+class HeldReferenceTargetChain(NamedTuple):
+    paths: tuple[Path, ...]
+    evidence: tuple[ReferencePathEvidence, ...]
+
+
+class BenchmarkBuildEvidence(NamedTuple):
+    binary: Path
+    command: tuple[str, ...]
+    target_directory: Path
+    cargo_lock_sha256: str
+    rustc: str
+    sanitized_environment_removed: tuple[str, ...]
 
 
 POWERSHELL_LIVE_PROFILE = r"""
@@ -494,7 +514,7 @@ def validate_reference_target_location(
         )
     artifact_path = artifact.expanduser().resolve(strict=False)
     if _is_within(artifact_path, resolved) or _same_resolved_path(artifact_path, resolved):
-        raise ReferenceTargetError("benchmark artifact cannot be inside the cleanup target")
+        raise ReferenceTargetError("benchmark artifact cannot be inside the benchmark target")
     for synchronized_root in synchronized_roots:
         if _is_within(resolved, synchronized_root):
             raise ReferenceTargetError(
@@ -515,7 +535,7 @@ def _validated_path_evidence(
         raise ReferenceTargetError(f"path handle canonicalization changed for {path}")
     if evidence.attributes & CLOUD_OR_REPARSE_ATTRIBUTES:
         raise ReferenceTargetError(
-            f"refusing reparse, offline, or Cloud Files path during cleanup: {path}"
+            f"refusing reparse, offline, or Cloud Files reference path: {path}"
         )
     return evidence
 
@@ -528,45 +548,15 @@ def _same_identity(left: ReferencePathEvidence, right: ReferencePathEvidence) ->
     )
 
 
-def _walk_cleanup_tree(
-    directory: Path,
-    path_probe: Callable[[Path], ReferencePathEvidence],
-) -> tuple[list[Path], list[Path]]:
-    files: list[Path] = []
-    directories: list[Path] = []
-    try:
-        entries = list(os.scandir(directory))
-    except OSError as error:
-        raise ReferenceTargetError(
-            f"cannot enumerate cleanup target {directory}: {error}"
-        ) from error
-    for entry in entries:
-        path = Path(entry.path)
-        _validated_path_evidence(path, path_probe)
-        try:
-            is_directory = entry.is_dir(follow_symlinks=False)
-        except OSError as error:
-            raise ReferenceTargetError(f"cannot classify cleanup path {path}: {error}") from error
-        if is_directory:
-            child_files, child_directories = _walk_cleanup_tree(path, path_probe)
-            files.extend(child_files)
-            directories.extend(child_directories)
-            directories.append(path)
-        else:
-            files.append(path)
-    return files, directories
-
-
 def prepare_reference_target(
     target: Path,
     artifact: Path,
     *,
-    clean_target: bool,
     local_app_data_probe: Callable[[], Path] = probe_local_app_data,
     sync_roots_probe: Callable[[], tuple[Path, ...]] = collect_synchronized_roots,
     path_probe: Callable[[Path], ReferencePathEvidence] = probe_reference_path,
 ) -> Path:
-    """Validate, clean only an owned target, recreate it, and durably mark ownership."""
+    """Validate and create a fresh dedicated target without deleting existing data."""
 
     try:
         local = local_app_data_probe().expanduser().resolve(strict=False)
@@ -577,44 +567,18 @@ def prepare_reference_target(
         raise ReferenceTargetError(f"reference location probe failed: {error}") from error
     resolved = validate_reference_target_location(target, artifact, local, synchronized_roots)
 
-    initial_target: ReferencePathEvidence | None = None
     relative_parts = resolved.relative_to(local).parts
     candidate = local
     for part in ("", *relative_parts):
         if part:
             candidate /= part
         if os.path.lexists(candidate):
-            evidence = _validated_path_evidence(candidate, path_probe)
+            _validated_path_evidence(candidate, path_probe)
             if _same_resolved_path(candidate, resolved):
-                initial_target = evidence
-
-    if initial_target is not None:
-        if not clean_target:
-            raise ReferenceTargetError("existing target requires --clean-target")
-        sentinel = resolved / TARGET_SENTINEL_NAME
-        if not os.path.lexists(sentinel):
-            raise ReferenceTargetError("existing target has no benchmark ownership sentinel")
-        _validated_path_evidence(sentinel, path_probe)
-        try:
-            sentinel_content = sentinel.read_bytes()
-        except OSError as error:
-            raise ReferenceTargetError(f"cannot read benchmark target sentinel: {error}") from error
-        if sentinel_content != TARGET_SENTINEL_CONTENT:
-            raise ReferenceTargetError("benchmark target sentinel owner or version does not match")
-        files, directories = _walk_cleanup_tree(resolved, path_probe)
-        current_target = _validated_path_evidence(resolved, path_probe)
-        if not _same_identity(initial_target, current_target):
-            raise ReferenceTargetError(
-                "benchmark target was replaced or changed identity before cleanup"
-            )
-        try:
-            for path in files:
-                path.unlink()
-            for path in directories:
-                path.rmdir()
-            resolved.rmdir()
-        except OSError as error:
-            raise ReferenceTargetError(f"safe benchmark target cleanup failed: {error}") from error
+                raise ReferenceTargetError(
+                    "reference target already exists; archive it manually after verifying the "
+                    "exact canonical path, then rerun"
+                )
 
     try:
         resolved.mkdir(parents=True, exist_ok=False)
@@ -1015,9 +979,11 @@ def measure_durable_write_4k(
     flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
+    active_probe: Path | None = None
     try:
         for index in range(warmups + samples):
             probe = probe_dir / f"probe-{index:04}.bin"
+            active_probe = probe
             started = time.perf_counter_ns()
             descriptor = os.open(probe, flags, 0o600)
             try:
@@ -1029,10 +995,18 @@ def measure_durable_write_4k(
                 os.close(descriptor)
             elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000.0
             probe.unlink()
+            active_probe = None
             if index >= warmups:
                 timings_ms.append(elapsed_ms)
     finally:
-        shutil.rmtree(probe_dir, ignore_errors=True)
+        if active_probe is not None:
+            active_probe.unlink(missing_ok=True)
+        try:
+            probe_dir.rmdir()
+        except OSError as error:
+            raise ReferenceTargetError(
+                f"durable-write probe directory was not empty after exact cleanup: {error}"
+            ) from error
     return {
         "warmupCount": warmups,
         "sampleCount": samples,
@@ -1147,7 +1121,7 @@ def _validate_fixture(
             "serializedSizeBytes",
             "warmupSerializedSizeBytes",
             "measuredSerializedSizeBytes",
-            "fixtureSha256",
+            "fixtureManifestSha256",
             "productionSerializationsPerCommit",
             "warmupCommits",
             "sampleCount",
@@ -1200,11 +1174,13 @@ def _validate_fixture(
         or measured_range[1] > MAX_CATALOG_PLAINTEXT_BYTES
     ):
         raise MaximumLiveSizeGateError(f"{name} exceeds 16 MiB")
-    fingerprint = _report_string(record["fixtureSha256"], f"{name}.fixtureSha256")
+    fingerprint = _report_string(record["fixtureManifestSha256"], f"{name}.fixtureManifestSha256")
     if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-        raise ReportValidationError(f"{name}.fixtureSha256 must be lowercase SHA-256")
-    if fingerprint != EXPECTED_FIXTURE_FINGERPRINTS.get(name):
-        raise ReportValidationError(f"{name}.fixtureSha256 is not the source-controlled fixture")
+        raise ReportValidationError(f"{name}.fixtureManifestSha256 must be lowercase SHA-256")
+    if fingerprint != EXPECTED_FIXTURE_MANIFEST_FINGERPRINTS.get(name):
+        raise ReportValidationError(
+            f"{name}.fixtureManifestSha256 is not the source-controlled manifest"
+        )
     if (
         _report_int(
             record["productionSerializationsPerCommit"],
@@ -1438,12 +1414,29 @@ def calculate_gates(report: dict[str, Any]) -> dict[str, bool]:
     return gates
 
 
+def benchmark_build_record(build: BenchmarkBuildEvidence, source_commit: str) -> dict[str, Any]:
+    return {
+        "sourceCommit": source_commit,
+        "command": list(build.command),
+        "targetDirectory": str(build.target_directory),
+        "cargoLockSha256": build.cargo_lock_sha256,
+        "rustc": build.rustc,
+        "sanitizedEnvironmentRemoved": list(build.sanitized_environment_removed),
+        "forcedEnvironment": {"CARGO_INCREMENTAL": "0"},
+        "preservedForAudit": True,
+    }
+
+
 def validate_and_finalize_report(
     report: dict[str, Any],
     *,
     expected_source_commit: str,
     expected_binary_path: Path,
     expected_binary_sha256: str,
+    expected_binary_volume_serial: int,
+    expected_binary_file_id: int,
+    expected_reference_target: Path,
+    expected_benchmark_build: Mapping[str, Any],
 ) -> dict[str, Any]:
     record = _report_object(
         report,
@@ -1451,6 +1444,7 @@ def validate_and_finalize_report(
             "schemaVersion",
             "generatedAt",
             "sourceCommit",
+            "benchmarkBuild",
             "benchmarkBinary",
             "benchmarkCommand",
             "warmupCommits",
@@ -1476,7 +1470,49 @@ def validate_and_finalize_report(
         raise ReportValidationError("sourceCommit must be a lowercase Git commit hash")
     if source_commit != expected_source_commit:
         raise ReportValidationError("sourceCommit does not match the benchmark source")
-    binary = _report_object(record["benchmarkBinary"], {"path", "sha256"}, "benchmarkBinary")
+    build = _report_object(
+        record["benchmarkBuild"],
+        {
+            "sourceCommit",
+            "command",
+            "targetDirectory",
+            "cargoLockSha256",
+            "rustc",
+            "sanitizedEnvironmentRemoved",
+            "forcedEnvironment",
+            "preservedForAudit",
+        },
+        "benchmarkBuild",
+    )
+    _report_string(build["sourceCommit"], "benchmarkBuild.sourceCommit")
+    _report_string(build["targetDirectory"], "benchmarkBuild.targetDirectory")
+    cargo_lock_sha256 = _report_string(build["cargoLockSha256"], "benchmarkBuild.cargoLockSha256")
+    if re.fullmatch(r"[0-9a-f]{64}", cargo_lock_sha256) is None:
+        raise ReportValidationError("benchmarkBuild.cargoLockSha256 must be lowercase SHA-256")
+    _report_string(build["rustc"], "benchmarkBuild.rustc")
+    if not isinstance(build["command"], list) or not all(
+        isinstance(value, str) and value for value in build["command"]
+    ):
+        raise ReportValidationError("benchmarkBuild.command must be an argv string array")
+    if not isinstance(build["sanitizedEnvironmentRemoved"], list) or not all(
+        isinstance(value, str) and value for value in build["sanitizedEnvironmentRemoved"]
+    ):
+        raise ReportValidationError(
+            "benchmarkBuild.sanitizedEnvironmentRemoved must be a string array"
+        )
+    forced = _report_object(
+        build["forcedEnvironment"], {"CARGO_INCREMENTAL"}, "benchmarkBuild.forcedEnvironment"
+    )
+    if forced != {"CARGO_INCREMENTAL": "0"}:
+        raise ReportValidationError("benchmarkBuild.forcedEnvironment is invalid")
+    _report_bool(build["preservedForAudit"], "benchmarkBuild.preservedForAudit")
+    if build != dict(expected_benchmark_build):
+        raise ReportValidationError("benchmarkBuild does not match the executed private build")
+    binary = _report_object(
+        record["benchmarkBinary"],
+        {"path", "sha256", "volumeSerial", "fileId"},
+        "benchmarkBinary",
+    )
     binary_path = Path(_report_string(binary["path"], "benchmarkBinary.path"))
     binary_sha256 = _report_string(binary["sha256"], "benchmarkBinary.sha256")
     if not _same_resolved_path(binary_path, expected_binary_path):
@@ -1486,6 +1522,13 @@ def validate_and_finalize_report(
         or binary_sha256 != expected_binary_sha256
     ):
         raise ReportValidationError("benchmarkBinary.sha256 does not match the executed binary")
+    if (
+        _report_int(binary["volumeSerial"], "benchmarkBinary.volumeSerial", minimum=0)
+        != expected_binary_volume_serial
+        or _report_int(binary["fileId"], "benchmarkBinary.fileId", minimum=0)
+        != expected_binary_file_id
+    ):
+        raise ReportValidationError("benchmarkBinary identity does not match the executed binary")
     warmups = _report_int(record["warmupCommits"], "warmupCommits")
     samples = _report_int(record["measuredCommits"], "measuredCommits")
     if warmups != REFERENCE_WARMUPS or samples < REFERENCE_SAMPLES:
@@ -1493,11 +1536,16 @@ def validate_and_finalize_report(
             "reference report requires exactly 30 warmups and at least 200 samples"
         )
     profile = _validate_profile(record["profile"])
+    profile_target = Path(profile["target"])
+    if not _same_resolved_path(profile_target, expected_reference_target):
+        raise ReportValidationError(
+            "profile.target is not the independently derived reference target"
+        )
     command = record["benchmarkCommand"]
     expected_command = [
         str(expected_binary_path),
         "--target",
-        str(profile["target"]),
+        str(expected_reference_target),
         "--warmups",
         str(warmups),
         "--samples",
@@ -1639,53 +1687,330 @@ def source_commit_for_benchmark() -> str:
     return commit
 
 
-def build_rust_benchmark_binary() -> Path:
-    metadata = subprocess.run(
-        ["cargo", "+1.75.0", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+def _sha256_regular_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sanitized_cargo_environment() -> tuple[dict[str, str], tuple[str, ...]]:
+    environment = os.environ.copy()
+    exact = {
+        "CARGO_BUILD_TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_TARGET_DIR",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTDOCFLAGS",
+        "RUSTFLAGS",
+        "RUSTUP_TOOLCHAIN",
+    }
+    removed = sorted(
+        key
+        for key in environment
+        if key in exact or key.startswith("CARGO_PROFILE_") or key.startswith("CARGO_TARGET_")
+    )
+    for key in removed:
+        environment.pop(key, None)
+    environment["CARGO_INCREMENTAL"] = "0"
+    return environment, tuple(removed)
+
+
+def build_rust_benchmark_binary() -> BenchmarkBuildEvidence:
+    target_directory = Path(tempfile.mkdtemp(prefix="anima-corefs-catalog-build-")).resolve()
+    environment, removed = _sanitized_cargo_environment()
+    command = (
+        "cargo",
+        "+1.75.0",
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        "anima-corefs",
+        "--bin",
+        "catalog_benchmark",
+        "--target-dir",
+        str(target_directory),
+    )
+    subprocess.run(
+        list(command),
+        cwd=REPO_ROOT,
+        check=True,
+        env=environment,
+    )
+    rustc = subprocess.run(
+        ["rustc", "+1.75.0", "--version", "--verbose"],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
-    )
-    decoded = loads_strict_json(metadata.stdout)
-    if not isinstance(decoded, dict):
-        raise ReportValidationError("Cargo metadata was not an object")
-    target_directory = decoded.get("target_directory")
-    if not isinstance(target_directory, str) or not target_directory:
-        raise ReportValidationError("Cargo metadata did not identify the target directory")
-    subprocess.run(
-        [
-            "cargo",
-            "+1.75.0",
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "anima-corefs",
-            "--bin",
-            "catalog_benchmark",
-        ],
-        cwd=REPO_ROOT,
-        check=True,
-    )
+        env=environment,
+    ).stdout.strip()
     suffix = ".exe" if os.name == "nt" else ""
-    binary = (Path(target_directory) / "release" / f"catalog_benchmark{suffix}").resolve(
-        strict=False
-    )
+    binary = (target_directory / "release" / f"catalog_benchmark{suffix}").resolve(strict=False)
     if not binary.is_file():
         raise ReportValidationError(f"built benchmark binary is missing: {binary}")
-    return binary
+    return BenchmarkBuildEvidence(
+        binary=binary,
+        command=command,
+        target_directory=target_directory,
+        cargo_lock_sha256=_sha256_regular_file(REPO_ROOT / "Cargo.lock"),
+        rustc=rustc,
+        sanitized_environment_removed=removed,
+    )
 
 
-def sha256_file(path: Path) -> str:
+def _open_locked_binary_handle(path: Path) -> tuple[Any, Any]:
+    """Open the exact Windows binary for read while denying writes and replacement."""
+
+    if os.name != "nt":
+        raise ReportValidationError("reference benchmark binary locking requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x80000000,  # GENERIC_READ
+        0x00000001,  # FILE_SHARE_READ only: deny writes, delete, and replacement
+        None,
+        3,  # OPEN_EXISTING
+        0x00200000 | 0x08000000,  # OPEN_REPARSE_POINT | SEQUENTIAL_SCAN
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ReportValidationError(
+            f"cannot hold benchmark binary against mutation: {ctypes.get_last_error()}"
+        )
+    return kernel32, handle
+
+
+def _open_handle_evidence(kernel32: Any, handle: Any) -> ReferencePathEvidence:
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    information = ByHandleFileInformation()
+    if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+        raise ReportValidationError(
+            f"cannot read held benchmark binary identity: {ctypes.get_last_error()}"
+        )
+    capacity = 32768
+    buffer = ctypes.create_unicode_buffer(capacity)
+    length = int(kernel32.GetFinalPathNameByHandleW(handle, buffer, capacity, 0))
+    if length == 0 or length >= capacity:
+        raise ReportValidationError(
+            f"cannot canonicalize held benchmark binary: {ctypes.get_last_error()}"
+        )
+    canonical = buffer.value
+    if canonical.startswith("\\\\?\\UNC\\"):
+        canonical = "\\\\" + canonical[8:]
+    elif canonical.startswith("\\\\?\\"):
+        canonical = canonical[4:]
+    file_id = (int(information.file_index_high) << 32) | int(information.file_index_low)
+    return ReferencePathEvidence(
+        canonical_path=Path(canonical),
+        volume_serial=int(information.volume_serial_number),
+        file_id=file_id,
+        attributes=int(information.attributes),
+    )
+
+
+def _sha256_open_windows_handle(kernel32: Any, handle: Any) -> str:
+    kernel32.SetFilePointerEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    ]
+    kernel32.SetFilePointerEx.restype = wintypes.BOOL
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    kernel32.ReadFile.restype = wintypes.BOOL
+    if not kernel32.SetFilePointerEx(handle, 0, None, 0):
+        raise ReportValidationError("cannot seek held benchmark binary")
     digest = hashlib.sha256()
-    try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as error:
-        raise ReportValidationError(f"cannot hash benchmark binary: {error}") from error
+    buffer = ctypes.create_string_buffer(1024 * 1024)
+    while True:
+        count = wintypes.DWORD()
+        if not kernel32.ReadFile(handle, buffer, len(buffer), ctypes.byref(count), None):
+            raise ReportValidationError(
+                f"cannot hash held benchmark binary: {ctypes.get_last_error()}"
+            )
+        if count.value == 0:
+            break
+        digest.update(buffer.raw[: count.value])
+    if not kernel32.SetFilePointerEx(handle, 0, None, 0):
+        raise ReportValidationError("cannot rewind held benchmark binary")
     return digest.hexdigest()
+
+
+def verify_benchmark_binary_after_run(
+    path: Path,
+    initial_evidence: ReferencePathEvidence,
+    initial_sha256: str,
+    *,
+    path_probe: Callable[[Path], ReferencePathEvidence] = probe_reference_path,
+    hash_probe: Callable[[], str],
+) -> None:
+    try:
+        current_evidence = path_probe(path)
+    except OSError as error:
+        raise ReportValidationError(
+            f"cannot revalidate benchmark binary identity: {error}"
+        ) from error
+    if not _same_identity(initial_evidence, current_evidence):
+        raise ReportValidationError("benchmark binary identity changed during execution")
+    if current_evidence.attributes & CLOUD_OR_REPARSE_ATTRIBUTES:
+        raise ReportValidationError("benchmark binary became a reparse or cloud-backed path")
+    if hash_probe() != initial_sha256:
+        raise ReportValidationError("benchmark binary content changed during execution")
+
+
+@contextmanager
+def hold_benchmark_binary(path: Path):
+    kernel32, handle = _open_locked_binary_handle(path)
+    try:
+        evidence = _open_handle_evidence(kernel32, handle)
+        if not _same_resolved_path(evidence.canonical_path, path):
+            raise ReportValidationError("held benchmark binary canonical path changed")
+        if evidence.attributes & CLOUD_OR_REPARSE_ATTRIBUTES:
+            raise ReportValidationError("benchmark binary must be a regular local file")
+        digest = _sha256_open_windows_handle(kernel32, handle)
+        yield HeldBenchmarkBinary(
+            evidence=evidence,
+            sha256=digest,
+            hash_probe=lambda: _sha256_open_windows_handle(kernel32, handle),
+        )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def verify_reference_target_chain(
+    held: HeldReferenceTargetChain,
+    *,
+    path_probe: Callable[[Path], ReferencePathEvidence] = probe_reference_path,
+) -> None:
+    for path, expected in zip(held.paths, held.evidence, strict=True):
+        try:
+            current = path_probe(path)
+        except OSError as error:
+            raise ReferenceTargetError(
+                f"cannot revalidate held reference path {path}: {error}"
+            ) from error
+        if not _same_identity(expected, current):
+            raise ReferenceTargetError(
+                f"reference target path identity changed during execution: {path}"
+            )
+        if current.attributes & CLOUD_OR_REPARSE_ATTRIBUTES:
+            raise ReferenceTargetError(
+                f"reference target path became reparse, offline, or cloud-backed: {path}"
+            )
+
+
+@contextmanager
+def hold_reference_target_chain(local_app_data_root: Path, target: Path):
+    """Pin the LocalAppData-to-target directory chain against rename/replacement."""
+
+    local = local_app_data_root.resolve(strict=True)
+    resolved_target = target.resolve(strict=True)
+    try:
+        relative_parts = resolved_target.relative_to(local).parts
+    except ValueError as error:
+        raise ReferenceTargetError("reference target is outside LocalAppData") from error
+    paths = [local]
+    candidate = local
+    for part in relative_parts:
+        candidate /= part
+        paths.append(candidate)
+
+    if os.name != "nt":
+        raise ReferenceTargetError("reference target handle pinning requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handles: list[Any] = []
+    evidence: list[ReferencePathEvidence] = []
+    try:
+        for path in paths:
+            handle = kernel32.CreateFileW(
+                str(path),
+                0x80000000,  # GENERIC_READ
+                0x00000001 | 0x00000002,  # share read/write, but deny delete/rename
+                None,
+                3,
+                0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+                None,
+            )
+            if handle == ctypes.c_void_p(-1).value:
+                raise ReferenceTargetError(
+                    f"cannot pin reference target path {path}: {ctypes.get_last_error()}"
+                )
+            handles.append(handle)
+            current = _open_handle_evidence(kernel32, handle)
+            if not _same_resolved_path(current.canonical_path, path):
+                raise ReferenceTargetError(f"held reference path canonicalization changed: {path}")
+            if current.attributes & CLOUD_OR_REPARSE_ATTRIBUTES:
+                raise ReferenceTargetError(
+                    f"held reference path is reparse, offline, or cloud-backed: {path}"
+                )
+            evidence.append(current)
+        held = HeldReferenceTargetChain(tuple(paths), tuple(evidence))
+        verify_reference_target_chain(held)
+        yield held
+        verify_reference_target_chain(held)
+    finally:
+        for handle in reversed(handles):
+            kernel32.CloseHandle(handle)
 
 
 def run_rust_benchmark(
@@ -1735,7 +2060,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reference", action="store_true", required=True)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--artifact", type=Path, default=DEFAULT_ARTIFACT)
-    parser.add_argument("--clean-target", action="store_true", required=True)
     parser.add_argument("--warmups", type=int, default=REFERENCE_WARMUPS)
     parser.add_argument("--samples", type=int, default=REFERENCE_SAMPLES)
     return parser.parse_args(argv)
@@ -1747,94 +2071,119 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact = args.artifact.expanduser().resolve(strict=False)
     validate_reference_run_counts(args.warmups, args.samples)
     source_commit = source_commit_for_benchmark()
+    local_app_data = probe_local_app_data().expanduser().resolve(strict=True)
     target = prepare_reference_target(
         target,
         artifact,
-        clean_target=args.clean_target,
+        local_app_data_probe=lambda: local_app_data,
     )
-    facts = validate_reference_profile(target, probe_live_reference_host(target))
-
-    durable_write = measure_durable_write_4k(target)
-    if float(durable_write["p95Ms"]) > 5.0:
-        raise ReferenceTargetError(
-            f"4-KiB durable-write p95 exceeds 5 ms: {durable_write['p95Ms']:.3f} ms"
-        )
-    binary = build_rust_benchmark_binary()
-    if source_commit_for_benchmark() != source_commit:
-        raise ReportValidationError("benchmark source commit changed during the build")
-    binary_sha256 = sha256_file(binary)
-    rust_report, command = run_rust_benchmark(
-        binary, target, warmups=args.warmups, samples=args.samples
-    )
-    report = {
-        **rust_report,
-        "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "sourceCommit": source_commit,
-        "benchmarkBinary": {
-            "path": str(binary),
-            "sha256": binary_sha256,
-        },
-        "benchmarkCommand": command,
-        "profile": {
-            "mode": "reference",
-            "target": str(target),
-            "architecture": "x64",
-            "hostEvidence": {
-                "source": "live-cim",
-                "osCaption": facts.os_caption,
-                "osVersion": facts.os_version,
-                "cpu": facts.cpu_name,
-                "cpuArchitectureCodes": list(facts.cpu_architecture_codes),
-                "physicalCores": facts.physical_cores,
-                "logicalProcessors": facts.logical_processors,
-                "ramBytes": facts.ram_bytes,
-                "ramGiB": round(facts.ram_bytes / 1024**3, 2),
-            },
-            "storageEvidence": {
-                "source": "live-cim-volume-disk-physical-disk-mapping",
-                "volumeRoot": str(facts.volume.volume_root),
-                "driveType": facts.volume.drive_type,
-                "filesystem": facts.volume.filesystem,
-                "partitionDiskNumber": facts.partition_disk_number,
-                "diskNumber": facts.disk_number,
-                "physicalDeviceId": facts.physical_device_id,
-                "model": facts.physical_model,
-                "serialNumber": facts.physical_serial,
-                "busType": facts.physical_bus_type,
-                "mediaType": facts.physical_media_type,
-                "healthStatus": facts.physical_health_status,
-                "operationalStatus": facts.physical_operational_status,
-                "physicalLocation": facts.physical_location,
-                "mappingVerified": True,
-                "internal": True,
-            },
-            "durabilityEvidence": {
-                "source": "live-storage-write-cache-property-and-publication-path",
-                "hardwarePowerProtection": facts.hardware_power_protection,
-                "writeCacheType": facts.write_cache.write_cache_type,
-                "writeCacheEnabled": facts.write_cache.write_cache_enabled,
-                "writeThroughSupported": facts.write_cache.write_through_supported,
-                "flushCacheSupported": facts.write_cache.flush_cache_supported,
-                "userDefinedPowerProtection": (facts.write_cache.user_defined_power_protection),
-                "nvCacheEnabled": facts.write_cache.nv_cache_enabled,
-                "softwareFlushMethod": "FlushFileBuffers",
-                "publicationUsesWriteThroughAndDirectorySync": True,
-                "acceptableProperty": "flush-and-write-through-supported",
-            },
-            "durableWrite4KiBP95Ms": durable_write["p95Ms"],
-            "durableWrite4KiB": durable_write,
-            "excludedStorageClasses": EXCLUDED_STORAGE_CLASSES,
-        },
-        "versions": collect_versions(),
-    }
-    report["gates"] = calculate_gates(report)
-    validate_and_finalize_report(
-        report,
-        expected_source_commit=source_commit,
-        expected_binary_path=binary,
-        expected_binary_sha256=binary_sha256,
-    )
-    write_json_atomic(artifact, report)
+    with hold_reference_target_chain(local_app_data, target) as held_target:
+        facts = validate_reference_profile(target, probe_live_reference_host(target))
+        durable_write = measure_durable_write_4k(target)
+        if float(durable_write["p95Ms"]) > 5.0:
+            raise ReferenceTargetError(
+                f"4-KiB durable-write p95 exceeds 5 ms: {durable_write['p95Ms']:.3f} ms"
+            )
+        build = build_rust_benchmark_binary()
+        binary = build.binary
+        with hold_benchmark_binary(binary) as held_binary:
+            if source_commit_for_benchmark() != source_commit:
+                raise ReportValidationError("benchmark source commit changed during the build")
+            verify_reference_target_chain(held_target)
+            rust_report, command = run_rust_benchmark(
+                binary, target, warmups=args.warmups, samples=args.samples
+            )
+            verify_benchmark_binary_after_run(
+                binary,
+                held_binary.evidence,
+                held_binary.sha256,
+                hash_probe=held_binary.hash_probe,
+            )
+            verify_reference_target_chain(held_target)
+            if source_commit_for_benchmark() != source_commit:
+                raise ReportValidationError("benchmark source changed during execution")
+            build_record = benchmark_build_record(build, source_commit)
+            report = {
+                **rust_report,
+                "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "sourceCommit": source_commit,
+                "benchmarkBuild": build_record,
+                "benchmarkBinary": {
+                    "path": str(binary),
+                    "sha256": held_binary.sha256,
+                    "volumeSerial": held_binary.evidence.volume_serial,
+                    "fileId": held_binary.evidence.file_id,
+                },
+                "benchmarkCommand": command,
+                "profile": {
+                    "mode": "reference",
+                    "target": str(target),
+                    "architecture": "x64",
+                    "hostEvidence": {
+                        "source": "live-cim",
+                        "osCaption": facts.os_caption,
+                        "osVersion": facts.os_version,
+                        "cpu": facts.cpu_name,
+                        "cpuArchitectureCodes": list(facts.cpu_architecture_codes),
+                        "physicalCores": facts.physical_cores,
+                        "logicalProcessors": facts.logical_processors,
+                        "ramBytes": facts.ram_bytes,
+                        "ramGiB": round(facts.ram_bytes / 1024**3, 2),
+                    },
+                    "storageEvidence": {
+                        "source": "live-cim-volume-disk-physical-disk-mapping",
+                        "volumeRoot": str(facts.volume.volume_root),
+                        "driveType": facts.volume.drive_type,
+                        "filesystem": facts.volume.filesystem,
+                        "partitionDiskNumber": facts.partition_disk_number,
+                        "diskNumber": facts.disk_number,
+                        "physicalDeviceId": facts.physical_device_id,
+                        "model": facts.physical_model,
+                        "serialNumber": facts.physical_serial,
+                        "busType": facts.physical_bus_type,
+                        "mediaType": facts.physical_media_type,
+                        "healthStatus": facts.physical_health_status,
+                        "operationalStatus": facts.physical_operational_status,
+                        "physicalLocation": facts.physical_location,
+                        "mappingVerified": True,
+                        "internal": True,
+                    },
+                    "durabilityEvidence": {
+                        "source": "live-storage-write-cache-property-and-publication-path",
+                        "hardwarePowerProtection": facts.hardware_power_protection,
+                        "writeCacheType": facts.write_cache.write_cache_type,
+                        "writeCacheEnabled": facts.write_cache.write_cache_enabled,
+                        "writeThroughSupported": facts.write_cache.write_through_supported,
+                        "flushCacheSupported": facts.write_cache.flush_cache_supported,
+                        "userDefinedPowerProtection": (
+                            facts.write_cache.user_defined_power_protection
+                        ),
+                        "nvCacheEnabled": facts.write_cache.nv_cache_enabled,
+                        "softwareFlushMethod": "FlushFileBuffers",
+                        "publicationUsesWriteThroughAndDirectorySync": True,
+                        "acceptableProperty": "flush-and-write-through-supported",
+                    },
+                    "durableWrite4KiBP95Ms": durable_write["p95Ms"],
+                    "durableWrite4KiB": durable_write,
+                    "excludedStorageClasses": EXCLUDED_STORAGE_CLASSES,
+                },
+                "versions": collect_versions(),
+            }
+            report["gates"] = calculate_gates(report)
+            if source_commit_for_benchmark() != source_commit:
+                raise ReportValidationError("benchmark source changed before artifact publication")
+            verify_reference_target_chain(held_target)
+            validate_and_finalize_report(
+                report,
+                expected_source_commit=source_commit,
+                expected_binary_path=binary,
+                expected_binary_sha256=held_binary.sha256,
+                expected_binary_volume_serial=held_binary.evidence.volume_serial,
+                expected_binary_file_id=held_binary.evidence.file_id,
+                expected_reference_target=target,
+                expected_benchmark_build=build_record,
+            )
+            write_json_atomic(artifact, report)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["gates"]["allPassed"] else 2
 
