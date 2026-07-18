@@ -471,6 +471,15 @@ def test_derive_topic_key_same_content_same_key():
     assert a == b
 
 
+def test_derive_topic_key_long_prefix_collisions_separate():
+    """The 60-char slug truncation must not merge long observations that
+    share a prefix — the full-content digest keeps them distinct."""
+    shared = "Mentioned the long commute from the northern suburbs takes forever "
+    a = derive_topic_key(shared + "on rainy days because of the bridge", "minor_observation")
+    b = derive_topic_key(shared + "since the train line closed last month", "minor_observation")
+    assert a != b
+
+
 # ---------------------------------------------------------------------------
 # 4. Fold DB edge — topic dedup, additive accumulation
 # ---------------------------------------------------------------------------
@@ -699,6 +708,16 @@ async def test_crystallize_due_trace_creates_one_memory_with_provenance(monkeypa
             assert len(evidence) == 1
             refs = evidence[0].metadata_json["contributing_evidence_refs"]
             assert {ref["candidate_id"] for ref in refs} == {c1_id, c2_id}
+
+            # Crystallization mirrors the promote path into the claim
+            # lineage — profile reconciliation reads only MemoryClaim rows.
+            from anima_server.models import MemoryClaim
+
+            claim = soul_db.scalar(
+                select(MemoryClaim).where(MemoryClaim.user_id == user_id)
+            )
+            assert claim is not None
+            assert claim.memory_item_id == item.id
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()

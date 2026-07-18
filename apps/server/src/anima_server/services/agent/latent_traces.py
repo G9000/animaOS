@@ -435,6 +435,31 @@ async def _synthesize_and_store_crystallized_memory(
             "contributing_evidence_refs": surviving_refs,
         },
     )
+
+    # Mirror the normal promotion path: profile reconciliation reads only
+    # active MemoryClaim rows, so a crystallized fact/preference must also
+    # land in the claim lineage or it stays invisible to the structured
+    # profile. Failure tolerance matches the promote path (log + continue —
+    # the memory itself is still stored).
+    try:
+        from anima_server.services.agent.claims import upsert_claim
+
+        upsert_claim(
+            soul_db,
+            user_id=user_id,
+            content=parsed["content"],
+            category=parsed["category"],
+            importance=parsed["importance"],
+            source_kind=CRYSTALLIZED_SOURCE,
+            extractor=CRYSTALLIZED_SOURCE,
+            memory_item_id=item.id,
+            evidence_text=parsed["content"],
+        )
+    except Exception:
+        logger.debug(
+            "upsert_claim failed for crystallized item %s", item.id, exc_info=True
+        )
+
     return "stored", item
 
 

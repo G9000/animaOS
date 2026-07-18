@@ -78,8 +78,23 @@ def derive_topic_key(content: str, category: str) -> str:
     for pattern, namespace, slot in _SLOT_PATTERNS:
         m = pattern.match(stripped)
         if m:
-            return f"user:{namespace}:{slot}:{_content_slug(m.group('v'))}"
-    return f"user:{category}:{_content_slug(content)}"
+            return f"user:{namespace}:{slot}:{_topic_value_slug(m.group('v'))}"
+    return f"user:{category}:{_topic_value_slug(content)}"
+
+
+def _topic_value_slug(value: str) -> str:
+    """Slug + short full-content digest for latent topic keys.
+
+    ``_content_slug`` truncates at 60 chars, which is fine for claim keys
+    (the value lives in the claim row) but not as a trace's UNIQUE topic
+    key: two long observations sharing a 60-char prefix would merge into
+    one trace and crystallize a false mixed memory. The digest is over
+    the full normalized value, so identical content still collapses to
+    one key while prefix-collisions separate.
+    """
+    normalized = value.strip().casefold()
+    digest = sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{_content_slug(value)}_{digest}"
 
 
 def upsert_claim(
