@@ -1060,6 +1060,7 @@ def require_supported_maximum_live_size(serialized_size: int) -> None:
 
 
 PUBLICATION_PATH = [
+    "commit-lock",
     "serialize",
     "encrypt",
     "temporary-file-write",
@@ -1067,7 +1068,6 @@ PUBLICATION_PATH = [
     "atomic-rename",
     "directory-durability",
     "fs-head-write-flush",
-    "commit-lock",
 ]
 EXCLUDED_STORAGE_CLASSES = [
     "OneDrive-synchronized",

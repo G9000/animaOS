@@ -178,14 +178,14 @@ fn percentile_uses_deterministic_nearest_rank_and_report_schema_has_required_met
     assert_eq!(
         value["publicationPath"],
         serde_json::json!([
+            "commit-lock",
             "serialize",
             "encrypt",
             "temporary-file-write",
             "durable-flush",
             "atomic-rename",
             "directory-durability",
-            "fs-head-write-flush",
-            "commit-lock"
+            "fs-head-write-flush"
         ])
     );
 

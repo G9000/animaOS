@@ -15,6 +15,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "apps" / "server" / "scripts" / "benchmark_corefs_catalog.py"
 PUBLICATION_PATH = [
+    "commit-lock",
     "serialize",
     "encrypt",
     "temporary-file-write",
@@ -22,7 +23,6 @@ PUBLICATION_PATH = [
     "atomic-rename",
     "directory-durability",
     "fs-head-write-flush",
-    "commit-lock",
 ]
 REFERENCE_TARGET = Path(
     r"C:\Users\test\AppData\Local\animaOS\benchmarks\corefs-catalog-reference-v1"

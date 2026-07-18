@@ -1026,6 +1026,7 @@ pub fn run_fixture_benchmark(
         commit_ms: DurationPercentiles::from_samples(&commit_samples),
         lock_hold_ms: DurationPercentiles::from_samples(&lock_samples),
         publication_path: [
+            "commit-lock",
             "serialize",
             "encrypt",
             "temporary-file-write",
@@ -1033,7 +1034,6 @@ pub fn run_fixture_benchmark(
             "atomic-rename",
             "directory-durability",
             "fs-head-write-flush",
-            "commit-lock",
         ],
     })
 }
