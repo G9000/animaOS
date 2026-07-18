@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 03:57 MYT
+- Updated: 2026-07-18 12:51 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -138,6 +138,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-18 03:24 MYT - PR #107 merged PCF-002 Step 11 into `main` at `5f41101a`; resumed PCF-002 Step 12 in isolated worktree `codex/pcf-002-catalog-benchmark`. The parent remains `in_progress` while the deterministic full durable-path catalog benchmark and checked reference artifact are implemented and validated before PCF-002 closeout.
 - 2026-07-18 03:57 MYT - PCF-002 recorded the approved 30/200 fixed NTFS/NVMe catalog reference run. The 4-KiB durable-write p95 (0.8358 ms) and maximum-live size (7,512,577 bytes) passed, while medium (231.2637 ms), maximum-live (1,017.7567 ms), and exact-16-MiB (1,266.1310 ms) commit p95 failed their required timing gates.
 - 2026-07-18 03:57 MYT - Marked PCF-002 and this initiative blocked. No other child is eligible: PCF-003 depends on PCF-002 and every later child depends on PCF-003 or the downstream chain. Clearance requires an approved CoreFS catalog performance optimization or catalog-design revision that preserves the full durable commit semantics, followed by the same fixed-profile 30/200 rerun with all catalog timing gates passing.
+- 2026-07-18 04:51 MYT - Replaced PCF-002 Step 12's review-invalid benchmark evidence with a strict live-probed fixed-profile artifact. Windows 11 x64/CPU/RAM and C: partition-to-Disk 0-to-physical internal NVMe/SSD mapping were proven live; hardware power protection remains explicitly unknown, while flush/write-through support, direct `FlushFileBuffers`, and the production durability path were proven separately. All three fixtures completed exact 30/200 runs at HEAD/catalog count 232, and the exact-size fixture stayed 16 MiB for every generation. PCF-002 and this initiative remain blocked because corrected medium, maximum-live, and exact-16-MiB p95 values of 195.6436 ms, 1,009.7856 ms, and 1,134.4307 ms still fail the acceptance gates; Steps 12 and 13 remain open.
+- 2026-07-18 12:51 MYT - Revalidated the final PCF-002 Step 12 code and completed a fresh exact 30/200 fixed-profile run from 12:36:08 MYT through 12:50:06 MYT. Live Windows x64/CPU/RAM, fixed NTFS partition-to-physical SN850X NVMe/SSD mapping, direct `FlushFileBuffers`, and IOCTL flush/write-through support all passed without inventing unavailable power-loss-protection evidence. Every fixture ended at HEAD/catalog count 232, and the serialized-limit fixture remained exactly 16,777,216 bytes for every generation.
+- 2026-07-18 12:51 MYT - Preserved PCF-002 and this initiative as blocked because final medium, maximum-live, and exact-16-MiB p95 values of 180.9455 ms, 870.8196 ms, and 966.7336 ms still fail the acceptance gates. The durable-write p95 passed at 0.7139 ms and maximum-live stayed below 16 MiB at 7,512,577 bytes; plan Steps 12 and 13 remain open and no dependent child is eligible.
 
 ## Validation
 
@@ -180,6 +183,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #107 thirteenth review follow-up: red/green Soul-/FS-scoped CoreFS-capability and replacement-DEK regressions; focused cases passed (3), related auth/keyslot/session/CoreFS tests passed (122), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PR #107 fourteenth review follow-up: red/green non-ASCII colon-name URI-scheme parity regressions; focused CoreFS route/logical tests passed (41), scoped Ruff passed, `bun run build` passed, and `git diff --check` passed.
   - PCF-002 Step 12 reference evidence: 30 warm-ups plus 200 measured commits per fixture completed on the approved fixed NTFS/NVMe profile. The durable-write and maximum-live size gates passed; all three commit-time gates failed and blocked PCF-002 plus the dependent initiative.
+  - PCF-002 Step 12 corrected evidence: 5 focused Rust benchmark tests and 62 focused Python contract tests passed after the required red phases; scoped Ruff/Python compilation/diff hygiene passed; live host/storage mapping and write-cache capability probing passed; the release smoke and exact 30/200 reference run completed; strict artifact revalidation and direct on-disk HEAD/catalog-count inspection passed. The artifact remains `allPassed: false` solely because all three catalog latency gates are red.
+  - PCF-002 Step 12 final corrective evidence: fresh final-code exact 30/200 run generated strict artifact SHA-256 `e9b83aa03e1bccc90c3b380a5fa9a9e28ffc0dce56692ec80cda09c9f927e3a6`; all three on-disk fixture trees retained HEAD plus 232 catalogs with no temporary files, and strict schema/cross-field revalidation passed.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`

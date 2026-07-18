@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "apps" / "server" / "scripts" / "benchmark_corefs_catalog.py"
+PUBLICATION_PATH = [
+    "serialize",
+    "encrypt",
+    "temporary-file-write",
+    "durable-flush",
+    "atomic-rename",
+    "directory-durability",
+    "fs-head-write-flush",
+    "commit-lock",
+]
 
 
 def load_benchmark_module():
@@ -18,126 +31,468 @@ def load_benchmark_module():
     return module
 
 
-@pytest.mark.parametrize("drive_type", ["network", "removable", "ramdisk", "unknown"])
-def test_reference_target_fails_closed_for_non_fixed_storage(
-    drive_type: str, tmp_path: Path
+def live_cim_payload() -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "os": {
+            "caption": "Microsoft Windows 11 Pro",
+            "version": "10.0.26200",
+            "architecture": "64-bit",
+            "totalVisibleMemoryKiB": 64_606_460,
+        },
+        "cpu": {
+            "name": "AMD Ryzen 9 9900X 12-Core Processor",
+            "architectureCodes": [9],
+            "physicalCores": 12,
+            "logicalProcessors": 24,
+        },
+        "partition": {"driveLetter": "C", "diskNumber": 0},
+        "disk": {
+            "number": 0,
+            "friendlyName": "WD_BLACK SN850X 2000GB",
+            "serialNumber": "SN850X-2TB",
+            "busType": "NVMe",
+            "healthStatus": "Healthy",
+            "operationalStatus": "Online",
+            "isOffline": False,
+            "isReadOnly": False,
+            "location": "Integrated : Bus 2 : Device 0 : Function 0 : Adapter 1",
+        },
+        "physicalDisk": {
+            "deviceId": "0",
+            "friendlyName": "WD_BLACK SN850X 2000GB",
+            "serialNumber": "SN850X-2TB",
+            "busType": "NVMe",
+            "mediaType": "SSD",
+            "healthStatus": "Healthy",
+            "operationalStatus": "OK",
+            "isPowerProtected": None,
+            "physicalLocation": "Integrated : Bus 2 : Device 0 : Function 0 : Adapter 1",
+        },
+    }
+
+
+def volume_facts(module, *, drive_type: str = "fixed", filesystem: str = "NTFS"):
+    return module.ReferenceVolumeFacts(
+        volume_root=Path("C:/"),
+        drive_type=drive_type,
+        filesystem=filesystem,
+        synchronized_roots=(Path("C:/Users/test/OneDrive"),),
+    )
+
+
+def cache_facts(module, *, write_through: bool = True, flush: bool = True):
+    return module.WriteCacheEvidence(
+        write_cache_type="write-back",
+        write_cache_enabled=True,
+        write_cache_changeable="unknown",
+        write_through_supported=write_through,
+        flush_cache_supported=flush,
+        user_defined_power_protection=False,
+        nv_cache_enabled=False,
+    )
+
+
+def probe_live_facts(module, payload: dict[str, object]):
+    completed = SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        return completed
+
+    facts = module.probe_live_reference_host(
+        Path("C:/benchmarks/corefs-catalog-reference-v1"),
+        volume_probe=lambda _target: volume_facts(module),
+        cache_probe=lambda _disk_number: cache_facts(module),
+        runner=runner,
+    )
+    assert calls and calls[0][1]["ANIMA_CORE_FS_BENCHMARK_DRIVE"] == "C"
+    return facts
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("os", "caption"), "Microsoft Windows 10 Pro", "Windows 11"),
+        (("os", "version"), "10.0.19045", "Windows 11"),
+        (("os", "architecture"), "32-bit", "x64"),
+        (("cpu", "architectureCodes"), [12], "x64"),
+        (("cpu", "physicalCores"), 3, "physical cores"),
+        (("os", "totalVisibleMemoryKiB"), 15 * 1024 * 1024, "16 GiB"),
+        (("disk", "busType"), "SATA", "NVMe"),
+        (("physicalDisk", "mediaType"), "HDD", "SSD"),
+        (("disk", "number"), 1, "mapping"),
+        (("physicalDisk", "deviceId"), "1", "mapping"),
+        (("physicalDisk", "serialNumber"), "OTHER", "mapping"),
+        (("partition", "driveLetter"), "D", "mapping"),
+        (("disk", "friendlyName"), "OTHER", "mapping"),
+        (("disk", "isOffline"), True, "online"),
+        (("disk", "isReadOnly"), True, "online"),
+        (("disk", "location"), "External : USB", "internal"),
+    ],
+)
+def test_live_reference_profile_rejects_unproven_or_wrong_host_facts(
+    path: tuple[str, str], value: object, message: str
 ) -> None:
     benchmark = load_benchmark_module()
-    facts = benchmark.ReferenceTargetFacts(
-        drive_type=drive_type,
-        filesystem="NTFS",
-        synchronized_roots=(),
-    )
+    payload = live_cim_payload()
+    nested = payload[path[0]]
+    assert isinstance(nested, dict)
+    nested[path[1]] = value
+
+    with pytest.raises(benchmark.ReferenceTargetError, match=message):
+        benchmark.validate_reference_profile(
+            Path("C:/benchmarks/corefs-catalog-reference-v1"),
+            probe_live_facts(benchmark, payload),
+        )
+
+
+def test_live_reference_probe_rejects_missing_physical_mapping() -> None:
+    benchmark = load_benchmark_module()
+    payload = live_cim_payload()
+    payload["physicalDisk"] = None
+
+    with pytest.raises(benchmark.ReferenceTargetError, match="physical disk"):
+        probe_live_facts(benchmark, payload)
+
+
+@pytest.mark.parametrize("drive_type", ["network", "removable", "ramdisk", "unknown"])
+def test_reference_profile_rejects_non_fixed_volume_classes(drive_type: str) -> None:
+    benchmark = load_benchmark_module()
+    facts = probe_live_facts(benchmark, live_cim_payload())
+    facts = facts._replace(volume=volume_facts(benchmark, drive_type=drive_type))
 
     with pytest.raises(benchmark.ReferenceTargetError, match="fixed local drive"):
-        benchmark.validate_reference_target(tmp_path, facts)
+        benchmark.validate_reference_profile(
+            Path("C:/benchmarks/corefs-catalog-reference-v1"), facts
+        )
 
 
-def test_reference_target_rejects_onedrive_and_non_ntfs(tmp_path: Path) -> None:
+def test_reference_profile_rejects_non_ntfs_and_synchronized_targets() -> None:
     benchmark = load_benchmark_module()
-    onedrive = tmp_path / "OneDrive"
-    target = onedrive / "benchmark"
-    facts = benchmark.ReferenceTargetFacts(
-        drive_type="fixed",
-        filesystem="NTFS",
-        synchronized_roots=(onedrive,),
+    facts = probe_live_facts(benchmark, live_cim_payload())
+    facts = facts._replace(volume=volume_facts(benchmark, filesystem="ReFS"))
+    with pytest.raises(benchmark.ReferenceTargetError, match="NTFS"):
+        benchmark.validate_reference_profile(
+            Path("C:/benchmarks/corefs-catalog-reference-v1"), facts
+        )
+
+    facts = facts._replace(
+        volume=benchmark.ReferenceVolumeFacts(
+            volume_root=Path("C:/"),
+            drive_type="fixed",
+            filesystem="NTFS",
+            synchronized_roots=(Path("C:/benchmarks"),),
+        )
     )
     with pytest.raises(benchmark.ReferenceTargetError, match="synchronized"):
-        benchmark.validate_reference_target(target, facts)
-
-    facts = benchmark.ReferenceTargetFacts(
-        drive_type="fixed",
-        filesystem="ReFS",
-        synchronized_roots=(),
-    )
-    with pytest.raises(benchmark.ReferenceTargetError, match="NTFS"):
-        benchmark.validate_reference_target(tmp_path, facts)
+        benchmark.validate_reference_profile(
+            Path("C:/benchmarks/corefs-catalog-reference-v1"), facts
+        )
 
 
-def test_reference_target_accepts_only_fixed_ntfs_outside_sync_roots(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("write_through", "flush"), [(False, True), (True, False), (False, False)])
+def test_reference_profile_rejects_unproven_write_cache_durability(
+    write_through: bool, flush: bool
+) -> None:
     benchmark = load_benchmark_module()
-    facts = benchmark.ReferenceTargetFacts(
-        drive_type="fixed",
-        filesystem="NTFS",
-        synchronized_roots=(tmp_path / "sync",),
+    facts = probe_live_facts(benchmark, live_cim_payload())
+    facts = facts._replace(
+        write_cache=cache_facts(benchmark, write_through=write_through, flush=flush)
     )
 
-    assert benchmark.validate_reference_target(tmp_path / "local", facts).filesystem == "NTFS"
+    with pytest.raises(benchmark.ReferenceTargetError, match="durability"):
+        benchmark.validate_reference_profile(
+            Path("C:/benchmarks/corefs-catalog-reference-v1"), facts
+        )
 
 
-def test_report_validation_enforces_conditional_size_fixture_and_schema() -> None:
+def test_unknown_hardware_power_protection_is_recorded_not_invented() -> None:
     benchmark = load_benchmark_module()
-    report = {
+    facts = probe_live_facts(benchmark, live_cim_payload())
+
+    validated = benchmark.validate_reference_profile(
+        Path("C:/benchmarks/corefs-catalog-reference-v1"), facts
+    )
+
+    assert validated.hardware_power_protection == "unknown-not-reported"
+    assert validated.write_cache.write_through_supported is True
+    assert validated.write_cache.flush_cache_supported is True
+
+
+def test_removed_override_flags_cannot_spoof_live_profile() -> None:
+    benchmark = load_benchmark_module()
+    args = benchmark.parse_args(
+        [
+            "--reference",
+            "--target",
+            r"C:\benchmarks\corefs-catalog-reference-v1",
+            "--clean-target",
+        ]
+    )
+    assert args.reference is True
+
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(
+            [
+                "--reference",
+                "--target",
+                r"C:\benchmarks\corefs-catalog-reference-v1",
+                "--clean-target",
+                "--cpu",
+                "spoofed",
+            ]
+        )
+
+
+def test_reference_warmups_are_exact_and_samples_are_a_floor() -> None:
+    benchmark = load_benchmark_module()
+    benchmark.validate_reference_run_counts(30, 200)
+    benchmark.validate_reference_run_counts(30, 201)
+
+    for warmups in (29, 31):
+        with pytest.raises(benchmark.ReferenceTargetError, match="exactly 30"):
+            benchmark.validate_reference_run_counts(warmups, 200)
+    with pytest.raises(benchmark.ReferenceTargetError, match="at least 200"):
+        benchmark.validate_reference_run_counts(30, 199)
+
+
+def fixture_record(
+    name: str,
+    live: int,
+    tombstones: int,
+    serialized_size: int,
+    p95: float,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "liveCount": live,
+        "tombstoneCount": tombstones,
+        "totalCount": live + tombstones,
+        "serializedSizeBytes": serialized_size,
+        "warmupSerializedSizeBytes": {
+            "min": serialized_size,
+            "max": serialized_size,
+        },
+        "measuredSerializedSizeBytes": {
+            "min": serialized_size,
+            "max": serialized_size,
+        },
+        "fixtureSha256": "a" * 64,
+        "warmupCommits": 30,
+        "sampleCount": 200,
+        "finalHeadGeneration": 232,
+        "finalCatalogCount": 232,
+        "bytesWritten": serialized_size + 206,
+        "totalBytesWritten": (serialized_size + 206) * 200,
+        "commitMs": {"p50": p95 - 10.0, "p95": p95, "p99": p95 + 10.0},
+        "lockHoldMs": {
+            "p50": p95 - 11.0,
+            "p95": p95 - 1.0,
+            "p99": p95 + 9.0,
+        },
+        "publicationPath": PUBLICATION_PATH,
+    }
+
+
+def complete_report() -> dict[str, object]:
+    return {
         "schemaVersion": 1,
-        "profile": {
-            "mode": "reference",
-            "os": "Windows 11 Pro 10.0.26200 x64",
-            "cpu": "AMD Ryzen 9 9900X",
-            "physicalCores": 12,
-            "ramGiB": 61.61,
-            "storage": "WD_BLACK SN850X NVMe",
-            "filesystem": "NTFS",
-            "target": r"C:\benchmark",
-            "durableWrite4KiBP95Ms": 1.0,
-        },
-        "versions": {
-            "animaCorefs": "0.1.0",
-            "rust": "1.75.0",
-            "aesGcm": "0.10",
-            "argon2": "0.5",
-            "serdeJson": "1.0",
-        },
+        "generatedAt": "2026-07-17T20:00:00Z",
+        "benchmarkCommand": "catalog_benchmark --warmups 30 --samples 200",
         "warmupCommits": 30,
         "measuredCommits": 200,
         "fixtures": [
-            {
-                "name": "medium",
-                "liveCount": 5_000,
-                "tombstoneCount": 500,
-                "totalCount": 5_500,
-                "serializedSizeBytes": 4_000_000,
-                "bytesWritten": 4_000_200,
-                "commitMs": {"p50": 20.0, "p95": 40.0, "p99": 50.0},
-                "lockHoldMs": {"p50": 19.0, "p95": 39.0, "p99": 49.0},
-            },
-            {
-                "name": "maximum-live",
-                "liveCount": 25_000,
-                "tombstoneCount": 2_500,
-                "totalCount": 27_500,
-                "serializedSizeBytes": 10_000_000,
-                "bytesWritten": 10_000_200,
-                "commitMs": {"p50": 100.0, "p95": 200.0, "p99": 220.0},
-                "lockHoldMs": {"p50": 99.0, "p95": 199.0, "p99": 219.0},
-            },
+            fixture_record("medium", 5_000, 500, 1_500_001, 90.0),
+            fixture_record("maximum-live", 25_000, 2_500, 7_500_001, 240.0),
+            fixture_record("serialized-limit", 25_000, 0, 16 * 1024 * 1024, 245.0),
         ],
-        "gates": {},
+        "profile": {
+            "mode": "reference",
+            "target": r"C:\benchmarks\corefs-catalog-reference-v1",
+            "architecture": "AMD64",
+            "hostEvidence": {
+                "source": "live-cim",
+                "osCaption": "Microsoft Windows 11 Pro",
+                "osVersion": "10.0.26200",
+                "cpu": "AMD Ryzen 9 9900X 12-Core Processor",
+                "cpuArchitectureCodes": [9],
+                "physicalCores": 12,
+                "logicalProcessors": 24,
+                "ramBytes": 66_156_001_280,
+                "ramGiB": 61.61,
+            },
+            "storageEvidence": {
+                "source": "live-cim-volume-disk-physical-disk-mapping",
+                "volumeRoot": "C:\\",
+                "driveType": "fixed",
+                "filesystem": "NTFS",
+                "partitionDiskNumber": 0,
+                "diskNumber": 0,
+                "physicalDeviceId": "0",
+                "model": "WD_BLACK SN850X 2000GB",
+                "serialNumber": "SN850X-2TB",
+                "busType": "NVMe",
+                "mediaType": "SSD",
+                "healthStatus": "Healthy",
+                "operationalStatus": "OK",
+                "physicalLocation": "Integrated : Bus 2",
+                "mappingVerified": True,
+                "internal": True,
+            },
+            "durabilityEvidence": {
+                "source": "live-storage-write-cache-property-and-publication-path",
+                "hardwarePowerProtection": "unknown-not-reported",
+                "writeCacheType": "write-back",
+                "writeCacheEnabled": True,
+                "writeThroughSupported": True,
+                "flushCacheSupported": True,
+                "userDefinedPowerProtection": False,
+                "nvCacheEnabled": False,
+                "softwareFlushMethod": "FlushFileBuffers",
+                "publicationUsesWriteThroughAndDirectorySync": True,
+                "acceptableProperty": "flush-and-write-through-supported",
+            },
+            "durableWrite4KiBP95Ms": 0.9,
+            "durableWrite4KiB": {
+                "warmupCount": 30,
+                "sampleCount": 200,
+                "p50Ms": 0.6,
+                "p95Ms": 0.9,
+                "p99Ms": 1.1,
+                "flushMethod": "FlushFileBuffers",
+            },
+            "excludedStorageClasses": [
+                "OneDrive-synchronized",
+                "network",
+                "removable",
+                "RAM-disk",
+                "write-cache-without-durability",
+            ],
+        },
+        "versions": {
+            "animaCorefs": "0.1.0",
+            "rust": "rustc 1.75.0",
+            "aesGcm": "0.10.3",
+            "argon2": "0.5.3",
+            "serdeJson": "1.0.150",
+        },
+        "gates": {
+            "durableWrite4KiBP95Le5Ms": True,
+            "mediumP95Le100Ms": True,
+            "maximumLiveSerializedSizeLe16MiB": True,
+            "maximumLiveP95Le250Ms": True,
+            "serializedLimitP95Le250Ms": True,
+            "allPassed": True,
+        },
     }
 
-    with pytest.raises(benchmark.ReportValidationError, match="serialized-limit"):
+
+def remove_path(payload: dict[str, object], path: str) -> None:
+    current: object = payload
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if part.isdecimal():
+            assert isinstance(current, list)
+            current = current[int(part)]
+        else:
+            assert isinstance(current, dict)
+            current = current[part]
+    assert isinstance(current, dict)
+    del current[parts[-1]]
+
+
+def test_complete_reference_report_schema_is_accepted() -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+
+    assert benchmark.validate_and_finalize_report(report) == report
+
+
+@pytest.mark.parametrize(
+    "missing_path",
+    [
+        "versions",
+        "profile.architecture",
+        "profile.target",
+        "profile.hostEvidence",
+        "profile.storageEvidence",
+        "profile.durabilityEvidence",
+        "profile.durableWrite4KiB.p50Ms",
+        "profile.durableWrite4KiB.sampleCount",
+        "fixtures.0.warmupCommits",
+        "fixtures.0.sampleCount",
+        "fixtures.0.finalHeadGeneration",
+        "fixtures.0.finalCatalogCount",
+        "fixtures.0.publicationPath",
+        "fixtures.0.commitMs.p99",
+        "fixtures.0.lockHoldMs.p50",
+        "fixtures.0.bytesWritten",
+        "fixtures.0.totalBytesWritten",
+        "fixtures.0.liveCount",
+        "fixtures.0.fixtureSha256",
+        "fixtures.0.serializedSizeBytes",
+        "fixtures.0.measuredSerializedSizeBytes",
+        "gates",
+    ],
+)
+def test_strict_report_schema_rejects_every_missing_required_family(
+    missing_path: str,
+) -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+    remove_path(report, missing_path)
+
+    with pytest.raises(benchmark.ReportValidationError):
         benchmark.validate_and_finalize_report(report)
 
-    report["fixtures"].append(
-        {
-            "name": "serialized-limit",
-            "liveCount": 25_000,
-            "tombstoneCount": 0,
-            "totalCount": 25_000,
-            "serializedSizeBytes": 16 * 1024 * 1024,
-            "bytesWritten": 16 * 1024 * 1024 + 200,
-            "commitMs": {"p50": 150.0, "p95": 240.0, "p99": 245.0},
-            "lockHoldMs": {"p50": 149.0, "p95": 239.0, "p99": 244.0},
-        }
-    )
-    finalized = benchmark.validate_and_finalize_report(report)
-    assert finalized["gates"] == {
-        "durableWrite4KiBP95Le5Ms": True,
-        "mediumP95Le100Ms": True,
-        "maximumLiveSerializedSizeLe16MiB": True,
-        "maximumLiveP95Le250Ms": True,
-        "serializedLimitP95Le250Ms": True,
-        "allPassed": True,
-    }
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate-fixture",
+        "extra-fixture",
+        "wrong-sample-count",
+        "wrong-final-catalog-count",
+        "wrong-size-range",
+        "old-host-version",
+        "wrong-volume-root",
+        "extra-nested-field",
+        "contradictory-gate",
+        "extra-top-level-field",
+    ],
+)
+def test_strict_report_schema_rejects_extra_or_contradictory_records(
+    mutation: str,
+) -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+    fixtures = report["fixtures"]
+    assert isinstance(fixtures, list)
+    if mutation == "duplicate-fixture":
+        fixtures.append(copy.deepcopy(fixtures[0]))
+    elif mutation == "extra-fixture":
+        fixtures.append(fixture_record("unexpected", 1, 0, 1_000, 1.0))
+    elif mutation == "wrong-sample-count":
+        fixtures[0]["sampleCount"] = 199
+    elif mutation == "wrong-final-catalog-count":
+        fixtures[0]["finalCatalogCount"] = 231
+    elif mutation == "wrong-size-range":
+        fixtures[2]["measuredSerializedSizeBytes"]["min"] -= 1
+    elif mutation == "old-host-version":
+        report["profile"]["hostEvidence"]["osVersion"] = "10.0.19045"
+    elif mutation == "wrong-volume-root":
+        report["profile"]["storageEvidence"]["volumeRoot"] = "D:\\"
+    elif mutation == "extra-nested-field":
+        report["profile"]["hostEvidence"]["callerSupplied"] = True
+    elif mutation == "contradictory-gate":
+        report["gates"]["mediumP95Le100Ms"] = False
+    elif mutation == "extra-top-level-field":
+        report["callerSuppliedHardware"] = "spoofed"
+
+    with pytest.raises(benchmark.ReportValidationError):
+        benchmark.validate_and_finalize_report(report)
 
 
 def test_oversized_maximum_live_fixture_blocks_before_timing_evidence() -> None:

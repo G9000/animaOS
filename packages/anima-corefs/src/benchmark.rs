@@ -21,7 +21,7 @@ use crate::crypto::{
 use crate::folders::{ClientId, FolderError, FolderOwner, PortableName};
 use crate::id::{OpaqueId, OpaqueIdError};
 use crate::policy::AnimaAccess;
-use crate::transaction::{CommitError, CoreCommitCoordinator};
+use crate::transaction::{CatalogPrecondition, CommitConflict, CommitError, CoreCommitCoordinator};
 
 pub const MAX_CATALOG_PLAINTEXT_BYTES: usize = MAX_CATALOG_PLAINTEXT_SIZE;
 pub const REFERENCE_WARMUP_COMMITS: usize = 30;
@@ -83,6 +83,7 @@ pub struct CatalogBenchmarkFixture {
     live_count: usize,
     tombstone_count: usize,
     entries: Vec<CatalogGenerationEntry>,
+    target_serialized_size: Option<usize>,
     serialized_size: usize,
     fingerprint: String,
 }
@@ -117,12 +118,79 @@ impl CatalogBenchmarkFixture {
         generation: u64,
         with_cutover_marker: bool,
     ) -> Result<CatalogGeneration, CatalogError> {
-        let catalog = CatalogGeneration::new(generation, self.entries.clone())?;
-        if with_cutover_marker {
-            catalog.with_cutover_marker(CatalogCutoverMarker::new(CUTOVER_EPOCH)?)
-        } else {
-            Ok(catalog)
+        self.catalog_with_size_marker(generation, with_cutover_marker, with_cutover_marker)
+    }
+
+    fn commit_catalog(&self, generation: u64) -> Result<CatalogGeneration, CatalogError> {
+        self.catalog_with_size_marker(generation, false, true)
+    }
+
+    fn catalog_with_size_marker(
+        &self,
+        generation: u64,
+        with_cutover_marker: bool,
+        size_includes_cutover_marker: bool,
+    ) -> Result<CatalogGeneration, CatalogError> {
+        let mut entries = self.entries.clone();
+        if let Some(target) = self.target_serialized_size {
+            let unpadded =
+                catalog_from_entries(generation, entries.clone(), size_includes_cutover_marker)?;
+            let actual = encode_catalog_generation(&unpadded)?.len();
+            let padding_size = target
+                .checked_sub(actual)
+                .ok_or(CatalogError::InvalidFormat(
+                    "benchmark serialized-size target is too small",
+                ))?;
+            let writer = ClientId::parse("benchmark.fixture")
+                .map_err(|_| CatalogError::InvalidFormat("benchmark client ID"))?;
+            let root = match entries.first() {
+                Some(CatalogGenerationEntry::Folder(common)) => common.clone(),
+                Some(CatalogGenerationEntry::Object(_, _)) | None => {
+                    return Err(CatalogError::InvalidFormat("benchmark root entry"));
+                }
+            };
+            entries[0] = CatalogGenerationEntry::folder(root.with_client_metadata(
+                CatalogClientMetadata::new(
+                    &writer,
+                    vec![(
+                        "client:benchmark.fixture:padding",
+                        json!("x".repeat(padding_size)),
+                    )],
+                )?,
+            ));
         }
+        let catalog = catalog_from_entries(generation, entries.clone(), with_cutover_marker)?;
+        if self.target_serialized_size.is_some_and(|target| {
+            catalog_from_entries(generation, entries, size_includes_cutover_marker)
+                .and_then(|value| encode_catalog_generation(&value))
+                .map_or(true, |encoded| encoded.len() != target)
+        }) {
+            return Err(CatalogError::InvalidFormat(
+                "benchmark serialized-size calibration drifted",
+            ));
+        }
+        Ok(catalog)
+    }
+
+    pub fn serialized_size_at_generation(
+        &self,
+        generation: u64,
+        with_cutover_marker: bool,
+    ) -> Result<usize, CatalogError> {
+        Ok(encode_catalog_generation(&self.catalog(generation, with_cutover_marker)?)?.len())
+    }
+}
+
+fn catalog_from_entries(
+    generation: u64,
+    entries: Vec<CatalogGenerationEntry>,
+    with_cutover_marker: bool,
+) -> Result<CatalogGeneration, CatalogError> {
+    let catalog = CatalogGeneration::new(generation, entries)?;
+    if with_cutover_marker {
+        catalog.with_cutover_marker(CatalogCutoverMarker::new(CUTOVER_EPOCH)?)
+    } else {
+        Ok(catalog)
     }
 }
 
@@ -140,6 +208,8 @@ pub enum BenchmarkError {
     Catalog(#[from] CatalogError),
     #[error("commit error: {0}")]
     Commit(#[from] CommitError),
+    #[error("commit precondition error: {0}")]
+    CommitConflict(#[from] CommitConflict),
     #[error("crypto error: {0}")]
     Crypto(#[from] CryptoError),
     #[error("folder value error: {0}")]
@@ -163,14 +233,8 @@ pub fn build_fixture_matrix() -> Result<Vec<CatalogBenchmarkFixture>, BenchmarkE
         2_500,
         None,
     ))?;
-    if maximum_live.serialized_size() > MAX_CATALOG_PLAINTEXT_BYTES {
-        return Err(BenchmarkError::MaximumLiveSizeGate {
-            actual: maximum_live.serialized_size(),
-        });
-    }
-
     let mut fixtures = vec![medium, maximum_live];
-    if fixtures[1].serialized_size() < MAX_CATALOG_PLAINTEXT_BYTES {
+    if needs_serialized_limit_fixture(fixtures[1].serialized_size())? {
         fixtures.push(build_fixture(&CatalogFixtureSpec::new(
             FixtureKind::SerializedLimit,
             25_000,
@@ -179,6 +243,15 @@ pub fn build_fixture_matrix() -> Result<Vec<CatalogBenchmarkFixture>, BenchmarkE
         ))?);
     }
     Ok(fixtures)
+}
+
+pub fn needs_serialized_limit_fixture(maximum_live_size: usize) -> Result<bool, BenchmarkError> {
+    if maximum_live_size > MAX_CATALOG_PLAINTEXT_BYTES {
+        return Err(BenchmarkError::MaximumLiveSizeGate {
+            actual: maximum_live_size,
+        });
+    }
+    Ok(maximum_live_size < MAX_CATALOG_PLAINTEXT_BYTES)
 }
 
 pub fn build_fixture(spec: &CatalogFixtureSpec) -> Result<CatalogBenchmarkFixture, BenchmarkError> {
@@ -201,42 +274,34 @@ pub fn build_fixture(spec: &CatalogFixtureSpec) -> Result<CatalogBenchmarkFixtur
         });
     }
 
-    let (entries, encoded) = match spec.target_serialized_size {
-        Some(target) => {
-            let entries = fixture_entries(spec.live_count, spec.tombstone_count, Some(""))?;
-            let encoded = encode_fixture(&entries)?;
-            if encoded.len() > target {
-                return Err(BenchmarkError::TargetTooSmall {
-                    target,
-                    actual: encoded.len(),
-                });
-            }
-            let padding = "x".repeat(target - encoded.len());
-            let entries = fixture_entries(spec.live_count, spec.tombstone_count, Some(&padding))?;
-            let encoded = encode_fixture(&entries)?;
-            if encoded.len() != target {
-                return Err(BenchmarkError::InvalidFixture(
-                    "serialized-size padding did not produce the exact target",
-                ));
-            }
-            (entries, encoded)
+    let entries = fixture_entries(
+        spec.live_count,
+        spec.tombstone_count,
+        spec.target_serialized_size.map(|_| ""),
+    )?;
+    let unpadded = encode_fixture(&entries)?;
+    if let Some(target) = spec.target_serialized_size {
+        if unpadded.len() > target {
+            return Err(BenchmarkError::TargetTooSmall {
+                target,
+                actual: unpadded.len(),
+            });
         }
-        None => {
-            let entries = fixture_entries(spec.live_count, spec.tombstone_count, None)?;
-            let encoded = encode_fixture(&entries)?;
-            (entries, encoded)
-        }
-    };
-
-    let fingerprint = hex_sha256(&encoded);
-    Ok(CatalogBenchmarkFixture {
+    }
+    let mut fixture = CatalogBenchmarkFixture {
         kind: spec.kind,
         live_count: spec.live_count,
         tombstone_count: spec.tombstone_count,
         entries,
-        serialized_size: encoded.len(),
-        fingerprint,
-    })
+        target_serialized_size: spec.target_serialized_size,
+        serialized_size: 0,
+        fingerprint: String::new(),
+    };
+    let encoded = encode_catalog_generation(&fixture.catalog(SERIALIZED_SIZE_GENERATION, true)?)?;
+
+    fixture.serialized_size = encoded.len();
+    fixture.fingerprint = hex_sha256(&encoded);
+    Ok(fixture)
 }
 
 fn fixture_entries(
@@ -333,6 +398,21 @@ pub struct DurationPercentiles {
     p99: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct ByteRange {
+    min: usize,
+    max: usize,
+}
+
+impl ByteRange {
+    fn from_samples(samples: &[usize]) -> Option<Self> {
+        Some(Self {
+            min: *samples.iter().min()?,
+            max: *samples.iter().max()?,
+        })
+    }
+}
+
 impl DurationPercentiles {
     fn from_samples(samples: &[Duration]) -> Self {
         Self {
@@ -363,10 +443,13 @@ pub struct FixtureBenchmarkReport {
     tombstone_count: usize,
     total_count: usize,
     serialized_size_bytes: usize,
+    warmup_serialized_size_bytes: Option<ByteRange>,
+    measured_serialized_size_bytes: ByteRange,
     fixture_sha256: String,
     warmup_commits: usize,
     sample_count: usize,
     final_head_generation: u64,
+    final_catalog_count: usize,
     bytes_written: u64,
     total_bytes_written: u64,
     commit_ms: DurationPercentiles,
@@ -424,57 +507,79 @@ pub fn run_fixture_benchmark(
     let wrapped = wrap_filesystem_root_key(CREDENTIAL, &frk, CREDENTIAL_AAD)?;
     let unlocked = unwrap_filesystem_root_key(CREDENTIAL, &wrapped, CREDENTIAL_AAD)?;
     let keys = derive_corefs_subkeys(&unlocked, 1)?;
+    let root_id = fixture_id(0)?;
 
-    coordinator.initialize_validation_snapshot(&keys, &[], |generation| {
-        fixture.catalog(generation, false)
-    })?;
+    let validation_catalog = fixture.catalog(1, false)?;
+    let validation =
+        coordinator.initialize_validation_snapshot(&keys, &[], |_| Ok(validation_catalog))?;
+    let first_precondition = CatalogPrecondition::folder(validation.catalog(), &root_id)?;
+    let first_catalog = fixture.commit_catalog(2)?;
     coordinator.commit_first_mutation(
         &keys,
         CUTOVER_EPOCH,
         &[],
-        &[],
-        |_, generation| fixture.catalog(generation, false),
+        &[first_precondition],
+        |_, _| Ok(first_catalog),
         |_| Ok(()),
     )?;
 
+    let mut warmup_sizes = Vec::with_capacity(config.warmup_commits);
     for _ in 0..config.warmup_commits {
+        let current = coordinator
+            .load_committed(&keys)?
+            .ok_or(BenchmarkError::InvalidFixture(
+                "initialized benchmark catalog is missing",
+            ))?;
+        let precondition = CatalogPrecondition::folder(current.catalog(), &root_id)?;
+        let generation =
+            current
+                .head()
+                .generation()
+                .checked_add(1)
+                .ok_or(BenchmarkError::InvalidFixture(
+                    "benchmark generation overflow",
+                ))?;
+        let next_catalog = fixture.commit_catalog(generation)?;
+        let serialized_size = fixture.serialized_size_at_generation(generation, true)?;
         coordinator.commit(
             &keys,
             &[],
-            &[],
-            |current, generation| {
-                CatalogGeneration::new(
-                    generation,
-                    current
-                        .expect("initialized benchmark catalog")
-                        .entries()
-                        .to_vec(),
-                )
-            },
+            &[precondition],
+            |_, _| Ok(next_catalog),
             |_| Ok(()),
         )?;
+        warmup_sizes.push(serialized_size);
     }
 
     let mut commit_samples = Vec::with_capacity(config.measured_commits);
     let mut lock_samples = Vec::with_capacity(config.measured_commits);
+    let mut measured_sizes = Vec::with_capacity(config.measured_commits);
     let mut bytes_written = 0_u64;
     let mut total_bytes_written = 0_u64;
     let mut final_head_generation = 0_u64;
     for _ in 0..config.measured_commits {
+        let current = coordinator
+            .load_committed(&keys)?
+            .ok_or(BenchmarkError::InvalidFixture(
+                "initialized benchmark catalog is missing",
+            ))?;
+        let precondition = CatalogPrecondition::folder(current.catalog(), &root_id)?;
+        let generation =
+            current
+                .head()
+                .generation()
+                .checked_add(1)
+                .ok_or(BenchmarkError::InvalidFixture(
+                    "benchmark generation overflow",
+                ))?;
+        let next_catalog = fixture.commit_catalog(generation)?;
+        let serialized_size = fixture.serialized_size_at_generation(generation, true)?;
         let started = Instant::now();
         let outcome = coordinator.commit(
             &keys,
             &[],
-            &[],
-            |current, generation| {
-                CatalogGeneration::new(
-                    generation,
-                    current
-                        .expect("initialized benchmark catalog")
-                        .entries()
-                        .to_vec(),
-                )
-            },
+            &[precondition],
+            |_, _| Ok(next_catalog),
             |_| Ok(()),
         )?;
         commit_samples.push(started.elapsed());
@@ -482,6 +587,24 @@ pub fn run_fixture_benchmark(
         bytes_written = bytes_written.max(outcome.bytes_written());
         total_bytes_written = total_bytes_written.saturating_add(outcome.bytes_written());
         final_head_generation = outcome.generation();
+        measured_sizes.push(serialized_size);
+    }
+    let measured_serialized_size_bytes = ByteRange::from_samples(&measured_sizes).ok_or(
+        BenchmarkError::InvalidFixture("measured catalog sizes are missing"),
+    )?;
+    let final_catalog_count = fs::read_dir(root.join("fs").join("catalogs"))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .count();
+    if final_catalog_count != usize::try_from(final_head_generation).unwrap_or(usize::MAX) {
+        return Err(BenchmarkError::InvalidFixture(
+            "final catalog count does not match authoritative HEAD generation",
+        ));
     }
 
     Ok(FixtureBenchmarkReport {
@@ -489,11 +612,14 @@ pub fn run_fixture_benchmark(
         live_count: fixture.live_count(),
         tombstone_count: fixture.tombstone_count(),
         total_count: fixture.total_count(),
-        serialized_size_bytes: fixture.serialized_size(),
+        serialized_size_bytes: measured_serialized_size_bytes.max,
+        warmup_serialized_size_bytes: ByteRange::from_samples(&warmup_sizes),
+        measured_serialized_size_bytes,
         fixture_sha256: fixture.fingerprint().to_owned(),
         warmup_commits: config.warmup_commits,
         sample_count: config.measured_commits,
         final_head_generation,
+        final_catalog_count,
         bytes_written,
         total_bytes_written,
         commit_ms: DurationPercentiles::from_samples(&commit_samples),

@@ -2,8 +2,9 @@ use std::fs;
 use std::time::Duration;
 
 use anima_corefs::benchmark::{
-    build_fixture, build_fixture_matrix, percentile_nearest_rank, run_fixture_benchmark,
-    BenchmarkRunConfig, CatalogFixtureSpec, FixtureKind, MAX_CATALOG_PLAINTEXT_BYTES,
+    build_fixture, build_fixture_matrix, needs_serialized_limit_fixture, percentile_nearest_rank,
+    run_fixture_benchmark, BenchmarkRunConfig, CatalogFixtureSpec, FixtureKind,
+    MAX_CATALOG_PLAINTEXT_BYTES,
 };
 
 fn test_root(name: &str) -> std::path::PathBuf {
@@ -38,25 +39,32 @@ fn fixture_matrix_is_deterministic_and_preserves_advertised_counts() {
 }
 
 #[test]
-fn exact_size_gate_skips_only_an_already_full_maximum_live_fixture() {
-    let exact = build_fixture(&CatalogFixtureSpec::new(
-        FixtureKind::MaximumLive,
-        25_000,
-        2_500,
-        Some(MAX_CATALOG_PLAINTEXT_BYTES),
+fn conditional_exact_size_fixture_exercises_include_skip_and_oversize_branches() {
+    assert!(needs_serialized_limit_fixture(MAX_CATALOG_PLAINTEXT_BYTES - 1).unwrap());
+    assert!(!needs_serialized_limit_fixture(MAX_CATALOG_PLAINTEXT_BYTES).unwrap());
+    let error = needs_serialized_limit_fixture(MAX_CATALOG_PLAINTEXT_BYTES + 1).unwrap_err();
+    assert!(error.to_string().contains("16 MiB"));
+}
+
+#[test]
+fn exact_size_padding_tracks_generation_digit_widths() {
+    let fixture = build_fixture(&CatalogFixtureSpec::new(
+        FixtureKind::TestOnly,
+        10,
+        0,
+        Some(4_096),
     ))
     .unwrap();
-    assert_eq!(exact.serialized_size(), MAX_CATALOG_PLAINTEXT_BYTES);
-    assert_eq!(build_fixture_matrix().unwrap().len(), 3);
 
-    let oversized = CatalogFixtureSpec::new(
-        FixtureKind::MaximumLive,
-        25_000,
-        2_500,
-        Some(MAX_CATALOG_PLAINTEXT_BYTES + 1),
-    );
-    let error = build_fixture(&oversized).unwrap_err();
-    assert!(error.to_string().contains("16 MiB"));
+    for generation in [9, 10, 99, 100, 999] {
+        assert_eq!(
+            fixture
+                .serialized_size_at_generation(generation, true)
+                .unwrap(),
+            4_096,
+            "generation {generation} drifted from the exact fixture size"
+        );
+    }
 }
 
 #[test]
@@ -88,14 +96,20 @@ fn percentile_uses_deterministic_nearest_rank_and_report_schema_has_required_met
         &root,
         &fixture,
         BenchmarkRunConfig {
-            warmup_commits: 0,
+            warmup_commits: 1,
             measured_commits: 1,
         },
     )
     .unwrap();
     let value = serde_json::to_value(report).unwrap();
 
+    assert_eq!(value["warmupCommits"], 1);
     assert_eq!(value["sampleCount"], 1);
+    assert_eq!(value["finalCatalogCount"], 4);
+    assert!(value["warmupSerializedSizeBytes"]["min"].is_number());
+    assert!(value["warmupSerializedSizeBytes"]["max"].is_number());
+    assert!(value["measuredSerializedSizeBytes"]["min"].is_number());
+    assert!(value["measuredSerializedSizeBytes"]["max"].is_number());
     assert!(value["commitMs"]["p50"].is_number());
     assert!(value["commitMs"]["p95"].is_number());
     assert!(value["commitMs"]["p99"].is_number());
@@ -119,29 +133,41 @@ fn percentile_uses_deterministic_nearest_rank_and_report_schema_has_required_met
 }
 
 #[test]
-fn measured_runner_publishes_real_catalog_and_authoritative_head_generations() {
+fn measured_runner_publishes_real_exact_catalogs_for_all_reference_generations() {
     let root = test_root("real-publication");
     let _ = fs::remove_dir_all(&root);
-    let fixture =
-        build_fixture(&CatalogFixtureSpec::new(FixtureKind::TestOnly, 10, 2, None)).unwrap();
+    let fixture = build_fixture(&CatalogFixtureSpec::new(
+        FixtureKind::TestOnly,
+        10,
+        0,
+        Some(4_096),
+    ))
+    .unwrap();
 
     let report = run_fixture_benchmark(
         &root,
         &fixture,
         BenchmarkRunConfig {
-            warmup_commits: 1,
-            measured_commits: 2,
+            warmup_commits: 30,
+            measured_commits: 200,
         },
     )
     .unwrap();
 
-    assert_eq!(report.final_head_generation(), 5);
+    assert_eq!(report.final_head_generation(), 232);
     assert!(root.join("fs").join("HEAD").is_file());
     let catalog_count = fs::read_dir(root.join("fs").join("catalogs"))
         .unwrap()
         .filter_map(Result::ok)
         .count();
-    assert_eq!(catalog_count, 5);
+    assert_eq!(catalog_count, 232);
+    let value = serde_json::to_value(&report).unwrap();
+    assert_eq!(value["serializedSizeBytes"], 4_096);
+    assert_eq!(value["warmupSerializedSizeBytes"]["min"], 4_096);
+    assert_eq!(value["warmupSerializedSizeBytes"]["max"], 4_096);
+    assert_eq!(value["measuredSerializedSizeBytes"]["min"], 4_096);
+    assert_eq!(value["measuredSerializedSizeBytes"]["max"], 4_096);
+    assert_eq!(value["finalCatalogCount"], 232);
     assert!(report.lock_hold().p50() > Duration::ZERO);
 
     let _ = fs::remove_dir_all(root);

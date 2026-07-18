@@ -4,17 +4,22 @@
     {
       "bytesWritten": 1502787,
       "commitMs": {
-        "p50": 176.6552,
-        "p95": 231.2637,
-        "p99": 330.8602
+        "p50": 148.80669999999998,
+        "p95": 180.9455,
+        "p99": 188.3871
       },
+      "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureSha256": "4d995f8d7f2d7a9e36d3d03e28af93e667281387aa32c356f093cddc45a6c649",
       "liveCount": 5000,
       "lockHoldMs": {
-        "p50": 174.2475,
-        "p95": 229.09959999999998,
-        "p99": 328.09450000000004
+        "p50": 146.7677,
+        "p95": 178.8974,
+        "p99": 186.1012
+      },
+      "measuredSerializedSizeBytes": {
+        "max": 1502577,
+        "min": 1502576
       },
       "name": "medium",
       "publicationPath": [
@@ -32,22 +37,31 @@
       "tombstoneCount": 500,
       "totalBytesWritten": 300557266,
       "totalCount": 5500,
-      "warmupCommits": 30
+      "warmupCommits": 30,
+      "warmupSerializedSizeBytes": {
+        "max": 1502576,
+        "min": 1502575
+      }
     },
     {
       "bytesWritten": 7512787,
       "commitMs": {
-        "p50": 863.5494,
-        "p95": 1017.7567,
-        "p99": 1373.3021
+        "p50": 777.2161,
+        "p95": 870.8196,
+        "p99": 930.6596000000001
       },
+      "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureSha256": "efdd2b6f700341f70cd7397b50f94b45d212a641f94feb73064714feadff025e",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 858.0095,
-        "p95": 1008.5580999999999,
-        "p99": 1362.335
+        "p50": 770.7932,
+        "p95": 865.0906,
+        "p99": 922.3821
+      },
+      "measuredSerializedSizeBytes": {
+        "max": 7512577,
+        "min": 7512576
       },
       "name": "maximum-live",
       "publicationPath": [
@@ -65,22 +79,31 @@
       "tombstoneCount": 2500,
       "totalBytesWritten": 1502557266,
       "totalCount": 27500,
-      "warmupCommits": 30
+      "warmupCommits": 30,
+      "warmupSerializedSizeBytes": {
+        "max": 7512576,
+        "min": 7512575
+      }
     },
     {
       "bytesWritten": 16777426,
       "commitMs": {
-        "p50": 970.7114,
-        "p95": 1266.131,
-        "p99": 1736.5444
+        "p50": 824.4879999999999,
+        "p95": 966.7336,
+        "p99": 1092.9487
       },
+      "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureSha256": "0ba88ec0759a5b17d4e6374be96d4dd504755bdd0a33304d4256eba7e490b8b4",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 964.4962,
-        "p95": 1254.1351,
-        "p99": 1723.2406
+        "p50": 818.5243,
+        "p95": 961.2294999999999,
+        "p99": 1087.4504
+      },
+      "measuredSerializedSizeBytes": {
+        "max": 16777216,
+        "min": 16777216
       },
       "name": "serialized-limit",
       "publicationPath": [
@@ -96,9 +119,13 @@
       "sampleCount": 200,
       "serializedSizeBytes": 16777216,
       "tombstoneCount": 0,
-      "totalBytesWritten": 3355485066,
+      "totalBytesWritten": 3355485133,
       "totalCount": 25000,
-      "warmupCommits": 30
+      "warmupCommits": 30,
+      "warmupSerializedSizeBytes": {
+        "max": 16777216,
+        "min": 16777216
+      }
     }
   ],
   "gates": {
@@ -109,20 +136,32 @@
     "mediumP95Le100Ms": false,
     "serializedLimitP95Le250Ms": false
   },
-  "generatedAt": "2026-07-17T19:56:37.689051Z",
+  "generatedAt": "2026-07-18T04:50:06.079633Z",
   "measuredCommits": 200,
   "profile": {
-    "architecture": "AMD64",
-    "cpu": "AMD Ryzen 9 9900X (12C/24T)",
-    "driveType": "fixed",
+    "architecture": "x64",
+    "durabilityEvidence": {
+      "acceptableProperty": "flush-and-write-through-supported",
+      "flushCacheSupported": true,
+      "hardwarePowerProtection": "unknown-not-reported",
+      "nvCacheEnabled": false,
+      "publicationUsesWriteThroughAndDirectorySync": true,
+      "softwareFlushMethod": "FlushFileBuffers",
+      "source": "live-storage-write-cache-property-and-publication-path",
+      "userDefinedPowerProtection": false,
+      "writeCacheEnabled": true,
+      "writeCacheType": "write-back",
+      "writeThroughSupported": true
+    },
     "durableWrite4KiB": {
-      "p50Ms": 0.6052,
-      "p95Ms": 0.8358,
-      "p99Ms": 0.9526,
+      "flushMethod": "FlushFileBuffers",
+      "p50Ms": 0.534,
+      "p95Ms": 0.7139,
+      "p99Ms": 0.7662,
       "sampleCount": 200,
       "warmupCount": 30
     },
-    "durableWrite4KiBP95Ms": 0.8358,
+    "durableWrite4KiBP95Ms": 0.7139,
     "excludedStorageClasses": [
       "OneDrive-synchronized",
       "network",
@@ -130,12 +169,38 @@
       "RAM-disk",
       "write-cache-without-durability"
     ],
-    "filesystem": "NTFS",
+    "hostEvidence": {
+      "cpu": "AMD Ryzen 9 9900X 12-Core Processor",
+      "cpuArchitectureCodes": [
+        9
+      ],
+      "logicalProcessors": 24,
+      "osCaption": "Microsoft Windows 11 Pro",
+      "osVersion": "10.0.26200",
+      "physicalCores": 12,
+      "ramBytes": 66157015040,
+      "ramGiB": 61.61,
+      "source": "live-cim"
+    },
     "mode": "reference",
-    "os": "Windows 11 Pro 10.0.26200 x64",
-    "physicalCores": 12,
-    "ramGiB": 61.61,
-    "storage": "WD_BLACK SN850X NVMe",
+    "storageEvidence": {
+      "busType": "NVMe",
+      "diskNumber": 0,
+      "driveType": "fixed",
+      "filesystem": "NTFS",
+      "healthStatus": "Healthy",
+      "internal": true,
+      "mappingVerified": true,
+      "mediaType": "SSD",
+      "model": "WD_BLACK SN850X 2000GB",
+      "operationalStatus": "OK",
+      "partitionDiskNumber": 0,
+      "physicalDeviceId": "0",
+      "physicalLocation": "Integrated : Bus 2 : Device 0 : Function 0 : Adapter 1",
+      "serialNumber": "E823_8FA6_BF53_0001_001B_448B_4D41_83EC.",
+      "source": "live-cim-volume-disk-physical-disk-mapping",
+      "volumeRoot": "C:\\"
+    },
     "target": "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1"
   },
   "schemaVersion": 1,
