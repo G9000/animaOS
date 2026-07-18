@@ -160,16 +160,19 @@ def test_stability_upgrades_one_rung_and_never_downgrades() -> None:
     assert result.stability_upgraded is False
 
 
-def test_identity_items_get_no_emotional_nudge_and_no_drift_accrual() -> None:
+def test_identity_items_get_recency_refresh_only() -> None:
+    """Identity exemption (PRD IL6): no affect nudge, no drift, and NO
+    stability change either — even for an identity item that arrives with a
+    non-stable stability_class (possible via LLM-set salience)."""
     state = ReconsolidationState(emotional_salience=0.3, stability_class="temporary")
     result = reconsolidate_salience(state, 0.9, 0.05, 0.0, is_identity=True)
 
     assert result.emotional_salience == 0.3
     assert result.emotional_salience_delta == 0.0
     assert result.lifetime_drift_total == 0.0
-    # Not named exempt by the PRD — stability re-evaluation still applies.
-    assert result.stability_class == "evolving"
-    assert result.stability_upgraded is True
+    # Stability is NOT upgraded for identity items — refresh only.
+    assert result.stability_class == "temporary"
+    assert result.stability_upgraded is False
 
 
 def test_no_affect_signal_skips_emotional_nudge_but_stability_still_applies() -> None:
@@ -724,3 +727,62 @@ def test_apply_reconsolidation_issues_no_extra_selects(db: Session) -> None:
 
     selects = [s for s in statements if s.strip().upper().startswith("SELECT")]
     assert selects == []
+
+
+def test_sync_reconsolidation_failure_is_isolated_per_item(monkeypatch) -> None:
+    """One item's apply_reconsolidation raising must NOT abort the sync:
+    the other used item still reconsolidates and the pass commits. Guards
+    the per-item SAVEPOINT isolation."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="il6-iso", password_hash="x", display_name="Iso")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+        boom = MemoryItem(
+            user_id=user_id, content="Will fail", category="fact", importance=3,
+            source="extraction", emotional_salience=0.2, stability_class="temporary",
+        )
+        ok = MemoryItem(
+            user_id=user_id, content="Will succeed", category="fact", importance=3,
+            source="extraction", emotional_salience=0.2, stability_class="temporary",
+        )
+        soul_db.add_all([boom, ok])
+        soul_db.commit()
+        boom_id, ok_id = boom.id, ok.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC)))
+        for mid in (boom_id, ok_id):
+            runtime_db.add(MemoryRetrievalFeedback(
+                user_id=user_id, run_id=1, memory_item_id=mid,
+                was_used=True, evidence_score=1.0, synced=False,
+            ))
+        runtime_db.commit()
+
+    real_apply = reconsolidation.apply_reconsolidation
+
+    def _selective_apply(db, item, **kwargs):
+        if item.id == boom_id:
+            raise RuntimeError("injected reconsolidation failure")
+        return real_apply(db, item, **kwargs)
+
+    monkeypatch.setattr(reconsolidation, "apply_reconsolidation", _selective_apply)
+
+    with runtime_factory() as runtime_db, soul_factory() as soul_db:
+        result = sync_retrieval_feedback(
+            user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
+        )
+        # The healthy item still reconsolidated; the failed one did not abort it.
+        assert ok_id in result["reconsolidated_items"]
+        assert boom_id not in result["reconsolidated_items"]
+        assert soul_db.get(MemoryItem, ok_id).emotional_salience > 0.2
+        # Session survived to commit — the failed item is unchanged.
+        assert soul_db.get(MemoryItem, boom_id).emotional_salience == 0.2
+
+    soul_engine.dispose()
+    runtime_engine.dispose()

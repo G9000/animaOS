@@ -168,7 +168,15 @@ def reconsolidate_salience(
         drift_cap, lifetime_drift_so_far + abs(emotional_salience_delta)
     )
 
-    new_stability_class, stability_upgraded = _upgrade_stability(state.stability_class)
+    # Identity items get recency/confidence refresh ONLY (PRD IL6) — no
+    # affect nudge (handled above) and no stability change. An item can
+    # reach here as memory_class="identity" with a non-stable stability
+    # class via LLM-set salience payloads, so the exemption must gate the
+    # stability upgrade too, not just the affect nudge.
+    if is_identity:
+        new_stability_class, stability_upgraded = state.stability_class, False
+    else:
+        new_stability_class, stability_upgraded = _upgrade_stability(state.stability_class)
 
     return ReconsolidationResult(
         emotional_salience=emotional_salience,

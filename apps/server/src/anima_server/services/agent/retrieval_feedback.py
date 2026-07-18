@@ -379,20 +379,29 @@ def sync_retrieval_feedback(
         # abort the rest of this sync (matches IL4/IL5 loops).
         if used_counts.get(item_id, 0) > 0 and item.superseded_by is None and item.distilled_at is None:
             try:
-                result = apply_reconsolidation(
-                    soul_db,
-                    item,
-                    current_affect_magnitude=current_affect_magnitude,
-                    eta=settings.reconsolidation_eta,
-                    drift_cap=settings.reconsolidation_lifetime_drift_cap,
-                    now=ref_now,
-                )
+                # This loop flushes per item and commits once at the end,
+                # so a bare rollback on failure would discard every prior
+                # item's nudge in this pass. A per-item SAVEPOINT confines a
+                # failed apply_reconsolidation's partial flush to just that
+                # item, keeping the session usable for the rest of the loop
+                # and the final commit (the soul-writer call site has no
+                # surrounding try/except).
+                with soul_db.begin_nested():
+                    result = apply_reconsolidation(
+                        soul_db,
+                        item,
+                        current_affect_magnitude=current_affect_magnitude,
+                        eta=settings.reconsolidation_eta,
+                        drift_cap=settings.reconsolidation_lifetime_drift_cap,
+                        now=ref_now,
+                    )
             except Exception:
                 logger.exception(
                     "IL6 reconsolidation failed for memory item %s (user %s)",
                     item_id,
                     user_id,
                 )
+                result = None
             else:
                 if result is not None and (
                     result.emotional_salience_delta != 0.0 or result.stability_upgraded
