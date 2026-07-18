@@ -768,7 +768,14 @@ def test_sync_reconsolidation_failure_is_isolated_per_item(monkeypatch) -> None:
 
     def _selective_apply(db, item, **kwargs):
         if item.id == boom_id:
-            raise RuntimeError("injected reconsolidation failure")
+            # Inject a REAL flush-time failure that poisons the session
+            # (NOT NULL violation), not just a Python raise — this is the
+            # scenario the savepoint guards. Under the old bare try/except
+            # (no rollback) this would leave the session needing rollback
+            # and break the next item's flush + the final commit.
+            item.emotional_salience = None
+            db.flush()
+            return None
         return real_apply(db, item, **kwargs)
 
     monkeypatch.setattr(reconsolidation, "apply_reconsolidation", _selective_apply)
@@ -777,11 +784,12 @@ def test_sync_reconsolidation_failure_is_isolated_per_item(monkeypatch) -> None:
         result = sync_retrieval_feedback(
             user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
         )
-        # The healthy item still reconsolidated; the failed one did not abort it.
+        # The healthy item still reconsolidated; the failed one did not abort
+        # it, and the session survived the poisoning flush to commit.
         assert ok_id in result["reconsolidated_items"]
         assert boom_id not in result["reconsolidated_items"]
         assert soul_db.get(MemoryItem, ok_id).emotional_salience > 0.2
-        # Session survived to commit — the failed item is unchanged.
+        # The savepoint rolled back the NOT NULL violation — boom is intact.
         assert soul_db.get(MemoryItem, boom_id).emotional_salience == 0.2
 
     soul_engine.dispose()
