@@ -41,6 +41,9 @@ from anima_server.services.agent.embedding_integrity import (
     parse_embedding_payload,
 )
 from anima_server.services.agent.embedding_resolution import (
+    DEFAULT_EMBEDDING_MODELS,
+)
+from anima_server.services.agent.embedding_resolution import (
     resolve_embedding_model as _resolve_shared_embedding_model,
 )
 from anima_server.services.agent.embedding_resolution import (
@@ -89,10 +92,30 @@ def _resolve_embedding_provider() -> str:
 
 
 def _resolve_embedding_api_key(provider: str | None = None) -> str:
+    resolved_provider = provider or _resolve_embedding_provider()
     configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
-        return configured
-    resolved_provider = provider or _resolve_embedding_provider()
+        # The dedicated `agent_embedding_api_key` belongs to whatever
+        # embedding provider is actually configured. When an EXPLICIT
+        # `agent_embedding_provider` is set, honor the dedicated key only
+        # for THAT provider — so a caller asking about a DIFFERENT provider
+        # name does not inherit a key that isn't theirs. The concrete case
+        # this guards: config GET normalizes an unsupported/legacy embedding
+        # provider's DISPLAY value away (e.g. a persisted, explicit
+        # `agent_embedding_provider="moonshot"` — which has no default
+        # embedding model, see `_missing_default_model_reason` — reported as
+        # "fastembed") without touching stored settings, then computes
+        # `hasEmbeddingApiKey` against that normalized "fastembed"; fastembed
+        # has no key concept at all, so the leftover moonshot key must not
+        # leak into it (and there is no dropdown path to clear it).
+        #
+        # When NO explicit `agent_embedding_provider` is set (the legacy
+        # piggyback / bundled-default cases), the dedicated key isn't bound
+        # to a specific provider name, so preserve the historical behavior
+        # of returning it for the queried provider unchanged.
+        explicit_provider = _setting_text(getattr(settings, "agent_embedding_provider", ""))
+        if not explicit_provider or explicit_provider == resolved_provider:
+            return configured
     env_name = _EMBEDDING_API_KEY_ENV.get(resolved_provider)
     if env_name is not None:
         configured = os.getenv(env_name, "").strip()
@@ -241,12 +264,50 @@ def _embedding_skip_reason(provider: str) -> str | None:
     return None
 
 
+def _missing_default_model_reason(provider: str) -> str | None:
+    """Return a reason when *provider* has no known default embedding model
+    and no explicit override, i.e. it would resolve to an unusable model.
+
+    A provider can have a perfectly real embeddings-shaped HTTP endpoint
+    (passes ``_embedding_skip_reason``) yet have no entry in
+    ``DEFAULT_EMBEDDING_MODELS`` — moonshot is the motivating case: it has no
+    ``_embedding_skip_reason`` (openai-compatible endpoint), and no
+    DEFAULT_EMBEDDING_MODELS entry either. Without this check, that gap made
+    it excluded from every USER-FACING surface (API boundary
+    ``VALID_EMBEDDING_PROVIDERS``, desktop dropdown) while remaining fully
+    reachable at the actual runtime call site — via a persisted legacy
+    ``agent_embedding_provider="moonshot"``, the matching env var, or a chat
+    piggyback (``agent_provider="moonshot"`` plus a leftover embedding key) —
+    silently POSTing real memory/document text to that provider's API while
+    every surface the user can see reports fastembed/no dense retrieval.
+
+    Deliberately checks ``DEFAULT_EMBEDDING_MODELS`` membership directly
+    (not ``resolve_embedding_model``'s full resolution, which also honors the
+    legacy piggyback-onto-chat-model fallback) — that fallback existing for
+    OTHER reasons must not accidentally paper over a provider that has no
+    genuine embeddings model of its own; the only thing that legitimately
+    clears this gate for a model-less provider is the user explicitly
+    setting ``agent_embedding_model`` themselves. Derived from
+    ``DEFAULT_EMBEDDING_MODELS`` rather than hardcoding "moonshot" so any
+    future model-less provider is covered automatically.
+    """
+    if provider in DEFAULT_EMBEDDING_MODELS:
+        return None
+    if _setting_text(getattr(settings, "agent_embedding_model", "")):
+        return None
+    return (
+        f"no embedding model available for provider {provider!r}; set an "
+        "explicit embedding model or choose a different embedding provider"
+    )
+
+
 def embedding_provider_unusable_reason(provider: str) -> str | None:
     """Return why *provider* would never even attempt an HTTP embedding call.
 
     Single predicate shared by ``generate_embedding``'s early-return checks
-    (an endpoint-less provider via ``_embedding_skip_reason``, or a
-    key-required provider with no usable key via
+    (an endpoint-less provider via ``_embedding_skip_reason``, a provider
+    with no usable embedding model via ``_missing_default_model_reason``, or
+    a key-required provider with no usable key via
     ``validate_provider_configuration``) and ``http_backend_status``. Both
     call sites must agree on what "misconfigured" means: a provider that
     fails either check is skipped with ``return None`` before any network
@@ -261,6 +322,9 @@ def embedding_provider_unusable_reason(provider: str) -> str | None:
     skip_reason = _embedding_skip_reason(provider)
     if skip_reason is not None:
         return skip_reason
+    missing_model_reason = _missing_default_model_reason(provider)
+    if missing_model_reason is not None:
+        return missing_model_reason
     try:
         validate_provider_configuration(provider)
     except LLMConfigError as exc:
@@ -445,6 +509,12 @@ async def generate_embedding(text: str) -> list[float] | None:
     if skip_reason is not None:
         logger.debug(
             "Skipping embedding generation for provider %s: %s", provider, skip_reason)
+        return None
+
+    missing_model_reason = _missing_default_model_reason(provider)
+    if missing_model_reason is not None:
+        logger.debug(
+            "Skipping embedding generation for provider %s: %s", provider, missing_model_reason)
         return None
 
     # Check cache first
@@ -1454,6 +1524,15 @@ async def generate_embeddings_batch(
     if skip_reason is not None:
         logger.debug(
             "Skipping batch embedding generation for provider %s: %s", provider, skip_reason)
+        return [None] * len(texts)
+
+    missing_model_reason = _missing_default_model_reason(provider)
+    if missing_model_reason is not None:
+        logger.debug(
+            "Skipping batch embedding generation for provider %s: %s",
+            provider,
+            missing_model_reason,
+        )
         return [None] * len(texts)
 
     try:

@@ -40,12 +40,18 @@ from typing import Any
 # since resolve_embedding_model would have no sane default to fall back to.
 DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "ollama": "nomic-embed-text",
-    "openrouter": "openai/text-embedding-3-small",
     "openai": "text-embedding-3-small",
     "vllm": "text-embedding-3-small",
     "doubleword": "Qwen/Qwen3-Embedding-8B",
     "fastembed": "BAAI/bge-small-en-v1.5",
 }
+# openrouter intentionally has no entry here: it always has a real
+# `_embedding_skip_reason` (no supported embeddings endpoint), so it is
+# already excluded from every embedding surface via that gate and can never
+# reach this table at runtime. Keeping a dead entry around would misleadingly
+# suggest openrouter passes the has-default-model membership check (see
+# VALID_EMBEDDING_PROVIDERS in config.py and embeddings.embedding_provider_
+# unusable_reason) when it never gets there in the first place.
 
 
 def _setting_text(value: Any) -> str:

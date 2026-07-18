@@ -46,15 +46,33 @@ class _Loaded:
     model: Any
 
 
+@dataclass(frozen=True)
+class _Failed:
+    """A latched load failure bound to the model name it applies to.
+
+    Held as ONE module-level reference (see ``_failed`` below), mirroring
+    ``_Loaded`` above, so a lock-free reader (``_cooldown_active``/
+    ``backend_status``) always observes a consistent (name, at) pair. Two
+    separate globals (``_failed_at`` and ``_failed_model_name``, assigned one
+    after the other under the lock) let a concurrent lock-free read pair a
+    freshly-written timestamp with the STALE name still in place (or vice
+    versa) during a failure-latch update for a different model — e.g.
+    reporting model B as failing using model A's fresh timestamp. A single
+    reference swap can't be observed mid-update for the same GIL-atomicity
+    reason ``_Loaded`` relies on.
+    """
+
+    name: str
+    at: float
+
+
 _loaded: _Loaded | None = None
-_failed_at: float | None = None
-# The model name the *current* _failed_at cooldown applies to. Keeping the
-# cooldown keyed by name (rather than a single process-wide latch) means a
-# failure loading one model — e.g. a mistyped model name in the settings UI
-# — cannot block a completely different, correctly-named model from getting
-# its own fresh load attempt. Without this, fixing the typo still yielded no
-# dense embeddings for the full 300s cooldown.
-_failed_model_name: str | None = None
+# Keyed by name (rather than a single process-wide latch) means a failure
+# loading one model — e.g. a mistyped model name in the settings UI — cannot
+# block a completely different, correctly-named model from getting its own
+# fresh load attempt. Without this, fixing the typo still yielded no dense
+# embeddings for the full 300s cooldown.
+_failed: _Failed | None = None
 
 _RETRY_TTL_SECONDS = 300.0
 
@@ -79,15 +97,16 @@ def embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None
 
 
 def _cooldown_active(model_name: str) -> bool:
+    failed = _failed  # single lock-free read of the atomic pair
     return (
-        _failed_model_name == model_name
-        and _failed_at is not None
-        and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+        failed is not None
+        and failed.name == model_name
+        and time.monotonic() - failed.at < _RETRY_TTL_SECONDS
     )
 
 
 def _load_model(model_name: str) -> Any | None:
-    global _loaded, _failed_at, _failed_model_name
+    global _loaded, _failed
     loaded = _loaded  # single lock-free read of the atomic pair
     if loaded is not None and loaded.name == model_name:
         return loaded.model
@@ -109,12 +128,14 @@ def _load_model(model_name: str) -> Any | None:
             # different model's unrelated failure record must survive this
             # success untouched, so that model stays correctly blocked
             # until its own cooldown or its own successful retry.
-            if _failed_model_name == model_name:
-                _failed_at = None
-                _failed_model_name = None
+            failed = _failed
+            if failed is not None and failed.name == model_name:
+                _failed = None
         except Exception:
-            _failed_at = time.monotonic()
-            _failed_model_name = model_name
+            # Single reference swap — see _Failed's docstring for why this
+            # (rather than two separate globals) is what makes the fast
+            # path above safe to read without the lock.
+            _failed = _Failed(name=model_name, at=time.monotonic())
             logger.warning(
                 "Failed to load fastembed model %r; dense retrieval will be "
                 "unavailable until the model can be loaded.",
@@ -164,10 +185,11 @@ def backend_status() -> str:
       the loaded model differs from the current one with no active failure.
     """
     current_model_name = _resolve_current_model_name()
+    failed = _failed  # single lock-free read of the atomic pair
     if (
-        _failed_model_name == current_model_name
-        and _failed_at is not None
-        and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+        failed is not None
+        and failed.name == current_model_name
+        and time.monotonic() - failed.at < _RETRY_TTL_SECONDS
     ):
         return "failed_retrying"
     loaded = _loaded
@@ -209,11 +231,10 @@ def warm_up_retrieval_models() -> None:
 
 
 def _reset_backend_for_tests() -> None:
-    global _loaded, _failed_at, _failed_model_name
+    global _loaded, _failed
     with _lock:
         _loaded = None
-        _failed_at = None
-        _failed_model_name = None
+        _failed = None
 
 
 def _set_loaded_for_tests(name: str, model: Any) -> None:
@@ -227,6 +248,20 @@ def _set_loaded_for_tests(name: str, model: Any) -> None:
     global _loaded
     with _lock:
         _loaded = _Loaded(name=name, model=model)
+
+
+def _set_failed_for_tests(name: str, at: float) -> None:
+    """Test-only helper to simulate a latched load failure.
+
+    Mirrors ``_set_loaded_for_tests``: goes through the same single-
+    reference-swap as ``_load_model``'s failure path so tests exercise (and
+    cannot bypass) the atomic-pair invariant described on ``_Failed`` above,
+    instead of poking at two separate globals that no longer exist as
+    separate assignable attributes.
+    """
+    global _failed
+    with _lock:
+        _failed = _Failed(name=name, at=at)
 
 
 __all__ = ["backend_status", "embed_texts", "warm_up_retrieval_models"]

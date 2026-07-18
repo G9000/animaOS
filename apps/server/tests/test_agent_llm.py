@@ -425,6 +425,109 @@ async def test_generate_embedding_skips_explicit_anthropic_embedding_provider(
 
 
 @pytest.mark.asyncio
+async def test_generate_embedding_skips_explicit_moonshot_no_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # STRUCTURAL FIX (was reachable at runtime despite being excluded from
+    # every user-facing surface): moonshot has a real, openai-compatible
+    # embeddings endpoint (no `_embedding_skip_reason`) but no entry in
+    # DEFAULT_EMBEDDING_MODELS, so `generate_embedding` must refuse it
+    # WITHOUT ever making an HTTP call — exactly like the endpoint-less
+    # openrouter/anthropic skips above — even when a (leftover) embedding key
+    # is present, so the runtime path agrees with VALID_EMBEDDING_PROVIDERS.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    async def unexpected_embed(text: str) -> list[float] | None:
+        raise AssertionError(
+            "moonshot has no default embedding model; it must be skipped "
+            "before any HTTP call is attempted, even with a usable key"
+        )
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+    original_embedding_model = settings.agent_embedding_model
+    original_embedding_api_key = settings.agent_embedding_api_key
+
+    try:
+        settings.agent_provider = "moonshot"
+        settings.agent_embedding_provider = "moonshot"
+        settings.agent_embedding_model = ""
+        settings.agent_embedding_api_key = "sk-leftover-moonshot-key"
+        monkeypatch.setattr(embeddings_module, "_embed_ollama", unexpected_embed)
+        monkeypatch.setattr(
+            embeddings_module, "_embed_openai_compatible", unexpected_embed
+        )
+
+        result = await generate_embedding("hello")
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+        settings.agent_embedding_model = original_embedding_model
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+    assert result is None
+
+
+def test_embedding_provider_unusable_reason_moonshot_has_no_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+
+    reason = embeddings_module.embedding_provider_unusable_reason("moonshot")
+    assert reason is not None
+    assert "moonshot" in reason
+
+
+def test_embedding_provider_unusable_reason_openai_usable_with_key_and_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-openai-key")
+
+    assert embeddings_module.embedding_provider_unusable_reason("openai") is None
+
+
+def test_embedding_provider_unusable_reason_ollama_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    assert embeddings_module.embedding_provider_unusable_reason("ollama") is None
+
+
+def test_embedding_provider_unusable_reason_openrouter_still_excluded() -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    assert embeddings_module.embedding_provider_unusable_reason("openrouter") is not None
+
+
+def test_embedding_provider_unusable_reason_anthropic_still_excluded() -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    assert embeddings_module.embedding_provider_unusable_reason("anthropic") is not None
+
+
+def test_embedding_provider_unusable_reason_moonshot_usable_with_explicit_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The gate only fires when NO explicit embedding model is configured — a
+    # user who explicitly sets agent_embedding_model for moonshot has made a
+    # real, intentional choice and must not be blocked by the has-default-
+    # model gate (still subject to the ordinary key-required check).
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "moonshot")
+    monkeypatch.setattr(settings, "agent_embedding_model", "custom-embed-model")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-moonshot-key")
+
+    assert embeddings_module.embedding_provider_unusable_reason("moonshot") is None
+
+
+@pytest.mark.asyncio
 async def test_embed_ollama_prefers_native_embed_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -142,7 +142,15 @@ export default function AiSettings() {
   const handleDisableCloud = () => {
     setCloudEnabled(false); localStorage.removeItem(CLOUD_STORAGE_KEY);
     if (isCloudProvider) handleProviderChange(localProviders[0]?.name || "ollama");
-    if (!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)) handleEmbeddingProviderChange("fastembed");
+    if (!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)) {
+      handleEmbeddingProviderChange("fastembed");
+      // Also close the Advanced panel so buildEmbeddingUpdate sends the
+      // reset sentinel ({embeddingProvider: ""}) instead of an EXPLICIT
+      // {embeddingProvider: "fastembed", ...} — otherwise this only pins
+      // the value to fastembed instead of resetting it, and the save
+      // stops tracking future bundled-default changes.
+      setEmbeddingAdvanced(false);
+    }
   };
   const handleProviderChange = (next: string) => {
     setProvider(next);

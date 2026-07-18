@@ -295,21 +295,27 @@ def test_fastembed_backend_status_failed_retrying_within_ttl(
     monkeypatch.setattr(
         fastembed_backend, "_resolve_current_model_name", lambda: "model-a"
     )
-    fastembed_backend._failed_at = time.monotonic()
-    fastembed_backend._failed_model_name = "model-a"
+    fastembed_backend._set_failed_for_tests("model-a", time.monotonic())
     try:
         assert fastembed_backend.backend_status() == "failed_retrying"
     finally:
         fastembed_backend._reset_backend_for_tests()
 
 
-def test_fastembed_backend_status_cold_after_ttl_expires() -> None:
+def test_fastembed_backend_status_cold_after_ttl_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import time
 
     from anima_server.services.agent import fastembed_backend
 
     fastembed_backend._reset_backend_for_tests()
-    fastembed_backend._failed_at = time.monotonic() - fastembed_backend._RETRY_TTL_SECONDS - 1
+    monkeypatch.setattr(
+        fastembed_backend, "_resolve_current_model_name", lambda: "model-a"
+    )
+    fastembed_backend._set_failed_for_tests(
+        "model-a", time.monotonic() - fastembed_backend._RETRY_TTL_SECONDS - 1
+    )
     try:
         assert fastembed_backend.backend_status() == "cold"
     finally:
@@ -330,8 +336,7 @@ def test_fastembed_backend_status_not_ready_when_loaded_model_is_stale(
         fastembed_backend, "_resolve_current_model_name", lambda: "model-b"
     )
     fastembed_backend._set_loaded_for_tests("model-a", object())
-    fastembed_backend._failed_at = time.monotonic()
-    fastembed_backend._failed_model_name = "model-b"
+    fastembed_backend._set_failed_for_tests("model-b", time.monotonic())
     try:
         assert fastembed_backend.backend_status() == "failed_retrying"
     finally:
@@ -371,8 +376,7 @@ def test_reranker_backend_status_matches_latch_states(
     assert reranker.backend_status() == "ready"
 
     reranker._reset_model_cache_for_tests()
-    reranker._failed_at = time.monotonic()
-    reranker._failed_model_name = settings.retrieval_reranker_model
+    reranker._set_failed_for_tests(settings.retrieval_reranker_model, time.monotonic())
     assert reranker.backend_status() == "failed_retrying"
 
     reranker._reset_model_cache_for_tests()
@@ -391,8 +395,7 @@ def test_reranker_backend_status_not_ready_when_loaded_model_is_stale(
     reranker._reset_model_cache_for_tests()
     monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
     reranker._set_loaded_for_tests("model-a", object())
-    reranker._failed_at = time.monotonic()
-    reranker._failed_model_name = "model-b"
+    reranker._set_failed_for_tests("model-b", time.monotonic())
     try:
         assert reranker.backend_status() == "failed_retrying"
     finally:
@@ -474,6 +477,25 @@ def test_http_backend_status_failed_retrying_when_doubleword_has_no_usable_key(
     monkeypatch.setattr(settings, "agent_provider", "ollama")
 
     assert embeddings_module.http_backend_status("doubleword") == "failed_retrying"
+
+
+def test_http_backend_status_moonshot_unhealthy_with_no_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # STRUCTURAL FIX regression guard: moonshot passes the endpoint check
+    # (openai-compatible /v1/embeddings) and even has a usable key here — the
+    # gate that must make it unhealthy is the missing-default-embedding-model
+    # check, not the key check. Without this, http_backend_status would
+    # report moonshot as "ready" even though generate_embedding can never
+    # produce a vector for it.
+    from anima_server.config import settings
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    embeddings_module._provider_unavailable_until.clear()
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-moonshot-key")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+
+    assert embeddings_module.http_backend_status("moonshot") == "failed_retrying"
 
 
 @pytest.mark.asyncio

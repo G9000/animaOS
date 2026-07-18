@@ -900,6 +900,43 @@ def test_config_get_normalizes_legacy_unsupported_piggyback_embedding_provider()
             _restore_config_settings(original)
 
 
+def test_config_get_normalizes_legacy_moonshot_hides_leftover_embedding_api_key() -> None:
+    """STRUCTURAL FIX 2: after get_config normalizes a legacy moonshot
+    embedding config's DISPLAY value to fastembed (moonshot has no default
+    embedding model — see VALID_EMBEDDING_PROVIDERS / Fix 1), a leftover
+    ``agent_embedding_api_key`` that actually belongs to the REAL resolved
+    provider (moonshot) must not leak into ``hasEmbeddingApiKey`` for the
+    normalized "fastembed" display value — fastembed has no key concept at
+    all, and there is no dropdown path in the UI to clear a key attributed
+    to a provider it no longer shows as selected."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_embedding_provider = "moonshot"
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = "sk-leftover-moonshot-key"
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+            assert config["hasEmbeddingApiKey"] is False
+
+            # GET is read-only: stored settings are untouched.
+            assert settings.agent_embedding_provider == "moonshot"
+            assert settings.agent_embedding_api_key == "sk-leftover-moonshot-key"
+        finally:
+            _restore_config_settings(original)
+
+
 def test_config_get_leaves_explicit_valid_embedding_provider_unchanged() -> None:
     """Regression guard: normalization must only kick in for the unsupported
     legacy-piggyback case — a normal, explicit, valid embedding provider must
