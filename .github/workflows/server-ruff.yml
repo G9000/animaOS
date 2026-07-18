@@ -1,0 +1,30 @@
+name: Server Ruff
+
+on:
+  pull_request:
+    paths:
+      - "apps/server/**/*.py"
+      - "apps/server/pyproject.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/server-ruff.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Run Ruff
+        working-directory: apps/server
+        run: uv run --locked --only-group dev ruff check src tests
