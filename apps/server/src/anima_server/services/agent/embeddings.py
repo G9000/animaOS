@@ -40,6 +40,12 @@ from anima_server.services.agent.embedding_integrity import (
     compute_embedding_checksum,
     parse_embedding_payload,
 )
+from anima_server.services.agent.embedding_resolution import (
+    resolve_embedding_model as _resolve_shared_embedding_model,
+)
+from anima_server.services.agent.embedding_resolution import (
+    resolve_embedding_provider as _resolve_shared_embedding_provider,
+)
 from anima_server.services.agent.llm import (
     LLMConfigError,
     validate_provider,
@@ -48,18 +54,6 @@ from anima_server.services.agent.text_processing import prepare_embedding_text
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
-
-# Default embedding models per provider. Users can override via the
-# dedicated embedding settings, with extraction_model kept as a
-# backwards-compatible fallback.
-_DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
-    "ollama": "nomic-embed-text",
-    "openrouter": "openai/text-embedding-3-small",
-    "openai": "text-embedding-3-small",
-    "vllm": "text-embedding-3-small",
-    "doubleword": "Qwen/Qwen3-Embedding-8B",
-    "fastembed": "BAAI/bge-small-en-v1.5",
-}
 
 _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
     "ollama": "http://127.0.0.1:11434",
@@ -83,27 +77,15 @@ def _setting_text(value: Any) -> str:
 def _resolve_embedding_provider() -> str:
     """Resolve which provider generates embeddings.
 
-    Order: explicit ``agent_embedding_provider`` wins. Otherwise the bundled
-    ``fastembed`` ONNX provider is the default — dense retrieval must work
-    regardless of which chat LLM the user has configured. The old implicit
-    piggyback onto ``agent_provider`` is preserved only when the user has
-    configured embedding-specific details (model, base URL, or API key)
-    against their chat provider without naming an embedding provider
-    explicitly; that is a real signal of intent, not an accident of the old
-    fallback.
-
-    KEEP IN SYNC with ``config._resolve_default_embedding_provider``, which
-    duplicates this same piggyback-signal rule.
+    Thin wrapper: the resolution rule lives in
+    ``embedding_resolution.resolve_embedding_provider`` — the single copy
+    shared with ``config.resolve_embedding_dim``. This module's ``settings``
+    binding is passed through explicitly (rather than letting the shared
+    function fetch ``anima_server.config.settings`` itself) so tests that
+    monkeypatch this module's ``settings`` attribute keep working exactly as
+    before the move.
     """
-    configured = _setting_text(getattr(settings, "agent_embedding_provider", ""))
-    if configured:
-        return configured
-    embedding_model = _setting_text(getattr(settings, "agent_embedding_model", ""))
-    embedding_base_url = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
-    embedding_api_key = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
-    if embedding_model or embedding_base_url or embedding_api_key:
-        return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
-    return "fastembed"
+    return _resolve_shared_embedding_provider(settings)
 
 
 def _resolve_embedding_api_key(provider: str | None = None) -> str:
@@ -131,36 +113,18 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
 
 
 def _resolve_embedding_model() -> str:
-    """Return the embedding model to use, preferring the user-configured one.
+    """Return the embedding model for the currently resolved provider.
 
-    ``agent_extraction_model`` is a CHAT model setting (written by the
-    settings route for the background extraction LLM), not an embedding
-    setting. It is kept as a legacy fallback only for the piggyback case —
-    an explicitly-configured non-fastembed provider — where reusing the
-    chat model name was the pre-existing, documented behavior. It must
-    NOT be consulted when the resolved provider is the bundled
-    ``fastembed`` ONNX backend: fastembed can only load embedding-capable
-    ONNX models, so leaking a chat model name (e.g. "qwen2.5:3b") in here
-    would fail ``TextEmbedding`` construction and silently kill dense
-    retrieval. (Rejected alternative: keep treating extraction model as a
-    piggyback intent for fastembed too, preserving pre-branch behavior —
-    but that misreads chat config as embedding config, and the existing
-    contract-migration machinery already moves such installs onto the
-    bundled default uniformly, so there is no migration gap to bridge.)
-
-    KEEP IN SYNC with ``config._resolve_default_embedding_provider`` /
-    ``config.resolve_embedding_dim``, which duplicate this same
-    fastembed-skips-extraction-model rule for the dimension lookup.
+    Thin wrapper: the resolution rule (including the fastembed-skips-
+    extraction-model rule) lives in
+    ``embedding_resolution.resolve_embedding_model`` — the single copy
+    shared with ``config.resolve_embedding_dim``. This just supplies the
+    already-resolved provider so this module's existing zero-arg call
+    sites are unaffected by the move. Passes this module's ``settings``
+    binding through explicitly for the same monkeypatch-compatibility
+    reason as ``_resolve_embedding_provider`` above.
     """
-    configured = _setting_text(getattr(settings, "agent_embedding_model", ""))
-    if configured:
-        return configured
-    provider = _resolve_embedding_provider()
-    if provider != "fastembed":
-        configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
-        if configured:
-            return configured
-    return _DEFAULT_EMBEDDING_MODELS.get(provider, "nomic-embed-text")
+    return _resolve_shared_embedding_model(_resolve_embedding_provider(), settings)
 
 
 def _resolve_embedding_base_url() -> str:
@@ -345,6 +309,21 @@ def _mark_provider_unavailable(
 def _clear_provider_unavailable(key: str) -> None:
     with _provider_unavailable_lock:
         _provider_unavailable_until.pop(key, None)
+
+
+def http_backend_status(provider: str) -> str:
+    """Read-only cooldown-state view for HTTP embedding providers.
+
+    Unlike the bundled in-process ``fastembed`` backend, HTTP providers
+    (ollama/openai/vllm/doubleword/...) have no "loaded"/"cold" concept —
+    there is no model to warm up locally. The only observable state is
+    whether the provider is currently sitting out its post-failure cooldown
+    window. Used by ``services.capabilities.collect_capabilities`` to make
+    ``embeddings.backend`` provider-truthful instead of always reflecting
+    the fastembed latch regardless of which provider is actually active.
+    """
+    key = _provider_failure_key(provider)
+    return "failed_retrying" if _provider_in_cooldown(key) else "ready"
 
 
 def clear_embedding_cache() -> None:

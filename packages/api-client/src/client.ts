@@ -899,6 +899,11 @@ export function createApiClient(options: ApiClientOptions) {
           apiKey?: string;
           ollamaUrl?: string;
           systemPrompt?: string;
+          // Embedding provider selection; "" resets to the bundled default
+          // (clears the explicit provider/model/key settings).
+          embeddingProvider?: string;
+          embeddingModel?: string;
+          embeddingApiKey?: string;
         },
       ) =>
         request<{ status: string }>(`/config/${userId}`, {

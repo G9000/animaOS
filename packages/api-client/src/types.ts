@@ -581,6 +581,15 @@ export interface AgentConfig {
   ollamaUrl?: string;
   hasApiKey: boolean;
   systemPrompt?: string | null;
+  // Resolved (not raw-setting) embedding provider/model — reflects the
+  // bundled fastembed default when nothing has been configured.
+  embeddingProvider: string;
+  embeddingModel: string;
+  // True when the user explicitly configured embeddings (provider set
+  // directly, or via the legacy piggyback signal); false means this is
+  // purely the bundled default.
+  embeddingIsExplicit: boolean;
+  hasEmbeddingApiKey: boolean;
 }
 
 export interface Nudge {

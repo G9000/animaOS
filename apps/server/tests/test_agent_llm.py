@@ -775,11 +775,12 @@ def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
 def test_resolve_default_embedding_provider_piggybacks_on_embedding_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # P2 regression, mirrored in config.py: agent_embedding_api_key alone is
-    # explicit embedding intent, just like agent_embedding_model or
-    # agent_embedding_base_url. Must be kept in sync with
-    # embeddings._resolve_embedding_provider.
+    # P2 regression: agent_embedding_api_key alone is explicit embedding
+    # intent, just like agent_embedding_model or agent_embedding_base_url.
+    # Lives in embedding_resolution.py now — the single copy shared by
+    # config.py and services.agent.embeddings.
     from anima_server import config as config_module
+    from anima_server.services.agent import embedding_resolution
 
     monkeypatch.setattr(
         config_module,
@@ -795,13 +796,14 @@ def test_resolve_default_embedding_provider_piggybacks_on_embedding_api_key(
         ),
     )
 
-    assert config_module._resolve_default_embedding_provider() == "openai"
+    assert embedding_resolution.resolve_embedding_provider() == "openai"
 
 
 def test_resolve_default_embedding_provider_defaults_to_fastembed_when_nothing_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server import config as config_module
+    from anima_server.services.agent import embedding_resolution
 
     monkeypatch.setattr(
         config_module,
@@ -817,7 +819,7 @@ def test_resolve_default_embedding_provider_defaults_to_fastembed_when_nothing_s
         ),
     )
 
-    assert config_module._resolve_default_embedding_provider() == "fastembed"
+    assert embedding_resolution.resolve_embedding_provider() == "fastembed"
 
 
 def test_resolve_embedding_dim_uses_openai_default_for_embedding_api_key_piggyback(

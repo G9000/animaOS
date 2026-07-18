@@ -333,15 +333,6 @@ KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "BAAI/bge-small-en-v1.5": 384,
 }
 
-_DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
-    "ollama": "nomic-embed-text",
-    "openrouter": "openai/text-embedding-3-small",
-    "openai": "text-embedding-3-small",
-    "vllm": "text-embedding-3-small",
-    "doubleword": "Qwen/Qwen3-Embedding-8B",
-    "fastembed": "BAAI/bge-small-en-v1.5",
-}
-
 _detected_embedding_dim: int | None = None
 
 
@@ -364,60 +355,28 @@ def _normalize_embedding_model_name(model: str) -> str:
     return normalized
 
 
-def _resolve_default_embedding_provider() -> str:
-    """Mirror ``embeddings._resolve_embedding_provider()``'s resolution order.
-
-    Duplicated (rather than imported) to avoid a circular import between
-    ``config`` and ``services.agent.embeddings``. Keep both in sync: explicit
-    ``agent_embedding_provider`` wins; otherwise the bundled ``fastembed``
-    provider is the default, except when the user configured embedding
-    details (model, base URL, or API key) against their chat provider
-    without naming an embedding provider — that legacy piggyback is
-    preserved as a real signal of intent.
-
-    KEEP IN SYNC with ``embeddings._resolve_embedding_provider``, which
-    duplicates this same piggyback-signal rule.
-    """
-    configured = settings.agent_embedding_provider.strip()
-    if configured:
-        return configured
-    embedding_model = settings.agent_embedding_model.strip()
-    embedding_base_url = getattr(settings, "agent_embedding_base_url", "").strip()
-    embedding_api_key = getattr(settings, "agent_embedding_api_key", "").strip()
-    if embedding_model or embedding_base_url or embedding_api_key:
-        return settings.agent_provider.strip() or "ollama"
-    return "fastembed"
-
-
 def resolve_embedding_dim() -> int:
     """Return the embedding dimension for the active model.
 
     Priority: detected at runtime > known lookup > config fallback.
 
-    ``agent_extraction_model`` is a CHAT model setting, not embedding intent
-    — it is only consulted as a legacy fallback when the resolved provider
-    is an explicitly-configured non-fastembed piggyback provider. For the
-    bundled ``fastembed`` provider it must be skipped entirely: a chat model
-    name (e.g. "qwen2.5:3b") isn't in ``KNOWN_EMBEDDING_DIMS``, so it would
-    silently fall through to the 768 config fallback while the bundled
-    default model is actually 384-dim.  (Rejected alternative: keep the old
-    unconditional piggyback for fastembed too — that reads chat config as
-    embedding config; the contract-migration machinery already moves such
-    installs onto the bundled default uniformly.)
-
-    KEEP IN SYNC with ``embeddings._resolve_embedding_model``, which
-    duplicates this same fastembed-skips-extraction-model rule for model
-    resolution.
+    Provider/model resolution (including the fastembed-skips-extraction-
+    model rule) is delegated to
+    ``services.agent.embedding_resolution`` — the single copy shared with
+    ``services.agent.embeddings``, imported lazily here (module scope would
+    create an import cycle: ``embedding_resolution`` is imported by this
+    module and must not import ``config`` back at module scope).
     """
     if _detected_embedding_dim is not None:
         return _detected_embedding_dim
-    embed_provider = _resolve_default_embedding_provider()
-    model = settings.agent_embedding_model.strip()
-    if not model and embed_provider != "fastembed":
-        model = settings.agent_extraction_model.strip()
-    if not model:
-        model = _DEFAULT_EMBEDDING_MODELS.get(
-            embed_provider, "nomic-embed-text")
+
+    from anima_server.services.agent.embedding_resolution import (
+        resolve_embedding_model,
+        resolve_embedding_provider,
+    )
+
+    embed_provider = resolve_embedding_provider()
+    model = resolve_embedding_model(embed_provider)
     if model in KNOWN_EMBEDDING_DIMS:
         return KNOWN_EMBEDDING_DIMS[model]
     normalized_model = _normalize_embedding_model_name(model)

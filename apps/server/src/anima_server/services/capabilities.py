@@ -15,6 +15,7 @@ from anima_server.config import resolve_embedding_dim, settings
 from anima_server.services.agent.embeddings import (
     _resolve_embedding_model,
     _resolve_embedding_provider,
+    http_backend_status,
 )
 from anima_server.services.agent.fastembed_backend import (
     backend_status as fastembed_backend_status,
@@ -54,9 +55,27 @@ def _llm_configured() -> bool:
     return True
 
 
+def _embedding_backend_status(provider: str) -> str:
+    """Provider-truthful ``embeddings.backend`` status.
+
+    The bundled ``fastembed`` provider is the only one with a "loaded
+    in-process ONNX model" concept, so its dedicated latch is the right
+    read for it. Any other (HTTP) provider has no load/cold state — the
+    only observable signal is whether it's sitting in its post-failure
+    cooldown window, read via ``embeddings.http_backend_status``. Before
+    this, the field always reported the fastembed latch regardless of
+    which provider was actually configured, which was misleading whenever
+    an HTTP embedding provider was active.
+    """
+    if provider == "fastembed":
+        return fastembed_backend_status()
+    return http_backend_status(provider)
+
+
 def collect_capabilities() -> dict[str, Any]:
     """Snapshot the current state of the document/retrieval capability stack."""
     pack = pack_status()
+    embedding_provider = _resolve_embedding_provider()
 
     return {
         "parsingPack": {
@@ -65,10 +84,10 @@ def collect_capabilities() -> dict[str, Any]:
             "error": pack.error,
         },
         "embeddings": {
-            "provider": _resolve_embedding_provider(),
+            "provider": embedding_provider,
             "model": _resolve_embedding_model(),
             "dim": resolve_embedding_dim(),
-            "backend": fastembed_backend_status(),
+            "backend": _embedding_backend_status(embedding_provider),
         },
         "reranker": {
             "enabled": settings.retrieval_reranker == "local",

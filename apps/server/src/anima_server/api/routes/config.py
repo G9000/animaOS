@@ -17,6 +17,11 @@ from anima_server.config import (
     settings,
 )
 from anima_server.db import get_db
+from anima_server.services.agent.embedding_resolution import (
+    has_embedding_piggyback_intent,
+    resolve_embedding_model,
+    resolve_embedding_provider,
+)
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -35,6 +40,16 @@ class AgentConfigResponse(BaseModel):
     ollamaUrl: str | None = None
     hasApiKey: bool = False
     systemPrompt: str | None = None
+    # Resolved (not raw-setting) embedding provider/model — reflects the
+    # bundled fastembed default when the user hasn't configured anything.
+    embeddingProvider: str = "fastembed"
+    embeddingModel: str = ""
+    # True when the user explicitly configured embeddings (either naming a
+    # provider directly, or via the legacy piggyback signal — an embedding
+    # model/base URL/API key set against the chat provider); False means
+    # this is purely the bundled default with no user intent behind it.
+    embeddingIsExplicit: bool = False
+    hasEmbeddingApiKey: bool = False
 
 
 class AgentConfigUpdateRequest(BaseModel):
@@ -44,6 +59,13 @@ class AgentConfigUpdateRequest(BaseModel):
     apiKey: str | None = None
     ollamaUrl: str | None = None
     systemPrompt: str | None = None
+    # Embedding provider selection. Must be a member of SUPPORTED_PROVIDERS
+    # (fastembed IS valid here — this is the embedding side, unlike the chat
+    # `provider` field above) or "" to reset to the bundled default, which
+    # clears the explicit provider/model/key settings below.
+    embeddingProvider: str | None = None
+    embeddingModel: str | None = None
+    embeddingApiKey: str | None = None
 
 
 class OllamaModelDetails(BaseModel):
@@ -300,6 +322,7 @@ async def get_config(
     not silently revert to defaults.
     """
     require_unlocked_user(request, user_id)
+    embedding_provider = resolve_embedding_provider()
     return AgentConfigResponse(
         provider=settings.agent_provider,
         model=settings.agent_model,
@@ -309,6 +332,11 @@ async def get_config(
             get_provider_api_key(settings.agent_provider)
             or (settings.agent_api_key.strip() if not has_provider_api_keys() else "")
         ),
+        embeddingProvider=embedding_provider,
+        embeddingModel=resolve_embedding_model(embedding_provider),
+        embeddingIsExplicit=bool(settings.agent_embedding_provider.strip())
+        or has_embedding_piggyback_intent(),
+        hasEmbeddingApiKey=bool(settings.agent_embedding_api_key.strip()),
     )
 
 
@@ -329,6 +357,18 @@ async def update_config(
             detail=f"Unsupported provider: {payload.provider!r}. Valid: {', '.join(sorted(VALID_PROVIDERS))}",
         )
 
+    embedding_provider = (
+        payload.embeddingProvider.strip() if payload.embeddingProvider is not None else None
+    )
+    if embedding_provider and embedding_provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported embedding provider: {embedding_provider!r}. "
+                f"Valid: {', '.join(sorted(SUPPORTED_PROVIDERS))} or ''"
+            ),
+        )
+
     await _validate_prospective_ollama_targets(payload)
 
     settings.agent_provider = payload.provider
@@ -347,6 +387,20 @@ async def update_config(
         # Clear base_url for providers with fixed endpoints.
         settings.agent_base_url = ""
 
+    if embedding_provider is not None:
+        if embedding_provider == "":
+            # Reset to bundled default: clear the explicit provider/model/key
+            # so resolution falls through to the bundled fastembed default.
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = ""
+        else:
+            settings.agent_embedding_provider = embedding_provider
+            if payload.embeddingModel is not None:
+                settings.agent_embedding_model = payload.embeddingModel.strip()
+            if payload.embeddingApiKey is not None:
+                settings.agent_embedding_api_key = payload.embeddingApiKey.strip()
+
     try:
         persist_runtime_settings()
     except OSError as exc:
@@ -358,6 +412,13 @@ async def update_config(
     from anima_server.services.agent import invalidate_agent_runtime_cache
     from anima_server.services.agent.embeddings import clear_embedding_cache
 
+    # A changed embedding provider/model/dim (including a reset back to the
+    # bundled default) is picked up on the next embedding call purely via
+    # clear_embedding_cache(): it re-arms the one-shot cold-start sync,
+    # resets the embedding-contract cache, and clears the detected-dim latch
+    # (see embeddings.clear_embedding_cache), so a dimension/model mismatch
+    # is caught by the existing contract-migration machinery instead of
+    # silently serving stale-model vectors. Nothing else to build here.
     clear_embedding_cache()
     invalidate_agent_runtime_cache()
 

@@ -136,6 +136,81 @@ def test_collect_capabilities_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(result["fullDocumentContext"], bool)
 
 
+def test_collect_capabilities_backend_is_provider_truthful_for_http_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """embeddings.backend must reflect the *active* provider, not always fastembed.
+
+    Regression guard for the carried-in review requirement: when the
+    resolved embedding provider is an HTTP provider (e.g. openai), the
+    backend status must come from the HTTP cooldown latch, never the
+    unrelated fastembed model-load latch.
+    """
+    from anima_server.services import capabilities as capabilities_module
+    from anima_server.services.documents.parsing_pack import ParsingPackStatus
+
+    monkeypatch.setattr(
+        capabilities_module, "pack_status", lambda: ParsingPackStatus(state="ready")
+    )
+    monkeypatch.setattr(
+        capabilities_module, "_resolve_embedding_provider", lambda: "openai"
+    )
+    monkeypatch.setattr(
+        capabilities_module, "_resolve_embedding_model", lambda: "text-embedding-3-small"
+    )
+    monkeypatch.setattr(capabilities_module, "resolve_embedding_dim", lambda: 1536)
+    # The fastembed latch is deliberately wired to report "ready" here so the
+    # test would fail loudly if collect_capabilities ever fell back to it for
+    # a non-fastembed provider.
+    monkeypatch.setattr(capabilities_module, "fastembed_backend_status", lambda: "ready")
+    monkeypatch.setattr(
+        capabilities_module, "http_backend_status", lambda provider: "failed_retrying"
+    )
+    monkeypatch.setattr(capabilities_module, "reranker_backend_status", lambda: "cold")
+    monkeypatch.setattr(capabilities_module, "_llm_configured", lambda: True)
+
+    result = capabilities_module.collect_capabilities()
+
+    assert result["embeddings"] == {
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "dim": 1536,
+        "backend": "failed_retrying",
+    }
+
+
+def test_embedding_backend_status_uses_fastembed_latch_for_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services import capabilities as capabilities_module
+
+    monkeypatch.setattr(capabilities_module, "fastembed_backend_status", lambda: "cold")
+    monkeypatch.setattr(
+        capabilities_module,
+        "http_backend_status",
+        lambda provider: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+
+    assert capabilities_module._embedding_backend_status("fastembed") == "cold"
+
+
+def test_embedding_backend_status_uses_http_cooldown_for_other_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services import capabilities as capabilities_module
+
+    monkeypatch.setattr(
+        capabilities_module,
+        "fastembed_backend_status",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+    monkeypatch.setattr(
+        capabilities_module, "http_backend_status", lambda provider: "ready"
+    )
+
+    assert capabilities_module._embedding_backend_status("ollama") == "ready"
+
+
 def test_llm_configured_false_when_no_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     from anima_server.services import capabilities as capabilities_module
 
@@ -246,6 +321,27 @@ def test_reranker_backend_status_matches_latch_states() -> None:
     assert reranker.backend_status() == "failed_retrying"
 
     reranker._reset_model_cache_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# embeddings.http_backend_status
+# ---------------------------------------------------------------------------
+
+
+def test_http_backend_status_ready_when_not_cooling_down() -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    embeddings_module._provider_unavailable_until.clear()
+    assert embeddings_module.http_backend_status("openai") == "ready"
+
+
+def test_http_backend_status_failed_retrying_during_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(embeddings_module, "_provider_in_cooldown", lambda key: True)
+    assert embeddings_module.http_backend_status("openai") == "failed_retrying"
 
 
 # ---------------------------------------------------------------------------

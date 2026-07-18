@@ -773,6 +773,103 @@ describe("createApiClient error handling", () => {
     expect(result.llm.configured).toBe(true);
   });
 
+  test("gets agent config including resolved embedding fields", async () => {
+    let requestedUrl = "";
+    let requestHeaders: Headers | null = null;
+    const config = {
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      extractionModel: null,
+      ollamaUrl: null,
+      hasApiKey: false,
+      systemPrompt: null,
+      embeddingProvider: "fastembed",
+      embeddingModel: "BAAI/bge-small-en-v1.5",
+      embeddingIsExplicit: false,
+      hasEmbeddingApiKey: false,
+    };
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestHeaders = new Headers(init?.headers);
+        return new Response(JSON.stringify(config));
+      },
+    });
+
+    const result = await api.config.get(1);
+
+    expect(requestedUrl).toBe("https://api.test/api/config/1");
+    expect(requestHeaders?.get("x-anima-unlock")).toBe("unlock-token");
+    expect(requestHeaders?.get("x-anima-nonce")).toBe("sidecar-nonce");
+    expect(result).toEqual(config);
+    expect(result.embeddingProvider).toBe("fastembed");
+    expect(result.embeddingIsExplicit).toBe(false);
+  });
+
+  test("updates agent config with embedding provider fields", async () => {
+    let requestedUrl = "";
+    let requestMethod = "";
+    let requestBody: unknown;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestMethod = init?.method || "GET";
+        requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+        return new Response(JSON.stringify({ status: "updated" }));
+      },
+    });
+
+    const result = await api.config.update(1, {
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-embed-test",
+    });
+
+    expect(requestedUrl).toBe("https://api.test/api/config/1");
+    expect(requestMethod).toBe("PUT");
+    expect(requestBody).toEqual({
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-embed-test",
+    });
+    expect(result).toEqual({ status: "updated" });
+  });
+
+  test("resets embedding provider to bundled default with empty string", async () => {
+    let requestBody: unknown;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (_input, init) => {
+        requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+        return new Response(JSON.stringify({ status: "updated" }));
+      },
+    });
+
+    await api.config.update(1, {
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "",
+    });
+
+    expect(requestBody).toEqual({
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "",
+    });
+  });
+
   test("calls knowledge library endpoints", async () => {
     const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
     const api = createApiClient({
