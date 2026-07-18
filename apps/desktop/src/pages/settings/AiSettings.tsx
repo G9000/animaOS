@@ -29,7 +29,15 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
 // of the three are offered here. fastembed IS offered here even though it's
 // excluded from the chat provider list above (it has no chat completion).
 const EMBEDDING_PROVIDERS = ["fastembed", "ollama", "openai", "vllm", "doubleword"] as const;
-const EMBEDDING_LOCAL_PROVIDERS = new Set(["fastembed", "ollama"]);
+// Must mirror the server's local/no-key-required embedding providers — see
+// apps/server/.../services/agent/embeddings.py::_validate_embedding_provider_
+// configuration, which only requires an embedding API key for
+// openrouter/moonshot/openai/doubleword (openrouter/moonshot aren't even
+// offered here, see EMBEDDING_PROVIDERS above). fastembed (in-process ONNX,
+// no HTTP endpoint) and ollama/vllm (local OpenAI-compatible servers with a
+// default localhost base URL, no key) are the local/no-consent-needed set;
+// openai/doubleword are cloud and gated behind the Cloud toggle above.
+const EMBEDDING_LOCAL_PROVIDERS = new Set(["fastembed", "ollama", "vllm"]);
 const EMBEDDING_DEFAULT_MODELS: Record<string, string> = {
   fastembed: "BAAI/bge-small-en-v1.5",
   ollama: "nomic-embed-text",
@@ -203,7 +211,13 @@ export default function AiSettings() {
         embeddingModel: embeddingModel || undefined,
         embeddingApiKey: "",
       });
-      setConfig((prev) => (prev ? { ...prev, hasEmbeddingApiKey: false } : prev));
+      // Re-fetch rather than optimistically assuming hasEmbeddingApiKey is
+      // now false: _resolve_embedding_api_key() may still resolve a key for
+      // this provider from the per-provider store or an env var (e.g.
+      // DOUBLEWORD_API_KEY) even after the dedicated field is cleared, so
+      // the backend's real resolved state — not local optimism — must
+      // drive the UI (get_config's hasEmbeddingApiKey, commit c7c9b10).
+      await applyRefreshedConfig();
       setSaved(true); setTimeout(() => setSaved(false), 2500);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to remove key."); }
     finally { setSaving(false); }

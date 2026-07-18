@@ -849,6 +849,85 @@ def test_config_get_has_embedding_api_key_reflects_legacy_chat_key_piggyback() -
             _restore_config_settings(original)
 
 
+def test_config_get_normalizes_legacy_unsupported_piggyback_embedding_provider() -> None:
+    """P2 fix: a legacy install that piggybacked embedding intent (model/key
+    set, no explicit agent_embedding_provider) onto a chat provider with no
+    usable embeddings endpoint for this API (openrouter/anthropic/moonshot)
+    used to have resolve_embedding_provider() return that chat provider
+    verbatim. The desktop form echoes embeddingProvider on every save, and
+    VALID_EMBEDDING_PROVIDERS rejects it -> the user could not save ANY AI
+    setting until discovering they had to disable Embeddings Advanced.
+    get_config must normalize the response to the bundled default so the
+    echoed value is always savable; this must not touch stored settings."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openrouter"
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_model = "x"
+            settings.agent_embedding_api_key = ""
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+
+            # GET is read-only: the legacy piggyback settings are untouched.
+            assert settings.agent_embedding_provider == ""
+            assert settings.agent_embedding_model == "x"
+
+            # A subsequent PUT echoing the normalized value must succeed —
+            # no save lockout.
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openrouter",
+                    "model": "google/gemma-3-27b-it",
+                    "embeddingProvider": config["embeddingProvider"],
+                    "embeddingModel": config["embeddingModel"],
+                },
+            )
+            assert resp.status_code == 200
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_get_leaves_explicit_valid_embedding_provider_unchanged() -> None:
+    """Regression guard: normalization must only kick in for the unsupported
+    legacy-piggyback case — a normal, explicit, valid embedding provider must
+    be reported as-is."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "ollama"
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = "sk-embed-test"
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "openai"
+            assert config["embeddingIsExplicit"] is True
+            assert config["hasEmbeddingApiKey"] is True
+        finally:
+            _restore_config_settings(original)
+
+
 def test_config_update_round_trips_explicit_embedding_provider() -> None:
     original = _snapshot_config_settings()
 

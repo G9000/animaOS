@@ -350,6 +350,24 @@ async def get_config(
     """
     require_unlocked_user(request, user_id)
     embedding_provider = resolve_embedding_provider()
+    embedding_is_explicit = bool(settings.agent_embedding_provider.strip()) or has_embedding_piggyback_intent()
+
+    # Legacy normalization (read-only): a pre-existing install may have
+    # piggybacked embedding intent (agent_embedding_model/base_url/key set,
+    # no explicit agent_embedding_provider) onto a chat provider that has no
+    # usable embeddings endpoint for this API (e.g. openrouter/anthropic/
+    # moonshot — see VALID_EMBEDDING_PROVIDERS above). resolve_embedding_
+    # provider() still returns that chat provider for actual embedding calls
+    # (unchanged run-time behavior), but surfacing it here would make the
+    # desktop form echo an embeddingProvider value that PUT rejects on ANY
+    # save (not just embedding changes) — a save lockout until the user
+    # discovers they must clear the piggyback. Report the bundled default
+    # instead so the UI shows/echoes something savable; this does NOT
+    # mutate stored settings, only the response.
+    if embedding_provider not in (VALID_EMBEDDING_PROVIDERS - {""}):
+        embedding_provider = "fastembed"
+        embedding_is_explicit = False
+
     return AgentConfigResponse(
         provider=settings.agent_provider,
         model=settings.agent_model,
@@ -361,14 +379,14 @@ async def get_config(
         ),
         embeddingProvider=embedding_provider,
         embeddingModel=resolve_embedding_model(embedding_provider),
-        embeddingIsExplicit=bool(settings.agent_embedding_provider.strip())
-        or has_embedding_piggyback_intent(),
+        embeddingIsExplicit=embedding_is_explicit,
         # Reflects the key the embedding path will ACTUALLY use — the same
         # rich resolution `generate_embedding` consults (env DOUBLEWORD_API_
         # KEY, the per-provider store, and the legacy agent_api_key
         # piggyback when embedding_provider == chat provider) — not just the
         # raw agent_embedding_api_key setting. A bool only; never exposes
-        # the key itself.
+        # the key itself. Computed against the (possibly normalized)
+        # embedding_provider above so it matches what is actually reported.
         hasEmbeddingApiKey=bool(_resolve_embedding_api_key(embedding_provider)),
     )
 
