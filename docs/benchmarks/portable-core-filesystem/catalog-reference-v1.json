@@ -1,8 +1,8 @@
 {
   "benchmarkBinary": {
-    "fileId": 844424936489789,
-    "path": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x\\release\\catalog_benchmark.exe",
-    "sha256": "415d09cd7de8f744a8d15c9b96e5c75116babee5ffff13de412f1d3d83a4dca4",
+    "fileId": 1125899913206455,
+    "path": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-8zzm6io8\\release\\catalog_benchmark.exe",
+    "sha256": "3124eb00c1332ffcb95abd2197180bde8bf533126d82cf55d7804cbb137b68f7",
     "volumeSerial": 4008503144
   },
   "benchmarkBuild": {
@@ -18,7 +18,7 @@
       "--bin",
       "catalog_benchmark",
       "--target-dir",
-      "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x"
+      "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-8zzm6io8"
     ],
     "forcedEnvironment": {
       "CARGO_INCREMENTAL": "0"
@@ -26,11 +26,11 @@
     "preservedForAudit": true,
     "rustc": "rustc 1.75.0 (82e1608df 2023-12-21)\nbinary: rustc\ncommit-hash: 82e1608dfa6e0b5569232559e3d385fea5a93112\ncommit-date: 2023-12-21\nhost: x86_64-pc-windows-msvc\nrelease: 1.75.0\nLLVM version: 17.0.6",
     "sanitizedEnvironmentRemoved": [],
-    "sourceCommit": "443886c55d09f55cd31c49fbfb96a0d967d9be1f",
-    "targetDirectory": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x"
+    "sourceCommit": "45bc5a2bf14a6d40f877eed5e4e71ca054133bc3",
+    "targetDirectory": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-8zzm6io8"
   },
   "benchmarkCommand": [
-    "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x\\release\\catalog_benchmark.exe",
+    "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-8zzm6io8\\release\\catalog_benchmark.exe",
     "--target",
     "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1",
     "--warmups",
@@ -42,18 +42,18 @@
     {
       "bytesWritten": 1651287,
       "commitMs": {
-        "p50": 208.6155,
-        "p95": 246.6083,
-        "p99": 268.20369999999997
+        "p50": 180.26039999999998,
+        "p95": 203.894,
+        "p99": 284.1124
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureManifestSha256": "d1f8817ba635359cc10208d86b79652dc0e2180c2514f1e1d0634a96ebcb40c4",
       "liveCount": 5000,
       "lockHoldMs": {
-        "p50": 206.5526,
-        "p95": 244.3112,
-        "p99": 264.9441
+        "p50": 178.02609999999999,
+        "p95": 201.1966,
+        "p99": 280.574
       },
       "measuredSerializedSizeBytes": {
         "max": 1651077,
@@ -85,18 +85,18 @@
     {
       "bytesWritten": 8255287,
       "commitMs": {
-        "p50": 1064.3587,
-        "p95": 1307.3104,
-        "p99": 1567.5856
+        "p50": 961.86,
+        "p95": 1032.0541,
+        "p99": 1148.7396999999999
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureManifestSha256": "1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 1057.8512,
-        "p95": 1298.1772,
-        "p99": 1554.6972
+        "p50": 955.6453,
+        "p95": 1024.1093,
+        "p99": 1142.4549
       },
       "measuredSerializedSizeBytes": {
         "max": 8255077,
@@ -128,18 +128,18 @@
     {
       "bytesWritten": 16777426,
       "commitMs": {
-        "p50": 925.9988999999999,
-        "p95": 1173.7264,
-        "p99": 1358.2697
+        "p50": 805.6985,
+        "p95": 933.2491,
+        "p99": 1109.6446
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureManifestSha256": "26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 918.0539,
-        "p95": 1166.4669999999999,
-        "p99": 1344.0014
+        "p50": 799.904,
+        "p95": 927.6065,
+        "p99": 1038.748
       },
       "measuredSerializedSizeBytes": {
         "max": 16777216,
@@ -177,7 +177,7 @@
     "mediumP95Le100Ms": false,
     "serializedLimitP95Le250Ms": false
   },
-  "generatedAt": "2026-07-18T18:22:49.292961Z",
+  "generatedAt": "2026-07-18T19:10:56.989976Z",
   "measuredCommits": 200,
   "profile": {
     "architecture": "x64",
@@ -196,13 +196,13 @@
     },
     "durableWrite4KiB": {
       "flushMethod": "FlushFileBuffers",
-      "p50Ms": 0.6197,
-      "p95Ms": 0.8782,
-      "p99Ms": 0.9519,
+      "p50Ms": 0.569,
+      "p95Ms": 0.7336,
+      "p99Ms": 0.9263,
       "sampleCount": 200,
       "warmupCount": 30
     },
-    "durableWrite4KiBP95Ms": 0.8782,
+    "durableWrite4KiBP95Ms": 0.7336,
     "excludedStorageClasses": [
       "OneDrive-synchronized",
       "network",
@@ -245,7 +245,7 @@
     "target": "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1"
   },
   "schemaVersion": 1,
-  "sourceCommit": "443886c55d09f55cd31c49fbfb96a0d967d9be1f",
+  "sourceCommit": "45bc5a2bf14a6d40f877eed5e4e71ca054133bc3",
   "versions": {
     "aesGcm": "0.10.3",
     "animaCorefs": "0.1.0",
