@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-18 18:57 MYT
+- Updated: 2026-07-18 19:51 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -51,6 +51,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - Full backend, desktop, migration, transfer, lock, recovery, and health validation is recorded.
 - Product and technical naming consistently distinguish animaOS, ANIMA CORE, Soul, CoreFS, and Runtime.
 - Codex-derived production patterns are selectively adapted with pinned provenance/Apache-2.0 notices; CoreFS improves multi-file patching to one-generation atomic publication.
+- Review evidence (2026-07-18 19:51 MYT): PCF-002 first-mutation byte accounting now covers both durable cutover-marker writes, with a focused red/green regression and the full transaction/benchmark plus strict clippy gates passing.
+- Benchmark evidence (2026-07-18 19:51 MYT): the regenerated source/binary-bound 30/200 artifact and direct target inspection passed, while all three catalog latency gates remain red; PCF-002 and this initiative therefore remain blocked and PCF-003 remains ineligible.
 
 ## Completed Tickets
 
@@ -151,6 +153,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-18 17:09 MYT - Regenerated the exact 30/200 evidence after the review fix from clean source `5a251421`, producing strict artifact SHA-256 `5769d79120fd4d798c8329cf3932c23e880b53544b8bc96b91485ecc4de54155` and binary SHA-256 `2dc5424303fd2c98a1dcceba3e2455d1d205020455c2356f4ae0725648b2c182`. Strict identity/build validation and direct HEAD/catalog/object/temp inspection passed. PCF-002 and this initiative remain blocked, with original Started values preserved, because medium, maximum-live, and exact-16-MiB p95 values of 263.2791 ms, 1,296.5753 ms, and 929.6833 ms still fail; durable p95 0.8558 ms and maximum-live size 8,255,077 bytes pass, Steps 12/13 remain open, and PCF-003 remains ineligible.
 - 2026-07-18 18:57 MYT - Addressed PR #110 current-head P1 threads `PRRT_kwDORPzHkM6R-S3x` and `PRRT_kwDORPzHkM6R-S3z` in source commit `3ab1626c`: injected Windows volume facts and recorded benchmark paths now use explicit Windows semantics independently of the CI host, while live canonical filesystem checks remain native. The two red/green regressions, full 119-test benchmark Python file, scoped Ruff check/format, Python compilation, and diff hygiene passed.
 - 2026-07-18 18:57 MYT - Regenerated the exact 30/200 evidence after the Windows-path fix from clean source `3ab1626c`, producing strict artifact SHA-256 `182380965c5e2402bf518acca543237b30594b79c5aeb901d21dfa8037ef8c5e` and binary SHA-256 `ed235b698c763fac0f5f2ad7c852e25a841e26e583c48266b9695253765aea8a`. Independent identity/build/schema validation and direct HEAD/catalog/object/temp inspection passed. PCF-002 and this initiative remain blocked, with original Started values preserved, because medium, maximum-live, and exact-16-MiB p95 values of 189.8769 ms, 1,113.9635 ms, and 1,550.4651 ms still fail; durable p95 0.6874 ms and maximum-live size 8,255,077 bytes pass, Steps 12/13 remain open, and PCF-003 remains ineligible.
+- 2026-07-18 19:51 MYT - Addressed PR #110 current-head P2 thread `PRRT_kwDORPzHkM6R-vr8` in source commit `f5b9ffa4`: first-mutation `CommitOutcome::bytes_written()` now records each durable cutover marker after successful publication, closing the observed 1,208-versus-1,524-byte gap. The focused red/green regression, full 25-active/2-ignored transaction suite, six benchmark tests, strict all-target CoreFS clippy, scoped rustfmt, and diff hygiene passed.
+- 2026-07-18 19:51 MYT - Regenerated the exact 30/200 evidence after the metric fix from clean source `f5b9ffa4`, producing strict artifact SHA-256 `227908771da7f757b1a0537d300428912be34fb9853065fc13562acbbc4cb1fc` and preserved binary SHA-256 `618594325b8cd250c8f9f89ade82426b8cdba8248ab5ca435c74b579148084a3`. Independent source/binary/Cargo.lock/target/build/schema validation and direct HEAD/catalog/object/temp inspection passed. PCF-002 and this initiative remain blocked, with original Started values preserved, because medium, maximum-live, and exact-16-MiB p95 values of 321.2209 ms, 1,813.2248 ms, and 1,558.0574 ms still fail; durable p95 1.4688 ms and maximum-live size 8,255,077 bytes pass, Steps 12/13 remain open, and PCF-003 remains ineligible.
 
 ## Validation
 
