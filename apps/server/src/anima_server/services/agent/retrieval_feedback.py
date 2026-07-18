@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 from anima_server.models.runtime_memory import MemoryRetrievalFeedback
 from anima_server.services.agent.state import AgentRetrievalTrace
 from anima_server.services.agent.text_processing import prepare_embedding_text
+
+logger = logging.getLogger(__name__)
 
 _MIN_TOKEN_LENGTH = 3
 _MIN_SUBSTRING_MATCH_LENGTH = 24
@@ -242,6 +245,7 @@ def sync_retrieval_feedback(
             "importance_deltas": {},
             "evidence_heat_factors": {},
             "heat_decay_factors": {},
+            "reconsolidated_items": {},
         }
 
     row_ids = [int(row.id) for row in rows]
@@ -301,15 +305,30 @@ def sync_retrieval_feedback(
             "importance_deltas": {},
             "evidence_heat_factors": evidence_heat_factors,
             "heat_decay_factors": {},
+            "reconsolidated_items": {},
         }
 
+    from anima_server.config import settings
     from anima_server.models import MemoryItem
     from anima_server.services.agent.heat_scoring import compute_heat_for_item
+    from anima_server.services.agent.reconsolidation import (
+        apply_reconsolidation,
+        resolve_current_affect_magnitude,
+    )
 
     ref_now = datetime.now(UTC)
     importance_deltas: dict[int, int] = {}
     applied_evidence_heat_factors: dict[int, float] = {}
     heat_decay_factors: dict[int, float] = {}
+    reconsolidated_items: dict[int, dict[str, float | bool]] = {}
+
+    # IL6: resolved ONCE per sync cycle (not per item) — it is a per-user
+    # affect reading, not a per-item one. None means "no affect signal yet"
+    # (see resolve_current_affect_magnitude), in which case every item below
+    # still gets its stability-upgrade check but no emotional_salience nudge.
+    current_affect_magnitude = resolve_current_affect_magnitude(
+        runtime_db, user_id=user_id
+    )
 
     for item_id in sorted(set(used_counts) | set(corrected_counts) | set(zero_reference_counts)):
         item = soul_db.get(MemoryItem, item_id)
@@ -347,6 +366,45 @@ def sync_retrieval_feedback(
         if heat_value is not None and (delta != 0 or evidence_heat_factor is not None or decay_count > 0):
             item.heat = heat_value
 
+        # IL6 recall reconsolidation: fires ONLY for genuinely
+        # context-included items this cycle (was_used, not merely scored —
+        # `used_counts` is populated exclusively from
+        # `was_used and not was_corrected` rows, see the grouping loop
+        # above), at most once per item per sync cycle regardless of how
+        # many used feedback rows it accumulated this pass. Superseded and
+        # IL5 distilled-tombstone items are skipped (the "active item"
+        # guard family) — apply_reconsolidation re-checks this itself too,
+        # but skipping here avoids the call entirely for inactive items.
+        # Per-item try/except isolation: one item's failure must never
+        # abort the rest of this sync (matches IL4/IL5 loops).
+        if used_counts.get(item_id, 0) > 0 and item.superseded_by is None and item.distilled_at is None:
+            try:
+                result = apply_reconsolidation(
+                    soul_db,
+                    item,
+                    current_affect_magnitude=current_affect_magnitude,
+                    eta=settings.reconsolidation_eta,
+                    drift_cap=settings.reconsolidation_lifetime_drift_cap,
+                    now=ref_now,
+                )
+            except Exception:
+                logger.exception(
+                    "IL6 reconsolidation failed for memory item %s (user %s)",
+                    item_id,
+                    user_id,
+                )
+            else:
+                if result is not None and (
+                    result.emotional_salience_delta != 0.0 or result.stability_upgraded
+                ):
+                    reconsolidated_items[item_id] = {
+                        "emotional_salience_delta": round(
+                            result.emotional_salience_delta, 6
+                        ),
+                        "stability_upgraded": result.stability_upgraded,
+                        "lifetime_drift_total": round(result.lifetime_drift_total, 6),
+                    }
+
     soul_db.flush()
     soul_db.commit()
 
@@ -381,6 +439,7 @@ def sync_retrieval_feedback(
         "importance_deltas": importance_deltas,
         "evidence_heat_factors": applied_evidence_heat_factors,
         "heat_decay_factors": heat_decay_factors,
+        "reconsolidated_items": reconsolidated_items,
     }
 
 

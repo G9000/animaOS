@@ -35,6 +35,7 @@ from anima_server.models import (
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
+    ReconsolidationLog,
     SelfModelBlock,
     SoulKeyslot,
     Task,
@@ -906,6 +907,12 @@ def export_database_snapshot(
             _scoped(select(TendencyContribution), TendencyContribution)
         ).all()
     ]
+    reconsolidation_log = [
+        serialize_reconsolidation_log_record(row)
+        for row in db.scalars(
+            _scoped(select(ReconsolidationLog), ReconsolidationLog)
+        ).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -927,6 +934,7 @@ def export_database_snapshot(
         "latentTraces": latent_traces,
         "memoryClaims": memory_claims,
         "tendencyContributions": tendency_contributions,
+        "reconsolidationLog": reconsolidation_log,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -966,6 +974,7 @@ def restore_database_snapshot(
     latent_traces_payload = snapshot.get("latentTraces", [])
     memory_claims_payload = snapshot.get("memoryClaims", [])
     tendency_contributions_payload = snapshot.get("tendencyContributions", [])
+    reconsolidation_log_payload = snapshot.get("reconsolidationLog", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -975,6 +984,11 @@ def restore_database_snapshot(
     is_full = scope == "full"
 
     try:
+        # IL6: like TendencyContribution, this must go before MemoryItem
+        # (bulk deletes bypass ORM cascade and SQLite FKs are not enforced,
+        # so a later-deleted memory_items row would leave orphaned log rows
+        # referencing it, or a reused id could reattach to a stale log).
+        db.query(ReconsolidationLog).delete()
         db.query(TendencyContribution).delete()
         # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
         # (no foreign_keys pragma), so claim evidence must be deleted
@@ -1231,6 +1245,7 @@ def restore_database_snapshot(
                     evolves_from_item_id=coerce_optional_int(record.get("evolves_from_item_id")),
                     evolution_kind=coerce_optional_str(record.get("evolution_kind")),
                     distilled_at=parse_optional_datetime(record.get("distilled_at")),
+                    reconsolidation_drift=float(record.get("reconsolidation_drift") or 0.0),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
@@ -1330,6 +1345,22 @@ def restore_database_snapshot(
                     tendency_claim_id=int(record["tendency_claim_id"]),
                     contribution_vector=record.get("contribution_vector") or {},
                     created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        for record in reconsolidation_log_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                ReconsolidationLog(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    memory_item_id=int(record["memory_item_id"]),
+                    applied_at=parse_optional_datetime(record.get("applied_at")),
+                    field=str(record["field"]),
+                    old_value=float(record.get("old_value") or 0.0),
+                    new_value=float(record.get("new_value") or 0.0),
+                    eta=float(record.get("eta") or 0.0),
                 )
             )
 
@@ -1833,6 +1864,7 @@ def serialize_memory_item_record(
         "evolves_from_item_id": item.evolves_from_item_id,
         "evolution_kind": item.evolution_kind,
         "distilled_at": serialize_optional_datetime(item.distilled_at),
+        "reconsolidation_drift": item.reconsolidation_drift,
         "created_at": serialize_optional_datetime(item.created_at),
         "updated_at": serialize_optional_datetime(item.updated_at),
     }
@@ -2294,6 +2326,27 @@ def serialize_tendency_contribution_record(
         "tendency_claim_id": row.tendency_claim_id,
         "contribution_vector": row.contribution_vector,
         "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
+def serialize_reconsolidation_log_record(
+    row: ReconsolidationLog,
+) -> dict[str, Any]:
+    """IL6 provenance ledger row: ``old_value``/``new_value`` are numeric
+    only (never content, see ``ReconsolidationLog`` docstring), so — like
+    ``TendencyContribution`` — this needs no ``deks`` argument. Preserving
+    this table verbatim across export/import is what makes
+    ``original_salience_from_log`` reversibility survive a vault
+    round-trip."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "memory_item_id": row.memory_item_id,
+        "applied_at": serialize_optional_datetime(row.applied_at),
+        "field": row.field,
+        "old_value": row.old_value,
+        "new_value": row.new_value,
+        "eta": row.eta,
     }
 
 
