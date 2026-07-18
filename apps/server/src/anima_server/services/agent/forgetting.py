@@ -439,6 +439,24 @@ def forget_latent_traces_for_topic(
     return count
 
 
+def _topic_key_content_tokens(topic_key: str) -> set[str]:
+    """Content-bearing tokens of a topic key, EXCLUDING structural segments.
+
+    Topic keys are ``user:{namespace}:{slot}:{value}`` (structured) or
+    ``user:{category}:{content}`` (freeform); only the LAST colon-segment
+    carries the actual topic (the value or content slug). Matching the whole
+    key would let a single structural token — ``user``, ``fact``,
+    ``preference`` — purge every tendency/trace under that prefix. Strip the
+    trailing collision digest the slug helpers append, then tokenize only
+    the content segment.
+    """
+    import re
+
+    tail = topic_key.rsplit(":", 1)[-1]
+    tail = re.sub(r"_[0-9a-f]{8,16}$", "", tail)
+    return {token for token in tail.split("_") if token}
+
+
 def purge_latent_traces_matching_topic(
     db: Session,
     *,
@@ -474,12 +492,7 @@ def purge_latent_traces_matching_topic(
     traces = [
         trace
         for trace in all_traces
-        if topic_tokens
-        <= {
-            token
-            for segment in trace.topic_key.split(":")
-            for token in segment.split("_")
-        }
+        if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
     ]
     for trace in traces:
         db.delete(trace)
@@ -539,12 +552,7 @@ def purge_tendency_claims_matching_topic(
     matched = [
         claim
         for claim in claims
-        if topic_tokens
-        <= {
-            token
-            for segment in (claim.slot or "").split(":")
-            for token in segment.split("_")
-        }
+        if topic_tokens <= _topic_key_content_tokens(claim.slot or "")
     ]
     if not matched:
         return 0

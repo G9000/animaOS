@@ -770,3 +770,20 @@ def test_eval_reset_clears_tendency_contributions(db: Session) -> None:
     assert deleted.get("tendency_contributions", 0) >= 1
     assert db.scalars(select(TendencyContribution)).all() == []
     assert db.scalars(select(MemoryClaim)).all() == []
+
+
+def test_topic_purge_ignores_structural_key_segments(db: Session) -> None:
+    """Purging a structural token (user/fact/preference/likes) must NOT
+    match — only the content portion of the topic key counts, or a
+    single-word purge would wipe every tendency under that prefix."""
+    from anima_server.services.agent.forgetting import purge_tendency_claims_matching_topic
+
+    _make_item(db, memory_class="casual", content="likes sushi", category="preference")
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+
+    for structural in ("user", "preference", "likes", "tendency", "casual"):
+        assert purge_tendency_claims_matching_topic(db, user_id=1, topic=structural) == 0
+    # The real content token still works.
+    assert purge_tendency_claims_matching_topic(db, user_id=1, topic="sushi") == 1
