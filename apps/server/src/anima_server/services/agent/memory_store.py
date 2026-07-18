@@ -1013,6 +1013,11 @@ def get_current_focus(db: Session, *, user_id: int) -> str | None:
             MemoryItem.user_id == user_id,
             MemoryItem.category == "focus",
             MemoryItem.superseded_by.is_(None),
+            # Structural tombstone guard: focus items are active_project
+            # class today (exempt from distillation), but that is an
+            # invariant of _infer_salience's goal mapping, not of this
+            # query — keep the guarantee local.
+            MemoryItem.distilled_at.is_(None),
         )
         .order_by(MemoryItem.created_at.desc())
         .limit(1)
@@ -1035,6 +1040,8 @@ def set_current_focus(
             MemoryItem.user_id == user_id,
             MemoryItem.category == "focus",
             MemoryItem.superseded_by.is_(None),
+            # Same structural tombstone guard as get_current_focus.
+            MemoryItem.distilled_at.is_(None),
         )
         .order_by(MemoryItem.created_at.desc())
         .limit(1)
