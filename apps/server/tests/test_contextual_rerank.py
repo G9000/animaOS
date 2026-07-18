@@ -335,6 +335,71 @@ def test_rerank_load_failure_retries_after_ttl_expires(monkeypatch: Any) -> None
     assert calls == [1, 1]
 
 
+def test_reranker_backend_status_ready_when_loaded_model_matches_setting(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+
+    class _FakeModel:
+        def rerank(self, query: str, documents: Any) -> Any:
+            return [0.0 for _ in documents]
+
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: _FakeModel())
+
+    assert reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")]) is not None
+    assert reranker_module.backend_status() == "ready"
+
+
+def test_reranker_backend_status_cold_when_setting_changes_no_failure(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+
+    class _FakeModel:
+        def rerank(self, query: str, documents: Any) -> Any:
+            return [0.0 for _ in documents]
+
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: _FakeModel())
+    reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+    assert reranker_module.backend_status() == "ready"
+
+    # Config now names a different model; the cached model-a load is stale
+    # for it and no attempt to load model-b has happened yet.
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    assert reranker_module.backend_status() == "cold"
+
+
+def test_reranker_backend_status_failed_retrying_when_switch_fails(
+    monkeypatch: Any,
+) -> None:
+    clock = {"now": 3000.0}
+    monkeypatch.setattr(reranker_module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+
+    class _FakeModel:
+        def rerank(self, query: str, documents: Any) -> Any:
+            return [0.0 for _ in documents]
+
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: _FakeModel())
+    reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+    assert reranker_module.backend_status() == "ready"
+
+    def _boom() -> Any:
+        raise RuntimeError("model-b unavailable")
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    monkeypatch.setattr(reranker_module, "_create_model", _boom)
+
+    assert reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")]) is None
+    assert reranker_module.backend_status() == "failed_retrying"
+
+    clock["now"] += reranker_module._RETRY_TTL_SECONDS - 1
+    assert reranker_module.backend_status() == "failed_retrying"
+
+    clock["now"] += 2
+    assert reranker_module.backend_status() == "cold"
+
+
 def test_rerank_orders_by_model_scores(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 

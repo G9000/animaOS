@@ -401,11 +401,17 @@ async def update_config(
         settings.agent_base_url = ""
 
     if embedding_provider == "":
-        # Reset to bundled default: clear the explicit provider/model/key
-        # so resolution falls through to the bundled fastembed default.
+        # Reset to bundled default: clear the explicit provider/model/key,
+        # AND the embedding base URL. Without clearing the base URL too, a
+        # previously-configured agent_embedding_base_url (env / persisted
+        # runtime settings / legacy) still satisfies
+        # has_embedding_piggyback_intent(), so resolve_embedding_provider()
+        # would keep piggybacking on the chat provider instead of actually
+        # returning to fastembed — this reset would be a no-op in that case.
         settings.agent_embedding_provider = ""
         settings.agent_embedding_model = ""
         settings.agent_embedding_api_key = ""
+        settings.agent_embedding_base_url = ""
     else:
         # embeddingProvider may be omitted while model and/or key are sent —
         # those still apply, against the currently-configured embedding

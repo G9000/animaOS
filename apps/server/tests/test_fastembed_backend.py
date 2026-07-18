@@ -91,3 +91,77 @@ def test_load_failure_retries_after_ttl_expires(monkeypatch) -> None:
     monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
     third = fastembed_backend.embed_texts(["c"], model_name="test-model")
     assert third == [[1.0] * 4]
+
+
+# ── backend_status: model-name-aware ────────────────────────────────────
+#
+# backend_status() must not just check "is *some* model loaded" — it has to
+# agree with which model is currently configured. Otherwise a failed switch
+# from model A to model B leaves a stale, no-longer-relevant model A sitting
+# in `_model`, and backend_status would keep reporting "ready" even though
+# `embed_texts(model_name="B")` is actively returning None vectors.
+
+
+def test_backend_status_cold_when_nothing_loaded(monkeypatch) -> None:
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-a")
+    assert fastembed_backend.backend_status() == "cold"
+
+
+def test_backend_status_ready_when_loaded_model_matches_current(monkeypatch) -> None:
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-a")
+    fake = _FakeModel()
+    monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
+
+    fastembed_backend.embed_texts(["a"], model_name="model-a")
+
+    assert fastembed_backend.backend_status() == "ready"
+
+
+def test_backend_status_cold_when_loaded_model_differs_from_current_no_failure(
+    monkeypatch,
+) -> None:
+    fake = _FakeModel()
+    monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
+    fastembed_backend.embed_texts(["a"], model_name="model-a")
+
+    # Config has since moved on to model-b; model-a was never re-attempted
+    # for model-b, so there's no active failure — just a stale load.
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-b")
+
+    assert fastembed_backend.backend_status() == "cold"
+
+
+def test_backend_status_failed_retrying_when_switch_to_current_model_fails(
+    monkeypatch,
+) -> None:
+    """Model A loaded fine; switching to model B fails and latches within
+    TTL. Status must reflect B's failure, not A's stale "ready" state."""
+    clock = {"now": 2000.0}
+    monkeypatch.setattr(fastembed_backend.time, "monotonic", lambda: clock["now"])
+
+    fake = _FakeModel()
+    monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
+    fastembed_backend.embed_texts(["a"], model_name="model-a")
+
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-a")
+    assert fastembed_backend.backend_status() == "ready"
+
+    def failing_factory(model_name: str):
+        raise RuntimeError("model-b unavailable")
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", failing_factory)
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-b")
+
+    result = fastembed_backend.embed_texts(["x"], model_name="model-b")
+    assert result == [None]
+
+    assert fastembed_backend.backend_status() == "failed_retrying"
+
+    # Still within TTL: stays failed_retrying, not "ready" from stale model A.
+    clock["now"] += fastembed_backend._RETRY_TTL_SECONDS - 1
+    assert fastembed_backend.backend_status() == "failed_retrying"
+
+    # TTL lapsed with no retry yet attempted: cold (model A is stale for the
+    # now-current model B), implying a retry is due on the next embed call.
+    clock["now"] += 2
+    assert fastembed_backend.backend_status() == "cold"

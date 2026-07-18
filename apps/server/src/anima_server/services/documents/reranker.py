@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _model_lock = threading.Lock()
 _model: Any | None = None
+_model_name_loaded: str | None = None
 _failed_at: float | None = None
 
 _RETRY_TTL_SECONDS = 300.0
@@ -69,13 +70,14 @@ def _create_model() -> Any:
 
 
 def _load_model() -> Any | None:
-    global _model, _failed_at
-    if _model is not None:
+    global _model, _model_name_loaded, _failed_at
+    model_name = settings.retrieval_reranker_model
+    if _model is not None and _model_name_loaded == model_name:
         return _model
     if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
         return None
     with _model_lock:
-        if _model is not None:
+        if _model is not None and _model_name_loaded == model_name:
             return _model
         if (
             _failed_at is not None
@@ -84,6 +86,7 @@ def _load_model() -> Any | None:
             return None
         try:
             _model = _create_model()
+            _model_name_loaded = model_name
             _failed_at = None
         except Exception:
             _failed_at = time.monotonic()
@@ -102,19 +105,26 @@ def _load_model() -> Any | None:
 def backend_status() -> str:
     """Read-only snapshot of the local reranker model latch.
 
-    Never triggers a load. See ``fastembed_backend.backend_status`` for the
-    equivalent embeddings-side helper and the shared TTL-cooldown rationale.
+    Never triggers a load. Mirrors ``fastembed_backend.backend_status``:
+    model-name-aware, not just "is *some* model loaded". A failed load for
+    the currently-configured ``settings.retrieval_reranker_model`` reports
+    ``"failed_retrying"`` (even if an older, differently-named model is
+    still cached in ``_model``) while its TTL cooldown is active; ``"ready"``
+    requires the cached model's name to match the current setting; anything
+    else — never attempted, or a stale model cached under a different name
+    with no active failure — is ``"cold"``.
     """
-    if _model is not None:
-        return "ready"
     if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
         return "failed_retrying"
+    if _model is not None and _model_name_loaded == settings.retrieval_reranker_model:
+        return "ready"
     return "cold"
 
 
 def _reset_model_cache_for_tests() -> None:
-    global _model, _failed_at
+    global _model, _model_name_loaded, _failed_at
     _model = None
+    _model_name_loaded = None
     _failed_at = None
 
 

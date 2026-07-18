@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -885,6 +886,57 @@ def test_config_update_resets_embedding_provider_to_bundled_default() -> None:
             assert config["hasEmbeddingApiKey"] is False
         finally:
             _restore_config_settings(original)
+
+
+def test_config_update_reset_also_clears_embedding_base_url(tmp_path) -> None:
+    """Regression: resetting embeddingProvider to "" must fully return to
+    the bundled fastembed default — including a previously-set
+    agent_embedding_base_url. Without clearing it,
+    has_embedding_piggyback_intent() still sees a truthy base URL, so
+    resolve_embedding_provider() keeps piggybacking on the chat provider and
+    the "reset" is a no-op."""
+    original = _snapshot_config_settings()
+    original_data_dir = settings.data_dir
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            settings.data_dir = tmp_path
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_base_url = "http://x:11434"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_base_url == ""
+            assert settings.agent_embedding_provider == ""
+            assert settings.agent_embedding_model == ""
+            assert settings.agent_embedding_api_key == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+
+            # Persisted, not just in-memory: a restart must not silently
+            # revert to the piggyback behavior.
+            persisted = json.loads(
+                config_module.get_runtime_settings_path().read_text(encoding="utf-8")
+            )
+            assert persisted["agent_embedding_base_url"] == ""
+        finally:
+            _restore_config_settings(original)
+            settings.data_dir = original_data_dir
 
 
 def test_config_update_rejects_invalid_embedding_provider() -> None:

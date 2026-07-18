@@ -268,11 +268,17 @@ def test_fastembed_backend_status_cold_by_default() -> None:
     assert fastembed_backend.backend_status() == "cold"
 
 
-def test_fastembed_backend_status_ready_when_model_loaded() -> None:
+def test_fastembed_backend_status_ready_when_model_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from anima_server.services.agent import fastembed_backend
 
     fastembed_backend._reset_backend_for_tests()
+    monkeypatch.setattr(
+        fastembed_backend, "_resolve_current_model_name", lambda: "model-a"
+    )
     fastembed_backend._model = object()
+    fastembed_backend._model_name_loaded = "model-a"
     try:
         assert fastembed_backend.backend_status() == "ready"
     finally:
@@ -305,15 +311,60 @@ def test_fastembed_backend_status_cold_after_ttl_expires() -> None:
         fastembed_backend._reset_backend_for_tests()
 
 
-def test_reranker_backend_status_matches_latch_states() -> None:
+def test_fastembed_backend_status_not_ready_when_loaded_model_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model A loaded fine, but config now resolves to model B with a latched
+    failure — must report the failure, not the stale model A as "ready"."""
     import time
 
+    from anima_server.services.agent import fastembed_backend
+
+    fastembed_backend._reset_backend_for_tests()
+    monkeypatch.setattr(
+        fastembed_backend, "_resolve_current_model_name", lambda: "model-b"
+    )
+    fastembed_backend._model = object()
+    fastembed_backend._model_name_loaded = "model-a"
+    fastembed_backend._failed_at = time.monotonic()
+    try:
+        assert fastembed_backend.backend_status() == "failed_retrying"
+    finally:
+        fastembed_backend._reset_backend_for_tests()
+
+
+def test_fastembed_backend_status_cold_when_loaded_model_differs_no_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model A loaded, config now resolves to model B, no active failure —
+    a load of the current model hasn't happened yet, so status is "cold"."""
+    from anima_server.services.agent import fastembed_backend
+
+    fastembed_backend._reset_backend_for_tests()
+    monkeypatch.setattr(
+        fastembed_backend, "_resolve_current_model_name", lambda: "model-b"
+    )
+    fastembed_backend._model = object()
+    fastembed_backend._model_name_loaded = "model-a"
+    try:
+        assert fastembed_backend.backend_status() == "cold"
+    finally:
+        fastembed_backend._reset_backend_for_tests()
+
+
+def test_reranker_backend_status_matches_latch_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from anima_server.config import settings
     from anima_server.services.documents import reranker
 
     reranker._reset_model_cache_for_tests()
     assert reranker.backend_status() == "cold"
 
     reranker._model = object()
+    reranker._model_name_loaded = settings.retrieval_reranker_model
     assert reranker.backend_status() == "ready"
 
     reranker._reset_model_cache_for_tests()
@@ -321,6 +372,43 @@ def test_reranker_backend_status_matches_latch_states() -> None:
     assert reranker.backend_status() == "failed_retrying"
 
     reranker._reset_model_cache_for_tests()
+
+
+def test_reranker_backend_status_not_ready_when_loaded_model_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model A loaded fine, but settings now name model B with a latched
+    failure — must report the failure, not the stale model A as "ready"."""
+    import time
+
+    from anima_server.config import settings
+    from anima_server.services.documents import reranker
+
+    reranker._reset_model_cache_for_tests()
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    reranker._model = object()
+    reranker._model_name_loaded = "model-a"
+    reranker._failed_at = time.monotonic()
+    try:
+        assert reranker.backend_status() == "failed_retrying"
+    finally:
+        reranker._reset_model_cache_for_tests()
+
+
+def test_reranker_backend_status_cold_when_loaded_model_differs_no_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.documents import reranker
+
+    reranker._reset_model_cache_for_tests()
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    reranker._model = object()
+    reranker._model_name_loaded = "model-a"
+    try:
+        assert reranker.backend_status() == "cold"
+    finally:
+        reranker._reset_model_cache_for_tests()
 
 
 # ---------------------------------------------------------------------------

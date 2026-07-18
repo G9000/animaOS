@@ -78,19 +78,43 @@ def _load_model(model_name: str) -> Any | None:
     return _model
 
 
+def _resolve_current_model_name() -> str:
+    """Resolve the embedding model name that should be loaded right now.
+
+    Imported lazily (module scope, not import time) to avoid a cycle:
+    ``embeddings`` already imports ``embed_texts`` from this module lazily
+    inside its functions, so keeping this edge lazy too means either module
+    stays importable regardless of which one loads first.
+    """
+    from anima_server.services.agent.embeddings import _resolve_embedding_model
+
+    return _resolve_embedding_model()
+
+
 def backend_status() -> str:
     """Read-only snapshot of the in-process embedding model latch.
 
     Never triggers a load — purely observes the state ``_load_model`` already
-    set: ``"ready"`` once a model is loaded, ``"failed_retrying"`` while a
-    prior load failure's TTL cooldown is still active, ``"cold"`` otherwise
-    (never attempted, or the cooldown has lapsed and the next call will
-    retry the load).
+    set, and is aware of *which* model is currently configured (not just
+    whether some model happens to be loaded):
+
+    - ``"failed_retrying"``: a load failure is latched and its TTL cooldown
+      is still active. This takes priority even if a *different*, older
+      model is still sitting in ``_model`` — that stale model must not be
+      reported as backing the currently-configured one.
+    - ``"ready"``: a model is loaded, no failure is latched, AND the loaded
+      model name matches the currently-resolved one. A load of model A
+      followed by a config switch to model B (with B's load still pending
+      or its failure already past TTL) must NOT report "ready" — that would
+      claim a model is healthy when it's actually never been attempted.
+    - ``"cold"`` otherwise: never attempted, the cooldown lapsed without a
+      retry happening yet (so a retry is implied on the next embed call), or
+      the loaded model differs from the current one with no active failure.
     """
-    if _model is not None:
-        return "ready"
     if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
         return "failed_retrying"
+    if _model is not None and _model_name_loaded == _resolve_current_model_name():
+        return "ready"
     return "cold"
 
 
