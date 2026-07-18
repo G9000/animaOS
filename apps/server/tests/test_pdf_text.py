@@ -10,7 +10,6 @@ from anima_server.services.documents.pdf_text import (
     extract_pdf_text,
     normalize_pdf_page_text,
 )
-
 from pdf_fixtures import write_text_pdf
 
 
