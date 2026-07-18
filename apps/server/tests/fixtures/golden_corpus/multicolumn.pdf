@@ -12,27 +12,51 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
 endobj
 5 0 obj
-<< /Length 572 >>
+<< /Length 1002 >>
 stream
 BT
-/F1 13 Tf
+/F1 12 Tf
 1 0 0 1 54 720 Tm
 (Marsh Orchid Cultivation Notes) Tj
-/F1 10 Tf
-1 0 0 1 54 690 Tm
-(Marsh orchids thrive in waterlogged peat with dappled afternoon shade.) Tj
-/F1 10 Tf
-1 0 0 1 54 670 Tm
-(Divide the rhizomes every third spring to prevent overcrowding in the bed.) Tj
-/F1 13 Tf
-1 0 0 1 320 720 Tm
+/F1 9 Tf
+1 0 0 1 54 694 Tm
+(Marsh orchids thrive in waterlogged peat.) Tj
+/F1 9 Tf
+1 0 0 1 54 668 Tm
+(Keep the crown above the waterline.) Tj
+/F1 9 Tf
+1 0 0 1 54 642 Tm
+(Feed a dilute tonic at first bloom.) Tj
+/F1 9 Tf
+1 0 0 1 54 616 Tm
+(Shield the bed from hard overnight frost.) Tj
+/F1 9 Tf
+1 0 0 1 54 590 Tm
+(Divide the rhizomes every third spring.) Tj
+/F1 9 Tf
+1 0 0 1 54 564 Tm
+(Label each division by its bloom colour.) Tj
+/F1 12 Tf
+1 0 0 1 330 720 Tm
 (Solar Array Maintenance Notes) Tj
-/F1 10 Tf
-1 0 0 1 320 690 Tm
-(Wipe the panel glass with a soft cloth to remove accumulated pollen and dust.) Tj
-/F1 10 Tf
-1 0 0 1 320 670 Tm
-(Check the inverter fuse if output drops below eighty percent of rated capacity.) Tj
+/F1 9 Tf
+1 0 0 1 330 694 Tm
+(Wipe the panel glass with a soft cloth.) Tj
+/F1 9 Tf
+1 0 0 1 330 668 Tm
+(Inspect mounting bolts for corrosion.) Tj
+/F1 9 Tf
+1 0 0 1 330 642 Tm
+(Log the midday output current daily.) Tj
+/F1 9 Tf
+1 0 0 1 330 616 Tm
+(Reseat any brittle connector insulation.) Tj
+/F1 9 Tf
+1 0 0 1 330 590 Tm
+(Check the inverter fuse below eighty percent.) Tj
+/F1 9 Tf
+1 0 0 1 330 564 Tm
+(Record the firmware after each update.) Tj
 ET
 endstream
 endobj
@@ -47,5 +71,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-933
+1364
 %%EOF

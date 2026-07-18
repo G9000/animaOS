@@ -1,7 +1,8 @@
 {
   "multicolumn": {
-    "column1_phrase": "Marsh orchids thrive in waterlogged peat",
-    "column2_phrase": "Wipe the panel glass",
+    "column1_first_phrase": "Marsh orchids thrive in waterlogged peat",
+    "column1_last_phrase": "Label each division by its bloom colour",
+    "column2_first_phrase": "Wipe the panel glass",
     "queries": [
       {
         "expect": "every third spring",

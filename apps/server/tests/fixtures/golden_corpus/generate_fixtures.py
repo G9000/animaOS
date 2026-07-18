@@ -68,29 +68,61 @@ def _write_simple_pdf(path: Path) -> None:
 # multicolumn.pdf — two independent text columns at different x offsets.
 # ---------------------------------------------------------------------------
 
+# Two tall, narrow columns side by side with a wide gutter — the realistic
+# newspaper geometry a layout model needs to recognise a column boundary.
+# Both columns span the SAME vertical range (top to bottom), so reading order
+# is the discriminator: a column-aware reader emits all of column 1 (heading +
+# every body line, top to bottom) and only then all of column 2, whereas a
+# naive y-descending / x-ascending sort interleaves the two columns row by row.
+# The reading-order test compares column 1's LAST body line against column 2's
+# FIRST body line: column-aware puts them in that order, a y-sort reverses them
+# (column 2's first line sits near the top of the page, column 1's last near
+# the bottom). Lines are kept short (~40 chars) so each column's text stays
+# well clear of the ~100pt gutter between column1_x+width and column2_x.
 COLUMN1_HEADING = "Marsh Orchid Cultivation Notes"
-COLUMN1_LINE_1 = "Marsh orchids thrive in waterlogged peat with dappled afternoon shade."
-COLUMN1_LINE_2 = "Divide the rhizomes every third spring to prevent overcrowding in the bed."
+COLUMN1_LINES = [
+    "Marsh orchids thrive in waterlogged peat.",
+    "Keep the crown above the waterline.",
+    "Feed a dilute tonic at first bloom.",
+    "Shield the bed from hard overnight frost.",
+    "Divide the rhizomes every third spring.",
+    "Label each division by its bloom colour.",
+]
 
 COLUMN2_HEADING = "Solar Array Maintenance Notes"
-COLUMN2_LINE_1 = (
-    "Wipe the panel glass with a soft cloth to remove accumulated pollen and dust."
-)
-COLUMN2_LINE_2 = (
-    "Check the inverter fuse if output drops below eighty percent of rated capacity."
-)
+COLUMN2_LINES = [
+    "Wipe the panel glass with a soft cloth.",
+    "Inspect mounting bolts for corrosion.",
+    "Log the midday output current daily.",
+    "Reseat any brittle connector insulation.",
+    "Check the inverter fuse below eighty percent.",
+    "Record the firmware after each update.",
+]
+
+_MULTICOLUMN_Y_START = 720
+_MULTICOLUMN_LINE_HEIGHT = 26
+
+
+def _column_runs(x: float, heading: str, lines: list[str]) -> list[TextRun]:
+    runs = [TextRun(x=x, y=_MULTICOLUMN_Y_START, text=heading, font_size=12)]
+    for index, line in enumerate(lines, start=1):
+        runs.append(
+            TextRun(
+                x=x,
+                y=_MULTICOLUMN_Y_START - index * _MULTICOLUMN_LINE_HEIGHT,
+                text=line,
+                font_size=9,
+            )
+        )
+    return runs
 
 
 def _write_multicolumn_pdf(path: Path) -> None:
     column1_x = 54
-    column2_x = 320
+    column2_x = 330
     runs = [
-        TextRun(x=column1_x, y=720, text=COLUMN1_HEADING, font_size=13),
-        TextRun(x=column1_x, y=690, text=COLUMN1_LINE_1, font_size=10),
-        TextRun(x=column1_x, y=670, text=COLUMN1_LINE_2, font_size=10),
-        TextRun(x=column2_x, y=720, text=COLUMN2_HEADING, font_size=13),
-        TextRun(x=column2_x, y=690, text=COLUMN2_LINE_1, font_size=10),
-        TextRun(x=column2_x, y=670, text=COLUMN2_LINE_2, font_size=10),
+        *_column_runs(column1_x, COLUMN1_HEADING, COLUMN1_LINES),
+        *_column_runs(column2_x, COLUMN2_HEADING, COLUMN2_LINES),
     ]
     write_multi_text_pdf(path, runs, media_box=(0, 0, 612, 792))
 
@@ -184,8 +216,14 @@ def _gold_corpus() -> dict[str, object]:
             ],
         },
         "multicolumn": {
-            "column1_phrase": "Marsh orchids thrive in waterlogged peat",
-            "column2_phrase": "Wipe the panel glass",
+            # column1_first / column1_last / column2_first are the specific
+            # lines the reading-order test compares: with the interleaved
+            # y-layout (see _write_multicolumn_pdf) the test asserts column
+            # 1's LAST body line precedes column 2's FIRST body line, which a
+            # naive y-sort gets wrong.
+            "column1_first_phrase": "Marsh orchids thrive in waterlogged peat",
+            "column1_last_phrase": "Label each division by its bloom colour",
+            "column2_first_phrase": "Wipe the panel glass",
             "queries": [
                 {
                     "id": "multicolumn-orchid",

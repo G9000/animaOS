@@ -229,17 +229,40 @@ def test_simple_pdf_phrases_present(golden_extractions: dict[str, Any]) -> None:
 
 
 def test_multicolumn_reading_order(golden_extractions: dict[str, Any]) -> None:
-    text = _joined_text(golden_extractions["multicolumn"]).lower()
-    column1_phrase = GOLD["multicolumn"]["column1_phrase"].lower()
-    column2_phrase = GOLD["multicolumn"]["column2_phrase"].lower()
+    """Genuinely column-aware reading order, not a y-sort coincidence.
 
-    column1_index = text.find(column1_phrase)
-    column2_index = text.find(column2_phrase)
-    assert column1_index != -1, f"column 1 phrase {column1_phrase!r} missing"
-    assert column2_index != -1, f"column 2 phrase {column2_phrase!r} missing"
-    assert column1_index < column2_index, (
-        "expected column 1's sentence to precede column 2's in reading order "
-        f"(column1 at {column1_index}, column2 at {column2_index})"
+    The fixture interleaves the two columns' y-values (column 2's rows sit
+    between column 1's — see ``generate_fixtures._write_multicolumn_pdf``), so
+    a naive extractor that sorts by y-descending then x-ascending would place
+    column 2's FIRST body line above column 1's LAST body line. The assertion
+    therefore compares column 1's *last* line against column 2's *first*:
+    only a reader that groups by column (all of column 1 top-to-bottom, then
+    all of column 2) puts them in the asserted order. A naive y-sort fails it.
+    """
+    text = _joined_text(golden_extractions["multicolumn"]).lower()
+    column1_first = GOLD["multicolumn"]["column1_first_phrase"].lower()
+    column1_last = GOLD["multicolumn"]["column1_last_phrase"].lower()
+    column2_first = GOLD["multicolumn"]["column2_first_phrase"].lower()
+
+    column1_first_index = text.find(column1_first)
+    column1_last_index = text.find(column1_last)
+    column2_first_index = text.find(column2_first)
+    assert column1_first_index != -1, f"column 1 first line {column1_first!r} missing"
+    assert column1_last_index != -1, f"column 1 last line {column1_last!r} missing"
+    assert column2_first_index != -1, f"column 2 first line {column2_first!r} missing"
+    # Sanity within column 1: its first line precedes its last line.
+    assert column1_first_index < column1_last_index, (
+        "column 1's own lines are out of order "
+        f"(first at {column1_first_index}, last at {column1_last_index})"
+    )
+    # The load-bearing column-awareness check: column 1's LAST line must come
+    # before column 2's FIRST line. Under the interleaved y-layout a naive
+    # y-sort would reverse these.
+    assert column1_last_index < column2_first_index, (
+        "expected all of column 1 to precede column 2 in reading order — "
+        "column 1's last line came AFTER column 2's first line, which is what "
+        "a column-unaware (y-sorted) extractor would produce "
+        f"(column1_last at {column1_last_index}, column2_first at {column2_first_index})"
     )
 
 
