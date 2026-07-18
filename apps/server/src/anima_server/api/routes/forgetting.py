@@ -65,29 +65,37 @@ async def forget_by_topic_endpoint(
 ) -> dict[str, object]:
     """Find memories matching a topic and return them as candidates for confirmation.
 
-    Does NOT delete memories — returns a candidate list for per-item
+    Does NOT delete visible memories — returns a candidate list for per-item
     confirmation. ``purge_traces=true`` additionally deletes matching
-    latent traces immediately: those are sub-threshold accumulation
-    signals with no per-item confirm path of their own (PRD IL4
-    topic-scoped right-to-forget).
+    sub-threshold/hidden residue immediately, which has no per-item confirm
+    path of its own: IL4 latent traces (accumulation signals) AND IL5
+    distilled tendencies + their tombstones (whose source content is erased,
+    so ``forget_by_topic``'s content search can never surface them). Both are
+    PRD topic-scoped right-to-forget.
     """
     require_unlocked_user(request, user_id)
 
     candidates = forget_by_topic(db, topic=topic, user_id=user_id)
 
     traces_purged = 0
+    tendencies_purged = 0
     if purge_traces:
         from anima_server.services.agent.forgetting import (
             purge_latent_traces_matching_topic,
+            purge_tendency_claims_matching_topic,
         )
 
         traces_purged = purge_latent_traces_matching_topic(db, user_id=user_id, topic=topic)
+        tendencies_purged = purge_tendency_claims_matching_topic(
+            db, user_id=user_id, topic=topic
+        )
         db.commit()
 
     return {
         "topic": topic,
         "candidate_count": len(candidates),
         "latent_traces_purged": traces_purged,
+        "tendencies_purged": tendencies_purged,
         "candidates": [
             {
                 "id": item.id,

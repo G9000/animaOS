@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     latent_fold_rate: float = Field(default=0.5, ge=0.0, le=1.0)
     latent_weekly_decay: float = Field(default=0.98, ge=0.0, le=1.0)
     latent_max_traces_per_user: int = Field(default=500, ge=1)
+    # IL5 forgetting-as-distillation (see services/agent/distillation.py).
+    # Pure DB work with no LLM calls, but capped per sleep run to bound
+    # work — ge=1 so a misconfigured cap can't silently disable the sweep.
+    distill_max_per_run: int = Field(default=20, ge=1)
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30

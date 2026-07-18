@@ -264,6 +264,9 @@ def load_canonical_memory_retrieval_documents(
             .where(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
+                # IL5: a distilled tombstone must never be re-added to the
+                # vector/BM25 index by a rebuild (its content is gutted).
+                MemoryItem.distilled_at.is_(None),
             )
             .order_by(MemoryItem.created_at.desc())
         ).all()
@@ -695,7 +698,12 @@ def get_memory_items(
     limit: int = 50,
     active_only: bool = True,
 ) -> list[MemoryItem]:
-    query = select(MemoryItem).where(MemoryItem.user_id == user_id)
+    query = select(MemoryItem).where(
+        MemoryItem.user_id == user_id,
+        # IL5: a distilled tombstone is content-free and must never surface
+        # in a memory listing, regardless of active_only.
+        MemoryItem.distilled_at.is_(None),
+    )
     if category is not None:
         query = query.where(MemoryItem.category == category)
     if active_only:
@@ -725,6 +733,10 @@ def get_memory_items_scored(
     query = select(MemoryItem).where(
         MemoryItem.user_id == user_id,
         MemoryItem.superseded_by.is_(None),
+        # IL5: a distilled tombstone's content is gutted; the heat floor
+        # already excludes it (distillation only fires below-floor), but
+        # guard explicitly in case heat is ever recomputed upward later.
+        MemoryItem.distilled_at.is_(None),
         # Exclude items that have been scored (heat > 0) but decayed below floor.
         # Items with heat == 0.0 or NULL are unscored and should NOT be excluded.
         or_(
@@ -1001,6 +1013,11 @@ def get_current_focus(db: Session, *, user_id: int) -> str | None:
             MemoryItem.user_id == user_id,
             MemoryItem.category == "focus",
             MemoryItem.superseded_by.is_(None),
+            # Structural tombstone guard: focus items are active_project
+            # class today (exempt from distillation), but that is an
+            # invariant of _infer_salience's goal mapping, not of this
+            # query — keep the guarantee local.
+            MemoryItem.distilled_at.is_(None),
         )
         .order_by(MemoryItem.created_at.desc())
         .limit(1)
@@ -1023,6 +1040,8 @@ def set_current_focus(
             MemoryItem.user_id == user_id,
             MemoryItem.category == "focus",
             MemoryItem.superseded_by.is_(None),
+            # Same structural tombstone guard as get_current_focus.
+            MemoryItem.distilled_at.is_(None),
         )
         .order_by(MemoryItem.created_at.desc())
         .limit(1)
@@ -1314,6 +1333,7 @@ def get_items_by_tags(
             .where(
                 MemoryItem.id.in_(item_ids),
                 MemoryItem.superseded_by.is_(None),
+                MemoryItem.distilled_at.is_(None),
             )
             .order_by(MemoryItem.created_at.desc())
             .limit(limit)

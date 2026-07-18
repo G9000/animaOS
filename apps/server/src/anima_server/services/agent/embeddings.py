@@ -713,7 +713,12 @@ async def semantic_search(
     items_by_id = {
         item.id: item
         for item in db.scalars(
-            select(MemoryItem).where(MemoryItem.id.in_(item_ids))
+            select(MemoryItem).where(
+                MemoryItem.id.in_(item_ids),
+                # Best-effort index cleanup after distillation may lag, so
+                # exclude tombstones SQL-side rather than trust the index.
+                MemoryItem.distilled_at.is_(None),
+            )
         ).all()
     }
 
@@ -806,6 +811,9 @@ async def backfill_embeddings(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
                 MemoryItem.embedding_json.is_(None),
+                # IL5 tombstones are content-free with a nulled embedding by
+                # design — never an "unembedded active item" to backfill.
+                MemoryItem.distilled_at.is_(None),
             )
             .limit(batch_size)
         ).all()
@@ -1267,7 +1275,14 @@ async def hybrid_search(
     items_by_id = (
         {
             item.id: item
-            for item in db.scalars(select(MemoryItem).where(MemoryItem.id.in_(merged_ids))).all()
+            for item in db.scalars(
+                select(MemoryItem).where(
+                    MemoryItem.id.in_(merged_ids),
+                    # Tombstone guard: a lagging index must not resurface a
+                    # distilled item through the hybrid-search path.
+                    MemoryItem.distilled_at.is_(None),
+                )
+            ).all()
         }
         if merged_ids
         else {}

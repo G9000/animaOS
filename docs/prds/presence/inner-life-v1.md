@@ -157,7 +157,7 @@ Ten passing mentions of work stress across a month become one well-evidenced mem
 
 ### IL5 — Forgetting as Distillation (extends F7)
 
-When passive decay (F7) takes an episode or fact below the visibility floor AND its memory class (`memory_class` in `memory_salience.py`, not `stability_class`) is `casual`, `transient`, or `emotional_pattern`:
+When passive decay (F7) takes an episode or fact down to its own salience floor — the recency/access contribution fully gone, only the importance/salience floor clamp keeping it scored (the hard visibility floor of 0.01 is unreachable for schema-valid items, since `compute_heat` clamps every item to `importance_heat_floor × salience_heat_floor_multiplier ≥ ~0.025`) — AND its memory class (`memory_class` in `memory_salience.py`, not `stability_class`) is `casual`, `transient`, or `emotional_pattern`:
 
 1. **Distill**: fold its affective/topical signature into a semantic tendency claim (namespace `tendency`, e.g. "low-grade recurring frustration around commuting").
 2. **Ledger**: write a `tendency_contributions` row `(tombstone_id, tendency_claim_id, contribution_vector)` — numeric signature deltas only, no content. The tendency's value is defined as a recency-weighted aggregate *recomputable from its surviving ledger rows*, so any single contribution can be removed exactly later.

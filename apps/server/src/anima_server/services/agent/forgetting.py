@@ -439,6 +439,40 @@ def forget_latent_traces_for_topic(
     return count
 
 
+def _topic_key_content_tokens(topic_key: str) -> set[str]:
+    """Content-bearing tokens of a topic key, EXCLUDING structural segments.
+
+    Topic keys are ``user:{namespace}:{slot}:{value}`` (structured) or
+    ``user:{category}:{content}`` (freeform); only the LAST colon-segment
+    carries the actual topic (the value or content slug). Matching the whole
+    key would let a single structural token — ``user``, ``fact``,
+    ``preference`` — purge every tendency/trace under that prefix. Strip the
+    trailing collision digest the slug helpers append, then tokenize only
+    the content segment.
+    """
+    import re
+
+    tail = topic_key.rsplit(":", 1)[-1]
+    tail = re.sub(r"_[0-9a-f]{8,16}$", "", tail)
+    return {token for token in tail.split("_") if token}
+
+
+def _topic_query_tokens(topic: str) -> set[str]:
+    """Content tokens of a user's topic query, normalized the SAME way
+    stored keys are so a structured phrase matches its stored value.
+
+    A raw phrase like "likes sushi" or "works at Acme" carries structural
+    words (likes/works/at) that the stored key drops — comparing raw query
+    tokens against ``_topic_key_content_tokens`` would never match. Running
+    the query through ``derive_topic_key`` collapses it to the same value
+    segment ("sushi", "acme"); the category is irrelevant here since only
+    the trailing content segment is kept.
+    """
+    from anima_server.services.agent.claims import derive_topic_key
+
+    return _topic_key_content_tokens(derive_topic_key(topic, "fact"))
+
+
 def purge_latent_traces_matching_topic(
     db: Session,
     *,
@@ -460,12 +494,10 @@ def purge_latent_traces_matching_topic(
     complete token among the key's slug segments.
     """
     from anima_server.models.agent_runtime import LatentTrace
-    from anima_server.services.agent.claims import _content_slug
 
-    slug = _content_slug(topic)
-    if not slug:
+    topic_tokens = _topic_query_tokens(topic)
+    if not topic_tokens:
         return 0
-    topic_tokens = set(slug.split("_"))
     # Bounded by the per-user trace cap, so Python-side token filtering is
     # cheap and portable across dialects.
     all_traces = db.scalars(
@@ -474,12 +506,7 @@ def purge_latent_traces_matching_topic(
     traces = [
         trace
         for trace in all_traces
-        if topic_tokens
-        <= {
-            token
-            for segment in trace.topic_key.split(":")
-            for token in segment.split("_")
-        }
+        if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
     ]
     for trace in traces:
         db.delete(trace)
@@ -496,6 +523,144 @@ def purge_latent_traces_matching_topic(
         )
         db.flush()
     return len(traces)
+
+
+# ── IL5 right-to-forget integration ────────────────────────────────────
+
+
+def purge_tendency_claims_matching_topic(
+    db: Session,
+    *,
+    user_id: int,
+    topic: str,
+) -> int:
+    """Delete tendency claims (and their ledger + tombstones) whose topic
+    key token-matches ``topic`` (PRD IL5 topic-scoped right-to-forget).
+
+    Distillation erases the source item's content and hides it from normal
+    listings, so ``forget_by_topic`` (which searches MemoryItem content/BM25)
+    can never surface a distilled memory — leaving no per-item path to reach
+    ``_scrub_tendency_contributions_for_forget``. This is the discovery path:
+    the tendency claim's slot IS the shared topic key, so token-matching it
+    finds the distilled residue and removes the claim, every contributing
+    tombstone, and the ledger rows together. Whole-token match (topic "art"
+    must not purge "cart_repair"), mirroring the latent-trace purge.
+    """
+    from anima_server.models import MemoryClaim, MemoryItem, TendencyContribution
+    from anima_server.services.agent.claims import TENDENCY_NAMESPACE
+
+    topic_tokens = _topic_query_tokens(topic)
+    if not topic_tokens:
+        return 0
+
+    claims = list(
+        db.scalars(
+            select(MemoryClaim).where(
+                MemoryClaim.user_id == user_id,
+                MemoryClaim.namespace == TENDENCY_NAMESPACE,
+                MemoryClaim.status == "active",
+            )
+        ).all()
+    )
+    matched = [
+        claim
+        for claim in claims
+        if topic_tokens <= _topic_key_content_tokens(claim.slot or "")
+    ]
+    if not matched:
+        return 0
+
+    claim_ids = [claim.id for claim in matched]
+    ledger_rows = list(
+        db.scalars(
+            select(TendencyContribution).where(
+                TendencyContribution.tendency_claim_id.in_(claim_ids)
+            )
+        ).all()
+    )
+    tombstone_ids = {row.tombstone_item_id for row in ledger_rows}
+
+    for row in ledger_rows:
+        db.delete(row)
+    db.flush()
+    # Tombstones are already content/evidence/embedding-free and out of the
+    # retrieval indexes (scrubbed at distill time), so a plain delete fully
+    # removes them.
+    if tombstone_ids:
+        db.execute(
+            delete(MemoryItem).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.id.in_(tombstone_ids),
+            )
+        )
+    for claim in matched:
+        db.delete(claim)
+
+    db.add(
+        ForgetAuditLog(
+            user_id=user_id,
+            forgotten_at=datetime.now(UTC),
+            trigger="user_request",
+            scope="topic",
+            items_forgotten=len(tombstone_ids),
+            derived_refs_affected=len(matched),
+        )
+    )
+    db.flush()
+    return len(matched)
+
+
+def _scrub_tendency_contributions_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    chain_ids: Iterable[int],
+) -> int:
+    """Delete ledger rows for any tombstoned items in the forget chain and
+    recompute each affected tendency claim from its surviving contributions
+    (PRD IL5 — binding, right-to-forget precedence over distillation).
+
+    Uses ``distillation.recompute_tendency_from_ledger`` — the single
+    function both the distill path and this path use — so a distilled item
+    that is later explicitly forgotten leaves tendency state EXACTLY as if
+    it had never been distilled (property test in
+    ``tests/test_inner_life_distillation.py``).
+    """
+    from anima_server.models import MemoryClaim, TendencyContribution
+    from anima_server.services.agent.distillation import recompute_tendency_from_ledger
+
+    chain_id_list = list(chain_ids)
+    if not chain_id_list:
+        return 0
+
+    rows = list(
+        db.scalars(
+            select(TendencyContribution).where(
+                TendencyContribution.user_id == user_id,
+                TendencyContribution.tombstone_item_id.in_(chain_id_list),
+            )
+        ).all()
+    )
+    if not rows:
+        return 0
+
+    affected_claim_ids = {row.tendency_claim_id for row in rows}
+    for row in rows:
+        db.delete(row)
+    db.flush()
+
+    for claim_id in affected_claim_ids:
+        aggregate = recompute_tendency_from_ledger(db, tendency_claim_id=claim_id)
+        claim = db.get(MemoryClaim, claim_id)
+        if claim is None:
+            continue
+        if aggregate is None:
+            db.delete(claim)
+        else:
+            claim.value_json = aggregate
+            claim.updated_at = datetime.now(UTC)
+    db.flush()
+    return len(rows)
 
 
 # ── User-initiated forgetting ─────────────────────────────────────────
@@ -658,6 +823,14 @@ def forget_memory(
             MemoryItemEvidence.memory_item_id.in_(chain_ids),
         )
     )
+
+    # IL5 right-to-forget precedence: explicit forgetting of an
+    # already-distilled (tombstoned) item deletes its ledger rows and
+    # recomputes every tendency it contributed to from the surviving rows
+    # (deleting the tendency claim outright when none remain) — see
+    # ``docs/prds/presence/inner-life-v1.md`` "IL5" (binding: right-to-forget
+    # takes precedence over distillation).
+    _scrub_tendency_contributions_for_forget(db, user_id=user_id, chain_ids=chain_ids)
 
     # 4. Hard-delete all items in the chain
     for item in chain_items:

@@ -150,6 +150,10 @@ def backfill_memory_item_evidence(
             .where(
                 MemoryItem.user_id == user_id,
                 ~existing_evidence,
+                # IL5 tombstones have their evidence deleted by design — not
+                # active items awaiting a provenance backfill. Excluding them
+                # keeps a batch of older tombstones from starving the limit.
+                MemoryItem.distilled_at.is_(None),
             )
             .order_by(MemoryItem.superseded_by.is_not(None), MemoryItem.id)
             .limit(max(1, limit))
@@ -204,6 +208,9 @@ def audit_memory_item_evidence(
     active_filter = (
         MemoryItem.user_id == user_id,
         MemoryItem.superseded_by.is_(None),
+        # IL5 tombstones have their evidence hard-deleted by design — they
+        # are not "active durable memories missing evidence".
+        MemoryItem.distilled_at.is_(None),
     )
     evidence_exists = (
         select(MemoryItemEvidence.id)
@@ -215,10 +222,7 @@ def audit_memory_item_evidence(
     )
     total_active = (
         db.scalar(
-            select(func.count(MemoryItem.id)).where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.superseded_by.is_(None),
-            )
+            select(func.count(MemoryItem.id)).where(*active_filter)
         )
         or 0
     )

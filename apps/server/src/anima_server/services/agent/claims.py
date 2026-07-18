@@ -218,6 +218,97 @@ def upsert_claim(
     return new_claim
 
 
+TENDENCY_NAMESPACE = "tendency"
+
+
+def upsert_tendency_claim(
+    db: Session,
+    *,
+    user_id: int,
+    category: str,
+    memory_class: str,
+    topic_content: str,
+) -> MemoryClaim:
+    """Upsert the semantic ``tendency`` claim a distilled item folds into
+    (IL5 — PRD "IL5 Forgetting as Distillation").
+
+    Deliberately NOT ``upsert_claim``: that function treats any change in
+    ``content`` as a new value and supersedes the existing claim. A tendency
+    claim's ``value_json`` strength is recomputed and rewritten on every new
+    contribution (``distillation.recompute_tendency_from_ledger``), so keying
+    off content would supersede the claim on every single distillation and
+    fragment one tendency's ledger across many dead claims. Instead the
+    canonical key groups by structural topic — the same collapsing
+    ``derive_topic_key`` gives IL4 latent traces — scoped under
+    ``memory_class`` so, e.g., a "casual" commuting signal and a "transient"
+    one accumulate as two distinct tendencies. The claim itself is a compact,
+    content-derived phrase (per PRD, tendency claims ARE a semantic
+    descriptor of the folded signature) — only the ledger and tombstone are
+    required to be content-free.
+    """
+    topic_key = derive_topic_key(topic_content, category)
+    canonical_key = f"user:{TENDENCY_NAMESPACE}:{memory_class}:{topic_key}"
+
+    existing = db.scalar(
+        select(MemoryClaim).where(
+            MemoryClaim.user_id == user_id,
+            MemoryClaim.canonical_key == canonical_key,
+            MemoryClaim.status == "active",
+        )
+    )
+    if existing is not None:
+        return existing
+
+    # slot and descriptor derive from the SHARED topic key, never from this
+    # contributor's raw wording. Collapsing structured variants ("likes
+    # sushi" / "loves sushi") share a claim, so if the descriptor came from
+    # whichever contributor happened to be first, forgetting that item would
+    # leave its wording behind (right-to-forget recompute only touches
+    # value_json). Keying the descriptor on the shared topic makes it
+    # contributor-order-independent AND identical to what the never-distilled
+    # reference universe produces for the surviving set. (Freeform topics are
+    # single-contributor by construction — a distinct content digest per key
+    # — so forgetting the sole contributor deletes the whole claim.)
+    label = _tendency_label_from_topic_key(topic_key)
+    phrase = f"recurring {memory_class} signal: {label}"
+    claim = MemoryClaim(
+        user_id=user_id,
+        subject_type="user",
+        namespace=TENDENCY_NAMESPACE,
+        slot=topic_key,
+        value_text=ef(user_id, phrase, table="memory_items", field="content"),
+        polarity="positive",
+        confidence=0.5,
+        status="active",
+        canonical_key=canonical_key,
+        source_kind="distillation",
+        extractor="deterministic",
+        memory_item_id=None,
+        superseded_by_id=None,
+    )
+    db.add(claim)
+    db.flush()
+    return claim
+
+
+def _tendency_label_from_topic_key(topic_key: str, max_words: int = 4) -> str:
+    """Compact descriptor for a tendency claim, derived ONLY from the shared
+    topic key so it is identical for every contributor to the same claim.
+
+    The topic key looks like ``user:{ns}:{slot}:{value_slug}_{digest}``
+    (structured) or ``user:{category}:{slug}_{digest}`` (freeform). Take the
+    last segment, drop the trailing hex digest ``derive_topic_key`` appends,
+    and keep the first few tokens. Never reads raw item content — a claim's
+    descriptor must not carry a forgotten contributor's wording.
+    """
+    tail = topic_key.rsplit(":", 1)[-1]
+    # Drop the trailing "_<hexdigest>" (8 or 16 hex chars) the topic-key
+    # slug helpers append for collision resistance.
+    tail = re.sub(r"_[0-9a-f]{8,16}$", "", tail)
+    tokens = [token for token in tail.split("_") if token][:max_words]
+    return "_".join(tokens) or "signal"
+
+
 def get_active_claims(
     db: Session,
     *,

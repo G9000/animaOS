@@ -39,6 +39,7 @@ from anima_server.models import (
     RuntimeWorkflowRun,
     SelfModelBlock,
     Task,
+    TendencyContribution,
     UserProfileField,
     UserProfileFieldEvidence,
 )
@@ -234,6 +235,15 @@ def _reset_soul_state(
     _delete(db, deleted, "kg_entities", delete(KGEntity).where(KGEntity.user_id == user_id))
     _delete(db, deleted, "memory_vectors", delete(MemoryVector).where(MemoryVector.user_id == user_id))
     _delete(db, deleted, "memory_item_tags", delete(MemoryItemTag).where(MemoryItemTag.user_id == user_id))
+    # IL5 ledger before claims/items: SQLite FKs aren't enforced, so these
+    # rows would orphan and (tombstone_item_id being unique) could collide
+    # with reused rowids on a later distillation.
+    _delete(
+        db,
+        deleted,
+        "tendency_contributions",
+        delete(TendencyContribution).where(TendencyContribution.user_id == user_id),
+    )
     _delete(db, deleted, "memory_claims", delete(MemoryClaim).where(MemoryClaim.user_id == user_id))
     _update(
         db,

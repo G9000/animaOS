@@ -30,12 +30,15 @@ from anima_server.models import (
     KGEntity,
     KGRelation,
     LatentTrace,
+    MemoryClaim,
+    MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
     SelfModelBlock,
     SoulKeyslot,
     Task,
+    TendencyContribution,
     User,
     UserKey,
     UserProfileField,
@@ -165,6 +168,8 @@ _MEMORY_TABLES = frozenset(
         "experienceClusterState",
         "agentSkills",
         "latentTraces",
+        "memoryClaims",
+        "tendencyContributions",
     }
 )
 
@@ -207,6 +212,8 @@ _CAPSULE_CARD_TABLES = frozenset(
         "experienceClusterState",
         "agentSkills",
         "latentTraces",
+        "memoryClaims",
+        "tendencyContributions",
     }
 )
 
@@ -889,6 +896,16 @@ def export_database_snapshot(
         serialize_latent_trace_record(trace)
         for trace in db.scalars(_scoped(select(LatentTrace), LatentTrace)).all()
     ]
+    memory_claims = [
+        serialize_memory_claim_record(claim, deks=deks)
+        for claim in db.scalars(_scoped(select(MemoryClaim), MemoryClaim)).all()
+    ]
+    tendency_contributions = [
+        serialize_tendency_contribution_record(row)
+        for row in db.scalars(
+            _scoped(select(TendencyContribution), TendencyContribution)
+        ).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -908,6 +925,8 @@ def export_database_snapshot(
         "experienceClusterState": experience_cluster_state,
         "agentSkills": agent_skills,
         "latentTraces": latent_traces,
+        "memoryClaims": memory_claims,
+        "tendencyContributions": tendency_contributions,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -945,6 +964,8 @@ def restore_database_snapshot(
     experience_cluster_state_payload = snapshot.get("experienceClusterState", [])
     agent_skills_payload = snapshot.get("agentSkills", [])
     latent_traces_payload = snapshot.get("latentTraces", [])
+    memory_claims_payload = snapshot.get("memoryClaims", [])
+    tendency_contributions_payload = snapshot.get("tendencyContributions", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -954,6 +975,14 @@ def restore_database_snapshot(
     is_full = scope == "full"
 
     try:
+        db.query(TendencyContribution).delete()
+        # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
+        # (no foreign_keys pragma), so claim evidence must be deleted
+        # explicitly BEFORE its claims — mirroring MemoryItemEvidence and
+        # UserProfileFieldEvidence below. Otherwise stale encrypted
+        # evidence survives import and can reattach to reused claim ids.
+        db.query(MemoryClaimEvidence).delete()
+        db.query(MemoryClaim).delete()
         db.query(LatentTrace).delete()
         db.query(AgentSkill).delete()
         db.query(ExperienceClusterState).delete()
@@ -1201,6 +1230,7 @@ def restore_database_snapshot(
                     ),
                     evolves_from_item_id=coerce_optional_int(record.get("evolves_from_item_id")),
                     evolution_kind=coerce_optional_str(record.get("evolution_kind")),
+                    distilled_at=parse_optional_datetime(record.get("distilled_at")),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
@@ -1232,6 +1262,78 @@ def restore_database_snapshot(
                     created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
+
+        # IL5: memory_claims (all namespaces, not just "tendency") are
+        # soul-store and now ride along in vault export/import — needed so
+        # a distilled item's tendency claim (and its aggregate strength)
+        # survive a wipe+import, which right-to-forget for already-distilled
+        # items depends on (PRD §5). Claim EVIDENCE is still not part of
+        # vault snapshots (unrelated to IL5 — tendency claims never have
+        # evidence rows, see ``claims.upsert_tendency_claim``), so those FKs
+        # cannot be restored safely for other claim kinds; superseded-claim
+        # self-links are backfilled the same way profile fields are below.
+        restored_claim_ids: set[int] = set()
+        claim_superseded_links: list[tuple[int, int]] = []
+        for record in memory_claims_payload:
+            if not isinstance(record, dict):
+                continue
+            claim_id = int(record["id"])
+            superseded_by_id = coerce_optional_int(record.get("superseded_by_id"))
+            restored_claim_ids.add(claim_id)
+            if superseded_by_id is not None:
+                claim_superseded_links.append((claim_id, superseded_by_id))
+            db.add(
+                MemoryClaim(
+                    id=claim_id,
+                    user_id=int(record["user_id"]),
+                    subject_type=str(record.get("subject_type", "user")),
+                    namespace=str(record["namespace"]),
+                    slot=str(record["slot"]),
+                    # Value is already in its final form here: authenticated
+                    # user-scoped imports re-encrypted it in
+                    # _re_encrypt_snapshot_fields; full snapshots (no user_id)
+                    # carry field values as-is, matching how memoryItems and
+                    # profile fields restore. Re-encrypting inline would
+                    # double-encrypt a full-restore claim.
+                    value_text=str(record.get("value_text") or ""),
+                    value_json=record.get("value_json"),
+                    polarity=str(record.get("polarity", "positive")),
+                    confidence=float(record.get("confidence", 0.8)),
+                    status=str(record.get("status", "active")),
+                    canonical_key=str(record["canonical_key"]),
+                    source_kind=str(record.get("source_kind", "extraction")),
+                    extractor=str(record.get("extractor", "regex")),
+                    memory_item_id=coerce_optional_int(record.get("memory_item_id")),
+                    superseded_by_id=None,
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                    updated_at=parse_optional_datetime(record.get("updated_at")),
+                )
+            )
+
+        db.flush()
+
+        for claim_id, superseded_by_id in claim_superseded_links:
+            if superseded_by_id not in restored_claim_ids:
+                continue
+            claim = db.get(MemoryClaim, claim_id)
+            if claim is not None:
+                claim.superseded_by_id = superseded_by_id
+
+        for record in tendency_contributions_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                TendencyContribution(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    tombstone_item_id=int(record["tombstone_item_id"]),
+                    tendency_claim_id=int(record["tendency_claim_id"]),
+                    contribution_vector=record.get("contribution_vector") or {},
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        db.flush()
 
         restored_profile_field_ids: set[int] = set()
         profile_superseded_links: list[tuple[int, int]] = []
@@ -1730,6 +1832,7 @@ def serialize_memory_item_record(
         "evidence_strength": item.evidence_strength,
         "evolves_from_item_id": item.evolves_from_item_id,
         "evolution_kind": item.evolution_kind,
+        "distilled_at": serialize_optional_datetime(item.distilled_at),
         "created_at": serialize_optional_datetime(item.created_at),
         "updated_at": serialize_optional_datetime(item.updated_at),
     }
@@ -2142,6 +2245,58 @@ def serialize_latent_trace_record(trace: LatentTrace) -> dict[str, Any]:
     }
 
 
+def serialize_memory_claim_record(
+    claim: MemoryClaim,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """``value_text`` uses ``table="memory_items"`` for decryption — matching
+    ``claims.upsert_claim``/``claims.upsert_tendency_claim``'s own (existing)
+    encryption convention for this column, so domain resolution and AAD stay
+    consistent between write and export."""
+    return {
+        "id": claim.id,
+        "user_id": claim.user_id,
+        "subject_type": claim.subject_type,
+        "namespace": claim.namespace,
+        "slot": claim.slot,
+        "value_text": _decrypt_field_value(
+            claim.value_text,
+            deks,
+            table="memory_items",
+            field="content",
+            user_id=claim.user_id,
+        ),
+        "value_json": claim.value_json,
+        "polarity": claim.polarity,
+        "confidence": claim.confidence,
+        "status": claim.status,
+        "canonical_key": claim.canonical_key,
+        "source_kind": claim.source_kind,
+        "extractor": claim.extractor,
+        "memory_item_id": claim.memory_item_id,
+        "superseded_by_id": claim.superseded_by_id,
+        "created_at": serialize_optional_datetime(claim.created_at),
+        "updated_at": serialize_optional_datetime(claim.updated_at),
+    }
+
+
+def serialize_tendency_contribution_record(
+    row: TendencyContribution,
+) -> dict[str, Any]:
+    """IL5 ledger row: ``contribution_vector`` is numeric-only (never
+    content, see ``TendencyContribution`` docstring), so — like
+    ``LatentTrace.evidence_refs`` — this needs no ``deks`` argument."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "tombstone_item_id": row.tombstone_item_id,
+        "tendency_claim_id": row.tendency_claim_id,
+        "contribution_vector": row.contribution_vector,
+        "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
 def serialize_experience_cluster_state_record(
     state: ExperienceClusterState,
 ) -> dict[str, Any]:
@@ -2430,6 +2585,17 @@ def _re_encrypt_snapshot_fields(
                 user_id,
                 table="memory_item_evidence",
                 field="evidence_text",
+            )
+
+    for claim in snapshot.get("memoryClaims", []):
+        if isinstance(claim, dict) and claim.get("value_text"):
+            # Claim value_text encrypts under table="memory_items" (see the
+            # decrypt path in _serialize_memory_claim) — keep it consistent.
+            claim["value_text"] = _re_encrypt_field_value(
+                claim["value_text"],
+                user_id,
+                table="memory_items",
+                field="content",
             )
 
     for field in snapshot.get("userProfileFields", []):
