@@ -727,7 +727,7 @@ impl CommitOutcome {
         self.lock_hold_duration
     }
 
-    /// Catalog-envelope plus pointer bytes durably written by this commit.
+    /// Catalog, pointer, and cutover-marker payload bytes durably written by this commit.
     pub const fn bytes_written(&self) -> u64 {
         self.bytes_written
     }
@@ -2055,11 +2055,12 @@ impl CoreCommitCoordinator {
             keys.frk_version(),
         )?;
         let encoded_head = encode_head(&head)?;
-        let bytes_written = u64::try_from(encrypted_catalog.len())
-            .and_then(|catalog_bytes| {
-                u64::try_from(encoded_head.len()).map(|head_bytes| catalog_bytes + head_bytes)
-            })
-            .map_err(|_| CommitError::GenerationExhausted)?;
+        let head_bytes =
+            u64::try_from(encoded_head.len()).map_err(|_| CommitError::GenerationExhausted)?;
+        let mut bytes_written = u64::try_from(encrypted_catalog.len())
+            .map_err(|_| CommitError::GenerationExhausted)?
+            .checked_add(head_bytes)
+            .ok_or(CommitError::GenerationExhausted)?;
         let pointer_target = if pointer_name == HEAD_FILE {
             PublicationTarget::AuthoritativeHead
         } else {
@@ -2095,6 +2096,9 @@ impl CoreCommitCoordinator {
                     &encoded_head,
                     &mut receipt_hook,
                 )?;
+                bytes_written = bytes_written
+                    .checked_add(head_bytes)
+                    .ok_or(CommitError::GenerationExhausted)?;
                 self.validate_pinned_layout()?;
                 let mut complete_hook = |phase| {
                     hook(CommitFailurePoint::Publication {
@@ -2108,6 +2112,9 @@ impl CoreCommitCoordinator {
                     &encoded_head,
                     &mut complete_hook,
                 )?;
+                bytes_written = bytes_written
+                    .checked_add(head_bytes)
+                    .ok_or(CommitError::GenerationExhausted)?;
                 self.validate_pinned_layout()?;
                 Ok(())
             })()
