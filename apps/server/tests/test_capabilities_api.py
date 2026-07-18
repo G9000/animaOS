@@ -425,20 +425,99 @@ def test_reranker_backend_status_cold_when_loaded_model_differs_no_failure(
 # ---------------------------------------------------------------------------
 
 
-def test_http_backend_status_ready_when_not_cooling_down() -> None:
+def test_http_backend_status_ready_when_key_configured_and_not_cooling_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
     from anima_server.services.agent import embeddings as embeddings_module
 
     embeddings_module._provider_unavailable_until.clear()
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-openai-key")
     assert embeddings_module.http_backend_status("openai") == "ready"
 
 
 def test_http_backend_status_failed_retrying_during_cooldown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from anima_server.config import settings
     from anima_server.services.agent import embeddings as embeddings_module
 
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-openai-key")
     monkeypatch.setattr(embeddings_module, "_provider_in_cooldown", lambda key: True)
     assert embeddings_module.http_backend_status("openai") == "failed_retrying"
+
+
+def test_http_backend_status_failed_retrying_when_openai_has_no_usable_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression: generate_embedding() returns None *before* any HTTP
+    # request for a key-required provider with no usable key, so no
+    # cooldown is ever recorded — http_backend_status must not read that
+    # silence as "ready".
+    from anima_server.config import settings
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    embeddings_module._provider_unavailable_until.clear()
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "")
+    monkeypatch.setattr(settings, "agent_api_key", "")
+    monkeypatch.setattr(settings, "agent_api_keys_json", "{}")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+
+    assert embeddings_module.http_backend_status("openai") == "failed_retrying"
+
+
+def test_http_backend_status_failed_retrying_when_doubleword_has_no_usable_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    embeddings_module._provider_unavailable_until.clear()
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "")
+    monkeypatch.setattr(settings, "agent_api_key", "")
+    monkeypatch.setattr(settings, "agent_api_keys_json", "{}")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+
+    assert embeddings_module.http_backend_status("doubleword") == "failed_retrying"
+
+
+@pytest.mark.asyncio
+async def test_check_retrieval_capabilities_unhealthy_for_keyless_openai_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end guard for the same regression: a keyless cloud embedding
+    # provider must make collect_capabilities/the health check report the
+    # retrieval stack unhealthy, not silently "ready".
+    from anima_server.config import settings
+    from anima_server.services import capabilities as capabilities_module
+    from anima_server.services.agent import embeddings as embeddings_module
+    from anima_server.services.documents.parsing_pack import ParsingPackStatus
+    from anima_server.services.health.checks import check_retrieval_capabilities
+
+    embeddings_module._provider_unavailable_until.clear()
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "")
+    monkeypatch.setattr(settings, "agent_api_key", "")
+    monkeypatch.setattr(settings, "agent_api_keys_json", "{}")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+
+    monkeypatch.setattr(
+        capabilities_module, "pack_status", lambda: ParsingPackStatus(state="ready")
+    )
+    monkeypatch.setattr(
+        capabilities_module, "_resolve_embedding_model", lambda: "text-embedding-3-small"
+    )
+    monkeypatch.setattr(capabilities_module, "resolve_embedding_dim", lambda: 1536)
+    monkeypatch.setattr(capabilities_module, "reranker_backend_status", lambda: "cold")
+    monkeypatch.setattr(capabilities_module, "_llm_configured", lambda: True)
+
+    capabilities = capabilities_module.collect_capabilities()
+    assert capabilities["embeddings"]["backend"] == "failed_retrying"
+
+    result = await check_retrieval_capabilities(1, capabilities=capabilities)
+    assert result.status == "unhealthy"
+    assert "embeddings" in result.message
 
 
 # ---------------------------------------------------------------------------

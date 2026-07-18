@@ -69,14 +69,6 @@ _EMBEDDING_API_KEY_ENV: dict[str, str] = {
     "doubleword": "DOUBLEWORD_API_KEY",
 }
 
-# Providers backed by a locally-run server (as opposed to a fixed cloud
-# endpoint). The config API has no dedicated field for a distinct embedding
-# base URL, so when one of these is explicitly selected for embeddings with
-# no ``agent_embedding_base_url`` set, ``_resolve_embedding_base_url`` must
-# reuse the configured local server address (``agent_base_url``) rather than
-# silently reverting to the hardcoded localhost default.
-LOCAL_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"ollama", "vllm"})
-
 
 def _setting_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
@@ -158,19 +150,22 @@ def _resolve_embedding_base_url() -> str:
         return configured.removesuffix("/v1") if provider == "ollama" else configured
 
     configured_agent = _setting_text(getattr(settings, "agent_base_url", ""))
-    embedding_provider_explicit = _setting_text(
-        getattr(settings, "agent_embedding_provider", ""))
-    # Fall back to the configured local-server URL (agent_base_url) when
-    # either: no embedding provider was named explicitly (legacy piggyback —
-    # the resolved provider mirrors the chat provider), or an explicit LOCAL
-    # embedding provider (ollama/vllm) was named. The config API has no field
-    # to set a distinct embedding base URL, so for a local provider
-    # agent_base_url is the only real signal of where that server lives —
-    # without this, an explicit local embedding provider with a custom/remote
-    # server silently reverts to the hardcoded localhost default.
-    if configured_agent and (
-        not embedding_provider_explicit or provider in LOCAL_EMBEDDING_PROVIDERS
-    ):
+    chat_provider = _setting_text(getattr(settings, "agent_provider", ""))
+    # Reuse the configured local-server URL (agent_base_url) only when the
+    # resolved embedding provider IS the chat provider — mirrors the
+    # same-provider rule ``_resolve_embedding_api_key`` uses for its legacy
+    # key piggyback. That's the one case where agent_base_url is actually
+    # known to point at *this* provider's server: either no embedding
+    # provider was named explicitly (legacy piggyback — the resolved
+    # provider mirrors the chat provider) or the embedding provider was
+    # named explicitly but happens to match the chat provider (e.g. both
+    # "ollama"). When an explicit LOCAL embedding provider (ollama/vllm)
+    # DIFFERS from the chat provider (e.g. chat=vllm, embedding=ollama),
+    # agent_base_url is the CHAT server's address, not this provider's —
+    # reusing it would send that provider's requests to the wrong endpoint
+    # (e.g. POSTing ollama's /api/embed to a vLLM port). Fall through to
+    # that provider's own default base URL instead.
+    if configured_agent and provider == chat_provider:
         if provider == "openrouter":
             return _DEFAULT_EMBEDDING_BASE_URLS[provider]
         return configured_agent.removesuffix("/v1") if provider == "ollama" else configured_agent
@@ -243,6 +238,33 @@ def _embedding_skip_reason(provider: str) -> str | None:
         return "provider has no supported embeddings endpoint; configure an explicit embedding provider"
     if provider == "anthropic":
         return "provider has no embeddings endpoint; configure an explicit embedding provider"
+    return None
+
+
+def embedding_provider_unusable_reason(provider: str) -> str | None:
+    """Return why *provider* would never even attempt an HTTP embedding call.
+
+    Single predicate shared by ``generate_embedding``'s early-return checks
+    (an endpoint-less provider via ``_embedding_skip_reason``, or a
+    key-required provider with no usable key via
+    ``validate_provider_configuration``) and ``http_backend_status``. Both
+    call sites must agree on what "misconfigured" means: a provider that
+    fails either check is skipped with ``return None`` before any network
+    request is made, so no cooldown ever gets recorded for it — without this
+    shared check, ``http_backend_status`` would report such a provider as
+    "ready" (never having "failed") even though dense embeddings can never
+    actually run.
+
+    Returns ``None`` when the provider is usable (may still fail at request
+    time for other reasons, e.g. the server being unreachable).
+    """
+    skip_reason = _embedding_skip_reason(provider)
+    if skip_reason is not None:
+        return skip_reason
+    try:
+        validate_provider_configuration(provider)
+    except LLMConfigError as exc:
+        return str(exc)
     return None
 
 
@@ -348,12 +370,18 @@ def http_backend_status(provider: str) -> str:
 
     Unlike the bundled in-process ``fastembed`` backend, HTTP providers
     (ollama/openai/vllm/doubleword/...) have no "loaded"/"cold" concept —
-    there is no model to warm up locally. The only observable state is
-    whether the provider is currently sitting out its post-failure cooldown
-    window. Used by ``services.capabilities.collect_capabilities`` to make
+    there is no model to warm up locally. Beyond the post-failure cooldown
+    window, a provider can also be misconfigured badly enough that
+    ``generate_embedding`` never attempts a request at all (a key-required
+    provider with no usable key, or a provider with no embeddings endpoint)
+    — that path never records a cooldown, so without this check such a
+    provider would incorrectly read as "ready" forever. Used by
+    ``services.capabilities.collect_capabilities`` to make
     ``embeddings.backend`` provider-truthful instead of always reflecting
     the fastembed latch regardless of which provider is actually active.
     """
+    if embedding_provider_unusable_reason(provider) is not None:
+        return "failed_retrying"
     key = _provider_failure_key(provider)
     return "failed_retrying" if _provider_in_cooldown(key) else "ready"
 

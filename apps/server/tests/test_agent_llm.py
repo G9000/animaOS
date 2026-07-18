@@ -202,9 +202,12 @@ def test_resolve_embedding_base_url_explicit_local_ollama_falls_back_to_agent_ba
     # dedicated embedding base URL must reuse the configured local server
     # address (agent_base_url) instead of silently reverting to the
     # hardcoded localhost default — the API has no field to set a distinct
-    # embedding base URL, so agent_base_url is the only real signal.
+    # embedding base URL, so agent_base_url is the only real signal. This is
+    # the legitimate case: the embedding provider IS the chat provider, so
+    # agent_base_url is known to point at ollama's own server.
     from anima_server.services.agent import embeddings
 
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
     monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
     monkeypatch.setattr(settings, "agent_embedding_base_url", "")
     monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
@@ -212,16 +215,53 @@ def test_resolve_embedding_base_url_explicit_local_ollama_falls_back_to_agent_ba
     assert embeddings._resolve_embedding_base_url() == "http://192.168.1.5:11434"
 
 
-def test_resolve_embedding_base_url_explicit_local_vllm_falls_back_to_agent_base_url(
+def test_resolve_embedding_base_url_explicit_vllm_matching_chat_provider_falls_back_to_agent_base_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Same legitimate-piggyback case as the ollama test above, for vllm:
+    # chat provider and embedding provider both resolve to "vllm", so
+    # agent_base_url is known to be vllm's own server address.
     from anima_server.services.agent import embeddings
 
+    monkeypatch.setattr(settings, "agent_provider", "vllm")
     monkeypatch.setattr(settings, "agent_embedding_provider", "vllm")
     monkeypatch.setattr(settings, "agent_embedding_base_url", "")
     monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:8000/v1")
 
     assert embeddings._resolve_embedding_base_url() == "http://192.168.1.5:8000/v1"
+
+
+def test_resolve_embedding_base_url_mismatched_local_provider_uses_its_own_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression: chat=vllm (agent_base_url pointing at vllm's server) with
+    # an explicit, DIFFERENT local embedding provider (ollama) must NOT reuse
+    # agent_base_url — that would send ollama's /api/embed requests to the
+    # vLLM port and silently fail dense retrieval. It must fall through to
+    # ollama's own default base URL instead.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_base_url", "http://127.0.0.1:8000/v1")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+
+    assert embeddings._resolve_embedding_base_url() == "http://127.0.0.1:11434"
+
+
+def test_resolve_embedding_base_url_mismatched_local_provider_vllm_uses_its_own_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mirror case: chat=ollama, explicit embedding provider=vllm. Must use
+    # vllm's own default base URL, not ollama's agent_base_url.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+
+    assert embeddings._resolve_embedding_base_url() == "http://127.0.0.1:8000/v1"
 
 
 def test_resolve_embedding_base_url_explicit_embedding_base_url_still_wins(
