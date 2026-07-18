@@ -346,16 +346,20 @@ def _resolve_default_embedding_provider() -> str:
     ``config`` and ``services.agent.embeddings``. Keep both in sync: explicit
     ``agent_embedding_provider`` wins; otherwise the bundled ``fastembed``
     provider is the default, except when the user configured embedding
-    details (model or base URL) against their chat provider without naming
-    an embedding provider — that legacy piggyback is preserved as a real
-    signal of intent.
+    details (model, base URL, or API key) against their chat provider
+    without naming an embedding provider — that legacy piggyback is
+    preserved as a real signal of intent.
+
+    KEEP IN SYNC with ``embeddings._resolve_embedding_provider``, which
+    duplicates this same piggyback-signal rule.
     """
     configured = settings.agent_embedding_provider.strip()
     if configured:
         return configured
     embedding_model = settings.agent_embedding_model.strip()
     embedding_base_url = getattr(settings, "agent_embedding_base_url", "").strip()
-    if embedding_model or embedding_base_url:
+    embedding_api_key = getattr(settings, "agent_embedding_api_key", "").strip()
+    if embedding_model or embedding_base_url or embedding_api_key:
         return settings.agent_provider.strip() or "ollama"
     return "fastembed"
 

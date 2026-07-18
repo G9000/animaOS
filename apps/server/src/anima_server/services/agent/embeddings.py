@@ -87,16 +87,21 @@ def _resolve_embedding_provider() -> str:
     ``fastembed`` ONNX provider is the default — dense retrieval must work
     regardless of which chat LLM the user has configured. The old implicit
     piggyback onto ``agent_provider`` is preserved only when the user has
-    configured embedding-specific details (model or base URL) against their
-    chat provider without naming an embedding provider explicitly; that is a
-    real signal of intent, not an accident of the old fallback.
+    configured embedding-specific details (model, base URL, or API key)
+    against their chat provider without naming an embedding provider
+    explicitly; that is a real signal of intent, not an accident of the old
+    fallback.
+
+    KEEP IN SYNC with ``config._resolve_default_embedding_provider``, which
+    duplicates this same piggyback-signal rule.
     """
     configured = _setting_text(getattr(settings, "agent_embedding_provider", ""))
     if configured:
         return configured
     embedding_model = _setting_text(getattr(settings, "agent_embedding_model", ""))
     embedding_base_url = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
-    if embedding_model or embedding_base_url:
+    embedding_api_key = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
+    if embedding_model or embedding_base_url or embedding_api_key:
         return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
     return "fastembed"
 

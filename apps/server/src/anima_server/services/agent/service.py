@@ -2086,7 +2086,7 @@ def _build_full_document_memory_block(
     )
     for document, text in document_texts:
         lines.append("")
-        lines.append(f"--- {document.filename} (complete document) ---")
+        lines.append(f"--- {document.filename} [doc:{document.id}] (complete document) ---")
         lines.append(text)
 
     return MemoryBlock(

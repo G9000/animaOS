@@ -94,6 +94,61 @@ def test_legacy_piggyback_kept_when_embedding_model_configured(
     assert embeddings._resolve_embedding_provider() == "ollama"
 
 
+def test_legacy_piggyback_kept_when_only_embedding_api_key_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression: agent_embedding_api_key (ANIMA_AGENT_EMBEDDING_API_KEY)
+    # is equally explicit embedding intent as agent_embedding_model /
+    # agent_embedding_base_url. An install with only the embedding API key
+    # set must not silently fall through to the fastembed default and
+    # ignore the configured key.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-only-embedding-key")
+    monkeypatch.setattr(settings, "agent_provider", "openai")
+
+    assert embeddings._resolve_embedding_provider() == "openai"
+
+
+def test_embedding_provider_defaults_to_fastembed_when_nothing_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing set (no embedding provider, model, base URL, or API key)
+    # must still resolve to the bundled fastembed default.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "")
+    monkeypatch.setattr(settings, "agent_provider", "openai")
+
+    assert embeddings._resolve_embedding_provider() == "fastembed"
+
+
+def test_embedding_api_key_piggyback_still_uses_extraction_model_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Verify the api-key piggyback composes correctly with the
+    # extraction-model-skip logic from commit 5c62215: piggybacking to a
+    # non-fastembed provider via the api key alone must still apply the
+    # existing agent_extraction_model fallback (only fastembed skips it).
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-only-embedding-key")
+    monkeypatch.setattr(settings, "agent_provider", "openai")
+    monkeypatch.setattr(settings, "agent_extraction_model", "gpt-5-mini")
+
+    assert embeddings._resolve_embedding_provider() == "openai"
+    assert embeddings._resolve_embedding_model() == "gpt-5-mini"
+
+
 def test_resolve_embedding_model_ignores_extraction_model_for_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -715,6 +770,81 @@ def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
     config_module.clear_detected_embedding_dim()
 
     assert config_module.resolve_embedding_dim() == 1024
+
+
+def test_resolve_default_embedding_provider_piggybacks_on_embedding_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression, mirrored in config.py: agent_embedding_api_key alone is
+    # explicit embedding intent, just like agent_embedding_model or
+    # agent_embedding_base_url. Must be kept in sync with
+    # embeddings._resolve_embedding_provider.
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="",
+            agent_extraction_model="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_api_key="sk-only-embedding-key",
+            agent_provider="openai",
+            agent_embedding_dim=768,
+        ),
+    )
+
+    assert config_module._resolve_default_embedding_provider() == "openai"
+
+
+def test_resolve_default_embedding_provider_defaults_to_fastembed_when_nothing_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="",
+            agent_extraction_model="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_api_key="",
+            agent_provider="openai",
+            agent_embedding_dim=768,
+        ),
+    )
+
+    assert config_module._resolve_default_embedding_provider() == "fastembed"
+
+
+def test_resolve_embedding_dim_uses_openai_default_for_embedding_api_key_piggyback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the embedding API key is set (agent_provider="openai"): the
+    # piggyback must resolve to "openai" and the dim lookup must use
+    # openai's default embedding model (text-embedding-3-small -> 1536),
+    # not the fastembed default (384) or the generic 768 fallback.
+    from anima_server import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        SimpleNamespace(
+            agent_embedding_model="",
+            agent_extraction_model="",
+            agent_embedding_provider="",
+            agent_embedding_base_url="",
+            agent_embedding_api_key="sk-only-embedding-key",
+            agent_provider="openai",
+            agent_embedding_dim=768,
+        ),
+    )
+    config_module.clear_detected_embedding_dim()
+
+    assert config_module.resolve_embedding_dim() == 1536
 
 
 @pytest.mark.asyncio

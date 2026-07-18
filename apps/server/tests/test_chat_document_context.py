@@ -853,6 +853,7 @@ def test_small_document_injected_whole(
     assert block is not None
     assert block.label == "document_context"
     assert "(complete document)" in block.value
+    assert f"[doc:{document_id}]" in block.value
     first_index = block.value.index("First chunk covers the installation steps")
     second_index = block.value.index("Second chunk covers the calibration window")
     assert first_index < second_index
