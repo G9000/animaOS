@@ -28,6 +28,12 @@ _model_lock = threading.Lock()
 _model: Any | None = None
 _model_name_loaded: str | None = None
 _failed_at: float | None = None
+# The model name the *current* _failed_at cooldown applies to. Keyed by name
+# (mirrors fastembed_backend) so a failure loading one reranker model name
+# cannot block a different, correctly-named one from getting a fresh attempt
+# immediately — otherwise fixing a mistyped reranker model in settings still
+# yields no reranking for the full 300s cooldown.
+_failed_model_name: str | None = None
 
 _RETRY_TTL_SECONDS = 300.0
 
@@ -69,27 +75,39 @@ def _create_model() -> Any:
     )
 
 
+def _cooldown_active(model_name: str) -> bool:
+    return (
+        _failed_model_name == model_name
+        and _failed_at is not None
+        and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+    )
+
+
 def _load_model() -> Any | None:
-    global _model, _model_name_loaded, _failed_at
+    global _model, _model_name_loaded, _failed_at, _failed_model_name
     model_name = settings.retrieval_reranker_model
     if _model is not None and _model_name_loaded == model_name:
         return _model
-    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
+    if _cooldown_active(model_name):
         return None
     with _model_lock:
         if _model is not None and _model_name_loaded == model_name:
             return _model
-        if (
-            _failed_at is not None
-            and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
-        ):
+        if _cooldown_active(model_name):
             return None
         try:
             _model = _create_model()
             _model_name_loaded = model_name
-            _failed_at = None
+            # Only clear the latch if it belongs to *this* model name — a
+            # different model's unrelated failure record must survive this
+            # success untouched, so that model stays correctly blocked
+            # until its own cooldown or its own successful retry.
+            if _failed_model_name == model_name:
+                _failed_at = None
+                _failed_model_name = None
         except Exception:
             _failed_at = time.monotonic()
+            _failed_model_name = model_name
             cache_dir = settings.data_dir / "models" / "fastembed"
             logger.warning(
                 "Local reranker unavailable for %s (the model download to "
@@ -112,20 +130,29 @@ def backend_status() -> str:
     still cached in ``_model``) while its TTL cooldown is active; ``"ready"``
     requires the cached model's name to match the current setting; anything
     else — never attempted, or a stale model cached under a different name
-    with no active failure — is ``"cold"``.
+    with no active failure — is ``"cold"``. A failure latched for a
+    DIFFERENT model name than the currently-configured one does not count
+    here either — that would report the current model as failing when it
+    has never actually been attempted.
     """
-    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
+    model_name = settings.retrieval_reranker_model
+    if (
+        _failed_model_name == model_name
+        and _failed_at is not None
+        and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+    ):
         return "failed_retrying"
-    if _model is not None and _model_name_loaded == settings.retrieval_reranker_model:
+    if _model is not None and _model_name_loaded == model_name:
         return "ready"
     return "cold"
 
 
 def _reset_model_cache_for_tests() -> None:
-    global _model, _model_name_loaded, _failed_at
+    global _model, _model_name_loaded, _failed_at, _failed_model_name
     _model = None
     _model_name_loaded = None
     _failed_at = None
+    _failed_model_name = None
 
 
 __all__ = ["backend_status", "rerank_chunk_ids"]

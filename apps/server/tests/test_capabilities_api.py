@@ -285,13 +285,19 @@ def test_fastembed_backend_status_ready_when_model_loaded(
         fastembed_backend._reset_backend_for_tests()
 
 
-def test_fastembed_backend_status_failed_retrying_within_ttl() -> None:
+def test_fastembed_backend_status_failed_retrying_within_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import time
 
     from anima_server.services.agent import fastembed_backend
 
     fastembed_backend._reset_backend_for_tests()
+    monkeypatch.setattr(
+        fastembed_backend, "_resolve_current_model_name", lambda: "model-a"
+    )
     fastembed_backend._failed_at = time.monotonic()
+    fastembed_backend._failed_model_name = "model-a"
     try:
         assert fastembed_backend.backend_status() == "failed_retrying"
     finally:
@@ -327,6 +333,7 @@ def test_fastembed_backend_status_not_ready_when_loaded_model_is_stale(
     fastembed_backend._model = object()
     fastembed_backend._model_name_loaded = "model-a"
     fastembed_backend._failed_at = time.monotonic()
+    fastembed_backend._failed_model_name = "model-b"
     try:
         assert fastembed_backend.backend_status() == "failed_retrying"
     finally:
@@ -369,6 +376,7 @@ def test_reranker_backend_status_matches_latch_states(
 
     reranker._reset_model_cache_for_tests()
     reranker._failed_at = time.monotonic()
+    reranker._failed_model_name = settings.retrieval_reranker_model
     assert reranker.backend_status() == "failed_retrying"
 
     reranker._reset_model_cache_for_tests()
@@ -389,6 +397,7 @@ def test_reranker_backend_status_not_ready_when_loaded_model_is_stale(
     reranker._model = object()
     reranker._model_name_loaded = "model-a"
     reranker._failed_at = time.monotonic()
+    reranker._failed_model_name = "model-b"
     try:
         assert reranker.backend_status() == "failed_retrying"
     finally:

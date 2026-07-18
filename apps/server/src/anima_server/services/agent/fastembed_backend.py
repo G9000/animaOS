@@ -25,6 +25,13 @@ _lock = threading.Lock()
 _model: Any | None = None
 _model_name_loaded: str | None = None
 _failed_at: float | None = None
+# The model name the *current* _failed_at cooldown applies to. Keeping the
+# cooldown keyed by name (rather than a single process-wide latch) means a
+# failure loading one model — e.g. a mistyped model name in the settings UI
+# — cannot block a completely different, correctly-named model from getting
+# its own fresh load attempt. Without this, fixing the typo still yielded no
+# dense embeddings for the full 300s cooldown.
+_failed_model_name: str | None = None
 
 _RETRY_TTL_SECONDS = 300.0
 
@@ -48,26 +55,38 @@ def embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None
         return [None] * len(texts)
 
 
+def _cooldown_active(model_name: str) -> bool:
+    return (
+        _failed_model_name == model_name
+        and _failed_at is not None
+        and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+    )
+
+
 def _load_model(model_name: str) -> Any | None:
-    global _model, _model_name_loaded, _failed_at
+    global _model, _model_name_loaded, _failed_at, _failed_model_name
     if _model is not None and _model_name_loaded == model_name:
         return _model
-    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
+    if _cooldown_active(model_name):
         return None
     with _lock:
         if _model is not None and _model_name_loaded == model_name:
             return _model
-        if (
-            _failed_at is not None
-            and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
-        ):
+        if _cooldown_active(model_name):
             return None
         try:
             _model = _create_model(model_name)
             _model_name_loaded = model_name
-            _failed_at = None
+            # Only clear the latch if it belongs to *this* model — a
+            # different model's unrelated failure record must survive this
+            # success untouched, so that model stays correctly blocked
+            # until its own cooldown or its own successful retry.
+            if _failed_model_name == model_name:
+                _failed_at = None
+                _failed_model_name = None
         except Exception:
             _failed_at = time.monotonic()
+            _failed_model_name = model_name
             logger.warning(
                 "Failed to load fastembed model %r; dense retrieval will be "
                 "unavailable until the model can be loaded.",
@@ -98,10 +117,15 @@ def backend_status() -> str:
     set, and is aware of *which* model is currently configured (not just
     whether some model happens to be loaded):
 
-    - ``"failed_retrying"``: a load failure is latched and its TTL cooldown
-      is still active. This takes priority even if a *different*, older
-      model is still sitting in ``_model`` — that stale model must not be
-      reported as backing the currently-configured one.
+    - ``"failed_retrying"``: a load failure is latched *for the currently-
+      resolved model name* and its TTL cooldown is still active. This takes
+      priority even if a *different*, older model is still sitting in
+      ``_model`` — that stale model must not be reported as backing the
+      currently-configured one. A failure latched for some OTHER model name
+      (e.g. a stale typo that's since been corrected in settings) must not
+      make the current, never-attempted model report as failing — that
+      would tell the UI dense embeddings are broken for a model that hasn't
+      even been tried yet.
     - ``"ready"``: a model is loaded, no failure is latched, AND the loaded
       model name matches the currently-resolved one. A load of model A
       followed by a config switch to model B (with B's load still pending
@@ -111,9 +135,14 @@ def backend_status() -> str:
       retry happening yet (so a retry is implied on the next embed call), or
       the loaded model differs from the current one with no active failure.
     """
-    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
+    current_model_name = _resolve_current_model_name()
+    if (
+        _failed_model_name == current_model_name
+        and _failed_at is not None
+        and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+    ):
         return "failed_retrying"
-    if _model is not None and _model_name_loaded == _resolve_current_model_name():
+    if _model is not None and _model_name_loaded == current_model_name:
         return "ready"
     return "cold"
 
@@ -151,11 +180,12 @@ def warm_up_retrieval_models() -> None:
 
 
 def _reset_backend_for_tests() -> None:
-    global _model, _model_name_loaded, _failed_at
+    global _model, _model_name_loaded, _failed_at, _failed_model_name
     with _lock:
         _model = None
         _model_name_loaded = None
         _failed_at = None
+        _failed_model_name = None
 
 
 __all__ = ["backend_status", "embed_texts", "warm_up_retrieval_models"]

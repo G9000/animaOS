@@ -1291,6 +1291,133 @@ class TestReparsePendingDocumentsTask:
         assert "pending" in result
 
     @pytest.mark.asyncio()
+    async def test_upgraded_unembedded_rolls_back_and_aborts(
+        self, rt_factory, monkeypatch
+    ):
+        """FINDING A: reparse_document() calls replace_document_chunks()
+        (resets the document to non-indexed and deletes old chunk vectors)
+        *before* embedding. If the embedding backend is down, the document
+        comes back "upgraded_unembedded" — docling-quality chunks written,
+        but the document left non-indexed because nothing embedded. If the
+        cycle committed that, a previously-searchable indexed preview
+        document becomes invisible to search AND drops out of
+        list_reparse_candidates (which requires status=="indexed") —
+        orphaned forever. The cycle must instead roll back (discarding the
+        flushed-but-uncommitted reset so the original indexed preview
+        survives), not count the document as reparsed, and abort the rest
+        of the budget since an unavailable embedding backend affects every
+        candidate identically."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+        rollback_calls: list[int] = []
+        commit_calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="upgraded_unembedded", chunk_count=3)
+
+        def spying_factory(*args, **kwargs):
+            session = rt_factory(*args, **kwargs)
+            original_rollback = session.rollback
+            original_commit = session.commit
+
+            def _spy_rollback():
+                rollback_calls.append(1)
+                return original_rollback()
+
+            def _spy_commit():
+                commit_calls.append(1)
+                return original_commit()
+
+            session.rollback = _spy_rollback
+            session.commit = _spy_commit
+            return session
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=spying_factory,
+            )
+
+        # Only the first candidate is attempted — the cycle aborts instead
+        # of repeating the same unembedded dance for candidates 2 and 3.
+        assert calls == [1]
+        # The flushed replace_document_chunks reset must be rolled back, not
+        # committed — committing it is exactly the orphaning bug.
+        assert rollback_calls == [1]
+        assert commit_calls == []
+        assert "reparsed 0" in result
+        assert "embeddings unavailable" in result
+        assert "pending" in result
+
+    @pytest.mark.asyncio()
+    async def test_upgraded_still_commits_and_counts(self, rt_factory, monkeypatch):
+        """Regression guard alongside the upgraded_unembedded fix above: a
+        normal successful upgrade must still commit and count as reparsed —
+        the fix must not accidentally make every reparse roll back."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        commit_calls: list[int] = []
+        rollback_calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            return ReparseResult(status="upgraded", chunk_count=3)
+
+        def spying_factory(*args, **kwargs):
+            session = rt_factory(*args, **kwargs)
+            original_rollback = session.rollback
+            original_commit = session.commit
+
+            def _spy_rollback():
+                rollback_calls.append(1)
+                return original_rollback()
+
+            def _spy_commit():
+                commit_calls.append(1)
+                return original_commit()
+
+            session.rollback = _spy_rollback
+            session.commit = _spy_commit
+            return session
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=spying_factory,
+            )
+
+        assert commit_calls == [1, 1]
+        assert rollback_calls == []
+        assert result == "reparsed 2 documents"
+
+    @pytest.mark.asyncio()
     async def test_session_lifecycle_stays_on_worker_thread(
         self, rt_factory, monkeypatch
     ):

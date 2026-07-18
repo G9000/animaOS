@@ -165,3 +165,109 @@ def test_backend_status_failed_retrying_when_switch_to_current_model_fails(
     # now-current model B), implying a retry is due on the next embed call.
     clock["now"] += 2
     assert fastembed_backend.backend_status() == "cold"
+
+
+# ── FINDING B: cooldown must be keyed by model name ──────────────────────
+#
+# The `_failed_at` TTL latch used to be global: one model's load failure
+# blocked every OTHER model name for the full 300s cooldown too. That means
+# fixing a mistyped embedding model in the settings UI still yielded no
+# dense embeddings for 5 minutes, since the new (correct) model name got
+# blocked by the old (broken) one's cooldown. The fix keys the cooldown to
+# the specific model name that failed via `_failed_model_name`.
+
+
+def test_other_model_gets_fresh_attempt_despite_different_models_cooldown(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def factory(model_name: str):
+        calls.append(model_name)
+        if model_name == "model-a":
+            raise RuntimeError("model-a unavailable")
+        return _FakeModel()
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", factory)
+
+    # model-a fails and latches its own cooldown.
+    first = fastembed_backend.embed_texts(["x"], model_name="model-a")
+    assert first == [None]
+    assert calls == ["model-a"]
+
+    # model-b is a completely different model — it must get a fresh attempt
+    # immediately, not be blocked by model-a's cooldown.
+    second = fastembed_backend.embed_texts(["y"], model_name="model-b")
+    assert second == [[1.0] * 4]
+    assert calls == ["model-a", "model-b"]
+
+
+def test_same_model_still_blocked_within_ttl_after_own_failure_even_after_other_succeeds(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def factory(model_name: str):
+        calls.append(model_name)
+        if model_name == "model-a":
+            raise RuntimeError("model-a unavailable")
+        return _FakeModel()
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", factory)
+
+    fastembed_backend.embed_texts(["x"], model_name="model-a")
+    fastembed_backend.embed_texts(["y"], model_name="model-b")
+    assert calls == ["model-a", "model-b"]
+
+    # model-a is retried within its own TTL window: still blocked (no new
+    # _create_model call for it), because model-b's unrelated success must
+    # not clear model-a's own latch.
+    third = fastembed_backend.embed_texts(["z"], model_name="model-a")
+    assert third == [None]
+    assert calls == ["model-a", "model-b"]
+
+
+def test_successful_load_clears_its_own_latch(monkeypatch) -> None:
+    calls: list[str] = []
+    clock = {"now": 5000.0}
+    monkeypatch.setattr(fastembed_backend.time, "monotonic", lambda: clock["now"])
+
+    def failing_factory(model_name: str):
+        calls.append(model_name)
+        raise RuntimeError("model-a unavailable")
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", failing_factory)
+    first = fastembed_backend.embed_texts(["x"], model_name="model-a")
+    assert first == [None]
+
+    # model-a's own TTL has elapsed and it recovers — a successful retry
+    # must clear its own latch entirely (not just stop returning None).
+    clock["now"] += fastembed_backend._RETRY_TTL_SECONDS + 1
+    fake = _FakeModel()
+    monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
+    second = fastembed_backend.embed_texts(["y"], model_name="model-a")
+    assert second == [[1.0] * 4]
+    assert fastembed_backend._failed_at is None
+    assert fastembed_backend._failed_model_name is None
+
+
+def test_backend_status_not_failed_retrying_for_differently_latched_model(
+    monkeypatch,
+) -> None:
+    """A failure latched for model-a must not make backend_status() report
+    failed_retrying when the currently-resolved model is model-b — that
+    would tell the UI dense embeddings are broken for a model that was
+    never even attempted."""
+    clock = {"now": 4000.0}
+    monkeypatch.setattr(fastembed_backend.time, "monotonic", lambda: clock["now"])
+
+    def factory(model_name: str):
+        if model_name == "model-a":
+            raise RuntimeError("model-a unavailable")
+        return _FakeModel()
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", factory)
+    fastembed_backend.embed_texts(["x"], model_name="model-a")
+
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-b")
+    assert fastembed_backend.backend_status() == "cold"

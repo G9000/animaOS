@@ -1046,8 +1046,23 @@ async def _task_knowledge_autocompile(
 # parser is unhealthy" rather than "this one document had a problem" — the
 # cycle aborts on these instead of burning the rest of the budget against a
 # sick parser, and picks the remaining candidates back up next cycle.
+#
+# "upgraded_unembedded" joins this set for the same reason: it means the
+# embedding backend is down. reparse_document() already re-cut the document
+# to docling-quality chunks via replace_document_chunks() (which resets the
+# document to non-indexed and deletes the old chunk vectors) *before*
+# embedding, so an embedding failure leaves the document flushed into a
+# non-indexed, unembedded state. Committing that would silently orphan a
+# previously-searchable indexed preview document — it drops out of both
+# search (status != "indexed") and list_reparse_candidates (which requires
+# status == "indexed") — permanently, from a background job the user never
+# asked to run right now. The cycle rolls that document's session back
+# instead (discarding the flush, preserving the original indexed preview)
+# and, since an unavailable embedding backend affects every remaining
+# candidate identically, aborts the rest of the budget to retry next cycle
+# once embeddings recover.
 _REPARSE_ABORT_STATUSES = frozenset(
-    {"pack_not_ready", "parse_degraded", "parser_unavailable"}
+    {"pack_not_ready", "parse_degraded", "parser_unavailable", "upgraded_unembedded"}
 )
 
 
@@ -1088,6 +1103,7 @@ async def _task_reparse_pending_documents(
     def _reparse_cycle() -> str:
         reparsed = 0
         missing = 0
+        embeddings_unavailable = False
         candidates: list[int] = []
         with factory() as runtime_db:
             candidates = list_reparse_candidates(runtime_db, user_id=user_id)[:budget]
@@ -1097,15 +1113,22 @@ async def _task_reparse_pending_documents(
                     user_id=user_id,
                     document_id=document_id,
                 )
-                if result.status in ("upgraded", "upgraded_unembedded"):
+                if result.status == "upgraded":
                     reparsed += 1
                     runtime_db.commit()
                     continue
                 if result.status in _REPARSE_ABORT_STATUSES:
-                    # Pack state changed mid-cycle or the parser is sick —
+                    # Pack state changed mid-cycle, the parser is sick, or
+                    # (upgraded_unembedded) the embedding backend is down —
                     # nothing left to commit for this attempt, stop and retry
-                    # the remaining candidates next cycle.
+                    # the remaining candidates next cycle. For
+                    # upgraded_unembedded specifically, this rollback is load
+                    # bearing: it discards the flushed replace_document_chunks
+                    # reset so the document's original indexed preview
+                    # survives instead of being silently orphaned.
                     runtime_db.rollback()
+                    if result.status == "upgraded_unembedded":
+                        embeddings_unavailable = True
                     break
                 # "not_found": the document vanished (deleted concurrently)
                 # between listing and reparse — nothing to commit, but this
@@ -1118,6 +1141,11 @@ async def _task_reparse_pending_documents(
         pending = len(candidates) - reparsed - missing
         if not candidates:
             return "no documents pending reparse"
+        if embeddings_unavailable:
+            return (
+                f"reparsed {reparsed} documents "
+                f"(embeddings unavailable, {pending} pending)"
+            )
         if pending:
             return f"reparsed {reparsed} documents ({pending} pending)"
         return f"reparsed {reparsed} documents"

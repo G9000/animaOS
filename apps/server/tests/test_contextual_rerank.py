@@ -400,6 +400,93 @@ def test_reranker_backend_status_failed_retrying_when_switch_fails(
     assert reranker_module.backend_status() == "cold"
 
 
+# ── FINDING B: reranker cooldown must be keyed by model name ────────────
+#
+# Same bug as fastembed_backend: the `_failed_at` TTL latch used to be
+# global, so fixing a mistyped reranker model name in settings still gave
+# no reranking for the full 300s cooldown. Keyed by `_failed_model_name`.
+
+
+def test_other_reranker_model_gets_fresh_attempt_despite_different_cooldown(
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    class _FakeModel:
+        def rerank(self, query: str, documents: Any) -> Any:
+            return [0.0 for _ in documents]
+
+    def factory() -> Any:
+        model_name = settings.retrieval_reranker_model
+        calls.append(model_name)
+        if model_name == "model-a":
+            raise RuntimeError("model-a unavailable")
+        return _FakeModel()
+
+    monkeypatch.setattr(reranker_module, "_create_model", factory)
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+    first = reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+    assert first is None
+    assert calls == ["model-a"]
+
+    # A different, correctly-named model must get a fresh attempt right
+    # away, not be blocked by model-a's cooldown.
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    second = reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+    assert second is not None
+    assert calls == ["model-a", "model-b"]
+
+
+def test_same_reranker_model_still_blocked_after_other_model_succeeds(
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    class _FakeModel:
+        def rerank(self, query: str, documents: Any) -> Any:
+            return [0.0 for _ in documents]
+
+    def factory() -> Any:
+        model_name = settings.retrieval_reranker_model
+        calls.append(model_name)
+        if model_name == "model-a":
+            raise RuntimeError("model-a unavailable")
+        return _FakeModel()
+
+    monkeypatch.setattr(reranker_module, "_create_model", factory)
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+    reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+    assert calls == ["model-a", "model-b"]
+
+    # model-a retried within its own TTL, after model-b's unrelated success:
+    # still blocked, no new _create_model call for it.
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+    third = reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+    assert third is None
+    assert calls == ["model-a", "model-b"]
+
+
+def test_reranker_backend_status_not_failed_retrying_for_differently_latched_model(
+    monkeypatch: Any,
+) -> None:
+    def factory() -> Any:
+        raise RuntimeError("model-a unavailable")
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+    monkeypatch.setattr(reranker_module, "_create_model", factory)
+    reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")])
+
+    # Settings have since moved on to model-b, which has never been
+    # attempted — must not report failed_retrying for it.
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    assert reranker_module.backend_status() == "cold"
+
+
 def test_rerank_orders_by_model_scores(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 
