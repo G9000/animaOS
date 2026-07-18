@@ -288,16 +288,19 @@ def test_removed_override_flags_cannot_spoof_live_profile() -> None:
             )
 
 
-def test_reference_warmups_are_exact_and_samples_are_a_floor() -> None:
+def test_reference_run_counts_stay_within_calibrated_generation_width() -> None:
     benchmark = load_benchmark_module()
     benchmark.validate_reference_run_counts(30, 200)
     benchmark.validate_reference_run_counts(30, 201)
+    benchmark.validate_reference_run_counts(30, 967)
 
     for warmups in (29, 31):
         with pytest.raises(benchmark.ReferenceTargetError, match="exactly 30"):
             benchmark.validate_reference_run_counts(warmups, 200)
     with pytest.raises(benchmark.ReferenceTargetError, match="at least 200"):
         benchmark.validate_reference_run_counts(30, 199)
+    with pytest.raises(benchmark.ReferenceTargetError, match="at most 967"):
+        benchmark.validate_reference_run_counts(30, 968)
 
 
 def fixture_record(
@@ -501,6 +504,29 @@ def test_complete_reference_report_schema_is_accepted() -> None:
     report = complete_report()
 
     assert validate_report(benchmark, report) == report
+
+
+def test_complete_reference_report_accepts_online_physical_storage_status() -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+    report["profile"]["storageEvidence"]["operationalStatus"] = "Online"
+
+    assert validate_report(benchmark, report) == report
+
+
+def test_reference_report_rejects_samples_above_calibrated_generation_width() -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+    report["measuredCommits"] = 968
+    report["benchmarkCommand"][-1] = "968"
+    for fixture in report["fixtures"]:
+        fixture["sampleCount"] = 968
+        fixture["finalHeadGeneration"] = 1_000
+        fixture["finalCatalogCount"] = 1_000
+        fixture["totalBytesWritten"] = fixture["bytesWritten"] * 968
+
+    with pytest.raises(benchmark.ReportValidationError, match="200 to 967"):
+        validate_report(benchmark, report)
 
 
 def test_reference_report_validation_does_not_use_host_path_semantics(monkeypatch) -> None:

@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 MAX_CATALOG_PLAINTEXT_BYTES = 16 * 1024 * 1024
 REFERENCE_WARMUPS = 30
 REFERENCE_SAMPLES = 200
+MAX_REFERENCE_SAMPLES = 999 - 2 - REFERENCE_WARMUPS
 REFERENCE_DURABLE_WRITE_SAMPLES = 200
 REFERENCE_DURABLE_WRITE_WARMUPS = 30
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -970,6 +971,10 @@ def validate_reference_run_counts(warmups: int, samples: int) -> None:
         raise ReferenceTargetError("reference mode requires exactly 30 warmups")
     if samples < REFERENCE_SAMPLES:
         raise ReferenceTargetError("reference mode requires at least 200 measured commits")
+    if samples > MAX_REFERENCE_SAMPLES:
+        raise ReferenceTargetError(
+            f"reference mode requires at most {MAX_REFERENCE_SAMPLES} measured commits"
+        )
 
 
 def percentile_nearest_rank(samples: Sequence[float], percentile: float) -> float:
@@ -1345,11 +1350,15 @@ def _validate_profile(value: Any) -> dict[str, Any]:
         "busType": "nvme",
         "mediaType": "ssd",
         "healthStatus": "healthy",
-        "operationalStatus": "ok",
     }
     for key, expected in expected_storage.items():
         if _report_string(storage[key], f"storage.{key}").casefold() != expected:
             raise ReportValidationError(f"storage.{key} is not reference-grade")
+    if _report_string(storage["operationalStatus"], "storage.operationalStatus").casefold() not in {
+        "ok",
+        "online",
+    }:
+        raise ReportValidationError("storage.operationalStatus is not reference-grade")
     for key in ("volumeRoot", "model", "serialNumber", "physicalLocation"):
         _report_string(storage[key], f"storage.{key}")
     if _windows_path(storage["volumeRoot"]).drive.casefold() != windows_target.drive.casefold():
@@ -1562,9 +1571,13 @@ def validate_and_finalize_report(
         raise ReportValidationError("benchmarkBinary identity does not match the executed binary")
     warmups = _report_int(record["warmupCommits"], "warmupCommits")
     samples = _report_int(record["measuredCommits"], "measuredCommits")
-    if warmups != REFERENCE_WARMUPS or samples < REFERENCE_SAMPLES:
+    if (
+        warmups != REFERENCE_WARMUPS
+        or samples < REFERENCE_SAMPLES
+        or samples > MAX_REFERENCE_SAMPLES
+    ):
         raise ReportValidationError(
-            "reference report requires exactly 30 warmups and at least 200 samples"
+            "reference report requires exactly 30 warmups and 200 to 967 samples"
         )
     profile = _validate_profile(record["profile"])
     profile_target = _report_string(profile["target"], "profile.target")
