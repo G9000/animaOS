@@ -1785,6 +1785,36 @@ def test_effective_candidate_category_resolution():
     )
 
 
+def test_stronger_repeat_raises_active_candidate_importance():
+    """An importance>=2 extraction of the same content must lift an active
+    importance-1 row before the Soul Writer gate reads it — the stronger
+    observation gets the promotion bypass, not the stale weak importance."""
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with runtime_factory() as runtime_db:
+            weak = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Works at the observatory",
+                category="fact",
+                importance=1,
+            )
+            assert weak is not None
+            stronger = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Works at the observatory",
+                category="fact",
+                importance=3,
+            )
+            assert stronger is None  # merged
+            runtime_db.refresh(weak)
+            assert weak.importance == 3
+    finally:
+        runtime_engine.dispose()
+
+
 def test_purge_latent_traces_matching_topic_removes_fold_only_topics():
     from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
 

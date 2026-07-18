@@ -103,6 +103,12 @@ def create_memory_candidate(
                 existing.salience_json,
                 salience_json,
             )
+            # A stronger extraction of the same content must not be
+            # weakened by merging into an older weak row — the Soul Writer
+            # gate reads the row's importance, and IL4 promises the
+            # importance >= 2 bypass to the strongest observation.
+            if int(importance or 0) > int(existing.importance or 0):
+                existing.importance = int(importance)
             if int(existing.importance or 0) == 1:
                 # Weak-signal lane (IL4): an active repeat must still count
                 # toward latent accumulation — record it so the fold applies
