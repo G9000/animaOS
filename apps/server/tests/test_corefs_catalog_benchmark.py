@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -1011,7 +1012,7 @@ def test_held_reference_target_chain_blocks_target_rename(tmp_path: Path) -> Non
     assert target.is_dir()
 
 
-def test_release_build_uses_fresh_private_target_and_sanitized_environment(
+def test_release_build_uses_committed_lockfile_and_sanitized_private_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     benchmark = load_benchmark_module()
@@ -1020,10 +1021,13 @@ def test_release_build_uses_fresh_private_target_and_sanitized_environment(
     monkeypatch.setenv("RUSTFLAGS", "-C target-cpu=native")
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "shared"))
     calls: list[tuple[list[str], dict[str, object]]] = []
+    committed_lockfile = b"committed-lockfile-with-lf\n"
 
     def runner(command, **kwargs):
         command = list(command)
         calls.append((command, kwargs))
+        if command[:3] == ["git", "cat-file", "blob"]:
+            return SimpleNamespace(stdout=committed_lockfile, returncode=0)
         if "build" in command:
             suffix = ".exe" if os.name == "nt" else ""
             binary = private_target / "release" / f"catalog_benchmark{suffix}"
@@ -1033,7 +1037,7 @@ def test_release_build_uses_fresh_private_target_and_sanitized_environment(
         return SimpleNamespace(stdout="rustc 1.75.0\nhost: x86_64-pc-windows-msvc\n", returncode=0)
 
     monkeypatch.setattr(benchmark.subprocess, "run", runner)
-    build = benchmark.build_rust_benchmark_binary()
+    build = benchmark.build_rust_benchmark_binary(SOURCE_COMMIT)
 
     assert build.target_directory == private_target
     assert build.binary.parent == private_target / "release"
@@ -1043,6 +1047,8 @@ def test_release_build_uses_fresh_private_target_and_sanitized_environment(
     assert "RUSTFLAGS" not in build_environment
     assert "CARGO_TARGET_DIR" not in build_environment
     assert build.sanitized_environment_removed == ("CARGO_TARGET_DIR", "RUSTFLAGS")
+    assert calls[-1][0] == ["git", "cat-file", "blob", f"{SOURCE_COMMIT}:Cargo.lock"]
+    assert build.cargo_lock_sha256 == hashlib.sha256(committed_lockfile).hexdigest()
 
 
 def test_registered_sync_roots_cover_multiple_accounts_and_alternate_providers() -> None:

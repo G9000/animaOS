@@ -1739,6 +1739,20 @@ def _sha256_regular_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_committed_cargo_lock(source_commit: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise ReportValidationError("benchmark source commit is invalid")
+    completed = subprocess.run(
+        ["git", "cat-file", "blob", f"{source_commit}:Cargo.lock"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    )
+    if not isinstance(completed.stdout, bytes):
+        raise ReportValidationError("committed Cargo.lock probe did not return bytes")
+    return hashlib.sha256(completed.stdout).hexdigest()
+
+
 def _sanitized_cargo_environment() -> tuple[dict[str, str], tuple[str, ...]]:
     environment = os.environ.copy()
     exact = {
@@ -1763,7 +1777,7 @@ def _sanitized_cargo_environment() -> tuple[dict[str, str], tuple[str, ...]]:
     return environment, tuple(removed)
 
 
-def build_rust_benchmark_binary() -> BenchmarkBuildEvidence:
+def build_rust_benchmark_binary(source_commit: str) -> BenchmarkBuildEvidence:
     target_directory = Path(tempfile.mkdtemp(prefix="anima-corefs-catalog-build-")).resolve()
     environment, removed = _sanitized_cargo_environment()
     command = (
@@ -1801,7 +1815,7 @@ def build_rust_benchmark_binary() -> BenchmarkBuildEvidence:
         binary=binary,
         command=command,
         target_directory=target_directory,
-        cargo_lock_sha256=_sha256_regular_file(REPO_ROOT / "Cargo.lock"),
+        cargo_lock_sha256=_sha256_committed_cargo_lock(source_commit),
         rustc=rustc,
         sanitized_environment_removed=removed,
     )
@@ -2128,7 +2142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ReferenceTargetError(
                 f"4-KiB durable-write p95 exceeds 5 ms: {durable_write['p95Ms']:.3f} ms"
             )
-        build = build_rust_benchmark_binary()
+        build = build_rust_benchmark_binary(source_commit)
         binary = build.binary
         with hold_benchmark_binary(binary) as held_binary:
             if source_commit_for_benchmark() != source_commit:
