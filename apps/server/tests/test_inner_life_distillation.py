@@ -911,3 +911,31 @@ def test_direct_delete_of_tombstone_scrubs_ledger(db: Session) -> None:
     # No orphaned ledger row; the sole-contributor tendency is gone.
     assert db.scalars(select(TendencyContribution)).all() == []
     assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is None
+
+
+def test_distilled_tendency_surfaces_in_memory_block(db: Session) -> None:
+    """A distilled tendency must be readable somewhere — build_tendencies_block
+    surfaces active tendency claims into the prompt, so distillation has an
+    actual user-visible retrieval effect."""
+    from anima_server.services.agent.memory_blocks import build_tendencies_block
+
+    item = _make_item(db, memory_class="casual", content="stressed about the commute")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+
+    block = build_tendencies_block(db, user_id=1)
+    assert block is not None
+    assert block.label == "tendencies"
+    assert "strength:" in block.value
+    assert "commute" in block.value  # topic-derived descriptor is surfaced
+
+
+def test_tendencies_block_none_when_no_tendencies(db: Session) -> None:
+    from anima_server.services.agent.memory_blocks import build_tendencies_block
+
+    assert build_tendencies_block(db, user_id=1) is None

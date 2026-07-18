@@ -239,6 +239,14 @@ def build_turn_memory_blocks(
     if cross_episode_patterns_block is not None:
         blocks.append(cross_episode_patterns_block)
 
+    tendencies_block = build_tendencies_block(
+        db,
+        user_id=user_id,
+        agent_type=agent_type,
+    )
+    if tendencies_block is not None:
+        blocks.append(tendencies_block)
+
     foresight_block = build_foresight_memory_block(
         db,
         user_id=user_id,
@@ -1328,6 +1336,67 @@ def build_emotional_patterns_block(
         description=_desc(
             "emotional_patterns",
             "My enduring emotional tendencies - patterns distilled from many conversations.",
+            agent_type,
+        ),
+        value=value,
+    )
+
+
+def build_tendencies_block(
+    db: Session,
+    *,
+    user_id: int,
+    agent_type: str = "companion",
+    limit: int = 10,
+) -> MemoryBlock | None:
+    """Surface IL5 distilled tendencies — the semantic residue of weak,
+    recurring signals whose source memories decayed and were tombstoned.
+
+    Without this the distillation feature would store tendency claims that
+    nothing ever reads: the original memory is gone and the disposition
+    would exist only in raw DB/vault state. Ordered by aggregate strength
+    (value_json), highest first.
+    """
+    from anima_server.config import settings
+    from anima_server.models import MemoryClaim
+    from anima_server.services.agent.claims import TENDENCY_NAMESPACE
+
+    claims = list(
+        db.scalars(
+            select(MemoryClaim)
+            .where(
+                MemoryClaim.user_id == user_id,
+                MemoryClaim.namespace == TENDENCY_NAMESPACE,
+                MemoryClaim.status == "active",
+            )
+            .limit(200)
+        ).all()
+    )
+    if not claims:
+        return None
+
+    def _strength(claim: MemoryClaim) -> float:
+        vj = claim.value_json if isinstance(claim.value_json, dict) else {}
+        try:
+            return float(vj.get("strength", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    claims.sort(key=_strength, reverse=True)
+    lines = []
+    for claim in claims[:limit]:
+        phrase = df(user_id, claim.value_text, table="memory_items", field="content").strip()
+        if phrase:
+            lines.append(f"- {phrase} (strength: {_strength(claim):.2f})")
+    if not lines:
+        return None
+
+    value = _truncate_lines("\n".join(lines), settings.agent_emotional_patterns_budget)
+    return MemoryBlock(
+        label="tendencies",
+        description=_desc(
+            "tendencies",
+            "Low-grade dispositions I've distilled from many small, fading signals.",
             agent_type,
         ),
         value=value,
