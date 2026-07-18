@@ -1,0 +1,72 @@
+{
+  "multicolumn": {
+    "column1_phrase": "Marsh orchids thrive in waterlogged peat",
+    "column2_phrase": "Wipe the panel glass",
+    "queries": [
+      {
+        "expect": "every third spring",
+        "id": "multicolumn-orchid",
+        "query": "How often should marsh orchid rhizomes be divided?"
+      },
+      {
+        "expect": "eighty percent",
+        "id": "multicolumn-solar",
+        "query": "When should I check the solar array inverter fuse?"
+      }
+    ]
+  },
+  "scanned": {
+    "phrase": "Coolant manifold pressure must stay below forty psi during the sunrise patrol.",
+    "queries": [
+      {
+        "expect": "coolant manifold",
+        "id": "scanned-coolant",
+        "query": "What is the maximum coolant manifold pressure allowed?"
+      }
+    ]
+  },
+  "simple": {
+    "extraction_phrases": [
+      "triple-stage membrane",
+      "auxiliary valve"
+    ],
+    "queries": [
+      {
+        "expect": "triple-stage membrane",
+        "id": "simple-membrane",
+        "query": "What filters the brine before it reaches the cistern?"
+      },
+      {
+        "expect": "auxiliary valve",
+        "id": "simple-valve",
+        "query": "What should I do if the pressure gauge exceeds ninety kilopascals?"
+      }
+    ]
+  },
+  "tables": {
+    "queries": [
+      {
+        "expect": "Oxygen Canister",
+        "id": "tables-oxygen",
+        "query": "How many oxygen canisters are in stock?"
+      },
+      {
+        "expect": "Medkit",
+        "id": "tables-medkit",
+        "query": "What is the unit price of a medkit?"
+      }
+    ],
+    "row1": [
+      "Oxygen Canister",
+      "12",
+      "45.00",
+      "540.00"
+    ],
+    "row2": [
+      "Water Filter",
+      "8",
+      "22.50",
+      "180.00"
+    ]
+  }
+}

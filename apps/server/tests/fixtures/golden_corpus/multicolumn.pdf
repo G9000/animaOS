@@ -1,0 +1,51 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 572 >>
+stream
+BT
+/F1 13 Tf
+1 0 0 1 54 720 Tm
+(Marsh Orchid Cultivation Notes) Tj
+/F1 10 Tf
+1 0 0 1 54 690 Tm
+(Marsh orchids thrive in waterlogged peat with dappled afternoon shade.) Tj
+/F1 10 Tf
+1 0 0 1 54 670 Tm
+(Divide the rhizomes every third spring to prevent overcrowding in the bed.) Tj
+/F1 13 Tf
+1 0 0 1 320 720 Tm
+(Solar Array Maintenance Notes) Tj
+/F1 10 Tf
+1 0 0 1 320 690 Tm
+(Wipe the panel glass with a soft cloth to remove accumulated pollen and dust.) Tj
+/F1 10 Tf
+1 0 0 1 320 670 Tm
+(Check the inverter fuse if output drops below eighty percent of rated capacity.) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+933
+%%EOF
