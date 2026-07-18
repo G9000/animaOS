@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import Generator
 
 import pytest
+from anima_server.db.helpers import dual_session_scope, session_scope
 from sqlalchemy import Column, Integer, String, create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from anima_server.db.helpers import dual_session_scope, session_scope
 
 
 class _Base(DeclarativeBase):
@@ -64,10 +63,9 @@ class TestSessionScope:
 
     def test_rolls_back_and_reraises_on_exception(self, soul) -> None:
         _, factory = soul
-        with pytest.raises(RuntimeError, match="boom"):
-            with session_scope(factory) as db:
-                db.add(_Row(value="discarded"))
-                raise RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"), session_scope(factory) as db:
+            db.add(_Row(value="discarded"))
+            raise RuntimeError("boom")
         assert _count(factory) == 0
 
     def test_session_closed_after_exit(self, soul) -> None:
@@ -92,11 +90,13 @@ class TestDualSessionScope:
     def test_body_exception_rolls_back_both(self, soul, runtime) -> None:
         _, soul_factory = soul
         _, runtime_factory = runtime
-        with pytest.raises(RuntimeError, match="boom"):
-            with dual_session_scope(soul_factory, runtime_factory) as (s, r):
-                s.add(_Row(value="soul"))
-                r.add(_Row(value="runtime"))
-                raise RuntimeError("boom")
+        with (
+            pytest.raises(RuntimeError, match="boom"),
+            dual_session_scope(soul_factory, runtime_factory) as (s, r),
+        ):
+            s.add(_Row(value="soul"))
+            r.add(_Row(value="runtime"))
+            raise RuntimeError("boom")
         assert _count(soul_factory) == 0
         assert _count(runtime_factory) == 0
 
@@ -106,15 +106,17 @@ class TestDualSessionScope:
         """Ordering rule: soul commits first. If it fails, runtime must not commit."""
         _, soul_factory = soul
         _, runtime_factory = runtime
-        with pytest.raises(RuntimeError, match="soul-commit-fail"):
-            with dual_session_scope(soul_factory, runtime_factory) as (s, r):
-                s.add(_Row(value="soul"))
-                r.add(_Row(value="runtime"))
-                monkeypatch.setattr(
-                    s, "commit", lambda: (_ for _ in ()).throw(
-                        RuntimeError("soul-commit-fail")
-                    )
-                )
+        with (
+            pytest.raises(RuntimeError, match="soul-commit-fail"),
+            dual_session_scope(soul_factory, runtime_factory) as (s, r),
+        ):
+            s.add(_Row(value="soul"))
+            r.add(_Row(value="runtime"))
+            monkeypatch.setattr(
+                s,
+                "commit",
+                lambda: (_ for _ in ()).throw(RuntimeError("soul-commit-fail")),
+            )
         assert _count(soul_factory) == 0
         assert _count(runtime_factory) == 0
 
@@ -124,15 +126,17 @@ class TestDualSessionScope:
         """At-least-once semantics: soul data is durable; runtime re-stages on retry."""
         _, soul_factory = soul
         _, runtime_factory = runtime
-        with pytest.raises(RuntimeError, match="runtime-commit-fail"):
-            with dual_session_scope(soul_factory, runtime_factory) as (s, r):
-                s.add(_Row(value="soul"))
-                r.add(_Row(value="runtime"))
-                monkeypatch.setattr(
-                    r, "commit", lambda: (_ for _ in ()).throw(
-                        RuntimeError("runtime-commit-fail")
-                    )
-                )
+        with (
+            pytest.raises(RuntimeError, match="runtime-commit-fail"),
+            dual_session_scope(soul_factory, runtime_factory) as (s, r),
+        ):
+            s.add(_Row(value="soul"))
+            r.add(_Row(value="runtime"))
+            monkeypatch.setattr(
+                r,
+                "commit",
+                lambda: (_ for _ in ()).throw(RuntimeError("runtime-commit-fail")),
+            )
         assert _count(soul_factory) == 1  # soul committed before runtime failed
         assert _count(runtime_factory) == 0
 
