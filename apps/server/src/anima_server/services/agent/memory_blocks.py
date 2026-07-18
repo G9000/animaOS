@@ -1355,6 +1355,11 @@ def build_cross_episode_patterns_block(
             MemoryItem.category == PATTERN_CATEGORY,
             MemoryItem.source == PATTERN_SOURCE,
             MemoryItem.superseded_by.is_(None),
+            # IL5: emotional_pattern items are distillable, and a distilled
+            # tombstone keeps its category/source/heat/evidence_strength —
+            # without this guard it would inject an empty "- (confidence:...)"
+            # line into the turn prompt.
+            MemoryItem.distilled_at.is_(None),
             MemoryItem.evidence_strength >= confidence_threshold,
             or_(
                 MemoryItem.heat.is_(None),

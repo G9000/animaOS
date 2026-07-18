@@ -457,6 +457,22 @@ def _topic_key_content_tokens(topic_key: str) -> set[str]:
     return {token for token in tail.split("_") if token}
 
 
+def _topic_query_tokens(topic: str) -> set[str]:
+    """Content tokens of a user's topic query, normalized the SAME way
+    stored keys are so a structured phrase matches its stored value.
+
+    A raw phrase like "likes sushi" or "works at Acme" carries structural
+    words (likes/works/at) that the stored key drops — comparing raw query
+    tokens against ``_topic_key_content_tokens`` would never match. Running
+    the query through ``derive_topic_key`` collapses it to the same value
+    segment ("sushi", "acme"); the category is irrelevant here since only
+    the trailing content segment is kept.
+    """
+    from anima_server.services.agent.claims import derive_topic_key
+
+    return _topic_key_content_tokens(derive_topic_key(topic, "fact"))
+
+
 def purge_latent_traces_matching_topic(
     db: Session,
     *,
@@ -478,12 +494,10 @@ def purge_latent_traces_matching_topic(
     complete token among the key's slug segments.
     """
     from anima_server.models.agent_runtime import LatentTrace
-    from anima_server.services.agent.claims import _content_slug
 
-    slug = _content_slug(topic)
-    if not slug:
+    topic_tokens = _topic_query_tokens(topic)
+    if not topic_tokens:
         return 0
-    topic_tokens = set(slug.split("_"))
     # Bounded by the per-user trace cap, so Python-side token filtering is
     # cheap and portable across dialects.
     all_traces = db.scalars(
@@ -533,12 +547,11 @@ def purge_tendency_claims_matching_topic(
     must not purge "cart_repair"), mirroring the latent-trace purge.
     """
     from anima_server.models import MemoryClaim, MemoryItem, TendencyContribution
-    from anima_server.services.agent.claims import TENDENCY_NAMESPACE, _content_slug
+    from anima_server.services.agent.claims import TENDENCY_NAMESPACE
 
-    slug = _content_slug(topic)
-    if not slug:
+    topic_tokens = _topic_query_tokens(topic)
+    if not topic_tokens:
         return 0
-    topic_tokens = set(slug.split("_"))
 
     claims = list(
         db.scalars(

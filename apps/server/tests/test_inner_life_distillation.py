@@ -787,3 +787,77 @@ def test_topic_purge_ignores_structural_key_segments(db: Session) -> None:
         assert purge_tendency_claims_matching_topic(db, user_id=1, topic=structural) == 0
     # The real content token still works.
     assert purge_tendency_claims_matching_topic(db, user_id=1, topic="sushi") == 1
+
+
+def test_topic_purge_matches_structured_phrase_query(db: Session) -> None:
+    """A structured user phrase ('likes sushi') must purge its distilled
+    tendency — the query is normalized the same way the stored key is, so
+    structural words (likes) don't block the match."""
+    from anima_server.services.agent.forgetting import purge_tendency_claims_matching_topic
+
+    _make_item(db, memory_class="casual", content="likes sushi", category="preference")
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+
+    # Full structured phrase, not just the bare value.
+    purged = purge_tendency_claims_matching_topic(db, user_id=1, topic="likes sushi")
+    assert purged == 1
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is None
+
+
+def test_distillation_deletes_linked_claim(db: Session) -> None:
+    """An item that already produced a MemoryClaim via upsert_claim must
+    have that claim (and its evidence) deleted at distillation — otherwise
+    the original fact stays active and profile reconciliation resurfaces it.
+    The new tendency claim (memory_item_id=None) is untouched."""
+    from anima_server.services.agent.claims import upsert_claim
+
+    item = _make_item(db, memory_class="casual", content="likes sushi", category="preference")
+    upsert_claim(
+        db, user_id=1, content="likes sushi", category="preference",
+        memory_item_id=item.id, evidence_text="likes sushi",
+    )
+    db.flush()
+    item_id = item.id
+    linked = db.scalars(
+        select(MemoryClaim).where(MemoryClaim.memory_item_id == item_id)
+    ).all()
+    assert len(linked) == 1  # precondition
+
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    # The original preference claim linked to the item is gone...
+    assert db.scalars(
+        select(MemoryClaim).where(MemoryClaim.memory_item_id == item_id)
+    ).all() == []
+    # ...but a tendency claim (unlinked) now exists.
+    tendency = db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency"))
+    assert tendency is not None
+    assert tendency.memory_item_id is None
+
+
+def test_distilled_pattern_excluded_from_patterns_block(db: Session) -> None:
+    """A distilled emotional_pattern tombstone must not inject an empty line
+    into the cross-episode patterns prompt block."""
+    from anima_server.services.agent.memory_blocks import build_cross_episode_patterns_block
+    from anima_server.services.agent.pattern_synthesis import PATTERN_CATEGORY, PATTERN_SOURCE
+
+    item = _make_item(
+        db,
+        memory_class="emotional_pattern",
+        category=PATTERN_CATEGORY,
+        content="recurring low mood on Mondays",
+        emotional_salience=0.5,
+    )
+    item.source = PATTERN_SOURCE
+    item.evidence_strength = 0.9
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.get(MemoryItem, item.id).distilled_at is not None
+
+    block = build_cross_episode_patterns_block(db, user_id=1)
+    # No block at all, or a block that does not contain the empty-content line.
+    if block is not None:
+        assert "recurring low mood" not in block.content
+        assert "-  (confidence" not in block.content

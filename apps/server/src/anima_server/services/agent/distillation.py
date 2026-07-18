@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 
 from anima_server.models import (
     ForgetAuditLog,
+    MemoryClaim,
+    MemoryClaimEvidence,
     MemoryItem,
     MemoryItemEvidence,
     MemoryItemTag,
@@ -240,6 +242,27 @@ def _distill_one_item(
             MemoryItemEvidence.memory_item_id == item.id,
         )
     ).rowcount or 0
+
+    # A casual/transient item may already have gone through upsert_claim,
+    # leaving an active MemoryClaim (+ its evidence) linked by
+    # memory_item_id — the original fact/preference. Distillation must
+    # reduce the item to ONLY the new tendency; leaving the old claim would
+    # keep the source content active and exportable and let profile
+    # reconciliation resurface it. Mirror forget_memory's claim cleanup.
+    # (The new tendency claim is linked with memory_item_id=None, so it is
+    # never caught here.)
+    linked_claim_ids = list(
+        db.scalars(
+            select(MemoryClaim.id).where(MemoryClaim.memory_item_id == item.id)
+        ).all()
+    )
+    if linked_claim_ids:
+        db.execute(
+            delete(MemoryClaimEvidence).where(
+                MemoryClaimEvidence.claim_id.in_(linked_claim_ids)
+            )
+        )
+        db.execute(delete(MemoryClaim).where(MemoryClaim.id.in_(linked_claim_ids)))
 
     db.add(
         ForgetAuditLog(
