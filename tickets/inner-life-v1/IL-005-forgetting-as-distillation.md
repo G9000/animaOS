@@ -1,16 +1,16 @@
 # IL-005 - Forgetting as distillation (F7 extension)
 
-- Status: backlog
+- Status: in_progress
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/agent/forgetting.py`, `apps/server/src/anima_server/services/agent/claims.py`, `apps/server/src/anima_server/models`
 - Parent: `IL-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 17:40 MYT
-- Started:
+- Updated: 2026-07-18 15:20 MYT
+- Started: 2026-07-18 15:20 MYT
 - Completed:
 
 ## Goal
