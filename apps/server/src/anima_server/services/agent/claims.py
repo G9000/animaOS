@@ -218,6 +218,80 @@ def upsert_claim(
     return new_claim
 
 
+TENDENCY_NAMESPACE = "tendency"
+
+
+def upsert_tendency_claim(
+    db: Session,
+    *,
+    user_id: int,
+    category: str,
+    memory_class: str,
+    topic_content: str,
+) -> MemoryClaim:
+    """Upsert the semantic ``tendency`` claim a distilled item folds into
+    (IL5 — PRD "IL5 Forgetting as Distillation").
+
+    Deliberately NOT ``upsert_claim``: that function treats any change in
+    ``content`` as a new value and supersedes the existing claim. A tendency
+    claim's ``value_json`` strength is recomputed and rewritten on every new
+    contribution (``distillation.recompute_tendency_from_ledger``), so keying
+    off content would supersede the claim on every single distillation and
+    fragment one tendency's ledger across many dead claims. Instead the
+    canonical key groups by structural topic — the same collapsing
+    ``derive_topic_key`` gives IL4 latent traces — scoped under
+    ``memory_class`` so, e.g., a "casual" commuting signal and a "transient"
+    one accumulate as two distinct tendencies. The claim itself is a compact,
+    content-derived phrase (per PRD, tendency claims ARE a semantic
+    descriptor of the folded signature) — only the ledger and tombstone are
+    required to be content-free.
+    """
+    topic_key = derive_topic_key(topic_content, category)
+    canonical_key = f"user:{TENDENCY_NAMESPACE}:{memory_class}:{topic_key}"
+
+    existing = db.scalar(
+        select(MemoryClaim).where(
+            MemoryClaim.user_id == user_id,
+            MemoryClaim.canonical_key == canonical_key,
+            MemoryClaim.status == "active",
+        )
+    )
+    if existing is not None:
+        return existing
+
+    phrase = f"recurring {memory_class} signal: {_compact_topic_label(topic_content)}"
+    claim = MemoryClaim(
+        user_id=user_id,
+        subject_type="user",
+        namespace=TENDENCY_NAMESPACE,
+        slot=_content_slug(topic_content),
+        value_text=ef(user_id, phrase, table="memory_items", field="content"),
+        polarity="positive",
+        confidence=0.5,
+        status="active",
+        canonical_key=canonical_key,
+        source_kind="distillation",
+        extractor="deterministic",
+        memory_item_id=None,
+        superseded_by_id=None,
+    )
+    db.add(claim)
+    db.flush()
+    return claim
+
+
+def _compact_topic_label(content: str, max_words: int = 4) -> str:
+    """Short, deterministic label for a tendency claim's phrase text.
+
+    The canonical key (``derive_topic_key``) uses the full content slug +
+    digest to correctly distinguish/collapse topics; the *displayed* phrase
+    only needs to be a compact human-readable tag, so it takes just the
+    first few slug tokens.
+    """
+    tokens = [token for token in _content_slug(content).split("_") if token][:max_words]
+    return "_".join(tokens) or "signal"
+
+
 def get_active_claims(
     db: Session,
     *,

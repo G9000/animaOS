@@ -939,16 +939,36 @@ async def _task_heat_decay(
     user_id: int,
     db_factory: Callable[..., object] | None = None,
 ) -> dict:
-    """Decay heat scores for all items (F2)."""
+    """Decay heat scores for all items (F2), then distill any casual/
+    transient/emotional_pattern items that decayed below the visibility
+    floor into tendency claims (IL5 — PRD "Forgetting as Distillation").
+
+    Distillation runs as its own per-item transactional pass AFTER the
+    heat-decay commit: a distillation failure on one item must never roll
+    back heat updates that already landed for the whole sweep.
+    """
+    from anima_server.config import settings
     from anima_server.db.helpers import session_scope
     from anima_server.db.session import SessionLocal
+    from anima_server.services.agent.distillation import distill_due_items
     from anima_server.services.agent.heat_scoring import decay_all_heat
 
     factory = db_factory or SessionLocal
     with session_scope(factory) as db:
         count = decay_all_heat(db, user_id=user_id)
 
-    return {"items_decayed": count}
+    with factory() as db:
+        distillation = distill_due_items(
+            db,
+            user_id=user_id,
+            max_per_run=settings.distill_max_per_run,
+        )
+
+    return {
+        "items_decayed": count,
+        "items_distilled": distillation.distilled,
+        "distillation_failed": distillation.failed,
+    }
 
 
 async def _task_knowledge_autocompile(

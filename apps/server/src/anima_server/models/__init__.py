@@ -25,6 +25,7 @@ from anima_server.models.agent_runtime import (
     MemoryItemEvidence,
     MemoryItemTag,
     MemoryVector,
+    TendencyContribution,
     UserProfileField,
     UserProfileFieldEvidence,
 )
@@ -136,6 +137,7 @@ __all__ = [
     "SoulKeyslot",
     "Task",
     "TelegramLink",
+    "TendencyContribution",
     "User",
     "UserKey",
     "UserProfileField",

@@ -292,6 +292,16 @@ class MemoryItem(Base):
         nullable=False,
         server_default=func.now(),
     )
+    # IL5 forgetting-as-distillation tombstone marker: set when passive decay
+    # folded this item's signature into a ``tendency`` claim and gutted its
+    # content/embedding/evidence in place (id, memory_class, category, and
+    # created_at survive). NULL means "never distilled" — retrieval paths
+    # that don't already heat-gate must additionally require this NULL (see
+    # ``services/agent/distillation.py``).
+    distilled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     tag_entries: Mapped[list[MemoryItemTag]] = relationship(
         cascade="all, delete-orphan",
@@ -1186,4 +1196,54 @@ class LatentTrace(Base):
     )
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TendencyContribution(Base):
+    """IL5 forgetting-as-distillation ledger row.
+
+    Records one distilled (tombstoned) ``MemoryItem``'s numeric contribution
+    toward a ``tendency``-namespace ``MemoryClaim``. Soul-store, portable,
+    included in vault export/import (PRD §5 — the ledger and its tombstones
+    cannot be rebuilt once their source content is deleted, so right-to-forget
+    for already-distilled items depends on this table surviving rebuilds and
+    export/import).
+
+    Both foreign keys are soul-store-local (``memory_items``,
+    ``memory_claims``) — unlike ``LatentTrace.evidence_refs``, which can
+    reference runtime-store ids that collide across a vault import, there is
+    no cross-store id-collision risk here.
+
+    ``contribution_vector`` holds numeric salience deltas only, e.g.
+    ``{"strength": s, "valence_hint": v}`` — never content. A tendency
+    claim's aggregate strength is always recomputed from surviving rows here
+    by ``services.agent.distillation.recompute_tendency_from_ledger``, the
+    single source of truth both the distill path and the right-to-forget
+    path use, so a single contribution can be removed exactly later.
+    """
+
+    __tablename__ = "tendency_contributions"
+    __table_args__ = (
+        Index("ix_tendency_contributions_user_id", "user_id"),
+        Index("ix_tendency_contributions_claim", "tendency_claim_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tombstone_item_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tendency_claim_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_claims.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contribution_vector: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )

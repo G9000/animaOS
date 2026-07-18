@@ -115,6 +115,9 @@ async def get_memory_overview(
                     MemoryItem.user_id == user_id,
                     MemoryItem.category == category,
                     MemoryItem.superseded_by.is_(None),
+                    # IL5: a distilled tombstone is content-free and must not
+                    # count as an active memory item.
+                    MemoryItem.distilled_at.is_(None),
                 )
             )
             or 0
