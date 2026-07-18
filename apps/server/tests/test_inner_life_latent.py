@@ -1710,6 +1710,62 @@ async def test_crystallize_requalifies_when_stale_refs_carried_the_weight(monkey
         runtime_engine.dispose()
 
 
+def test_fold_replay_of_same_candidate_is_idempotent():
+    """Crash-retry safety: the soul commit can land before the candidate's
+    runtime status flips to folded, so the same candidate may be folded
+    again on the next run. Folding is additive, so a replay must be a
+    no-op — keyed on the candidate id already present in the refs."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Weak signal", category="minor_observation", importance=1
+        )
+        candidate.id = 4242
+        trace = fold_candidate_into_trace(
+            soul_db,
+            user_id=user.id,
+            candidate=candidate,
+            topic_key="user:minor_observation:replay_guard",
+            score=0.3,
+        )
+        weight_after_first = trace.weight
+        refs_after_first = len(trace.evidence_refs)
+
+        replayed = fold_candidate_into_trace(
+            soul_db,
+            user_id=user.id,
+            candidate=candidate,
+            topic_key="user:minor_observation:replay_guard",
+            score=0.3,
+        )
+        assert replayed.weight == pytest.approx(weight_after_first)
+        assert len(replayed.evidence_refs) == refs_after_first
+
+
+def test_effective_candidate_category_resolution():
+    """One resolution everywhere a category matters: canonical categories
+    pass through untouched; structured minor_observations resolve to the
+    slot's namespace; freeform minor_observations resolve to fact."""
+    from anima_server.services.agent.soul_writer import _effective_candidate_category
+
+    assert (
+        _effective_candidate_category(FakeCandidate(content="x", category="preference"))
+        == "preference"
+    )
+    assert (
+        _effective_candidate_category(
+            FakeCandidate(content="Likes green tea", category="minor_observation")
+        )
+        == "preference"
+    )
+    assert (
+        _effective_candidate_category(
+            FakeCandidate(content="Mentioned the commute", category="minor_observation")
+        )
+        == "fact"
+    )
+
+
 def test_purge_latent_traces_matching_topic_removes_fold_only_topics():
     from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
 

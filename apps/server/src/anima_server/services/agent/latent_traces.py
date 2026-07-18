@@ -110,6 +110,21 @@ def fold_candidate_into_trace(
         soul_db.add(trace)
         soul_db.flush()
 
+    # Crash-retry idempotency: the soul commit lands before the candidate's
+    # runtime status flips to "folded", so a replay of the same candidate is
+    # possible. Unlike promotion (idempotent via store dedup), folding is
+    # additive — a replayed fold must be a no-op, keyed on the candidate id
+    # already present among the trace's refs (the replayed candidate's ref
+    # is always the newest, so the 50-ref window cannot have evicted it).
+    refs = list(trace.evidence_refs or [])
+    candidate_id = getattr(candidate, "id", None)
+    if candidate_id is not None and any(
+        ref.get("candidate_id") == int(candidate_id) for ref in refs
+    ):
+        trace.last_seen = now
+        soul_db.flush()
+        return trace
+
     # An active-window repeat merged into one candidate row still counts
     # once per mention (candidate_ops records repeat_count on merge) —
     # bounded so a runaway extractor can't leap a trace to the cap.
@@ -117,7 +132,6 @@ def fold_candidate_into_trace(
     repeats = max(1, min(10, int(salience.get("repeat_count", 1) or 1)))
     for _ in range(repeats):
         trace.weight = fold_weight(trace.weight, score, cfg)
-    refs = list(trace.evidence_refs or [])
     refs.append(evidence_ref_for_candidate(candidate))
     # Weight caps at 1.0 but refs would otherwise append forever on a
     # recurring topic that never crystallizes (e.g. scaffold provider) —
