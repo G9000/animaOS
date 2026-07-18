@@ -1,0 +1,2044 @@
+"""Tests for IL4 — latent trace buffer and crystallization.
+
+Covers: the pure scoring/fold/decay math (``inner_life/latent.py``), the
+promotion-gate integration in ``soul_writer.plan_candidate_promotion``, the
+soul-store fold/decay/crystallize/scrub edges (``latent_traces.py``), F7
+right-to-forget integration, and vault export/import round-tripping.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import itertools
+from collections.abc import Generator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+
+import pytest
+from anima_server.db.base import Base
+from anima_server.db.runtime_base import RuntimeBase
+from anima_server.models import LatentTrace, MemoryItem, MemoryItemEvidence, User
+from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.models.runtime_memory import MemoryCandidate
+from anima_server.services.agent import latent_traces
+from anima_server.services.agent.candidate_ops import create_memory_candidate
+from anima_server.services.agent.claims import derive_topic_key
+from anima_server.services.agent.forgetting import (
+    forget_latent_traces_for_topic,
+    forget_memory,
+)
+from anima_server.services.agent.inner_life import latent
+from anima_server.services.agent.inner_life.latent import (
+    DEFAULT_LATENT_CONFIG,
+    LatentConfig,
+    classify_score,
+    decay_weight,
+    fold_weight,
+    score_candidate,
+    should_crystallize,
+    should_prune,
+)
+from anima_server.services.agent.latent_traces import (
+    crystallize_due_traces,
+    decay_and_cap_traces,
+    fold_candidate_into_trace,
+    forget_latent_traces_by_topic,
+    get_latent_config,
+    scrub_latent_traces_for_forgotten_sources,
+)
+from anima_server.services.agent.soul_writer import (
+    plan_candidate_promotion,
+    run_soul_writer,
+)
+from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
+from sqlalchemy import create_engine, delete, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+# ---------------------------------------------------------------------------
+# Helpers (mirrors tests/test_soul_writer.py conventions)
+# ---------------------------------------------------------------------------
+
+
+def _content_hash(user_id: int, category: str, importance_source: str, content: str) -> str:
+    normalized = content.strip().lower()
+    return hashlib.sha256(
+        f"{user_id}:{category}:{importance_source}:{normalized}".encode()
+    ).hexdigest()
+
+
+def _create_soul_engine() -> Engine:
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(bind=engine)
+    return engine
+
+
+def _create_runtime_engine() -> Engine:
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    RuntimeBase.metadata.create_all(bind=engine)
+    return engine
+
+
+def _make_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+@contextmanager
+def _soul_db_session() -> Generator[Session, None, None]:
+    engine = _create_soul_engine()
+    factory = _make_factory(engine)
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
+class FakeCandidate:
+    """Minimal stand-in for a MemoryCandidate, for pure decision tests that
+    never reach the fold/promote DB edges (mirrors
+    test_soul_writer.py's FakeCandidate for plan_candidate_promotion)."""
+
+    def __init__(
+        self,
+        *,
+        content: str,
+        category: str = "fact",
+        importance: int = 3,
+        importance_source: str = "llm",
+        source: str = "llm",
+        supersedes_item_id: int | None = None,
+        salience_json: dict[str, object] | None = None,
+        source_message_ids: list[int] | None = None,
+    ) -> None:
+        self.source_message_ids = source_message_ids or []
+        self.content = content
+        self.category = category
+        self.importance = importance
+        self.importance_source = importance_source
+        self.source = source
+        self.supersedes_item_id = supersedes_item_id
+        self.salience_json = salience_json
+
+
+def _make_user(db: Session, username: str = "latent-user") -> User:
+    user = User(username=username, password_hash="x", display_name="Latent User")
+    db.add(user)
+    db.flush()
+    return user
+
+
+# ---------------------------------------------------------------------------
+# 1. Pure math (inner_life/latent.py)
+# ---------------------------------------------------------------------------
+
+
+def test_score_candidate_matches_prd_formula():
+    # s = clamp01(0.6*importance/5 + 0.3*emotional_salience + 0.1*evidence_strength)
+    s = score_candidate(importance=3, emotional_salience=0.5, evidence_strength=0.9)
+    assert s == pytest.approx(0.6 * 0.6 + 0.3 * 0.5 + 0.1 * 0.9)
+
+
+def test_score_candidate_clamped_to_unit_interval():
+    assert score_candidate(
+        importance=5, emotional_salience=1.0, evidence_strength=1.0
+    ) == pytest.approx(1.0)
+    assert score_candidate(importance=0, emotional_salience=0.0, evidence_strength=0.0) == 0.0
+
+
+def test_classify_score_boundaries():
+    config = DEFAULT_LATENT_CONFIG
+    floor = config.floor
+    assert classify_score(floor - 0.001, config) == "reject"
+    assert classify_score(floor, config) == "fold"
+    assert classify_score(config.promotion_threshold - 0.001, config) == "fold"
+    assert classify_score(config.promotion_threshold, config) == "promote"
+
+
+def test_fold_weight_is_additive_not_ema():
+    """EMA-regression guard: repeated identical folds must strictly
+    increase weight until the cap — an EMA would converge below threshold
+    and never crystallize (the PR review finding this ticket fixes)."""
+    config = DEFAULT_LATENT_CONFIG
+    weight = 0.0
+    seen = [weight]
+    for _ in range(10):
+        new_weight = fold_weight(weight, 0.3, config)
+        if weight < 1.0:
+            assert new_weight > weight, "fold must strictly increase weight below the cap"
+        weight = new_weight
+        seen.append(weight)
+    assert weight == 1.0
+    # Never plateaus below the cap partway through — an EMA converging to
+    # ~0.3 would fail this.
+    assert seen[4] >= config.crystallization_threshold
+
+
+def test_fold_weight_crystallizes_after_expected_fold_count():
+    """N mentions at s=0.3 crystallize after ceil(0.6/(0.5*0.3)) == 4 folds."""
+    config = DEFAULT_LATENT_CONFIG
+    weight = 0.0
+    for i in range(1, 5):
+        weight = fold_weight(weight, 0.3, config)
+        if i < 4:
+            assert not should_crystallize(weight, config), f"should not crystallize after {i} folds"
+    assert weight == pytest.approx(0.6)
+    assert should_crystallize(weight, config)
+
+
+def test_fold_weight_caps_at_one():
+    config = DEFAULT_LATENT_CONFIG
+    weight = 0.95
+    for _ in range(10):
+        weight = fold_weight(weight, 1.0, config)
+    assert weight == 1.0
+
+
+def test_decay_weight_and_prune():
+    config = DEFAULT_LATENT_CONFIG
+    assert decay_weight(1.0, config) == pytest.approx(0.98)
+    assert not should_prune(0.02, config)
+    assert should_prune(0.0199, config)
+
+
+def test_pure_latent_module_has_no_llm_seam():
+    """Zero-LLM assertion: the pure fold/score module must never import or
+    reference an LLM call — crystallization (latent_traces.py) is the ONLY
+    LLM consumer in the IL4 pipeline."""
+    source = inspect.getsource(latent)
+    assert "call_llm_for_json" not in source
+    assert "llm_json" not in source
+    assert "async def" not in source
+
+
+# ---------------------------------------------------------------------------
+# 2. Scorer behavior-preservation property (soul_writer integration)
+# ---------------------------------------------------------------------------
+
+
+_SALIENCE_GRID = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+# The full grid, deliberately including values the salience-inference
+# fallback never produces: LLM-explicit salience flows through
+# normalize_salience_payload verbatim (bounded only to [0, 1]), so real
+# candidates CAN reach the gate with near-zero emotional_salience and
+# evidence_strength. Behavior preservation for importance >= 2 must hold
+# by construction — the gate bypasses scoring entirely for them — not by
+# calibration against an assumed input range.
+_FULL_EVIDENCE_GRID = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+
+def test_behavior_preservation_importance_2_plus_bypasses_gate():
+    """For importance >= 2 the gate returns "promote" before any scoring
+    happens, across the FULL salience grid including LLM-explicit
+    near-zero values — verbatim pre-IL4 behavior by construction. (No DB:
+    the bypass returns before any lookup.)"""
+    from anima_server.services.agent.soul_writer import _gate_new_memory_decision
+
+    for importance, emotional_salience, evidence_strength in itertools.product(
+        (2, 3, 4, 5), _SALIENCE_GRID, _FULL_EVIDENCE_GRID
+    ):
+        candidate = FakeCandidate(
+            content="Any content at all",
+            importance=importance,
+            salience_json={
+                "emotional_salience": emotional_salience,
+                "evidence_strength": evidence_strength,
+            },
+        )
+        decision = _gate_new_memory_decision(candidate, reason="new memory")
+        assert decision.action == "promote", (
+            f"importance={importance} salience={emotional_salience} "
+            f"evidence={evidence_strength} -> {decision.action}"
+        )
+
+
+def test_behavior_preservation_via_plan_candidate_promotion_new_memory():
+    """Integration half: real plan_candidate_promotion() calls, no existing
+    matching memory (the "promote-family" new-memory path), across the
+    importance>=2 FULL grid — decision.action must always be "promote",
+    covering the actual live promotion decision the property protects."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for importance, emotional_salience, evidence_strength in itertools.product(
+            (2, 3, 4, 5), _SALIENCE_GRID, _FULL_EVIDENCE_GRID
+        ):
+            candidate = FakeCandidate(
+                content=f"Unique content {importance}-{emotional_salience}-{evidence_strength}",
+                importance=importance,
+                salience_json={
+                    "emotional_salience": emotional_salience,
+                    "evidence_strength": evidence_strength,
+                },
+            )
+            decision = plan_candidate_promotion(soul_db, candidate, user.id)
+            assert decision.action == "promote", (
+                f"importance={importance} salience={emotional_salience} "
+                f"evidence={evidence_strength} -> {decision.action} ({decision.reason})"
+            )
+
+
+def test_behavior_preservation_covers_promote_family_reinforce_supersede_evolve():
+    """The property also must hold for the OTHER promote-family outcomes
+    (reinforce/supersede/evolve against an existing matching memory) —
+    these must win over folding regardless of score, including for a
+    candidate that would score below the fold floor on its own."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        existing = MemoryItem(
+            user_id=user.id,
+            content="Likes green tea",
+            category="preference",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(existing)
+        soul_db.commit()
+
+        # A near-identical, very low-score candidate (importance=1, zero
+        # salience/evidence) duplicating an EXISTING memory must still
+        # reinforce — dedup wins over folding.
+        candidate = FakeCandidate(
+            content="Likes green tea",
+            category="preference",
+            importance=1,
+            salience_json={"emotional_salience": 0.0, "evidence_strength": 0.0},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "reinforce"
+
+
+def test_minor_observation_repeat_of_existing_memory_reinforces_not_folds():
+    """A weak minor_observation repeating an existing canonical memory must
+    hit dedup (reinforce) — the dry-run sees the same effective category
+    the final write would use, so known preferences/facts never leak into
+    the latent gate."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            MemoryItem(
+                user_id=user.id,
+                content="Likes green tea",
+                category="preference",
+                importance=3,
+                source="extraction",
+            )
+        )
+        soul_db.commit()
+
+        candidate = FakeCandidate(
+            content="Likes green tea",
+            category="minor_observation",
+            importance=1,
+            salience_json={"emotional_salience": 0.0, "evidence_strength": 0.8},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "reinforce", (
+            f"expected dedup to win over folding, got {decision.action} "
+            f"({decision.reason})"
+        )
+
+
+def test_purge_topic_tokens_do_not_match_substrings():
+    """purge_traces topic matching is whole-token: 'art' must not purge a
+    'cart_repair' trace."""
+    from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
+
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for key in (
+            "user:minor_observation:cart_repair",
+            "user:minor_observation:art_class_supplies",
+        ):
+            soul_db.add(
+                LatentTrace(
+                    user_id=user.id,
+                    topic_key=key,
+                    weight=0.3,
+                    evidence_refs=[],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+        soul_db.commit()
+
+        purged = purge_latent_traces_matching_topic(soul_db, user_id=user.id, topic="art")
+        assert purged == 1
+        remaining = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user.id)
+        ).all()
+        assert [t.topic_key for t in remaining] == ["user:minor_observation:cart_repair"]
+
+
+def test_importance_1_low_salience_folds():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Mentioned the commute again",
+            category="minor_observation",
+            importance=1,
+            salience_json={"emotional_salience": 0.0, "evidence_strength": 0.8},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "fold_to_trace"
+        assert decision.topic_key is not None
+
+
+def test_importance_1_strong_emotional_salience_still_promotes():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Something small but emotionally loaded happened",
+            importance=1,
+            salience_json={"emotional_salience": 1.0, "evidence_strength": 0.8},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "promote"
+
+
+def test_score_below_floor_is_rejected():
+    """"below-floor drops": no real MemoryCandidate can score below the
+    floor (importance is clamped to >= 1, which alone scores 0.12 > the
+    default floor of 0.075), so this is exercised at the classifier level
+    directly — the contract the promotion gate relies on."""
+    config = DEFAULT_LATENT_CONFIG
+    assert classify_score(0.05, config) == "reject"
+
+
+def test_high_authority_user_explicit_never_folds():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Trivial aside",
+            importance=1,
+            importance_source="user_explicit",
+            salience_json={"emotional_salience": 0.0, "evidence_strength": 0.0},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "promote"
+        assert "user_explicit" in decision.reason
+
+
+def test_high_authority_correction_never_folds():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        old_item = MemoryItem(
+            user_id=user.id, content="Age: 25", category="fact", importance=3, source="extraction"
+        )
+        soul_db.add(old_item)
+        soul_db.commit()
+
+        candidate = FakeCandidate(
+            content="Age: 26",
+            category="fact",
+            importance=1,
+            importance_source="correction",
+            supersedes_item_id=old_item.id,
+            salience_json={"emotional_salience": 0.0, "evidence_strength": 0.0},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "supersede"
+
+
+# ---------------------------------------------------------------------------
+# 3. Topic key derivation + dedup
+# ---------------------------------------------------------------------------
+
+
+def test_derive_topic_key_structured_content_is_slot_and_value_scoped():
+    """Structured matches carry the claims slot PLUS the value slug: claims
+    group by slot alone (one claim per slot), but a latent topic must
+    distinguish values or unrelated weak signals would accumulate onto one
+    trace and crystallize from mixed evidence."""
+    hiking = derive_topic_key("Likes hiking", "preference")
+    sushi = derive_topic_key("Likes sushi", "preference")
+    assert hiking.startswith("user:preference:likes:")
+    assert sushi.startswith("user:preference:likes:")
+    assert hiking != sushi
+    # Verb variants over the same value collapse to one topic.
+    assert derive_topic_key("Loves sushi", "preference") == sushi
+
+
+def test_derive_topic_key_same_content_same_key():
+    a = derive_topic_key("Mentioned feeling tired about the commute", "minor_observation")
+    b = derive_topic_key("Mentioned feeling tired about the commute", "minor_observation")
+    assert a == b
+
+
+def test_derive_topic_key_long_prefix_collisions_separate():
+    """The 60-char slug truncation must not merge long observations that
+    share a prefix — the full-content digest keeps them distinct."""
+    shared = "Mentioned the long commute from the northern suburbs takes forever "
+    a = derive_topic_key(shared + "on rainy days because of the bridge", "minor_observation")
+    b = derive_topic_key(shared + "since the train line closed last month", "minor_observation")
+    assert a != b
+
+
+# ---------------------------------------------------------------------------
+# 4. Fold DB edge — topic dedup, additive accumulation
+# ---------------------------------------------------------------------------
+
+
+_candidate_counter = itertools.count()
+
+
+def _runtime_candidate(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    content: str,
+    category: str = "minor_observation",
+    importance: int = 1,
+) -> MemoryCandidate:
+    # Each helper call represents a distinct extraction event (e.g. two
+    # separate turns mentioning the same topic), so the hash is salted with
+    # a counter to avoid colliding on identical content within one test.
+    unique_content_hash = hashlib.sha256(
+        f"{_content_hash(user_id, category, 'llm', content)}:{next(_candidate_counter)}".encode()
+    ).hexdigest()
+    candidate = MemoryCandidate(
+        user_id=user_id,
+        content=content,
+        category=category,
+        importance=importance,
+        importance_source="llm",
+        source="llm",
+        content_hash=unique_content_hash,
+        status="extracted",
+        created_at=datetime.now(UTC),
+    )
+    runtime_db.add(candidate)
+    runtime_db.commit()
+    return candidate
+
+
+def test_fold_same_topic_twice_creates_one_trace_with_two_evidence_refs():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        runtime_engine = _create_runtime_engine()
+        runtime_factory = _make_factory(runtime_engine)
+        try:
+            with runtime_factory() as runtime_db:
+                c1 = _runtime_candidate(
+                    runtime_db, user_id=user.id, content="Mentioned commute stress"
+                )
+                c2 = _runtime_candidate(
+                    runtime_db, user_id=user.id, content="Mentioned commute stress"
+                )
+
+            topic_key = derive_topic_key("Mentioned commute stress", "minor_observation")
+            fold_candidate_into_trace(
+                soul_db, user_id=user.id, candidate=c1, topic_key=topic_key, score=0.3
+            )
+            fold_candidate_into_trace(
+                soul_db, user_id=user.id, candidate=c2, topic_key=topic_key, score=0.3
+            )
+
+            traces = soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user.id)
+            ).all()
+            assert len(traces) == 1
+            trace = traces[0]
+            assert trace.weight == pytest.approx(0.3)  # min(1, 0 + .5*.3) then min(1, .15+.5*.3)
+            assert len(trace.evidence_refs) == 2
+        finally:
+            runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 5. Decay + cap
+# ---------------------------------------------------------------------------
+
+
+def test_decay_and_cap_traces():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        now = datetime.now(UTC)
+        weights_by_topic = {"topic0": 0.5, "topic1": 0.019, "topic2": 0.9, "topic3": 0.03}
+        soul_db.add_all(
+            [
+                LatentTrace(
+                    user_id=user.id,
+                    topic_key=f"user:minor_observation:{topic}",
+                    kind="observation",
+                    weight=weight,
+                    evidence_refs=[{"candidate_id": i, "source_message_ids": []}],
+                    first_seen=now,
+                    last_seen=now,
+                )
+                for i, (topic, weight) in enumerate(weights_by_topic.items())
+            ]
+        )
+        soul_db.commit()
+
+        stats = decay_and_cap_traces(
+            soul_db, user_id=user.id, config=LatentConfig(max_traces_per_user=500)
+        )
+        assert stats["decayed"] == 4
+        # 0.019 * 0.98 stays below the 0.02 floor -> pruned
+        assert stats["pruned"] == 1
+
+        remaining = {
+            trace.topic_key.rsplit(":", 1)[-1]: trace.weight
+            for trace in soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user.id)
+            ).all()
+        }
+        assert set(remaining) == {"topic0", "topic2", "topic3"}
+        assert remaining["topic0"] == pytest.approx(0.5 * 0.98)
+        assert remaining["topic2"] == pytest.approx(0.9 * 0.98)
+        assert remaining["topic3"] == pytest.approx(0.03 * 0.98)
+
+
+def test_decay_and_cap_enforces_per_user_cap():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        now = datetime.now(UTC)
+        soul_db.add_all(
+            [
+                LatentTrace(
+                    user_id=user.id,
+                    topic_key=f"user:minor_observation:cap{i}",
+                    weight=0.1 + i * 0.01,
+                    evidence_refs=[],
+                    first_seen=now,
+                    last_seen=now,
+                )
+                for i in range(5)
+            ]
+        )
+        soul_db.commit()
+
+        stats = decay_and_cap_traces(
+            soul_db, user_id=user.id, config=LatentConfig(max_traces_per_user=3)
+        )
+        assert stats["capped"] == 2
+        remaining = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user.id)
+        ).all()
+        assert len(remaining) == 3
+        # The lowest-weight traces (topic0, topic1) were dropped.
+        kept_keys = {t.topic_key for t in remaining}
+        assert "user:minor_observation:cap0" not in kept_keys
+        assert "user:minor_observation:cap1" not in kept_keys
+
+
+# ---------------------------------------------------------------------------
+# 6. Crystallization (LLM seam mocked like test_pattern_synthesis.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_due_trace_creates_one_memory_with_provenance(monkeypatch):
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+
+        with runtime_factory() as runtime_db:
+            c1 = _runtime_candidate(
+                runtime_db, user_id=user_id, content="Mentioned being tired after work again"
+            )
+            c2 = _runtime_candidate(
+                runtime_db, user_id=user_id, content="Said work has been draining lately"
+            )
+            c1_id, c2_id = c1.id, c2.id
+
+        topic_key = "user:minor_observation:work_fatigue"
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key=topic_key,
+                    kind="observation",
+                    weight=0.65,
+                    evidence_refs=[
+                        {"candidate_id": c1_id, "source_message_ids": []},
+                        {"candidate_id": c2_id, "source_message_ids": []},
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _fake_call_llm_for_json(*_args, **_kwargs):
+            return {
+                "content": "Work has been consistently draining lately",
+                "category": "fact",
+                "importance": 3,
+            }
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _fake_call_llm_for_json)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id,
+            db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+        )
+        assert stats["crystallized"] == 1
+
+        with soul_factory() as soul_db:
+            traces = soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user_id)
+            ).all()
+            assert traces == []  # topic cleared
+
+            items = soul_db.scalars(
+                select(MemoryItem).where(MemoryItem.user_id == user_id)
+            ).all()
+            assert len(items) == 1
+            item = items[0]
+            assert item.source == "latent_crystallization"
+
+            evidence = soul_db.scalars(
+                select(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id == item.id)
+            ).all()
+            assert len(evidence) == 1
+            refs = evidence[0].metadata_json["contributing_evidence_refs"]
+            assert {ref["candidate_id"] for ref in refs} == {c1_id, c2_id}
+
+            # Crystallization mirrors the promote path into the claim
+            # lineage — profile reconciliation reads only MemoryClaim rows.
+            from anima_server.models import MemoryClaim
+
+            claim = soul_db.scalar(
+                select(MemoryClaim).where(MemoryClaim.user_id == user_id)
+            )
+            assert claim is not None
+            assert claim.memory_item_id == item.id
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_respects_per_run_cap(monkeypatch):
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+
+        with runtime_factory() as runtime_db:
+            candidate_ids = [
+                _runtime_candidate(runtime_db, user_id=user_id, content=f"Observation {i}").id
+                for i in range(5)
+            ]
+
+        with soul_factory() as soul_db:
+            soul_db.add_all(
+                [
+                    LatentTrace(
+                        user_id=user_id,
+                        topic_key=f"user:minor_observation:cap_topic{i}",
+                        weight=0.7,
+                        evidence_refs=[{"candidate_id": candidate_ids[i], "source_message_ids": []}],
+                        first_seen=datetime.now(UTC),
+                        last_seen=datetime.now(UTC),
+                    )
+                    for i in range(5)
+                ]
+            )
+            soul_db.commit()
+
+        calls = 0
+
+        async def _fake_call_llm_for_json(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return {"content": f"Synthesized memory {calls}", "category": "fact", "importance": 2}
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _fake_call_llm_for_json)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id,
+            db_factory=soul_factory,
+            runtime_db_factory=runtime_factory,
+            max_per_run=3,
+        )
+        assert stats["crystallized"] == 3
+        assert calls == 3
+
+        with soul_factory() as soul_db:
+            remaining = soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user_id)
+            ).all()
+            assert len(remaining) == 2  # left for the next run
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_drops_stale_refs_and_skips_synthesis_when_none_survive(monkeypatch):
+    """Defense-in-depth: a ref whose candidate no longer resolves is
+    dropped; if NONE survive, the trace is deleted and the LLM is never
+    called."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:stale_topic",
+                    weight=0.7,
+                    evidence_refs=[{"candidate_id": 999999, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        calls = 0
+
+        async def _fake_call_llm_for_json(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return {"content": "should never happen", "category": "fact", "importance": 3}
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _fake_call_llm_for_json)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["dropped_stale"] == 1
+        assert calls == 0
+
+        with soul_factory() as soul_db:
+            assert soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user_id)
+            ).all() == []
+            assert soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all() == []
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 7. F7 right-to-forget integration (forget-then-sleep, P1 acceptance test)
+# ---------------------------------------------------------------------------
+
+
+def test_forget_then_sleep_scrubs_refs_and_deletes_emptied_trace():
+    """P1 acceptance test: forgetting a memory whose source contributed to
+    a latent trace scrubs that evidence — a trace left with no surviving
+    evidence is deleted outright, so a later crystallization pass can
+    synthesize nothing from it."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+
+        with runtime_factory() as runtime_db:
+            thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=2)
+            runtime_db.add(thread)
+            runtime_db.flush()
+            message = RuntimeMessage(
+                thread_id=thread.id,
+                user_id=user_id,
+                sequence_id=1,
+                role="user",
+                content_text="I've been so stressed about the commute lately.",
+            )
+            runtime_db.add(message)
+            runtime_db.commit()
+            message_id = message.id
+
+        with soul_factory() as soul_db:
+            memory = MemoryItem(
+                user_id=user_id,
+                content="Stressed about commute",
+                category="fact",
+                importance=3,
+                source="extraction",
+            )
+            soul_db.add(memory)
+            soul_db.flush()
+            evidence = MemoryItemEvidence(
+                user_id=user_id,
+                memory_item_id=memory.id,
+                source_kind="llm_extraction",
+                runtime_message_id=message_id,
+                evidence_text="I've been so stressed about the commute lately.",
+            )
+            soul_db.add(evidence)
+            soul_db.commit()
+            memory_id = memory.id
+
+            # A latent trace whose ONLY evidence ref shares the same
+            # forgotten source message — this is the "same source
+            # contributes to both a promoted memory and a folded trace"
+            # scenario the P1 review finding is about.
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:commute_stress",
+                    weight=0.3,
+                    evidence_refs=[
+                        {"candidate_id": None, "source_message_ids": [message_id]}
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+            result = forget_memory(
+                soul_db,
+                memory_id=memory_id,
+                user_id=user_id,
+                runtime_db_factory=runtime_factory,
+            )
+            soul_db.commit()
+
+            assert result.latent_traces_scrubbed == 1
+            remaining_traces = soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user_id)
+            ).all()
+            assert remaining_traces == []
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_forget_scrubs_ref_but_keeps_trace_when_other_evidence_survives():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:mixed_evidence",
+                weight=0.4,
+                evidence_refs=[
+                    {"candidate_id": None, "source_message_ids": [101]},
+                    {"candidate_id": None, "source_message_ids": [202]},
+                ],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+
+        scrubbed = scrub_latent_traces_for_forgotten_sources(
+            soul_db, user_id=user.id, source_message_ids=[101]
+        )
+        assert scrubbed == 1
+
+        trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id))
+        assert trace is not None
+        assert len(trace.evidence_refs) == 1
+        assert trace.evidence_refs[0]["source_message_ids"] == [202]
+        # Right-to-forget takes the forgotten evidence's WEIGHT too: the
+        # trace requalifies at the survival-scaled value (0.4 x 1/2).
+        assert trace.weight == pytest.approx(0.2)
+
+
+def test_topic_scoped_forget_deletes_matching_trace():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:topic_to_forget",
+                weight=0.2,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:other_topic",
+                weight=0.2,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+
+        count = forget_latent_traces_for_topic(
+            soul_db, user_id=user.id, topic_key="user:minor_observation:topic_to_forget"
+        )
+        assert count == 1
+
+        remaining = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user.id)
+        ).all()
+        assert len(remaining) == 1
+        assert remaining[0].topic_key == "user:minor_observation:other_topic"
+
+
+def test_forget_latent_traces_by_topic_direct():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:preference:likes",
+                weight=0.5,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+        count = forget_latent_traces_by_topic(
+            soul_db, user_id=user.id, topic_key="user:preference:likes"
+        )
+        assert count == 1
+        assert soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id)) is None
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_synthesis_exception_keeps_trace(monkeypatch):
+    """A transient LLM failure must NOT consume the trace: it survives with
+    weight intact and the next sleep run retries."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            c1 = _runtime_candidate(runtime_db, user_id=user_id, content="Weak signal")
+            c1_id = c1.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:flaky_llm",
+                    kind="observation",
+                    weight=0.71,
+                    evidence_refs=[{"candidate_id": c1_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("LLM outage")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _boom)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["kept_for_retry"] == 1
+
+        with soul_factory() as soul_db:
+            trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id))
+            assert trace is not None
+            assert trace.weight == pytest.approx(0.71)
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_explicit_null_clears_trace_without_memory(monkeypatch):
+    """content: null is the LLM's authored "too thin" verdict — the trace is
+    cleared as a decision, and nothing is synthesized."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            c1 = _runtime_candidate(runtime_db, user_id=user_id, content="Thin signal")
+            c1_id = c1.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:too_thin",
+                    kind="observation",
+                    weight=0.66,
+                    evidence_refs=[{"candidate_id": c1_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _too_thin(*_args, **_kwargs):
+            return {"content": None}
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _too_thin)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["too_thin"] == 1
+
+        with soul_factory() as soul_db:
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_evidence_write_failure_rolls_back_orphan_item(monkeypatch):
+    """If the evidence write raises after store_memory_item flushed the new
+    MemoryItem, the session must roll back: no orphaned memory without
+    provenance may persist, and the trace survives for retry."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            c1 = _runtime_candidate(runtime_db, user_id=user_id, content="Signal")
+            c1_id = c1.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:orphan_guard",
+                    kind="observation",
+                    weight=0.8,
+                    evidence_refs=[{"candidate_id": c1_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _ok(*_args, **_kwargs):
+            return {"content": "A synthesized memory", "category": "fact", "importance": 2}
+
+        def _evidence_boom(*_args, **_kwargs):
+            raise RuntimeError("evidence write failed")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _ok)
+        monkeypatch.setattr(
+            "anima_server.services.agent.provenance.add_memory_item_evidence",
+            _evidence_boom,
+        )
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["kept_for_retry"] == 1
+
+        with soul_factory() as soul_db:
+            # The half-written MemoryItem must NOT have been committed.
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+            trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id))
+            assert trace is not None
+            assert trace.weight == pytest.approx(0.8)
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypatch):
+    """Forget-scrub of SOME refs (the same scrub forget_memory() calls —
+    see forgetting.py) followed by a real crystallization run: the stored
+    provenance must list only surviving refs, never the forgotten ones."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            keep = _runtime_candidate(runtime_db, user_id=user_id, content="Surviving signal")
+            keep2 = _runtime_candidate(runtime_db, user_id=user_id, content="Another survivor")
+            gone = _runtime_candidate(runtime_db, user_id=user_id, content="Forgotten signal")
+            keep_id, keep2_id, gone_id = keep.id, keep2.id, gone.id
+        with soul_factory() as soul_db:
+            # Three refs at weight 0.95: scrubbing one requalifies to
+            # 0.95 x 2/3 ≈ 0.633, still over the 0.6 threshold — the
+            # crystallization must proceed from the two survivors only.
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:partial_forget",
+                    kind="observation",
+                    weight=0.95,
+                    evidence_refs=[
+                        {"candidate_id": keep_id, "source_message_ids": [11]},
+                        {"candidate_id": keep2_id, "source_message_ids": [12]},
+                        {"candidate_id": gone_id, "source_message_ids": [99]},
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+            scrubbed = scrub_latent_traces_for_forgotten_sources(
+                soul_db, user_id=user_id, source_message_ids=[99]
+            )
+            assert scrubbed == 1
+            soul_db.commit()
+
+        async def _ok(*_args, **_kwargs):
+            return {"content": "Synthesized from what remains", "category": "fact", "importance": 2}
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _ok)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 1
+
+        with soul_factory() as soul_db:
+            item = soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id))
+            assert item is not None
+            evidence = soul_db.scalars(
+                select(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id == item.id)
+            ).all()
+            refs = evidence[0].metadata_json["contributing_evidence_refs"]
+            assert {ref["candidate_id"] for ref in refs} == {keep_id, keep2_id}
+            flat_sources = [mid for ref in refs for mid in ref["source_message_ids"]]
+            assert 99 not in flat_sources
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_explicit_zero_evidence_strength_is_honored_not_defaulted():
+    """An explicit evidence_strength of 0.0 is an honest signal — the 0.8
+    default applies only when the key is absent. Score at imp-1,
+    es=0.55, evs=0.0 is 0.285 < 0.30 (fold); the old `or 0.8` bug would
+    have promoted at 0.365."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Soft observation with explicit zero evidence",
+            category="minor_observation",
+            importance=1,
+            salience_json={"emotional_salience": 0.55, "evidence_strength": 0.0},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "fold_to_trace"
+
+
+def test_fold_caps_evidence_refs_per_trace():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for _i in range(60):
+            fold_candidate_into_trace(
+                soul_db,
+                user_id=user.id,
+                candidate=FakeCandidate(
+                    content="Recurring topic", category="minor_observation", importance=1
+                ),
+                topic_key="user:minor_observation:recurring",
+                score=0.2,
+            )
+        soul_db.commit()
+        trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id))
+        assert trace is not None
+        assert len(trace.evidence_refs) == 50
+
+
+def test_fold_enforces_cap_opportunistically_past_double_cap():
+    from anima_server.services.agent.inner_life.latent import LatentConfig
+
+    small_cfg = LatentConfig(
+        promotion_threshold=0.30,
+        floor_ratio=0.25,
+        crystallization_threshold=0.60,
+        fold_rate=0.5,
+        weekly_decay=0.98,
+        max_traces_per_user=5,
+    )
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for i in range(11):
+            fold_candidate_into_trace(
+                soul_db,
+                user_id=user.id,
+                candidate=FakeCandidate(
+                    content=f"Topic {i}", category="minor_observation", importance=1
+                ),
+                topic_key=f"user:minor_observation:topic_{i}",
+                score=0.1 + i * 0.01,
+                config=small_cfg,
+            )
+        soul_db.commit()
+        count = len(
+            soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user.id)).all()
+        )
+        assert count <= small_cfg.max_traces_per_user + 1
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_deletes_all_contentless_trace_via_stale_path(monkeypatch):
+    """A resolvable-but-contentless ref counts as stale: an all-contentless
+    trace is deleted through the no-survivors path instead of occupying a
+    crystallization slot forever."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            empty = _runtime_candidate(runtime_db, user_id=user_id, content="x")
+            empty_id = empty.id
+            runtime_db.get(type(empty), empty_id).content = ""
+            runtime_db.commit()
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:contentless",
+                    kind="observation",
+                    weight=0.9,
+                    evidence_refs=[{"candidate_id": empty_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("synthesis must not run for contentless traces")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _should_not_be_called)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["dropped_stale"] == 1
+
+        with soul_factory() as soul_db:
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_forget_memory_deletes_same_topic_trace():
+    """Forgetting a confirmed memory about X takes the latent buffer for X
+    with it — even when the trace shares no source message ids with the
+    forgotten item (topic-key derivation, minor_observation namespace)."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        item = MemoryItem(
+            user_id=user.id,
+            content="Commute stress mentioned",
+            category="fact",
+            importance=3,
+            source="extraction",
+        )
+        soul_db.add(item)
+        soul_db.commit()
+
+        trace_key = derive_topic_key("Commute stress mentioned", "minor_observation")
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key=trace_key,
+                weight=0.5,
+                evidence_refs=[{"candidate_id": None, "source_message_ids": [777]}],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+
+        result = forget_memory(soul_db, memory_id=item.id, user_id=user.id)
+        assert result.latent_traces_scrubbed >= 1
+        assert (
+            soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id)) is None
+        )
+
+
+def test_repeated_identical_weak_signal_after_folded_creates_new_candidate():
+    """With the production partial unique index in place (029: folded is
+    excluded from active hashes), an exact repeat of a folded weak signal
+    must create a NEW candidate row — not die on IntegrityError — or exact
+    repeats can never accumulate to crystallization."""
+    from sqlalchemy import text
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with runtime_factory() as runtime_db:
+            # Recreate the production partial index exactly as migration
+            # 029 defines it (metadata.create_all doesn't create it).
+            runtime_db.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_memory_candidates_active_hash "
+                    "ON memory_candidates(content_hash) "
+                    "WHERE status NOT IN "
+                    "('rejected', 'reinforced', 'superseded', 'failed', 'folded')"
+                )
+            )
+            runtime_db.commit()
+
+            first = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+            )
+            assert first is not None
+            first.status = "folded"
+            runtime_db.commit()
+
+            repeat = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+            )
+            assert repeat is not None, (
+                "identical weak signal after fold must create a new candidate "
+                "(would fail with the pre-029 index predicate)"
+            )
+            assert repeat.id != first.id
+    finally:
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_treats_hash_mismatched_ref_as_stale(monkeypatch):
+    """Vault-imported traces carry runtime-local candidate ids: after import
+    into a different runtime the same id can name an unrelated candidate.
+    The stored content_hash must gate resolution — a mismatch is stale."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            unrelated = _runtime_candidate(
+                runtime_db, user_id=user_id, content="Totally unrelated content"
+            )
+            unrelated_id = unrelated.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:imported_topic",
+                    kind="observation",
+                    weight=0.9,
+                    evidence_refs=[
+                        {
+                            "candidate_id": unrelated_id,
+                            "content_hash": "hash-from-the-old-runtime",
+                            "source_message_ids": [],
+                        }
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("must not synthesize from an unrelated candidate")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _should_not_be_called)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["dropped_stale"] == 1
+
+        with soul_factory() as soul_db:
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_conflicting_synthesis_never_grafts_onto_old_memory(monkeypatch):
+    """A synthesized aggregate that CONFLICTS with an established memory
+    (same slot, different value) must not attach crystallized evidence to
+    the old item, must not count as crystallized, and clears the trace so
+    it can't retry into the same wall every run."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            existing = MemoryItem(
+                user_id=user_id,
+                content="Lives in London",
+                category="fact",
+                importance=4,
+                source="extraction",
+            )
+            soul_db.add(existing)
+            soul_db.commit()
+            existing_id = existing.id
+        with runtime_factory() as runtime_db:
+            c1 = _runtime_candidate(runtime_db, user_id=user_id, content="Mentioned Paris again")
+            c1_id = c1.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:paris_mentions",
+                    kind="observation",
+                    weight=0.7,
+                    evidence_refs=[{"candidate_id": c1_id, "source_message_ids": []}],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _conflicting(*_args, **_kwargs):
+            return {"content": "Lives in Paris", "category": "fact", "importance": 3}
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _conflicting)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["conflicted"] == 1
+
+        with soul_factory() as soul_db:
+            items = soul_db.scalars(
+                select(MemoryItem).where(MemoryItem.user_id == user_id)
+            ).all()
+            assert [i.id for i in items] == [existing_id]  # no new memory
+            evidence = soul_db.scalars(
+                select(MemoryItemEvidence).where(
+                    MemoryItemEvidence.memory_item_id == existing_id
+                )
+            ).all()
+            assert evidence == []  # nothing grafted onto the old memory
+            assert (
+                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_active_repeat_merges_with_repeat_count_and_fold_multiplies():
+    """An identical weak signal extracted while the previous candidate is
+    still active merges with repeat_count (and unioned source ids), and the
+    fold applies once per mention — the IL4 accumulation contract holds
+    within a processing window, not just across folds."""
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with runtime_factory() as runtime_db:
+            first = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                source_message_ids=[1],
+            )
+            assert first is not None
+            repeat = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                source_message_ids=[2],
+            )
+            assert repeat is None  # merged into the active row
+            runtime_db.refresh(first)
+            assert first.salience_json.get("repeat_count") == 2
+            assert set(first.source_message_ids) == {1, 2}
+            third = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                source_message_ids=[3],
+            )
+            assert third is None
+            runtime_db.refresh(first)
+            # The counter must survive _merge_candidate_salience's payload
+            # rebuild — a reset here would cap accumulation at 2 forever.
+            assert first.salience_json.get("repeat_count") == 3
+            assert set(first.source_message_ids) == {1, 2, 3}
+            merged_salience = dict(first.salience_json)
+            merged_ids = list(first.source_message_ids)
+    finally:
+        runtime_engine.dispose()
+
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        trace = fold_candidate_into_trace(
+            soul_db,
+            user_id=user.id,
+            candidate=FakeCandidate(
+                content="Mentioned the commute again",
+                category="minor_observation",
+                importance=1,
+                salience_json=merged_salience,
+                source_message_ids=merged_ids,
+            ),
+            topic_key="user:minor_observation:window_repeats",
+            score=0.2,
+        )
+        expected = 0.0
+        for _ in range(3):  # repeat_count == 3 after the third extraction
+            expected = fold_weight(expected, 0.2, DEFAULT_LATENT_CONFIG)
+        assert trace.weight == pytest.approx(expected)
+
+
+@pytest.mark.asyncio()
+async def test_crystallize_requalifies_when_stale_refs_carried_the_weight(monkeypatch):
+    """A trace whose threshold crossing was mostly backed by now-stale refs
+    must NOT crystallize from the single survivor: it requalifies at the
+    survival-scaled weight and waits for future folds."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+        with runtime_factory() as runtime_db:
+            survivor = _runtime_candidate(runtime_db, user_id=user_id, content="One real mention")
+            survivor_id = survivor.id
+        with soul_factory() as soul_db:
+            soul_db.add(
+                LatentTrace(
+                    user_id=user_id,
+                    topic_key="user:minor_observation:mostly_stale",
+                    kind="observation",
+                    weight=0.9,
+                    evidence_refs=[
+                        {"candidate_id": survivor_id, "source_message_ids": []},
+                        {"candidate_id": 999901, "source_message_ids": []},
+                        {"candidate_id": 999902, "source_message_ids": []},
+                    ],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+            soul_db.commit()
+
+        async def _should_not_be_called(*_args, **_kwargs):
+            raise AssertionError("must not synthesize from under-backed evidence")
+
+        monkeypatch.setattr(latent_traces, "call_llm_for_json", _should_not_be_called)
+
+        stats = await crystallize_due_traces(
+            user_id=user_id, db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert stats["crystallized"] == 0
+        assert stats["requalified"] == 1
+        assert stats["dropped_stale"] == 2
+
+        with soul_factory() as soul_db:
+            trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id))
+            assert trace is not None
+            assert trace.weight == pytest.approx(0.9 * (1 / 3))
+            assert len(trace.evidence_refs) == 1
+            assert (
+                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
+            )
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_fold_replay_of_same_candidate_is_idempotent():
+    """Crash-retry safety: the soul commit can land before the candidate's
+    runtime status flips to folded, so the same candidate may be folded
+    again on the next run. Folding is additive, so a replay must be a
+    no-op — keyed on the candidate id already present in the refs."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        candidate = FakeCandidate(
+            content="Weak signal", category="minor_observation", importance=1
+        )
+        candidate.id = 4242
+        trace = fold_candidate_into_trace(
+            soul_db,
+            user_id=user.id,
+            candidate=candidate,
+            topic_key="user:minor_observation:replay_guard",
+            score=0.3,
+        )
+        weight_after_first = trace.weight
+        refs_after_first = len(trace.evidence_refs)
+
+        replayed = fold_candidate_into_trace(
+            soul_db,
+            user_id=user.id,
+            candidate=candidate,
+            topic_key="user:minor_observation:replay_guard",
+            score=0.3,
+        )
+        assert replayed.weight == pytest.approx(weight_after_first)
+        assert len(replayed.evidence_refs) == refs_after_first
+
+
+def test_effective_candidate_category_resolution():
+    """One resolution everywhere a category matters: canonical categories
+    pass through untouched; structured minor_observations resolve to the
+    slot's namespace; freeform minor_observations resolve to fact."""
+    from anima_server.services.agent.soul_writer import _effective_candidate_category
+
+    assert (
+        _effective_candidate_category(FakeCandidate(content="x", category="preference"))
+        == "preference"
+    )
+    assert (
+        _effective_candidate_category(
+            FakeCandidate(content="Likes green tea", category="minor_observation")
+        )
+        == "preference"
+    )
+    assert (
+        _effective_candidate_category(
+            FakeCandidate(content="Mentioned the commute", category="minor_observation")
+        )
+        == "fact"
+    )
+
+
+def test_stronger_repeat_raises_active_candidate_importance():
+    """An importance>=2 extraction of the same content must lift an active
+    importance-1 row before the Soul Writer gate reads it — the stronger
+    observation gets the promotion bypass, not the stale weak importance."""
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with runtime_factory() as runtime_db:
+            weak = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Works at the observatory",
+                category="fact",
+                importance=1,
+            )
+            assert weak is not None
+            stronger = create_memory_candidate(
+                runtime_db,
+                user_id=1,
+                content="Works at the observatory",
+                category="fact",
+                importance=3,
+                source_message_ids=[42],
+            )
+            assert stronger is None  # merged
+            runtime_db.refresh(weak)
+            assert weak.importance == 3
+            # The lifting message's source ids must join the row — F7
+            # forgetting of message 42 has to find the promoted memory.
+            assert 42 in (weak.source_message_ids or [])
+    finally:
+        runtime_engine.dispose()
+
+
+def test_purge_latent_traces_matching_topic_removes_fold_only_topics():
+    from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
+
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:commute_stress_again",
+                weight=0.4,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:garden_hobby",
+                weight=0.4,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+
+        purged = purge_latent_traces_matching_topic(
+            soul_db, user_id=user.id, topic="commute stress"
+        )
+        assert purged == 1
+        remaining = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user.id)
+        ).all()
+        assert [t.topic_key for t in remaining] == ["user:minor_observation:garden_hobby"]
+
+
+# ---------------------------------------------------------------------------
+# 8. End-to-end via run_soul_writer (dedup precedence + full fold pipeline)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_soul_writer_folds_weak_candidate_into_trace():
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+
+        with runtime_factory() as runtime_db:
+            create_memory_candidate(
+                runtime_db,
+                user_id=user_id,
+                content="Mentioned the neighbor's dog barking again",
+                category="minor_observation",
+                importance=1,
+                importance_source="llm",
+                source="llm",
+                salience={"emotional_salience": 0.0, "evidence_strength": 0.8},
+            )
+            runtime_db.commit()
+
+        result = await run_soul_writer(
+            user_id, soul_db_factory=soul_factory, runtime_db_factory=runtime_factory
+        )
+        assert result.candidates_folded == 1
+        assert result.candidates_promoted == 0
+
+        with runtime_factory() as runtime_db:
+            candidate = runtime_db.scalar(
+                select(MemoryCandidate).where(MemoryCandidate.user_id == user_id)
+            )
+            assert candidate.status == "folded"
+
+        with soul_factory() as soul_db:
+            traces = soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user_id)
+            ).all()
+            assert len(traces) == 1
+            assert traces[0].weight == pytest.approx(0.1)  # 0.5 * score(0.2)
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_folded_candidates_accumulate_to_crystallization_threshold():
+    """Duplicate-topic churn across separate extraction events accumulates
+    onto the SAME trace instead of double-counting into parallel rows."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+    try:
+        with soul_factory() as soul_db:
+            user = _make_user(soul_db)
+            user_id = user.id
+            soul_db.commit()
+
+        content = "Mentioned feeling drained by the commute"
+        # score(importance=1, salience=0.0, evidence=0.8) == 0.2 (still
+        # below the 0.30 fold threshold); fold_rate 0.5 -> +0.1/fold, so 6
+        # repeats cross the 0.6 crystallization threshold exactly.
+        for _ in range(6):
+            with runtime_factory() as runtime_db:
+                create_memory_candidate(
+                    runtime_db,
+                    user_id=user_id,
+                    content=content,
+                    category="minor_observation",
+                    importance=1,
+                    importance_source="llm",
+                    source="llm",
+                    salience={"emotional_salience": 0.0, "evidence_strength": 0.8},
+                )
+                runtime_db.commit()
+
+            await run_soul_writer(
+                user_id, soul_db_factory=soul_factory, runtime_db_factory=runtime_factory
+            )
+
+        with soul_factory() as soul_db:
+            traces = soul_db.scalars(
+                select(LatentTrace).where(LatentTrace.user_id == user_id)
+            ).all()
+            assert len(traces) == 1
+            trace = traces[0]
+            assert len(trace.evidence_refs) == 6
+            assert trace.weight == pytest.approx(0.6)  # 6 folds of s=0.2, fold_rate 0.5
+            assert should_crystallize(trace.weight)
+    finally:
+        soul_engine.dispose()
+        runtime_engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 9. Vault export/import round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_vault_round_trip_preserves_latent_traces():
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:vault_topic",
+                kind="observation",
+                weight=0.42,
+                evidence_refs=[{"candidate_id": 7, "source_message_ids": [1, 2]}],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+        user_id = user.id
+
+        snapshot = export_database_snapshot(soul_db, user_id=user_id)
+        assert len(snapshot["latentTraces"]) == 1
+        assert snapshot["latentTraces"][0]["topic_key"] == "user:minor_observation:vault_topic"
+
+        restore_database_snapshot(soul_db, snapshot, scope="full")
+        soul_db.commit()
+
+        traces = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user_id)
+        ).all()
+        assert len(traces) == 1
+        assert traces[0].topic_key == "user:minor_observation:vault_topic"
+        assert traces[0].weight == pytest.approx(0.42)
+        assert traces[0].evidence_refs == [{"candidate_id": 7, "source_message_ids": [1, 2]}]
+
+
+def test_vault_memories_scope_restores_latent_traces():
+    """scope="memories" restore must cover latentTraces like its sibling
+    memory tables, not just scope="full"."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            LatentTrace(
+                user_id=user.id,
+                topic_key="user:minor_observation:memories_scope",
+                kind="observation",
+                weight=0.33,
+                evidence_refs=[],
+                first_seen=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+            )
+        )
+        soul_db.commit()
+        user_id = user.id
+
+        snapshot = export_database_snapshot(soul_db, user_id=user_id)
+        soul_db.execute(delete(LatentTrace).where(LatentTrace.user_id == user_id))
+        soul_db.commit()
+
+        restore_database_snapshot(soul_db, snapshot, scope="memories")
+        soul_db.commit()
+
+        traces = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user_id)
+        ).all()
+        assert len(traces) == 1
+        assert traces[0].topic_key == "user:minor_observation:memories_scope"
+
+
+# ---------------------------------------------------------------------------
+# 10. get_latent_config wiring
+# ---------------------------------------------------------------------------
+
+
+def test_get_latent_config_reads_settings_defaults():
+    config = get_latent_config()
+    assert config.promotion_threshold == 0.30
+    assert config.crystallization_threshold == 0.60
+    assert config.fold_rate == 0.5
+    assert config.weekly_decay == 0.98
+    assert config.max_traces_per_user == 500

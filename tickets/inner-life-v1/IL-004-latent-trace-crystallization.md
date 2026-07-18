@@ -1,17 +1,17 @@
 # IL-004 - Latent trace buffer and crystallization
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/agent/consolidation.py`, `apps/server/src/anima_server/services/agent/soul_writer.py`, `apps/server/src/anima_server/services/agent/sleep_tasks.py`, `apps/server/src/anima_server/models`
 - Parent: `IL-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 18:45 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-18 03:46 MYT
+- Started: 2026-07-17 16:00 MYT
+- Completed: 2026-07-17 18:00 MYT
 
 ## Goal
 
@@ -42,12 +42,15 @@ Stop silently dropping sub-threshold memory candidates: accumulate them as weigh
 - 2026-07-15 17:40 MYT - Brought latent traces inside the F7 deletion boundary per review (forget scrubs traces/refs; crystallization re-validates refs).
 - 2026-07-15 18:15 MYT - Specified the candidate scoring/rejection flow explicitly per review: no promotion threshold exists today, so IL4 adds one (behavior-preserving default) plus minor_observation extraction.
 - 2026-07-15 18:45 MYT - Added soul_writer.py to scope per review: the threshold hook must live in plan_candidate_promotion(), the live promotion decision path.
+- 2026-07-17 18:00 MYT - Implemented: pure scorer/fold/decay (`inner_life/latent.py`), soul-store edges (`latent_traces.py`), `LatentTrace` model + migration, `plan_candidate_promotion()` scoring gate (dedup wins over folding), `minor_observation` extraction category, weekly decay/cap + crystallization sleep tasks, F7 forget scrub (source-based + topic-scoped), vault export/import. 43 new tests in `test_inner_life_latent.py` (after two review rounds); full suite 2481 passed / 47 pre-existing failures (unchanged baseline).
+- 2026-07-18 03:46 MYT - Task review round 1 (two Criticals: gate behavior-preservation, crystallization transaction safety) and final whole-branch review (category remap, topic-scoped trace forget wiring, hardening minors) fixed by controller; task re-review Approved; full suite 47/2481 = baseline.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run --project apps/server pytest apps/server/tests/test_inner_life_latent.py` — 43 passed
+  - `bun run test` — 2470 passed, 47 failed (pre-existing CoreFS/keyslots/recovery/vault + test_dev_session_continuity baseline, unchanged)
 - Changed paths:
-  - none
+  - see commit `IL-004: add latent trace buffer and crystallization` on `feature/il-004-latent-traces`
 - Notes:
-  - none
+  - `delta_extraction.md.j2` intentionally NOT updated with `minor_observation` — that prompt targets surprising/contradictory/corrective signals, the semantic opposite of a passing minor observation.

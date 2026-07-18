@@ -11,7 +11,7 @@ Return a JSON object with four fields:
 
 "memories": a JSON array. Each item:
 - "content": concise statement (e.g. "Works as a software engineer")
-- "category": one of "fact", "preference", "goal", "relationship"
+- "category": one of "fact", "preference", "goal", "relationship", "minor_observation"
 - "importance": 1-5 (5 = identity-defining like name/age/occupation, 1 = casual mention)
 - "salience": object with:
   - "memory_class": identity, life_event, relationship, active_project, casual, transient, or emotional_pattern
@@ -52,6 +52,12 @@ Rules for memories:
 - Use fast/ephemeral decay for transient states unless repeated emotional evidence suggests a pattern
 - Use evidence_strength to reflect how directly the conversation supports the memory
 - Use empty array [] if nothing worth remembering
+
+Rules for the "minor_observation" category:
+- Use it for passing, low-grade signals that are too slight to be a memory on their own but might matter if they keep recurring — a fleeting mention of a stressor, a small preference, a situational detail
+- Do NOT drop these the way you might have before; the memory system accumulates them across turns instead of discarding them, so extract them honestly rather than upgrading or omitting them
+- Always assign importance 1 for this category
+- Report emotional_salience and evidence_strength honestly and low — do not inflate them to make the observation seem more significant than it is
 
 Rules for profile_updates:
 - Use structured profile fields for stable, reusable understanding of the user

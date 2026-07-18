@@ -17,12 +17,23 @@ from anima_server.services.agent.memory_salience import (
 
 logger = logging.getLogger(__name__)
 
-_VALID_CATEGORIES = frozenset({"fact", "preference", "goal", "relationship"})
+_VALID_CATEGORIES = frozenset(
+    {"fact", "preference", "goal", "relationship", "minor_observation"}
+)
 _VALID_SOURCES = frozenset({"regex", "llm", "predict_calibrate", "tool", "feedback"})
 _VALID_IMPORTANCE_SOURCES = frozenset({
     "regex", "llm", "predict_calibrate", "user_explicit", "correction",
 })
-_TERMINAL_STATUSES = frozenset({"rejected", "reinforced", "superseded", "failed"})
+# "folded" (IL4: candidate scored below the promotion threshold and was
+# accumulated into a latent trace instead) is terminal like rejected/
+# reinforced/superseded/failed: each repeat mention of the same content
+# must create its OWN candidate row so it folds into the trace again —
+# that repeated accumulation is the entire point of IL4. Treating it as
+# non-terminal would instead merge repeats into the first folded row and
+# the trace would never receive more than one fold.
+_TERMINAL_STATUSES = frozenset(
+    {"rejected", "reinforced", "superseded", "failed", "folded"}
+)
 
 
 def compute_content_hash(
@@ -81,10 +92,39 @@ def create_memory_candidate(
             existing.status = "superseded"
             runtime_db.flush()
         else:
+            # Capture BEFORE the merge: _merge_candidate_salience rebuilds
+            # the payload from known salience fields and drops repeat_count,
+            # so reading it afterwards would reset the counter to 1 on
+            # every third-and-later repeat.
+            prior_repeats = int(
+                (existing.salience_json or {}).get("repeat_count", 1) or 1
+            )
             existing.salience_json = _merge_candidate_salience(
                 existing.salience_json,
                 salience_json,
             )
+            # A stronger extraction of the same content must not be
+            # weakened by merging into an older weak row — the Soul Writer
+            # gate reads the row's importance, and IL4 promises the
+            # importance >= 2 bypass to the strongest observation.
+            if int(importance or 0) > int(existing.importance or 0):
+                existing.importance = int(importance)
+            # Every merged mention's source ids join the row regardless of
+            # importance: the promoted memory's evidence and F7 forget
+            # cleanup must identify ALL contributing messages, including a
+            # later stronger one that lifted the importance.
+            merged_ids = list(existing.source_message_ids or [])
+            for message_id in source_message_ids or []:
+                if message_id not in merged_ids:
+                    merged_ids.append(message_id)
+            existing.source_message_ids = merged_ids
+            if int(existing.importance or 0) == 1:
+                # Weak-signal lane (IL4): an active repeat must still count
+                # toward latent accumulation — record it so the fold applies
+                # once per repeat.
+                merged_salience = dict(existing.salience_json or {})
+                merged_salience["repeat_count"] = prior_repeats + 1
+                existing.salience_json = merged_salience
             runtime_db.flush()
             return None
 

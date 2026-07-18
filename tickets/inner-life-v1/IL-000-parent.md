@@ -24,7 +24,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 | `IL-001` | Affect state vector with decay-to-baseline dynamics | `done` | none |
 | `IL-002` | Presence tick loop and offline catch-up | `done` | `IL-001` |
 | `IL-003` | Drive accumulators and push initiative channel | `backlog` | `IL-001`, `IL-002` |
-| `IL-004` | Latent trace buffer and crystallization | `backlog` | none |
+| `IL-004` | Latent trace buffer and crystallization | `done` | none |
 | `IL-005` | Forgetting as distillation (F7 extension) | `backlog` | none |
 | `IL-006` | Recall reconsolidation (F2 extension) | `backlog` | none |
 | `IL-007` | Dream cycle (F5 extension) | `backlog` | `IL-001`, `IL-002`, `IL-006` |
@@ -32,6 +32,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 ## Completed Ticket History
 
 - 2026-07-15 19:55 MYT - `IL-001` done: affect state vector (branch feature/il-001-affect-state-vector), review-approved after one fix round.
+- 2026-07-18 03:46 MYT - `IL-004` done: latent trace crystallization (branch feature/il-004-latent-traces), two review rounds + final review, all findings fixed.
 - 2026-07-16 13:30 MYT - `IL-002` done: presence tick loop and offline catch-up (branch feature/il-002-presence-tick), pending review.
 
 ## Deliverables

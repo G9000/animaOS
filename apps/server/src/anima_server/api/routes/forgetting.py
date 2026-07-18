@@ -48,6 +48,7 @@ async def forget_single_memory(
         "forgotten": True,
         "items_forgotten": result.items_forgotten,
         "derived_refs_affected": result.derived_refs_affected,
+        "latent_traces_scrubbed": result.latent_traces_scrubbed,
     }
 
 
@@ -59,19 +60,34 @@ async def forget_by_topic_endpoint(
     user_id: int,
     request: Request,
     topic: str = Query(min_length=1),
+    purge_traces: bool = Query(default=False),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Find memories matching a topic and return them as candidates for confirmation.
 
-    Does NOT delete. Returns candidate list for the user to review and confirm.
+    Does NOT delete memories — returns a candidate list for per-item
+    confirmation. ``purge_traces=true`` additionally deletes matching
+    latent traces immediately: those are sub-threshold accumulation
+    signals with no per-item confirm path of their own (PRD IL4
+    topic-scoped right-to-forget).
     """
     require_unlocked_user(request, user_id)
 
     candidates = forget_by_topic(db, topic=topic, user_id=user_id)
 
+    traces_purged = 0
+    if purge_traces:
+        from anima_server.services.agent.forgetting import (
+            purge_latent_traces_matching_topic,
+        )
+
+        traces_purged = purge_latent_traces_matching_topic(db, user_id=user_id, topic=topic)
+        db.commit()
+
     return {
         "topic": topic,
         "candidate_count": len(candidates),
+        "latent_traces_purged": traces_purged,
         "candidates": [
             {
                 "id": item.id,

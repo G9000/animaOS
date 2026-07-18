@@ -437,6 +437,83 @@ def mark_deep_monologue_done(user_id: int) -> None:
     _last_deep_monologue[user_id] = datetime.now(UTC)
 
 
+# ── IL4 latent trace weekly decay gate ───────────────────────────────
+#
+# Mirrors the deep-monologue gate above: a process-local fast path,
+# recovered on a fresh process from the newest completed task run so a
+# restart does not re-run the weekly sweep early.
+
+_LATENT_DECAY_INTERVAL_HOURS = 24 * 7
+_last_latent_decay: dict[int, datetime] = {}
+
+
+def _should_run_latent_decay(
+    user_id: int,
+    *,
+    db_factory: Callable[..., object] | None = None,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> bool:
+    """Return True if a week has passed since the last latent-trace decay
+    sweep for this user. Does NOT update the timestamp — call
+    ``mark_latent_decay_done()`` after the sweep succeeds."""
+    del db_factory
+    last = _last_latent_decay.get(user_id)
+    if last is None:
+        last = _last_completed_latent_decay_at(
+            user_id, runtime_db_factory=runtime_db_factory
+        )
+        if last is not None:
+            _last_latent_decay[user_id] = last
+    if last is not None:
+        now = datetime.now(UTC)
+        hours_since = (now - last).total_seconds() / 3600
+        if hours_since < _LATENT_DECAY_INTERVAL_HOURS:
+            return False
+    return True
+
+
+def _last_completed_latent_decay_at(
+    user_id: int,
+    *,
+    runtime_db_factory: Callable[..., object] | None = None,
+) -> datetime | None:
+    """Completion time of the newest successful latent-decay task run."""
+    from sqlalchemy import desc, select
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+
+    try:
+        if runtime_db_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_db_factory = get_runtime_session_factory()
+        with runtime_db_factory() as rt_db:
+            run = rt_db.scalar(
+                select(RuntimeBackgroundTaskRun)
+                .where(
+                    RuntimeBackgroundTaskRun.user_id == user_id,
+                    RuntimeBackgroundTaskRun.task_type == "latent_decay",
+                    RuntimeBackgroundTaskRun.status == "completed",
+                )
+                .order_by(desc(RuntimeBackgroundTaskRun.completed_at))
+                .limit(1)
+            )
+    except Exception:
+        logger.debug("Could not read latent-decay gate from task runs", exc_info=True)
+        return None
+    if run is None or run.completed_at is None:
+        return None
+    completed = run.completed_at
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=UTC)
+    return completed
+
+
+def mark_latent_decay_done(user_id: int) -> None:
+    """Record that a latent-trace decay sweep completed successfully."""
+    _last_latent_decay[user_id] = datetime.now(UTC)
+
+
 async def _check_contradiction(
     content_a: str,
     content_b: str,

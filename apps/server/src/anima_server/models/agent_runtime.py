@@ -1146,3 +1146,44 @@ class KGRelation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class LatentTrace(Base):
+    """IL4 sub-threshold memory accumulator: a weighted latent trace per topic.
+
+    Soul-store (SQLCipher), portable, included in vault export/import (PRD
+    §5 — right-to-forget bullets bring it inside the F7 deletion boundary).
+    ``topic_key`` mirrors ``MemoryClaim.canonical_key``: a derived structural
+    identifier (see ``claims.derive_topic_key``), never raw user content, so
+    — like ``canonical_key`` — it is stored in plaintext for indexed
+    equality lookups rather than field-encrypted; there is no other
+    content-bearing column on this table (``evidence_refs`` holds only
+    identifiers — candidate id, source message ids, content hash — never
+    copied text, following the house convention that ``_json`` columns are
+    structural/metadata, not encrypted content; see
+    ``MemoryItemEvidence.metadata_json`` for the same pattern).
+    """
+
+    __tablename__ = "latent_traces"
+    __table_args__ = (
+        UniqueConstraint("user_id", "topic_key", name="uq_latent_traces_user_topic"),
+        Index("ix_latent_traces_user_weight", "user_id", "weight"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    topic_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="observation", server_default=text("'observation'")
+    )
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default=text("0.0"))
+    evidence_refs: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

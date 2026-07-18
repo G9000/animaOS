@@ -65,9 +65,11 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
 
 @dataclass(slots=True)
 class PromotionDecision:
-    action: str  # "promote" | "supersede" | "evolve" | "reinforce" | "rejected"
+    action: str  # "promote" | "supersede" | "evolve" | "reinforce" | "rejected" | "fold_to_trace"
     reason: str = ""
     old_item: object | None = None  # MemoryItem when action targets an existing item
+    topic_key: str | None = None  # set when action == "fold_to_trace"
+    score: float | None = None  # IL4 latent score, set whenever it was computed
 
 
 @dataclass(slots=True)
@@ -82,6 +84,7 @@ class SoulWriterResult:
     candidates_rejected: int = 0
     candidates_reinforced: int = 0
     candidates_superseded: int = 0
+    candidates_folded: int = 0
     candidates_failed: int = 0
     profile_updates_promoted: int = 0
     profile_updates_failed: int = 0
@@ -880,6 +883,28 @@ def _process_candidate(
             result.candidates_rejected += 1
             return
 
+        if decision.action == "fold_to_trace":
+            from anima_server.services.agent.latent_traces import (
+                fold_candidate_into_trace,
+            )
+
+            trace = fold_candidate_into_trace(
+                soul_db,
+                user_id=user_id,
+                candidate=candidate,
+                topic_key=decision.topic_key,
+                score=decision.score or 0.0,
+            )
+            soul_db.commit()
+
+            candidate.status = "folded"
+            candidate.processed_at = now
+            journal.target_table = "latent_traces"
+            journal.target_record_id = str(trace.id)
+            journal.journal_status = "confirmed"
+            result.candidates_folded += 1
+            return
+
         if decision.action == "reinforce":
             old_item = decision.old_item
             if old_item is not None:
@@ -945,7 +970,7 @@ def _process_candidate(
                     soul_db,
                     user_id=user_id,
                     content=candidate.content,
-                    category=candidate.category,
+                    category=_effective_candidate_category(candidate),
                     importance=candidate.importance,
                     source_kind="extraction",
                     extractor=candidate.source,
@@ -979,7 +1004,7 @@ def _process_candidate(
                             user_id,
                             new_item.id,
                             candidate.content,
-                            candidate.category,
+                            _effective_candidate_category(candidate),
                             candidate.importance,
                             soul_db_factory,
                         ),
@@ -1006,7 +1031,7 @@ def _process_candidate(
                 soul_db,
                 user_id=user_id,
                 content=candidate.content,
-                category=candidate.category,
+                category=_effective_candidate_category(candidate),
                 importance=candidate.importance,
                 source="extraction",
                 allow_update=True,
@@ -1031,7 +1056,7 @@ def _process_candidate(
                     soul_db,
                     user_id=user_id,
                     content=candidate.content,
-                    category=candidate.category,
+                    category=_effective_candidate_category(candidate),
                     importance=candidate.importance,
                     source_kind="extraction",
                     extractor=candidate.source,
@@ -1062,7 +1087,7 @@ def _process_candidate(
                             user_id,
                             new_item.id,
                             candidate.content,
-                            candidate.category,
+                            _effective_candidate_category(candidate),
                             candidate.importance,
                             soul_db_factory,
                         ),
@@ -1085,11 +1110,17 @@ def _process_candidate(
         # action == "promote"
         from anima_server.services.agent.memory_store import store_memory_item
 
+        # Downstream consumers (overview counts, contradiction scan, memory
+        # tools) enumerate only the four canonical categories, so a promoted
+        # minor_observation must be remapped — mirroring the crystallization
+        # path's category normalization. Must match what the dry-run dedup
+        # saw (_effective_candidate_category).
+        promote_category = _effective_candidate_category(candidate)
         write_result = store_memory_item(
             soul_db,
             user_id=user_id,
             content=candidate.content,
-            category=candidate.category,
+            category=promote_category,
             importance=candidate.importance,
             source="extraction",
             allow_update=True,
@@ -1117,7 +1148,7 @@ def _process_candidate(
                     soul_db,
                     user_id=user_id,
                     content=candidate.content,
-                    category=candidate.category,
+                    category=_effective_candidate_category(candidate),
                     importance=candidate.importance,
                     source_kind="extraction",
                     extractor=candidate.source,
@@ -1170,7 +1201,10 @@ def _process_candidate(
                         user_id,
                         new_item.id,
                         candidate.content,
-                        candidate.category,
+                        # The vector row must carry the same category the
+                        # MemoryItem was stored under, or category-filtered
+                        # searches miss promoted minor_observations.
+                        promote_category,
                         candidate.importance,
                         soul_db_factory,
                     ),
@@ -1217,14 +1251,18 @@ def plan_candidate_promotion(
             reason="correction target missing — promoting as new memory",
         )
 
-    # Normal dedup via store_memory_item dry_run
+    # Normal dedup via store_memory_item dry_run. The dry-run must see the
+    # same canonical category the final write would use — a
+    # minor_observation repeat of an existing canonical memory has to hit
+    # the duplicate/supersede paths (reinforce), not slip past dedup into
+    # the latent gate.
     from anima_server.services.agent.memory_store import store_memory_item
 
     write_analysis = store_memory_item(
         soul_db,
         user_id=user_id,
         content=candidate.content,
-        category=candidate.category,
+        category=_effective_candidate_category(candidate),
         importance=candidate.importance,
         source="extraction",
         allow_update=True,
@@ -1274,7 +1312,86 @@ def plan_candidate_promotion(
                     old_item=old,
                     reason=f"slot match supersedes item {old.id}",
                 )
-            return PromotionDecision(action="promote", reason="slot match but no target item found")
-        return PromotionDecision(action="promote", reason="similar but no structured slot — append")
+            return _gate_new_memory_decision(
+                candidate, reason="slot match but no target item found"
+            )
+        return _gate_new_memory_decision(
+            candidate, reason="similar but no structured slot — append"
+        )
 
-    return PromotionDecision(action="promote", reason="new memory")
+    return _gate_new_memory_decision(candidate, reason="new memory")
+
+
+def _effective_candidate_category(candidate) -> str:
+    """The canonical category a minor_observation resolves to everywhere a
+    category matters (dry-run dedup AND the final write — they must agree):
+    the structured slot's namespace when the content matches one ("Likes
+    green tea" is a preference regardless of which lane extracted it),
+    else "fact"."""
+    if candidate.category != "minor_observation":
+        return candidate.category
+    from anima_server.services.agent.claims import derive_canonical_key
+
+    derived = derive_canonical_key(candidate.content, candidate.category)
+    if derived is not None:
+        namespace, _slot, _polarity = derived
+        return namespace
+    return "fact"
+
+
+def _gate_new_memory_decision(candidate, reason: str) -> PromotionDecision:
+    """IL4 scoring gate for a fresh "would-promote" decision.
+
+    The gate applies ONLY to importance-1 candidates: importance >= 2
+    promotes exactly as it did before IL4 existed — verbatim
+    behavior-preservation, regardless of what emotional_salience or
+    evidence_strength the extractor reported (an LLM can explicitly emit
+    near-zero salience values on the normal extraction path, and those
+    must never change an importance >= 2 outcome). Only genuinely weak
+    signals — the ``minor_observation`` lane and other importance-1
+    extractions — are scored and may fold into a latent trace.
+
+    Only candidates with no existing-memory match reach here — every
+    dedup/supersede/evolve branch above always wins over folding (a
+    duplicate of a weak signal reinforcing something already promoted is
+    not itself a weak signal), and the user_explicit/correction
+    high-authority fast paths return even earlier.
+    """
+    if candidate.importance >= 2:
+        return PromotionDecision(action="promote", reason=reason)
+
+    from anima_server.services.agent.claims import derive_topic_key
+    from anima_server.services.agent.inner_life.latent import classify_score, score_candidate
+    from anima_server.services.agent.latent_traces import get_latent_config
+
+    salience = getattr(candidate, "salience_json", None) or {}
+    # Defaults apply only when the value is ABSENT — an explicit 0.0 is an
+    # honest signal and must not be replaced (`or` would discard it).
+    es_raw = salience.get("emotional_salience")
+    evs_raw = salience.get("evidence_strength")
+    score = score_candidate(
+        importance=candidate.importance,
+        emotional_salience=float(0.0 if es_raw is None else es_raw),
+        evidence_strength=float(0.8 if evs_raw is None else evs_raw),
+    )
+    config = get_latent_config()
+    classification = classify_score(score, config)
+
+    if classification == "reject":
+        return PromotionDecision(
+            action="rejected",
+            reason=f"latent score {score:.3f} below floor {config.floor:.3f}",
+            score=score,
+        )
+    if classification == "fold":
+        topic_key = derive_topic_key(candidate.content, candidate.category)
+        return PromotionDecision(
+            action="fold_to_trace",
+            reason=(
+                f"latent score {score:.3f} below promotion threshold "
+                f"{config.promotion_threshold:.3f} — folding into trace"
+            ),
+            topic_key=topic_key,
+            score=score,
+        )
+    return PromotionDecision(action="promote", reason=reason, score=score)

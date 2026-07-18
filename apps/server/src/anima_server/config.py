@@ -155,6 +155,18 @@ class Settings(BaseSettings):
     # for the presence tick, so a crashed run stuck in status "running"
     # cannot exclude a user from presence forever.
     presence_run_stale_seconds: int = Field(default=1800, ge=1)
+    # IL4 latent trace crystallization (see services/agent/inner_life/latent.py
+    # for the pure scoring/fold/decay math). Importance >= 2 candidates bypass
+    # the gate entirely (behavior-preservation by construction — see
+    # _gate_new_memory_decision in soul_writer.py), so these thresholds only
+    # govern the importance-1 weak-signal lane: score >= threshold promotes,
+    # [floor_ratio * threshold, threshold) folds into a trace, below rejects.
+    latent_promotion_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
+    latent_floor_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
+    latent_crystallization_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    latent_fold_rate: float = Field(default=0.5, ge=0.0, le=1.0)
+    latent_weekly_decay: float = Field(default=0.98, ge=0.0, le=1.0)
+    latent_max_traces_per_user: int = Field(default=500, ge=1)
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30

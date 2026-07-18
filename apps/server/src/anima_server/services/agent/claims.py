@@ -55,6 +55,48 @@ def derive_canonical_key(
     return None
 
 
+def derive_topic_key(content: str, category: str) -> str:
+    """Derive the same canonical grouping key ``upsert_claim`` would use,
+    without touching the DB.
+
+    Used by IL4 latent-trace folding (``latent_traces.py``). Structured
+    matches include the captured VALUE's slug
+    (``"user:{namespace}:{slot}:{value_slug}"``): claims group by slot
+    alone because one claim per slot is the point (the value updates in
+    place), but a latent topic must distinguish values — otherwise
+    unrelated weak signals ("likes sushi" / "likes hiking") would
+    accumulate weight onto one trace and crystallize from mixed
+    evidence. Verb variants over the same value still collapse ("likes
+    sushi" / "loves sushi" → the same key). Freeform content falls back
+    to a category + content-hash slug. This intentionally skips
+    ``upsert_claim``'s DB-backed fuzzy-paraphrase resolution
+    (``_find_similar_freeform_claim``) — a pure key derivation has no
+    session to query, so near-duplicate paraphrases may still land on
+    distinct topic keys; exact-duplicate content always collapses to one.
+    """
+    stripped = content.strip()
+    for pattern, namespace, slot in _SLOT_PATTERNS:
+        m = pattern.match(stripped)
+        if m:
+            return f"user:{namespace}:{slot}:{_topic_value_slug(m.group('v'))}"
+    return f"user:{category}:{_topic_value_slug(content)}"
+
+
+def _topic_value_slug(value: str) -> str:
+    """Slug + short full-content digest for latent topic keys.
+
+    ``_content_slug`` truncates at 60 chars, which is fine for claim keys
+    (the value lives in the claim row) but not as a trace's UNIQUE topic
+    key: two long observations sharing a 60-char prefix would merge into
+    one trace and crystallize a false mixed memory. The digest is over
+    the full normalized value, so identical content still collapses to
+    one key while prefix-collisions separate.
+    """
+    normalized = value.strip().casefold()
+    digest = sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{_content_slug(value)}_{digest}"
+
+
 def upsert_claim(
     db: Session,
     *,

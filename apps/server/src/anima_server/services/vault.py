@@ -29,6 +29,7 @@ from anima_server.models import (
     ForesightSignal,
     KGEntity,
     KGRelation,
+    LatentTrace,
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
@@ -163,6 +164,7 @@ _MEMORY_TABLES = frozenset(
         "agentExperiences",
         "experienceClusterState",
         "agentSkills",
+        "latentTraces",
     }
 )
 
@@ -204,6 +206,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "agentExperiences",
         "experienceClusterState",
         "agentSkills",
+        "latentTraces",
     }
 )
 
@@ -882,6 +885,10 @@ def export_database_snapshot(
         serialize_agent_skill_record(skill, deks=deks)
         for skill in db.scalars(_scoped(select(AgentSkill), AgentSkill)).all()
     ]
+    latent_traces = [
+        serialize_latent_trace_record(trace)
+        for trace in db.scalars(_scoped(select(LatentTrace), LatentTrace)).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -900,6 +907,7 @@ def export_database_snapshot(
         "agentExperiences": agent_experiences,
         "experienceClusterState": experience_cluster_state,
         "agentSkills": agent_skills,
+        "latentTraces": latent_traces,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -936,6 +944,7 @@ def restore_database_snapshot(
     agent_experiences_payload = snapshot.get("agentExperiences", [])
     experience_cluster_state_payload = snapshot.get("experienceClusterState", [])
     agent_skills_payload = snapshot.get("agentSkills", [])
+    latent_traces_payload = snapshot.get("latentTraces", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -945,6 +954,7 @@ def restore_database_snapshot(
     is_full = scope == "full"
 
     try:
+        db.query(LatentTrace).delete()
         db.query(AgentSkill).delete()
         db.query(ExperienceClusterState).delete()
         db.query(AgentExperience).delete()
@@ -1146,6 +1156,22 @@ def restore_database_snapshot(
             skill = db.get(AgentSkill, skill_id)
             if skill is not None:
                 skill.superseded_by = superseded_by
+
+        for record in latent_traces_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                LatentTrace(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    topic_key=str(record["topic_key"]),
+                    kind=str(record.get("kind", "observation")),
+                    weight=float(record.get("weight", 0.0)),
+                    evidence_refs=record.get("evidence_refs"),
+                    first_seen=parse_optional_datetime(record.get("first_seen")),
+                    last_seen=parse_optional_datetime(record.get("last_seen")),
+                )
+            )
 
         for record in memory_items_payload:
             if not isinstance(record, dict):
@@ -2098,6 +2124,24 @@ def serialize_agent_experience_record(
     }
 
 
+def serialize_latent_trace_record(trace: LatentTrace) -> dict[str, Any]:
+    """IL4 latent trace: no encrypted fields (see ``LatentTrace`` docstring —
+    ``topic_key`` is a structural key stored plaintext like
+    ``MemoryClaim.canonical_key``, and ``evidence_refs`` holds only
+    identifiers, never copied content), so unlike memory/skill records this
+    needs no ``deks`` argument."""
+    return {
+        "id": trace.id,
+        "user_id": trace.user_id,
+        "topic_key": trace.topic_key,
+        "kind": trace.kind,
+        "weight": trace.weight,
+        "evidence_refs": trace.evidence_refs,
+        "first_seen": serialize_optional_datetime(trace.first_seen),
+        "last_seen": serialize_optional_datetime(trace.last_seen),
+    }
+
+
 def serialize_experience_cluster_state_record(
     state: ExperienceClusterState,
 ) -> dict[str, Any]:
@@ -2212,6 +2256,7 @@ def reset_identity_sequences(db: Session) -> None:
         "agent_experiences",
         "experience_cluster_state",
         "agent_skills",
+        "latent_traces",
         "agent_threads",
         "agent_runs",
         "agent_steps",

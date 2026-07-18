@@ -1236,6 +1236,7 @@ def consolidate_pending_memory() -> str:
         + result.candidates_rejected
         + result.candidates_reinforced
         + result.candidates_superseded
+        + result.candidates_folded
         + result.candidates_failed
     )
     if pending_before == 0 and result.ops_processed == 0 and result.ops_skipped == 0 and result.ops_failed == 0 and total_candidate_work == 0:
@@ -1246,7 +1247,8 @@ def consolidate_pending_memory() -> str:
         f"Ops processed={result.ops_processed}, skipped={result.ops_skipped}, failed={result.ops_failed}; "
         f"candidates promoted={result.candidates_promoted}, rejected={result.candidates_rejected}, "
         f"reinforced={result.candidates_reinforced}, "
-        f"superseded={result.candidates_superseded}, failed={result.candidates_failed}; "
+        f"superseded={result.candidates_superseded}, folded={result.candidates_folded}, "
+        f"failed={result.candidates_failed}; "
         f"remaining pending ops={remaining_pending}."
     )
 
