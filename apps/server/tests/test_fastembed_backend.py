@@ -271,3 +271,86 @@ def test_backend_status_not_failed_retrying_for_differently_latched_model(
 
     monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "model-b")
     assert fastembed_backend.backend_status() == "cold"
+
+
+# ── FIX 6: atomic (name, model) pair — no torn reads on a model switch ──
+#
+# _load_model used to set two separate globals, `_model` then
+# `_model_name_loaded`, both under the lock — but the fast-path guard reads
+# them lock-free. A concurrent embed during a model switch could observe
+# the NEW model already assigned but the OLD name still in place (or vice
+# versa), and return the wrong model's vectors for the requested name. The
+# fix holds both in one `_Loaded(name, model)` object swapped as a single
+# reference, so a lock-free reader can only ever see a fully-old or
+# fully-new pair — there is no intermediate state to observe.
+
+
+def test_load_model_of_b_after_a_never_returns_a_for_b_request(monkeypatch) -> None:
+    model_a = _FakeModel()
+    model_a.tag = "model-a"
+    model_b = _FakeModel()
+    model_b.tag = "model-b"
+
+    def factory(model_name: str):
+        return model_a if model_name == "model-a" else model_b
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", factory)
+
+    loaded_a = fastembed_backend._load_model("model-a")
+    assert loaded_a is model_a
+    assert fastembed_backend._loaded.name == "model-a"
+    assert fastembed_backend._loaded.model is model_a
+
+    loaded_b = fastembed_backend._load_model("model-b")
+    assert loaded_b is model_b
+    # The pair is internally consistent post-switch...
+    assert fastembed_backend._loaded.name == "model-b"
+    assert fastembed_backend._loaded.model is model_b
+    # ...and the fast (lock-free) path for "model-b" never transiently
+    # returns the stale model-a — there is only one reference to observe.
+    assert fastembed_backend._load_model("model-b") is model_b
+
+
+def test_load_model_concurrent_switch_never_serves_mismatched_model(monkeypatch) -> None:
+    """Stress regression: hammer _load_model with several model names from
+    multiple threads and assert no thread ever gets back a model tagged for
+    a different name than it requested. Real races are timing-dependent so
+    this is inherently probabilistic, but it exercises many interleavings —
+    it targets exactly the scenario the old two-globals design was
+    vulnerable to, and cannot fail under the new single-reference-swap
+    design because there is no torn intermediate state to land on."""
+    import threading
+
+    names = ["model-a", "model-b", "model-c"]
+    models: dict[str, _FakeModel] = {}
+    for name in names:
+        model = _FakeModel()
+        model.tag = name
+        models[name] = model
+
+    def factory(model_name: str):
+        return models[model_name]
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", factory)
+
+    errors: list[str] = []
+    errors_lock = threading.Lock()
+
+    def hammer(name: str) -> None:
+        for _ in range(200):
+            model = fastembed_backend._load_model(name)
+            if model is not None and model.tag != name:
+                with errors_lock:
+                    errors.append(f"requested {name!r} but got {model.tag!r}")
+
+    threads = [
+        threading.Thread(target=hammer, args=(name,))
+        for name in names
+        for _ in range(3)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []

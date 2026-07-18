@@ -814,6 +814,41 @@ def test_config_get_returns_resolved_embedding_fields_at_bundled_default() -> No
             _restore_config_settings(original)
 
 
+def test_config_get_has_embedding_api_key_reflects_legacy_chat_key_piggyback() -> None:
+    """MEDIUM audit fix: hasEmbeddingApiKey must reflect the RICH key
+    resolution (``_resolve_embedding_api_key``) the embedding path actually
+    uses, not just ``bool(agent_embedding_api_key.strip())``. A legacy
+    install with only the flat ``agent_api_key`` set (no per-provider store,
+    no dedicated embedding key) that piggybacks embeddings onto the chat
+    provider DOES have a usable key for the embedding call — the naive
+    check reported False here even though embeddings would actually work."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_api_key = "sk-legacy-chat-key"
+            settings.agent_api_keys_json = "{}"
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = ""
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            # Piggyback resolves the embedding provider to "openai" (the
+            # chat provider), which then legitimately reuses the chat key.
+            assert config["embeddingProvider"] == "openai"
+            assert config["hasEmbeddingApiKey"] is True
+        finally:
+            _restore_config_settings(original)
+
+
 def test_config_update_round_trips_explicit_embedding_provider() -> None:
     original = _snapshot_config_settings()
 
@@ -999,19 +1034,25 @@ def test_config_update_accepts_fastembed_as_embedding_provider_but_not_chat_prov
             _restore_config_settings(original)
 
 
-def test_valid_embedding_providers_is_derived_from_skip_reason() -> None:
-    """VALID_EMBEDDING_PROVIDERS must be computed from
-    ``embeddings._embedding_skip_reason`` rather than a hand-maintained list,
-    so a provider gaining/losing embeddings support can't drift silently."""
+def test_valid_embedding_providers_is_derived_from_skip_reason_and_default_model() -> None:
+    """VALID_EMBEDDING_PROVIDERS must be computed from BOTH
+    ``embeddings._embedding_skip_reason`` (has an embeddings endpoint) AND
+    membership in ``DEFAULT_EMBEDDING_MODELS`` (has a known default
+    embedding model) rather than a hand-maintained list, so a provider
+    gaining/losing embeddings support — or gaining/losing a default model —
+    can't drift silently."""
     from anima_server.api.routes.config import VALID_EMBEDDING_PROVIDERS
+    from anima_server.services.agent.embedding_resolution import (
+        DEFAULT_EMBEDDING_MODELS,
+    )
     from anima_server.services.agent.embeddings import _embedding_skip_reason
     from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
 
     expected = {
         provider
         for provider in SUPPORTED_PROVIDERS
-        if _embedding_skip_reason(provider) is None
-    }
+        if _embedding_skip_reason(provider) is None and provider in DEFAULT_EMBEDDING_MODELS
+    } | {"fastembed", ""}
     assert expected == VALID_EMBEDDING_PROVIDERS
     # openrouter/anthropic have no embeddings endpoint (real skip reasons) —
     # assert against the derivation rule, not a hardcoded name list.
@@ -1019,6 +1060,45 @@ def test_valid_embedding_providers_is_derived_from_skip_reason() -> None:
     assert "anthropic" not in VALID_EMBEDDING_PROVIDERS
     assert "ollama" in VALID_EMBEDDING_PROVIDERS
     assert "fastembed" in VALID_EMBEDDING_PROVIDERS
+    # moonshot passes the endpoint check but has no default embedding model
+    # (P2 audit finding): accepted-but-unusable must not slip through.
+    assert "moonshot" not in VALID_EMBEDDING_PROVIDERS
+    # Matches the desktop UI's EMBEDDING_PROVIDERS list in AiSettings.tsx
+    # exactly: ["fastembed", "ollama", "openai", "vllm", "doubleword"].
+    assert VALID_EMBEDDING_PROVIDERS - {""} == {
+        "fastembed",
+        "ollama",
+        "openai",
+        "vllm",
+        "doubleword",
+    }
+
+
+def test_config_update_rejects_moonshot_as_embedding_provider() -> None:
+    """moonshot has an embeddings-shaped endpoint but no known default
+    embedding model — accepting it would resolve to a wrong (Ollama)
+    catch-all model and 404 while reporting healthy (P2 audit finding)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "moonshot",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+        finally:
+            _restore_config_settings(original)
 
 
 def test_config_update_rejects_anthropic_as_embedding_provider() -> None:
@@ -1133,9 +1213,15 @@ def test_config_update_openrouter_valid_as_chat_provider_but_not_embedding() -> 
             _restore_config_settings(original)
 
 
-def test_config_update_applies_embedding_model_without_provider_field() -> None:
-    """A PUT carrying only embeddingModel must update the current embedding
-    config — not silently no-op because embeddingProvider was omitted."""
+def test_config_update_rejects_embedding_model_without_provider_field() -> None:
+    """Audit fix (was: "applies_embedding_model_without_provider_field"): a
+    PUT carrying embeddingModel with embeddingProvider OMITTED must be
+    rejected, not silently applied against whatever embedding provider
+    happens to already be configured — see
+    test_config_update_without_embedding_fields_leaves_embedding_config_alone
+    for the still-valid "send neither field" no-op case. The desktop UI
+    always sends embeddingProvider alongside embeddingModel (AiSettings.tsx
+    buildEmbeddingUpdate), so this is not a UI regression."""
     original = _snapshot_config_settings()
 
     with managed_test_client("anima-dashboard-test-") as client:
@@ -1157,20 +1243,19 @@ def test_config_update_applies_embedding_model_without_provider_field() -> None:
                     "embeddingModel": "new-embed-model",
                 },
             )
-            assert resp.status_code == 200
+            assert resp.status_code == 400
             assert settings.agent_embedding_provider == "vllm"
-            assert settings.agent_embedding_model == "new-embed-model"
-
-            resp = client.get(f"/api/config/{user_id}", headers=headers)
-            assert resp.status_code == 200
-            config = resp.json()
-            assert config["embeddingProvider"] == "vllm"
-            assert config["embeddingModel"] == "new-embed-model"
+            assert settings.agent_embedding_model == "old-embed-model"
         finally:
             _restore_config_settings(original)
 
 
-def test_config_update_applies_embedding_api_key_without_provider_field() -> None:
+def test_config_update_rejects_embedding_api_key_without_provider_field() -> None:
+    """Audit fix (was: "applies_embedding_api_key_without_provider_field"): a
+    PUT carrying embeddingApiKey with embeddingProvider OMITTED must be
+    rejected — see the model-without-provider test above for the full
+    rationale (has_embedding_piggyback_intent would otherwise force the key
+    onto whatever provider the CHAT side is currently using)."""
     original = _snapshot_config_settings()
 
     with managed_test_client("anima-dashboard-test-") as client:
@@ -1192,15 +1277,9 @@ def test_config_update_applies_embedding_api_key_without_provider_field() -> Non
                     "embeddingApiKey": "sk-embed-new",
                 },
             )
-            assert resp.status_code == 200
+            assert resp.status_code == 400
             assert settings.agent_embedding_provider == "openai"
-            assert settings.agent_embedding_api_key == "sk-embed-new"
-
-            resp = client.get(f"/api/config/{user_id}", headers=headers)
-            assert resp.status_code == 200
-            config = resp.json()
-            assert config["embeddingProvider"] == "openai"
-            assert config["hasEmbeddingApiKey"] is True
+            assert settings.agent_embedding_api_key == ""
         finally:
             _restore_config_settings(original)
 

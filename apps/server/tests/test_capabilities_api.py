@@ -277,8 +277,7 @@ def test_fastembed_backend_status_ready_when_model_loaded(
     monkeypatch.setattr(
         fastembed_backend, "_resolve_current_model_name", lambda: "model-a"
     )
-    fastembed_backend._model = object()
-    fastembed_backend._model_name_loaded = "model-a"
+    fastembed_backend._set_loaded_for_tests("model-a", object())
     try:
         assert fastembed_backend.backend_status() == "ready"
     finally:
@@ -330,8 +329,7 @@ def test_fastembed_backend_status_not_ready_when_loaded_model_is_stale(
     monkeypatch.setattr(
         fastembed_backend, "_resolve_current_model_name", lambda: "model-b"
     )
-    fastembed_backend._model = object()
-    fastembed_backend._model_name_loaded = "model-a"
+    fastembed_backend._set_loaded_for_tests("model-a", object())
     fastembed_backend._failed_at = time.monotonic()
     fastembed_backend._failed_model_name = "model-b"
     try:
@@ -351,8 +349,7 @@ def test_fastembed_backend_status_cold_when_loaded_model_differs_no_failure(
     monkeypatch.setattr(
         fastembed_backend, "_resolve_current_model_name", lambda: "model-b"
     )
-    fastembed_backend._model = object()
-    fastembed_backend._model_name_loaded = "model-a"
+    fastembed_backend._set_loaded_for_tests("model-a", object())
     try:
         assert fastembed_backend.backend_status() == "cold"
     finally:
@@ -370,8 +367,7 @@ def test_reranker_backend_status_matches_latch_states(
     reranker._reset_model_cache_for_tests()
     assert reranker.backend_status() == "cold"
 
-    reranker._model = object()
-    reranker._model_name_loaded = settings.retrieval_reranker_model
+    reranker._set_loaded_for_tests(settings.retrieval_reranker_model, object())
     assert reranker.backend_status() == "ready"
 
     reranker._reset_model_cache_for_tests()
@@ -394,8 +390,7 @@ def test_reranker_backend_status_not_ready_when_loaded_model_is_stale(
 
     reranker._reset_model_cache_for_tests()
     monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
-    reranker._model = object()
-    reranker._model_name_loaded = "model-a"
+    reranker._set_loaded_for_tests("model-a", object())
     reranker._failed_at = time.monotonic()
     reranker._failed_model_name = "model-b"
     try:
@@ -412,8 +407,7 @@ def test_reranker_backend_status_cold_when_loaded_model_differs_no_failure(
 
     reranker._reset_model_cache_for_tests()
     monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
-    reranker._model = object()
-    reranker._model_name_loaded = "model-a"
+    reranker._set_loaded_for_tests("model-a", object())
     try:
         assert reranker.backend_status() == "cold"
     finally:

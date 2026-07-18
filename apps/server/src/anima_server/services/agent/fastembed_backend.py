@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from anima_server.config import settings
@@ -22,8 +23,30 @@ from anima_server.config import settings
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_model: Any | None = None
-_model_name_loaded: str | None = None
+
+
+@dataclass(frozen=True)
+class _Loaded:
+    """A loaded model bound to the name it was loaded for.
+
+    Held as ONE module-level reference (see ``_loaded`` below) so a
+    lock-free reader (the ``_load_model``/``backend_status`` fast path)
+    always observes a consistent (name, model) pair. Two separate globals
+    (``_model`` and ``_model_name_loaded``, assigned one after the other
+    under the lock) let a concurrent lock-free read land between the two
+    assignments during a model switch — seeing the NEW model with the OLD
+    name still in place — and silently serve the wrong model's vectors for
+    the requested name. A single reference swap can't be observed
+    mid-update: under the GIL, rebinding a module-level name is atomic, so
+    any lock-free reader sees either the fully-old or the fully-new
+    ``_Loaded`` instance, never a mix of the two.
+    """
+
+    name: str
+    model: Any
+
+
+_loaded: _Loaded | None = None
 _failed_at: float | None = None
 # The model name the *current* _failed_at cooldown applies to. Keeping the
 # cooldown keyed by name (rather than a single process-wide latch) means a
@@ -64,19 +87,24 @@ def _cooldown_active(model_name: str) -> bool:
 
 
 def _load_model(model_name: str) -> Any | None:
-    global _model, _model_name_loaded, _failed_at, _failed_model_name
-    if _model is not None and _model_name_loaded == model_name:
-        return _model
+    global _loaded, _failed_at, _failed_model_name
+    loaded = _loaded  # single lock-free read of the atomic pair
+    if loaded is not None and loaded.name == model_name:
+        return loaded.model
     if _cooldown_active(model_name):
         return None
     with _lock:
-        if _model is not None and _model_name_loaded == model_name:
-            return _model
+        loaded = _loaded
+        if loaded is not None and loaded.name == model_name:
+            return loaded.model
         if _cooldown_active(model_name):
             return None
         try:
-            _model = _create_model(model_name)
-            _model_name_loaded = model_name
+            model = _create_model(model_name)
+            # Single reference swap — see _Loaded's docstring for why this
+            # (rather than two separate globals) is what makes the fast
+            # path above safe to read without the lock.
+            _loaded = _Loaded(name=model_name, model=model)
             # Only clear the latch if it belongs to *this* model — a
             # different model's unrelated failure record must survive this
             # success untouched, so that model stays correctly blocked
@@ -94,7 +122,7 @@ def _load_model(model_name: str) -> Any | None:
                 exc_info=True,
             )
             return None
-    return _model
+    return _loaded.model
 
 
 def _resolve_current_model_name() -> str:
@@ -142,7 +170,8 @@ def backend_status() -> str:
         and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
     ):
         return "failed_retrying"
-    if _model is not None and _model_name_loaded == current_model_name:
+    loaded = _loaded
+    if loaded is not None and loaded.name == current_model_name:
         return "ready"
     return "cold"
 
@@ -180,12 +209,24 @@ def warm_up_retrieval_models() -> None:
 
 
 def _reset_backend_for_tests() -> None:
-    global _model, _model_name_loaded, _failed_at, _failed_model_name
+    global _loaded, _failed_at, _failed_model_name
     with _lock:
-        _model = None
-        _model_name_loaded = None
+        _loaded = None
         _failed_at = None
         _failed_model_name = None
+
+
+def _set_loaded_for_tests(name: str, model: Any) -> None:
+    """Test-only helper to simulate an already-loaded model.
+
+    Goes through the same single-reference-swap path as ``_load_model`` so
+    tests exercise (and cannot bypass) the atomic-pair invariant described
+    on ``_Loaded`` above, instead of poking at two separate globals that no
+    longer exist as separate assignable attributes.
+    """
+    global _loaded
+    with _lock:
+        _loaded = _Loaded(name=name, model=model)
 
 
 __all__ = ["backend_status", "embed_texts", "warm_up_retrieval_models"]

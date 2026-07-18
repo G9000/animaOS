@@ -18,6 +18,7 @@ import logging
 import threading
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from anima_server.config import settings
@@ -25,8 +26,23 @@ from anima_server.config import settings
 logger = logging.getLogger(__name__)
 
 _model_lock = threading.Lock()
-_model: Any | None = None
-_model_name_loaded: str | None = None
+
+
+@dataclass(frozen=True)
+class _Loaded:
+    """A loaded model bound to the name it was loaded for.
+
+    Mirrors ``fastembed_backend._Loaded`` — held as ONE module-level
+    reference so a lock-free reader (the ``_load_model``/``backend_status``
+    fast path) never observes a torn (name, model) pair from a concurrent
+    model switch. See that class's docstring for the full rationale.
+    """
+
+    name: str
+    model: Any
+
+
+_loaded: _Loaded | None = None
 _failed_at: float | None = None
 # The model name the *current* _failed_at cooldown applies to. Keyed by name
 # (mirrors fastembed_backend) so a failure loading one reranker model name
@@ -84,20 +100,24 @@ def _cooldown_active(model_name: str) -> bool:
 
 
 def _load_model() -> Any | None:
-    global _model, _model_name_loaded, _failed_at, _failed_model_name
+    global _loaded, _failed_at, _failed_model_name
     model_name = settings.retrieval_reranker_model
-    if _model is not None and _model_name_loaded == model_name:
-        return _model
+    loaded = _loaded  # single lock-free read of the atomic pair
+    if loaded is not None and loaded.name == model_name:
+        return loaded.model
     if _cooldown_active(model_name):
         return None
     with _model_lock:
-        if _model is not None and _model_name_loaded == model_name:
-            return _model
+        loaded = _loaded
+        if loaded is not None and loaded.name == model_name:
+            return loaded.model
         if _cooldown_active(model_name):
             return None
         try:
-            _model = _create_model()
-            _model_name_loaded = model_name
+            model = _create_model()
+            # Single reference swap — see _Loaded's docstring for why this
+            # is what makes the fast path above safe to read lock-free.
+            _loaded = _Loaded(name=model_name, model=model)
             # Only clear the latch if it belongs to *this* model name — a
             # different model's unrelated failure record must survive this
             # success untouched, so that model stays correctly blocked
@@ -117,7 +137,7 @@ def _load_model() -> Any | None:
                 exc_info=True,
             )
             return None
-    return _model
+    return _loaded.model
 
 
 def backend_status() -> str:
@@ -142,17 +162,28 @@ def backend_status() -> str:
         and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
     ):
         return "failed_retrying"
-    if _model is not None and _model_name_loaded == model_name:
+    loaded = _loaded
+    if loaded is not None and loaded.name == model_name:
         return "ready"
     return "cold"
 
 
 def _reset_model_cache_for_tests() -> None:
-    global _model, _model_name_loaded, _failed_at, _failed_model_name
-    _model = None
-    _model_name_loaded = None
+    global _loaded, _failed_at, _failed_model_name
+    _loaded = None
     _failed_at = None
     _failed_model_name = None
+
+
+def _set_loaded_for_tests(name: str, model: Any) -> None:
+    """Test-only helper to simulate an already-loaded model.
+
+    Goes through the same single-reference-swap path as ``_load_model`` —
+    see ``fastembed_backend._set_loaded_for_tests``.
+    """
+    global _loaded
+    with _model_lock:
+        _loaded = _Loaded(name=name, model=model)
 
 
 __all__ = ["backend_status", "rerank_chunk_ids"]

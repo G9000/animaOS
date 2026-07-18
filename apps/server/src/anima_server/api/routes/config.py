@@ -18,11 +18,15 @@ from anima_server.config import (
 )
 from anima_server.db import get_db
 from anima_server.services.agent.embedding_resolution import (
+    DEFAULT_EMBEDDING_MODELS,
     has_embedding_piggyback_intent,
     resolve_embedding_model,
     resolve_embedding_provider,
 )
-from anima_server.services.agent.embeddings import _embedding_skip_reason
+from anima_server.services.agent.embeddings import (
+    _embedding_skip_reason,
+    _resolve_embedding_api_key,
+)
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -120,17 +124,27 @@ AVAILABLE_PROVIDERS: list[ProviderInfo] = [
 # selectable as the chat provider via this endpoint.
 VALID_PROVIDERS = ({"scaffold"} | set(SUPPORTED_PROVIDERS)) - {"fastembed"}
 
-# Embedding providers the embedding implementation can actually call.
-# Derived from `_embedding_skip_reason` — the same gate `generate_embedding`
-# checks at call time — rather than hardcoded, so this can never drift from
-# runtime behavior: openrouter/anthropic have no embeddings endpoint and are
-# excluded here (they are still valid chat providers, see VALID_PROVIDERS
-# above). Accepting them for embeddings would silently disable dense
-# retrieval, since the embedding call is a no-op skip for those providers.
+# Embedding providers the embedding implementation can actually call AND
+# actually serve with a usable model. Two independent gates, both required:
+#   1. `_embedding_skip_reason` — the same gate `generate_embedding` checks
+#      at call time — excludes providers with no embeddings endpoint at all
+#      (openrouter/anthropic; still valid CHAT providers, see VALID_PROVIDERS
+#      above). Accepting them for embeddings would silently disable dense
+#      retrieval, since the embedding call is a no-op skip for those
+#      providers.
+#   2. `provider in DEFAULT_EMBEDDING_MODELS` — a provider can have a real
+#      embeddings endpoint yet no known default embedding model (e.g.
+#      moonshot: it passes gate 1, but `resolve_embedding_model` has no
+#      entry for it and would otherwise fall through to a wrong catch-all
+#      model, e.g. an Ollama-only name POSTed to moonshot's API -> 404 while
+#      the UI reports the provider as configured/healthy). Requiring BOTH
+#      gates keeps the accepted set to "providers with an endpoint AND a
+#      default model" — this must never drift from runtime behavior, hence
+#      derived rather than hardcoded.
 VALID_EMBEDDING_PROVIDERS = frozenset(
     provider for provider in SUPPORTED_PROVIDERS
-    if _embedding_skip_reason(provider) is None
-)
+    if _embedding_skip_reason(provider) is None and provider in DEFAULT_EMBEDDING_MODELS
+) | {"fastembed", ""}
 
 
 def _normalize_ollama_base_url(
@@ -349,7 +363,13 @@ async def get_config(
         embeddingModel=resolve_embedding_model(embedding_provider),
         embeddingIsExplicit=bool(settings.agent_embedding_provider.strip())
         or has_embedding_piggyback_intent(),
-        hasEmbeddingApiKey=bool(settings.agent_embedding_api_key.strip()),
+        # Reflects the key the embedding path will ACTUALLY use — the same
+        # rich resolution `generate_embedding` consults (env DOUBLEWORD_API_
+        # KEY, the per-provider store, and the legacy agent_api_key
+        # piggyback when embedding_provider == chat provider) — not just the
+        # raw agent_embedding_api_key setting. A bool only; never exposes
+        # the key itself.
+        hasEmbeddingApiKey=bool(_resolve_embedding_api_key(embedding_provider)),
     )
 
 
@@ -378,7 +398,28 @@ async def update_config(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"Unsupported embedding provider: {embedding_provider!r}. "
-                f"Valid: {', '.join(sorted(VALID_EMBEDDING_PROVIDERS))} or ''"
+                f"Valid: {', '.join(sorted(p for p in VALID_EMBEDDING_PROVIDERS if p))} or ''"
+            ),
+        )
+
+    # embeddingApiKey/embeddingModel require an explicit embeddingProvider
+    # (either naming one, or "" to reset). Without this, secrets/models
+    # supplied with the field OMITTED entirely still applied against
+    # whatever embedding provider happened to already be configured — and if
+    # NONE was configured yet, has_embedding_piggyback_intent() then forced
+    # resolve_embedding_provider() onto the CHAT provider, so an embedding
+    # key meant for one provider could get sent to a completely different
+    # chat server (e.g. vllm) it was never meant for. The desktop UI always
+    # sends embeddingProvider alongside model/key (see AiSettings.tsx
+    # buildEmbeddingUpdate), so this is not a regression for it.
+    if embedding_provider is None and (
+        payload.embeddingModel is not None or payload.embeddingApiKey is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "embeddingModel/embeddingApiKey require embeddingProvider to be "
+                "set explicitly (or '' to reset to the bundled default)."
             ),
         )
 

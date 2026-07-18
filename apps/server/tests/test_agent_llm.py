@@ -180,19 +180,85 @@ def test_resolve_embedding_model_explicit_wins_over_fastembed_default(
     assert embeddings._resolve_embedding_model() == "custom/embed-model"
 
 
-def test_resolve_embedding_model_keeps_extraction_fallback_for_non_fastembed(
+def test_resolve_embedding_model_ignores_extraction_model_for_explicit_non_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Pre-existing behavior preserved: an explicit non-fastembed embedding
-    # provider (e.g. ollama) still falls back to agent_extraction_model when
-    # no dedicated agent_embedding_model is set.
+    # Audit fix (was: "keeps_extraction_fallback_for_non_fastembed"): an
+    # EXPLICITLY-configured embedding provider (agent_embedding_provider set)
+    # must NEVER consult agent_extraction_model — that's a CHAT model
+    # setting for a possibly-unrelated chat provider. The old behavior let a
+    # chat extraction model (e.g. "qwen2.5:3b" for an ollama chat setup)
+    # hijack an explicit embedding provider's request, e.g. POSTing a chat
+    # model name to openai's /v1/embeddings -> 400. The extraction-model
+    # fallback is now reserved strictly for the genuine piggyback case (see
+    # test_embedding_api_key_piggyback_still_uses_extraction_model_fallback
+    # above) where no embedding provider was named explicitly at all.
     from anima_server.services.agent import embeddings
 
     monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
     monkeypatch.setattr(settings, "agent_embedding_model", "")
     monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
 
+    assert embeddings._resolve_embedding_model() == "nomic-embed-text"
+
+
+def test_resolve_embedding_model_explicit_openai_ignores_chat_extraction_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # HIGH severity regression guard: explicit embeddingProvider="openai"
+    # with an unrelated chat agent_extraction_model set (e.g. left over from
+    # an ollama chat configuration) must resolve to openai's OWN default
+    # embedding model, not the chat model — which would 400 against
+    # /v1/embeddings.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_model() == "text-embedding-3-small"
+
+
+def test_resolve_embedding_model_genuine_piggyback_still_uses_extraction_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mirrors the explicit-provider tests above but for the TRUE piggyback
+    # case: no agent_embedding_provider named, piggyback intent signaled via
+    # agent_embedding_base_url alone, resolved (chat) provider is non-ollama.
+    # This is the one case where reusing agent_extraction_model is still the
+    # documented, intentional legacy behavior.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "http://custom-vllm:8000/v1")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "")
+    monkeypatch.setattr(settings, "agent_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_provider() == "vllm"
     assert embeddings._resolve_embedding_model() == "qwen2.5:3b"
+
+
+def test_resolve_embedding_model_unknown_provider_returns_empty_not_ollama_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # FIX 2 defense-in-depth: a provider with no DEFAULT_EMBEDDING_MODELS
+    # entry (e.g. moonshot — accepted by SUPPORTED_PROVIDERS/_embedding_skip_
+    # reason but with no default embedding model) must not silently fall
+    # through to the Ollama "nomic-embed-text" catch-all, which would send
+    # an Ollama-only model name to a completely different provider's API
+    # and 404. Empty string fails loudly instead.
+    from anima_server.services.agent.embedding_resolution import (
+        resolve_embedding_model,
+    )
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "moonshot")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_extraction_model", "")
+
+    assert resolve_embedding_model("moonshot", settings) == ""
 
 
 def test_resolve_embedding_base_url_explicit_local_ollama_falls_back_to_agent_base_url(
@@ -883,10 +949,15 @@ def test_resolve_embedding_dim_explicit_model_wins_over_fastembed_default(
     assert config_module.resolve_embedding_dim() == 384
 
 
-def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
+def test_resolve_embedding_dim_ignores_extraction_fallback_for_explicit_non_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Pre-existing behavior preserved for an explicit non-fastembed provider.
+    # Audit fix (was: "keeps_extraction_fallback_for_non_fastembed"): mirrors
+    # test_resolve_embedding_model_ignores_extraction_model_for_explicit_non_fastembed
+    # for dimension resolution. An explicit agent_embedding_provider must not
+    # consult agent_extraction_model (a chat setting) — it resolves to
+    # ollama's own default model ("nomic-embed-text", dim 768) instead of the
+    # chat extraction model's dim (1024 for mxbai-embed-large).
     from anima_server import config as config_module
 
     monkeypatch.setattr(
@@ -903,7 +974,7 @@ def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
     )
     config_module.clear_detected_embedding_dim()
 
-    assert config_module.resolve_embedding_dim() == 1024
+    assert config_module.resolve_embedding_dim() == 768
 
 
 def test_resolve_default_embedding_provider_piggybacks_on_embedding_api_key(

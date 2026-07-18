@@ -31,8 +31,13 @@ from __future__ import annotations
 from typing import Any
 
 # Default embedding model per provider, consulted only when neither an
-# explicit embedding model nor (for a non-fastembed piggyback provider) the
-# chat extraction model is configured.
+# explicit embedding model nor (for the genuine piggyback case — no explicit
+# agent_embedding_provider named) the chat extraction model is configured.
+# Also doubles as the "does this provider have a known default embedding
+# model" membership check for VALID_EMBEDDING_PROVIDERS (see config.py's
+# routes module) — a provider absent here (e.g. moonshot) must not be
+# accepted as an embedding provider even if it has a usable HTTP endpoint,
+# since resolve_embedding_model would have no sane default to fall back to.
 DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "ollama": "nomic-embed-text",
     "openrouter": "openai/text-embedding-3-small",
@@ -95,14 +100,23 @@ def resolve_embedding_model(provider: str, settings: Any = None) -> str:
     """Return the embedding model to use for the given, already-resolved provider.
 
     ``agent_extraction_model`` is a CHAT model setting, not an embedding
-    setting. It is kept as a legacy fallback only for the piggyback case —
-    an explicitly-configured non-fastembed provider — where reusing the
-    chat model name was the pre-existing, documented behavior. It must NOT
-    be consulted when *provider* is the bundled ``fastembed`` ONNX backend:
-    fastembed can only load embedding-capable ONNX models, so leaking a chat
-    model name (e.g. "qwen2.5:3b") in here would fail ``TextEmbedding``
-    construction (or, for dimension resolution, silently miss
-    ``KNOWN_EMBEDDING_DIMS`` and fall through to a wrong dimension default).
+    setting. It is kept as a legacy fallback ONLY for the genuine piggyback
+    case: no ``agent_embedding_provider`` was named explicitly, so the
+    embedding side is riding whatever the chat provider happens to be (see
+    ``has_embedding_piggyback_intent``) — reusing the chat model name there
+    was the pre-existing, documented behavior.
+
+    It must NOT be consulted whenever ``agent_embedding_provider`` IS
+    explicitly set, regardless of which provider that is. An explicit
+    embedding provider names a real, distinct embeddings endpoint (e.g.
+    "openai") — falling back to a CHAT model configured for a completely
+    different chat provider (e.g. an ``agent_extraction_model`` of
+    "qwen2.5:3b" left over from an ollama chat setup) would hijack the
+    embedding request with a model that provider's ``/v1/embeddings``
+    endpoint has never heard of, failing with a 400 instead of using the
+    provider's own sane default. This generalizes the older fastembed-only
+    skip (commit 5c62215): fastembed is just one case of "explicit,
+    non-piggyback provider" among several.
     """
     if settings is None:
         settings = _default_settings()
@@ -110,11 +124,25 @@ def resolve_embedding_model(provider: str, settings: Any = None) -> str:
     configured = _setting_text(getattr(settings, "agent_embedding_model", ""))
     if configured:
         return configured
-    if provider != "fastembed":
+
+    explicit_provider = _setting_text(getattr(settings, "agent_embedding_provider", ""))
+    if not explicit_provider and has_embedding_piggyback_intent(settings):
+        # Genuine piggyback only: no explicit embedding provider was named,
+        # so the resolved provider mirrors the chat provider and reusing the
+        # chat model name is the documented legacy behavior.
         configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
         if configured:
             return configured
-    return DEFAULT_EMBEDDING_MODELS.get(provider, "nomic-embed-text")
+
+    # Defense-in-depth catch-all: DEFAULT_EMBEDDING_MODELS.get(provider, "")
+    # rather than a hardcoded model name (e.g. the old "nomic-embed-text"
+    # Ollama default) for an unrecognized provider — the API layer
+    # (VALID_EMBEDDING_PROVIDERS) already rejects any provider without a
+    # known default embedding model, so this branch should be unreachable
+    # in normal operation. Returning "" for such a provider fails loudly
+    # (an empty model name in the request) instead of silently sending some
+    # OTHER provider's model name to an endpoint that has never heard of it.
+    return DEFAULT_EMBEDDING_MODELS.get(provider, "")
 
 
 __all__ = [

@@ -487,6 +487,49 @@ def test_reranker_backend_status_not_failed_retrying_for_differently_latched_mod
     assert reranker_module.backend_status() == "cold"
 
 
+def test_reranker_load_model_of_b_after_a_never_returns_a_for_b_request(
+    monkeypatch: Any,
+) -> None:
+    """Regression test for the torn-read/atomic-pair fix (FIX 6, mirrors
+    fastembed_backend): after switching ``retrieval_reranker_model`` from A
+    to B and loading B, ``_load_model`` must return the model tagged B, and
+    the internal latch must be internally consistent (name matches the
+    model's own tag) — never a mix of the new model with the old name or
+    vice versa. The old design (two separate globals ``_model`` and
+    ``_model_name_loaded``, assigned one after another under the lock) left
+    a window where a lock-free reader could observe the new model paired
+    with the stale name. The fix holds both in one ``_Loaded(name, model)``
+    reference swapped atomically — see ``reranker._Loaded``."""
+
+    class _TaggedModel:
+        def __init__(self, tag: str) -> None:
+            self.tag = tag
+
+    model_a = _TaggedModel("model-a")
+    model_b = _TaggedModel("model-b")
+
+    def factory() -> Any:
+        return model_a if settings.retrieval_reranker_model == "model-a" else model_b
+
+    monkeypatch.setattr(reranker_module, "_create_model", factory)
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+    loaded_a = reranker_module._load_model()
+    assert loaded_a is model_a
+    assert reranker_module._loaded.name == "model-a"
+    assert reranker_module._loaded.model.tag == "model-a"
+
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
+    loaded_b = reranker_module._load_model()
+    assert loaded_b is model_b
+    assert reranker_module._loaded.name == "model-b"
+    assert reranker_module._loaded.model.tag == "model-b"
+    # The fast (lock-free) path for the now-current model must return the
+    # NEW model, never the stale one — there is only one reference to
+    # observe, so this cannot transiently return model_a.
+    assert reranker_module._load_model() is model_b
+
+
 def test_rerank_orders_by_model_scores(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 
