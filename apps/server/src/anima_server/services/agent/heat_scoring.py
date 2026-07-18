@@ -226,11 +226,15 @@ def decay_all_heat(
     ref_now = now or datetime.now(UTC)
     from anima_server.services.agent.forgetting import SUPERSEDED_DECAY_MULTIPLIER
 
-    # Decay both active and superseded items
+    # Decay both active and superseded items. IL5 distilled tombstones are
+    # excluded: their heat is frozen at distillation time and rescoring
+    # them every sleep run is unbounded busywork (they are permanently
+    # hidden by the distilled_at retrieval guards, not by heat).
     items = list(
         db.scalars(
             select(MemoryItem).where(
                 MemoryItem.user_id == user_id,
+                MemoryItem.distilled_at.is_(None),
             )
         ).all()
     )
@@ -264,6 +268,8 @@ def get_hottest_items(
     stmt = select(MemoryItem).where(
         MemoryItem.user_id == user_id,
         MemoryItem.superseded_by.is_(None),
+        # IL5: distilled tombstones are content-free and permanently hidden.
+        MemoryItem.distilled_at.is_(None),
     )
     if category is not None:
         stmt = stmt.where(MemoryItem.category == category)

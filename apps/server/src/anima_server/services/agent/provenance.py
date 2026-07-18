@@ -204,6 +204,9 @@ def audit_memory_item_evidence(
     active_filter = (
         MemoryItem.user_id == user_id,
         MemoryItem.superseded_by.is_(None),
+        # IL5 tombstones have their evidence hard-deleted by design — they
+        # are not "active durable memories missing evidence".
+        MemoryItem.distilled_at.is_(None),
     )
     evidence_exists = (
         select(MemoryItemEvidence.id)
@@ -215,10 +218,7 @@ def audit_memory_item_evidence(
     )
     total_active = (
         db.scalar(
-            select(func.count(MemoryItem.id)).where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.superseded_by.is_(None),
-            )
+            select(func.count(MemoryItem.id)).where(*active_filter)
         )
         or 0
     )

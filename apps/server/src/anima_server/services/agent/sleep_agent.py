@@ -865,6 +865,9 @@ async def _task_embedding_backfill(
                         MemoryItem.user_id == user_id,
                         MemoryItem.superseded_by.is_(None),
                         MemoryItem.embedding_json.is_(None),
+                        # IL5 tombstones never get an embedding — excluding
+                        # them lets the re-embed completion check reach zero.
+                        MemoryItem.distilled_at.is_(None),
                     )
                 )
             if not remaining:

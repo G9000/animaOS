@@ -806,6 +806,9 @@ async def backfill_embeddings(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
                 MemoryItem.embedding_json.is_(None),
+                # IL5 tombstones are content-free with a nulled embedding by
+                # design — never an "unembedded active item" to backfill.
+                MemoryItem.distilled_at.is_(None),
             )
             .limit(batch_size)
         ).all()

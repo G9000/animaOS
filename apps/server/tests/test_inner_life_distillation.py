@@ -88,6 +88,87 @@ def _make_item(
 
 
 # ---------------------------------------------------------------------------
+# 0. Reachability: eligibility must be attainable through REAL heat decay,
+#    not just direct heat assignment (the trigger predicate is
+#    floor-equality, and the visibility floor is unreachable for
+#    schema-valid items — see the module eligibility comment).
+# ---------------------------------------------------------------------------
+
+
+def test_real_decay_drives_casual_item_to_its_floor_and_it_distills(db: Session) -> None:
+    """End-to-end reachability: a casual item created through the normal
+    fields, never referenced and far in the past, is decayed by the real
+    decay_all_heat pass to its own floor, then distilled — no direct heat
+    assignment anywhere."""
+    from anima_server.services.agent.heat_scoring import decay_all_heat
+
+    ancient = datetime(2020, 1, 1, tzinfo=UTC)
+    item = MemoryItem(
+        user_id=1,
+        content="offhand remark about the weather",
+        category="fact",
+        importance=1,
+        source="extraction",
+        memory_class="casual",
+        emotional_salience=0.0,
+        reference_count=0,
+        last_referenced_at=None,
+        created_at=ancient,
+        embedding_json=[0.1, 0.2, 0.3],
+        embedding_checksum="deadbeef",
+    )
+    db.add(item)
+    db.flush()
+    item_id = item.id
+
+    # Real decay — this is what the sleep task runs immediately before the
+    # sweep. With no recency/access signal the heat lands on the floor.
+    decay_all_heat(db, user_id=1, now=datetime(2026, 1, 1, tzinfo=UTC))
+    db.flush()
+    decayed = db.get(MemoryItem, item_id)
+    assert decayed.heat > 0.0  # scored, not "never scored"
+    assert decayed.heat <= distillation.item_heat_floor(decayed) + 1e-9
+
+    result = distill_due_items(db, user_id=1, max_per_run=20)
+    assert result.distilled == 1
+    assert db.get(MemoryItem, item_id).distilled_at is not None
+
+
+def test_recently_referenced_casual_item_does_not_distill(db: Session) -> None:
+    """Negative reachability: a casual item still warm from recent access
+    sits above its floor and must NOT distill, even after a decay pass."""
+    from anima_server.services.agent.heat_scoring import decay_all_heat
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    item = MemoryItem(
+        user_id=1,
+        content="just mentioned the commute five minutes ago",
+        category="fact",
+        importance=1,
+        source="extraction",
+        memory_class="casual",
+        emotional_salience=0.0,
+        reference_count=5,
+        last_referenced_at=now,
+        created_at=now,
+        embedding_json=[0.1, 0.2, 0.3],
+        embedding_checksum="deadbeef",
+    )
+    db.add(item)
+    db.flush()
+    item_id = item.id
+
+    decay_all_heat(db, user_id=1, now=now)
+    db.flush()
+    warm = db.get(MemoryItem, item_id)
+    assert warm.heat > distillation.item_heat_floor(warm) + 1e-9
+
+    result = distill_due_items(db, user_id=1, max_per_run=20)
+    assert result.distilled == 0
+    assert db.get(MemoryItem, item_id).distilled_at is None
+
+
+# ---------------------------------------------------------------------------
 # 1. Basic distill flow
 # ---------------------------------------------------------------------------
 
@@ -458,3 +539,68 @@ def test_memory_overview_excludes_distilled_tombstones() -> None:
         overview = resp.json()
         assert overview["factCount"] == 0
         assert overview["totalItems"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 11. Maintenance sweeps must not treat tombstones as active work
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_embeddings_skips_distilled_tombstones(db: Session) -> None:
+    """A distilled tombstone (empty content, null embedding) must not be
+    picked up by embedding backfill — it would scatter to None forever and
+    starve real unembedded memories."""
+    import asyncio
+
+    from anima_server.services.agent.embeddings import backfill_embeddings
+
+    item = _make_item(db, memory_class="casual", content="to be distilled")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    # The tombstone now has embedding_json=None; backfill must ignore it.
+    embedded = asyncio.run(backfill_embeddings(db, user_id=1, batch_size=50))
+    assert embedded == 0
+
+
+def test_evidence_audit_excludes_distilled_tombstones(db: Session) -> None:
+    """Distilled tombstones have their evidence hard-deleted by design and
+    must not be reported as active memories missing evidence."""
+    from anima_server.services.agent.provenance import audit_memory_item_evidence
+
+    item = _make_item(db, memory_class="casual", content="to be distilled")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    report = audit_memory_item_evidence(db, user_id=1)
+    assert report.missing_evidence == 0
+
+
+def test_decay_all_heat_leaves_tombstones_untouched(db: Session) -> None:
+    """decay_all_heat must skip distilled tombstones — their heat is frozen
+    and rescoring them every sleep run is unbounded busywork."""
+    from anima_server.services.agent.heat_scoring import decay_all_heat
+
+    item = _make_item(db, memory_class="casual", content="to be distilled")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    item_id = item.id
+    frozen_heat = db.get(MemoryItem, item_id).heat
+
+    updated = decay_all_heat(db, user_id=1, now=datetime(2027, 1, 1, tzinfo=UTC))
+    db.flush()
+    # The tombstone was not in the working set...
+    assert db.get(MemoryItem, item_id).heat == frozen_heat
+    assert updated == 0

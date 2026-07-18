@@ -28,11 +28,15 @@ from sqlalchemy.orm import Session
 
 from anima_server.models import ForgetAuditLog, MemoryItem, MemoryItemEvidence, TendencyContribution
 from anima_server.services.agent.claims import upsert_tendency_claim
-from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR
+from anima_server.services.agent.heat_scoring import (
+    MAX_IMPORTANCE,
+    importance_heat_floor,
+)
 from anima_server.services.agent.memory_salience import (
     MEMORY_CLASS_CASUAL,
     MEMORY_CLASS_EMOTIONAL_PATTERN,
     MEMORY_CLASS_TRANSIENT,
+    salience_heat_floor_multiplier,
 )
 from anima_server.services.data_crypto import df, ef
 
@@ -48,6 +52,44 @@ DISTILL_MEMORY_CLASSES = frozenset(
 DISTILLED_AUDIT_TRIGGER = "passive_decay"
 DISTILLED_AUDIT_SCOPE = "distilled"
 
+# ── Eligibility: "fully decayed to its own salience floor" ──────────────
+#
+# The PRD phrase "below the visibility floor" is UNREACHABLE for
+# schema-valid items by design: ``compute_heat`` clamps every
+# non-superseded scored item to ``importance_heat_floor(importance) x
+# salience_heat_floor_multiplier(...)``, and the multiplier's practical
+# minimum is 0.84 (only the evidence term can reduce it below 1.0), so
+# even importance-1 floors at ~0.0252 > HEAT_VISIBILITY_FLOOR (0.01).
+# The honest trigger semantic is therefore: distill when an item has
+# FULLY DECAYED TO ITS OWN FLOOR — the recency/access contribution is
+# gone and only the floor clamp keeps it visible.
+#
+# The check runs in two stages:
+# 1. A cheap SQL band pre-filter: 0 < heat <= _MAX_ITEM_HEAT_FLOOR, where
+#    the ceiling is the maximum floor any schema-valid item can have
+#    (importance_heat_floor(5) x the multiplier's maximum 1.69 =
+#    0.03·5·1.69 = 0.2535), computed below from the two REAL functions,
+#    never duplicated arithmetic. heat == 0/NULL means "never scored" and
+#    is excluded (scoring happens in decay_all_heat immediately before
+#    this sweep runs).
+# 2. An exact Python check per candidate: heat <= its OWN floor + epsilon,
+#    with the floor rebuilt from the item's actual salience fields via the
+#    same two functions ``compute_heat`` uses, so the comparison is
+#    bit-exact against what the decay pass just wrote.
+_MAX_ITEM_HEAT_FLOOR: float = importance_heat_floor(MAX_IMPORTANCE) * salience_heat_floor_multiplier(
+    emotional_salience=1.0,
+    relationship_proximity=1.0,
+    evidence_strength=1.0,
+)
+# Float-noise tolerance for the exact floor comparison (the decay pass and
+# this check compute the identical expression, but keep a margin anyway).
+_FLOOR_EPSILON: float = 1e-9
+# SQL band oversample: fetch a few multiples of the cap so items inside the
+# band that are still above their OWN floor (partially decayed) don't crowd
+# out eligible ones. Pathological distributions may defer some eligible
+# items to the next sleep run — the sweep is recurring, so that's fine.
+_CANDIDATE_FETCH_FACTOR: int = 4
+
 
 @dataclass(slots=True)
 class DistillationResult:
@@ -57,6 +99,26 @@ class DistillationResult:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def item_heat_floor(item: MemoryItem) -> float:
+    """The item's own heat floor — the exact clamp ``compute_heat`` applies
+    to a non-superseded scored item.
+
+    Mirrors ``compute_heat_for_item``'s field coercions and reuses the two
+    real functions (``importance_heat_floor`` from heat_scoring,
+    ``salience_heat_floor_multiplier`` from memory_salience) so the value
+    is bit-identical to what the decay pass wrote for a fully-decayed item.
+    """
+    evidence_strength = getattr(item, "evidence_strength", None)
+    floor = importance_heat_floor(float(item.importance or 3))
+    if floor <= 0.0:
+        return 0.0
+    return floor * salience_heat_floor_multiplier(
+        emotional_salience=float(getattr(item, "emotional_salience", 0.0) or 0.0),
+        relationship_proximity=float(getattr(item, "relationship_proximity", 0.0) or 0.0),
+        evidence_strength=0.8 if evidence_strength is None else float(evidence_strength),
+    )
 
 
 def _contribution_vector_for_item(item: MemoryItem) -> dict[str, float]:
@@ -203,12 +265,16 @@ def distill_due_items(
     max_per_run: int,
     now: datetime | None = None,
 ) -> DistillationResult:
-    """Sweep sub-floor casual/transient/emotional_pattern items into
-    tendency claims (PRD IL5).
+    """Sweep casual/transient/emotional_pattern items that have fully
+    decayed to their own salience floor into tendency claims (PRD IL5 —
+    see the eligibility comment at the top of this module for why the
+    trigger is floor-equality, not "below the visibility floor").
 
     Called from the F7 heat-decay sleep task (``sleep_agent._task_heat_decay``)
-    AFTER heat has already been recomputed and committed for this sweep — a
-    distillation failure must never roll back heat-decay's own updates.
+    AFTER heat has already been recomputed and committed for this sweep —
+    the floor comparison is only meaningful against heat values
+    ``decay_all_heat`` has actually written, and a distillation failure
+    must never roll back heat-decay's own updates.
     Per-item transactional isolation mirrors IL4's crystallization loop
     (``latent_traces.crystallize_due_traces``): each item commits or rolls
     back on its own, so one bad item never aborts the rest of the sweep.
@@ -217,26 +283,37 @@ def distill_due_items(
     """
     ref_now = now or datetime.now(UTC)
     result = DistillationResult()
+    cap = max(0, max_per_run)
 
-    due = list(
-        db.scalars(
-            select(MemoryItem)
-            .where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.superseded_by.is_(None),
-                MemoryItem.distilled_at.is_(None),
-                MemoryItem.memory_class.in_(DISTILL_MEMORY_CLASSES),
-                # heat == 0.0 means "never scored" (visible by convention,
-                # see heat_scoring.HEAT_SCORED_EPSILON) — only genuinely
-                # scored-below-floor items distill, so the sweep is safe
-                # even if ever invoked outside the post-decay context.
-                MemoryItem.heat > 0.0,
-                MemoryItem.heat < HEAT_VISIBILITY_FLOOR,
-            )
-            .order_by(MemoryItem.heat.asc(), MemoryItem.id.asc())
-            .limit(max(0, max_per_run))
-        ).all()
-    )
+    candidates = db.scalars(
+        select(MemoryItem)
+        .where(
+            MemoryItem.user_id == user_id,
+            MemoryItem.superseded_by.is_(None),
+            MemoryItem.distilled_at.is_(None),
+            MemoryItem.memory_class.in_(DISTILL_MEMORY_CLASSES),
+            # SQL band pre-filter (cheap). heat == 0.0 means "never
+            # scored" (visible by convention, see
+            # heat_scoring.HEAT_SCORED_EPSILON) — only genuinely scored
+            # items distill, so the sweep is safe even if ever invoked
+            # outside the post-decay context. The ceiling is the maximum
+            # floor any schema-valid item can have; the exact per-item
+            # check below does the real work.
+            MemoryItem.heat > 0.0,
+            MemoryItem.heat <= _MAX_ITEM_HEAT_FLOOR + _FLOOR_EPSILON,
+        )
+        .order_by(MemoryItem.heat.asc(), MemoryItem.id.asc())
+        .limit(cap * _CANDIDATE_FETCH_FACTOR)
+    ).all()
+
+    # Exact per-item check: "fully decayed" means heat has landed on the
+    # item's OWN floor (compute_heat clamps there once the recency/access
+    # contribution is gone).
+    due = [
+        item
+        for item in candidates
+        if item.heat <= item_heat_floor(item) + _FLOOR_EPSILON
+    ][:cap]
 
     for item in due:
         try:
