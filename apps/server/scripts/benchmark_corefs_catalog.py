@@ -751,6 +751,21 @@ def probe_live_reference_host(
 ) -> ReferenceHostFacts:
     if os.name != "nt":
         raise ReferenceTargetError("reference mode requires Windows 11 x64")
+    return _probe_live_reference_host_from_sources(
+        target,
+        volume_probe=volume_probe,
+        cache_probe=cache_probe,
+        runner=runner,
+    )
+
+
+def _probe_live_reference_host_from_sources(
+    target: Path,
+    *,
+    volume_probe: Callable[[Path], ReferenceVolumeFacts],
+    cache_probe: Callable[[int], WriteCacheEvidence],
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> ReferenceHostFacts:
     volume = volume_probe(target)
     drive = volume.volume_root.drive.rstrip(":").upper()
     if len(drive) != 1 or not drive.isascii() or not drive.isalpha():

@@ -119,7 +119,7 @@ def probe_live_facts(module, payload: dict[str, object]):
         calls.append((command, kwargs["env"]))
         return completed
 
-    facts = module.probe_live_reference_host(
+    facts = module._probe_live_reference_host_from_sources(
         Path("C:/benchmarks/corefs-catalog-reference-v1"),
         volume_probe=lambda _target: volume_facts(module),
         cache_probe=lambda _disk_number: cache_facts(module),
@@ -127,6 +127,20 @@ def probe_live_facts(module, payload: dict[str, object]):
     )
     assert calls and calls[0][1]["ANIMA_CORE_FS_BENCHMARK_DRIVE"] == "C"
     return facts
+
+
+def test_injected_live_reference_probe_is_platform_independent(monkeypatch) -> None:
+    benchmark = load_benchmark_module()
+    monkeypatch.setattr(
+        benchmark,
+        "os",
+        SimpleNamespace(name="posix", environ=os.environ),
+    )
+
+    facts = probe_live_facts(benchmark, live_cim_payload())
+
+    assert facts.os_caption == "Microsoft Windows 11 Pro"
+    assert facts.disk_number == 0
 
 
 @pytest.mark.parametrize(
