@@ -236,13 +236,16 @@ def _distill_one_item(
         delete(MemoryItemTag).where(MemoryItemTag.item_id == item.id)
     )
 
-    evidence_deleted = db.execute(
-        delete(MemoryItemEvidence).where(
-            MemoryItemEvidence.user_id == user_id,
-            MemoryItemEvidence.memory_item_id == item.id,
-        )
-    ).rowcount or 0
-
+    # Collect evidence ids BEFORE deleting anything — the profile cleanup
+    # below matches UserProfileField/Evidence by these source ids.
+    memory_evidence_ids = list(
+        db.scalars(
+            select(MemoryItemEvidence.id).where(
+                MemoryItemEvidence.user_id == user_id,
+                MemoryItemEvidence.memory_item_id == item.id,
+            )
+        ).all()
+    )
     # A casual/transient item may already have gone through upsert_claim,
     # leaving an active MemoryClaim (+ its evidence) linked by
     # memory_item_id — the original fact/preference. Distillation must
@@ -256,6 +259,41 @@ def _distill_one_item(
             select(MemoryClaim.id).where(MemoryClaim.memory_item_id == item.id)
         ).all()
     )
+    claim_evidence_ids = (
+        list(
+            db.scalars(
+                select(MemoryClaimEvidence.id).where(
+                    MemoryClaimEvidence.claim_id.in_(linked_claim_ids)
+                )
+            ).all()
+        )
+        if linked_claim_ids
+        else []
+    )
+
+    # Profile reconciliation may have already derived active UserProfileField
+    # rows from this item's claim/evidence; those keep surfacing the exact
+    # fact in the profile block and vault exports after the item is gutted.
+    # Scrub them (mirroring forget_memory) BEFORE deleting the evidence/claims
+    # they reference.
+    from anima_server.services.agent.forgetting import _delete_profile_fields_for_forget
+
+    _delete_profile_fields_for_forget(
+        db,
+        user_id=user_id,
+        source_memory_ids=[item.id],
+        source_evidence_ids=memory_evidence_ids,
+        source_claim_evidence_ids=claim_evidence_ids,
+        runtime_contexts=[],
+    )
+
+    evidence_deleted = db.execute(
+        delete(MemoryItemEvidence).where(
+            MemoryItemEvidence.user_id == user_id,
+            MemoryItemEvidence.memory_item_id == item.id,
+        )
+    ).rowcount or 0
+
     if linked_claim_ids:
         db.execute(
             delete(MemoryClaimEvidence).where(

@@ -939,3 +939,37 @@ def test_tendencies_block_none_when_no_tendencies(db: Session) -> None:
     from anima_server.services.agent.memory_blocks import build_tendencies_block
 
     assert build_tendencies_block(db, user_id=1) is None
+
+
+def test_distillation_scrubs_derived_profile_field(db: Session) -> None:
+    """A UserProfileField reconciled from a distillable item's claim must be
+    scrubbed at distillation — otherwise the exact fact keeps surfacing in
+    the profile block and vault after the item is gutted."""
+    from anima_server.models import UserProfileField
+
+    item = _make_item(db, memory_class="casual", content="likes sushi", category="preference")
+    db.add(
+        UserProfileField(
+            user_id=1,
+            category="preferences",
+            key="food",
+            value_text="likes sushi",
+            source_memory_id=item.id,
+            status="active",
+        )
+    )
+    db.flush()
+    item_id = item.id
+    assert db.scalars(
+        select(UserProfileField).where(UserProfileField.source_memory_id == item_id)
+    ).all()  # precondition
+
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    remaining = db.scalars(
+        select(UserProfileField).where(
+            UserProfileField.source_memory_id == item_id,
+            UserProfileField.status == "active",
+        )
+    ).all()
+    assert remaining == []
