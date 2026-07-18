@@ -1,27 +1,40 @@
 {
-  "benchmarkCommand": "cargo +1.75.0 run --release --locked -p anima-corefs --bin catalog_benchmark -- --target C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1 --warmups 30 --samples 200",
+  "benchmarkBinary": {
+    "path": "C:\\Users\\leoca\\OneDrive\\Desktop\\anima\\animaOS\\.worktrees\\pcf-002-catalog-benchmark\\target\\release\\catalog_benchmark.exe",
+    "sha256": "6f8f281a81ed5e1bda27f3890ccb57e80f4398d04991b9cf5caea5538299c351"
+  },
+  "benchmarkCommand": [
+    "C:\\Users\\leoca\\OneDrive\\Desktop\\anima\\animaOS\\.worktrees\\pcf-002-catalog-benchmark\\target\\release\\catalog_benchmark.exe",
+    "--target",
+    "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1",
+    "--warmups",
+    "30",
+    "--samples",
+    "200"
+  ],
   "fixtures": [
     {
-      "bytesWritten": 1502787,
+      "bytesWritten": 1651287,
       "commitMs": {
-        "p50": 148.80669999999998,
-        "p95": 180.9455,
-        "p99": 188.3871
+        "p50": 200.78640000000001,
+        "p95": 249.85379999999998,
+        "p99": 261.125
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
-      "fixtureSha256": "4d995f8d7f2d7a9e36d3d03e28af93e667281387aa32c356f093cddc45a6c649",
+      "fixtureSha256": "2c55af03723c2f10f40790b894c421fde0f9cd10f9b2355f128aad66d7cfc1d5",
       "liveCount": 5000,
       "lockHoldMs": {
-        "p50": 146.7677,
-        "p95": 178.8974,
-        "p99": 186.1012
+        "p50": 198.05249999999998,
+        "p95": 245.9721,
+        "p99": 257.63829999999996
       },
       "measuredSerializedSizeBytes": {
-        "max": 1502577,
-        "min": 1502576
+        "max": 1651077,
+        "min": 1651076
       },
       "name": "medium",
+      "productionSerializationsPerCommit": 1,
       "publicationPath": [
         "serialize",
         "encrypt",
@@ -33,37 +46,38 @@
         "commit-lock"
       ],
       "sampleCount": 200,
-      "serializedSizeBytes": 1502577,
+      "serializedSizeBytes": 1651077,
       "tombstoneCount": 500,
-      "totalBytesWritten": 300557266,
+      "totalBytesWritten": 330257266,
       "totalCount": 5500,
       "warmupCommits": 30,
       "warmupSerializedSizeBytes": {
-        "max": 1502576,
-        "min": 1502575
+        "max": 1651076,
+        "min": 1651075
       }
     },
     {
-      "bytesWritten": 7512787,
+      "bytesWritten": 8255287,
       "commitMs": {
-        "p50": 777.2161,
-        "p95": 870.8196,
-        "p99": 930.6596000000001
+        "p50": 1561.5056,
+        "p95": 1882.9397999999999,
+        "p99": 2001.0425
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
-      "fixtureSha256": "efdd2b6f700341f70cd7397b50f94b45d212a641f94feb73064714feadff025e",
+      "fixtureSha256": "95e6a054dee2fa09b48743429c37f1e4a54ba32008136755393e0341913b2857",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 770.7932,
-        "p95": 865.0906,
-        "p99": 922.3821
+        "p50": 1548.9986999999999,
+        "p95": 1870.306,
+        "p99": 1948.2608
       },
       "measuredSerializedSizeBytes": {
-        "max": 7512577,
-        "min": 7512576
+        "max": 8255077,
+        "min": 8255076
       },
       "name": "maximum-live",
+      "productionSerializationsPerCommit": 1,
       "publicationPath": [
         "serialize",
         "encrypt",
@@ -75,37 +89,38 @@
         "commit-lock"
       ],
       "sampleCount": 200,
-      "serializedSizeBytes": 7512577,
+      "serializedSizeBytes": 8255077,
       "tombstoneCount": 2500,
-      "totalBytesWritten": 1502557266,
+      "totalBytesWritten": 1651057266,
       "totalCount": 27500,
       "warmupCommits": 30,
       "warmupSerializedSizeBytes": {
-        "max": 7512576,
-        "min": 7512575
+        "max": 8255076,
+        "min": 8255075
       }
     },
     {
       "bytesWritten": 16777426,
       "commitMs": {
-        "p50": 824.4879999999999,
-        "p95": 966.7336,
-        "p99": 1092.9487
+        "p50": 1357.2439000000002,
+        "p95": 1533.4669999999999,
+        "p99": 1733.6238
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
-      "fixtureSha256": "0ba88ec0759a5b17d4e6374be96d4dd504755bdd0a33304d4256eba7e490b8b4",
+      "fixtureSha256": "f24864db4cefda29bf71975cd71da21c0564ec44eee9e59dada04aba82c20df4",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 818.5243,
-        "p95": 961.2294999999999,
-        "p99": 1087.4504
+        "p50": 1345.4588,
+        "p95": 1520.9515000000001,
+        "p99": 1720.7071
       },
       "measuredSerializedSizeBytes": {
         "max": 16777216,
         "min": 16777216
       },
       "name": "serialized-limit",
+      "productionSerializationsPerCommit": 1,
       "publicationPath": [
         "serialize",
         "encrypt",
@@ -136,7 +151,7 @@
     "mediumP95Le100Ms": false,
     "serializedLimitP95Le250Ms": false
   },
-  "generatedAt": "2026-07-18T04:50:06.079633Z",
+  "generatedAt": "2026-07-18T06:24:56.976344Z",
   "measuredCommits": 200,
   "profile": {
     "architecture": "x64",
@@ -155,13 +170,13 @@
     },
     "durableWrite4KiB": {
       "flushMethod": "FlushFileBuffers",
-      "p50Ms": 0.534,
-      "p95Ms": 0.7139,
-      "p99Ms": 0.7662,
+      "p50Ms": 0.5486,
+      "p95Ms": 0.8114,
+      "p99Ms": 0.9378,
       "sampleCount": 200,
       "warmupCount": 30
     },
-    "durableWrite4KiBP95Ms": 0.7139,
+    "durableWrite4KiBP95Ms": 0.8114,
     "excludedStorageClasses": [
       "OneDrive-synchronized",
       "network",
@@ -204,6 +219,7 @@
     "target": "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1"
   },
   "schemaVersion": 1,
+  "sourceCommit": "2ebed5dc678fd7aa2b4d366df92b3c931c7152ad",
   "versions": {
     "aesGcm": "0.10.3",
     "animaCorefs": "0.1.0",
