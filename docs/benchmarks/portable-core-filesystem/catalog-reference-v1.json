@@ -1,8 +1,8 @@
 {
   "benchmarkBinary": {
-    "fileId": 844424936477060,
-    "path": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-fqn3h58h\\release\\catalog_benchmark.exe",
-    "sha256": "037639a1b1391d3354a0a9f89055c39931f9f3626d0dd143c4af43982c7426e1",
+    "fileId": 844424936489789,
+    "path": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x\\release\\catalog_benchmark.exe",
+    "sha256": "415d09cd7de8f744a8d15c9b96e5c75116babee5ffff13de412f1d3d83a4dca4",
     "volumeSerial": 4008503144
   },
   "benchmarkBuild": {
@@ -18,7 +18,7 @@
       "--bin",
       "catalog_benchmark",
       "--target-dir",
-      "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-fqn3h58h"
+      "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x"
     ],
     "forcedEnvironment": {
       "CARGO_INCREMENTAL": "0"
@@ -26,11 +26,11 @@
     "preservedForAudit": true,
     "rustc": "rustc 1.75.0 (82e1608df 2023-12-21)\nbinary: rustc\ncommit-hash: 82e1608dfa6e0b5569232559e3d385fea5a93112\ncommit-date: 2023-12-21\nhost: x86_64-pc-windows-msvc\nrelease: 1.75.0\nLLVM version: 17.0.6",
     "sanitizedEnvironmentRemoved": [],
-    "sourceCommit": "3a0dd781206f9c1006664431ccf41aac256bb2ca",
-    "targetDirectory": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-fqn3h58h"
+    "sourceCommit": "443886c55d09f55cd31c49fbfb96a0d967d9be1f",
+    "targetDirectory": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x"
   },
   "benchmarkCommand": [
-    "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-fqn3h58h\\release\\catalog_benchmark.exe",
+    "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-vwa8vy3x\\release\\catalog_benchmark.exe",
     "--target",
     "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1",
     "--warmups",
@@ -42,18 +42,18 @@
     {
       "bytesWritten": 1651287,
       "commitMs": {
-        "p50": 203.51639999999998,
-        "p95": 243.0211,
-        "p99": 258.72279999999995
+        "p50": 208.6155,
+        "p95": 246.6083,
+        "p99": 268.20369999999997
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureManifestSha256": "d1f8817ba635359cc10208d86b79652dc0e2180c2514f1e1d0634a96ebcb40c4",
       "liveCount": 5000,
       "lockHoldMs": {
-        "p50": 201.2333,
-        "p95": 240.64,
-        "p99": 255.61070000000004
+        "p50": 206.5526,
+        "p95": 244.3112,
+        "p99": 264.9441
       },
       "measuredSerializedSizeBytes": {
         "max": 1651077,
@@ -62,14 +62,14 @@
       "name": "medium",
       "productionSerializationsPerCommit": 1,
       "publicationPath": [
+        "commit-lock",
         "serialize",
         "encrypt",
         "temporary-file-write",
         "durable-flush",
         "atomic-rename",
         "directory-durability",
-        "fs-head-write-flush",
-        "commit-lock"
+        "fs-head-write-flush"
       ],
       "sampleCount": 200,
       "serializedSizeBytes": 1651077,
@@ -85,18 +85,18 @@
     {
       "bytesWritten": 8255287,
       "commitMs": {
-        "p50": 1073.0907,
-        "p95": 1302.1416000000002,
-        "p99": 1744.2191999999998
+        "p50": 1064.3587,
+        "p95": 1307.3104,
+        "p99": 1567.5856
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureManifestSha256": "1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 1063.2393,
-        "p95": 1288.7333999999998,
-        "p99": 1732.9897
+        "p50": 1057.8512,
+        "p95": 1298.1772,
+        "p99": 1554.6972
       },
       "measuredSerializedSizeBytes": {
         "max": 8255077,
@@ -105,14 +105,14 @@
       "name": "maximum-live",
       "productionSerializationsPerCommit": 1,
       "publicationPath": [
+        "commit-lock",
         "serialize",
         "encrypt",
         "temporary-file-write",
         "durable-flush",
         "atomic-rename",
         "directory-durability",
-        "fs-head-write-flush",
-        "commit-lock"
+        "fs-head-write-flush"
       ],
       "sampleCount": 200,
       "serializedSizeBytes": 8255077,
@@ -128,18 +128,18 @@
     {
       "bytesWritten": 16777426,
       "commitMs": {
-        "p50": 952.722,
-        "p95": 1268.4783,
-        "p99": 1682.7522
+        "p50": 925.9988999999999,
+        "p95": 1173.7264,
+        "p99": 1358.2697
       },
       "finalCatalogCount": 232,
       "finalHeadGeneration": 232,
       "fixtureManifestSha256": "26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87",
       "liveCount": 25000,
       "lockHoldMs": {
-        "p50": 944.2893,
-        "p95": 1260.9015000000002,
-        "p99": 1628.8754999999999
+        "p50": 918.0539,
+        "p95": 1166.4669999999999,
+        "p99": 1344.0014
       },
       "measuredSerializedSizeBytes": {
         "max": 16777216,
@@ -148,14 +148,14 @@
       "name": "serialized-limit",
       "productionSerializationsPerCommit": 1,
       "publicationPath": [
+        "commit-lock",
         "serialize",
         "encrypt",
         "temporary-file-write",
         "durable-flush",
         "atomic-rename",
         "directory-durability",
-        "fs-head-write-flush",
-        "commit-lock"
+        "fs-head-write-flush"
       ],
       "sampleCount": 200,
       "serializedSizeBytes": 16777216,
@@ -177,7 +177,7 @@
     "mediumP95Le100Ms": false,
     "serializedLimitP95Le250Ms": false
   },
-  "generatedAt": "2026-07-18T14:44:12.544463Z",
+  "generatedAt": "2026-07-18T18:22:49.292961Z",
   "measuredCommits": 200,
   "profile": {
     "architecture": "x64",
@@ -196,13 +196,13 @@
     },
     "durableWrite4KiB": {
       "flushMethod": "FlushFileBuffers",
-      "p50Ms": 0.7099,
-      "p95Ms": 0.9087,
-      "p99Ms": 1.092,
+      "p50Ms": 0.6197,
+      "p95Ms": 0.8782,
+      "p99Ms": 0.9519,
       "sampleCount": 200,
       "warmupCount": 30
     },
-    "durableWrite4KiBP95Ms": 0.9087,
+    "durableWrite4KiBP95Ms": 0.8782,
     "excludedStorageClasses": [
       "OneDrive-synchronized",
       "network",
@@ -245,7 +245,7 @@
     "target": "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1"
   },
   "schemaVersion": 1,
-  "sourceCommit": "3a0dd781206f9c1006664431ccf41aac256bb2ca",
+  "sourceCommit": "443886c55d09f55cd31c49fbfb96a0d967d9be1f",
   "versions": {
     "aesGcm": "0.10.3",
     "animaCorefs": "0.1.0",
