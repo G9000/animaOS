@@ -702,3 +702,71 @@ def test_one_contribution_per_tombstone_is_enforced(db: Session) -> None:
     with pytest.raises(IntegrityError):
         db.flush()
     db.rollback()
+
+
+def test_topic_purge_reaches_distilled_tendencies(db: Session) -> None:
+    """A distilled item's content is erased, so forget_by_topic can't find
+    it. purge_tendency_claims_matching_topic is the discovery path: it
+    removes the tendency claim, its ledger rows, and the tombstone."""
+    from anima_server.services.agent.forgetting import purge_tendency_claims_matching_topic
+
+    item = _make_item(db, memory_class="casual", content="likes sushi", category="preference")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    item_id = item.id
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    # Precondition: a tendency + ledger + tombstone now exist.
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+    assert db.get(MemoryItem, item_id).distilled_at is not None
+
+    purged = purge_tendency_claims_matching_topic(db, user_id=1, topic="sushi")
+    assert purged == 1
+
+    # Nothing about the topic survives: claim, ledger, and tombstone gone.
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is None
+    assert db.scalars(select(TendencyContribution).where(
+        TendencyContribution.user_id == 1)).all() == []
+    assert db.get(MemoryItem, item_id) is None
+
+
+def test_topic_purge_is_whole_token(db: Session) -> None:
+    """purge_tendency_claims_matching_topic must not match substrings:
+    forgetting 'art' must not purge a 'cart'-topic tendency."""
+    from anima_server.services.agent.forgetting import purge_tendency_claims_matching_topic
+
+    _make_item(db, memory_class="casual", content="likes cart racing", category="preference")
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+
+    purged = purge_tendency_claims_matching_topic(db, user_id=1, topic="art")
+    assert purged == 0
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+
+
+def test_eval_reset_clears_tendency_contributions(db: Session) -> None:
+    """Eval reset must delete the ledger before claims/items — SQLite FKs
+    aren't enforced, so orphaned rows (with a unique tombstone_item_id)
+    could collide with reused rowids on a later distillation."""
+    from anima_server.services.eval_reset import _reset_soul_state
+
+    item = _make_item(db, memory_class="casual", content="stressed about the commute")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.scalars(select(TendencyContribution)).all()  # precondition
+
+    deleted: dict[str, int] = {}
+    _reset_soul_state(db, user_id=1, deleted=deleted)
+    db.commit()
+
+    assert deleted.get("tendency_contributions", 0) >= 1
+    assert db.scalars(select(TendencyContribution)).all() == []
+    assert db.scalars(select(MemoryClaim)).all() == []

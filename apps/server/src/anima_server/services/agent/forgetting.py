@@ -501,6 +501,94 @@ def purge_latent_traces_matching_topic(
 # ── IL5 right-to-forget integration ────────────────────────────────────
 
 
+def purge_tendency_claims_matching_topic(
+    db: Session,
+    *,
+    user_id: int,
+    topic: str,
+) -> int:
+    """Delete tendency claims (and their ledger + tombstones) whose topic
+    key token-matches ``topic`` (PRD IL5 topic-scoped right-to-forget).
+
+    Distillation erases the source item's content and hides it from normal
+    listings, so ``forget_by_topic`` (which searches MemoryItem content/BM25)
+    can never surface a distilled memory — leaving no per-item path to reach
+    ``_scrub_tendency_contributions_for_forget``. This is the discovery path:
+    the tendency claim's slot IS the shared topic key, so token-matching it
+    finds the distilled residue and removes the claim, every contributing
+    tombstone, and the ledger rows together. Whole-token match (topic "art"
+    must not purge "cart_repair"), mirroring the latent-trace purge.
+    """
+    from anima_server.models import MemoryClaim, MemoryItem, TendencyContribution
+    from anima_server.services.agent.claims import TENDENCY_NAMESPACE, _content_slug
+
+    slug = _content_slug(topic)
+    if not slug:
+        return 0
+    topic_tokens = set(slug.split("_"))
+
+    claims = list(
+        db.scalars(
+            select(MemoryClaim).where(
+                MemoryClaim.user_id == user_id,
+                MemoryClaim.namespace == TENDENCY_NAMESPACE,
+                MemoryClaim.status == "active",
+            )
+        ).all()
+    )
+    matched = [
+        claim
+        for claim in claims
+        if topic_tokens
+        <= {
+            token
+            for segment in (claim.slot or "").split(":")
+            for token in segment.split("_")
+        }
+    ]
+    if not matched:
+        return 0
+
+    claim_ids = [claim.id for claim in matched]
+    ledger_rows = list(
+        db.scalars(
+            select(TendencyContribution).where(
+                TendencyContribution.tendency_claim_id.in_(claim_ids)
+            )
+        ).all()
+    )
+    tombstone_ids = {row.tombstone_item_id for row in ledger_rows}
+
+    for row in ledger_rows:
+        db.delete(row)
+    db.flush()
+    # Tombstones are already content/evidence/embedding-free and out of the
+    # retrieval indexes (scrubbed at distill time), so a plain delete fully
+    # removes them.
+    if tombstone_ids:
+        db.execute(
+            delete(MemoryItem).where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.id.in_(tombstone_ids),
+            )
+        )
+    for claim in matched:
+        db.delete(claim)
+
+    db.add(
+        ForgetAuditLog(
+            user_id=user_id,
+            forgotten_at=datetime.now(UTC),
+            trigger="user_request",
+            scope="topic",
+            items_forgotten=len(tombstone_ids),
+            derived_refs_affected=len(matched),
+        )
+    )
+    db.flush()
+    return len(matched)
+
+
 def _scrub_tendency_contributions_for_forget(
     db: Session,
     *,
