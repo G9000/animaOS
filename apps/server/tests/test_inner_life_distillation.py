@@ -861,3 +861,22 @@ def test_distilled_pattern_excluded_from_patterns_block(db: Session) -> None:
     if block is not None:
         assert "recurring low mood" not in block.content
         assert "-  (confidence" not in block.content
+
+
+def test_evidence_backfill_skips_distilled_tombstones(db: Session) -> None:
+    """backfill_memory_item_evidence must not re-scan distilled tombstones
+    (evidence deleted by design) — they'd starve the limit before reaching
+    real active items missing evidence."""
+    from anima_server.services.agent.provenance import backfill_memory_item_evidence
+
+    item = _make_item(db, memory_class="casual", content="stressed about the commute")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    result = backfill_memory_item_evidence(db, user_id=1)
+    # The tombstone (empty content, no evidence) is not scanned/backfilled.
+    assert result.scanned == 0

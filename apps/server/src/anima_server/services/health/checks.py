@@ -508,6 +508,9 @@ async def check_memory_pipeline(
                     select(MemoryItem).where(
                         MemoryItem.user_id == user_id,
                         MemoryItem.superseded_by.is_(None),
+                        # IL5 tombstones intentionally have a null embedding;
+                        # counting them as "missing" degrades /health falsely.
+                        MemoryItem.distilled_at.is_(None),
                     )
                 ).all()
             )
