@@ -312,6 +312,68 @@ def test_behavior_preservation_covers_promote_family_reinforce_supersede_evolve(
         assert decision.action == "reinforce"
 
 
+def test_minor_observation_repeat_of_existing_memory_reinforces_not_folds():
+    """A weak minor_observation repeating an existing canonical memory must
+    hit dedup (reinforce) — the dry-run sees the same effective category
+    the final write would use, so known preferences/facts never leak into
+    the latent gate."""
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        soul_db.add(
+            MemoryItem(
+                user_id=user.id,
+                content="Likes green tea",
+                category="preference",
+                importance=3,
+                source="extraction",
+            )
+        )
+        soul_db.commit()
+
+        candidate = FakeCandidate(
+            content="Likes green tea",
+            category="minor_observation",
+            importance=1,
+            salience_json={"emotional_salience": 0.0, "evidence_strength": 0.8},
+        )
+        decision = plan_candidate_promotion(soul_db, candidate, user.id)
+        assert decision.action == "reinforce", (
+            f"expected dedup to win over folding, got {decision.action} "
+            f"({decision.reason})"
+        )
+
+
+def test_purge_topic_tokens_do_not_match_substrings():
+    """purge_traces topic matching is whole-token: 'art' must not purge a
+    'cart_repair' trace."""
+    from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
+
+    with _soul_db_session() as soul_db:
+        user = _make_user(soul_db)
+        for key in (
+            "user:minor_observation:cart_repair",
+            "user:minor_observation:art_class_supplies",
+        ):
+            soul_db.add(
+                LatentTrace(
+                    user_id=user.id,
+                    topic_key=key,
+                    weight=0.3,
+                    evidence_refs=[],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+        soul_db.commit()
+
+        purged = purge_latent_traces_matching_topic(soul_db, user_id=user.id, topic="art")
+        assert purged == 1
+        remaining = soul_db.scalars(
+            select(LatentTrace).where(LatentTrace.user_id == user.id)
+        ).all()
+        assert [t.topic_key for t in remaining] == ["user:minor_observation:cart_repair"]
+
+
 def test_importance_1_low_salience_folds():
     with _soul_db_session() as soul_db:
         user = _make_user(soul_db)

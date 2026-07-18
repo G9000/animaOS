@@ -1113,10 +1113,9 @@ def _process_candidate(
         # Downstream consumers (overview counts, contradiction scan, memory
         # tools) enumerate only the four canonical categories, so a promoted
         # minor_observation must be remapped — mirroring the crystallization
-        # path's category normalization.
-        promote_category = (
-            "fact" if candidate.category == "minor_observation" else candidate.category
-        )
+        # path's category normalization. Must match what the dry-run dedup
+        # saw (_effective_candidate_category).
+        promote_category = _effective_candidate_category(candidate)
         write_result = store_memory_item(
             soul_db,
             user_id=user_id,
@@ -1249,14 +1248,18 @@ def plan_candidate_promotion(
             reason="correction target missing — promoting as new memory",
         )
 
-    # Normal dedup via store_memory_item dry_run
+    # Normal dedup via store_memory_item dry_run. The dry-run must see the
+    # same canonical category the final write would use — a
+    # minor_observation repeat of an existing canonical memory has to hit
+    # the duplicate/supersede paths (reinforce), not slip past dedup into
+    # the latent gate.
     from anima_server.services.agent.memory_store import store_memory_item
 
     write_analysis = store_memory_item(
         soul_db,
         user_id=user_id,
         content=candidate.content,
-        category=candidate.category,
+        category=_effective_candidate_category(candidate),
         importance=candidate.importance,
         source="extraction",
         allow_update=True,
@@ -1314,6 +1317,23 @@ def plan_candidate_promotion(
         )
 
     return _gate_new_memory_decision(candidate, reason="new memory")
+
+
+def _effective_candidate_category(candidate) -> str:
+    """The canonical category a minor_observation resolves to everywhere a
+    category matters (dry-run dedup AND the final write — they must agree):
+    the structured slot's namespace when the content matches one ("Likes
+    green tea" is a preference regardless of which lane extracted it),
+    else "fact"."""
+    if candidate.category != "minor_observation":
+        return candidate.category
+    from anima_server.services.agent.claims import derive_canonical_key
+
+    derived = derive_canonical_key(candidate.content, candidate.category)
+    if derived is not None:
+        namespace, _slot, _polarity = derived
+        return namespace
+    return "fact"
 
 
 def _gate_new_memory_decision(candidate, reason: str) -> PromotionDecision:

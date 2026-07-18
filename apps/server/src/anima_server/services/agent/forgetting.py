@@ -445,7 +445,7 @@ def purge_latent_traces_matching_topic(
     user_id: int,
     topic: str,
 ) -> int:
-    """Delete every latent trace whose topic_key contains the topic's slug.
+    """Delete every latent trace whose topic_key token-matches the topic.
 
     This is the user-facing topic-scoped trace forget (PRD IL4): fold-only
     topics — weak signals that never promoted or crystallized any
@@ -454,6 +454,10 @@ def purge_latent_traces_matching_topic(
     sub-threshold signals, never surfaced as memories, so immediate
     deletion on an explicit request is proportionate. Audited without
     recording the topic content.
+
+    Matching is whole-token, not raw substring: topic "art" must not purge
+    "cart_repair". A trace matches when every topic token appears as a
+    complete token among the key's slug segments.
     """
     from anima_server.models.agent_runtime import LatentTrace
     from anima_server.services.agent.claims import _content_slug
@@ -461,12 +465,22 @@ def purge_latent_traces_matching_topic(
     slug = _content_slug(topic)
     if not slug:
         return 0
-    traces = db.scalars(
-        select(LatentTrace).where(
-            LatentTrace.user_id == user_id,
-            LatentTrace.topic_key.contains(slug),
-        )
+    topic_tokens = set(slug.split("_"))
+    # Bounded by the per-user trace cap, so Python-side token filtering is
+    # cheap and portable across dialects.
+    all_traces = db.scalars(
+        select(LatentTrace).where(LatentTrace.user_id == user_id)
     ).all()
+    traces = [
+        trace
+        for trace in all_traces
+        if topic_tokens
+        <= {
+            token
+            for segment in trace.topic_key.split(":")
+            for token in segment.split("_")
+        }
+    ]
     for trace in traces:
         db.delete(trace)
     if traces:
