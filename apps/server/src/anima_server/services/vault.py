@@ -31,6 +31,7 @@ from anima_server.models import (
     KGRelation,
     LatentTrace,
     MemoryClaim,
+    MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
@@ -975,6 +976,12 @@ def restore_database_snapshot(
 
     try:
         db.query(TendencyContribution).delete()
+        # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
+        # (no foreign_keys pragma), so claim evidence must be deleted
+        # explicitly BEFORE its claims — mirroring MemoryItemEvidence and
+        # UserProfileFieldEvidence below. Otherwise stale encrypted
+        # evidence survives import and can reattach to reused claim ids.
+        db.query(MemoryClaimEvidence).delete()
         db.query(MemoryClaim).delete()
         db.query(LatentTrace).delete()
         db.query(AgentSkill).delete()

@@ -226,6 +226,11 @@ def distill_due_items(
                 MemoryItem.superseded_by.is_(None),
                 MemoryItem.distilled_at.is_(None),
                 MemoryItem.memory_class.in_(DISTILL_MEMORY_CLASSES),
+                # heat == 0.0 means "never scored" (visible by convention,
+                # see heat_scoring.HEAT_SCORED_EPSILON) — only genuinely
+                # scored-below-floor items distill, so the sweep is safe
+                # even if ever invoked outside the post-decay context.
+                MemoryItem.heat > 0.0,
                 MemoryItem.heat < HEAT_VISIBILITY_FLOOR,
             )
             .order_by(MemoryItem.heat.asc(), MemoryItem.id.asc())
