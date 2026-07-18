@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     document_full_context_budget_ratio: float = 0.5
     # Hard ceiling in characters regardless of window size.
     document_full_context_char_cap: int = 120_000
+    # Sleep-agent auto-reparse: once the Docling parsing pack finishes
+    # downloading, automatically re-parse preview/legacy-quality documents
+    # that were ingested before it was ready, closing the loop without
+    # requiring a manual reparse click.
+    document_auto_reparse: Literal["off", "on"] = "on"
+    # Documents re-parsed per sleep cycle. Docling parsing runs
+    # synchronously and can take minutes on large PDFs, so this keeps a
+    # single cycle bounded.
+    document_auto_reparse_budget: int = 2
     # Contextual retrieval blurbs: when "on", each document chunk gets an
     # LLM-generated context line stored in chunk metadata and prepended to
     # the chunk text for embedding and lexical indexing only (never shown

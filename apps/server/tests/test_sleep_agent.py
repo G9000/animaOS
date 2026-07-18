@@ -19,6 +19,7 @@ from anima_server.services.agent.sleep_agent import (
     _task_consolidation,
     _task_episode_gen,
     _task_graph_ingestion,
+    _task_reparse_pending_documents,
     get_last_processed_message_id,
     run_sleeptime_agents,
     should_run_sleeptime,
@@ -1060,6 +1061,11 @@ class TestRunSleeptimeAgents:
                 return_value={"ok": True},
             ),
             patch(
+                "anima_server.services.agent.sleep_agent._task_reparse_pending_documents",
+                new_callable=AsyncMock,
+                return_value="no documents pending reparse",
+            ),
+            patch(
                 "anima_server.services.agent.sleep_agent._should_run_expensive",
                 return_value=False,
             ),
@@ -1084,7 +1090,7 @@ class TestRunSleeptimeAgents:
                 runtime_db_factory=rt_factory,
             )
 
-        assert len(run_ids) == 7
+        assert len(run_ids) == 8
         task_types = {r.split(":")[0] for r in run_ids}
         assert task_types == {
             "consolidation",
@@ -1094,11 +1100,12 @@ class TestRunSleeptimeAgents:
             "foresight_lifecycle",
             "episode_gen",
             "knowledge_autocompile",
+            "document_reparse",
         }
 
         with rt_factory() as db:
             runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
-            assert len(runs) == 7
+            assert len(runs) == 8
             assert all(r.status == "completed" for r in runs)
 
 
@@ -1161,6 +1168,188 @@ class TestGraphIngestionTask:
             db_factory=db_factory,
         )
         assert result == {"entities": 0, "relations": 0, "pruned": 0}
+
+
+# ── Auto-reparse task ─────────────────────────────────────────────────
+
+
+class TestReparsePendingDocumentsTask:
+    """_task_reparse_pending_documents — closes the loop on preview/legacy
+    documents once the parsing pack is ready. Patches ``parsing_pack_ready``,
+    ``list_reparse_candidates`` and ``reparse_document`` at their
+    sleep_agent module import site (imported at module scope there, not
+    lazily inside the task, precisely so these tests can patch them)."""
+
+    @pytest.mark.asyncio()
+    async def test_skips_when_policy_off(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "off")
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready"
+        ) as pack_ready, patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates"
+        ) as candidates:
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        pack_ready.assert_not_called()
+        candidates.assert_not_called()
+        assert isinstance(result, str)
+        assert "disabled" in result
+
+    @pytest.mark.asyncio()
+    async def test_skips_when_pack_not_ready(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=False,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates"
+        ) as candidates, patch(
+            "anima_server.services.agent.sleep_agent.reparse_document"
+        ) as reparse_fn:
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        candidates.assert_not_called()
+        reparse_fn.assert_not_called()
+        assert isinstance(result, str)
+        assert "not ready" in result
+
+    @pytest.mark.asyncio()
+    async def test_processes_at_most_budget_candidates(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 2)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="upgraded", chunk_count=3)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert calls == [1, 2]
+        assert "reparsed 2" in result
+
+    @pytest.mark.asyncio()
+    async def test_aborts_loop_on_parser_unavailable(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="parser_unavailable", detail="not installed")
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # The loop stops at the first unhealthy status instead of burning
+        # the rest of the budget on a parser that's clearly sick.
+        assert calls == [1]
+        assert "reparsed 0" in result
+        assert "pending" in result
+
+    @pytest.mark.asyncio()
+    async def test_registered_in_always_run_list(self, db_factory, rt_factory):
+        """The orchestrator's always-run group includes document_reparse
+        and records a RuntimeBackgroundTaskRun for it."""
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent._task_consolidation",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_embedding_backfill",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_graph_ingestion",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_heat_decay",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_episode_gen",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._should_run_expensive",
+                return_value=False,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_tasks._should_run_deep_monologue",
+                return_value=False,
+            ),
+            patch(
+                "anima_server.services.agent.companion.get_companion",
+                return_value=None,
+            ),
+        ):
+            run_ids = await run_sleeptime_agents(
+                user_id=1,
+                user_message="hello",
+                assistant_response="hi",
+                db_factory=db_factory,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert any(r.startswith("document_reparse:") for r in run_ids)
+        with rt_factory() as db:
+            run = db.scalar(
+                select(RuntimeBackgroundTaskRun).where(
+                    RuntimeBackgroundTaskRun.task_type == "document_reparse"
+                )
+            )
+            assert run is not None
+            assert run.status == "completed"
 
 
 # ── RuntimeBackgroundTaskRun model ───────────────────────────────────

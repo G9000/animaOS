@@ -17,6 +17,8 @@ from typing import Any
 
 from sqlalchemy.exc import OperationalError
 
+from anima_server.services.documents.parsing_pack import parsing_pack_ready
+from anima_server.services.documents.reparse import list_reparse_candidates, reparse_document
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
@@ -353,6 +355,11 @@ async def run_sleeptime_agents(
         (
             "knowledge_autocompile",
             _task_knowledge_autocompile,
+            {"_task_runtime_db_factory": runtime_db_factory},
+        ),
+        (
+            "document_reparse",
+            _task_reparse_pending_documents,
             {"_task_runtime_db_factory": runtime_db_factory},
         ),
     ]:
@@ -1033,6 +1040,79 @@ async def _task_knowledge_autocompile(
                 }
             )
     return {"policy": policy, "compiled": compiled}
+
+
+# Statuses from reparse_document() that mean "the pack state changed or the
+# parser is unhealthy" rather than "this one document had a problem" — the
+# cycle aborts on these instead of burning the rest of the budget against a
+# sick parser, and picks the remaining candidates back up next cycle.
+_REPARSE_ABORT_STATUSES = frozenset(
+    {"pack_not_ready", "parse_degraded", "parser_unavailable"}
+)
+
+
+async def _task_reparse_pending_documents(
+    *,
+    user_id: int,
+    runtime_db_factory: Callable[..., object] | None = None,
+    **_: Any,
+) -> str:
+    """Re-parse preview/legacy-quality documents through Docling once the
+    parsing pack becomes ready, closing the loop so early-ingested documents
+    upgrade themselves without a manual reparse click.
+
+    reparse_document() already runs sync_document_source(compile_knowledge=
+    True) internally on a successful upgrade — this task must NOT add a
+    second compile pass on top of it.
+
+    Docling parsing runs synchronously and can take minutes on a large PDF,
+    so each candidate is parsed in a worker thread (asyncio.to_thread) to
+    avoid blocking the sleep-agent event loop; the budget keeps a single
+    cycle bounded regardless.
+    """
+    from anima_server.config import settings
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    if settings.document_auto_reparse != "on":
+        return "auto-reparse disabled"
+    if not parsing_pack_ready():
+        return "parsing pack not ready"
+
+    factory = runtime_db_factory or get_runtime_session_factory()
+    reparsed = 0
+    candidates: list[int] = []
+    with factory() as runtime_db:
+        candidates = list_reparse_candidates(runtime_db, user_id=user_id)[
+            : settings.document_auto_reparse_budget
+        ]
+        for document_id in candidates:
+            result = await asyncio.to_thread(
+                reparse_document,
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+            if result.status in ("upgraded", "upgraded_unembedded"):
+                reparsed += 1
+                runtime_db.commit()
+                continue
+            if result.status in _REPARSE_ABORT_STATUSES:
+                # Pack state changed mid-cycle or the parser is sick —
+                # nothing left to commit for this attempt, stop and retry
+                # the remaining candidates next cycle.
+                runtime_db.rollback()
+                break
+            # "not_found": the document vanished (deleted concurrently)
+            # between listing and reparse — nothing to commit, but this
+            # doesn't reflect pack/parser health, so keep going.
+            runtime_db.rollback()
+
+    pending = len(candidates) - reparsed
+    if not candidates:
+        return "no documents pending reparse"
+    if pending:
+        return f"reparsed {reparsed} documents ({pending} pending)"
+    return f"reparsed {reparsed} documents"
 
 
 async def _task_foresight_lifecycle(
