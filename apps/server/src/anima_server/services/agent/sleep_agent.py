@@ -1066,53 +1066,63 @@ async def _task_reparse_pending_documents(
     second compile pass on top of it.
 
     Docling parsing runs synchronously and can take minutes on a large PDF,
-    so each candidate is parsed in a worker thread (asyncio.to_thread) to
-    avoid blocking the sleep-agent event loop; the budget keeps a single
-    cycle bounded regardless.
+    so the whole per-cycle body — session open, candidate listing, reparse
+    loop, commit — runs in a single worker thread via asyncio.to_thread
+    (matching soul_writer's convention of keeping a session's entire
+    lifecycle on the thread that uses it, and never pinning a pooled
+    connection to the event loop across a minutes-long parse); the budget
+    keeps a single cycle bounded regardless.
     """
     from anima_server.config import settings
     from anima_server.db.runtime import get_runtime_session_factory
 
+    # Cheap, DB-free gates stay on the event loop.
     if settings.document_auto_reparse != "on":
         return "auto-reparse disabled"
     if not parsing_pack_ready():
         return "parsing pack not ready"
 
     factory = runtime_db_factory or get_runtime_session_factory()
-    reparsed = 0
-    candidates: list[int] = []
-    with factory() as runtime_db:
-        candidates = list_reparse_candidates(runtime_db, user_id=user_id)[
-            : settings.document_auto_reparse_budget
-        ]
-        for document_id in candidates:
-            result = await asyncio.to_thread(
-                reparse_document,
-                runtime_db,
-                user_id=user_id,
-                document_id=document_id,
-            )
-            if result.status in ("upgraded", "upgraded_unembedded"):
-                reparsed += 1
-                runtime_db.commit()
-                continue
-            if result.status in _REPARSE_ABORT_STATUSES:
-                # Pack state changed mid-cycle or the parser is sick —
-                # nothing left to commit for this attempt, stop and retry
-                # the remaining candidates next cycle.
-                runtime_db.rollback()
-                break
-            # "not_found": the document vanished (deleted concurrently)
-            # between listing and reparse — nothing to commit, but this
-            # doesn't reflect pack/parser health, so keep going.
-            runtime_db.rollback()
+    budget = settings.document_auto_reparse_budget
 
-    pending = len(candidates) - reparsed
-    if not candidates:
-        return "no documents pending reparse"
-    if pending:
-        return f"reparsed {reparsed} documents ({pending} pending)"
-    return f"reparsed {reparsed} documents"
+    def _reparse_cycle() -> str:
+        reparsed = 0
+        missing = 0
+        candidates: list[int] = []
+        with factory() as runtime_db:
+            candidates = list_reparse_candidates(runtime_db, user_id=user_id)[:budget]
+            for document_id in candidates:
+                result = reparse_document(
+                    runtime_db,
+                    user_id=user_id,
+                    document_id=document_id,
+                )
+                if result.status in ("upgraded", "upgraded_unembedded"):
+                    reparsed += 1
+                    runtime_db.commit()
+                    continue
+                if result.status in _REPARSE_ABORT_STATUSES:
+                    # Pack state changed mid-cycle or the parser is sick —
+                    # nothing left to commit for this attempt, stop and retry
+                    # the remaining candidates next cycle.
+                    runtime_db.rollback()
+                    break
+                # "not_found": the document vanished (deleted concurrently)
+                # between listing and reparse — nothing to commit, but this
+                # doesn't reflect pack/parser health, so keep going. It's
+                # also not "pending": the document is gone, so it must not
+                # inflate the pending count in the summary.
+                missing += 1
+                runtime_db.rollback()
+
+        pending = len(candidates) - reparsed - missing
+        if not candidates:
+            return "no documents pending reparse"
+        if pending:
+            return f"reparsed {reparsed} documents ({pending} pending)"
+        return f"reparsed {reparsed} documents"
+
+    return await asyncio.to_thread(_reparse_cycle)
 
 
 async def _task_foresight_lifecycle(

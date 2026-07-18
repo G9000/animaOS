@@ -1291,6 +1291,90 @@ class TestReparsePendingDocumentsTask:
         assert "pending" in result
 
     @pytest.mark.asyncio()
+    async def test_session_lifecycle_stays_on_worker_thread(
+        self, rt_factory, monkeypatch
+    ):
+        """The runtime session must be opened, used, and committed entirely
+        inside the asyncio.to_thread worker (matching soul_writer's
+        convention) — never opened on the event loop and handed across
+        threads, which would also pin a pooled connection to the loop for
+        the full duration of a minutes-long Docling parse."""
+        import threading
+
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+
+        loop_thread = threading.get_ident()
+        factory_threads: list[int] = []
+        reparse_threads: list[int] = []
+
+        def spying_factory(*args, **kwargs):
+            factory_threads.append(threading.get_ident())
+            return rt_factory(*args, **kwargs)
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            reparse_threads.append(threading.get_ident())
+            return ReparseResult(status="upgraded", chunk_count=1)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=spying_factory,
+            )
+
+        assert result == "reparsed 1 documents"
+        # The session was created off the event loop, on the same worker
+        # thread that ran the reparse itself.
+        assert factory_threads and reparse_threads
+        assert factory_threads[0] != loop_thread
+        assert factory_threads[0] == reparse_threads[0]
+
+    @pytest.mark.asyncio()
+    async def test_not_found_excluded_from_pending_count(
+        self, rt_factory, monkeypatch
+    ):
+        """A concurrently-deleted document (not_found) is gone, not pending —
+        it must not inflate the '(M pending)' arithmetic in the summary."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        statuses = {1: "upgraded", 2: "not_found", 3: "upgraded"}
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            return ReparseResult(status=statuses[document_id])
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == "reparsed 2 documents"
+
+    @pytest.mark.asyncio()
     async def test_registered_in_always_run_list(self, db_factory, rt_factory):
         """The orchestrator's always-run group includes document_reparse
         and records a RuntimeBackgroundTaskRun for it."""
