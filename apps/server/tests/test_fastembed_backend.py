@@ -62,3 +62,32 @@ def test_load_failure_degrades_to_none_and_fast_fails(monkeypatch) -> None:
     assert first == [None]
     assert second == [None]
     assert calls == ["test-model"]  # failed flag prevents reload storm
+
+
+def test_load_failure_retries_after_ttl_expires(monkeypatch) -> None:
+    calls: list[str] = []
+    clock = {"now": 1000.0}
+
+    def factory(model_name: str):
+        calls.append(model_name)
+        raise RuntimeError("onnx model missing")
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", factory)
+    monkeypatch.setattr(fastembed_backend.time, "monotonic", lambda: clock["now"])
+
+    first = fastembed_backend.embed_texts(["a"], model_name="test-model")
+    assert first == [None]
+    assert calls == ["test-model"]
+
+    # Still within the TTL window: no reload attempt.
+    clock["now"] += fastembed_backend._RETRY_TTL_SECONDS - 1
+    second = fastembed_backend.embed_texts(["b"], model_name="test-model")
+    assert second == [None]
+    assert calls == ["test-model"]
+
+    # TTL has expired: a fresh load is attempted (and re-stamps on failure).
+    clock["now"] += 2
+    fake = _FakeModel()
+    monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
+    third = fastembed_backend.embed_texts(["c"], model_name="test-model")
+    assert third == [[1.0] * 4]

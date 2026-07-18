@@ -5,14 +5,18 @@ bundled ONNX cross-encoder run through fastembed — no extra install, no
 external service. Any unavailability — flag off, model load failure, or
 scoring failure — degrades to the fused order by returning ``None``. Expect
 roughly 30-80ms per query for ~50 candidates on CPU with the default
-MiniLM-based reranker; the model loads lazily on first use and is cached
-for the process lifetime.
+MiniLM-based reranker; the model loads lazily on first use (or during the
+startup warm-up) and is cached for the process lifetime. A load failure
+starts a retry-after-TTL cooldown — 300s, 10x the HTTP provider cooldown,
+since model loads are heavier than HTTP probes — rather than latching
+permanently for the process.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -22,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 _model_lock = threading.Lock()
 _model: Any | None = None
-_model_failed = False
+_failed_at: float | None = None
+
+_RETRY_TTL_SECONDS = 300.0
 
 
 def rerank_chunk_ids(
@@ -63,18 +69,24 @@ def _create_model() -> Any:
 
 
 def _load_model() -> Any | None:
-    global _model, _model_failed
+    global _model, _failed_at
     if _model is not None:
         return _model
-    if _model_failed:
+    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS:
         return None
     with _model_lock:
-        if _model is not None or _model_failed:
+        if _model is not None:
             return _model
+        if (
+            _failed_at is not None
+            and time.monotonic() - _failed_at < _RETRY_TTL_SECONDS
+        ):
+            return None
         try:
             _model = _create_model()
+            _failed_at = None
         except Exception:
-            _model_failed = True
+            _failed_at = time.monotonic()
             cache_dir = settings.data_dir / "models" / "fastembed"
             logger.warning(
                 "Local reranker unavailable for %s (the model download to "
@@ -88,9 +100,9 @@ def _load_model() -> Any | None:
 
 
 def _reset_model_cache_for_tests() -> None:
-    global _model, _model_failed
+    global _model, _failed_at
     _model = None
-    _model_failed = False
+    _failed_at = None
 
 
 __all__ = ["rerank_chunk_ids"]

@@ -309,6 +309,32 @@ def test_rerank_degrades_to_none_when_model_load_fails(monkeypatch: Any) -> None
     assert calls == [1]
 
 
+def test_rerank_load_failure_retries_after_ttl_expires(monkeypatch: Any) -> None:
+    monkeypatch.setattr(settings, "retrieval_reranker", "local")
+    calls: list[int] = []
+    clock = {"now": 500.0}
+
+    def _boom() -> Any:
+        calls.append(1)
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(reranker_module, "_create_model", _boom)
+    monkeypatch.setattr(reranker_module.time, "monotonic", lambda: clock["now"])
+
+    assert rerank_chunk_ids("query", [(1, "a"), (2, "b")]) is None
+    assert calls == [1]
+
+    # Still within the TTL window: no reload attempt.
+    clock["now"] += reranker_module._RETRY_TTL_SECONDS - 1
+    assert rerank_chunk_ids("query", [(1, "a"), (2, "b")]) is None
+    assert calls == [1]
+
+    # TTL has expired: a fresh load is attempted.
+    clock["now"] += 2
+    assert rerank_chunk_ids("query", [(1, "a"), (2, "b")]) is None
+    assert calls == [1, 1]
+
+
 def test_rerank_orders_by_model_scores(monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "retrieval_reranker", "local")
 

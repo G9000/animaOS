@@ -183,6 +183,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
         sweep_tasks.append(asyncio.create_task(_periodic_presence_tick()))
 
+        from .services.agent.fastembed_backend import warm_up_retrieval_models
+
+        # Load the bundled retrieval models (fastembed embeddings, and the
+        # local reranker when enabled) off the chat/request path so the
+        # first query after startup doesn't pay for the load. Cancelled on
+        # shutdown like the sweep tasks above; never raises.
+        sweep_tasks.append(
+            asyncio.create_task(asyncio.to_thread(warm_up_retrieval_models))
+        )
+
         # Install structured health event logger
         health_logger = get_event_logger()
         health_logger.cleanup_old_logs()
