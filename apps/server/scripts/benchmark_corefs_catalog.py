@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import math
 import os
@@ -14,7 +15,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from ctypes import wintypes
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,25 @@ REFERENCE_DURABLE_WRITE_WARMUPS = 30
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ARTIFACT = (
     REPO_ROOT / "docs" / "benchmarks" / "portable-core-filesystem" / "catalog-reference-v1.json"
+)
+REFERENCE_TARGET_RELATIVE = Path("animaOS") / "benchmarks" / "corefs-catalog-reference-v1"
+TARGET_SENTINEL_NAME = ".anima-corefs-catalog-benchmark-target-v1"
+TARGET_SENTINEL_CONTENT = b"animaOS CoreFS catalog benchmark target v1\n"
+EXPECTED_FIXTURE_FINGERPRINTS = {
+    "medium": "2c55af03723c2f10f40790b894c421fde0f9cd10f9b2355f128aad66d7cfc1d5",
+    "maximum-live": "95e6a054dee2fa09b48743429c37f1e4a54ba32008136755393e0341913b2857",
+    "serialized-limit": "f24864db4cefda29bf71975cd71da21c0564ec44eee9e59dada04aba82c20df4",
+}
+
+FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+FILE_ATTRIBUTE_OFFLINE = 0x00001000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+CLOUD_OR_REPARSE_ATTRIBUTES = (
+    FILE_ATTRIBUTE_REPARSE_POINT
+    | FILE_ATTRIBUTE_OFFLINE
+    | FILE_ATTRIBUTE_RECALL_ON_OPEN
+    | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
 )
 
 
@@ -90,6 +110,13 @@ class ReferenceHostFacts(NamedTuple):
     physical_location: str
     hardware_power_protection: str
     write_cache: WriteCacheEvidence
+
+
+class ReferencePathEvidence(NamedTuple):
+    canonical_path: Path
+    volume_serial: int
+    file_id: int
+    attributes: int
 
 
 POWERSHELL_LIVE_PROFILE = r"""
@@ -156,6 +183,119 @@ def _is_within(path: Path, root: Path) -> bool:
         return os.path.commonpath([path_value, root_value]) == root_value
     except ValueError:
         return False
+
+
+def loads_strict_json(payload: str) -> Any:
+    """Decode JSON while rejecting ambiguity and values outside RFC 8259."""
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ReportValidationError(f"duplicate JSON object key: {key}")
+            result[key] = value
+        return result
+
+    def reject_non_finite(value: str) -> Any:
+        raise ReportValidationError(f"non-finite JSON number is not allowed: {value}")
+
+    try:
+        return json.loads(
+            payload,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_non_finite,
+        )
+    except json.JSONDecodeError as error:
+        raise ReportValidationError("invalid JSON") from error
+
+
+def probe_registered_synchronized_roots() -> tuple[Path, ...]:
+    """Read user-registered sync roots, including all OneDrive accounts."""
+
+    if os.name != "nt":
+        raise OSError("registered sync-root probing requires Windows")
+    import winreg
+
+    roots: list[Path] = []
+
+    def add_value(value: object) -> None:
+        if isinstance(value, str) and value.strip():
+            roots.append(Path(os.path.expandvars(value.strip())))
+
+    accounts_path = r"Software\Microsoft\OneDrive\Accounts"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, accounts_path) as accounts:
+            index = 0
+            while True:
+                try:
+                    account_name = winreg.EnumKey(accounts, index)
+                except OSError as error:
+                    if getattr(error, "winerror", None) == 259:
+                        break
+                    raise
+                index += 1
+                with winreg.OpenKey(accounts, account_name) as account:
+                    try:
+                        add_value(winreg.QueryValueEx(account, "UserFolder")[0])
+                    except FileNotFoundError:
+                        continue
+    except FileNotFoundError:
+        pass
+
+    manager_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, manager_path) as manager:
+            index = 0
+            while True:
+                try:
+                    provider_name = winreg.EnumKey(manager, index)
+                except OSError as error:
+                    if getattr(error, "winerror", None) == 259:
+                        break
+                    raise
+                index += 1
+                try:
+                    with winreg.OpenKey(manager, provider_name + r"\UserSyncRoots") as provider:
+                        value_index = 0
+                        while True:
+                            try:
+                                _name, value, _kind = winreg.EnumValue(provider, value_index)
+                            except OSError as error:
+                                if getattr(error, "winerror", None) == 259:
+                                    break
+                                raise
+                            value_index += 1
+                            add_value(value)
+                except FileNotFoundError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return tuple(roots)
+
+
+def collect_synchronized_roots(
+    *,
+    environ: Mapping[str, str] = os.environ,
+    registry_probe: Callable[[], tuple[Path, ...]] = probe_registered_synchronized_roots,
+) -> tuple[Path, ...]:
+    try:
+        discovered = list(registry_probe())
+    except OSError as error:
+        raise ReferenceTargetError(
+            f"registered sync-root registry probe failed: {error}"
+        ) from error
+    for variable in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        value = environ.get(variable)
+        if value:
+            discovered.append(Path(value))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in discovered:
+        key = os.path.normcase(str(path.expanduser().resolve(strict=False)))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(unique)
 
 
 def _validate_reference_volume(target: Path, facts: ReferenceVolumeFacts) -> ReferenceVolumeFacts:
@@ -235,17 +375,259 @@ def probe_reference_volume(target: Path) -> ReferenceVolumeFacts:
         raise ReferenceTargetError(
             f"GetVolumeInformationW failed with error {ctypes.get_last_error()}"
         )
-    sync_roots: list[Path] = []
-    for variable in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
-        value = os.environ.get(variable)
-        if value:
-            sync_roots.append(Path(value))
     return ReferenceVolumeFacts(
         volume_root=Path(volume_root),
         drive_type=drive_types.get(drive_type_code, "unknown"),
         filesystem=filesystem_buffer.value,
-        synchronized_roots=tuple(sync_roots),
+        synchronized_roots=collect_synchronized_roots(),
     )
+
+
+def probe_local_app_data() -> Path:
+    value = os.environ.get("LOCALAPPDATA")
+    if os.name != "nt" or not value:
+        raise ReferenceTargetError("cannot resolve the Windows LOCALAPPDATA root")
+    return Path(value)
+
+
+def probe_reference_path(path: Path) -> ReferencePathEvidence:
+    """Open a path without following its final reparse point and return handle identity."""
+
+    if os.name != "nt":
+        raise OSError("reference path identity probing requires Windows")
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateFileW(
+        str(path),
+        0,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), f"cannot open path identity: {path}")
+    try:
+        information = ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+            raise OSError(ctypes.get_last_error(), f"cannot read path identity: {path}")
+        capacity = 32768
+        buffer = ctypes.create_unicode_buffer(capacity)
+        length = int(kernel32.GetFinalPathNameByHandleW(handle, buffer, capacity, 0))
+        if length == 0 or length >= capacity:
+            raise OSError(ctypes.get_last_error(), f"cannot canonicalize path handle: {path}")
+        canonical = buffer.value
+        if canonical.startswith("\\\\?\\UNC\\"):
+            canonical = "\\\\" + canonical[8:]
+        elif canonical.startswith("\\\\?\\"):
+            canonical = canonical[4:]
+        file_id = (int(information.file_index_high) << 32) | int(information.file_index_low)
+        return ReferencePathEvidence(
+            canonical_path=Path(canonical),
+            volume_serial=int(information.volume_serial_number),
+            file_id=file_id,
+            attributes=int(information.attributes),
+        )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left.resolve(strict=False))) == os.path.normcase(
+        str(right.resolve(strict=False))
+    )
+
+
+def validate_reference_target_location(
+    target: Path,
+    artifact: Path,
+    local_app_data_root: Path,
+    synchronized_roots: Sequence[Path],
+) -> Path:
+    resolved = target.expanduser().resolve(strict=False)
+    local = local_app_data_root.expanduser().resolve(strict=False)
+    expected = (local / REFERENCE_TARGET_RELATIVE).resolve(strict=False)
+    if not _same_resolved_path(resolved, expected):
+        raise ReferenceTargetError(
+            f"reference target must be the dedicated benchmark directory: {expected}; "
+            f"refusing dangerous or arbitrary target {resolved}"
+        )
+    artifact_path = artifact.expanduser().resolve(strict=False)
+    if _is_within(artifact_path, resolved) or _same_resolved_path(artifact_path, resolved):
+        raise ReferenceTargetError("benchmark artifact cannot be inside the cleanup target")
+    for synchronized_root in synchronized_roots:
+        if _is_within(resolved, synchronized_root):
+            raise ReferenceTargetError(
+                f"reference target is inside synchronized storage: {synchronized_root}"
+            )
+    return resolved
+
+
+def _validated_path_evidence(
+    path: Path,
+    path_probe: Callable[[Path], ReferencePathEvidence],
+) -> ReferencePathEvidence:
+    try:
+        evidence = path_probe(path)
+    except OSError as error:
+        raise ReferenceTargetError(f"reference path probe failed for {path}: {error}") from error
+    if not _same_resolved_path(evidence.canonical_path, path):
+        raise ReferenceTargetError(f"path handle canonicalization changed for {path}")
+    if evidence.attributes & CLOUD_OR_REPARSE_ATTRIBUTES:
+        raise ReferenceTargetError(
+            f"refusing reparse, offline, or Cloud Files path during cleanup: {path}"
+        )
+    return evidence
+
+
+def _same_identity(left: ReferencePathEvidence, right: ReferencePathEvidence) -> bool:
+    return (
+        _same_resolved_path(left.canonical_path, right.canonical_path)
+        and left.volume_serial == right.volume_serial
+        and left.file_id == right.file_id
+    )
+
+
+def _walk_cleanup_tree(
+    directory: Path,
+    path_probe: Callable[[Path], ReferencePathEvidence],
+) -> tuple[list[Path], list[Path]]:
+    files: list[Path] = []
+    directories: list[Path] = []
+    try:
+        entries = list(os.scandir(directory))
+    except OSError as error:
+        raise ReferenceTargetError(
+            f"cannot enumerate cleanup target {directory}: {error}"
+        ) from error
+    for entry in entries:
+        path = Path(entry.path)
+        _validated_path_evidence(path, path_probe)
+        try:
+            is_directory = entry.is_dir(follow_symlinks=False)
+        except OSError as error:
+            raise ReferenceTargetError(f"cannot classify cleanup path {path}: {error}") from error
+        if is_directory:
+            child_files, child_directories = _walk_cleanup_tree(path, path_probe)
+            files.extend(child_files)
+            directories.extend(child_directories)
+            directories.append(path)
+        else:
+            files.append(path)
+    return files, directories
+
+
+def prepare_reference_target(
+    target: Path,
+    artifact: Path,
+    *,
+    clean_target: bool,
+    local_app_data_probe: Callable[[], Path] = probe_local_app_data,
+    sync_roots_probe: Callable[[], tuple[Path, ...]] = collect_synchronized_roots,
+    path_probe: Callable[[Path], ReferencePathEvidence] = probe_reference_path,
+) -> Path:
+    """Validate, clean only an owned target, recreate it, and durably mark ownership."""
+
+    try:
+        local = local_app_data_probe().expanduser().resolve(strict=False)
+        synchronized_roots = sync_roots_probe()
+    except ReferenceTargetError:
+        raise
+    except OSError as error:
+        raise ReferenceTargetError(f"reference location probe failed: {error}") from error
+    resolved = validate_reference_target_location(target, artifact, local, synchronized_roots)
+
+    initial_target: ReferencePathEvidence | None = None
+    relative_parts = resolved.relative_to(local).parts
+    candidate = local
+    for part in ("", *relative_parts):
+        if part:
+            candidate /= part
+        if os.path.lexists(candidate):
+            evidence = _validated_path_evidence(candidate, path_probe)
+            if _same_resolved_path(candidate, resolved):
+                initial_target = evidence
+
+    if initial_target is not None:
+        if not clean_target:
+            raise ReferenceTargetError("existing target requires --clean-target")
+        sentinel = resolved / TARGET_SENTINEL_NAME
+        if not os.path.lexists(sentinel):
+            raise ReferenceTargetError("existing target has no benchmark ownership sentinel")
+        _validated_path_evidence(sentinel, path_probe)
+        try:
+            sentinel_content = sentinel.read_bytes()
+        except OSError as error:
+            raise ReferenceTargetError(f"cannot read benchmark target sentinel: {error}") from error
+        if sentinel_content != TARGET_SENTINEL_CONTENT:
+            raise ReferenceTargetError("benchmark target sentinel owner or version does not match")
+        files, directories = _walk_cleanup_tree(resolved, path_probe)
+        current_target = _validated_path_evidence(resolved, path_probe)
+        if not _same_identity(initial_target, current_target):
+            raise ReferenceTargetError(
+                "benchmark target was replaced or changed identity before cleanup"
+            )
+        try:
+            for path in files:
+                path.unlink()
+            for path in directories:
+                path.rmdir()
+            resolved.rmdir()
+        except OSError as error:
+            raise ReferenceTargetError(f"safe benchmark target cleanup failed: {error}") from error
+
+    try:
+        resolved.mkdir(parents=True, exist_ok=False)
+        sentinel = resolved / TARGET_SENTINEL_NAME
+        with sentinel.open("xb") as handle:
+            handle.write(TARGET_SENTINEL_CONTENT)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as error:
+        raise ReferenceTargetError(f"cannot create benchmark target sentinel: {error}") from error
+    _validated_path_evidence(resolved, path_probe)
+    _validated_path_evidence(sentinel, path_probe)
+    return resolved
 
 
 def _strict_object(value: object, expected_keys: set[str], context: str) -> dict[str, Any]:
@@ -428,15 +810,15 @@ def probe_live_reference_host(
     except (OSError, subprocess.CalledProcessError) as error:
         raise ReferenceTargetError(f"live Windows hardware probe failed: {error}") from error
     try:
-        raw = json.loads(completed.stdout)
-    except (json.JSONDecodeError, TypeError) as error:
+        raw = loads_strict_json(completed.stdout)
+    except (ReportValidationError, TypeError) as error:
         raise ReferenceTargetError("live Windows hardware probe returned invalid JSON") from error
     payload = _strict_object(
         raw,
         {"schemaVersion", "os", "cpu", "partition", "disk", "physicalDisk"},
         "live hardware probe",
     )
-    if payload["schemaVersion"] != 1:
+    if type(payload["schemaVersion"]) is not int or payload["schemaVersion"] != 1:
         raise ReferenceTargetError("live hardware probe schemaVersion must be 1")
     os_data = _strict_object(
         payload["os"],
@@ -766,6 +1148,7 @@ def _validate_fixture(
             "warmupSerializedSizeBytes",
             "measuredSerializedSizeBytes",
             "fixtureSha256",
+            "productionSerializationsPerCommit",
             "warmupCommits",
             "sampleCount",
             "finalHeadGeneration",
@@ -785,13 +1168,18 @@ def _validate_fixture(
     )
     if actual_counts != expected_counts:
         raise ReportValidationError(f"{name} fixture counts are not deterministic")
-    if record["warmupCommits"] != warmups or record["sampleCount"] != samples:
+    fixture_warmups = _report_int(record["warmupCommits"], f"{name}.warmupCommits")
+    fixture_samples = _report_int(record["sampleCount"], f"{name}.sampleCount")
+    if fixture_warmups != warmups or fixture_samples != samples:
         raise ReportValidationError(f"{name} run counts contradict the report")
     expected_generation = 2 + warmups + samples
-    if (
-        record["finalHeadGeneration"] != expected_generation
-        or record["finalCatalogCount"] != expected_generation
-    ):
+    final_head_generation = _report_int(
+        record["finalHeadGeneration"], f"{name}.finalHeadGeneration", minimum=1
+    )
+    final_catalog_count = _report_int(
+        record["finalCatalogCount"], f"{name}.finalCatalogCount", minimum=1
+    )
+    if final_head_generation != expected_generation or final_catalog_count != expected_generation:
         raise ReportValidationError(
             f"{name} final catalog count must match authoritative HEAD generation"
         )
@@ -815,6 +1203,17 @@ def _validate_fixture(
     fingerprint = _report_string(record["fixtureSha256"], f"{name}.fixtureSha256")
     if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
         raise ReportValidationError(f"{name}.fixtureSha256 must be lowercase SHA-256")
+    if fingerprint != EXPECTED_FIXTURE_FINGERPRINTS.get(name):
+        raise ReportValidationError(f"{name}.fixtureSha256 is not the source-controlled fixture")
+    if (
+        _report_int(
+            record["productionSerializationsPerCommit"],
+            f"{name}.productionSerializationsPerCommit",
+            minimum=1,
+        )
+        != 1
+    ):
+        raise ReportValidationError(f"{name}.productionSerializationsPerCommit must be exactly one")
     bytes_written = _report_int(record["bytesWritten"], f"{name}.bytesWritten", minimum=1)
     total_bytes = _report_int(record["totalBytesWritten"], f"{name}.totalBytesWritten", minimum=1)
     if not serialized_size * samples <= total_bytes <= bytes_written * samples:
@@ -999,9 +1398,11 @@ def _validate_profile(value: Any) -> dict[str, Any]:
         {"warmupCount", "sampleCount", "p50Ms", "p95Ms", "p99Ms", "flushMethod"},
         "profile.durableWrite4KiB",
     )
+    durable_warmups = _report_int(durable["warmupCount"], "durableWrite4KiB.warmupCount")
+    durable_samples = _report_int(durable["sampleCount"], "durableWrite4KiB.sampleCount")
     if (
-        durable["warmupCount"] != REFERENCE_DURABLE_WRITE_WARMUPS
-        or durable["sampleCount"] != REFERENCE_DURABLE_WRITE_SAMPLES
+        durable_warmups != REFERENCE_DURABLE_WRITE_WARMUPS
+        or durable_samples != REFERENCE_DURABLE_WRITE_SAMPLES
         or durable["flushMethod"] != "FlushFileBuffers"
     ):
         raise ReportValidationError("durable 4-KiB probe configuration is invalid")
@@ -1037,12 +1438,20 @@ def calculate_gates(report: dict[str, Any]) -> dict[str, bool]:
     return gates
 
 
-def validate_and_finalize_report(report: dict[str, Any]) -> dict[str, Any]:
+def validate_and_finalize_report(
+    report: dict[str, Any],
+    *,
+    expected_source_commit: str,
+    expected_binary_path: Path,
+    expected_binary_sha256: str,
+) -> dict[str, Any]:
     record = _report_object(
         report,
         {
             "schemaVersion",
             "generatedAt",
+            "sourceCommit",
+            "benchmarkBinary",
             "benchmarkCommand",
             "warmupCommits",
             "measuredCommits",
@@ -1053,7 +1462,7 @@ def validate_and_finalize_report(report: dict[str, Any]) -> dict[str, Any]:
         },
         "report",
     )
-    if record["schemaVersion"] != 1:
+    if type(record["schemaVersion"]) is not int or record["schemaVersion"] != 1:
         raise ReportValidationError("schemaVersion must be 1")
     generated_at = _report_string(record["generatedAt"], "generatedAt")
     try:
@@ -1062,15 +1471,42 @@ def validate_and_finalize_report(report: dict[str, Any]) -> dict[str, Any]:
         raise ReportValidationError("generatedAt must be an ISO-8601 timestamp") from error
     if not generated_at.endswith("Z") or timestamp.tzinfo is None:
         raise ReportValidationError("generatedAt must be an absolute UTC timestamp")
-    command = _report_string(record["benchmarkCommand"], "benchmarkCommand")
+    source_commit = _report_string(record["sourceCommit"], "sourceCommit")
+    if re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise ReportValidationError("sourceCommit must be a lowercase Git commit hash")
+    if source_commit != expected_source_commit:
+        raise ReportValidationError("sourceCommit does not match the benchmark source")
+    binary = _report_object(record["benchmarkBinary"], {"path", "sha256"}, "benchmarkBinary")
+    binary_path = Path(_report_string(binary["path"], "benchmarkBinary.path"))
+    binary_sha256 = _report_string(binary["sha256"], "benchmarkBinary.sha256")
+    if not _same_resolved_path(binary_path, expected_binary_path):
+        raise ReportValidationError("benchmarkBinary.path does not match the executed binary")
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", binary_sha256) is None
+        or binary_sha256 != expected_binary_sha256
+    ):
+        raise ReportValidationError("benchmarkBinary.sha256 does not match the executed binary")
     warmups = _report_int(record["warmupCommits"], "warmupCommits")
     samples = _report_int(record["measuredCommits"], "measuredCommits")
     if warmups != REFERENCE_WARMUPS or samples < REFERENCE_SAMPLES:
         raise ReportValidationError(
             "reference report requires exactly 30 warmups and at least 200 samples"
         )
-    if f"--warmups {warmups}" not in command or f"--samples {samples}" not in command:
-        raise ReportValidationError("benchmarkCommand contradicts the run counts")
+    profile = _validate_profile(record["profile"])
+    command = record["benchmarkCommand"]
+    expected_command = [
+        str(expected_binary_path),
+        "--target",
+        str(profile["target"]),
+        "--warmups",
+        str(warmups),
+        "--samples",
+        str(samples),
+    ]
+    if command != expected_command:
+        raise ReportValidationError(
+            "benchmarkCommand must be the exact executed binary argv and run parameters"
+        )
     fixtures_value = record["fixtures"]
     if not isinstance(fixtures_value, list):
         raise ReportValidationError("fixtures must be a list")
@@ -1121,7 +1557,6 @@ def validate_and_finalize_report(report: dict[str, Any]) -> dict[str, Any]:
             raise ReportValidationError(
                 "serialized-limit fixture must be exactly 16 MiB for every generation"
             )
-    _validate_profile(record["profile"])
     versions = _report_object(
         record["versions"],
         {"animaCorefs", "rust", "aesGcm", "argon2", "serdeJson"},
@@ -1180,20 +1615,84 @@ def collect_versions() -> dict[str, str]:
     }
 
 
+def source_commit_for_benchmark() -> str:
+    commit = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ReportValidationError("Git did not return a canonical source commit")
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if dirty:
+        raise ReportValidationError(
+            "reference benchmark source must be committed and the worktree must be clean"
+        )
+    return commit
+
+
+def build_rust_benchmark_binary() -> Path:
+    metadata = subprocess.run(
+        ["cargo", "+1.75.0", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    decoded = loads_strict_json(metadata.stdout)
+    if not isinstance(decoded, dict):
+        raise ReportValidationError("Cargo metadata was not an object")
+    target_directory = decoded.get("target_directory")
+    if not isinstance(target_directory, str) or not target_directory:
+        raise ReportValidationError("Cargo metadata did not identify the target directory")
+    subprocess.run(
+        [
+            "cargo",
+            "+1.75.0",
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "anima-corefs",
+            "--bin",
+            "catalog_benchmark",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    suffix = ".exe" if os.name == "nt" else ""
+    binary = (Path(target_directory) / "release" / f"catalog_benchmark{suffix}").resolve(
+        strict=False
+    )
+    if not binary.is_file():
+        raise ReportValidationError(f"built benchmark binary is missing: {binary}")
+    return binary
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise ReportValidationError(f"cannot hash benchmark binary: {error}") from error
+    return digest.hexdigest()
+
+
 def run_rust_benchmark(
-    target: Path, *, warmups: int, samples: int
+    binary: Path, target: Path, *, warmups: int, samples: int
 ) -> tuple[dict[str, Any], list[str]]:
     command = [
-        "cargo",
-        "+1.75.0",
-        "run",
-        "--release",
-        "--locked",
-        "-p",
-        "anima-corefs",
-        "--bin",
-        "catalog_benchmark",
-        "--",
+        str(binary),
         "--target",
         str(target),
         "--warmups",
@@ -1208,10 +1707,10 @@ def run_rust_benchmark(
         capture_output=True,
         text=True,
     )
-    try:
-        return json.loads(completed.stdout), command
-    except json.JSONDecodeError as error:
-        raise ReportValidationError("Rust benchmark did not emit one JSON report") from error
+    decoded = loads_strict_json(completed.stdout)
+    if not isinstance(decoded, dict):
+        raise ReportValidationError("Rust benchmark did not emit one JSON object")
+    return decoded, command
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -1245,24 +1744,37 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     target = args.target.expanduser().resolve(strict=False)
-    facts = validate_reference_profile(target, probe_live_reference_host(target))
+    artifact = args.artifact.expanduser().resolve(strict=False)
     validate_reference_run_counts(args.warmups, args.samples)
-    if target.exists():
-        if not args.clean_target:
-            raise ReferenceTargetError("existing target requires --clean-target")
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
+    source_commit = source_commit_for_benchmark()
+    target = prepare_reference_target(
+        target,
+        artifact,
+        clean_target=args.clean_target,
+    )
+    facts = validate_reference_profile(target, probe_live_reference_host(target))
 
     durable_write = measure_durable_write_4k(target)
     if float(durable_write["p95Ms"]) > 5.0:
         raise ReferenceTargetError(
             f"4-KiB durable-write p95 exceeds 5 ms: {durable_write['p95Ms']:.3f} ms"
         )
-    rust_report, command = run_rust_benchmark(target, warmups=args.warmups, samples=args.samples)
+    binary = build_rust_benchmark_binary()
+    if source_commit_for_benchmark() != source_commit:
+        raise ReportValidationError("benchmark source commit changed during the build")
+    binary_sha256 = sha256_file(binary)
+    rust_report, command = run_rust_benchmark(
+        binary, target, warmups=args.warmups, samples=args.samples
+    )
     report = {
         **rust_report,
         "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "benchmarkCommand": subprocess.list2cmdline(command),
+        "sourceCommit": source_commit,
+        "benchmarkBinary": {
+            "path": str(binary),
+            "sha256": binary_sha256,
+        },
+        "benchmarkCommand": command,
         "profile": {
             "mode": "reference",
             "target": str(target),
@@ -1316,8 +1828,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "versions": collect_versions(),
     }
     report["gates"] = calculate_gates(report)
-    validate_and_finalize_report(report)
-    write_json_atomic(args.artifact.resolve(strict=False), report)
+    validate_and_finalize_report(
+        report,
+        expected_source_commit=source_commit,
+        expected_binary_path=binary,
+        expected_binary_sha256=binary_sha256,
+    )
+    write_json_atomic(artifact, report)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["gates"]["allPassed"] else 2
 

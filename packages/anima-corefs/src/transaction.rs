@@ -23,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::catalog::{
-    catalog_generation_physical_name, decrypt_catalog_generation, encrypt_catalog_generation,
-    CatalogCutoverMarker, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
-    ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
-    MAX_CATALOG_ENVELOPE_SIZE,
+    catalog_generation_physical_name, decrypt_catalog_generation,
+    encrypt_catalog_generation_with_plaintext_size, CatalogCutoverMarker, CatalogError,
+    CatalogGeneration, CatalogGenerationEntry, CatalogObject, ContentHash, ObjectLifecycle,
+    ObjectPhysicalName, WrappedObjectDekRecord, MAX_CATALOG_ENVELOPE_SIZE,
 };
 use crate::crypto::{
     generate_object_dek, unwrap_object_dek, wrap_object_dek, CryptoError, ObjectKeyAad,
@@ -702,6 +702,7 @@ pub struct CommitOutcome {
     recovery_pending: bool,
     lock_hold_duration: Duration,
     bytes_written: u64,
+    catalog_plaintext_bytes: usize,
 }
 
 impl CommitOutcome {
@@ -729,6 +730,11 @@ impl CommitOutcome {
     /// Catalog-envelope plus pointer bytes durably written by this commit.
     pub const fn bytes_written(&self) -> u64 {
         self.bytes_written
+    }
+
+    /// Plaintext bytes emitted by the production catalog serialization used by this commit.
+    pub const fn catalog_plaintext_bytes(&self) -> usize {
+        self.catalog_plaintext_bytes
     }
 }
 
@@ -1539,7 +1545,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let (event, lock_hold_duration, bytes_written) = {
+        let (event, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = Instant::now();
             self.validate_pinned_layout()?;
@@ -1588,7 +1594,7 @@ impl CoreCommitCoordinator {
                 pending_keys,
                 next_generation,
             )?;
-            let (head, _, recovery_pending, bytes_written) = self
+            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = self
                 .publish_catalog_pointer_with_hook(
                     pending_keys,
                     &next_catalog,
@@ -1604,7 +1610,12 @@ impl CoreCommitCoordinator {
             };
             let lock_hold_duration = lock_started.elapsed();
             drop(commit_lock);
-            (event, lock_hold_duration, bytes_written)
+            (
+                event,
+                lock_hold_duration,
+                bytes_written,
+                catalog_plaintext_bytes,
+            )
         };
 
         hook(CommitFailurePoint::BeforeInvalidation)?;
@@ -1616,6 +1627,7 @@ impl CoreCommitCoordinator {
             recovery_pending: false,
             lock_hold_duration,
             bytes_written,
+            catalog_plaintext_bytes,
         })
     }
 
@@ -1672,7 +1684,7 @@ impl CoreCommitCoordinator {
             &catalog,
             prepared_revisions,
         )?;
-        let (head, _, _, _) = self.publish_catalog_pointer_with_hook(
+        let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
             keys,
             &catalog,
             VALIDATION_HEAD_FILE,
@@ -1755,7 +1767,7 @@ impl CoreCommitCoordinator {
             &next_catalog,
             prepared_revisions,
         )?;
-        let (head, _, _, _) = self.publish_catalog_pointer_with_hook(
+        let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
             keys,
             &next_catalog,
             VALIDATION_HEAD_FILE,
@@ -1913,7 +1925,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let (event, recovery_pending, lock_hold_duration, bytes_written) = {
+        let (event, recovery_pending, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = Instant::now();
             self.validate_pinned_layout()?;
@@ -1972,7 +1984,7 @@ impl CoreCommitCoordinator {
                 &next_catalog,
                 prepared_revisions,
             )?;
-            let (head, _, recovery_pending, bytes_written) = self
+            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = self
                 .publish_catalog_pointer_with_hook(
                     active_keys,
                     &next_catalog,
@@ -1987,7 +1999,13 @@ impl CoreCommitCoordinator {
             };
             let lock_hold_duration = lock_started.elapsed();
             drop(commit_lock);
-            (event, recovery_pending, lock_hold_duration, bytes_written)
+            (
+                event,
+                recovery_pending,
+                lock_hold_duration,
+                bytes_written,
+                catalog_plaintext_bytes,
+            )
         };
 
         (callbacks.hook)(CommitFailurePoint::BeforeInvalidation)?;
@@ -1999,6 +2017,7 @@ impl CoreCommitCoordinator {
             recovery_pending,
             lock_hold_duration,
             bytes_written,
+            catalog_plaintext_bytes,
         })
     }
 
@@ -2009,11 +2028,12 @@ impl CoreCommitCoordinator {
         pointer_name: &str,
         publish_cutover_receipt: bool,
         hook: &mut H,
-    ) -> Result<(HeadRecord, String, bool, u64), CommitError>
+    ) -> Result<(HeadRecord, String, bool, u64, usize), CommitError>
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let encrypted_catalog = encrypt_catalog_generation(keys, &self.core_id, catalog)?;
+        let (encrypted_catalog, catalog_plaintext_bytes) =
+            encrypt_catalog_generation_with_plaintext_size(keys, &self.core_id, catalog)?;
         let catalog_name = catalog_generation_physical_name(&encrypted_catalog)?;
         self.validate_pinned_layout()?;
         let mut catalog_hook = |phase| {
@@ -2092,7 +2112,13 @@ impl CoreCommitCoordinator {
                 Ok(())
             })()
             .is_err();
-        Ok((head, catalog_name, recovery_pending, bytes_written))
+        Ok((
+            head,
+            catalog_name,
+            recovery_pending,
+            bytes_written,
+            catalog_plaintext_bytes,
+        ))
     }
 
     fn publish_pointer_and_revalidate<P, V>(

@@ -20,6 +20,17 @@ PUBLICATION_PATH = [
     "fs-head-write-flush",
     "commit-lock",
 ]
+REFERENCE_TARGET = Path(
+    r"C:\Users\test\AppData\Local\animaOS\benchmarks\corefs-catalog-reference-v1"
+)
+SOURCE_COMMIT = "b" * 40
+BINARY_PATH = Path(r"C:\repo\target\release\catalog_benchmark.exe")
+BINARY_SHA256 = "c" * 64
+EXPECTED_FIXTURE_FINGERPRINTS = {
+    "medium": "2c55af03723c2f10f40790b894c421fde0f9cd10f9b2355f128aad66d7cfc1d5",
+    "maximum-live": "95e6a054dee2fa09b48743429c37f1e4a54ba32008136755393e0341913b2857",
+    "serialized-limit": "f24864db4cefda29bf71975cd71da21c0564ec44eee9e59dada04aba82c20df4",
+}
 
 
 def load_benchmark_module():
@@ -279,7 +290,8 @@ def fixture_record(
             "min": serialized_size,
             "max": serialized_size,
         },
-        "fixtureSha256": "a" * 64,
+        "fixtureSha256": EXPECTED_FIXTURE_FINGERPRINTS.get(name, "0" * 64),
+        "productionSerializationsPerCommit": 1,
         "warmupCommits": 30,
         "sampleCount": 200,
         "finalHeadGeneration": 232,
@@ -300,7 +312,20 @@ def complete_report() -> dict[str, object]:
     return {
         "schemaVersion": 1,
         "generatedAt": "2026-07-17T20:00:00Z",
-        "benchmarkCommand": "catalog_benchmark --warmups 30 --samples 200",
+        "sourceCommit": SOURCE_COMMIT,
+        "benchmarkBinary": {
+            "path": str(BINARY_PATH),
+            "sha256": BINARY_SHA256,
+        },
+        "benchmarkCommand": [
+            str(BINARY_PATH),
+            "--target",
+            str(REFERENCE_TARGET),
+            "--warmups",
+            "30",
+            "--samples",
+            "200",
+        ],
         "warmupCommits": 30,
         "measuredCommits": 200,
         "fixtures": [
@@ -310,7 +335,7 @@ def complete_report() -> dict[str, object]:
         ],
         "profile": {
             "mode": "reference",
-            "target": r"C:\benchmarks\corefs-catalog-reference-v1",
+            "target": str(REFERENCE_TARGET),
             "architecture": "AMD64",
             "hostEvidence": {
                 "source": "live-cim",
@@ -389,6 +414,15 @@ def complete_report() -> dict[str, object]:
     }
 
 
+def validate_report(benchmark, report: dict[str, object]):
+    return benchmark.validate_and_finalize_report(
+        report,
+        expected_source_commit=SOURCE_COMMIT,
+        expected_binary_path=BINARY_PATH,
+        expected_binary_sha256=BINARY_SHA256,
+    )
+
+
 def remove_path(payload: dict[str, object], path: str) -> None:
     current: object = payload
     parts = path.split(".")
@@ -407,7 +441,7 @@ def test_complete_reference_report_schema_is_accepted() -> None:
     benchmark = load_benchmark_module()
     report = complete_report()
 
-    assert benchmark.validate_and_finalize_report(report) == report
+    assert validate_report(benchmark, report) == report
 
 
 @pytest.mark.parametrize(
@@ -445,7 +479,7 @@ def test_strict_report_schema_rejects_every_missing_required_family(
     remove_path(report, missing_path)
 
     with pytest.raises(benchmark.ReportValidationError):
-        benchmark.validate_and_finalize_report(report)
+        validate_report(benchmark, report)
 
 
 @pytest.mark.parametrize(
@@ -492,10 +526,354 @@ def test_strict_report_schema_rejects_extra_or_contradictory_records(
         report["callerSuppliedHardware"] = "spoofed"
 
     with pytest.raises(benchmark.ReportValidationError):
-        benchmark.validate_and_finalize_report(report)
+        validate_report(benchmark, report)
 
 
 def test_oversized_maximum_live_fixture_blocks_before_timing_evidence() -> None:
     benchmark = load_benchmark_module()
     with pytest.raises(benchmark.MaximumLiveSizeGateError, match="exceeds 16 MiB"):
         benchmark.require_supported_maximum_live_size(16 * 1024 * 1024 + 1)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("schemaVersion",), True),
+        (("os", "totalVisibleMemoryKiB"), 64_606_460.0),
+        (("cpu", "physicalCores"), 12.0),
+        (("cpu", "logicalProcessors"), 24.0),
+        (("partition", "diskNumber"), 0.0),
+        (("disk", "number"), False),
+    ],
+)
+def test_live_probe_integer_fields_reject_bool_and_float(
+    path: tuple[str, ...], value: object
+) -> None:
+    benchmark = load_benchmark_module()
+    payload = live_cim_payload()
+    current: object = payload
+    for part in path[:-1]:
+        assert isinstance(current, dict)
+        current = current[part]
+    assert isinstance(current, dict)
+    current[path[-1]] = value
+
+    with pytest.raises(benchmark.ReferenceTargetError, match=r"integer|schemaVersion"):
+        probe_live_facts(benchmark, payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"schemaVersion": 1, "schemaVersion": 1}',
+        '{"value": NaN}',
+        '{"value": Infinity}',
+        '{"value": -Infinity}',
+    ],
+)
+def test_strict_json_loader_rejects_duplicate_keys_and_non_finite_values(payload: str) -> None:
+    benchmark = load_benchmark_module()
+    with pytest.raises(benchmark.ReportValidationError):
+        benchmark.loads_strict_json(payload)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("schemaVersion", True),
+        ("warmupCommits", 30.0),
+        ("measuredCommits", 200.0),
+        ("fixtures.0.sampleCount", 200.0),
+        ("fixtures.0.finalHeadGeneration", 232.0),
+        ("profile.durableWrite4KiB.sampleCount", 200.0),
+        ("profile.durableWrite4KiB.p95Ms", float("nan")),
+        ("fixtures.0.commitMs.p95", float("inf")),
+    ],
+)
+def test_report_rejects_bool_float_integer_fields_and_non_finite_numbers(
+    path: str, value: object
+) -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+    current: object = report
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if part.isdecimal():
+            assert isinstance(current, list)
+            current = current[int(part)]
+        else:
+            assert isinstance(current, dict)
+            current = current[part]
+    assert isinstance(current, dict)
+    current[parts[-1]] = value
+
+    with pytest.raises(benchmark.ReportValidationError):
+        validate_report(benchmark, report)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "arbitrary-hash",
+        "duplicate-hash",
+        "wrong-command-target",
+        "missing-command-target",
+        "duplicate-command-target",
+        "extra-command-argument",
+        "stale-source",
+        "stale-binary",
+        "wrong-binary-path",
+    ],
+)
+def test_report_is_bound_to_exact_fixtures_command_source_and_binary(mutation: str) -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+    fixtures = report["fixtures"]
+    command = report["benchmarkCommand"]
+    assert isinstance(fixtures, list)
+    assert isinstance(command, list)
+    if mutation == "arbitrary-hash":
+        fixtures[0]["fixtureSha256"] = "d" * 64
+    elif mutation == "duplicate-hash":
+        fixtures[1]["fixtureSha256"] = fixtures[0]["fixtureSha256"]
+    elif mutation == "wrong-command-target":
+        command[2] = str(REFERENCE_TARGET.parent / "other")
+    elif mutation == "missing-command-target":
+        del command[1:3]
+    elif mutation == "duplicate-command-target":
+        command.extend(["--target", str(REFERENCE_TARGET)])
+    elif mutation == "extra-command-argument":
+        command.append("--untrusted")
+    elif mutation == "stale-source":
+        report["sourceCommit"] = "a" * 40
+    elif mutation == "stale-binary":
+        report["benchmarkBinary"]["sha256"] = "d" * 64
+    elif mutation == "wrong-binary-path":
+        report["benchmarkBinary"]["path"] = str(BINARY_PATH.parent / "other.exe")
+
+    with pytest.raises(benchmark.ReportValidationError):
+        validate_report(benchmark, report)
+
+
+def reference_target(local_app_data: Path) -> Path:
+    return local_app_data / "animaOS" / "benchmarks" / "corefs-catalog-reference-v1"
+
+
+def safe_path_probe(benchmark, *, attributes: dict[Path, int] | None = None):
+    configured = {path.resolve(): value for path, value in (attributes or {}).items()}
+
+    def probe(path: Path):
+        canonical = path.resolve(strict=True)
+        return benchmark.ReferencePathEvidence(
+            canonical_path=canonical,
+            volume_serial=1,
+            file_id=abs(hash(str(canonical).casefold())),
+            attributes=configured.get(canonical, 0),
+        )
+
+    return probe
+
+
+@pytest.mark.parametrize("danger", ["drive", "home", "repo", "local-app-data", "sibling"])
+def test_reference_target_location_rejects_dangerous_or_arbitrary_paths(
+    tmp_path: Path, danger: str
+) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+    candidates = {
+        "drive": Path(target.anchor or "/"),
+        "home": Path.home(),
+        "repo": REPO_ROOT,
+        "local-app-data": local,
+        "sibling": target.parent / "other-benchmark",
+    }
+
+    with pytest.raises(benchmark.ReferenceTargetError, match=r"dedicated|dangerous"):
+        benchmark.validate_reference_target_location(
+            candidates[danger],
+            REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
+            local,
+            (),
+        )
+
+
+def test_reference_target_rejects_artifact_parent_or_ancestor(tmp_path: Path) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+
+    with pytest.raises(benchmark.ReferenceTargetError, match="artifact"):
+        benchmark.validate_reference_target_location(
+            target,
+            target / "catalog-reference-v1.json",
+            local,
+            (),
+        )
+
+
+def test_first_creation_writes_versioned_runner_sentinel(tmp_path: Path) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    local.mkdir()
+    target = reference_target(local)
+
+    benchmark.prepare_reference_target(
+        target,
+        REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
+        clean_target=True,
+        local_app_data_probe=lambda: local,
+        sync_roots_probe=lambda: (),
+        path_probe=safe_path_probe(benchmark),
+    )
+
+    sentinel = target / benchmark.TARGET_SENTINEL_NAME
+    assert sentinel.read_bytes() == benchmark.TARGET_SENTINEL_CONTENT
+
+
+@pytest.mark.parametrize("sentinel", [None, b"wrong-owner-or-version\n"])
+def test_cleanup_rejects_missing_or_mismatched_sentinel(
+    tmp_path: Path, sentinel: bytes | None
+) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+    target.mkdir(parents=True)
+    if sentinel is not None:
+        (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(sentinel)
+
+    with pytest.raises(benchmark.ReferenceTargetError, match="sentinel"):
+        benchmark.prepare_reference_target(
+            target,
+            REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
+            clean_target=True,
+            local_app_data_probe=lambda: local,
+            sync_roots_probe=lambda: (),
+            path_probe=safe_path_probe(benchmark),
+        )
+    assert target.is_dir()
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        0x00000400,  # FILE_ATTRIBUTE_REPARSE_POINT
+        0x00001000,  # FILE_ATTRIBUTE_OFFLINE
+        0x00040000,  # FILE_ATTRIBUTE_RECALL_ON_OPEN
+        0x00400000,  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+    ],
+)
+def test_cleanup_rejects_reparse_offline_or_cloud_files_tree_entries(
+    tmp_path: Path, attribute: int
+) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+    child = target / "fixture"
+    child.mkdir(parents=True)
+    (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(benchmark.TARGET_SENTINEL_CONTENT)
+
+    with pytest.raises(benchmark.ReferenceTargetError, match=r"reparse|offline|Cloud Files"):
+        benchmark.prepare_reference_target(
+            target,
+            REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
+            clean_target=True,
+            local_app_data_probe=lambda: local,
+            sync_roots_probe=lambda: (),
+            path_probe=safe_path_probe(benchmark, attributes={child: attribute}),
+        )
+    assert target.is_dir() and child.is_dir()
+
+
+def test_cleanup_fails_closed_when_target_identity_changes_before_delete(tmp_path: Path) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+    target.mkdir(parents=True)
+    (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(benchmark.TARGET_SENTINEL_CONTENT)
+    safe_probe = safe_path_probe(benchmark)
+    target_calls = 0
+
+    def swapped_probe(path: Path):
+        nonlocal target_calls
+        evidence = safe_probe(path)
+        if path.resolve() != target.resolve():
+            return evidence
+        target_calls += 1
+        return evidence._replace(file_id=1 if target_calls == 1 else 2)
+
+    with pytest.raises(benchmark.ReferenceTargetError, match=r"replaced|identity"):
+        benchmark.prepare_reference_target(
+            target,
+            REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
+            clean_target=True,
+            local_app_data_probe=lambda: local,
+            sync_roots_probe=lambda: (),
+            path_probe=swapped_probe,
+        )
+    assert target.is_dir()
+
+
+def test_cleanup_fails_closed_when_path_probe_fails(tmp_path: Path) -> None:
+    benchmark = load_benchmark_module()
+    local = tmp_path / "LocalAppData"
+    target = reference_target(local)
+    target.mkdir(parents=True)
+    (target / benchmark.TARGET_SENTINEL_NAME).write_bytes(benchmark.TARGET_SENTINEL_CONTENT)
+
+    def failed_probe(_path: Path):
+        raise OSError("probe denied")
+
+    with pytest.raises(benchmark.ReferenceTargetError, match="probe"):
+        benchmark.prepare_reference_target(
+            target,
+            REPO_ROOT / "docs" / "benchmarks" / "artifact.json",
+            clean_target=True,
+            local_app_data_probe=lambda: local,
+            sync_roots_probe=lambda: (),
+            path_probe=failed_probe,
+        )
+
+
+def test_registered_sync_roots_cover_multiple_accounts_and_alternate_providers() -> None:
+    benchmark = load_benchmark_module()
+    roots = benchmark.collect_synchronized_roots(
+        environ={},
+        registry_probe=lambda: (
+            Path(r"C:\Users\test\OneDrive"),
+            Path(r"C:\Users\test\OneDrive - Business A"),
+            Path(r"D:\Alternate OneDrive Provider"),
+        ),
+    )
+    assert roots == (
+        Path(r"C:\Users\test\OneDrive"),
+        Path(r"C:\Users\test\OneDrive - Business A"),
+        Path(r"D:\Alternate OneDrive Provider"),
+    )
+
+
+def test_registered_roots_catch_sync_target_with_missing_or_stale_environment() -> None:
+    benchmark = load_benchmark_module()
+    registered = Path(r"C:\Users\test\OneDrive - Business A")
+    roots = benchmark.collect_synchronized_roots(
+        environ={"OneDrive": r"C:\stale\missing"},
+        registry_probe=lambda: (registered,),
+    )
+    facts = benchmark.ReferenceVolumeFacts(
+        volume_root=Path("C:/"),
+        drive_type="fixed",
+        filesystem="NTFS",
+        synchronized_roots=roots,
+    )
+    with pytest.raises(benchmark.ReferenceTargetError, match="synchronized"):
+        benchmark._validate_reference_volume(registered / "benchmark", facts)
+
+
+def test_registered_sync_root_probe_failure_is_fail_closed() -> None:
+    benchmark = load_benchmark_module()
+
+    def failed_registry_probe():
+        raise OSError("registry denied")
+
+    with pytest.raises(benchmark.ReferenceTargetError, match=r"sync|registry"):
+        benchmark.collect_synchronized_roots(environ={}, registry_probe=failed_registry_probe)
