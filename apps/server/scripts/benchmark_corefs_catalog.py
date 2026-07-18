@@ -7,6 +7,7 @@ import ctypes
 import hashlib
 import json
 import math
+import ntpath
 import os
 import re
 import subprocess
@@ -18,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from ctypes import wintypes
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, NamedTuple
 
 MAX_CATALOG_PLAINTEXT_BYTES = 16 * 1024 * 1024
@@ -759,6 +760,20 @@ def probe_live_reference_host(
     )
 
 
+def _windows_path(value: str | os.PathLike[str]) -> PureWindowsPath:
+    return PureWindowsPath(str(value))
+
+
+def _windows_drive_letter(value: str | os.PathLike[str]) -> str:
+    return _windows_path(value).drive.rstrip(":").upper()
+
+
+def _same_windows_path(left: str | os.PathLike[str], right: str | os.PathLike[str]) -> bool:
+    return ntpath.normcase(ntpath.normpath(str(left))) == ntpath.normcase(
+        ntpath.normpath(str(right))
+    )
+
+
 def _probe_live_reference_host_from_sources(
     target: Path,
     *,
@@ -767,7 +782,7 @@ def _probe_live_reference_host_from_sources(
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ReferenceHostFacts:
     volume = volume_probe(target)
-    drive = volume.volume_root.drive.rstrip(":").upper()
+    drive = _windows_drive_letter(volume.volume_root)
     if len(drive) != 1 or not drive.isascii() or not drive.isalpha():
         raise ReferenceTargetError("reference target volume has no local drive letter")
     environment = os.environ.copy()
@@ -1239,7 +1254,8 @@ def _validate_profile(value: Any) -> dict[str, Any]:
     if profile["mode"] != "reference":
         raise ReportValidationError("profile.mode must be reference")
     target = _report_string(profile["target"], "profile.target")
-    if not Path(target).is_absolute():
+    windows_target = _windows_path(target)
+    if not windows_target.is_absolute():
         raise ReportValidationError("profile.target must be absolute")
     if _report_string(profile["architecture"], "profile.architecture").casefold() not in {
         "64-bit",
@@ -1336,7 +1352,7 @@ def _validate_profile(value: Any) -> dict[str, Any]:
             raise ReportValidationError(f"storage.{key} is not reference-grade")
     for key in ("volumeRoot", "model", "serialNumber", "physicalLocation"):
         _report_string(storage[key], f"storage.{key}")
-    if os.path.normcase(Path(storage["volumeRoot"]).drive) != os.path.normcase(Path(target).drive):
+    if _windows_path(storage["volumeRoot"]).drive.casefold() != windows_target.drive.casefold():
         raise ReportValidationError("storage volume contradicts the benchmark target")
     if not _report_bool(storage["internal"], "storage.internal"):
         raise ReportValidationError("storage must be internal")
@@ -1528,9 +1544,9 @@ def validate_and_finalize_report(
         {"path", "sha256", "volumeSerial", "fileId"},
         "benchmarkBinary",
     )
-    binary_path = Path(_report_string(binary["path"], "benchmarkBinary.path"))
+    binary_path = _report_string(binary["path"], "benchmarkBinary.path")
     binary_sha256 = _report_string(binary["sha256"], "benchmarkBinary.sha256")
-    if not _same_resolved_path(binary_path, expected_binary_path):
+    if not _same_windows_path(binary_path, expected_binary_path):
         raise ReportValidationError("benchmarkBinary.path does not match the executed binary")
     if (
         re.fullmatch(r"[0-9a-f]{64}", binary_sha256) is None
@@ -1551,8 +1567,8 @@ def validate_and_finalize_report(
             "reference report requires exactly 30 warmups and at least 200 samples"
         )
     profile = _validate_profile(record["profile"])
-    profile_target = Path(profile["target"])
-    if not _same_resolved_path(profile_target, expected_reference_target):
+    profile_target = _report_string(profile["target"], "profile.target")
+    if not _same_windows_path(profile_target, expected_reference_target):
         raise ReportValidationError(
             "profile.target is not the independently derived reference target"
         )

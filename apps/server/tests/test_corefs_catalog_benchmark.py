@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -90,9 +90,15 @@ def live_cim_payload() -> dict[str, object]:
     }
 
 
-def volume_facts(module, *, drive_type: str = "fixed", filesystem: str = "NTFS"):
+def volume_facts(
+    module,
+    *,
+    drive_type: str = "fixed",
+    filesystem: str = "NTFS",
+    volume_root=Path("C:/"),
+):
     return module.ReferenceVolumeFacts(
-        volume_root=Path("C:/"),
+        volume_root=volume_root,
         drive_type=drive_type,
         filesystem=filesystem,
         synchronized_roots=(Path("C:/Users/test/OneDrive"),),
@@ -111,7 +117,7 @@ def cache_facts(module, *, write_through: bool = True, flush: bool = True):
     )
 
 
-def probe_live_facts(module, payload: dict[str, object]):
+def probe_live_facts(module, payload: dict[str, object], *, volume_root=Path("C:/")):
     completed = SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
     calls: list[tuple[list[str], dict[str, str]]] = []
 
@@ -121,7 +127,7 @@ def probe_live_facts(module, payload: dict[str, object]):
 
     facts = module._probe_live_reference_host_from_sources(
         Path("C:/benchmarks/corefs-catalog-reference-v1"),
-        volume_probe=lambda _target: volume_facts(module),
+        volume_probe=lambda _target: volume_facts(module, volume_root=volume_root),
         cache_probe=lambda _disk_number: cache_facts(module),
         runner=runner,
     )
@@ -137,7 +143,11 @@ def test_injected_live_reference_probe_is_platform_independent(monkeypatch) -> N
         SimpleNamespace(name="posix", environ=os.environ),
     )
 
-    facts = probe_live_facts(benchmark, live_cim_payload())
+    facts = probe_live_facts(
+        benchmark,
+        live_cim_payload(),
+        volume_root=PurePosixPath("C:/"),
+    )
 
     assert facts.os_caption == "Microsoft Windows 11 Pro"
     assert facts.disk_number == 0
@@ -489,6 +499,18 @@ def remove_path(payload: dict[str, object], path: str) -> None:
 def test_complete_reference_report_schema_is_accepted() -> None:
     benchmark = load_benchmark_module()
     report = complete_report()
+
+    assert validate_report(benchmark, report) == report
+
+
+def test_reference_report_validation_does_not_use_host_path_semantics(monkeypatch) -> None:
+    benchmark = load_benchmark_module()
+    report = complete_report()
+
+    def reject_host_path(*_args, **_kwargs):
+        raise AssertionError("recorded Windows paths must not use the host Path parser")
+
+    monkeypatch.setattr(benchmark, "Path", reject_host_path)
 
     assert validate_report(benchmark, report) == report
 
