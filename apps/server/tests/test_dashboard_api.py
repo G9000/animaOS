@@ -1231,6 +1231,106 @@ def test_config_update_without_embedding_fields_leaves_embedding_config_alone() 
             _restore_config_settings(original)
 
 
+def test_config_update_clears_embedding_key_when_provider_switches_without_new_key() -> None:
+    """Switching embeddingProvider without supplying a new embeddingApiKey
+    must clear the previously-stored key rather than let the old provider's
+    secret be reused against the new provider."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_api_key = "sk-old"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "doubleword",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "doubleword"
+            assert settings.agent_embedding_api_key != "sk-old"
+            assert settings.agent_embedding_api_key == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "doubleword"
+            assert config["hasEmbeddingApiKey"] is False
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_provider_switch_with_new_key_uses_new_key() -> None:
+    """Switching embeddingProvider WITH a fresh embeddingApiKey must apply
+    the new key, not clear it."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_api_key = "sk-old"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "doubleword",
+                    "embeddingApiKey": "sk-new",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "doubleword"
+            assert settings.agent_embedding_api_key == "sk-new"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_same_provider_without_new_key_leaves_key_unchanged() -> None:
+    """A PUT that re-sends the SAME embeddingProvider already stored, with no
+    embeddingApiKey, must not spuriously clear the existing key — only an
+    actual provider change should trigger the clear."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_api_key = "sk-old"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "openai",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "openai"
+            assert settings.agent_embedding_api_key == "sk-old"
+        finally:
+            _restore_config_settings(original)
+
+
 def test_runtime_settings_persist_and_reload(tmp_path) -> None:
     original_data_dir = settings.data_dir
     original_provider = settings.agent_provider

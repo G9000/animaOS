@@ -417,7 +417,16 @@ async def update_config(
         # those still apply, against the currently-configured embedding
         # provider. Only fields present in the payload are touched.
         if embedding_provider is not None:
+            provider_changed = embedding_provider != settings.agent_embedding_provider
             settings.agent_embedding_provider = embedding_provider
+            if provider_changed and payload.embeddingApiKey is None:
+                # Switching to a different cloud provider without supplying
+                # a fresh key must not let the OLD provider's stored key be
+                # silently reused against the NEW provider — that would send
+                # the wrong secret. Clear it; the user must re-enter a key
+                # for the new provider (unless the payload provides one
+                # below, in which case that overrides this clear).
+                settings.agent_embedding_api_key = ""
         if payload.embeddingModel is not None:
             settings.agent_embedding_model = payload.embeddingModel.strip()
         if payload.embeddingApiKey is not None:
