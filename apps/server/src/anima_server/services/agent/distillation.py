@@ -26,7 +26,13 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from anima_server.models import ForgetAuditLog, MemoryItem, MemoryItemEvidence, TendencyContribution
+from anima_server.models import (
+    ForgetAuditLog,
+    MemoryItem,
+    MemoryItemEvidence,
+    MemoryItemTag,
+    TendencyContribution,
+)
 from anima_server.services.agent.claims import upsert_tendency_claim
 from anima_server.services.agent.heat_scoring import (
     MAX_IMPORTANCE,
@@ -218,7 +224,15 @@ def _distill_one_item(
     item.content = ef(user_id, "", table="memory_items", field="content")
     item.embedding_json = None
     item.embedding_checksum = None
+    item.tags_json = None
     item.distilled_at = now
+
+    # Scrub tag junction rows too: get_all_tags reads memory_item_tags
+    # directly (user filter only), so a leftover tag would keep revealing
+    # the distilled topic that item retrieval correctly hides.
+    db.execute(
+        delete(MemoryItemTag).where(MemoryItemTag.item_id == item.id)
+    )
 
     evidence_deleted = db.execute(
         delete(MemoryItemEvidence).where(

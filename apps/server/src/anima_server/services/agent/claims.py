@@ -259,12 +259,23 @@ def upsert_tendency_claim(
     if existing is not None:
         return existing
 
-    phrase = f"recurring {memory_class} signal: {_compact_topic_label(topic_content)}"
+    # slot and descriptor derive from the SHARED topic key, never from this
+    # contributor's raw wording. Collapsing structured variants ("likes
+    # sushi" / "loves sushi") share a claim, so if the descriptor came from
+    # whichever contributor happened to be first, forgetting that item would
+    # leave its wording behind (right-to-forget recompute only touches
+    # value_json). Keying the descriptor on the shared topic makes it
+    # contributor-order-independent AND identical to what the never-distilled
+    # reference universe produces for the surviving set. (Freeform topics are
+    # single-contributor by construction — a distinct content digest per key
+    # — so forgetting the sole contributor deletes the whole claim.)
+    label = _tendency_label_from_topic_key(topic_key)
+    phrase = f"recurring {memory_class} signal: {label}"
     claim = MemoryClaim(
         user_id=user_id,
         subject_type="user",
         namespace=TENDENCY_NAMESPACE,
-        slot=_content_slug(topic_content),
+        slot=topic_key,
         value_text=ef(user_id, phrase, table="memory_items", field="content"),
         polarity="positive",
         confidence=0.5,
@@ -280,15 +291,21 @@ def upsert_tendency_claim(
     return claim
 
 
-def _compact_topic_label(content: str, max_words: int = 4) -> str:
-    """Short, deterministic label for a tendency claim's phrase text.
+def _tendency_label_from_topic_key(topic_key: str, max_words: int = 4) -> str:
+    """Compact descriptor for a tendency claim, derived ONLY from the shared
+    topic key so it is identical for every contributor to the same claim.
 
-    The canonical key (``derive_topic_key``) uses the full content slug +
-    digest to correctly distinguish/collapse topics; the *displayed* phrase
-    only needs to be a compact human-readable tag, so it takes just the
-    first few slug tokens.
+    The topic key looks like ``user:{ns}:{slot}:{value_slug}_{digest}``
+    (structured) or ``user:{category}:{slug}_{digest}`` (freeform). Take the
+    last segment, drop the trailing hex digest ``derive_topic_key`` appends,
+    and keep the first few tokens. Never reads raw item content — a claim's
+    descriptor must not carry a forgotten contributor's wording.
     """
-    tokens = [token for token in _content_slug(content).split("_") if token][:max_words]
+    tail = topic_key.rsplit(":", 1)[-1]
+    # Drop the trailing "_<hexdigest>" (8 or 16 hex chars) the topic-key
+    # slug helpers append for collision resistance.
+    tail = re.sub(r"_[0-9a-f]{8,16}$", "", tail)
+    tokens = [token for token in tail.split("_") if token][:max_words]
     return "_".join(tokens) or "signal"
 
 

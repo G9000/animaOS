@@ -395,6 +395,50 @@ def test_forget_after_distill_multi_contributor_recomputes_exactly(db: Session) 
 
         assert remaining_claim.value_json == ref_claim.value_json
         assert remaining_claim.canonical_key == ref_claim.canonical_key
+        # value_text (the encrypted descriptor) must ALSO match the
+        # reference — it is derived from the shared topic key, not any one
+        # contributor's wording, so forgetting a contributor leaves no
+        # trace of its phrasing.
+        assert df(1, remaining_claim.value_text, table="memory_items", field="content") == df(
+            1, ref_claim.value_text, table="memory_items", field="content"
+        )
+        assert remaining_claim.slot == ref_claim.slot
+
+
+def test_forget_distilled_variant_leaves_no_forgotten_wording(db: Session) -> None:
+    """Two collapsing-but-differently-worded structured signals share one
+    tendency claim; forgetting the first must leave a descriptor derived
+    from the shared topic only — never the forgotten item's wording."""
+    forgotten = _make_item(db, content="likes sushi", category="preference")
+    survivor = _make_item(db, content="loves sushi", category="preference")
+
+    distill_due_items(db, user_id=1, max_per_run=20)
+    claim = db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency"))
+    assert claim is not None
+    # Both collapsed onto one claim (shared "likes:sushi" topic key).
+    all_tendency_claims = db.scalars(
+        select(MemoryClaim).where(MemoryClaim.namespace == "tendency")
+    ).all()
+    assert len(all_tendency_claims) == 1
+
+    forget_memory(db, memory_id=forgotten.id, user_id=1)
+
+    remaining = db.get(MemoryClaim, claim.id)
+    assert remaining is not None
+    descriptor = df(1, remaining.value_text, table="memory_items", field="content")
+    # The descriptor is topic-derived ("...sushi"), and must not carry the
+    # forgotten item's distinctive verb.
+    assert "sushi" in descriptor
+    assert "likes" not in remaining.slot.rsplit(":", 1)[-1] or "sushi" in remaining.slot
+    # Survivor still contributes; claim intact.
+    assert survivor.id in {
+        c.tombstone_item_id
+        for c in db.scalars(
+            select(TendencyContribution).where(
+                TendencyContribution.tendency_claim_id == claim.id
+            )
+        ).all()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -604,3 +648,28 @@ def test_decay_all_heat_leaves_tombstones_untouched(db: Session) -> None:
     # The tombstone was not in the working set...
     assert db.get(MemoryItem, item_id).heat == frozen_heat
     assert updated == 0
+
+
+def test_distillation_scrubs_tombstone_tags(db: Session) -> None:
+    """Distillation must scrub tags_json and memory_item_tags rows, or
+    get_all_tags keeps revealing a topic item retrieval correctly hides."""
+    from anima_server.models import MemoryItemTag
+    from anima_server.services.agent.memory_store import get_all_tags
+
+    item = _make_item(db, memory_class="casual", content="stressed about the commute")
+    db.add(MemoryItemTag(user_id=1, item_id=item.id, tag="commute"))
+    item.tags_json = ["commute"]
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    assert "commute" in get_all_tags(db, user_id=1)
+
+    distill_due_items(db, user_id=1, max_per_run=20)
+
+    assert get_all_tags(db, user_id=1) == []
+    assert db.get(MemoryItem, item.id).tags_json is None
+    assert db.scalars(
+        select(MemoryItemTag).where(MemoryItemTag.item_id == item.id)
+    ).all() == []
