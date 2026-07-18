@@ -10,12 +10,13 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeDocument,
+    RuntimeDocumentChunk,
     RuntimeImageMessageLink,
     RuntimeKnowledgeConcept,
     RuntimeKnowledgeConceptSource,
@@ -1980,6 +1981,37 @@ def _full_document_texts(
     that ships is never re-truncated by prompt assembly.
     """
     budget_chars = resolve_document_context_budget_chars()
+
+    # Cheap admission check: reject an oversized selection via a SQL length
+    # aggregate BEFORE loading any chunk body. `SUM(LENGTH(content_text))` is
+    # a strict lower bound of the assembled text length (assembly still adds
+    # "\n\n" separators between chunks and per-document markers on top), so
+    # rejecting when the aggregate alone exceeds budget is always correct.
+    # This only rejects — it never admits on its own; a selection that
+    # passes still runs the existing per-document load/measure loop below
+    # unchanged, and the caller still makes the final fit decision on the
+    # fully assembled block value. Works on both Postgres (prod) and sqlite
+    # (tests): LENGTH/SUM are standard on both backends. Fails open (falls
+    # through to the existing path) on any query error rather than crash.
+    try:
+        chunk_length_sum = runtime_db.scalar(
+            select(func.sum(func.length(RuntimeDocumentChunk.content_text))).where(
+                RuntimeDocumentChunk.document_id.in_(document_ids),
+                RuntimeDocumentChunk.user_id == user_id,
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Full-document length aggregate failed for user %s documents %s; "
+            "falling back to per-document loading",
+            user_id,
+            document_ids,
+            exc_info=True,
+        )
+    else:
+        if chunk_length_sum is not None and chunk_length_sum > budget_chars:
+            return None
+
     documents: list[tuple[RuntimeDocument, str]] = []
     total_chars = 0
     for document_id in document_ids:

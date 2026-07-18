@@ -907,6 +907,76 @@ def test_oversized_selection_falls_back_to_retrieval(
     assert "(complete document)" not in block.value
 
 
+def test_oversized_selection_rejected_without_loading_chunk_bodies(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    """P2 regression: an oversized selection must be rejected by a cheap SQL
+    length aggregate BEFORE any chunk body is loaded from the DB. Loading
+    every chunk's content_text and joining it into one string just to
+    discover overflow is an O(full-document-size) DB load + allocation on
+    every chat turn for large indexed PDFs that will fall back to
+    retrieval anyway.
+    """
+    monkeypatch.setattr(settings, "document_full_context_char_cap", 50)
+    document_id = _document_with_chunks(
+        runtime_db,
+        chunk_texts=[
+            "A chunk with enough text to blow past a fifty character cap easily.",
+        ],
+    )
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> list[Any]:
+        raise AssertionError(
+            "list_document_chunks must not be called when the cheap length "
+            "aggregate already proves the selection is over budget"
+        )
+
+    monkeypatch.setattr(agent_service, "list_document_chunks", fail_if_called)
+
+    result = agent_service._full_document_texts(
+        runtime_db,
+        user_id=7,
+        document_ids=[document_id],
+    )
+
+    assert result is None
+
+
+def test_under_budget_selection_still_loads_chunk_bodies(
+    monkeypatch: Any, runtime_db: Session
+) -> None:
+    """The aggregate is purely an admission check: a selection that passes it
+    must still load chunk bodies and inject the document whole, exactly as
+    before."""
+    document_id = _document_with_chunks(
+        runtime_db,
+        chunk_texts=[
+            "First chunk covers the installation steps for the relay.",
+            "Second chunk covers the calibration window for the pump.",
+        ],
+    )
+
+    calls: list[int] = []
+    real_list_document_chunks = agent_service.list_document_chunks
+
+    def spy_list_document_chunks(runtime_db: object, *, document_id: int) -> list[Any]:
+        calls.append(document_id)
+        return real_list_document_chunks(runtime_db, document_id=document_id)
+
+    monkeypatch.setattr(agent_service, "list_document_chunks", spy_list_document_chunks)
+
+    result = agent_service._full_document_texts(
+        runtime_db,
+        user_id=7,
+        document_ids=[document_id],
+    )
+
+    assert calls == [document_id]
+    assert result is not None
+    assert len(result) == 1
+    assert "First chunk covers the installation steps" in result[0][1]
+
+
 def test_assembled_block_over_budget_falls_back_to_retrieval(
     monkeypatch: Any, runtime_db: Session
 ) -> None:
