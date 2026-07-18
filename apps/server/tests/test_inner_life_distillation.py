@@ -880,3 +880,34 @@ def test_evidence_backfill_skips_distilled_tombstones(db: Session) -> None:
     result = backfill_memory_item_evidence(db, user_id=1)
     # The tombstone (empty content, no evidence) is not scanned/backfilled.
     assert result.scanned == 0
+
+
+def test_direct_delete_of_tombstone_scrubs_ledger(db: Session) -> None:
+    """Directly deleting a distilled tombstone (the DELETE /items/{id} route
+    path, since SQLite FK cascade is off) must scrub its ledger row and
+    recompute/delete the affected tendency — no orphaned residue."""
+    from anima_server.services.agent.forgetting import (
+        _scrub_tendency_contributions_for_forget,
+    )
+
+    item = _make_item(db, memory_class="casual", content="stressed about the commute")
+    add_memory_item_evidence(
+        db, user_id=1, memory_item_id=item.id,
+        evidence_text="x", source_kind="user_message",
+    )
+    db.flush()
+    item_id = item.id
+    distill_due_items(db, user_id=1, max_per_run=20)
+    assert db.scalars(select(TendencyContribution)).all()  # precondition
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is not None
+
+    # Replicate the route's cleanup for a distilled item, then delete it.
+    tombstone = db.get(MemoryItem, item_id)
+    assert tombstone.distilled_at is not None
+    _scrub_tendency_contributions_for_forget(db, user_id=1, chain_ids=[item_id])
+    db.delete(tombstone)
+    db.flush()
+
+    # No orphaned ledger row; the sole-contributor tendency is gone.
+    assert db.scalars(select(TendencyContribution)).all() == []
+    assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is None

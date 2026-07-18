@@ -307,6 +307,17 @@ async def delete_memory_item(
             MemoryItemEvidence.memory_item_id == item_id,
         )
     )
+    # SQLite FK cascades are not enforced, so directly deleting a distilled
+    # tombstone would orphan its TendencyContribution ledger row and leave
+    # the aggregate tendency counting a memory that no longer exists. Scrub
+    # the ledger and recompute affected tendencies via the same right-to-
+    # forget path forget_memory uses.
+    if existing.distilled_at is not None:
+        from anima_server.services.agent.forgetting import (
+            _scrub_tendency_contributions_for_forget,
+        )
+
+        _scrub_tendency_contributions_for_forget(db, user_id=user_id, chain_ids=[item_id])
     db.delete(existing)
     db.commit()
     _remove_from_vector_store(user_id, item_id, db)
@@ -366,6 +377,10 @@ def _search_memory_items_via_rust_index(
             select(MemoryItem).where(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
+                # SQL-side tombstone guard: index cleanup after distillation
+                # is best-effort, so a stale index hit must not hydrate a
+                # content-free tombstone back into search results.
+                MemoryItem.distilled_at.is_(None),
                 MemoryItem.id.in_(record_ids),
             )
         ).all()

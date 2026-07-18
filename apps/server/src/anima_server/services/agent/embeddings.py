@@ -713,7 +713,12 @@ async def semantic_search(
     items_by_id = {
         item.id: item
         for item in db.scalars(
-            select(MemoryItem).where(MemoryItem.id.in_(item_ids))
+            select(MemoryItem).where(
+                MemoryItem.id.in_(item_ids),
+                # Best-effort index cleanup after distillation may lag, so
+                # exclude tombstones SQL-side rather than trust the index.
+                MemoryItem.distilled_at.is_(None),
+            )
         ).all()
     }
 
@@ -1270,7 +1275,14 @@ async def hybrid_search(
     items_by_id = (
         {
             item.id: item
-            for item in db.scalars(select(MemoryItem).where(MemoryItem.id.in_(merged_ids))).all()
+            for item in db.scalars(
+                select(MemoryItem).where(
+                    MemoryItem.id.in_(merged_ids),
+                    # Tombstone guard: a lagging index must not resurface a
+                    # distilled item through the hybrid-search path.
+                    MemoryItem.distilled_at.is_(None),
+                )
+            ).all()
         }
         if merged_ids
         else {}
