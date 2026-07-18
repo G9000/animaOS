@@ -100,7 +100,7 @@ export default function AiSettings() {
         setProviders(providerList);
         setConfig(loadedConfig);
         setProvider(loadedConfig.provider);
-        if (!LOCAL_PROVIDERS.has(loadedConfig.provider)) { setCloudEnabled(true); localStorage.setItem(CLOUD_STORAGE_KEY, "true"); }
+        if (!LOCAL_PROVIDERS.has(loadedConfig.provider) || !EMBEDDING_LOCAL_PROVIDERS.has(loadedConfig.embeddingProvider)) { setCloudEnabled(true); localStorage.setItem(CLOUD_STORAGE_KEY, "true"); }
         setModel(loadedConfig.model);
         setExtractionModel(loadedConfig.extractionModel || "");
         setOllamaUrl(loadedConfig.ollamaUrl || OLLAMA_DEFAULT_URL);
@@ -134,6 +134,7 @@ export default function AiSettings() {
   const handleDisableCloud = () => {
     setCloudEnabled(false); localStorage.removeItem(CLOUD_STORAGE_KEY);
     if (isCloudProvider) handleProviderChange(localProviders[0]?.name || "ollama");
+    if (!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)) handleEmbeddingProviderChange("fastembed");
   };
   const handleProviderChange = (next: string) => {
     setProvider(next);
@@ -260,7 +261,10 @@ export default function AiSettings() {
                   Cloud provider active — {provider}
                 </p>
                 <p className="font-mono text-[9px] text-foreground/55 tracking-wide leading-relaxed">
-                  Your messages are processed by {provider}'s servers. Everything else — your memories, vault, diary, and personal data — never leaves this device and remains fully encrypted.
+                  Your messages are processed by {provider}'s servers.{" "}
+                  {EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)
+                    ? "Everything else — your memories, vault, diary, and personal data — never leaves this device and remains fully encrypted."
+                    : `Your embedding provider (${embeddingProvider}) is also cloud-based — see the Embeddings card below for what that sends off-device.`}
                 </p>
               </div>
             </div>
@@ -295,12 +299,16 @@ export default function AiSettings() {
                 <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Provider</label>
                 <select
                   value={embeddingProvider}
-                  onChange={(e) => handleEmbeddingProviderChange(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (cloudEnabled || EMBEDDING_LOCAL_PROVIDERS.has(next)) handleEmbeddingProviderChange(next);
+                  }}
                   className={INPUT}
                 >
                   {EMBEDDING_PROVIDERS.map((p) => (
-                    <option key={p} value={p}>
+                    <option key={p} value={p} disabled={!cloudEnabled && !EMBEDDING_LOCAL_PROVIDERS.has(p)}>
                       {p}{EMBEDDING_LOCAL_PROVIDERS.has(p) ? " (local)" : " (cloud)"}{p === "fastembed" ? " — built-in" : ""}
+                      {!cloudEnabled && !EMBEDDING_LOCAL_PROVIDERS.has(p) ? " — enable cloud to use" : ""}
                     </option>
                   ))}
                 </select>
@@ -318,6 +326,22 @@ export default function AiSettings() {
                   Changing the provider or model re-checks the embedding contract; existing memories are re-embedded automatically.
                 </p>
               </div>
+              {!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider) && (
+                <div className="border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 flex items-start gap-3">
+                  <svg className="shrink-0 mt-0.5 text-amber-400/70" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 2L1.5 13.5h13L8 2z" />
+                    <path d="M8 7v3M8 11.5v.5" />
+                  </svg>
+                  <div className="space-y-1.5">
+                    <p className="font-mono text-[10px] text-amber-300/80 tracking-[0.12em] uppercase font-semibold">
+                      Cloud embedding provider active — {embeddingProvider}
+                    </p>
+                    <p className="font-mono text-[9px] text-foreground/55 tracking-wide leading-relaxed">
+                      Unlike chat, this sends more than messages: the text of your memories and document chunks is transmitted to {embeddingProvider}'s servers to be embedded. This overrides the "memories stay encrypted on-device" guarantee shown above for anything that gets embedded with this provider.
+                    </p>
+                  </div>
+                </div>
+              )}
               {!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider) && (
                 <div className="space-y-2">
                   <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">API Key</label>
