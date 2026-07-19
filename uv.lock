@@ -208,6 +208,7 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "sqlcipher3" },
     { name = "trafilatura" },
+    { name = "tzdata" },
     { name = "uuid-utils" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -254,6 +255,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.43" },
     { name = "sqlcipher3", specifier = ">=0.5.4" },
     { name = "trafilatura", specifier = ">=2.0" },
+    { name = "tzdata", specifier = ">=2025.2" },
     { name = "uuid-utils", specifier = ">=0.14.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0" },
 ]
