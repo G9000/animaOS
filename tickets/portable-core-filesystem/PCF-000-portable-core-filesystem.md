@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: blocked
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-20 03:14 MYT
+- Updated: 2026-07-20 03:49 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | blocked | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -175,6 +175,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-20 02:47 MYT - Regenerated the exact 30/200 evidence from clean source `7dd4fd21`, producing strict artifact SHA-256 `5444255e8f7d116ecb9ccee9e3af6c329376770f45385eb3d6330e3caa86637d`, binary SHA-256 `d4fbcad5d73c6f86076c69a5179e753aefafa8f7810085d9c7cfb2df6a003cad`, and committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`. Independent provenance/schema validation and direct HEAD/catalog/object/temp inspection passed. PCF-002 and this initiative remain blocked, with original Started values preserved, because medium, maximum-live, and exact-16-MiB commit/lock p95 values of 220.3245/218.4084 ms, 1,081.4649/1,075.2657 ms, and 967.0579/961.7551 ms still fail; durable p95 0.7306 ms and maximum-live size 8,255,077 bytes pass, Steps 12/13 remain open, and PCF-003 remains ineligible.
 - 2026-07-20 03:14 MYT - Rebased PR #110 cleanly onto `origin/main` at `2a741d9c`; the kernel-acquisition fix is now `f81d2ff8`. Repaired the rebased head's stale server lock metadata with the two missing `tzdata` project entries in commit `d9944ff9`. `uv lock --check`, the exact Server Ruff workflow command, full Rust 1.75 CoreFS tests, strict all-target Clippy, and all 121 benchmark-contract tests pass.
 - 2026-07-20 03:14 MYT - Archived the prior create-only target intact as `corefs-catalog-reference-v1.pre-main-rebase-20260720-025814` and regenerated exact 30/200 evidence from clean source `d9944ff9d692f8aa6b46edb2b70c96edc31d59ba`. Independent held-path source/binary/Cargo.lock/target/build/schema validation passed with artifact SHA-256 `1fd7f1d7d6bb5c99e95793cfd6ba285329a4d982190ff675448cae3aacd6c63e`, binary SHA-256 `136533f7bc7e6ed1bb512251be04988ee50b041702843a868303859133e2f7fd`, volume serial `4008503144`, file ID `2814749768803186`, and committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`; direct inspection found HEAD plus 232 catalogs, object counts 500/2,500/0, and zero temporary files. PCF-002 and this initiative remain blocked, with original Started values preserved, because medium, maximum-live, and exact-16-MiB commit/lock p95 values of 207.7262/205.5434 ms, 1,060.9271/1,054.3169 ms, and 1,131.7692/1,123.8901 ms still fail; durable p95 0.7580 ms and maximum-live size 8,255,077 bytes pass, Steps 12/13 remain open, and PCF-003 remains ineligible.
+- 2026-07-20 03:49 MYT - Cleared the recorded PCF-002 design-decision blocker after the user approved the conservative exact-HEAD authenticated snapshot cache and validated-state fast path. Resumed PCF-002 and this parent on isolated branch `codex/pcf-002-catalog-performance` from merged main `5a3a7a0f`; the full Rust 1.75 CoreFS suite and all 121 benchmark-contract tests pass at baseline. PCF-003 remains backlog and ineligible until PCF-002's unchanged exact 30/200 latency gates pass and the child completes.
 
 ## Validation
 

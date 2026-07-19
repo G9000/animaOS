@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: blocked
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-20 03:14 MYT
+- Updated: 2026-07-20 03:49 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -155,6 +155,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-20 02:47 MYT - Regenerated evidence by archiving the prior create-only target intact as `corefs-catalog-reference-v1.pre-lock-acquisition-20260720-023118` and rerunning the exact 30/200 profile from clean source `7dd4fd21954afa6d780927a8fb035ab9b6fae9a0`. Independent validation matched source, exact target/argv, private build record, committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`, and preserved binary identity (volume serial `4008503144`, file ID `1970324838373422`) with binary SHA-256 `d4fbcad5d73c6f86076c69a5179e753aefafa8f7810085d9c7cfb2df6a003cad`. Direct inspection confirmed HEAD plus 232 catalogs, object counts 500/2,500/0, and zero temporary files. Artifact SHA-256 is `5444255e8f7d116ecb9ccee9e3af6c329376770f45385eb3d6330e3caa86637d`. Durable-write p95 passed at 0.7306 ms and maximum-live size passed at 8,255,077 bytes, while medium, maximum-live, and serialized-limit commit/lock p95 values remained red at 220.3245/218.4084 ms, 1,081.4649/1,075.2657 ms, and 967.0579/961.7551 ms. PCF-002 remains blocked with its original Started value preserved; plan Steps 12 and 13 remain open.
 - 2026-07-20 03:14 MYT - Rebased PR #110 cleanly onto `origin/main` at `2a741d9c`; the review fix is now commit `f81d2ff8`. The rebased merge result exposed `main`'s stale `uv.lock` project metadata for `tzdata>=2025.2`, so commit `d9944ff9` adds only the missing dependency and `requires-dist` entries. `uv lock --check`, the exact `uv run --locked --only-group dev ruff check src tests` workflow command, full Rust 1.75 CoreFS tests, strict all-target Clippy, and all 121 benchmark-contract tests pass.
 - 2026-07-20 03:14 MYT - Archived the prior create-only target intact as `corefs-catalog-reference-v1.pre-main-rebase-20260720-025814` and reran the exact 30/200 profile from clean source `d9944ff9d692f8aa6b46edb2b70c96edc31d59ba`. Independent validation held the LocalAppData target chain and preserved binary, matched source, exact target/argv, private build record, committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`, and binary identity (volume serial `4008503144`, file ID `2814749768803186`) with binary SHA-256 `136533f7bc7e6ed1bb512251be04988ee50b041702843a868303859133e2f7fd`. Closed-schema/cross-field validation passed; direct inspection confirmed HEAD plus 232 catalogs, object counts 500/2,500/0, and zero temporary files. Artifact SHA-256 is `1fd7f1d7d6bb5c99e95793cfd6ba285329a4d982190ff675448cae3aacd6c63e`. Durable-write p95 passed at 0.7580 ms and maximum-live size passed at 8,255,077 bytes, while medium, maximum-live, and serialized-limit commit/lock p95 values remained red at 207.7262/205.5434 ms, 1,060.9271/1,054.3169 ms, and 1,131.7692/1,123.8901 ms. PCF-002 remains blocked with its original Started value preserved; plan Steps 12 and 13 remain open.
+- 2026-07-20 03:49 MYT - Resumed PCF-002 after the user approved a conservative catalog-commit performance revision: an exact-HEAD authenticated in-process snapshot cache plus removal of redundant validation for already-validated immutable catalog state, without changing the full-generation format, durability sequence, object-file layout checks, benchmark timer, or acceptance gates. Work continues in isolated branch `codex/pcf-002-catalog-performance` from merged main `5a3a7a0f`; the clean baseline passed the full Rust 1.75 CoreFS suite and all 121 benchmark-contract tests. The original Started value is preserved, and PCF-003 remains ineligible until the exact 30/200 latency gates pass and PCF-002 completes.
 
 ## Validation
 
