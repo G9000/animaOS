@@ -1365,6 +1365,47 @@ class TestReparsePendingDocumentsTask:
         assert "pending" in result
 
     @pytest.mark.asyncio()
+    async def test_parse_degraded_skips_and_continues(self, rt_factory, monkeypatch):
+        """A per-document Docling crash (parse_degraded) must NOT abort the
+        cycle: the offending file sorts first by id and stays an indexed
+        preview candidate, so aborting on it would head-of-line-block every
+        document behind it forever. The loop skips it and keeps going."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            if document_id == 1:
+                return ReparseResult(status="parse_degraded", detail="docling crashed")
+            return ReparseResult(status="upgraded", chunk_count=3)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # All three candidates attempted — the degraded doc #1 did NOT block
+        # #2 and #3 (the head-of-line-blocking bug).
+        assert calls == [1, 2, 3]
+        assert "reparsed 2" in result
+        assert "could not be parsed" in result
+
+    @pytest.mark.asyncio()
     async def test_upgraded_still_commits_and_counts(self, rt_factory, monkeypatch):
         """Regression guard alongside the upgraded_unembedded fix above: a
         normal successful upgrade must still commit and count as reparsed —

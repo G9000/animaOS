@@ -1061,8 +1061,16 @@ async def _task_knowledge_autocompile(
 # and, since an unavailable embedding backend affects every remaining
 # candidate identically, aborts the rest of the budget to retry next cycle
 # once embeddings recover.
+#
+# These are GLOBAL failures — every remaining candidate would hit them
+# identically this cycle, so aborting the budget and retrying next cycle is
+# correct. A per-document failure (parse_degraded: Docling was ready but
+# crashed on this one file) is deliberately NOT here: aborting on it would
+# let a single pathological file, which sorts first by document id and stays
+# an indexed preview candidate, head-of-line-block every document behind it
+# forever. Such a file is skipped and the loop continues.
 _REPARSE_ABORT_STATUSES = frozenset(
-    {"pack_not_ready", "parse_degraded", "parser_unavailable", "upgraded_unembedded"}
+    {"pack_not_ready", "parser_unavailable", "upgraded_unembedded"}
 )
 
 
@@ -1103,6 +1111,7 @@ async def _task_reparse_pending_documents(
     def _reparse_cycle() -> str:
         reparsed = 0
         missing = 0
+        degraded = 0
         embeddings_unavailable = False
         candidates: list[int] = []
         with factory() as runtime_db:
@@ -1116,6 +1125,16 @@ async def _task_reparse_pending_documents(
                 if result.status == "upgraded":
                     reparsed += 1
                     runtime_db.commit()
+                    continue
+                if result.status == "parse_degraded":
+                    # Docling was ready but crashed on THIS specific file
+                    # (corrupt/pathological). This is per-document, not a
+                    # global parser failure — skip it and keep going so one
+                    # bad file can't head-of-line-block the rest of the queue.
+                    # Nothing was mutated before the quality check, so the
+                    # rollback is a safe no-op.
+                    degraded += 1
+                    runtime_db.rollback()
                     continue
                 if result.status in _REPARSE_ABORT_STATUSES:
                     # Pack state changed mid-cycle, the parser is sick, or
@@ -1138,7 +1157,7 @@ async def _task_reparse_pending_documents(
                 missing += 1
                 runtime_db.rollback()
 
-        pending = len(candidates) - reparsed - missing
+        pending = len(candidates) - reparsed - missing - degraded
         if not candidates:
             return "no documents pending reparse"
         if embeddings_unavailable:
@@ -1146,8 +1165,12 @@ async def _task_reparse_pending_documents(
                 f"reparsed {reparsed} documents "
                 f"(embeddings unavailable, {pending} pending)"
             )
-        if pending:
-            return f"reparsed {reparsed} documents ({pending} pending)"
+        degraded_note = f", {degraded} could not be parsed" if degraded else ""
+        if pending or degraded:
+            return (
+                f"reparsed {reparsed} documents "
+                f"({pending} pending{degraded_note})"
+            )
         return f"reparsed {reparsed} documents"
 
     return await asyncio.to_thread(_reparse_cycle)
