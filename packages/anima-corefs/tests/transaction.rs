@@ -355,6 +355,54 @@ fn validation_initialization_publishes_only_the_shadow_pointer() {
 }
 
 #[test]
+fn first_mutation_bytes_include_both_cutover_marker_records() {
+    let root = reset_root("first-mutation-byte-accounting");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+
+    let outcome = coordinator
+        .commit_first_mutation(
+            &keys,
+            17,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let catalog_bytes = fs::read_dir(coordinator.catalogs_path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog-00000000000000000002-")
+        })
+        .map(|path| fs::metadata(path).unwrap().len())
+        .unwrap();
+    let head_bytes = fs::metadata(coordinator.head_path()).unwrap().len();
+    let receipt_bytes = fs::metadata(root.join("fs").join("CUTOVER_RECEIPT"))
+        .unwrap()
+        .len();
+    let complete_bytes = fs::metadata(root.join("fs").join("CUTOVER_COMPLETE"))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        outcome.bytes_written(),
+        catalog_bytes + head_bytes + receipt_bytes + complete_bytes
+    );
+    assert_eq!(receipt_bytes, head_bytes);
+    assert_eq!(complete_bytes, head_bytes);
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn prepared_revision_must_match_the_catalog_wrapped_object_key() {
     let root = reset_root("prepared-wrapped-key-binding");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();

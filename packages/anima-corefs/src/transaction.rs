@@ -8,6 +8,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use cap_fs_ext::MetadataExt as _;
 use cap_std::ambient_authority;
@@ -22,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::catalog::{
-    catalog_generation_physical_name, decrypt_catalog_generation, encrypt_catalog_generation,
-    CatalogCutoverMarker, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
-    ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
-    MAX_CATALOG_ENVELOPE_SIZE,
+    catalog_generation_physical_name, decrypt_catalog_generation,
+    encrypt_catalog_generation_with_plaintext_size, CatalogCutoverMarker, CatalogError,
+    CatalogGeneration, CatalogGenerationEntry, CatalogObject, ContentHash, ObjectLifecycle,
+    ObjectPhysicalName, WrappedObjectDekRecord, MAX_CATALOG_ENVELOPE_SIZE,
 };
 use crate::crypto::{
     generate_object_dek, unwrap_object_dek, wrap_object_dek, CryptoError, ObjectKeyAad,
@@ -295,6 +296,7 @@ impl LockOwnerMetadata {
 pub struct CoreCommitLock {
     file: File,
     anchor: File,
+    acquired_at: Instant,
     identity: ProcessIdentity,
     _fs_dir: Dir,
 }
@@ -317,6 +319,17 @@ impl CoreCommitLock {
     }
 
     fn acquire_in(root_dir: &Dir, fs_dir: &Dir) -> Result<Self, CommitError> {
+        Self::acquire_in_with_post_kernel_lock_hook(root_dir, fs_dir, || {})
+    }
+
+    fn acquire_in_with_post_kernel_lock_hook<F>(
+        root_dir: &Dir,
+        fs_dir: &Dir,
+        post_kernel_lock: F,
+    ) -> Result<Self, CommitError>
+    where
+        F: FnOnce(),
+    {
         #[cfg(windows)]
         let _ = root_dir;
         let fs_dir = fs_dir.try_clone()?;
@@ -346,6 +359,8 @@ impl CoreCommitLock {
                 CommitError::Io(error)
             }
         })?;
+        let acquired_at = Instant::now();
+        post_kernel_lock();
 
         let identity = ProcessIdentity::current()?;
         let recorded = match read_lock_metadata(&mut file) {
@@ -369,9 +384,14 @@ impl CoreCommitLock {
         Ok(Self {
             file,
             anchor,
+            acquired_at,
             identity,
             _fs_dir: fs_dir,
         })
+    }
+
+    fn acquired_at(&self) -> Instant {
+        self.acquired_at
     }
 
     pub fn owner_identity(&self) -> &ProcessIdentity {
@@ -391,6 +411,11 @@ impl Drop for CoreCommitLock {
         let _ = self.file.sync_all();
         let _ = FileExt::unlock(&self.anchor);
     }
+}
+
+fn measure_lock_hold_through_release(lock_started: Instant, release: impl FnOnce()) -> Duration {
+    release();
+    lock_started.elapsed()
 }
 
 fn read_lock_metadata(file: &mut File) -> Result<Option<LockOwnerMetadata>, CommitError> {
@@ -699,6 +724,9 @@ pub struct CommitOutcome {
     event: InvalidationEvent,
     invalidation_delivered: bool,
     recovery_pending: bool,
+    lock_hold_duration: Duration,
+    bytes_written: u64,
+    catalog_plaintext_bytes: usize,
 }
 
 impl CommitOutcome {
@@ -716,6 +744,21 @@ impl CommitOutcome {
 
     pub const fn recovery_pending(&self) -> bool {
         self.recovery_pending
+    }
+
+    /// Time spent inside the kernel-backed Core-wide commit lock.
+    pub const fn lock_hold_duration(&self) -> Duration {
+        self.lock_hold_duration
+    }
+
+    /// Catalog, pointer, and cutover-marker payload bytes durably written by this commit.
+    pub const fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+
+    /// Plaintext bytes emitted by the production catalog serialization used by this commit.
+    pub const fn catalog_plaintext_bytes(&self) -> usize {
+        self.catalog_plaintext_bytes
     }
 }
 
@@ -1526,8 +1569,9 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let event = {
-            let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        let (event, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
+            let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
             let committed = self
                 .load_committed_recovering_with_keyring(keyring)?
@@ -1574,19 +1618,28 @@ impl CoreCommitCoordinator {
                 pending_keys,
                 next_generation,
             )?;
-            let (head, _, recovery_pending) = self.publish_catalog_pointer_with_hook(
-                pending_keys,
-                &next_catalog,
-                HEAD_FILE,
-                false,
-                hook,
-            )?;
+            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = self
+                .publish_catalog_pointer_with_hook(
+                    pending_keys,
+                    &next_catalog,
+                    HEAD_FILE,
+                    false,
+                    hook,
+                )?;
             debug_assert!(!recovery_pending);
-            InvalidationEvent {
+            let event = InvalidationEvent {
                 generation: head.generation(),
                 catalog_hash: head.catalog_hash().to_owned(),
                 required_frk_version: head.required_frk_version(),
-            }
+            };
+            let lock_hold_duration =
+                measure_lock_hold_through_release(lock_started, || drop(commit_lock));
+            (
+                event,
+                lock_hold_duration,
+                bytes_written,
+                catalog_plaintext_bytes,
+            )
         };
 
         hook(CommitFailurePoint::BeforeInvalidation)?;
@@ -1596,6 +1649,9 @@ impl CoreCommitCoordinator {
             event,
             invalidation_delivered,
             recovery_pending: false,
+            lock_hold_duration,
+            bytes_written,
+            catalog_plaintext_bytes,
         })
     }
 
@@ -1652,7 +1708,7 @@ impl CoreCommitCoordinator {
             &catalog,
             prepared_revisions,
         )?;
-        let (head, _, _) = self.publish_catalog_pointer_with_hook(
+        let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
             keys,
             &catalog,
             VALIDATION_HEAD_FILE,
@@ -1735,7 +1791,7 @@ impl CoreCommitCoordinator {
             &next_catalog,
             prepared_revisions,
         )?;
-        let (head, _, _) = self.publish_catalog_pointer_with_hook(
+        let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
             keys,
             &next_catalog,
             VALIDATION_HEAD_FILE,
@@ -1893,8 +1949,9 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let (event, recovery_pending) = {
-            let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        let (event, recovery_pending, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
+            let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
             let authoritative = self.load_committed_recovering_with_keyring(keyring)?;
             let current = match mode {
@@ -1951,20 +2008,27 @@ impl CoreCommitCoordinator {
                 &next_catalog,
                 prepared_revisions,
             )?;
-            let (head, _, recovery_pending) = self.publish_catalog_pointer_with_hook(
-                active_keys,
-                &next_catalog,
-                HEAD_FILE,
-                matches!(mode, CommitMode::FirstMutation { .. }),
-                callbacks.hook,
-            )?;
+            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = self
+                .publish_catalog_pointer_with_hook(
+                    active_keys,
+                    &next_catalog,
+                    HEAD_FILE,
+                    matches!(mode, CommitMode::FirstMutation { .. }),
+                    callbacks.hook,
+                )?;
+            let event = InvalidationEvent {
+                generation: head.generation(),
+                catalog_hash: head.catalog_hash().to_owned(),
+                required_frk_version: head.required_frk_version(),
+            };
+            let lock_hold_duration =
+                measure_lock_hold_through_release(lock_started, || drop(commit_lock));
             (
-                InvalidationEvent {
-                    generation: head.generation(),
-                    catalog_hash: head.catalog_hash().to_owned(),
-                    required_frk_version: head.required_frk_version(),
-                },
+                event,
                 recovery_pending,
+                lock_hold_duration,
+                bytes_written,
+                catalog_plaintext_bytes,
             )
         };
 
@@ -1975,6 +2039,9 @@ impl CoreCommitCoordinator {
             event,
             invalidation_delivered,
             recovery_pending,
+            lock_hold_duration,
+            bytes_written,
+            catalog_plaintext_bytes,
         })
     }
 
@@ -1985,11 +2052,12 @@ impl CoreCommitCoordinator {
         pointer_name: &str,
         publish_cutover_receipt: bool,
         hook: &mut H,
-    ) -> Result<(HeadRecord, String, bool), CommitError>
+    ) -> Result<(HeadRecord, String, bool, u64, usize), CommitError>
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let encrypted_catalog = encrypt_catalog_generation(keys, &self.core_id, catalog)?;
+        let (encrypted_catalog, catalog_plaintext_bytes) =
+            encrypt_catalog_generation_with_plaintext_size(keys, &self.core_id, catalog)?;
         let catalog_name = catalog_generation_physical_name(&encrypted_catalog)?;
         self.validate_pinned_layout()?;
         let mut catalog_hook = |phase| {
@@ -2011,6 +2079,12 @@ impl CoreCommitCoordinator {
             keys.frk_version(),
         )?;
         let encoded_head = encode_head(&head)?;
+        let head_bytes =
+            u64::try_from(encoded_head.len()).map_err(|_| CommitError::GenerationExhausted)?;
+        let mut bytes_written = u64::try_from(encrypted_catalog.len())
+            .map_err(|_| CommitError::GenerationExhausted)?
+            .checked_add(head_bytes)
+            .ok_or(CommitError::GenerationExhausted)?;
         let pointer_target = if pointer_name == HEAD_FILE {
             PublicationTarget::AuthoritativeHead
         } else {
@@ -2046,6 +2120,9 @@ impl CoreCommitCoordinator {
                     &encoded_head,
                     &mut receipt_hook,
                 )?;
+                bytes_written = bytes_written
+                    .checked_add(head_bytes)
+                    .ok_or(CommitError::GenerationExhausted)?;
                 self.validate_pinned_layout()?;
                 let mut complete_hook = |phase| {
                     hook(CommitFailurePoint::Publication {
@@ -2059,11 +2136,20 @@ impl CoreCommitCoordinator {
                     &encoded_head,
                     &mut complete_hook,
                 )?;
+                bytes_written = bytes_written
+                    .checked_add(head_bytes)
+                    .ok_or(CommitError::GenerationExhausted)?;
                 self.validate_pinned_layout()?;
                 Ok(())
             })()
             .is_err();
-        Ok((head, catalog_name, recovery_pending))
+        Ok((
+            head,
+            catalog_name,
+            recovery_pending,
+            bytes_written,
+            catalog_plaintext_bytes,
+        ))
     }
 
     fn publish_pointer_and_revalidate<P, V>(
@@ -2867,6 +2953,8 @@ pub enum CommitError {
 mod tests {
     use std::cell::Cell;
     use std::io::{self, Cursor};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use cap_std::{ambient_authority, fs::Dir};
 
@@ -2890,6 +2978,44 @@ mod tests {
     #[test]
     fn commit_lock_files_use_owner_only_unix_permissions() {
         assert_eq!(super::COMMIT_LOCK_FILE_MODE, 0o600);
+    }
+
+    #[test]
+    fn lock_hold_measurement_includes_release_cleanup() {
+        let release_delay = Duration::from_millis(25);
+        let started = Instant::now();
+
+        let measured = super::measure_lock_hold_through_release(started, || {
+            thread::sleep(release_delay);
+        });
+
+        assert!(measured >= release_delay);
+    }
+
+    #[test]
+    fn lock_hold_measurement_starts_when_the_kernel_lock_is_acquired() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-lock-acquisition-timing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, "core-a").unwrap();
+        let bookkeeping_delay = Duration::from_millis(25);
+
+        let commit_lock = super::CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
+            &coordinator.root_dir,
+            &coordinator.fs_dir,
+            || thread::sleep(bookkeeping_delay),
+        )
+        .unwrap();
+        let lock_hold_duration =
+            super::measure_lock_hold_through_release(commit_lock.acquired_at(), || {
+                drop(commit_lock)
+            });
+
+        assert!(lock_hold_duration >= bookkeeping_delay);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

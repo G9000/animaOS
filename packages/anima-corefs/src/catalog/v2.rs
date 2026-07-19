@@ -1240,8 +1240,18 @@ pub fn encrypt_catalog_generation(
     core_id: &str,
     payload: &CatalogGeneration,
 ) -> Result<Vec<u8>, CatalogError> {
+    encrypt_catalog_generation_with_plaintext_size(keys, core_id, payload)
+        .map(|(encoded, _)| encoded)
+}
+
+pub(crate) fn encrypt_catalog_generation_with_plaintext_size(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &CatalogGeneration,
+) -> Result<(Vec<u8>, usize), CatalogError> {
     validate_v2_core_id(core_id)?;
     let plaintext = encode_catalog_generation(payload)?;
+    let plaintext_size = plaintext.len();
     let generation_key = v2_generation_key(keys.catalog(), payload.generation)?;
     let cipher = Aes256Gcm::new_from_slice(generation_key.as_slice())
         .map_err(|_| CryptoError::Derivation)?;
@@ -1265,7 +1275,7 @@ pub fn encrypt_catalog_generation(
     output.extend_from_slice(&nonce);
     output.extend_from_slice(&ciphertext_length.to_le_bytes());
     output.extend_from_slice(&ciphertext);
-    Ok(output)
+    Ok((output, plaintext_size))
 }
 
 pub fn decrypt_catalog_generation(
