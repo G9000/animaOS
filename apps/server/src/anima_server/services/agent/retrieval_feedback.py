@@ -366,18 +366,23 @@ def sync_retrieval_feedback(
         if heat_value is not None and (delta != 0 or evidence_heat_factor is not None or decay_count > 0):
             item.heat = heat_value
 
-        # IL6 recall reconsolidation: fires ONLY for genuinely
-        # context-included items this cycle (was_used, not merely scored —
-        # `used_counts` is populated exclusively from
-        # `was_used and not was_corrected` rows, see the grouping loop
-        # above), at most once per item per sync cycle regardless of how
-        # many used feedback rows it accumulated this pass. Superseded and
-        # IL5 distilled-tombstone items are skipped (the "active item"
-        # guard family) — apply_reconsolidation re-checks this itself too,
-        # but skipping here avoids the call entirely for inactive items.
-        # Per-item try/except isolation: one item's failure must never
-        # abort the rest of this sync (matches IL4/IL5 loops).
-        if used_counts.get(item_id, 0) > 0 and item.superseded_by is None and item.distilled_at is None:
+        # IL6 recall reconsolidation: fires for every memory RENDERED INTO
+        # CONTEXT this cycle — recall is what makes a trace labile (PRD IL6:
+        # "rendered into the model's context, not merely scored"), whether
+        # or not the answer went on to cite it. Every feedback outcome row
+        # means the item was placed in the prompt, so the rendered set is
+        # used + zero_reference (ignored-but-rendered). Corrected items are
+        # EXCLUDED: a correction contradicts the memory, so reconsolidation
+        # must not strengthen (nudge/stability-upgrade) it. At most once per
+        # item per cycle. Superseded and IL5 distilled-tombstone items are
+        # skipped (the "active item" guard family) — apply_reconsolidation
+        # re-checks this too, but skipping here avoids the call entirely.
+        # Per-item try/except isolation: one item's failure must never abort
+        # the rest of this sync (matches IL4/IL5 loops).
+        rendered_in_context = (
+            item_id in used_counts or item_id in zero_reference_counts
+        ) and item_id not in corrected_counts
+        if rendered_in_context and item.superseded_by is None and item.distilled_at is None:
             try:
                 # This loop flushes per item and commits once at the end,
                 # so a bare rollback on failure would discard every prior

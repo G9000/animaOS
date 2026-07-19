@@ -378,7 +378,10 @@ def test_original_salience_from_log_returns_none_when_never_reconsolidated(
 # ---------------------------------------------------------------------------
 
 
-def test_sync_retrieval_feedback_reconsolidates_used_items_only() -> None:
+def test_sync_reconsolidates_rendered_items_used_and_ignored_but_not_corrected() -> None:
+    """Reconsolidation fires for every memory RENDERED into context (recall
+    makes the trace labile), whether the answer used it or ignored it — but
+    NOT for corrected items (a correction must not strengthen the trace)."""
     soul_engine = _create_soul_engine()
     runtime_engine = _create_runtime_engine()
     soul_factory = _make_factory(soul_engine)
@@ -390,96 +393,60 @@ def test_sync_retrieval_feedback_reconsolidates_used_items_only() -> None:
         soul_db.flush()
         user_id = user.id
 
-        used_item = MemoryItem(
-            user_id=user_id,
-            content="Ran a marathon",
-            category="fact",
-            importance=3,
-            source="extraction",
-            emotional_salience=0.2,
-            stability_class="temporary",
-        )
-        scored_only_item = MemoryItem(
-            user_id=user_id,
-            content="Mentioned the weather once",
-            category="fact",
-            importance=3,
-            source="extraction",
-            emotional_salience=0.2,
-            stability_class="temporary",
-        )
-        soul_db.add_all([used_item, scored_only_item])
+        def _item(content: str) -> MemoryItem:
+            it = MemoryItem(
+                user_id=user_id, content=content, category="fact", importance=3,
+                source="extraction", emotional_salience=0.2, stability_class="temporary",
+            )
+            soul_db.add(it)
+            return it
+
+        used_item = _item("Ran a marathon")            # answer cited it
+        ignored_item = _item("Mentioned the weather")  # rendered, answer ignored
+        corrected_item = _item("Lives in Berlin")      # answer corrected it
         soul_db.commit()
-        used_item_id = used_item.id
-        scored_only_item_id = scored_only_item.id
+        used_id, ignored_id, corrected_id = used_item.id, ignored_item.id, corrected_item.id
 
     with runtime_factory() as runtime_db:
-        # A real (non-default-seeded) affect row so the emotional nudge has
-        # a genuine signal to move toward.
-        runtime_db.add(
-            AffectStateRow(
-                user_id=user_id,
-                valence=0.6,
-                arousal=0.8,
-                updated_at=datetime.now(UTC),
-            )
-        )
-        runtime_db.add(
-            MemoryRetrievalFeedback(
-                user_id=user_id,
-                run_id=1,
-                memory_item_id=used_item_id,
-                was_used=True,
-                evidence_score=1.0,
-                synced=False,
-            )
-        )
-        # Separate run: the only feedback row for this item is NOT used, so
-        # it lands in zero_reference_counts (still processed by the sync
-        # loop for heat decay) but must not be reconsolidated.
-        runtime_db.add(
-            MemoryRetrievalFeedback(
-                user_id=user_id,
-                run_id=2,
-                memory_item_id=scored_only_item_id,
-                was_used=False,
-                evidence_score=0.0,
-                synced=False,
-            )
-        )
+        runtime_db.add(AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC)))
+        runtime_db.add(MemoryRetrievalFeedback(
+            user_id=user_id, run_id=1, memory_item_id=used_id,
+            was_used=True, evidence_score=1.0, synced=False,
+        ))
+        # Run 2: rendered but the answer ignored it → zero_reference (rendered).
+        runtime_db.add(MemoryRetrievalFeedback(
+            user_id=user_id, run_id=2, memory_item_id=ignored_id,
+            was_used=False, evidence_score=0.0, synced=False,
+        ))
+        # Run 3: the answer corrected it.
+        runtime_db.add(MemoryRetrievalFeedback(
+            user_id=user_id, run_id=3, memory_item_id=corrected_id,
+            was_used=False, was_corrected=True, evidence_score=0.9, synced=False,
+        ))
         runtime_db.commit()
 
     with runtime_factory() as runtime_db, soul_factory() as soul_db:
         result = sync_retrieval_feedback(
-            user_id=user_id,
-            runtime_db=runtime_db,
-            soul_db=soul_db,
-            dry_run=False,
+            user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
         )
 
-        assert used_item_id in result["reconsolidated_items"]
-        assert scored_only_item_id not in result["reconsolidated_items"]
+        # Both rendered items reconsolidate; the corrected one does not.
+        assert used_id in result["reconsolidated_items"]
+        assert ignored_id in result["reconsolidated_items"]
+        assert corrected_id not in result["reconsolidated_items"]
 
-        used_refreshed = soul_db.get(MemoryItem, used_item_id)
-        scored_only_refreshed = soul_db.get(MemoryItem, scored_only_item_id)
+        assert soul_db.get(MemoryItem, used_id).emotional_salience > 0.2
+        assert soul_db.get(MemoryItem, ignored_id).emotional_salience > 0.2
+        assert soul_db.get(MemoryItem, corrected_id).emotional_salience == 0.2
+        assert soul_db.get(MemoryItem, corrected_id).stability_class == "temporary"
 
-        assert used_refreshed.emotional_salience > 0.2
-        assert used_refreshed.stability_class == "evolving"
-        assert scored_only_refreshed.emotional_salience == 0.2
-        assert scored_only_refreshed.stability_class == "temporary"
-
-        used_logs = soul_db.scalars(
-            select(ReconsolidationLog).where(
-                ReconsolidationLog.memory_item_id == used_item_id
-            )
-        ).all()
-        scored_only_logs = soul_db.scalars(
-            select(ReconsolidationLog).where(
-                ReconsolidationLog.memory_item_id == scored_only_item_id
-            )
-        ).all()
-        assert used_logs != []
-        assert scored_only_logs == []
+        for mid in (used_id, ignored_id):
+            assert soul_db.scalars(
+                select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == mid)
+            ).all() != []
+        assert soul_db.scalars(
+            select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == corrected_id)
+        ).all() == []
 
     soul_engine.dispose()
     runtime_engine.dispose()
@@ -794,3 +761,29 @@ def test_sync_reconsolidation_failure_is_isolated_per_item(monkeypatch) -> None:
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+def test_forget_memory_clears_reconsolidation_log(db: Session) -> None:
+    """Forgetting a reconsolidated memory must delete its reconsolidation_log
+    rows — SQLite FK cascades aren't enforced, so orphaned log rows would be
+    exported and could reattach to a reused item id (F7 right-to-forget)."""
+    from anima_server.models import User
+    from anima_server.services.agent.forgetting import forget_memory
+
+    user = User(username="il6-forget", password_hash="x", display_name="F")
+    db.add(user)
+    db.flush()
+    item = _make_item(db, user_id=user.id, emotional_salience=0.2, stability_class="temporary")
+    apply_reconsolidation(db, item, current_affect_magnitude=0.9, eta=0.05)
+    db.flush()
+    item_id = item.id
+    assert db.scalars(
+        select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == item_id)
+    ).all()  # precondition
+
+    forget_memory(db, memory_id=item_id, user_id=user.id)
+
+    assert db.scalars(
+        select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == item_id)
+    ).all() == []
+    assert db.get(MemoryItem, item_id) is None
