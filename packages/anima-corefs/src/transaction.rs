@@ -296,6 +296,7 @@ impl LockOwnerMetadata {
 pub struct CoreCommitLock {
     file: File,
     anchor: File,
+    acquired_at: Instant,
     identity: ProcessIdentity,
     _fs_dir: Dir,
 }
@@ -318,6 +319,17 @@ impl CoreCommitLock {
     }
 
     fn acquire_in(root_dir: &Dir, fs_dir: &Dir) -> Result<Self, CommitError> {
+        Self::acquire_in_with_post_kernel_lock_hook(root_dir, fs_dir, || {})
+    }
+
+    fn acquire_in_with_post_kernel_lock_hook<F>(
+        root_dir: &Dir,
+        fs_dir: &Dir,
+        post_kernel_lock: F,
+    ) -> Result<Self, CommitError>
+    where
+        F: FnOnce(),
+    {
         #[cfg(windows)]
         let _ = root_dir;
         let fs_dir = fs_dir.try_clone()?;
@@ -347,6 +359,8 @@ impl CoreCommitLock {
                 CommitError::Io(error)
             }
         })?;
+        let acquired_at = Instant::now();
+        post_kernel_lock();
 
         let identity = ProcessIdentity::current()?;
         let recorded = match read_lock_metadata(&mut file) {
@@ -370,9 +384,14 @@ impl CoreCommitLock {
         Ok(Self {
             file,
             anchor,
+            acquired_at,
             identity,
             _fs_dir: fs_dir,
         })
+    }
+
+    fn acquired_at(&self) -> Instant {
+        self.acquired_at
     }
 
     pub fn owner_identity(&self) -> &ProcessIdentity {
@@ -1552,7 +1571,7 @@ impl CoreCommitCoordinator {
     {
         let (event, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
-            let lock_started = Instant::now();
+            let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
             let committed = self
                 .load_committed_recovering_with_keyring(keyring)?
@@ -1932,7 +1951,7 @@ impl CoreCommitCoordinator {
     {
         let (event, recovery_pending, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
-            let lock_started = Instant::now();
+            let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
             let authoritative = self.load_committed_recovering_with_keyring(keyring)?;
             let current = match mode {
@@ -2971,6 +2990,32 @@ mod tests {
         });
 
         assert!(measured >= release_delay);
+    }
+
+    #[test]
+    fn lock_hold_measurement_starts_when_the_kernel_lock_is_acquired() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-lock-acquisition-timing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, "core-a").unwrap();
+        let bookkeeping_delay = Duration::from_millis(25);
+
+        let commit_lock = super::CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
+            &coordinator.root_dir,
+            &coordinator.fs_dir,
+            || thread::sleep(bookkeeping_delay),
+        )
+        .unwrap();
+        let lock_hold_duration =
+            super::measure_lock_hold_through_release(commit_lock.acquired_at(), || {
+                drop(commit_lock)
+            });
+
+        assert!(lock_hold_duration >= bookkeeping_delay);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
