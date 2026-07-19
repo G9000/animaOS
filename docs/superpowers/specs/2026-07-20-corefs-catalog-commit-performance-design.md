@@ -12,7 +12,7 @@
 
 Retain the complete immutable catalog-generation format and the existing durable publication sequence. Reduce repeated work in normal commits with:
 
-1. a process-local authenticated catalog snapshot cache keyed by the exact authoritative pointer set and required FRK version;
+1. a process-local authenticated catalog snapshot cache keyed by the exact authoritative pointer set and domain-separated identities of the FRK-derived key material that authenticated it;
 2. a validated-object state cache that avoids repeating cryptographic key-binding work for byte-for-byte unchanged object records after a successful validating commit; and
 3. crate-private fast paths for catalog values whose private constructors or authenticated decoder have already established the complete graph and policy invariants.
 
@@ -68,13 +68,14 @@ The optimization targets duplicate decrypt/authentication, invariant validation,
 - the canonical decoded `fs/HEAD`, cutover receipt, and cutover completion records observed together;
 - the authenticated and decoded `CatalogGeneration` referenced by HEAD;
 - the required FRK version and Core identity binding;
+- a domain-separated catalog-key cache identity for every FRK version used to authenticate HEAD/receipt/completion state, plus the active object-wrap-key cache identity when object validation is cached; and
 - optional validated-object state described below.
 
-The cache contains decrypted catalog metadata already returned by the coordinator today, but it stores no FRK, catalog key, Object DEK, plaintext object content, or new secret material.
+Each cache identity is a fixed-length HKDF-derived identifier using an explicit CoreFS cache-binding domain, the Core ID, FRK version, and the applicable high-entropy catalog or object-wrap subkey. It is safe to compare and store but is never accepted as cryptographic authority outside cache selection. The cache contains decrypted catalog metadata already returned by the coordinator today, but it stores no FRK, catalog key, Object DEK, plaintext object content, or new secret material.
 
-For a normal commit, after acquiring the kernel lock and revalidating the pinned layout, the coordinator rereads all authoritative pointer records. A hit requires exact equality with the cached HEAD/receipt/complete tuple, exact Core identity, exact required FRK version, and a non-recovery state. The cached catalog was previously authenticated against that exact HEAD and may then replace catalog-file read, hash verification, decryption, decode, and canonical-reencode.
+For a normal commit, after acquiring the kernel lock and revalidating the pinned layout, the coordinator rereads all authoritative pointer records. A hit requires exact equality with the cached HEAD/receipt/complete tuple, exact Core identity, exact required FRK version, equality of every required catalog-key cache identity, equality of the active object-wrap-key identity before object-binding reuse, and a non-recovery state. The cached catalog was previously authenticated against that exact HEAD and key material and may then replace catalog-file read, hash verification, decryption, decode, and canonical-reencode.
 
-Any mismatch, missing pointer, malformed pointer, recovery state, FRK-version mismatch, or absent cache becomes a cache miss and uses the existing full load/recovery path. A successful full path may refresh the authenticated catalog portion of the cache. Public unlocked `load_committed` retains its existing reread/race handling; a cache match does not eliminate its pointer stability check.
+Any mismatch, missing pointer, malformed pointer, recovery state, FRK-version mismatch, same-version key-identity mismatch, or absent cache becomes a cache miss and uses the existing full load/recovery path. Wrong key material therefore reaches normal catalog authentication and fails closed. A successful full path may refresh the authenticated catalog portion of the cache. Public unlocked `load_committed` retains its existing reread/race handling; a cache match does not eliminate its pointer stability check.
 
 Mutex poisoning must not make CoreFS unavailable. A poisoned cache is cleared and treated as a miss; storage authority remains on disk.
 
@@ -91,7 +92,15 @@ The cache changes only at authority boundaries:
 
 A restart or another process begins with an empty cache. Cross-process commits are detected by the mandatory pointer reread under the kernel lock.
 
-### 3. Validated catalog fast paths
+### 3. Concurrency and lock ordering
+
+The cache mutex protects only `Option<Arc<AuthenticatedCommitSnapshot>>`. Callers briefly lock it to clone the immutable `Arc`, compare an already-collected key, replace the `Arc`, or clear it. They never hold the cache mutex while performing filesystem I/O, cryptography, catalog traversal, user build closures, failure hooks, invalidation callbacks, or kernel-lock acquisition.
+
+Operations that require `CoreCommitLock` always acquire the kernel lock first, collect and verify on-disk state without the cache mutex, and only then perform a short cache lookup or replacement. Public unlocked loads read their pointer tuple first, release any cache guard before the existing second pointer read, and release it before entering a recovery path that acquires `CoreCommitLock`. No path may acquire the kernel lock while holding the cache mutex.
+
+This order prevents commit/load-recovery inversion. Immutable `Arc` snapshots also prevent a cache replacement from invalidating state already selected by an in-flight operation without requiring a long-held mutex or a full catalog clone.
+
+### 4. Validated catalog fast paths
 
 `CatalogGeneration` already has private fields and can only arise from validating constructors, controlled crate-private transformations, or authenticated untrusted decode. The implementation may therefore add narrowly named crate-private operations for validated values:
 
@@ -101,7 +110,7 @@ A restart or another process begins with an empty cache. Cross-process commits a
 
 Public untrusted validation and decoding remain unchanged. The encoder still performs the allocation-free bounded-size preflight before the one materializing serialization, so oversized input cannot cause an unbounded proportional allocation.
 
-### 4. Single-pass authenticated open and publication artifact
+### 5. Single-pass authenticated open and publication artifact
 
 The head/catalog boundary gains crate-private helpers while retaining the current public fail-closed APIs:
 
@@ -110,13 +119,13 @@ The head/catalog boundary gains crate-private helpers while retaining the curren
 
 These helpers are not general trust shortcuts. They are callable only where the same coordinator has just produced or authenticated the exact bytes. Public construction from arbitrary encrypted bytes continues to decrypt, validate, and bind the catalog before returning.
 
-### 5. Allocation-light precondition coverage
+### 6. Allocation-light precondition coverage
 
 Catalog entries are canonical and sorted by stable ID. `validate_precondition_coverage` should compare current and next entries with an ordered merge rather than constructing two full hash maps. Destination-vacancy lookup may use a bounded index only for the referenced parents or another measured allocation-light structure.
 
 This preserves the rule that every changed source and every newly occupied existing-parent destination has a matching caller precondition. It changes representation cost, not authority semantics.
 
-### 6. Unchanged-object validation
+### 7. Unchanged-object validation
 
 After a commit has successfully validated an object record, the cache may retain a non-secret validation record keyed by stable ID and the complete immutable object-body tuple: revision, physical name, content hash, kind, object-key epoch, and wrapped-DEK record. It may also retain the derived non-secret key-binding digest already used by `PreparedObjectRevision` validation.
 
@@ -128,14 +137,14 @@ On an exact authenticated snapshot hit:
 
 Keeping the safe open preserves current detection of missing, zero-length, symlinked, replaced, or unexpectedly hard-linked object files. This first design does not introduce directory timestamp heuristics, retained file handles, or a weaker batch existence check. If the exact benchmark remains red, further object-file optimization requires a separate reviewed design proving equivalent file-identity and link-count semantics.
 
-### 7. Commit flow
+### 8. Commit flow
 
 The steady-state normal commit becomes:
 
 1. acquire `CoreCommitLock` and retain the existing acquisition timestamp;
 2. revalidate pinned root and directory handles;
 3. read and decode HEAD, receipt, and completion records;
-4. select an exact cache hit or authenticate/decrypt the referenced catalog once on the full recovery path;
+4. derive and compare the required catalog/object-wrap cache identities, then select an exact cache hit or authenticate/decrypt the referenced catalog once on the full recovery path;
 5. validate active FRK version and caller preconditions;
 6. build the next already-validated immutable generation;
 7. apply marker state through the validated-value path;
@@ -148,6 +157,7 @@ The steady-state normal commit becomes:
 ## Failure and recovery behavior
 
 - Cache corruption or inconsistency can only cause a miss: exact pointer and identity checks gate every reuse.
+- Wrong same-version active or retained key material cannot hit because the derived cache identity differs; the fallback authentication path then rejects it.
 - A process crash loses the cache and returns to the existing disk-only recovery behavior.
 - A concurrent coordinator cannot reuse stale state because it must win the kernel lock and then observe the current pointer tuple.
 - Receipt-only, missing-HEAD-after-cutover, divergent receipt/completion, and mixed-FRK states bypass the cache.
@@ -161,16 +171,19 @@ Implementation is test-first. Focused regressions must prove:
 1. a second same-head operation rereads pointer records but does not reread/decrypt/canonical-reencode the current catalog;
 2. a cache-miss load decrypts and canonical-validates the referenced catalog exactly once while preserving every HEAD binding check;
 3. publication constructs byte-identical HEAD and physical-name values from one digest without decrypting the coordinator's just-encrypted catalog;
-4. an external coordinator advancing HEAD invalidates the cache and loads the new authenticated catalog;
-5. cutover recovery states, pointer disagreement, and FRK-version changes never use a stale snapshot;
-6. a pre-HEAD failure retains only the prior valid cache, while a recovery-pending post-HEAD outcome clears it;
-7. poisoned cache synchronization becomes a miss rather than a storage failure;
-8. trusted encoding is byte-identical to existing canonical encoding, while untrusted non-canonical bytes still fail;
-9. the validated marker path cannot construct an invalid marker or bypass graph validation for caller-created entries;
-10. ordered precondition coverage rejects the same missing-source and missing-destination cases as the current implementation;
-11. unchanged cached object bindings avoid repeated unwraps, while changed wrappers and wrong FRK bindings still fail;
-12. missing, empty, symlinked, replaced, and unexpected-hard-link object files still fail on a cache hit; and
-13. benchmark measurement still records lock acquisition first, HEAD publication last, complete `commit` wall time, full catalog bytes, and all strict provenance fields.
+4. wrong same-version active keys and wrong same-version retained receipt/completion keys miss the cache and fail normal authentication;
+5. an external coordinator advancing HEAD invalidates the cache and loads the new authenticated catalog;
+6. cutover recovery states, pointer disagreement, and FRK-version changes never use a stale snapshot;
+7. a pre-HEAD failure retains only the prior valid cache, while a recovery-pending post-HEAD outcome clears it;
+8. poisoned cache synchronization becomes a miss rather than a storage failure;
+9. concurrent unlocked load/recovery and commit complete without cache/kernel-lock inversion or deadlock;
+10. no test seam observes the cache mutex held during I/O, cryptography, build/hook/invalidation callbacks, or kernel-lock acquisition;
+11. trusted encoding is byte-identical to existing canonical encoding, while untrusted non-canonical bytes still fail;
+12. the validated marker path cannot construct an invalid marker or bypass graph validation for caller-created entries;
+13. ordered precondition coverage rejects the same missing-source and missing-destination cases as the current implementation;
+14. unchanged cached object bindings avoid repeated unwraps, while changed wrappers and wrong FRK bindings still fail;
+15. missing, empty, symlinked, replaced, and unexpected-hard-link object files still fail on a cache hit; and
+16. benchmark measurement still records lock acquisition first, HEAD publication last, complete `commit` wall time, full catalog bytes, and all strict provenance fields.
 
 Required broader validation remains:
 
