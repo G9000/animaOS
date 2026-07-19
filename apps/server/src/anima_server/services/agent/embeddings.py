@@ -265,8 +265,8 @@ def _embedding_skip_reason(provider: str) -> str | None:
 
 
 def _missing_default_model_reason(provider: str) -> str | None:
-    """Return a reason when *provider* has no known default embedding model
-    and no explicit override, i.e. it would resolve to an unusable model.
+    """Return a reason when *provider* is not a supported embedding provider,
+    i.e. it has no known embedding model of its own.
 
     A provider can have a perfectly real embeddings-shaped HTTP endpoint
     (passes ``_embedding_skip_reason``) yet have no entry in
@@ -281,23 +281,23 @@ def _missing_default_model_reason(provider: str) -> str | None:
     silently POSTing real memory/document text to that provider's API while
     every surface the user can see reports fastembed/no dense retrieval.
 
-    Deliberately checks ``DEFAULT_EMBEDDING_MODELS`` membership directly
-    (not ``resolve_embedding_model``'s full resolution, which also honors the
-    legacy piggyback-onto-chat-model fallback) — that fallback existing for
-    OTHER reasons must not accidentally paper over a provider that has no
-    genuine embeddings model of its own; the only thing that legitimately
-    clears this gate for a model-less provider is the user explicitly
-    setting ``agent_embedding_model`` themselves. Derived from
-    ``DEFAULT_EMBEDDING_MODELS`` rather than hardcoding "moonshot" so any
-    future model-less provider is covered automatically.
+    Membership in ``DEFAULT_EMBEDDING_MODELS`` is treated as a property of the
+    PROVIDER: whether it is an embedding provider at all. An explicit
+    ``agent_embedding_model`` deliberately does NOT clear this gate — a model
+    string only selects *which* model within an already-supported provider;
+    it cannot make an unsupported provider (moonshot) into an embedding
+    provider. (Allowing that was the original hole: a legacy moonshot config
+    WITH an explicit model still POSTed real content to the moonshot endpoint
+    while the UI showed fastembed.) This mirrors the API-boundary
+    ``VALID_EMBEDDING_PROVIDERS`` rule exactly, one layer down at the runtime
+    call site, and is derived from ``DEFAULT_EMBEDDING_MODELS`` rather than
+    hardcoding "moonshot" so any future model-less provider is covered.
     """
     if provider in DEFAULT_EMBEDDING_MODELS:
         return None
-    if _setting_text(getattr(settings, "agent_embedding_model", "")):
-        return None
     return (
-        f"no embedding model available for provider {provider!r}; set an "
-        "explicit embedding model or choose a different embedding provider"
+        f"provider {provider!r} is not a supported embedding provider "
+        "(no embedding model of its own); choose a different embedding provider"
     )
 
 

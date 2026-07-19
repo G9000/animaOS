@@ -468,6 +468,49 @@ async def test_generate_embedding_skips_explicit_moonshot_no_default_model(
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_generate_embedding_skips_moonshot_even_with_explicit_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P1 (Codex round 10): the leak the structural fix half-closed. A legacy
+    # moonshot config WITH an explicit embedding model previously bypassed the
+    # has-default-model gate and POSTed real memory/document text to the
+    # moonshot endpoint while the UI showed fastembed. An explicit model must
+    # NOT rescue an unsupported provider — generate_embedding must still refuse
+    # it WITHOUT any HTTP call.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    async def unexpected_embed(text: str) -> list[float] | None:
+        raise AssertionError(
+            "moonshot is not a supported embedding provider; an explicit "
+            "model must not make it reachable at the HTTP call site"
+        )
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+    original_embedding_model = settings.agent_embedding_model
+    original_embedding_api_key = settings.agent_embedding_api_key
+
+    try:
+        settings.agent_provider = "moonshot"
+        settings.agent_embedding_provider = "moonshot"
+        settings.agent_embedding_model = "custom-embed-model"
+        settings.agent_embedding_api_key = "sk-leftover-moonshot-key"
+        monkeypatch.setattr(embeddings_module, "_embed_ollama", unexpected_embed)
+        monkeypatch.setattr(
+            embeddings_module, "_embed_openai_compatible", unexpected_embed
+        )
+
+        result = await generate_embedding("hello")
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+        settings.agent_embedding_model = original_embedding_model
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+    assert result is None
+
+
 def test_embedding_provider_unusable_reason_moonshot_has_no_default_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,20 +554,25 @@ def test_embedding_provider_unusable_reason_anthropic_still_excluded() -> None:
     assert embeddings_module.embedding_provider_unusable_reason("anthropic") is not None
 
 
-def test_embedding_provider_unusable_reason_moonshot_usable_with_explicit_model(
+def test_embedding_provider_unusable_reason_moonshot_blocked_even_with_explicit_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The gate only fires when NO explicit embedding model is configured — a
-    # user who explicitly sets agent_embedding_model for moonshot has made a
-    # real, intentional choice and must not be blocked by the has-default-
-    # model gate (still subject to the ordinary key-required check).
+    # P1 (Codex round 10): an explicit agent_embedding_model must NOT rescue a
+    # provider that isn't a supported embedding provider. Membership in
+    # DEFAULT_EMBEDDING_MODELS is a property of the PROVIDER (is it an
+    # embedding provider at all); a model string only selects which model
+    # within a supported one. A legacy moonshot config WITH an explicit model
+    # previously slipped through and kept POSTing memory/document text to the
+    # moonshot endpoint while the UI showed fastembed — it must stay blocked.
     from anima_server.services.agent import embeddings as embeddings_module
 
     monkeypatch.setattr(settings, "agent_embedding_provider", "moonshot")
     monkeypatch.setattr(settings, "agent_embedding_model", "custom-embed-model")
     monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-moonshot-key")
 
-    assert embeddings_module.embedding_provider_unusable_reason("moonshot") is None
+    reason = embeddings_module.embedding_provider_unusable_reason("moonshot")
+    assert reason is not None
+    assert "moonshot" in reason
 
 
 @pytest.mark.asyncio
