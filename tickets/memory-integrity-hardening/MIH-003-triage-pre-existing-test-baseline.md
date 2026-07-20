@@ -26,6 +26,7 @@ The full suite has carried a growing set of failures throughout the Inner Life v
 - Root-cause classification of the ~54 failures: real regression (name the introducing PR) vs environment/local-config (name the fix) vs flaky/order-dependent.
 - Fixes for real regressions; quarantine markers (with tracking) for anything deferred.
 - Restored green baseline (or a documented, minimal known-failure allowlist enforced in CI rather than by manual stash-comparison).
+- **Suite-hygiene item (discovered during IL-003):** some test in the full suite runs a `git clean`/filesystem sweep that DELETES untracked working-tree files mid-run. During IL-003 this silently removed the not-yet-committed new source files (`drives.py`, `initiative.py`, the `.j2` template), producing 5 phantom `getsource`/`FileNotFoundError` failures that vanished the instant the files were `git add`ed. This is a footgun for every feature branch before its first commit and can also mask real breakage. Locate the offending test, make it scope its cleanup (e.g. a temp dir) instead of touching the repo working tree, or guard it so it never removes untracked files outside its own fixture.
 
 ## Acceptance
 
@@ -35,6 +36,7 @@ The full suite has carried a growing set of failures throughout the Inner Life v
 ## Activity Log
 
 - 2026-07-19 03:34 MYT - Ticket created; baseline drift observed across PRs #98/#104/#108/#112.
+- 2026-07-20 MYT - Baseline holds at 54 failed / 2821 passed / 2 skipped through IL-003 (CoreFS/keyslots 29, recovery 18, p5-transcript-archive 3, vault 2, encrypted-core-regression 2). Added the untracked-file-deletion suite-hygiene item after it produced 5 phantom failures on the IL-003 branch pre-commit.
 
 ## Validation
 
