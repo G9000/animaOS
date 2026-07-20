@@ -1,5 +1,8 @@
 //! Core-wide atomic catalog commit coordination.
 
+#[cfg_attr(not(test), allow(dead_code))]
+mod cache;
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt;
@@ -21,6 +24,8 @@ use fs4::FileExt;
 use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use self::cache::CommitCache;
 
 #[cfg(test)]
 use crate::catalog::encrypt_catalog_generation_for_publication_with_observer;
@@ -797,6 +802,9 @@ struct CoordinatorPublicationProbe {
 
 pub struct CoreCommitCoordinator {
     core_id: String,
+    // Task 4 integrates lookup/replacement into the existing load paths.
+    #[allow(dead_code)]
+    cache: CommitCache,
     core_root: PathBuf,
     catalogs_path: PathBuf,
     objects_path: PathBuf,
@@ -843,6 +851,7 @@ impl CoreCommitCoordinator {
         let objects_path = core_root.join(OBJECTS_DIRECTORY);
         Ok(Self {
             core_id,
+            cache: CommitCache::default(),
             head_path: fs_path.join(HEAD_FILE),
             validation_head_path: fs_path.join(VALIDATION_HEAD_FILE),
             cutover_receipt_path: fs_path.join(CUTOVER_RECEIPT_FILE),
@@ -3406,5 +3415,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod cache_tests;
 #[cfg(test)]
 mod failure_tests;
