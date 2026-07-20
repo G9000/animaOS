@@ -530,17 +530,13 @@ def test_reranker_load_model_of_b_after_a_never_returns_a_for_b_request(
     assert reranker_module._load_model() is model_b
 
 
-def test_reranker_failed_latch_of_b_after_a_is_internally_consistent(
+def test_reranker_failed_latch_preserves_each_models_cooldown(
     monkeypatch: Any,
 ) -> None:
-    """FIX 3: mirrors test_reranker_load_model_of_b_after_a_never_returns_a_
-    for_b_request above, but for the FAILURE latch: the old design set
-    `_failed_at` then `_failed_model_name` as two separate globals, read
-    lock-free by `_cooldown_active`/`backend_status`. A concurrent reader
-    during a failure-latch update for a *different* reranker model could
-    pair a fresh timestamp with the stale name. The fix bundles both into
-    one `_Failed(name, at)` object swapped as a single reference — see
-    ``reranker._Failed``."""
+    """Per-model reranker cooldowns: two reranker model names that fail within
+    the TTL window each keep their own latch (the failure latch is a dict
+    keyed by model name), so a second bad model's failure does not overwrite
+    the first's cooldown — switching back to the first still respects it."""
     clock = {"now": 1000.0}
     monkeypatch.setattr(reranker_module.time, "monotonic", lambda: clock["now"])
 
@@ -551,17 +547,17 @@ def test_reranker_failed_latch_of_b_after_a_is_internally_consistent(
 
     monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
     assert reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")]) is None
-    assert reranker_module._failed is not None
-    assert reranker_module._failed.name == "model-a"
-    assert reranker_module._failed.at == 1000.0
+    assert reranker_module._cooldown_active("model-a") is True
 
-    clock["now"] = 2000.0
+    # model-b fails while model-a is STILL within its 300s window.
+    clock["now"] = 1100.0
     monkeypatch.setattr(settings, "retrieval_reranker_model", "model-b")
     assert reranker_module.rerank_chunk_ids("q", [(1, "a"), (2, "b")]) is None
-    # The pair is internally consistent post-switch: the fresh timestamp is
-    # paired with model-b's own name, never a stale "model-a" left over.
-    assert reranker_module._failed.name == "model-b"
-    assert reranker_module._failed.at == 2000.0
+
+    # Both cooldowns coexist — model-b did not overwrite model-a's latch.
+    assert reranker_module._failed == {"model-a": 1000.0, "model-b": 1100.0}
+    assert reranker_module._cooldown_active("model-a") is True
+    assert reranker_module._cooldown_active("model-b") is True
 
 
 def test_rerank_orders_by_model_scores(monkeypatch: Any) -> None:

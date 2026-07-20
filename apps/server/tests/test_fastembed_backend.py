@@ -247,7 +247,7 @@ def test_successful_load_clears_its_own_latch(monkeypatch) -> None:
     monkeypatch.setattr(fastembed_backend, "_create_model", lambda model_name: fake)
     second = fastembed_backend.embed_texts(["y"], model_name="model-a")
     assert second == [[1.0] * 4]
-    assert fastembed_backend._failed is None
+    assert fastembed_backend._failed == {}
 
 
 def test_backend_status_not_failed_retrying_for_differently_latched_model(
@@ -355,24 +355,14 @@ def test_load_model_concurrent_switch_never_serves_mismatched_model(monkeypatch)
     assert errors == []
 
 
-# ── FIX 3: atomic (name, at) failure pair — no torn reads on a latch switch ──
-#
-# _load_model's failure path used to set two separate globals, `_failed_at`
-# then `_failed_model_name`, both under the lock — but the fast-path guard
-# (`_cooldown_active`/`backend_status`) reads them lock-free. A concurrent
-# reader during a failure-latch update for a *different* model could pair a
-# fresh `_failed_at` with the STALE `_failed_model_name` still in place (or
-# vice versa). The fix mirrors FINDING 6's `_Loaded` treatment: both fields
-# now live in one `_Failed(name, at)` object swapped as a single reference,
-# so a lock-free reader can only ever see a fully-old or fully-new pair.
+# ── Per-model failure cooldowns — a second model's failure must not evict ──
+#   the first's. The failure latch is a dict keyed by model name (copy-on-
+#   write for lock-free reads), so two models that fail within the TTL window
+#   each keep their own cooldown; switching back to an earlier bad name still
+#   respects its remaining cooldown instead of re-attempting the load.
 
 
-def test_failed_latch_of_b_after_a_is_internally_consistent(monkeypatch) -> None:
-    """Mirrors test_load_model_of_b_after_a_never_returns_a_for_b_request
-    above, but for the FAILURE latch: after model-a fails and then model-b
-    also fails, the latched (name, at) pair must always name whichever model
-    most recently failed — never a mix of the new timestamp with the old
-    name (or vice versa)."""
+def test_failed_latch_preserves_each_models_cooldown(monkeypatch) -> None:
     clock = {"now": 1000.0}
     monkeypatch.setattr(fastembed_backend.time, "monotonic", lambda: clock["now"])
 
@@ -381,21 +371,31 @@ def test_failed_latch_of_b_after_a_is_internally_consistent(monkeypatch) -> None
 
     monkeypatch.setattr(fastembed_backend, "_create_model", factory)
 
-    first = fastembed_backend.embed_texts(["x"], model_name="model-a")
-    assert first == [None]
-    assert fastembed_backend._failed is not None
-    assert fastembed_backend._failed.name == "model-a"
-    assert fastembed_backend._failed.at == 1000.0
+    assert fastembed_backend.embed_texts(["x"], model_name="model-a") == [None]
+    assert fastembed_backend._cooldown_active("model-a") is True
 
-    clock["now"] = 2000.0
-    second = fastembed_backend.embed_texts(["y"], model_name="model-b")
-    assert second == [None]
-    # The pair is internally consistent post-switch: the fresh timestamp is
-    # paired with model-b's own name, never a stale "model-a" left over from
-    # the first failure.
-    assert fastembed_backend._failed.name == "model-b"
-    assert fastembed_backend._failed.at == 2000.0
-    # And the fast (lock-free) cooldown check for "model-a" must not be
-    # confused by model-b's fresh record — model-a's own cooldown window
-    # (from t=1000) is still what governs it, not model-b's.
-    assert fastembed_backend._cooldown_active("model-a") is False
+    # model-b fails while model-a is STILL within its 300s window.
+    clock["now"] = 1100.0
+    assert fastembed_backend.embed_texts(["y"], model_name="model-b") == [None]
+
+    # Both cooldowns coexist — model-b's failure did not overwrite model-a's.
+    assert fastembed_backend._failed == {"model-a": 1000.0, "model-b": 1100.0}
+    assert fastembed_backend._cooldown_active("model-a") is True
+    assert fastembed_backend._cooldown_active("model-b") is True
+
+    # Retrying model-a while it's still cooling down makes NO load attempt.
+    calls: list[str] = []
+
+    def counting_factory(model_name: str):
+        calls.append(model_name)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", counting_factory)
+    assert fastembed_backend._load_model("model-a") is None
+    assert calls == []
+
+    # Once model-a's OWN cooldown lapses it retries again (independently of
+    # model-b, whose window is unrelated).
+    clock["now"] = 1000.0 + fastembed_backend._RETRY_TTL_SECONDS + 1
+    assert fastembed_backend._load_model("model-a") is None
+    assert calls == ["model-a"]

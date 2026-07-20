@@ -42,27 +42,16 @@ class _Loaded:
     model: Any
 
 
-@dataclass(frozen=True)
-class _Failed:
-    """A latched load failure bound to the model name it applies to.
-
-    Mirrors ``fastembed_backend._Failed`` — held as ONE module-level
-    reference so a lock-free reader (``_cooldown_active``/``backend_status``)
-    never observes a torn (name, at) pair from a concurrent failure-latch
-    update for a different model. See that class's docstring for the full
-    rationale.
-    """
-
-    name: str
-    at: float
-
-
 _loaded: _Loaded | None = None
-# Keyed by name (mirrors fastembed_backend) so a failure loading one
-# reranker model name cannot block a different, correctly-named one from
-# getting a fresh attempt immediately — otherwise fixing a mistyped reranker
-# model in settings still yields no reranking for the full 300s cooldown.
-_failed: _Failed | None = None
+# Per-model failure latch (mirrors fastembed_backend): model name -> monotonic
+# failure timestamp. Keyed by name, not a single slot, so (1) a failure
+# loading one reranker model can't block a different, correctly-named one from
+# a fresh attempt (fixing a mistyped model in settings works immediately), and
+# (2) a second bad model's failure doesn't overwrite the first's cooldown.
+# Written copy-on-write under ``_model_lock`` (whole-dict rebind, never mutated
+# in place) so a lock-free reader (``_cooldown_active`` / ``backend_status``)
+# always sees a consistent dict — GIL-atomic rebind, and a single ``.get``.
+_failed: dict[str, float] = {}
 
 _RETRY_TTL_SECONDS = 300.0
 
@@ -105,12 +94,8 @@ def _create_model() -> Any:
 
 
 def _cooldown_active(model_name: str) -> bool:
-    failed = _failed  # single lock-free read of the atomic pair
-    return (
-        failed is not None
-        and failed.name == model_name
-        and time.monotonic() - failed.at < _RETRY_TTL_SECONDS
-    )
+    at = _failed.get(model_name)  # atomic single-key read of the current dict
+    return at is not None and time.monotonic() - at < _RETRY_TTL_SECONDS
 
 
 def _load_model() -> Any | None:
@@ -132,17 +117,14 @@ def _load_model() -> Any | None:
             # Single reference swap — see _Loaded's docstring for why this
             # is what makes the fast path above safe to read lock-free.
             _loaded = _Loaded(name=model_name, model=model)
-            # Only clear the latch if it belongs to *this* model name — a
-            # different model's unrelated failure record must survive this
-            # success untouched, so that model stays correctly blocked
-            # until its own cooldown or its own successful retry.
-            failed = _failed
-            if failed is not None and failed.name == model_name:
-                _failed = None
+            # Copy-on-write clear of ONLY this model's latch — a different
+            # model's unrelated failure record must survive this success.
+            if model_name in _failed:
+                _failed = {k: v for k, v in _failed.items() if k != model_name}
         except Exception:
-            # Single reference swap — see _Failed's docstring for why this
-            # is what makes the fast path above safe to read lock-free.
-            _failed = _Failed(name=model_name, at=time.monotonic())
+            # Copy-on-write add for THIS model (see _failed's comment) — a
+            # different model's existing cooldown is preserved.
+            _failed = {**_failed, model_name: time.monotonic()}
             cache_dir = settings.data_dir / "models" / "fastembed"
             logger.warning(
                 "Local reranker unavailable for %s (the model download to "
@@ -171,12 +153,8 @@ def backend_status() -> str:
     has never actually been attempted.
     """
     model_name = settings.retrieval_reranker_model
-    failed = _failed  # single lock-free read of the atomic pair
-    if (
-        failed is not None
-        and failed.name == model_name
-        and time.monotonic() - failed.at < _RETRY_TTL_SECONDS
-    ):
+    at = _failed.get(model_name)  # atomic single-key read
+    if at is not None and time.monotonic() - at < _RETRY_TTL_SECONDS:
         return "failed_retrying"
     loaded = _loaded
     if loaded is not None and loaded.name == model_name:
@@ -187,7 +165,7 @@ def backend_status() -> str:
 def _reset_model_cache_for_tests() -> None:
     global _loaded, _failed
     _loaded = None
-    _failed = None
+    _failed = {}
 
 
 def _set_loaded_for_tests(name: str, model: Any) -> None:
@@ -202,14 +180,14 @@ def _set_loaded_for_tests(name: str, model: Any) -> None:
 
 
 def _set_failed_for_tests(name: str, at: float) -> None:
-    """Test-only helper to simulate a latched load failure.
+    """Test-only helper to latch a load failure for ``name``.
 
-    Mirrors ``fastembed_backend._set_failed_for_tests`` — goes through the
-    same single-reference-swap as ``_load_model``'s failure path.
+    Copy-on-write add (mirrors ``fastembed_backend._set_failed_for_tests``),
+    so multiple models' latches coexist rather than a single overwritable slot.
     """
     global _failed
     with _model_lock:
-        _failed = _Failed(name=name, at=at)
+        _failed = {**_failed, name: at}
 
 
 __all__ = ["backend_status", "rerank_chunk_ids"]

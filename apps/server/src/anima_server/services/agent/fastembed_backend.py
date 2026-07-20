@@ -46,33 +46,22 @@ class _Loaded:
     model: Any
 
 
-@dataclass(frozen=True)
-class _Failed:
-    """A latched load failure bound to the model name it applies to.
-
-    Held as ONE module-level reference (see ``_failed`` below), mirroring
-    ``_Loaded`` above, so a lock-free reader (``_cooldown_active``/
-    ``backend_status``) always observes a consistent (name, at) pair. Two
-    separate globals (``_failed_at`` and ``_failed_model_name``, assigned one
-    after the other under the lock) let a concurrent lock-free read pair a
-    freshly-written timestamp with the STALE name still in place (or vice
-    versa) during a failure-latch update for a different model — e.g.
-    reporting model B as failing using model A's fresh timestamp. A single
-    reference swap can't be observed mid-update for the same GIL-atomicity
-    reason ``_Loaded`` relies on.
-    """
-
-    name: str
-    at: float
-
-
 _loaded: _Loaded | None = None
-# Keyed by name (rather than a single process-wide latch) means a failure
-# loading one model — e.g. a mistyped model name in the settings UI — cannot
-# block a completely different, correctly-named model from getting its own
-# fresh load attempt. Without this, fixing the typo still yielded no dense
-# embeddings for the full 300s cooldown.
-_failed: _Failed | None = None
+# Per-model failure latch: model name -> monotonic timestamp of the failure.
+# Keyed by name (not a single process-wide slot) for two reasons: (1) a
+# failure loading one model — e.g. a mistyped model name in the settings UI —
+# must not block a different, correctly-named model from its own fresh load
+# attempt (without this, fixing the typo still yielded no dense embeddings for
+# the full 300s cooldown); (2) a SECOND model's failure must not overwrite the
+# first's cooldown — switching back to an earlier bad name must still respect
+# its remaining cooldown instead of immediately re-attempting the load.
+# Written COPY-ON-WRITE under ``_lock`` (a whole new dict is rebound, never
+# mutated in place) so a lock-free reader — the ``_load_model`` /
+# ``backend_status`` / ``_cooldown_active`` fast path — always sees a
+# consistent dict: under the GIL, rebinding the module-level name is atomic,
+# so a reader observes either the fully-old or the fully-new dict, and a
+# single ``.get(name)`` on either is itself atomic.
+_failed: dict[str, float] = {}
 
 _RETRY_TTL_SECONDS = 300.0
 
@@ -97,12 +86,8 @@ def embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None
 
 
 def _cooldown_active(model_name: str) -> bool:
-    failed = _failed  # single lock-free read of the atomic pair
-    return (
-        failed is not None
-        and failed.name == model_name
-        and time.monotonic() - failed.at < _RETRY_TTL_SECONDS
-    )
+    at = _failed.get(model_name)  # atomic single-key read of the current dict
+    return at is not None and time.monotonic() - at < _RETRY_TTL_SECONDS
 
 
 def _load_model(model_name: str) -> Any | None:
@@ -124,18 +109,17 @@ def _load_model(model_name: str) -> Any | None:
             # (rather than two separate globals) is what makes the fast
             # path above safe to read without the lock.
             _loaded = _Loaded(name=model_name, model=model)
-            # Only clear the latch if it belongs to *this* model — a
-            # different model's unrelated failure record must survive this
-            # success untouched, so that model stays correctly blocked
-            # until its own cooldown or its own successful retry.
-            failed = _failed
-            if failed is not None and failed.name == model_name:
-                _failed = None
+            # Copy-on-write clear of ONLY this model's latch — other models'
+            # unrelated failure records must survive this success untouched,
+            # so each stays blocked until its own cooldown or successful retry.
+            if model_name in _failed:
+                _failed = {k: v for k, v in _failed.items() if k != model_name}
         except Exception:
-            # Single reference swap — see _Failed's docstring for why this
-            # (rather than two separate globals) is what makes the fast
-            # path above safe to read without the lock.
-            _failed = _Failed(name=model_name, at=time.monotonic())
+            # Copy-on-write add for THIS model (see _failed's comment for why
+            # the whole-dict rebind, rather than an in-place mutation, is what
+            # keeps the lock-free reads above safe) — a different model's
+            # existing cooldown is preserved.
+            _failed = {**_failed, model_name: time.monotonic()}
             logger.warning(
                 "Failed to load fastembed model %r; dense retrieval will be "
                 "unavailable until the model can be loaded.",
@@ -185,12 +169,8 @@ def backend_status() -> str:
       the loaded model differs from the current one with no active failure.
     """
     current_model_name = _resolve_current_model_name()
-    failed = _failed  # single lock-free read of the atomic pair
-    if (
-        failed is not None
-        and failed.name == current_model_name
-        and time.monotonic() - failed.at < _RETRY_TTL_SECONDS
-    ):
+    at = _failed.get(current_model_name)  # atomic single-key read
+    if at is not None and time.monotonic() - at < _RETRY_TTL_SECONDS:
         return "failed_retrying"
     loaded = _loaded
     if loaded is not None and loaded.name == current_model_name:
@@ -234,7 +214,7 @@ def _reset_backend_for_tests() -> None:
     global _loaded, _failed
     with _lock:
         _loaded = None
-        _failed = None
+        _failed = {}
 
 
 def _set_loaded_for_tests(name: str, model: Any) -> None:
@@ -251,17 +231,15 @@ def _set_loaded_for_tests(name: str, model: Any) -> None:
 
 
 def _set_failed_for_tests(name: str, at: float) -> None:
-    """Test-only helper to simulate a latched load failure.
+    """Test-only helper to latch a load failure for ``name``.
 
-    Mirrors ``_set_loaded_for_tests``: goes through the same single-
-    reference-swap as ``_load_model``'s failure path so tests exercise (and
-    cannot bypass) the atomic-pair invariant described on ``_Failed`` above,
-    instead of poking at two separate globals that no longer exist as
-    separate assignable attributes.
+    Copy-on-write add (not overwrite), so multiple models' latches coexist —
+    mirroring ``_load_model``'s failure path and exercising the per-model
+    cooldown behavior rather than a single overwritable slot.
     """
     global _failed
     with _lock:
-        _failed = _Failed(name=name, at=at)
+        _failed = {**_failed, name: at}
 
 
 __all__ = ["backend_status", "embed_texts", "warm_up_retrieval_models"]
