@@ -619,7 +619,11 @@ def test_vault_round_trip_preserves_reconsolidation_log_full_scope(db: Session) 
     assert reconstructed["emotional_salience"] == 0.2
 
 
-def test_vault_memories_scope_restores_reconsolidation_log(db: Session) -> None:
+def test_vault_memories_scope_export_includes_reconsolidation_log(db: Session) -> None:
+    """The memories-SCOPE export path filters by _MEMORY_TABLES; the log
+    must survive it (not just a full export + memories restore), or exact
+    reversibility is lost through a memories-scoped vault."""
+    from anima_server.services.vault import _build_vault_payload
     from sqlalchemy import delete
 
     item = _make_item(db, emotional_salience=0.2, stability_class="temporary")
@@ -627,16 +631,20 @@ def test_vault_memories_scope_restores_reconsolidation_log(db: Session) -> None:
     db.flush()
     db.commit()
 
-    snapshot = export_database_snapshot(db, user_id=1)
+    # Go through the real memories-scope export (not a full export), which
+    # is where the _MEMORY_TABLES filter would have dropped the log. The
+    # payload nests the filtered snapshot under "database".
+    scoped = _build_vault_payload(db, scope="memories")
+    assert "reconsolidationLog" in scoped["database"]
+    assert len(scoped["database"]["reconsolidationLog"]) == 2
 
     db.execute(delete(ReconsolidationLog))
     db.commit()
 
-    restore_database_snapshot(db, snapshot, scope="memories")
+    restore_database_snapshot(db, scoped["database"], scope="memories")
     db.commit()
 
-    restored_logs = db.scalars(select(ReconsolidationLog)).all()
-    assert len(restored_logs) == 2
+    assert len(db.scalars(select(ReconsolidationLog)).all()) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -787,3 +795,59 @@ def test_forget_memory_clears_reconsolidation_log(db: Session) -> None:
         select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == item_id)
     ).all() == []
     assert db.get(MemoryItem, item_id) is None
+
+
+def test_ignored_memory_in_mixed_run_still_reconsolidates() -> None:
+    """A run that renders two memories and the answer uses one but ignores
+    the other: the ignored one is rendered-in-context and must reconsolidate.
+    It lands in unused_counts (per-row) but NOT zero_reference_counts
+    (per-run, only when the whole run was ignored) — the regression this
+    guards."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    with soul_factory() as soul_db:
+        user = User(username="il6-mixed", password_hash="x", display_name="Mixed")
+        soul_db.add(user)
+        soul_db.flush()
+        user_id = user.id
+
+        def _item(content: str) -> MemoryItem:
+            it = MemoryItem(
+                user_id=user_id, content=content, category="fact", importance=3,
+                source="extraction", emotional_salience=0.2, stability_class="temporary",
+            )
+            soul_db.add(it)
+            return it
+
+        used_item = _item("Cited in the answer")
+        ignored_item = _item("Rendered but ignored")
+        soul_db.commit()
+        used_id, ignored_id = used_item.id, ignored_item.id
+
+    with runtime_factory() as runtime_db:
+        runtime_db.add(AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC)))
+        # SAME run_id — a mixed run: one used, one ignored.
+        runtime_db.add(MemoryRetrievalFeedback(
+            user_id=user_id, run_id=1, memory_item_id=used_id,
+            was_used=True, evidence_score=1.0, synced=False,
+        ))
+        runtime_db.add(MemoryRetrievalFeedback(
+            user_id=user_id, run_id=1, memory_item_id=ignored_id,
+            was_used=False, evidence_score=0.0, synced=False,
+        ))
+        runtime_db.commit()
+
+    with runtime_factory() as runtime_db, soul_factory() as soul_db:
+        result = sync_retrieval_feedback(
+            user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
+        )
+        # Both the used AND the ignored-but-rendered memory reconsolidate.
+        assert used_id in result["reconsolidated_items"]
+        assert ignored_id in result["reconsolidated_items"]
+        assert soul_db.get(MemoryItem, ignored_id).emotional_salience > 0.2
+
+    soul_engine.dispose()
+    runtime_engine.dispose()

@@ -171,6 +171,7 @@ _MEMORY_TABLES = frozenset(
         "latentTraces",
         "memoryClaims",
         "tendencyContributions",
+        "reconsolidationLog",
     }
 )
 
@@ -215,6 +216,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "latentTraces",
         "memoryClaims",
         "tendencyContributions",
+        "reconsolidationLog",
     }
 )
 

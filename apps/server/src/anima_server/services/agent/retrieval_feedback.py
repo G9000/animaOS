@@ -330,7 +330,17 @@ def sync_retrieval_feedback(
         runtime_db, user_id=user_id
     )
 
-    for item_id in sorted(set(used_counts) | set(corrected_counts) | set(zero_reference_counts)):
+    # unused_counts (per-row, pre-grouping) is the true "rendered but the
+    # answer ignored it" signal — including memories ignored in a MIXED run
+    # that also used another memory, which zero_reference_counts (per-run,
+    # only when the whole run was ignored) misses. Include it so those items
+    # are iterated and can reconsolidate.
+    for item_id in sorted(
+        set(used_counts)
+        | set(corrected_counts)
+        | set(zero_reference_counts)
+        | set(unused_counts)
+    ):
         item = soul_db.get(MemoryItem, item_id)
         if item is None:
             continue
@@ -380,7 +390,7 @@ def sync_retrieval_feedback(
         # Per-item try/except isolation: one item's failure must never abort
         # the rest of this sync (matches IL4/IL5 loops).
         rendered_in_context = (
-            item_id in used_counts or item_id in zero_reference_counts
+            item_id in used_counts or item_id in unused_counts
         ) and item_id not in corrected_counts
         if rendered_in_context and item.superseded_by is None and item.distilled_at is None:
             try:
