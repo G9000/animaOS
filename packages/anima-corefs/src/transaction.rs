@@ -804,6 +804,7 @@ struct CoordinatorPublicationProbe {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CatalogLoadStage {
+    KernelLock,
     PointerIo,
     KeyDerivation,
     CacheAccess,
@@ -1247,6 +1248,25 @@ impl CoreCommitCoordinator {
         )
     }
 
+    #[cfg(test)]
+    fn load_committed_locked_with_probe(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        probe: &mut CatalogLoadProbe<'_>,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
+            &self.root_dir,
+            &self.fs_dir,
+            || probe.stage(CatalogLoadStage::KernelLock),
+        )?;
+        self.load_committed_recovering_with_keyring_and_hook_inner(
+            &commit_lock,
+            keyring,
+            &mut |_| Ok(()),
+            Some(probe),
+        )
+    }
+
     /// Reads the version declared by the current HEAD so the session can select
     /// matching pending or active key material before authenticating the catalog.
     /// The returned value is an untrusted selection hint until a load verifies
@@ -1323,9 +1343,9 @@ impl CoreCommitCoordinator {
             probe.as_deref_mut(),
         )? != pointers.head
         {
-            let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
-            return self.load_committed_recovering_with_keyring(keyring);
+            return self.load_committed_recovering_with_keyring(&commit_lock, keyring);
         }
 
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
@@ -1359,9 +1379,9 @@ impl CoreCommitCoordinator {
         ) {
             return committed;
         }
-        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_recovering_with_keyring(keyring)
+        self.load_committed_recovering_with_keyring(&commit_lock, keyring)
     }
 
     fn cache_lookup_key(
@@ -1370,30 +1390,13 @@ impl CoreCommitCoordinator {
         keyring: &FrkKeyring<'_>,
         #[cfg(test)] probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Option<CacheLookupKey> {
+        let head = pointers.head.as_ref()?;
+        let active_keys = keyring.require(head.required_frk_version()).ok()?;
         #[cfg(test)]
         if let Some(probe) = probe {
             probe.stage(CatalogLoadStage::KeyDerivation);
         }
-        let head = pointers.head.as_ref()?;
-        let active_keys = keyring.require(head.required_frk_version()).ok()?;
         CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok()
-    }
-
-    fn load_committed_once_with_keyring_heads(
-        &self,
-        keyring: &FrkKeyring<'_>,
-        committed_head: Option<HeadRecord>,
-        receipt_head: Option<HeadRecord>,
-        complete_head: Option<HeadRecord>,
-    ) -> Result<Option<CommittedCatalog>, CommitError> {
-        self.load_committed_once_with_keyring_heads_inner(
-            keyring,
-            committed_head,
-            receipt_head,
-            complete_head,
-            #[cfg(test)]
-            None,
-        )
     }
 
     fn load_committed_once_with_keyring_heads_inner(
@@ -1497,9 +1500,9 @@ impl CoreCommitCoordinator {
             return committed;
         }
 
-        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_recovering_with_hook(keys, hook)
+        self.load_committed_recovering_with_hook(&commit_lock, keys, hook)
     }
 
     fn load_committed_once(
@@ -1566,41 +1569,144 @@ impl CoreCommitCoordinator {
 
     fn load_committed_recovering(
         &self,
+        commit_lock: &CoreCommitLock,
         keys: &FrkSubkeys,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
-        self.load_committed_recovering_with_hook(keys, &mut |_| Ok(()))
+        self.load_committed_recovering_with_keyring(commit_lock, &FrkKeyring::single(keys))
     }
 
     fn load_committed_recovering_with_keyring(
         &self,
+        commit_lock: &CoreCommitLock,
         keyring: &FrkKeyring<'_>,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
-        let committed_head = self.load_pointer_head(HEAD_FILE)?;
-        let receipt_head = self.load_pointer_head(CUTOVER_RECEIPT_FILE)?;
-        let complete_head = self.load_pointer_head(CUTOVER_COMPLETE_FILE)?;
+        self.load_committed_recovering_with_keyring_and_hook_inner(
+            commit_lock,
+            keyring,
+            &mut |_| Ok(()),
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn load_committed_recovering_with_keyring_and_hook_inner<H>(
+        &self,
+        commit_lock: &CoreCommitLock,
+        keyring: &FrkKeyring<'_>,
+        hook: &mut H,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        self.validate_pinned_layout()?;
+        let pointers = self.load_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
+        let lookup_key = self.cache_lookup_key(
+            &pointers,
+            keyring,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        );
+        let cached = lookup_key.as_ref().and_then(|key| self.cache.get(key));
+        #[cfg(test)]
+        if lookup_key.is_some() {
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CatalogLoadStage::CacheAccess);
+            }
+        }
+        if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
+            return Ok(Some(CommittedCatalog {
+                head,
+                catalog: Arc::clone(snapshot.catalog()),
+            }));
+        }
+
         let mut versions = HashSet::new();
-        for head in [&committed_head, &receipt_head, &complete_head]
+        for head in [&pointers.head, &pointers.receipt, &pointers.complete]
             .into_iter()
             .flatten()
         {
             versions.insert(head.required_frk_version());
         }
-        if versions.len() <= 1 {
-            return match versions.into_iter().next() {
-                Some(version) => self.load_committed_recovering(keyring.require(version)?),
-                None => Ok(None),
-            };
-        }
-        self.load_committed_once_with_keyring_heads(
+        let full_load = self.load_committed_once_with_keyring_heads_inner(
             keyring,
-            committed_head,
-            receipt_head,
-            complete_head,
+            pointers.head.clone(),
+            pointers.receipt.clone(),
+            pointers.complete.clone(),
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        );
+        let mut recovered = false;
+        let committed = if versions.len() <= 1
+            && matches!(
+                &full_load,
+                Err(CommitError::CutoverRecoveryRequired
+                    | CommitError::AuthoritativeHeadMissingAfterCutover
+                    | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+            ) {
+            recovered = true;
+            match versions.into_iter().next() {
+                Some(version) => {
+                    self.recover_cutover_with_hook(commit_lock, keyring.require(version)?, hook)
+                }
+                None => Ok(None),
+            }
+        } else {
+            full_load
+        };
+
+        if let Ok(Some(committed_catalog)) = committed.as_ref() {
+            let replacement_key = if recovered {
+                let final_pointers = self.load_pointer_set(
+                    #[cfg(test)]
+                    probe.as_deref_mut(),
+                )?;
+                self.cache_lookup_key(
+                    &final_pointers,
+                    keyring,
+                    #[cfg(test)]
+                    probe,
+                )
+            } else {
+                lookup_key
+            };
+            if let Some(key) = replacement_key.as_ref() {
+                self.cache
+                    .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                        key,
+                        Arc::clone(&committed_catalog.catalog),
+                        None,
+                    )));
+            }
+        }
+        committed
+    }
+
+    #[cfg(test)]
+    fn load_committed_recovering_with_hook<H>(
+        &self,
+        commit_lock: &CoreCommitLock,
+        keys: &FrkSubkeys,
+        hook: &mut H,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        self.load_committed_recovering_with_keyring_and_hook_inner(
+            commit_lock,
+            &FrkKeyring::single(keys),
+            hook,
+            #[cfg(test)]
+            None,
         )
     }
 
-    fn load_committed_recovering_with_hook<H>(
+    fn recover_cutover_with_hook<H>(
         &self,
+        _commit_lock: &CoreCommitLock,
         keys: &FrkSubkeys,
         hook: &mut H,
     ) -> Result<Option<CommittedCatalog>, CommitError>
@@ -1836,7 +1942,7 @@ impl CoreCommitCoordinator {
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
             let committed = self
-                .load_committed_recovering_with_keyring(keyring)?
+                .load_committed_recovering_with_keyring(&commit_lock, keyring)?
                 .ok_or(CommitError::CoreNotInitialized)?;
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
@@ -1945,9 +2051,11 @@ impl CoreCommitCoordinator {
         B: FnOnce(u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        if self.load_committed_recovering(keys)?.is_some()
+        if self
+            .load_committed_recovering(&commit_lock, keys)?
+            .is_some()
             || self.load_validation_snapshot(keys)?.is_some()
         {
             return Err(CommitError::CoreAlreadyInitialized);
@@ -2014,9 +2122,12 @@ impl CoreCommitCoordinator {
         B: FnOnce(&CatalogGeneration, u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        if self.load_committed_recovering(keys)?.is_some() {
+        if self
+            .load_committed_recovering(&commit_lock, keys)?
+            .is_some()
+        {
             return Err(CommitError::CutoverAlreadyCommitted);
         }
         let current = self
@@ -2215,7 +2326,8 @@ impl CoreCommitCoordinator {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
-            let authoritative = self.load_committed_recovering_with_keyring(keyring)?;
+            let authoritative =
+                self.load_committed_recovering_with_keyring(&commit_lock, keyring)?;
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {

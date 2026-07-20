@@ -354,6 +354,87 @@ fn unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto() {
 }
 
 #[test]
+fn locked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-locked-hit-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let mut probe = CatalogLoadProbe::default();
+
+    let committed = coordinator
+        .load_committed_locked_with_probe(&FrkKeyring::single(&keys), &mut probe)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.head().generation(), 2);
+    assert_eq!(probe.pointer_reads, 3);
+    assert_eq!(probe.catalog_file_reads, 0);
+    assert_eq!(probe.catalog_decrypts, 0);
+    assert_eq!(probe.catalog_encodes, 0);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn locked_load_acquires_kernel_lock_before_cache_and_releases_cache_before_io() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-locked-order-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    let mut stages = Vec::new();
+    let mut assert_cache_free = |stage| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held during {stage:?}"
+        );
+        stages.push(stage);
+    };
+    let mut probe = CatalogLoadProbe::observed(&mut assert_cache_free);
+
+    coordinator
+        .load_committed_locked_with_probe(&FrkKeyring::single(&keys), &mut probe)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(stages.first(), Some(&CatalogLoadStage::KernelLock));
+    let last_pointer = stages
+        .iter()
+        .rposition(|stage| *stage == CatalogLoadStage::PointerIo)
+        .unwrap();
+    let key_derivation = stages
+        .iter()
+        .position(|stage| *stage == CatalogLoadStage::KeyDerivation)
+        .unwrap();
+    let cache_access = stages
+        .iter()
+        .position(|stage| *stage == CatalogLoadStage::CacheAccess)
+        .unwrap();
+    let catalog_file_io = stages
+        .iter()
+        .position(|stage| *stage == CatalogLoadStage::CatalogFileIo)
+        .unwrap();
+    let catalog_crypto = stages
+        .iter()
+        .position(|stage| *stage == CatalogLoadStage::CatalogCrypto)
+        .unwrap();
+    assert!(last_pointer < key_derivation);
+    assert!(key_derivation < cache_access);
+    assert!(cache_access < catalog_file_io);
+    assert!(catalog_file_io < catalog_crypto);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn empty_validated_object_state_is_buildable_and_searchable() {
     let first_id = OpaqueId::parse(FIRST_OBJECT_ID).unwrap();
     let empty = ValidatedObjectState::empty();
