@@ -19,7 +19,10 @@ use super::cache::{
     AuthenticatedCommitSnapshot, CacheError, CacheLookupKey, CommitCache, PointerSet,
     ValidatedObjectBinding, ValidatedObjectState,
 };
-use super::{CatalogLoadProbe, CatalogLoadStage, CommitProbe, CommitStage, CoreCommitCoordinator};
+use super::{
+    CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitMode, CommitProbe, CommitStage,
+    CoreCommitCoordinator,
+};
 
 const CORE_ID: &str = "cache-core";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -483,23 +486,56 @@ fn commit_holds_no_cache_guard_during_kernel_lock_io_crypto_build_hooks_or_inval
     drop(seeder);
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let mut stages = Vec::new();
-    let mut assert_cache_free = |stage| {
-        assert!(
-            coordinator.cache.inner.try_lock().is_ok(),
-            "cache mutex held during {stage:?}"
-        );
+    let mut observe_stage = |stage| {
+        if matches!(
+            stage,
+            CommitStage::KernelLock
+                | CommitStage::PointerIo
+                | CommitStage::KeyDerivation
+                | CommitStage::CatalogIoCrypto
+        ) {
+            assert!(
+                coordinator.cache.inner.try_lock().is_ok(),
+                "cache mutex held at immediate internal stage {stage:?}"
+            );
+        }
         stages.push(stage);
     };
-    let mut probe = CommitProbe::observed(&mut assert_cache_free);
+    let mut probe = CommitProbe::observed(&mut observe_stage);
+    let keyring = FrkKeyring::single(&keys);
+    let mut hook = |_| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held inside publication/failure hook"
+        );
+        Ok(())
+    };
 
     let outcome = coordinator
-        .commit_with_probe(
+        .commit_internal_with_keyring_and_hook(
+            &keyring,
             &keys,
             &[],
             &[],
-            |_, generation| Ok((*catalog(generation)).clone()),
-            |_| Err("runtime index is offline".to_owned()),
-            &mut probe,
+            CommitMode::Normal,
+            |_, generation| {
+                assert!(
+                    coordinator.cache.inner.try_lock().is_ok(),
+                    "cache mutex held inside catalog build callback"
+                );
+                Ok((*catalog(generation)).clone())
+            },
+            CommitCallbacks {
+                invalidate: |_| {
+                    assert!(
+                        coordinator.cache.inner.try_lock().is_ok(),
+                        "cache mutex held inside invalidation callback"
+                    );
+                    Err("runtime index is offline".to_owned())
+                },
+                hook: &mut hook,
+            },
+            Some(&mut probe),
         )
         .unwrap();
 

@@ -2613,10 +2613,20 @@ impl CoreCommitCoordinator {
             if let Some(probe) = probe.as_deref_mut() {
                 probe.stage(CommitStage::EncryptionAndPublication);
             }
+            let expected_final_pointers = PointerSet {
+                head: Some(head.clone()),
+                receipt: match mode {
+                    CommitMode::Normal => initial_pointers.receipt.clone(),
+                    CommitMode::FirstMutation { .. } => Some(head.clone()),
+                },
+                complete: match mode {
+                    CommitMode::Normal => initial_pointers.complete.clone(),
+                    CommitMode::FirstMutation { .. } => Some(head.clone()),
+                },
+            };
             self.publish_commit_cache_authority(
                 keyring,
-                mode,
-                &head,
+                &expected_final_pointers,
                 Arc::clone(&next_catalog),
                 recovery_pending,
                 #[cfg(test)]
@@ -2669,8 +2679,7 @@ impl CoreCommitCoordinator {
     fn publish_commit_cache_authority(
         &self,
         keyring: &FrkKeyring<'_>,
-        mode: CommitMode,
-        head: &HeadRecord,
+        expected_pointers: &PointerSet,
         catalog: Arc<CatalogGeneration>,
         recovery_pending: bool,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
@@ -2689,11 +2698,7 @@ impl CoreCommitCoordinator {
                 return;
             }
         };
-        let exact_final_authority = final_pointers.head.as_ref() == Some(head)
-            && (!matches!(mode, CommitMode::FirstMutation { .. })
-                || (final_pointers.receipt.as_ref() == Some(head)
-                    && final_pointers.complete.as_ref() == Some(head)));
-        if !exact_final_authority {
+        if &final_pointers != expected_pointers {
             self.cache.clear();
             return;
         }

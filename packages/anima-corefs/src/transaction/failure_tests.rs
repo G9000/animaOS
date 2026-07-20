@@ -695,6 +695,80 @@ fn post_head_recovery_pending_clears_the_cache() {
 }
 
 #[test]
+fn normal_success_clears_cache_when_retained_receipt_changes_after_head_sync() {
+    let root = reset_root("normal-success-retained-receipt-mismatch");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let prior = coordinator
+        .cache
+        .current()
+        .expect("first mutation should cache the authenticated retained markers");
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let mutate_after_head_sync = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::DestinationSynced,
+    };
+
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == mutate_after_head_sync {
+                        std::fs::remove_file(coordinator.cutover_receipt_path())?;
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 3);
+    assert!(
+        coordinator.cache.current().is_none(),
+        "a malformed retained marker tuple must not become exact cache authority"
+    );
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn torn_unlocked_cutover_observation_is_retried_under_the_commit_lock() {
     let root = reset_root("torn-cutover-observation");
     seed_validation(&root);
