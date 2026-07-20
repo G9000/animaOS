@@ -1406,6 +1406,48 @@ class TestReparsePendingDocumentsTask:
         assert "could not be parsed" in result
 
     @pytest.mark.asyncio()
+    async def test_reparse_document_raising_does_not_crash_cycle(
+        self, rt_factory, monkeypatch
+    ):
+        """reparse_document can RAISE (bad stored path / unreadable PDF) rather
+        than return a status. That must be handled like a per-document failure
+        — skip + record + continue — not crash the cycle or (since candidates
+        are id-ordered) crash every run on a broken low-id document."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            if document_id == 1:
+                raise RuntimeError("Failed to read PDF file: no such file")
+            return ReparseResult(status="upgraded", chunk_count=2)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # The raise on doc #1 did NOT crash the cycle or block #2/#3.
+        assert calls == [1, 2, 3]
+        assert "reparsed 2" in result
+        assert "could not be parsed" in result
+
+    @pytest.mark.asyncio()
     async def test_negative_budget_clamps_to_zero(self, rt_factory, monkeypatch):
         """A misconfigured negative budget must not turn candidates[:budget]
         into a slice-from-the-end (`[:-1]`) that reparses almost the whole

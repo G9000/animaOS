@@ -1516,3 +1516,17 @@ async def test_batch_embed_openai_compatible_marks_provider_unavailable(
     assert embeddings_module.http_backend_status("vllm") == "failed_retrying"
 
     embeddings_module._provider_unavailable_until.clear()
+
+
+def test_resolve_embedding_api_key_never_returns_key_for_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: fastembed is in-process (no HTTP endpoint, no API key). A stored
+    agent_embedding_api_key must never be attributed to it — otherwise a
+    legacy piggyback config whose get_config DISPLAY is normalized to
+    'fastembed' would report hasEmbeddingApiKey=true for a provider that
+    can't use one."""
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-leftover")
+    assert embeddings_module._resolve_embedding_api_key("fastembed") == ""

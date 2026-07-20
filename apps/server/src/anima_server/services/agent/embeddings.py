@@ -93,6 +93,15 @@ def _resolve_embedding_provider() -> str:
 
 def _resolve_embedding_api_key(provider: str | None = None) -> str:
     resolved_provider = provider or _resolve_embedding_provider()
+    # fastembed is the in-process ONNX backend — it has no HTTP endpoint and
+    # uses no API key at all. Never attribute a stored key to it: otherwise a
+    # legacy piggyback config (no explicit agent_embedding_provider, a leftover
+    # agent_embedding_api_key belonging to an unsupported chat provider like
+    # moonshot) whose DISPLAY get_config normalizes to "fastembed" would report
+    # hasEmbeddingApiKey=true for a provider that can't use one. Mirrors
+    # _resolve_embedding_base_url's fastembed short-circuit.
+    if resolved_provider == "fastembed":
+        return ""
     configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
         # The dedicated `agent_embedding_api_key` belongs to whatever

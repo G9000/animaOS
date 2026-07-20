@@ -1129,11 +1129,35 @@ async def _task_reparse_pending_documents(
                 failure_cooldown_hours=settings.document_auto_reparse_failure_cooldown_hours,
             )[:budget]
             for document_id in candidates:
-                result = reparse_document(
-                    runtime_db,
-                    user_id=user_id,
-                    document_id=document_id,
-                )
+                try:
+                    result = reparse_document(
+                        runtime_db,
+                        user_id=user_id,
+                        document_id=document_id,
+                    )
+                except Exception:
+                    # reparse_document can RAISE (rather than return a status)
+                    # on a bad stored path or an unreadable/missing PDF —
+                    # DocumentStoragePathError from resolve_document_storage_
+                    # path(), RuntimeError from the pdfium preview path, etc.
+                    # That is per-document, so handle it like parse_degraded:
+                    # roll back, record the failure (cooldown), and keep going.
+                    # Otherwise one broken low-id document would crash the whole
+                    # cycle — and, since candidates are id-ordered, crash it
+                    # again every run, starving every document behind it.
+                    logger.warning(
+                        "Auto-reparse raised for document %s; recording failure "
+                        "and skipping",
+                        document_id,
+                        exc_info=True,
+                    )
+                    degraded += 1
+                    runtime_db.rollback()
+                    mark_docling_reparse_failed(
+                        runtime_db, user_id=user_id, document_id=document_id
+                    )
+                    runtime_db.commit()
+                    continue
                 if result.status == "upgraded":
                     reparsed += 1
                     runtime_db.commit()
