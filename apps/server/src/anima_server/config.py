@@ -171,6 +171,14 @@ class Settings(BaseSettings):
     # Pure DB work with no LLM calls, but capped per sleep run to bound
     # work — ge=1 so a misconfigured cap can't silently disable the sweep.
     distill_max_per_run: int = Field(default=20, ge=1)
+    # IL6 recall reconsolidation (see services/agent/reconsolidation.py).
+    # eta is the PRD-default nudge step; dream_eta is IL-007's
+    # reduced-strength touch on the same edge. The lifetime drift cap
+    # bounds cumulative |Δemotional_salience| from reconsolidation only,
+    # per item, forever.
+    reconsolidation_eta: float = Field(default=0.05, ge=0.0, le=1.0)
+    reconsolidation_dream_eta: float = Field(default=0.02, ge=0.0, le=1.0)
+    reconsolidation_lifetime_drift_cap: float = Field(default=0.3, ge=0.0, le=1.0)
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30

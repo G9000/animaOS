@@ -167,6 +167,15 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
             "distilled_at",
             "ALTER TABLE memory_items ADD COLUMN distilled_at DATETIME",
         ),
+        (
+            # IL6: same "legacy DB stamped past migrations" gap IL5 hit (P2
+            # review finding) — handled up front here instead of after the
+            # fact. reconsolidation.py reads/writes this column on every
+            # reconsolidation, so a missing column would raise "no such
+            # column: memory_items.reconsolidation_drift" on first recall.
+            "reconsolidation_drift",
+            "ALTER TABLE memory_items ADD COLUMN reconsolidation_drift FLOAT NOT NULL DEFAULT 0.0",
+        ),
     ):
         if column_name not in memory_columns:
             connection.exec_driver_sql(ddl)

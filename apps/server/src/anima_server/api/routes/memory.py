@@ -318,6 +318,17 @@ async def delete_memory_item(
         )
 
         _scrub_tendency_contributions_for_forget(db, user_id=user_id, chain_ids=[item_id])
+    # IL6: same unenforced-FK story — remove reconsolidation_log rows for
+    # this item so a direct delete can't orphan them (they're exported and
+    # could reattach to a reused item id).
+    from anima_server.models import ReconsolidationLog
+
+    db.execute(
+        delete(ReconsolidationLog).where(
+            ReconsolidationLog.user_id == user_id,
+            ReconsolidationLog.memory_item_id == item_id,
+        )
+    )
     db.delete(existing)
     db.commit()
     _remove_from_vector_store(user_id, item_id, db)

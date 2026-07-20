@@ -832,6 +832,20 @@ def forget_memory(
     # takes precedence over distillation).
     _scrub_tendency_contributions_for_forget(db, user_id=user_id, chain_ids=chain_ids)
 
+    # IL6: reconsolidation_log rows reference memory_item_id, but SQLite FK
+    # cascades aren't enforced — delete them explicitly or forgetting a
+    # reconsolidated memory leaves orphaned log rows that get exported and
+    # can reattach to a reused item id.
+    if chain_ids:
+        from anima_server.models import ReconsolidationLog
+
+        db.execute(
+            delete(ReconsolidationLog).where(
+                ReconsolidationLog.user_id == user_id,
+                ReconsolidationLog.memory_item_id.in_(chain_ids),
+            )
+        )
+
     # 4. Hard-delete all items in the chain
     for item in chain_items:
         db.delete(item)

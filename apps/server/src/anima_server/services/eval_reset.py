@@ -27,6 +27,7 @@ from anima_server.models import (
     MemoryItemEvidence,
     MemoryItemTag,
     MemoryVector,
+    ReconsolidationLog,
     RuntimeBackgroundTaskRun,
     RuntimeDocument,
     RuntimeDocumentChunk,
@@ -243,6 +244,15 @@ def _reset_soul_state(
         deleted,
         "tendency_contributions",
         delete(TendencyContribution).where(TendencyContribution.user_id == user_id),
+    )
+    # IL6 provenance ledger before memory_items: same unenforced-SQLite-FK
+    # orphan hazard IL5 hit — memory_item_id would dangle once memory_items
+    # rows below are deleted.
+    _delete(
+        db,
+        deleted,
+        "reconsolidation_log",
+        delete(ReconsolidationLog).where(ReconsolidationLog.user_id == user_id),
     )
     _delete(db, deleted, "memory_claims", delete(MemoryClaim).where(MemoryClaim.user_id == user_id))
     _update(
