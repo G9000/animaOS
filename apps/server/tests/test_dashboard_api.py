@@ -878,6 +878,11 @@ def test_config_get_normalizes_legacy_unsupported_piggyback_embedding_provider()
             config = resp.json()
             assert config["embeddingProvider"] == "fastembed"
             assert config["embeddingIsExplicit"] is False
+            # The normalized provider must be paired with ITS OWN default
+            # model, not the stale legacy agent_embedding_model ("x") — else
+            # echoing the response back on save would pin an invalid model to
+            # fastembed and break dense-retrieval load.
+            assert config["embeddingModel"] == "BAAI/bge-small-en-v1.5"
 
             # GET is read-only: the legacy piggyback settings are untouched.
             assert settings.agent_embedding_provider == ""

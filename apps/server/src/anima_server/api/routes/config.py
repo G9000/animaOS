@@ -364,9 +364,23 @@ async def get_config(
     # discovers they must clear the piggyback. Report the bundled default
     # instead so the UI shows/echoes something savable; this does NOT
     # mutate stored settings, only the response.
+    embedding_normalized = False
     if embedding_provider not in (VALID_EMBEDDING_PROVIDERS - {""}):
         embedding_provider = "fastembed"
         embedding_is_explicit = False
+        embedding_normalized = True
+
+    # When the provider was normalized away from an unsupported legacy value,
+    # report the normalized provider's OWN default model — not
+    # resolve_embedding_model(), which honors the stale explicit
+    # agent_embedding_model and would pair "fastembed" with, say, a leftover
+    # "text-embedding-3-small". Echoing that stale pair back would let a save
+    # pin an invalid model to fastembed and break dense-retrieval load.
+    embedding_model = (
+        DEFAULT_EMBEDDING_MODELS.get(embedding_provider, "")
+        if embedding_normalized
+        else resolve_embedding_model(embedding_provider)
+    )
 
     return AgentConfigResponse(
         provider=settings.agent_provider,
@@ -378,7 +392,7 @@ async def get_config(
             or (settings.agent_api_key.strip() if not has_provider_api_keys() else "")
         ),
         embeddingProvider=embedding_provider,
-        embeddingModel=resolve_embedding_model(embedding_provider),
+        embeddingModel=embedding_model,
         embeddingIsExplicit=embedding_is_explicit,
         # Reflects the key the embedding path will ACTUALLY use — the same
         # rich resolution `generate_embedding` consults (env DOUBLEWORD_API_
