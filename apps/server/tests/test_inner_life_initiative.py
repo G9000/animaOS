@@ -1228,6 +1228,72 @@ def test_fetch_marks_delivered_and_ack_clears_it(db: Session) -> None:
     runtime_engine.dispose()
 
 
+def test_ack_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
+    """Regression (PR review, P2): an acknowledgement is definitive proof the
+    user received the message, so it must reconcile InitiativeLog.delivered,
+    not only `answered`. Otherwise a two-phase under-claim (delivered=False
+    left after a failed post-runtime commit) stays uncounted by
+    count_recent_fires (which filters delivered=True), letting a close user get
+    another initiative inside the 24h cap."""
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    # Under-claim: the soul log says NOT delivered, yet the pending row IS
+    # durable (the exact state a failed delivered-flip commit leaves behind).
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    db.commit()
+    assert count_recent_fires(db, user_id=1, now=now) == (0, 0)  # uncounted pre-ack
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+        pid = rdb.scalars(select(PendingInitiative)).one().id
+        acknowledge_pending_initiative(rdb, soul_db=db, user_id=1, pending_id=pid)
+        rdb.commit()
+        db.commit()
+
+    refreshed = db.get(InitiativeLog, log_row.id)
+    assert refreshed.delivered is True  # reconciled by the ack
+    assert refreshed.answered is True
+    assert count_recent_fires(db, user_id=1, now=now) == (1, 1)  # now counted
+
+    runtime_engine.dispose()
+
+
+def test_runtime_biginteger_pk_autoincrements_on_sqlite() -> None:
+    """Regression (PR review, P2): runtime models use BigInteger PKs sized for
+    PostgreSQL, but SQLite only aliases rowid (autoincrement) for a column
+    declared exactly INTEGER — a BIGINT PK fails the first id-less insert with
+    'NOT NULL constraint failed'. runtime_base registers a PRODUCTION @compiles
+    hook so BigInteger emits INTEGER on SQLite; without it every runtime table
+    (not just IL3's) breaks on a SQLite runtime backend."""
+    from sqlalchemy import BigInteger
+    from sqlalchemy.dialects import sqlite
+    from sqlalchemy.schema import CreateTable
+
+    from anima_server.db.runtime_base import _compile_biginteger_sqlite
+
+    # The production hook exists and maps BigInteger -> INTEGER on SQLite.
+    assert _compile_biginteger_sqlite(BigInteger(), None) == "INTEGER"
+
+    # And it takes effect in the new IL3 runtime tables' SQLite DDL: the id
+    # column renders INTEGER (rowid alias -> autoincrements), never BIGINT.
+    for model in (DriveStateRow, PendingInitiative):
+        ddl = str(CreateTable(model.__table__).compile(dialect=sqlite.dialect()))
+        assert "BIGINT" not in ddl
+        assert "id INTEGER" in ddl
+
+
 def test_acknowledge_unknown_pending_id_returns_none() -> None:
     engine = _create_runtime_engine()
     factory = _make_factory(engine)

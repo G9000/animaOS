@@ -163,6 +163,15 @@ def acknowledge_pending_initiative(
 
             log_row = soul_db.get(InitiativeLog, row.initiative_log_id)
             if log_row is not None and log_row.user_id == user_id:
+                # An acknowledgement is definitive proof the user received the
+                # message, so reconcile `delivered` too — not just `answered`.
+                # If the two-phase `delivered=True` commit in
+                # tick_initiative_for_user failed after the runtime PendingInitiative
+                # was already durable, the log would otherwise stay
+                # delivered=False and count_recent_fires (which filters
+                # delivered) would undercount, letting a close user get another
+                # initiative inside the 24h cap.
+                log_row.delivered = True
                 log_row.answered = True
                 soul_db.flush()
         except Exception:
