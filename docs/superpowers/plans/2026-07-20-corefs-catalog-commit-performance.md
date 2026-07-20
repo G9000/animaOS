@@ -548,7 +548,7 @@ fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() { /* chann
 fn recovery_holds_no_cache_guard_during_lock_io_crypto_or_hooks() { /* stage try_lock */ }
 ```
 
-- [ ] **Step 2: Run every recovery test and verify RED**
+- [ ] **Step 2: Run GREEN recovery-authority characterizations and RED cache-publication/guard tests**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::failure_tests::receipt_without_head_bypasses_cache_and_runs_recovery -- --exact
@@ -560,7 +560,15 @@ cargo +1.75.0 test --locked -p anima-corefs transaction::failure_tests::concurre
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::recovery_holds_no_cache_guard_during_lock_io_crypto_or_hooks -- --exact
 ```
 
-Expected: at least the scoped counter/guard assertions FAIL because recovery-specific cache bypass and replacement rules are absent.
+Expected per command:
+
+- `receipt_without_head...`, `missing_head_with_completion...`, and `divergent_receipt_and_completion...` PASS before caching, characterizing existing fail-closed recovery rather than a cache hit.
+- `mixed_frk_recovery...` FAIL because required catalog cache identities do not exist.
+- `cutover_recovery_replaces_cache...` FAIL because recovery does not publish cache state.
+- `concurrent_unlocked_load...` PASS before caching, characterizing current recovery/commit liveness.
+- `recovery_holds_no_cache_guard...` FAIL because the cache/stage seam does not exist.
+
+Rerun all seven after implementation; every command must then PASS.
 
 - [ ] **Step 3: Implement recovery integration and commit it alone**
 
@@ -594,7 +602,7 @@ cargo +1.75.0 test --locked -p anima-corefs --test rotation successful_rotation_
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::rotation_holds_no_cache_guard_during_lock_io_crypto_or_hooks -- --exact
 ```
 
-Expected: FAIL because rotation does not yet publish/clear cache state under the exact key identities.
+Expected per command: `cached_load_rejects_wrong_same_version_retained_material` PASS before rotation caching as an existing authentication characterization. `successful_rotation_replaces_cache_only_after_cutover_completion` and `rotation_holds_no_cache_guard_during_lock_io_crypto_or_hooks` FAIL because rotation cache publication and its scoped guard seam do not exist. Rerun all three after implementation; every command must then PASS.
 
 - [ ] **Step 5: Implement rotation integration, validate, and commit**
 
