@@ -490,7 +490,18 @@ async def update_config(
         # those still apply, against the currently-configured embedding
         # provider. Only fields present in the payload are touched.
         if embedding_provider is not None:
-            provider_changed = embedding_provider != settings.agent_embedding_provider
+            # Compare against the currently-RESOLVED provider, not the raw
+            # stored agent_embedding_provider. For a piggyback config (raw ""
+            # but resolving to the chat provider because a key/base-URL is
+            # set), get_config echoes that resolved provider, and the desktop
+            # replays it on ANY save. Comparing against the raw "" would read
+            # that echo as a switch and wrongly clear the piggyback key/base-
+            # URL/model below — an unrelated settings save could delete the
+            # only embedding credential and break dense retrieval. Resolve
+            # before mutating (settings.agent_embedding_provider still holds
+            # the old value here).
+            current_effective_provider = resolve_embedding_provider()
+            provider_changed = embedding_provider != current_effective_provider
             settings.agent_embedding_provider = embedding_provider
             if provider_changed:
                 # An embedding-provider switch without an explicit override

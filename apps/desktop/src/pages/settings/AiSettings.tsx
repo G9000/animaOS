@@ -171,7 +171,16 @@ export default function AiSettings() {
     embeddingAdvanced
       ? {
           embeddingProvider,
-          embeddingModel: embeddingModel || undefined,
+          // Send the raw model string, including "" — an intentionally
+          // cleared Model field must reach the server so it can reset the
+          // model to the provider default. Coercing "" to undefined omits the
+          // field, and the PUT route only clears agent_embedding_model when
+          // the field is present, so a stale/invalid model would survive the
+          // user deleting it. (embeddingProvider is always sent here, so this
+          // is never mistaken for the reset sentinel.)
+          embeddingModel,
+          // The key keeps ||undefined: an empty masked input means "unchanged"
+          // (there is a separate explicit Remove flow), not "clear it".
           embeddingApiKey: embeddingApiKey || undefined,
         }
       : { embeddingProvider: "" };

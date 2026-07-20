@@ -1837,3 +1837,46 @@ def test_user_directive_get_put() -> None:
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.json()["content"] == "I am a helpful companion."
         assert resp.json()["source"] == "database"
+
+
+def test_config_update_piggyback_echo_is_not_treated_as_provider_switch() -> None:
+    """P2: a legacy piggyback config (no raw agent_embedding_provider; embedding
+    intent via a set key) resolves GET's embeddingProvider to the chat
+    provider, which the desktop echoes on ANY save. That echo must NOT be read
+    as a provider switch — doing so would clear the piggyback key/base-URL/
+    model on an unrelated settings save and break dense retrieval."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_embedding_provider = ""  # piggyback: raw empty
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = "sk-piggyback"
+            settings.agent_embedding_base_url = ""
+
+            config = client.get(f"/api/config/{user_id}", headers=headers).json()
+            # Resolved via piggyback onto the chat provider.
+            assert config["embeddingProvider"] == "openai"
+
+            # Save unrelated chat settings, echoing the resolved
+            # embeddingProvider with NO fresh embedding key.
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "embeddingProvider": config["embeddingProvider"],
+                },
+            )
+            assert resp.status_code == 200
+
+            # The piggyback key survived — the echo was not a switch.
+            assert settings.agent_embedding_api_key == "sk-piggyback"
+        finally:
+            _restore_config_settings(original)
