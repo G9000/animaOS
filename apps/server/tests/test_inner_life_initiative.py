@@ -1250,7 +1250,7 @@ def test_active_user_never_fires_via_presence_tick(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory=soul_factory)
+    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
     assert result.users_skipped_active == 1
     assert result.users_ticked == 0
 
@@ -1291,7 +1291,7 @@ def test_idle_user_fires_via_presence_tick(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory=soul_factory)
+    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
     assert result.users_ticked == 1
     assert result.users_skipped_active == 0
 
@@ -1301,6 +1301,72 @@ def test_idle_user_fires_via_presence_tick(monkeypatch: pytest.MonkeyPatch) -> N
         assert logs[0].generated_text is not None
 
     soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_presence_tick_resolves_soul_factory_per_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the soul store is physically per-user in the SQLite
+    deployment, so `run_presence_tick` must resolve each user's OWN soul
+    factory via the resolver, not reuse one shared factory for everyone. Two
+    users are seeded into two SEPARATE soul databases; each user's provenance
+    must land in its own DB. A resolver that ignored `user_id` (the original
+    wiring bug, which passed a single static `SessionLocal`) would route both
+    users to one database and fail this test."""
+    from anima_server.services.agent.inner_life.affect import AffectState
+    from anima_server.services.agent.inner_life.presence import run_presence_tick
+    from anima_server.services.agent.inner_life.store import save_affect_state
+
+    soul_engine_1 = _create_soul_engine()
+    soul_engine_2 = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory_1 = _make_factory(soul_engine_1)
+    soul_factory_2 = _make_factory(soul_engine_2)
+    runtime_factory = _make_factory(runtime_engine)
+    soul_factories = {1: soul_factory_1, 2: soul_factory_2}
+
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    for user_id, soul_factory in soul_factories.items():
+        _seed_enabled_user(
+            soul_factory, runtime_factory, user_id=user_id,
+            pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+        )
+        with runtime_factory() as db_:
+            save_affect_state(
+                db_, user_id=user_id,
+                state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+            )
+            db_.commit()
+
+    resolved_for: list[int] = []
+
+    def resolver(user_id: int) -> sessionmaker[Session]:
+        resolved_for.append(user_id)
+        return soul_factories[user_id]
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return f"hello user {user_id}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=resolver)
+    assert result.users_ticked == 2
+    # The resolver was consulted once per idle user, with the real user_id.
+    assert sorted(resolved_for) == [1, 2]
+
+    # Each user's provenance lands in ITS OWN soul database, never the other's.
+    with soul_factory_1() as db_:
+        logs = db_.scalars(select(InitiativeLog)).all()
+        assert [row.user_id for row in logs] == [1]
+        assert logs[0].generated_text == "hello user 1"
+    with soul_factory_2() as db_:
+        logs = db_.scalars(select(InitiativeLog)).all()
+        assert [row.user_id for row in logs] == [2]
+        assert logs[0].generated_text == "hello user 2"
+
+    soul_engine_1.dispose()
+    soul_engine_2.dispose()
     runtime_engine.dispose()
 
 
@@ -1363,7 +1429,7 @@ def test_per_user_initiative_failure_does_not_abort_the_sweep(
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory=soul_factory)
+    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
     # The affect tick itself never touches the soul store, so both users
     # still tick fine there regardless of IL3's failure.
     assert result.users_ticked == 2
@@ -1426,7 +1492,7 @@ def test_hard_crash_before_fire_is_isolated_to_one_user(
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory=soul_factory)
+    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
     assert result.users_ticked == 2  # affect tick unaffected either way
 
     with soul_factory() as db_:
