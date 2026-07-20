@@ -730,7 +730,14 @@ def _fire(
         with soul_db.begin_nested():
             log_row = InitiativeLog(
                 user_id=user_id,
-                fired_at=now,
+                # Always stored in UTC explicitly: `now` here is the tick's
+                # LOCAL-time view (see presence.py's local-time discipline),
+                # and SQLite's DateTime(timezone=True) drops tzinfo on
+                # read-back, so a naive local value would later get
+                # re-interpreted as UTC by `_as_utc` in `count_recent_fires`
+                # — silently shifting the daily/weekly rate-cap windows by
+                # the server's UTC offset in any non-UTC deployment.
+                fired_at=now.astimezone(UTC),
                 drive=decision.drive,
                 pressure_snapshot=decision.pressure_snapshot,
                 gate_states=decision.gate_states,

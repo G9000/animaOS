@@ -1001,6 +1001,12 @@ def restore_database_snapshot(
         # referencing it, or a reused id could reattach to a stale log).
         db.query(ReconsolidationLog).delete()
         db.query(TendencyContribution).delete()
+        # IL3 provenance log: same reused-id/stale-row hazard as the other
+        # provenance ledgers above — without this, restoring into a DB that
+        # already has initiative_log rows either raises
+        # "UNIQUE constraint failed: initiative_log.id" (id collision) or
+        # leaves stale rows behind (no FK to scrub them via cascade).
+        db.query(InitiativeLog).delete()
         # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
         # (no foreign_keys pragma), so claim evidence must be deleted
         # explicitly BEFORE its claims — mirroring MemoryItemEvidence and

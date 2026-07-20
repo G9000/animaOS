@@ -13,7 +13,7 @@ eval-reset clearing.
 from __future__ import annotations
 
 import inspect
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 from anima_server.db.base import Base
@@ -842,6 +842,77 @@ def test_count_recent_fires_only_counts_real_messages(db: Session) -> None:
     assert week == 2
 
 
+def test_fired_at_is_stored_in_utc_regardless_of_local_tick_offset(db: Session) -> None:
+    """Regression (PR review, P2): SQLite's DateTime(timezone=True) drops
+    tzinfo on read-back — empirically, a value written with a non-UTC
+    offset round-trips as a NAIVE datetime carrying the ORIGINAL WALL-CLOCK
+    numbers (not converted to UTC). Since `_as_utc` re-attaches UTC to any
+    naive value, writing `fired_at` as the tick's raw local-offset `now`
+    would silently shift the daily/weekly rate-cap windows by the server's
+    UTC offset in any non-UTC deployment. `_fire` must store
+    `now.astimezone(UTC)`, not `now` — asserted here via the real SQLite
+    round trip (`db.expire_all()` forces a fresh read from the database,
+    not the session identity map)."""
+    local_tz = timezone(timedelta(hours=8))
+    fired_local = datetime(2026, 1, 2, 20, 0, tzinfo=local_tz)  # 12:00 UTC
+
+    db.add(
+        InitiativeLog(
+            user_id=1,
+            fired_at=fired_local.astimezone(UTC),
+            drive=DRIVE_RELATIONAL,
+            pressure_snapshot={},
+            gate_states={},
+            generated_text="hi",
+            delivered=True,
+        )
+    )
+    db.commit()
+    db.expire_all()  # force the actual DB round trip, not the identity map
+
+    # 20 REAL hours later (expressed in the same local zone) — still well
+    # under the real 24h day boundary, so the daily cap must still apply.
+    today, _ = count_recent_fires(db, user_id=1, now=fired_local + timedelta(hours=20))
+    assert today == 1
+
+    # Just past 24 REAL hours -> correctly falls out of the daily window.
+    today_after, _ = count_recent_fires(
+        db, user_id=1, now=fired_local + timedelta(hours=24, minutes=1)
+    )
+    assert today_after == 0
+
+
+def test_fire_writes_fired_at_in_utc_not_local_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same regression as above, exercised through the real `_fire` edge
+    function (not a hand-built row) with a local_now bearing a real
+    non-UTC offset, confirming the actual write path stores UTC."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"relational": 0.9})
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return "hi"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    local_tz = timezone(timedelta(hours=8))
+    local_now = datetime(2026, 1, 2, 20, 0, tzinfo=local_tz)  # 12:00 UTC
+    tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=local_now)
+
+    with soul_factory() as db_:
+        db_.expire_all()
+        log_row = db_.scalars(select(InitiativeLog)).one()
+        # Stored value's WALL-CLOCK numbers must be the UTC ones (12:00),
+        # never the local ones (20:00) with UTC silently re-assumed.
+        assert log_row.fired_at.replace(tzinfo=UTC) == local_now.astimezone(UTC)
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 def test_count_unanswered_initiatives(db: Session) -> None:
     db.add_all(
         [
@@ -1560,6 +1631,40 @@ def test_vault_memories_scope_export_includes_initiative_log(db: Session) -> Non
     db.commit()
 
     assert len(db.scalars(select(InitiativeLog)).all()) == 1
+
+
+def test_full_scope_restore_clears_preexisting_initiative_log_rows(db: Session) -> None:
+    """Regression (PR review, P1): restoring a FULL-scope vault must clear
+    existing `initiative_log` rows first, exactly like its sibling
+    provenance ledgers (`ReconsolidationLog`/`TendencyContribution`) already
+    do — otherwise importing into a database that already has initiatives
+    fired either collides on a reused id (`UNIQUE constraint failed:
+    initiative_log.id`) or leaves stale rows behind (no FK to scrub via
+    cascade, since InitiativeLog has none)."""
+    # An initiative that already fired in THIS database before the import.
+    db.add(
+        InitiativeLog(
+            id=1, user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC),
+            drive=DRIVE_RELATIONAL, pressure_snapshot={}, gate_states={},
+            generated_text="pre-existing local row", delivered=True,
+        )
+    )
+    db.commit()
+
+    snapshot = export_database_snapshot(db, user_id=1)
+    assert snapshot["initiativeLog"][0]["id"] == 1
+
+    # Simulate importing a vault whose row happens to reuse id=1 (e.g. an
+    # export taken from a different point in time or a different device) —
+    # exactly the "restoring into a DB that already has rows" scenario.
+    snapshot["initiativeLog"][0]["generated_text"] = "restored from vault"
+
+    restore_database_snapshot(db, snapshot, scope="full")  # must not raise
+    db.commit()
+
+    rows = db.scalars(select(InitiativeLog)).all()
+    assert len(rows) == 1  # the stale local row was cleared, not duplicated
+    assert rows[0].generated_text == "restored from vault"
 
 
 def test_eval_reset_clears_initiative_log(db: Session) -> None:
