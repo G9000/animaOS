@@ -446,13 +446,24 @@ def run_presence_tick(
             # idle users. The gate chain models `idle` as a satisfied invariant
             # rather than re-checking it — keep it that way by never calling
             # `tick_initiative_for_user` for a user outside this idle loop.
+            #
             # Resolve the soul factory per-user (see docstring): in SQLite mode
-            # each user's soul store is a physically distinct database.
-            tick_initiative_for_user(
-                soul_db_factory_for(user_id),
-                runtime_db_factory,
-                user_id=user_id,
-                local_now=local_now,
-            )
+            # each user's soul store is a physically distinct database. Wrap the
+            # RESOLVER call too, not just the tick — the resolver runs
+            # `get_user_session_factory(user_id)`, which can raise on a corrupt
+            # DB or a failed migration BEFORE `tick_initiative_for_user`'s own
+            # try/except is reached. Without this guard one user's bad database
+            # would abort the whole sweep and skip every later idle user.
+            try:
+                tick_initiative_for_user(
+                    soul_db_factory_for(user_id),
+                    runtime_db_factory,
+                    user_id=user_id,
+                    local_now=local_now,
+                )
+            except Exception:
+                logger.warning(
+                    "Initiative tick wiring failed for user %s", user_id, exc_info=True
+                )
 
     return PresenceTickResult(users_ticked=ticked, users_skipped_active=skipped)

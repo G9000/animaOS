@@ -431,6 +431,46 @@ def test_disabled_edge_level_never_creates_initiative_or_pending_row() -> None:
     runtime_engine.dispose()
 
 
+def test_master_presence_pause_blocks_fire_even_with_initiative_enabled() -> None:
+    """Regression (PR review, P2): `PresenceConfig.enabled` is the top-level
+    kill switch for ALL proactive notices. A user who paused Presence
+    (`enabled=False`) but left `initiative_enabled=True` must never receive an
+    initiative — the gate must require BOTH flags."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    with runtime_factory() as db_:
+        db_.add(
+            DriveStateRow(
+                user_id=1, relational=1.0,
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        db_.commit()
+
+    with soul_factory() as db_:
+        cfg = get_or_create_presence_config(db_, 1)
+        cfg.enabled = False  # master Presence paused
+        cfg.initiative_enabled = True  # but initiative left on
+        db_.commit()
+
+    ok = tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1,
+        local_now=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
+    )
+    assert ok is True
+
+    with soul_factory() as db_:
+        assert db_.scalars(select(InitiativeLog)).all() == []
+    with runtime_factory() as db_:
+        assert db_.scalars(select(PendingInitiative)).all() == []
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # 4. Drive-tagged generation
 # ---------------------------------------------------------------------------
@@ -1739,6 +1779,61 @@ def test_hard_crash_before_fire_is_isolated_to_one_user(
         logs = {row.user_id: row for row in db_.scalars(select(InitiativeLog)).all()}
         assert 1 not in logs  # user 1's crash never even reached the fire step
         assert 2 in logs
+        assert logs[2].generated_text == "hello from user 2's tick"
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_per_user_soul_resolver_failure_does_not_abort_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): the per-user soul resolver runs as an
+    argument to `tick_initiative_for_user`, BEFORE that function's own
+    try/except. If it raises for one user (e.g. `get_user_session_factory`
+    on a corrupt DB), the presence loop must still isolate the failure and
+    tick every later idle user, not abort the whole sweep."""
+    from anima_server.services.agent.inner_life.affect import AffectState
+    from anima_server.services.agent.inner_life.presence import run_presence_tick
+    from anima_server.services.agent.inner_life.store import save_affect_state
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    for user_id in (1, 2):
+        _seed_enabled_user(
+            soul_factory, runtime_factory, user_id=user_id,
+            pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+        )
+        with runtime_factory() as db_:
+            save_affect_state(
+                db_, user_id=user_id,
+                state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+            )
+            db_.commit()
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return "hello from user 2's tick"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    def failing_resolver(user_id: int):
+        if user_id == 1:
+            raise RuntimeError("simulated corrupt soul DB / migration failure")
+        return soul_factory
+
+    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=failing_resolver)
+    # The sweep completed for both users (affect tick never touches the soul
+    # store) — user 1's resolver failure did not abort it.
+    assert result.users_ticked == 2
+
+    with soul_factory() as db_:
+        logs = {row.user_id: row for row in db_.scalars(select(InitiativeLog)).all()}
+        assert 1 not in logs  # resolver blew up before user 1 could fire
+        assert 2 in logs  # user 2 still fired despite user 1's failure
         assert logs[2].generated_text == "hello from user 2's tick"
 
     soul_engine.dispose()

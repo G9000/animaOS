@@ -307,7 +307,12 @@ def get_gate_config(presence_values: object) -> GateConfig:
     (typed loosely to avoid a hard import cycle with ``presence_config.py``,
     which itself only needs the model, not this module)."""
     return GateConfig(
-        enabled=bool(getattr(presence_values, "initiative_enabled", False)),
+        # Both the master Presence switch AND the initiative opt-in must be on.
+        # `PresenceConfig.enabled` is the top-level kill switch for ALL
+        # proactive notices (see proactive.py), so a user who paused Presence
+        # must never receive an initiative even with initiative_enabled left on.
+        enabled=bool(getattr(presence_values, "enabled", True))
+        and bool(getattr(presence_values, "initiative_enabled", False)),
         quiet_hours_start=getattr(presence_values, "quiet_hours_start", None),
         quiet_hours_end=getattr(presence_values, "quiet_hours_end", None),
         cooldown_base_hours=settings.initiative_cooldown_base_hours,
@@ -880,7 +885,10 @@ def tick_initiative_for_user(
                 row.last_user_turn_at = latest_message_at
             row.unanswered_initiatives = count_unanswered_initiatives(soul_db, user_id=user_id)
 
-            if not presence_values.initiative_enabled:
+            # Drives kept advancing above regardless; firing requires BOTH the
+            # master Presence switch and the initiative opt-in (mirrors
+            # get_gate_config's enabled gate — a paused user never fires).
+            if not (presence_values.enabled and presence_values.initiative_enabled):
                 runtime_db.commit()
                 return True
 
