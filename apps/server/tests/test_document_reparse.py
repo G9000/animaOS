@@ -393,3 +393,66 @@ def test_list_reparse_candidates_excludes_unindexed_documents(
         reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id)
         == []
     )
+
+
+def test_mark_docling_reparse_failed_excludes_within_cooldown(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+) -> None:
+    # Baseline: an indexed preview document is a candidate.
+    assert reparse.list_reparse_candidates(
+        runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=24
+    ) == [preview_document.id]
+
+    # After Docling fails on it, the cooldown excludes it so it can't
+    # re-consume the per-cycle budget and starve valid documents behind it.
+    reparse.mark_docling_reparse_failed(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+    )
+    runtime_db.flush()
+
+    assert reparse.list_reparse_candidates(
+        runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=24
+    ) == []
+
+
+def test_list_reparse_candidates_retries_failed_document_after_cooldown(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+) -> None:
+    # A failure recorded 25h ago is past a 24h cooldown, so the document is
+    # eligible again — a transient Docling failure gets retried, not
+    # permanently abandoned.
+    from datetime import UTC, datetime, timedelta
+
+    stale = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+    preview_document.metadata_json = {"docling_reparse_failed_at": stale}
+    runtime_db.add(preview_document)
+    runtime_db.flush()
+
+    assert reparse.list_reparse_candidates(
+        runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=24
+    ) == [preview_document.id]
+
+
+def test_list_reparse_candidates_ignores_failure_marker_when_cooldown_disabled(
+    runtime_db: Session,
+    preview_document: RuntimeDocument,
+) -> None:
+    # cooldown of 0/None disables the filter — a marked document is still a
+    # candidate (retry every cycle).
+    reparse.mark_docling_reparse_failed(
+        runtime_db,
+        user_id=preview_document.user_id,
+        document_id=preview_document.id,
+    )
+    runtime_db.flush()
+
+    assert reparse.list_reparse_candidates(
+        runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=0
+    ) == [preview_document.id]
+    assert reparse.list_reparse_candidates(
+        runtime_db, user_id=preview_document.user_id
+    ) == [preview_document.id]

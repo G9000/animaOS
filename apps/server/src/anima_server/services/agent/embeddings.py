@@ -40,6 +40,15 @@ from anima_server.services.agent.embedding_integrity import (
     compute_embedding_checksum,
     parse_embedding_payload,
 )
+from anima_server.services.agent.embedding_resolution import (
+    DEFAULT_EMBEDDING_MODELS,
+)
+from anima_server.services.agent.embedding_resolution import (
+    resolve_embedding_model as _resolve_shared_embedding_model,
+)
+from anima_server.services.agent.embedding_resolution import (
+    resolve_embedding_provider as _resolve_shared_embedding_provider,
+)
 from anima_server.services.agent.llm import (
     LLMConfigError,
     validate_provider,
@@ -48,18 +57,6 @@ from anima_server.services.agent.text_processing import prepare_embedding_text
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
-
-# Default embedding models per provider. Users can override via the
-# dedicated embedding settings, with extraction_model kept as a
-# backwards-compatible fallback.
-_DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
-    "ollama": "nomic-embed-text",
-    "openrouter": "openai/text-embedding-3-small",
-    "openai": "text-embedding-3-small",
-    "vllm": "text-embedding-3-small",
-    "doubleword": "Qwen/Qwen3-Embedding-8B",
-    "fastembed": "BAAI/bge-small-en-v1.5",
-}
 
 _DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
     "ollama": "http://127.0.0.1:11434",
@@ -83,34 +80,51 @@ def _setting_text(value: Any) -> str:
 def _resolve_embedding_provider() -> str:
     """Resolve which provider generates embeddings.
 
-    Order: explicit ``agent_embedding_provider`` wins. Otherwise the bundled
-    ``fastembed`` ONNX provider is the default — dense retrieval must work
-    regardless of which chat LLM the user has configured. The old implicit
-    piggyback onto ``agent_provider`` is preserved only when the user has
-    configured embedding-specific details (model, base URL, or API key)
-    against their chat provider without naming an embedding provider
-    explicitly; that is a real signal of intent, not an accident of the old
-    fallback.
-
-    KEEP IN SYNC with ``config._resolve_default_embedding_provider``, which
-    duplicates this same piggyback-signal rule.
+    Thin wrapper: the resolution rule lives in
+    ``embedding_resolution.resolve_embedding_provider`` — the single copy
+    shared with ``config.resolve_embedding_dim``. This module's ``settings``
+    binding is passed through explicitly (rather than letting the shared
+    function fetch ``anima_server.config.settings`` itself) so tests that
+    monkeypatch this module's ``settings`` attribute keep working exactly as
+    before the move.
     """
-    configured = _setting_text(getattr(settings, "agent_embedding_provider", ""))
-    if configured:
-        return configured
-    embedding_model = _setting_text(getattr(settings, "agent_embedding_model", ""))
-    embedding_base_url = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
-    embedding_api_key = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
-    if embedding_model or embedding_base_url or embedding_api_key:
-        return _setting_text(getattr(settings, "agent_provider", "")) or "ollama"
-    return "fastembed"
+    return _resolve_shared_embedding_provider(settings)
 
 
 def _resolve_embedding_api_key(provider: str | None = None) -> str:
+    resolved_provider = provider or _resolve_embedding_provider()
+    # fastembed is the in-process ONNX backend — it has no HTTP endpoint and
+    # uses no API key at all. Never attribute a stored key to it: otherwise a
+    # legacy piggyback config (no explicit agent_embedding_provider, a leftover
+    # agent_embedding_api_key belonging to an unsupported chat provider like
+    # moonshot) whose DISPLAY get_config normalizes to "fastembed" would report
+    # hasEmbeddingApiKey=true for a provider that can't use one. Mirrors
+    # _resolve_embedding_base_url's fastembed short-circuit.
+    if resolved_provider == "fastembed":
+        return ""
     configured = _setting_text(getattr(settings, "agent_embedding_api_key", ""))
     if configured:
-        return configured
-    resolved_provider = provider or _resolve_embedding_provider()
+        # The dedicated `agent_embedding_api_key` belongs to whatever
+        # embedding provider is actually configured. When an EXPLICIT
+        # `agent_embedding_provider` is set, honor the dedicated key only
+        # for THAT provider — so a caller asking about a DIFFERENT provider
+        # name does not inherit a key that isn't theirs. The concrete case
+        # this guards: config GET normalizes an unsupported/legacy embedding
+        # provider's DISPLAY value away (e.g. a persisted, explicit
+        # `agent_embedding_provider="moonshot"` — which has no default
+        # embedding model, see `_missing_default_model_reason` — reported as
+        # "fastembed") without touching stored settings, then computes
+        # `hasEmbeddingApiKey` against that normalized "fastembed"; fastembed
+        # has no key concept at all, so the leftover moonshot key must not
+        # leak into it (and there is no dropdown path to clear it).
+        #
+        # When NO explicit `agent_embedding_provider` is set (the legacy
+        # piggyback / bundled-default cases), the dedicated key isn't bound
+        # to a specific provider name, so preserve the historical behavior
+        # of returning it for the queried provider unchanged.
+        explicit_provider = _setting_text(getattr(settings, "agent_embedding_provider", ""))
+        if not explicit_provider or explicit_provider == resolved_provider:
+            return configured
     env_name = _EMBEDDING_API_KEY_ENV.get(resolved_provider)
     if env_name is not None:
         configured = os.getenv(env_name, "").strip()
@@ -119,11 +133,23 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
 
     from anima_server.config import get_provider_api_key, has_provider_api_keys
 
+    # The per-provider store is keyed by provider name, so this lookup only
+    # ever returns a key that was actually saved *for this exact provider*
+    # (e.g. as a past chat-provider key) — safe regardless of which provider
+    # is currently configured for chat.
     configured = get_provider_api_key(resolved_provider).strip()
     if configured:
         return configured
 
-    if not has_provider_api_keys():
+    # The flat legacy ``agent_api_key`` field predates the per-provider
+    # store and is not provider-scoped at all — it was always just "the
+    # chat provider's key". Falling back to it here is only a legitimate
+    # piggyback when the embedding provider IS the configured chat
+    # provider; otherwise it would authorize a DIFFERENT embedding
+    # provider's requests with the chat provider's secret (a cross-provider
+    # key leak).
+    chat_provider = _setting_text(getattr(settings, "agent_provider", ""))
+    if not has_provider_api_keys() and resolved_provider == chat_provider:
         configured = _setting_text(getattr(settings, "agent_api_key", ""))
         if configured:
             return configured
@@ -131,36 +157,18 @@ def _resolve_embedding_api_key(provider: str | None = None) -> str:
 
 
 def _resolve_embedding_model() -> str:
-    """Return the embedding model to use, preferring the user-configured one.
+    """Return the embedding model for the currently resolved provider.
 
-    ``agent_extraction_model`` is a CHAT model setting (written by the
-    settings route for the background extraction LLM), not an embedding
-    setting. It is kept as a legacy fallback only for the piggyback case —
-    an explicitly-configured non-fastembed provider — where reusing the
-    chat model name was the pre-existing, documented behavior. It must
-    NOT be consulted when the resolved provider is the bundled
-    ``fastembed`` ONNX backend: fastembed can only load embedding-capable
-    ONNX models, so leaking a chat model name (e.g. "qwen2.5:3b") in here
-    would fail ``TextEmbedding`` construction and silently kill dense
-    retrieval. (Rejected alternative: keep treating extraction model as a
-    piggyback intent for fastembed too, preserving pre-branch behavior —
-    but that misreads chat config as embedding config, and the existing
-    contract-migration machinery already moves such installs onto the
-    bundled default uniformly, so there is no migration gap to bridge.)
-
-    KEEP IN SYNC with ``config._resolve_default_embedding_provider`` /
-    ``config.resolve_embedding_dim``, which duplicate this same
-    fastembed-skips-extraction-model rule for the dimension lookup.
+    Thin wrapper: the resolution rule (including the fastembed-skips-
+    extraction-model rule) lives in
+    ``embedding_resolution.resolve_embedding_model`` — the single copy
+    shared with ``config.resolve_embedding_dim``. This just supplies the
+    already-resolved provider so this module's existing zero-arg call
+    sites are unaffected by the move. Passes this module's ``settings``
+    binding through explicitly for the same monkeypatch-compatibility
+    reason as ``_resolve_embedding_provider`` above.
     """
-    configured = _setting_text(getattr(settings, "agent_embedding_model", ""))
-    if configured:
-        return configured
-    provider = _resolve_embedding_provider()
-    if provider != "fastembed":
-        configured = _setting_text(getattr(settings, "agent_extraction_model", ""))
-        if configured:
-            return configured
-    return _DEFAULT_EMBEDDING_MODELS.get(provider, "nomic-embed-text")
+    return _resolve_shared_embedding_model(_resolve_embedding_provider(), settings)
 
 
 def _resolve_embedding_base_url() -> str:
@@ -174,7 +182,22 @@ def _resolve_embedding_base_url() -> str:
         return configured.removesuffix("/v1") if provider == "ollama" else configured
 
     configured_agent = _setting_text(getattr(settings, "agent_base_url", ""))
-    if configured_agent and not _setting_text(getattr(settings, "agent_embedding_provider", "")):
+    chat_provider = _setting_text(getattr(settings, "agent_provider", ""))
+    # Reuse the configured local-server URL (agent_base_url) only when the
+    # resolved embedding provider IS the chat provider — mirrors the
+    # same-provider rule ``_resolve_embedding_api_key`` uses for its legacy
+    # key piggyback. That's the one case where agent_base_url is actually
+    # known to point at *this* provider's server: either no embedding
+    # provider was named explicitly (legacy piggyback — the resolved
+    # provider mirrors the chat provider) or the embedding provider was
+    # named explicitly but happens to match the chat provider (e.g. both
+    # "ollama"). When an explicit LOCAL embedding provider (ollama/vllm)
+    # DIFFERS from the chat provider (e.g. chat=vllm, embedding=ollama),
+    # agent_base_url is the CHAT server's address, not this provider's —
+    # reusing it would send that provider's requests to the wrong endpoint
+    # (e.g. POSTing ollama's /api/embed to a vLLM port). Fall through to
+    # that provider's own default base URL instead.
+    if configured_agent and provider == chat_provider:
         if provider == "openrouter":
             return _DEFAULT_EMBEDDING_BASE_URLS[provider]
         return configured_agent.removesuffix("/v1") if provider == "ollama" else configured_agent
@@ -247,6 +270,74 @@ def _embedding_skip_reason(provider: str) -> str | None:
         return "provider has no supported embeddings endpoint; configure an explicit embedding provider"
     if provider == "anthropic":
         return "provider has no embeddings endpoint; configure an explicit embedding provider"
+    return None
+
+
+def _missing_default_model_reason(provider: str) -> str | None:
+    """Return a reason when *provider* is not a supported embedding provider,
+    i.e. it has no known embedding model of its own.
+
+    A provider can have a perfectly real embeddings-shaped HTTP endpoint
+    (passes ``_embedding_skip_reason``) yet have no entry in
+    ``DEFAULT_EMBEDDING_MODELS`` — moonshot is the motivating case: it has no
+    ``_embedding_skip_reason`` (openai-compatible endpoint), and no
+    DEFAULT_EMBEDDING_MODELS entry either. Without this check, that gap made
+    it excluded from every USER-FACING surface (API boundary
+    ``VALID_EMBEDDING_PROVIDERS``, desktop dropdown) while remaining fully
+    reachable at the actual runtime call site — via a persisted legacy
+    ``agent_embedding_provider="moonshot"``, the matching env var, or a chat
+    piggyback (``agent_provider="moonshot"`` plus a leftover embedding key) —
+    silently POSTing real memory/document text to that provider's API while
+    every surface the user can see reports fastembed/no dense retrieval.
+
+    Membership in ``DEFAULT_EMBEDDING_MODELS`` is treated as a property of the
+    PROVIDER: whether it is an embedding provider at all. An explicit
+    ``agent_embedding_model`` deliberately does NOT clear this gate — a model
+    string only selects *which* model within an already-supported provider;
+    it cannot make an unsupported provider (moonshot) into an embedding
+    provider. (Allowing that was the original hole: a legacy moonshot config
+    WITH an explicit model still POSTed real content to the moonshot endpoint
+    while the UI showed fastembed.) This mirrors the API-boundary
+    ``VALID_EMBEDDING_PROVIDERS`` rule exactly, one layer down at the runtime
+    call site, and is derived from ``DEFAULT_EMBEDDING_MODELS`` rather than
+    hardcoding "moonshot" so any future model-less provider is covered.
+    """
+    if provider in DEFAULT_EMBEDDING_MODELS:
+        return None
+    return (
+        f"provider {provider!r} is not a supported embedding provider "
+        "(no embedding model of its own); choose a different embedding provider"
+    )
+
+
+def embedding_provider_unusable_reason(provider: str) -> str | None:
+    """Return why *provider* would never even attempt an HTTP embedding call.
+
+    Single predicate shared by ``generate_embedding``'s early-return checks
+    (an endpoint-less provider via ``_embedding_skip_reason``, a provider
+    with no usable embedding model via ``_missing_default_model_reason``, or
+    a key-required provider with no usable key via
+    ``validate_provider_configuration``) and ``http_backend_status``. Both
+    call sites must agree on what "misconfigured" means: a provider that
+    fails either check is skipped with ``return None`` before any network
+    request is made, so no cooldown ever gets recorded for it — without this
+    shared check, ``http_backend_status`` would report such a provider as
+    "ready" (never having "failed") even though dense embeddings can never
+    actually run.
+
+    Returns ``None`` when the provider is usable (may still fail at request
+    time for other reasons, e.g. the server being unreachable).
+    """
+    skip_reason = _embedding_skip_reason(provider)
+    if skip_reason is not None:
+        return skip_reason
+    missing_model_reason = _missing_default_model_reason(provider)
+    if missing_model_reason is not None:
+        return missing_model_reason
+    try:
+        validate_provider_configuration(provider)
+    except LLMConfigError as exc:
+        return str(exc)
     return None
 
 
@@ -347,6 +438,27 @@ def _clear_provider_unavailable(key: str) -> None:
         _provider_unavailable_until.pop(key, None)
 
 
+def http_backend_status(provider: str) -> str:
+    """Read-only cooldown-state view for HTTP embedding providers.
+
+    Unlike the bundled in-process ``fastembed`` backend, HTTP providers
+    (ollama/openai/vllm/doubleword/...) have no "loaded"/"cold" concept —
+    there is no model to warm up locally. Beyond the post-failure cooldown
+    window, a provider can also be misconfigured badly enough that
+    ``generate_embedding`` never attempts a request at all (a key-required
+    provider with no usable key, or a provider with no embeddings endpoint)
+    — that path never records a cooldown, so without this check such a
+    provider would incorrectly read as "ready" forever. Used by
+    ``services.capabilities.collect_capabilities`` to make
+    ``embeddings.backend`` provider-truthful instead of always reflecting
+    the fastembed latch regardless of which provider is actually active.
+    """
+    if embedding_provider_unusable_reason(provider) is not None:
+        return "failed_retrying"
+    key = _provider_failure_key(provider)
+    return "failed_retrying" if _provider_in_cooldown(key) else "ready"
+
+
 def clear_embedding_cache() -> None:
     """Clear the embedding cache. Called on model config change or in tests."""
     global _cache_hits, _cache_misses
@@ -406,6 +518,12 @@ async def generate_embedding(text: str) -> list[float] | None:
     if skip_reason is not None:
         logger.debug(
             "Skipping embedding generation for provider %s: %s", provider, skip_reason)
+        return None
+
+    missing_model_reason = _missing_default_model_reason(provider)
+    if missing_model_reason is not None:
+        logger.debug(
+            "Skipping embedding generation for provider %s: %s", provider, missing_model_reason)
         return None
 
     # Check cache first
@@ -1417,6 +1535,15 @@ async def generate_embeddings_batch(
             "Skipping batch embedding generation for provider %s: %s", provider, skip_reason)
         return [None] * len(texts)
 
+    missing_model_reason = _missing_default_model_reason(provider)
+    if missing_model_reason is not None:
+        logger.debug(
+            "Skipping batch embedding generation for provider %s: %s",
+            provider,
+            missing_model_reason,
+        )
+        return [None] * len(texts)
+
     try:
         validate_provider_configuration(provider)
     except LLMConfigError:
@@ -1514,13 +1641,26 @@ async def _batch_embed_openai_compatible(
                             if abs_idx < len(results) and isinstance(embedding, list):
                                 results[abs_idx] = embedding
                 break  # Success — move to next batch
-            except Exception:
+            except Exception as exc:
                 current_batch = current_batch // 2
                 if current_batch < 1:
                     logger.warning(
                         "Batch embedding failed for chunk at offset %d after retries",
                         start,
                     )
+                    # Record the provider outage on the SAME key
+                    # http_backend_status reads, so a batch-path failure
+                    # (backfill/re-embed) shows up as unhealthy in
+                    # /api/capabilities and the health check — the single-embed
+                    # path already does this, and without it a batch outage
+                    # would leave the trust surface reporting "ready".
+                    if isinstance(exc, httpx.HTTPError):
+                        _mark_provider_unavailable(
+                            _provider_failure_key(provider),
+                            provider=provider,
+                            base_url=base_url,
+                            exc=exc,
+                        )
                     break
                 logger.debug(
                     "Batch embedding failed, retrying with batch_size=%d",

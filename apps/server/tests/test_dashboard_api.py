@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -760,6 +761,964 @@ def test_config_update_preserves_legacy_key_when_api_key_omitted() -> None:
             settings.agent_base_url = original_base_url
 
 
+# Every settings field the config PUT route can mutate. The embedding tests
+# below snapshot/restore all of them — a PUT also writes agent_provider /
+# agent_model / agent_api_keys_json etc., and leaking those (especially a
+# non-empty agent_api_keys_json, which disables the legacy agent_api_key
+# fallback) breaks unrelated provider tests later in the session.
+_CONFIG_MUTATED_SETTINGS = (
+    "agent_provider",
+    "agent_model",
+    "agent_extraction_model",
+    "agent_api_key",
+    "agent_api_keys_json",
+    "agent_base_url",
+    "agent_embedding_provider",
+    "agent_embedding_model",
+    "agent_embedding_api_key",
+    "agent_embedding_base_url",
+)
+
+
+def _snapshot_config_settings() -> dict[str, str]:
+    return {field: getattr(settings, field) for field in _CONFIG_MUTATED_SETTINGS}
+
+
+def _restore_config_settings(snapshot: dict[str, str]) -> None:
+    for field, value in snapshot.items():
+        setattr(settings, field, value)
+
+
+def test_config_get_returns_resolved_embedding_fields_at_bundled_default() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = ""
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingModel"] == "BAAI/bge-small-en-v1.5"
+            assert config["embeddingIsExplicit"] is False
+            assert config["hasEmbeddingApiKey"] is False
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_get_has_embedding_api_key_reflects_legacy_chat_key_piggyback() -> None:
+    """MEDIUM audit fix: hasEmbeddingApiKey must reflect the RICH key
+    resolution (``_resolve_embedding_api_key``) the embedding path actually
+    uses, not just ``bool(agent_embedding_api_key.strip())``. A legacy
+    install with only the flat ``agent_api_key`` set (no per-provider store,
+    no dedicated embedding key) that piggybacks embeddings onto the chat
+    provider DOES have a usable key for the embedding call — the naive
+    check reported False here even though embeddings would actually work."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_api_key = "sk-legacy-chat-key"
+            settings.agent_api_keys_json = "{}"
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = ""
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            # Piggyback resolves the embedding provider to "openai" (the
+            # chat provider), which then legitimately reuses the chat key.
+            assert config["embeddingProvider"] == "openai"
+            assert config["hasEmbeddingApiKey"] is True
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_get_normalizes_legacy_unsupported_piggyback_embedding_provider() -> None:
+    """P2 fix: a legacy install that piggybacked embedding intent (model/key
+    set, no explicit agent_embedding_provider) onto a chat provider with no
+    usable embeddings endpoint for this API (openrouter/anthropic/moonshot)
+    used to have resolve_embedding_provider() return that chat provider
+    verbatim. The desktop form echoes embeddingProvider on every save, and
+    VALID_EMBEDDING_PROVIDERS rejects it -> the user could not save ANY AI
+    setting until discovering they had to disable Embeddings Advanced.
+    get_config must normalize the response to the bundled default so the
+    echoed value is always savable; this must not touch stored settings."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openrouter"
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_model = "x"
+            settings.agent_embedding_api_key = ""
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+            # The normalized provider must be paired with ITS OWN default
+            # model, not the stale legacy agent_embedding_model ("x") — else
+            # echoing the response back on save would pin an invalid model to
+            # fastembed and break dense-retrieval load.
+            assert config["embeddingModel"] == "BAAI/bge-small-en-v1.5"
+
+            # GET is read-only: the legacy piggyback settings are untouched.
+            assert settings.agent_embedding_provider == ""
+            assert settings.agent_embedding_model == "x"
+
+            # A subsequent PUT echoing the normalized value must succeed —
+            # no save lockout.
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openrouter",
+                    "model": "google/gemma-3-27b-it",
+                    "embeddingProvider": config["embeddingProvider"],
+                    "embeddingModel": config["embeddingModel"],
+                },
+            )
+            assert resp.status_code == 200
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_get_normalizes_legacy_moonshot_hides_leftover_embedding_api_key() -> None:
+    """STRUCTURAL FIX 2: after get_config normalizes a legacy moonshot
+    embedding config's DISPLAY value to fastembed (moonshot has no default
+    embedding model — see VALID_EMBEDDING_PROVIDERS / Fix 1), a leftover
+    ``agent_embedding_api_key`` that actually belongs to the REAL resolved
+    provider (moonshot) must not leak into ``hasEmbeddingApiKey`` for the
+    normalized "fastembed" display value — fastembed has no key concept at
+    all, and there is no dropdown path in the UI to clear a key attributed
+    to a provider it no longer shows as selected."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_embedding_provider = "moonshot"
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = "sk-leftover-moonshot-key"
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+            assert config["hasEmbeddingApiKey"] is False
+
+            # GET is read-only: stored settings are untouched.
+            assert settings.agent_embedding_provider == "moonshot"
+            assert settings.agent_embedding_api_key == "sk-leftover-moonshot-key"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_get_leaves_explicit_valid_embedding_provider_unchanged() -> None:
+    """Regression guard: normalization must only kick in for the unsupported
+    legacy-piggyback case — a normal, explicit, valid embedding provider must
+    be reported as-is."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "ollama"
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = "sk-embed-test"
+            settings.agent_embedding_base_url = ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "openai"
+            assert config["embeddingIsExplicit"] is True
+            assert config["hasEmbeddingApiKey"] is True
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_round_trips_explicit_embedding_provider() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "apiKey": "test-openai-chat-key",
+                    "embeddingProvider": "vllm",
+                    "embeddingModel": "custom-embed-model",
+                    "embeddingApiKey": "sk-embed-test",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "vllm"
+            assert settings.agent_embedding_model == "custom-embed-model"
+            assert settings.agent_embedding_api_key == "sk-embed-test"
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "vllm"
+            assert config["embeddingModel"] == "custom-embed-model"
+            assert config["embeddingIsExplicit"] is True
+            assert config["hasEmbeddingApiKey"] is True
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_resets_embedding_provider_to_bundled_default() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = "sk-embed-test"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == ""
+            assert settings.agent_embedding_model == ""
+            assert settings.agent_embedding_api_key == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+            assert config["hasEmbeddingApiKey"] is False
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_reset_also_clears_embedding_base_url(tmp_path) -> None:
+    """Regression: resetting embeddingProvider to "" must fully return to
+    the bundled fastembed default — including a previously-set
+    agent_embedding_base_url. Without clearing it,
+    has_embedding_piggyback_intent() still sees a truthy base URL, so
+    resolve_embedding_provider() keeps piggybacking on the chat provider and
+    the "reset" is a no-op."""
+    original = _snapshot_config_settings()
+    original_data_dir = settings.data_dir
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            settings.data_dir = tmp_path
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_base_url = "http://x:11434"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_base_url == ""
+            assert settings.agent_embedding_provider == ""
+            assert settings.agent_embedding_model == ""
+            assert settings.agent_embedding_api_key == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingIsExplicit"] is False
+
+            # Persisted, not just in-memory: a restart must not silently
+            # revert to the piggyback behavior.
+            persisted = json.loads(
+                config_module.get_runtime_settings_path().read_text(encoding="utf-8")
+            )
+            assert persisted["agent_embedding_base_url"] == ""
+        finally:
+            _restore_config_settings(original)
+            settings.data_dir = original_data_dir
+
+
+def test_config_update_rejects_invalid_embedding_provider() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "not-a-real-provider",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+            assert settings.agent_embedding_model == original["agent_embedding_model"]
+            assert settings.agent_embedding_api_key == original["agent_embedding_api_key"]
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_accepts_fastembed_as_embedding_provider_but_not_chat_provider() -> None:
+    """fastembed is embeddings-only: valid for embeddingProvider, still 400 for
+    the chat ``provider`` field — regression guard for both directions."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={"provider": "fastembed", "model": "whatever"},
+            )
+            assert resp.status_code == 400
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "fastembed",
+                    "embeddingModel": "BAAI/bge-small-en-v1.5",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "fastembed"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_valid_embedding_providers_is_derived_from_skip_reason_and_default_model() -> None:
+    """VALID_EMBEDDING_PROVIDERS must be computed from BOTH
+    ``embeddings._embedding_skip_reason`` (has an embeddings endpoint) AND
+    membership in ``DEFAULT_EMBEDDING_MODELS`` (has a known default
+    embedding model) rather than a hand-maintained list, so a provider
+    gaining/losing embeddings support — or gaining/losing a default model —
+    can't drift silently."""
+    from anima_server.api.routes.config import VALID_EMBEDDING_PROVIDERS
+    from anima_server.services.agent.embedding_resolution import (
+        DEFAULT_EMBEDDING_MODELS,
+    )
+    from anima_server.services.agent.embeddings import _embedding_skip_reason
+    from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
+
+    expected = {
+        provider
+        for provider in SUPPORTED_PROVIDERS
+        if _embedding_skip_reason(provider) is None and provider in DEFAULT_EMBEDDING_MODELS
+    } | {"fastembed", ""}
+    assert expected == VALID_EMBEDDING_PROVIDERS
+    # openrouter/anthropic have no embeddings endpoint (real skip reasons) —
+    # assert against the derivation rule, not a hardcoded name list.
+    assert "openrouter" not in VALID_EMBEDDING_PROVIDERS
+    assert "anthropic" not in VALID_EMBEDDING_PROVIDERS
+    assert "ollama" in VALID_EMBEDDING_PROVIDERS
+    assert "fastembed" in VALID_EMBEDDING_PROVIDERS
+    # moonshot passes the endpoint check but has no default embedding model
+    # (P2 audit finding): accepted-but-unusable must not slip through.
+    assert "moonshot" not in VALID_EMBEDDING_PROVIDERS
+    # Matches the desktop UI's EMBEDDING_PROVIDERS list in AiSettings.tsx
+    # exactly: ["fastembed", "ollama", "openai", "vllm", "doubleword"].
+    assert VALID_EMBEDDING_PROVIDERS - {""} == {
+        "fastembed",
+        "ollama",
+        "openai",
+        "vllm",
+        "doubleword",
+    }
+
+
+def test_config_update_rejects_moonshot_as_embedding_provider() -> None:
+    """moonshot has an embeddings-shaped endpoint but no known default
+    embedding model — accepting it would resolve to a wrong (Ollama)
+    catch-all model and 404 while reporting healthy (P2 audit finding)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "moonshot",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_rejects_anthropic_as_embedding_provider() -> None:
+    """anthropic has no embeddings endpoint; selecting it for embeddings must
+    not silently disable dense retrieval (P2 regression guard)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "anthropic",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_rejects_openrouter_as_embedding_provider() -> None:
+    """openrouter has no embeddings endpoint; selecting it for embeddings must
+    not silently disable dense retrieval (P2 regression guard)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "openrouter",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == original["agent_embedding_provider"]
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_accepts_ollama_as_embedding_provider() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "ollama",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "ollama"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_openrouter_valid_as_chat_provider_but_not_embedding() -> None:
+    """Regression guard for the asymmetry: openrouter is a fine chat provider
+    (it just can't serve embeddings)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openrouter",
+                    "model": "google/gemma-3-27b-it",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_provider == "openrouter"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openrouter",
+                    "model": "google/gemma-3-27b-it",
+                    "embeddingProvider": "openrouter",
+                },
+            )
+            assert resp.status_code == 400
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_rejects_embedding_model_without_provider_field() -> None:
+    """Audit fix (was: "applies_embedding_model_without_provider_field"): a
+    PUT carrying embeddingModel with embeddingProvider OMITTED must be
+    rejected, not silently applied against whatever embedding provider
+    happens to already be configured — see
+    test_config_update_without_embedding_fields_leaves_embedding_config_alone
+    for the still-valid "send neither field" no-op case. The desktop UI
+    always sends embeddingProvider alongside embeddingModel (AiSettings.tsx
+    buildEmbeddingUpdate), so this is not a UI regression."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "vllm"
+            settings.agent_embedding_model = "old-embed-model"
+            settings.agent_embedding_api_key = ""
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingModel": "new-embed-model",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == "vllm"
+            assert settings.agent_embedding_model == "old-embed-model"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_rejects_embedding_api_key_without_provider_field() -> None:
+    """Audit fix (was: "applies_embedding_api_key_without_provider_field"): a
+    PUT carrying embeddingApiKey with embeddingProvider OMITTED must be
+    rejected — see the model-without-provider test above for the full
+    rationale (has_embedding_piggyback_intent would otherwise force the key
+    onto whatever provider the CHAT side is currently using)."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = ""
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingApiKey": "sk-embed-new",
+                },
+            )
+            assert resp.status_code == 400
+            assert settings.agent_embedding_provider == "openai"
+            assert settings.agent_embedding_api_key == ""
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_without_embedding_fields_leaves_embedding_config_alone() -> None:
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "vllm"
+            settings.agent_embedding_model = "keep-this-model"
+            settings.agent_embedding_api_key = "sk-keep-this"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={"provider": "openai", "model": "gpt-4o-mini"},
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "vllm"
+            assert settings.agent_embedding_model == "keep-this-model"
+            assert settings.agent_embedding_api_key == "sk-keep-this"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_clears_embedding_key_when_provider_switches_without_new_key() -> None:
+    """Switching embeddingProvider without supplying a new embeddingApiKey
+    must clear the previously-stored key rather than let the old provider's
+    secret be reused against the new provider."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_api_key = "sk-old"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "doubleword",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "doubleword"
+            assert settings.agent_embedding_api_key != "sk-old"
+            assert settings.agent_embedding_api_key == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "doubleword"
+            assert config["hasEmbeddingApiKey"] is False
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_provider_switch_with_new_key_uses_new_key() -> None:
+    """Switching embeddingProvider WITH a fresh embeddingApiKey must apply
+    the new key, not clear it."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_api_key = "sk-old"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "doubleword",
+                    "embeddingApiKey": "sk-new",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "doubleword"
+            assert settings.agent_embedding_api_key == "sk-new"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_same_provider_without_new_key_leaves_key_unchanged() -> None:
+    """A PUT that re-sends the SAME embeddingProvider already stored, with no
+    embeddingApiKey, must not spuriously clear the existing key — only an
+    actual provider change should trigger the clear."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_api_key = "sk-old"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "openai",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "openai"
+            assert settings.agent_embedding_api_key == "sk-old"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_provider_switch_does_not_leak_legacy_chat_key() -> None:
+    """A legacy config with only a global chat key (no per-provider store)
+    that switches embeddingProvider away from the chat provider must not
+    let the embedding resolver fall back to that global key — otherwise the
+    NEW embedding provider gets authorized with the OLD chat provider's
+    secret. Root-caused in ``_resolve_embedding_api_key``; this is the
+    end-to-end regression check through the route."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            # Legacy config: global chat key, no per-provider store, no
+            # embedding provider configured yet (piggybacks on chat=openai).
+            settings.agent_provider = "openai"
+            settings.agent_api_key = "sk-legacy-openai"
+            settings.agent_api_keys_json = "{}"
+            settings.agent_embedding_provider = ""
+            settings.agent_embedding_api_key = ""
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "doubleword",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "doubleword"
+            assert settings.agent_embedding_api_key == ""
+
+            from anima_server.services.agent import embeddings as embeddings_module
+
+            assert embeddings_module._resolve_embedding_api_key("doubleword") == ""
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            assert resp.json()["hasEmbeddingApiKey"] is False
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_provider_switch_clears_stale_embedding_model() -> None:
+    """Switching embeddingProvider without an explicit embeddingModel must
+    clear the previous provider's stale model — otherwise resolve_embedding_
+    model treats it as an explicit override for the NEW provider, which
+    likely can't serve it, silently disabling dense embeddings."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+            settings.agent_embedding_api_key = ""
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "fastembed",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "fastembed"
+            assert settings.agent_embedding_model == ""
+
+            from anima_server.services.agent.embedding_resolution import (
+                resolve_embedding_model,
+            )
+
+            assert resolve_embedding_model("fastembed") == "BAAI/bge-small-en-v1.5"
+
+            resp = client.get(f"/api/config/{user_id}", headers=headers)
+            assert resp.status_code == 200
+            config = resp.json()
+            assert config["embeddingProvider"] == "fastembed"
+            assert config["embeddingModel"] == "BAAI/bge-small-en-v1.5"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_provider_switch_with_explicit_model_keeps_it() -> None:
+    """Switching embeddingProvider WITH an explicit embeddingModel must keep
+    that model, not clear it."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "fastembed",
+                    "embeddingModel": "custom-fastembed-model",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "fastembed"
+            assert settings.agent_embedding_model == "custom-fastembed-model"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_same_provider_without_model_leaves_model_unchanged() -> None:
+    """Re-sending the SAME embeddingProvider already stored, with no
+    embeddingModel, must not spuriously clear the existing model — only an
+    actual provider change should trigger the reset."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "openai"
+            settings.agent_embedding_model = "text-embedding-3-small"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "openai",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "openai"
+            assert settings.agent_embedding_model == "text-embedding-3-small"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_provider_switch_clears_stale_embedding_base_url() -> None:
+    """A base URL left over from a previous (e.g. local/custom) embedding
+    provider must not be replayed against a newly-selected provider —
+    ``_resolve_embedding_base_url`` returns ``agent_embedding_base_url``
+    verbatim whenever it is set, regardless of which provider is active, so
+    an un-cleared stale value would silently misroute the new provider's
+    requests."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_embedding_provider = "ollama"
+            settings.agent_embedding_base_url = "http://stale-ollama-host:11434"
+
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "embeddingProvider": "openai",
+                },
+            )
+            assert resp.status_code == 200
+            assert settings.agent_embedding_provider == "openai"
+            assert settings.agent_embedding_base_url == ""
+        finally:
+            _restore_config_settings(original)
+
+
 def test_runtime_settings_persist_and_reload(tmp_path) -> None:
     original_data_dir = settings.data_dir
     original_provider = settings.agent_provider
@@ -878,3 +1837,90 @@ def test_user_directive_get_put() -> None:
         resp = client.get(f"/api/soul/{user_id}", headers=headers)
         assert resp.json()["content"] == "I am a helpful companion."
         assert resp.json()["source"] == "database"
+
+
+def test_config_update_piggyback_echo_is_not_treated_as_provider_switch() -> None:
+    """P2: a legacy piggyback config (no raw agent_embedding_provider; embedding
+    intent via a set key) resolves GET's embeddingProvider to the chat
+    provider, which the desktop echoes on ANY save. That echo must NOT be read
+    as a provider switch — doing so would clear the piggyback key/base-URL/
+    model on an unrelated settings save and break dense retrieval."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_embedding_provider = ""  # piggyback: raw empty
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = "sk-piggyback"
+            settings.agent_embedding_base_url = ""
+
+            config = client.get(f"/api/config/{user_id}", headers=headers).json()
+            # Resolved via piggyback onto the chat provider.
+            assert config["embeddingProvider"] == "openai"
+
+            # Save unrelated chat settings, echoing the resolved
+            # embeddingProvider with NO fresh embedding key.
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "embeddingProvider": config["embeddingProvider"],
+                },
+            )
+            assert resp.status_code == 200
+
+            # The piggyback key survived — the echo was not a switch.
+            assert settings.agent_embedding_api_key == "sk-piggyback"
+        finally:
+            _restore_config_settings(original)
+
+
+def test_config_update_piggyback_survives_chat_provider_change_in_same_put() -> None:
+    """P2: changing the CHAT provider in the same PUT that echoes a piggyback
+    embeddingProvider must not clear the piggyback credential. The 'provider
+    changed?' check compares against the embedding provider effective BEFORE
+    the handler mutates agent_provider — not a fresh resolve that would see the
+    already-updated chat provider and misdetect a switch."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_embedding_provider = ""  # piggyback onto chat=openai
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = "sk-piggyback"
+            settings.agent_embedding_base_url = ""
+
+            config = client.get(f"/api/config/{user_id}", headers=headers).json()
+            assert config["embeddingProvider"] == "openai"
+
+            # Change the CHAT provider (openai -> vllm) while the form still
+            # echoes the stale resolved embeddingProvider ("openai").
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "vllm",
+                    "model": "some-vllm-model",
+                    "ollamaUrl": "http://localhost:8000/v1",
+                    "embeddingProvider": config["embeddingProvider"],
+                },
+            )
+            assert resp.status_code == 200
+
+            # The piggyback key survived — the chat change did not trip a false
+            # embedding-provider switch.
+            assert settings.agent_embedding_api_key == "sk-piggyback"
+        finally:
+            _restore_config_settings(original)

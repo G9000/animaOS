@@ -180,19 +180,181 @@ def test_resolve_embedding_model_explicit_wins_over_fastembed_default(
     assert embeddings._resolve_embedding_model() == "custom/embed-model"
 
 
-def test_resolve_embedding_model_keeps_extraction_fallback_for_non_fastembed(
+def test_resolve_embedding_model_ignores_extraction_model_for_explicit_non_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Pre-existing behavior preserved: an explicit non-fastembed embedding
-    # provider (e.g. ollama) still falls back to agent_extraction_model when
-    # no dedicated agent_embedding_model is set.
+    # Audit fix (was: "keeps_extraction_fallback_for_non_fastembed"): an
+    # EXPLICITLY-configured embedding provider (agent_embedding_provider set)
+    # must NEVER consult agent_extraction_model — that's a CHAT model
+    # setting for a possibly-unrelated chat provider. The old behavior let a
+    # chat extraction model (e.g. "qwen2.5:3b" for an ollama chat setup)
+    # hijack an explicit embedding provider's request, e.g. POSTing a chat
+    # model name to openai's /v1/embeddings -> 400. The extraction-model
+    # fallback is now reserved strictly for the genuine piggyback case (see
+    # test_embedding_api_key_piggyback_still_uses_extraction_model_fallback
+    # above) where no embedding provider was named explicitly at all.
     from anima_server.services.agent import embeddings
 
     monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
     monkeypatch.setattr(settings, "agent_embedding_model", "")
     monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
 
+    assert embeddings._resolve_embedding_model() == "nomic-embed-text"
+
+
+def test_resolve_embedding_model_explicit_openai_ignores_chat_extraction_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # HIGH severity regression guard: explicit embeddingProvider="openai"
+    # with an unrelated chat agent_extraction_model set (e.g. left over from
+    # an ollama chat configuration) must resolve to openai's OWN default
+    # embedding model, not the chat model — which would 400 against
+    # /v1/embeddings.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_model() == "text-embedding-3-small"
+
+
+def test_resolve_embedding_model_genuine_piggyback_still_uses_extraction_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mirrors the explicit-provider tests above but for the TRUE piggyback
+    # case: no agent_embedding_provider named, piggyback intent signaled via
+    # agent_embedding_base_url alone, resolved (chat) provider is non-ollama.
+    # This is the one case where reusing agent_extraction_model is still the
+    # documented, intentional legacy behavior.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "http://custom-vllm:8000/v1")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "")
+    monkeypatch.setattr(settings, "agent_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_extraction_model", "qwen2.5:3b")
+
+    assert embeddings._resolve_embedding_provider() == "vllm"
     assert embeddings._resolve_embedding_model() == "qwen2.5:3b"
+
+
+def test_resolve_embedding_model_unknown_provider_returns_empty_not_ollama_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # FIX 2 defense-in-depth: a provider with no DEFAULT_EMBEDDING_MODELS
+    # entry (e.g. moonshot — accepted by SUPPORTED_PROVIDERS/_embedding_skip_
+    # reason but with no default embedding model) must not silently fall
+    # through to the Ollama "nomic-embed-text" catch-all, which would send
+    # an Ollama-only model name to a completely different provider's API
+    # and 404. Empty string fails loudly instead.
+    from anima_server.services.agent.embedding_resolution import (
+        resolve_embedding_model,
+    )
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "moonshot")
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+    monkeypatch.setattr(settings, "agent_extraction_model", "")
+
+    assert resolve_embedding_model("moonshot", settings) == ""
+
+
+def test_resolve_embedding_base_url_explicit_local_ollama_falls_back_to_agent_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression: an explicit local embedding provider (ollama) with no
+    # dedicated embedding base URL must reuse the configured local server
+    # address (agent_base_url) instead of silently reverting to the
+    # hardcoded localhost default — the API has no field to set a distinct
+    # embedding base URL, so agent_base_url is the only real signal. This is
+    # the legitimate case: the embedding provider IS the chat provider, so
+    # agent_base_url is known to point at ollama's own server.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+
+    assert embeddings._resolve_embedding_base_url() == "http://192.168.1.5:11434"
+
+
+def test_resolve_embedding_base_url_explicit_vllm_matching_chat_provider_falls_back_to_agent_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same legitimate-piggyback case as the ollama test above, for vllm:
+    # chat provider and embedding provider both resolve to "vllm", so
+    # agent_base_url is known to be vllm's own server address.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:8000/v1")
+
+    assert embeddings._resolve_embedding_base_url() == "http://192.168.1.5:8000/v1"
+
+
+def test_resolve_embedding_base_url_mismatched_local_provider_uses_its_own_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2 regression: chat=vllm (agent_base_url pointing at vllm's server) with
+    # an explicit, DIFFERENT local embedding provider (ollama) must NOT reuse
+    # agent_base_url — that would send ollama's /api/embed requests to the
+    # vLLM port and silently fail dense retrieval. It must fall through to
+    # ollama's own default base URL instead.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_base_url", "http://127.0.0.1:8000/v1")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+
+    assert embeddings._resolve_embedding_base_url() == "http://127.0.0.1:11434"
+
+
+def test_resolve_embedding_base_url_mismatched_local_provider_vllm_uses_its_own_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mirror case: chat=ollama, explicit embedding provider=vllm. Must use
+    # vllm's own default base URL, not ollama's agent_base_url.
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+    monkeypatch.setattr(settings, "agent_embedding_provider", "vllm")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+
+    assert embeddings._resolve_embedding_base_url() == "http://127.0.0.1:8000/v1"
+
+
+def test_resolve_embedding_base_url_explicit_embedding_base_url_still_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "ollama")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "http://10.0.0.9:11434")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+
+    assert embeddings._resolve_embedding_base_url() == "http://10.0.0.9:11434"
+
+
+def test_resolve_embedding_base_url_non_local_explicit_provider_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # openai (non-local, fixed cloud endpoint) must keep its default base URL
+    # even when agent_base_url happens to be set to some local server address
+    # (e.g. left over from a prior ollama chat-provider configuration).
+    from anima_server.services.agent import embeddings
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+    monkeypatch.setattr(settings, "agent_embedding_base_url", "")
+    monkeypatch.setattr(settings, "agent_base_url", "http://192.168.1.5:11434")
+
+    assert embeddings._resolve_embedding_base_url() == "https://api.openai.com/v1"
 
 
 @pytest.mark.asyncio
@@ -260,6 +422,157 @@ async def test_generate_embedding_skips_explicit_anthropic_embedding_provider(
         settings.agent_embedding_provider = original_embedding_provider
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_skips_explicit_moonshot_no_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # STRUCTURAL FIX (was reachable at runtime despite being excluded from
+    # every user-facing surface): moonshot has a real, openai-compatible
+    # embeddings endpoint (no `_embedding_skip_reason`) but no entry in
+    # DEFAULT_EMBEDDING_MODELS, so `generate_embedding` must refuse it
+    # WITHOUT ever making an HTTP call — exactly like the endpoint-less
+    # openrouter/anthropic skips above — even when a (leftover) embedding key
+    # is present, so the runtime path agrees with VALID_EMBEDDING_PROVIDERS.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    async def unexpected_embed(text: str) -> list[float] | None:
+        raise AssertionError(
+            "moonshot has no default embedding model; it must be skipped "
+            "before any HTTP call is attempted, even with a usable key"
+        )
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+    original_embedding_model = settings.agent_embedding_model
+    original_embedding_api_key = settings.agent_embedding_api_key
+
+    try:
+        settings.agent_provider = "moonshot"
+        settings.agent_embedding_provider = "moonshot"
+        settings.agent_embedding_model = ""
+        settings.agent_embedding_api_key = "sk-leftover-moonshot-key"
+        monkeypatch.setattr(embeddings_module, "_embed_ollama", unexpected_embed)
+        monkeypatch.setattr(
+            embeddings_module, "_embed_openai_compatible", unexpected_embed
+        )
+
+        result = await generate_embedding("hello")
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+        settings.agent_embedding_model = original_embedding_model
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_skips_moonshot_even_with_explicit_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P1 (Codex round 10): the leak the structural fix half-closed. A legacy
+    # moonshot config WITH an explicit embedding model previously bypassed the
+    # has-default-model gate and POSTed real memory/document text to the
+    # moonshot endpoint while the UI showed fastembed. An explicit model must
+    # NOT rescue an unsupported provider — generate_embedding must still refuse
+    # it WITHOUT any HTTP call.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    async def unexpected_embed(text: str) -> list[float] | None:
+        raise AssertionError(
+            "moonshot is not a supported embedding provider; an explicit "
+            "model must not make it reachable at the HTTP call site"
+        )
+
+    original_provider = settings.agent_provider
+    original_embedding_provider = settings.agent_embedding_provider
+    original_embedding_model = settings.agent_embedding_model
+    original_embedding_api_key = settings.agent_embedding_api_key
+
+    try:
+        settings.agent_provider = "moonshot"
+        settings.agent_embedding_provider = "moonshot"
+        settings.agent_embedding_model = "custom-embed-model"
+        settings.agent_embedding_api_key = "sk-leftover-moonshot-key"
+        monkeypatch.setattr(embeddings_module, "_embed_ollama", unexpected_embed)
+        monkeypatch.setattr(
+            embeddings_module, "_embed_openai_compatible", unexpected_embed
+        )
+
+        result = await generate_embedding("hello")
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_embedding_provider = original_embedding_provider
+        settings.agent_embedding_model = original_embedding_model
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+    assert result is None
+
+
+def test_embedding_provider_unusable_reason_moonshot_has_no_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_model", "")
+
+    reason = embeddings_module.embedding_provider_unusable_reason("moonshot")
+    assert reason is not None
+    assert "moonshot" in reason
+
+
+def test_embedding_provider_unusable_reason_openai_usable_with_key_and_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-openai-key")
+
+    assert embeddings_module.embedding_provider_unusable_reason("openai") is None
+
+
+def test_embedding_provider_unusable_reason_ollama_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    assert embeddings_module.embedding_provider_unusable_reason("ollama") is None
+
+
+def test_embedding_provider_unusable_reason_openrouter_still_excluded() -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    assert embeddings_module.embedding_provider_unusable_reason("openrouter") is not None
+
+
+def test_embedding_provider_unusable_reason_anthropic_still_excluded() -> None:
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    assert embeddings_module.embedding_provider_unusable_reason("anthropic") is not None
+
+
+def test_embedding_provider_unusable_reason_moonshot_blocked_even_with_explicit_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P1 (Codex round 10): an explicit agent_embedding_model must NOT rescue a
+    # provider that isn't a supported embedding provider. Membership in
+    # DEFAULT_EMBEDDING_MODELS is a property of the PROVIDER (is it an
+    # embedding provider at all); a model string only selects which model
+    # within a supported one. A legacy moonshot config WITH an explicit model
+    # previously slipped through and kept POSTing memory/document text to the
+    # moonshot endpoint while the UI showed fastembed — it must stay blocked.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_provider", "moonshot")
+    monkeypatch.setattr(settings, "agent_embedding_model", "custom-embed-model")
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-moonshot-key")
+
+    reason = embeddings_module.embedding_provider_unusable_reason("moonshot")
+    assert reason is not None
+    assert "moonshot" in reason
 
 
 @pytest.mark.asyncio
@@ -567,6 +880,44 @@ def test_embedding_provider_key_map_prevents_legacy_key_leakage(
         settings.agent_embedding_api_key = original_embedding_api_key
 
 
+def test_legacy_chat_key_not_reused_for_different_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flat legacy ``agent_api_key`` field predates the per-provider key
+    store and always held the CHAT provider's key. Falling back to it for an
+    embedding provider that differs from the chat provider would silently
+    authorize the NEW embedding provider's requests with the OLD chat
+    provider's secret — a cross-provider key leak. It must only be reused
+    when the resolved embedding provider is the SAME as the chat provider
+    (the legitimate piggyback case)."""
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    original_provider = settings.agent_provider
+    original_api_key = settings.agent_api_key
+    original_api_keys_json = settings.agent_api_keys_json
+    original_embedding_api_key = settings.agent_embedding_api_key
+    monkeypatch.delenv("DOUBLEWORD_API_KEY", raising=False)
+
+    try:
+        settings.agent_provider = "openai"
+        settings.agent_api_key = "sk-openai"
+        settings.agent_api_keys_json = "{}"
+        settings.agent_embedding_api_key = ""
+
+        # Embedding provider differs from the chat provider — must NOT leak
+        # the openai chat key to doubleword.
+        assert embeddings_module._resolve_embedding_api_key("doubleword") == ""
+
+        # Embedding provider equals the chat provider — legitimate piggyback,
+        # the chat key is preserved.
+        assert embeddings_module._resolve_embedding_api_key("openai") == "sk-openai"
+    finally:
+        settings.agent_provider = original_provider
+        settings.agent_api_key = original_api_key
+        settings.agent_api_keys_json = original_api_keys_json
+        settings.agent_embedding_api_key = original_embedding_api_key
+
+
 def test_create_llm_uses_anthropic_client() -> None:
     from anima_server.services.agent.anthropic_client import AnthropicChatClient
 
@@ -749,10 +1100,15 @@ def test_resolve_embedding_dim_explicit_model_wins_over_fastembed_default(
     assert config_module.resolve_embedding_dim() == 384
 
 
-def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
+def test_resolve_embedding_dim_ignores_extraction_fallback_for_explicit_non_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Pre-existing behavior preserved for an explicit non-fastembed provider.
+    # Audit fix (was: "keeps_extraction_fallback_for_non_fastembed"): mirrors
+    # test_resolve_embedding_model_ignores_extraction_model_for_explicit_non_fastembed
+    # for dimension resolution. An explicit agent_embedding_provider must not
+    # consult agent_extraction_model (a chat setting) — it resolves to
+    # ollama's own default model ("nomic-embed-text", dim 768) instead of the
+    # chat extraction model's dim (1024 for mxbai-embed-large).
     from anima_server import config as config_module
 
     monkeypatch.setattr(
@@ -769,17 +1125,18 @@ def test_resolve_embedding_dim_keeps_extraction_fallback_for_non_fastembed(
     )
     config_module.clear_detected_embedding_dim()
 
-    assert config_module.resolve_embedding_dim() == 1024
+    assert config_module.resolve_embedding_dim() == 768
 
 
 def test_resolve_default_embedding_provider_piggybacks_on_embedding_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # P2 regression, mirrored in config.py: agent_embedding_api_key alone is
-    # explicit embedding intent, just like agent_embedding_model or
-    # agent_embedding_base_url. Must be kept in sync with
-    # embeddings._resolve_embedding_provider.
+    # P2 regression: agent_embedding_api_key alone is explicit embedding
+    # intent, just like agent_embedding_model or agent_embedding_base_url.
+    # Lives in embedding_resolution.py now — the single copy shared by
+    # config.py and services.agent.embeddings.
     from anima_server import config as config_module
+    from anima_server.services.agent import embedding_resolution
 
     monkeypatch.setattr(
         config_module,
@@ -795,13 +1152,14 @@ def test_resolve_default_embedding_provider_piggybacks_on_embedding_api_key(
         ),
     )
 
-    assert config_module._resolve_default_embedding_provider() == "openai"
+    assert embedding_resolution.resolve_embedding_provider() == "openai"
 
 
 def test_resolve_default_embedding_provider_defaults_to_fastembed_when_nothing_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server import config as config_module
+    from anima_server.services.agent import embedding_resolution
 
     monkeypatch.setattr(
         config_module,
@@ -817,7 +1175,7 @@ def test_resolve_default_embedding_provider_defaults_to_fastembed_when_nothing_s
         ),
     )
 
-    assert config_module._resolve_default_embedding_provider() == "fastembed"
+    assert embedding_resolution.resolve_embedding_provider() == "fastembed"
 
 
 def test_resolve_embedding_dim_uses_openai_default_for_embedding_api_key_piggyback(
@@ -1104,3 +1462,71 @@ async def test_generate_embedding_normalizes_cache_key_for_equivalent_text(
     assert first == [0.1, 0.2, 0.3]
     assert second == [0.1, 0.2, 0.3]
     assert call_args == ["hello world"]
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_openai_compatible_marks_provider_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2: the batch path (backfill/re-embed) used to swallow an HTTP outage and
+    # return None entries WITHOUT recording the cooldown, so http_backend_status
+    # kept reporting "ready" while batch embeddings were actually failing. It
+    # must mark the provider unavailable on the SAME key the status reads.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    request = httpx.Request("POST", "http://127.0.0.1:8000/v1/embeddings")
+
+    class _FailingAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FailingAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def post(self, *args: object, **kwargs: object) -> object:
+            raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="vllm",
+            agent_base_url="http://127.0.0.1:8000/v1",
+            agent_api_key="",
+            agent_embedding_provider="vllm",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+    monkeypatch.setattr(embeddings_module.httpx, "AsyncClient", _FailingAsyncClient)
+    embeddings_module._provider_unavailable_until.clear()
+
+    # Sanity: healthy before the outage.
+    assert embeddings_module.http_backend_status("vllm") == "ready"
+
+    results = await embeddings_module._batch_embed_openai_compatible(["a", "b"])
+
+    assert results == [None, None]
+    # The batch outage is now visible to the trust surface.
+    assert embeddings_module.http_backend_status("vllm") == "failed_retrying"
+
+    embeddings_module._provider_unavailable_until.clear()
+
+
+def test_resolve_embedding_api_key_never_returns_key_for_fastembed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2: fastembed is in-process (no HTTP endpoint, no API key). A stored
+    agent_embedding_api_key must never be attributed to it — otherwise a
+    legacy piggyback config whose get_config DISPLAY is normalized to
+    'fastembed' would report hasEmbeddingApiKey=true for a provider that
+    can't use one."""
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-leftover")
+    assert embeddings_module._resolve_embedding_api_key("fastembed") == ""

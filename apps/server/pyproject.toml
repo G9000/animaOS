@@ -60,10 +60,11 @@ anima-core = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# retrieval_eval is excluded by default; run it explicitly with
-# `pytest -m retrieval_eval`.
-addopts = "-p no:cacheprovider -m 'not retrieval_eval'"
+# retrieval_eval and golden_corpus are excluded by default; run them
+# explicitly with `pytest -m retrieval_eval` / `pytest -m golden_corpus`.
+addopts = "-p no:cacheprovider -m 'not retrieval_eval and not golden_corpus'"
 markers = [
   "retrieval_eval: retrieval quality eval harness (non-default; run with -m retrieval_eval)",
+  "golden_corpus: golden-corpus eval against real docling/fastembed/reranker models (non-default; run with -m golden_corpus)",
   "integration: tests requiring external services (PostgreSQL, etc.)",
 ]

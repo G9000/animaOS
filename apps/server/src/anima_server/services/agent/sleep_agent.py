@@ -17,6 +17,12 @@ from typing import Any
 
 from sqlalchemy.exc import OperationalError
 
+from anima_server.services.documents.parsing_pack import parsing_pack_ready
+from anima_server.services.documents.reparse import (
+    list_reparse_candidates,
+    mark_docling_reparse_failed,
+    reparse_document,
+)
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
@@ -353,6 +359,11 @@ async def run_sleeptime_agents(
         (
             "knowledge_autocompile",
             _task_knowledge_autocompile,
+            {"_task_runtime_db_factory": runtime_db_factory},
+        ),
+        (
+            "document_reparse",
+            _task_reparse_pending_documents,
             {"_task_runtime_db_factory": runtime_db_factory},
         ),
     ]:
@@ -1033,6 +1044,179 @@ async def _task_knowledge_autocompile(
                 }
             )
     return {"policy": policy, "compiled": compiled}
+
+
+# Statuses from reparse_document() that mean "the pack state changed or the
+# parser is unhealthy" rather than "this one document had a problem" — the
+# cycle aborts on these instead of burning the rest of the budget against a
+# sick parser, and picks the remaining candidates back up next cycle.
+#
+# "upgraded_unembedded" joins this set for the same reason: it means the
+# embedding backend is down. reparse_document() already re-cut the document
+# to docling-quality chunks via replace_document_chunks() (which resets the
+# document to non-indexed and deletes the old chunk vectors) *before*
+# embedding, so an embedding failure leaves the document flushed into a
+# non-indexed, unembedded state. Committing that would silently orphan a
+# previously-searchable indexed preview document — it drops out of both
+# search (status != "indexed") and list_reparse_candidates (which requires
+# status == "indexed") — permanently, from a background job the user never
+# asked to run right now. The cycle rolls that document's session back
+# instead (discarding the flush, preserving the original indexed preview)
+# and, since an unavailable embedding backend affects every remaining
+# candidate identically, aborts the rest of the budget to retry next cycle
+# once embeddings recover.
+#
+# These are GLOBAL failures — every remaining candidate would hit them
+# identically this cycle, so aborting the budget and retrying next cycle is
+# correct. A per-document failure (parse_degraded: Docling was ready but
+# crashed on this one file) is deliberately NOT here: aborting on it would
+# let a single pathological file, which sorts first by document id and stays
+# an indexed preview candidate, head-of-line-block every document behind it
+# forever. Such a file is skipped and the loop continues.
+_REPARSE_ABORT_STATUSES = frozenset(
+    {"pack_not_ready", "parser_unavailable", "upgraded_unembedded"}
+)
+
+
+async def _task_reparse_pending_documents(
+    *,
+    user_id: int,
+    runtime_db_factory: Callable[..., object] | None = None,
+    **_: Any,
+) -> str:
+    """Re-parse preview/legacy-quality documents through Docling once the
+    parsing pack becomes ready, closing the loop so early-ingested documents
+    upgrade themselves without a manual reparse click.
+
+    reparse_document() already runs sync_document_source(compile_knowledge=
+    True) internally on a successful upgrade — this task must NOT add a
+    second compile pass on top of it.
+
+    Docling parsing runs synchronously and can take minutes on a large PDF,
+    so the whole per-cycle body — session open, candidate listing, reparse
+    loop, commit — runs in a single worker thread via asyncio.to_thread
+    (matching soul_writer's convention of keeping a session's entire
+    lifecycle on the thread that uses it, and never pinning a pooled
+    connection to the event loop across a minutes-long parse); the budget
+    keeps a single cycle bounded regardless.
+    """
+    from anima_server.config import settings
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    # Cheap, DB-free gates stay on the event loop.
+    if settings.document_auto_reparse != "on":
+        return "auto-reparse disabled"
+    if not parsing_pack_ready():
+        return "parsing pack not ready"
+
+    factory = runtime_db_factory or get_runtime_session_factory()
+    # Clamp to >= 0 before it's used as a slice bound: a negative budget (e.g.
+    # a misconfigured ANIMA_DOCUMENT_AUTO_REPARSE_BUDGET=-1) would make
+    # `candidates[:budget]` slice from the END (`[:-1]`), reparsing almost the
+    # entire legacy-document queue in one cycle — the opposite of bounded.
+    budget = max(0, settings.document_auto_reparse_budget)
+
+    def _reparse_cycle() -> str:
+        reparsed = 0
+        missing = 0
+        degraded = 0
+        embeddings_unavailable = False
+        candidates: list[int] = []
+        with factory() as runtime_db:
+            candidates = list_reparse_candidates(
+                runtime_db,
+                user_id=user_id,
+                failure_cooldown_hours=settings.document_auto_reparse_failure_cooldown_hours,
+            )[:budget]
+            for document_id in candidates:
+                try:
+                    result = reparse_document(
+                        runtime_db,
+                        user_id=user_id,
+                        document_id=document_id,
+                    )
+                except Exception:
+                    # reparse_document can RAISE (rather than return a status)
+                    # on a bad stored path or an unreadable/missing PDF —
+                    # DocumentStoragePathError from resolve_document_storage_
+                    # path(), RuntimeError from the pdfium preview path, etc.
+                    # That is per-document, so handle it like parse_degraded:
+                    # roll back, record the failure (cooldown), and keep going.
+                    # Otherwise one broken low-id document would crash the whole
+                    # cycle — and, since candidates are id-ordered, crash it
+                    # again every run, starving every document behind it.
+                    logger.warning(
+                        "Auto-reparse raised for document %s; recording failure "
+                        "and skipping",
+                        document_id,
+                        exc_info=True,
+                    )
+                    degraded += 1
+                    runtime_db.rollback()
+                    mark_docling_reparse_failed(
+                        runtime_db, user_id=user_id, document_id=document_id
+                    )
+                    runtime_db.commit()
+                    continue
+                if result.status == "upgraded":
+                    reparsed += 1
+                    runtime_db.commit()
+                    continue
+                if result.status == "parse_degraded":
+                    # Docling was ready but crashed on THIS specific file
+                    # (corrupt/pathological). This is per-document, not a
+                    # global parser failure — skip it and keep going so one
+                    # bad file can't head-of-line-block the rest of the queue.
+                    # Nothing was mutated before the quality check, so roll
+                    # back any flush, then RECORD the failure so the cooldown
+                    # in list_reparse_candidates keeps this file from
+                    # re-consuming the budget slot every cycle and starving
+                    # valid documents behind it.
+                    degraded += 1
+                    runtime_db.rollback()
+                    mark_docling_reparse_failed(
+                        runtime_db, user_id=user_id, document_id=document_id
+                    )
+                    runtime_db.commit()
+                    continue
+                if result.status in _REPARSE_ABORT_STATUSES:
+                    # Pack state changed mid-cycle, the parser is sick, or
+                    # (upgraded_unembedded) the embedding backend is down —
+                    # nothing left to commit for this attempt, stop and retry
+                    # the remaining candidates next cycle. For
+                    # upgraded_unembedded specifically, this rollback is load
+                    # bearing: it discards the flushed replace_document_chunks
+                    # reset so the document's original indexed preview
+                    # survives instead of being silently orphaned.
+                    runtime_db.rollback()
+                    if result.status == "upgraded_unembedded":
+                        embeddings_unavailable = True
+                    break
+                # "not_found": the document vanished (deleted concurrently)
+                # between listing and reparse — nothing to commit, but this
+                # doesn't reflect pack/parser health, so keep going. It's
+                # also not "pending": the document is gone, so it must not
+                # inflate the pending count in the summary.
+                missing += 1
+                runtime_db.rollback()
+
+        pending = len(candidates) - reparsed - missing - degraded
+        if not candidates:
+            return "no documents pending reparse"
+        if embeddings_unavailable:
+            return (
+                f"reparsed {reparsed} documents "
+                f"(embeddings unavailable, {pending} pending)"
+            )
+        degraded_note = f", {degraded} could not be parsed" if degraded else ""
+        if pending or degraded:
+            return (
+                f"reparsed {reparsed} documents "
+                f"({pending} pending{degraded_note})"
+            )
+        return f"reparsed {reparsed} documents"
+
+    return await asyncio.to_thread(_reparse_cycle)
 
 
 async def _task_foresight_lifecycle(

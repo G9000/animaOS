@@ -8,7 +8,7 @@
       "executor": "nx:run-commands",
       "options": {
         "cwd": "apps/server",
-        "command": "uv run --project . uvicorn anima_server.main:app --app-dir src --reload --host 127.0.0.1 --port 3031"
+        "command": "uv run --all-extras --project . uvicorn anima_server.main:app --app-dir src --reload --host 127.0.0.1 --port 3031"
       }
     },
     "build": {
