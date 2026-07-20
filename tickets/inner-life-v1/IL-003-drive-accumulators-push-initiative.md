@@ -1,16 +1,16 @@
 # IL-003 - Drive accumulators and push initiative channel
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/agent/inner_life`, `apps/server/src/anima_server/services/agent/proactive.py`, `apps/server/src/anima_server/models/presence.py`, `apps/desktop`
 - Parent: `IL-000`
 - Depends on: `IL-001`, `IL-002`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 17:10 MYT
-- Started:
+- Updated: 2026-07-20 13:42 MYT
+- Started: 2026-07-20 13:42 MYT
 - Completed:
 
 ## Goal
