@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     # synchronously and can take minutes on large PDFs, so this keeps a
     # single cycle bounded.
     document_auto_reparse_budget: int = 2
+    # After Docling fails on a specific document (parse_degraded), the
+    # auto-reparse loop records the failure and excludes that document from
+    # candidacy for this many hours — so one persistently-unparseable file
+    # can't monopolize the per-cycle budget and starve valid documents behind
+    # it, while still allowing a periodic retry in case the failure was
+    # transient. Set to 0 to disable the cooldown (retry every cycle).
+    document_auto_reparse_failure_cooldown_hours: int = 24
     # Contextual retrieval blurbs: when "on", each document chunk gets an
     # LLM-generated context line stored in chunk metadata and prepended to
     # the chunk text for embedding and lexical indexing only (never shown

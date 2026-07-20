@@ -18,7 +18,11 @@ from typing import Any
 from sqlalchemy.exc import OperationalError
 
 from anima_server.services.documents.parsing_pack import parsing_pack_ready
-from anima_server.services.documents.reparse import list_reparse_candidates, reparse_document
+from anima_server.services.documents.reparse import (
+    list_reparse_candidates,
+    mark_docling_reparse_failed,
+    reparse_document,
+)
 from anima_server.services.health.event_logger import emit as health_emit
 
 logger = logging.getLogger(__name__)
@@ -1115,7 +1119,11 @@ async def _task_reparse_pending_documents(
         embeddings_unavailable = False
         candidates: list[int] = []
         with factory() as runtime_db:
-            candidates = list_reparse_candidates(runtime_db, user_id=user_id)[:budget]
+            candidates = list_reparse_candidates(
+                runtime_db,
+                user_id=user_id,
+                failure_cooldown_hours=settings.document_auto_reparse_failure_cooldown_hours,
+            )[:budget]
             for document_id in candidates:
                 result = reparse_document(
                     runtime_db,
@@ -1131,10 +1139,17 @@ async def _task_reparse_pending_documents(
                     # (corrupt/pathological). This is per-document, not a
                     # global parser failure — skip it and keep going so one
                     # bad file can't head-of-line-block the rest of the queue.
-                    # Nothing was mutated before the quality check, so the
-                    # rollback is a safe no-op.
+                    # Nothing was mutated before the quality check, so roll
+                    # back any flush, then RECORD the failure so the cooldown
+                    # in list_reparse_candidates keeps this file from
+                    # re-consuming the budget slot every cycle and starving
+                    # valid documents behind it.
                     degraded += 1
                     runtime_db.rollback()
+                    mark_docling_reparse_failed(
+                        runtime_db, user_id=user_id, document_id=document_id
+                    )
+                    runtime_db.commit()
                     continue
                 if result.status in _REPARSE_ABORT_STATUSES:
                     # Pack state changed mid-cycle, the parser is sick, or
