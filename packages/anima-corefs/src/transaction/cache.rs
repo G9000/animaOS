@@ -120,7 +120,7 @@ fn derive_key_identity(
     Ok(identity)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct PointerSet {
     pub(super) head: Option<HeadRecord>,
     pub(super) receipt: Option<HeadRecord>,
@@ -255,6 +255,34 @@ pub(super) struct CommitCache {
 }
 
 impl CommitCache {
+    pub(super) fn current(&self) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let mut discarded = None;
+        let current = {
+            let mut recovered_now = false;
+            let guard = match self.inner.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    let mut guard = poisoned.into_inner();
+                    recovered_now = self
+                        .recovered_poison
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok();
+                    if recovered_now {
+                        discarded = guard.take();
+                    }
+                    guard
+                }
+            };
+            if recovered_now {
+                None
+            } else {
+                guard.as_ref().cloned()
+            }
+        };
+        drop(discarded);
+        current
+    }
+
     pub(super) fn get(&self, key: &CacheLookupKey) -> Option<Arc<AuthenticatedCommitSnapshot>> {
         let mut discarded = None;
         let hit = {

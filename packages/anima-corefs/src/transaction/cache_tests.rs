@@ -19,7 +19,7 @@ use super::cache::{
     AuthenticatedCommitSnapshot, CacheError, CacheLookupKey, CommitCache, PointerSet,
     ValidatedObjectBinding, ValidatedObjectState,
 };
-use super::{CatalogLoadProbe, CatalogLoadStage, CoreCommitCoordinator};
+use super::{CatalogLoadProbe, CatalogLoadStage, CommitProbe, CommitStage, CoreCommitCoordinator};
 
 const CORE_ID: &str = "cache-core";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -325,9 +325,11 @@ fn unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let keys = keys(0x11, 1);
-    seed_committed(&coordinator, &keys);
+    let seeder = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    seed_committed(&seeder, &keys);
+    drop(seeder);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let mut stages = Vec::new();
     let mut assert_cache_free = |stage| {
         assert!(
@@ -387,9 +389,11 @@ fn locked_load_acquires_kernel_lock_before_cache_and_releases_cache_before_io() 
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let keys = keys(0x11, 1);
-    seed_committed(&coordinator, &keys);
+    let seeder = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    seed_committed(&seeder, &keys);
+    drop(seeder);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let mut stages = Vec::new();
     let mut assert_cache_free = |stage| {
         assert!(
@@ -430,6 +434,101 @@ fn locked_load_acquires_kernel_lock_before_cache_and_releases_cache_before_io() 
     assert!(key_derivation < cache_access);
     assert!(cache_access < catalog_file_io);
     assert!(catalog_file_io < catalog_crypto);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn same_coordinator_commit_reuses_only_the_exact_authenticated_head() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-same-coordinator-commit-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    let mut probe = CommitProbe::default();
+
+    let outcome = coordinator
+        .commit_with_probe(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok((*catalog(generation)).clone()),
+            |_| Ok(()),
+            &mut probe,
+        )
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 3);
+    assert_eq!(probe.pointer_reads, 6);
+    assert_eq!(probe.catalog_file_reads, 0);
+    assert_eq!(probe.catalog_decrypts, 0);
+    assert_eq!(probe.catalog_encodes, 0);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_holds_no_cache_guard_during_kernel_lock_io_crypto_build_hooks_or_invalidation() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-commit-guard-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let seeder = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&seeder, &keys);
+    drop(seeder);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let mut stages = Vec::new();
+    let mut assert_cache_free = |stage| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held during {stage:?}"
+        );
+        stages.push(stage);
+    };
+    let mut probe = CommitProbe::observed(&mut assert_cache_free);
+
+    let outcome = coordinator
+        .commit_with_probe(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok((*catalog(generation)).clone()),
+            |_| Err("runtime index is offline".to_owned()),
+            &mut probe,
+        )
+        .unwrap();
+
+    assert!(!outcome.invalidation_delivered());
+    assert_eq!(
+        coordinator
+            .cache
+            .current()
+            .expect("durable authority must survive invalidation failure")
+            .catalog()
+            .generation(),
+        3
+    );
+
+    for expected in [
+        CommitStage::KernelLock,
+        CommitStage::PointerIo,
+        CommitStage::KeyDerivation,
+        CommitStage::CatalogIoCrypto,
+        CommitStage::PreconditionAndBuild,
+        CommitStage::EncryptionAndPublication,
+        CommitStage::FailureHook,
+        CommitStage::InvalidationCallback,
+    ] {
+        assert!(
+            stages.contains(&expected),
+            "missing commit stage {expected:?}"
+        );
+    }
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }

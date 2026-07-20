@@ -817,6 +817,7 @@ enum CatalogLoadStage {
 #[derive(Default)]
 struct CatalogLoadProbe<'a> {
     pointer_reads: usize,
+    key_derivations: usize,
     catalog_file_reads: usize,
     catalog_decrypts: usize,
     catalog_encodes: usize,
@@ -848,6 +849,11 @@ impl<'a> CatalogLoadProbe<'a> {
         self.stage(CatalogLoadStage::CatalogFileIo);
     }
 
+    fn key_derivation(&mut self) {
+        self.key_derivations += 1;
+        self.stage(CatalogLoadStage::KeyDerivation);
+    }
+
     fn catalog_crypto_started(&mut self) {
         self.stage(CatalogLoadStage::CatalogCrypto);
     }
@@ -856,6 +862,74 @@ impl<'a> CatalogLoadProbe<'a> {
         self.catalog_decrypts += 1;
         self.catalog_encodes += 1;
     }
+}
+
+#[cfg(test)]
+fn observe_catalog_key_derivation<T>(value: T, probe: Option<&mut CatalogLoadProbe<'_>>) -> T {
+    if let Some(probe) = probe {
+        probe.key_derivation();
+    }
+    value
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommitStage {
+    KernelLock,
+    PointerIo,
+    KeyDerivation,
+    CatalogIoCrypto,
+    PreconditionAndBuild,
+    EncryptionAndPublication,
+    FailureHook,
+    InvalidationCallback,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CommitProbe<'a> {
+    pointer_reads: usize,
+    catalog_file_reads: usize,
+    catalog_decrypts: usize,
+    catalog_encodes: usize,
+    observe_stage: Option<&'a mut dyn FnMut(CommitStage)>,
+}
+
+#[cfg(test)]
+impl<'a> CommitProbe<'a> {
+    fn observed(observe_stage: &'a mut dyn FnMut(CommitStage)) -> Self {
+        Self {
+            observe_stage: Some(observe_stage),
+            ..Self::default()
+        }
+    }
+
+    fn stage(&mut self, stage: CommitStage) {
+        if let Some(observer) = self.observe_stage.as_mut() {
+            observer(stage);
+        }
+    }
+
+    fn absorb_catalog_load_counts(
+        &mut self,
+        pointer_reads: usize,
+        catalog_file_reads: usize,
+        catalog_decrypts: usize,
+        catalog_encodes: usize,
+    ) {
+        self.pointer_reads += pointer_reads;
+        self.catalog_file_reads += catalog_file_reads;
+        self.catalog_decrypts += catalog_decrypts;
+        self.catalog_encodes += catalog_encodes;
+    }
+}
+
+#[cfg(test)]
+fn observe_commit_key_derivation<T>(value: T, probe: Option<&mut CommitProbe<'_>>) -> T {
+    if let Some(probe) = probe {
+        probe.stage(CommitStage::KeyDerivation);
+    }
+    value
 }
 
 pub struct CoreCommitCoordinator {
@@ -1393,10 +1467,16 @@ impl CoreCommitCoordinator {
         let head = pointers.head.as_ref()?;
         let active_keys = keyring.require(head.required_frk_version()).ok()?;
         #[cfg(test)]
-        if let Some(probe) = probe {
-            probe.stage(CatalogLoadStage::KeyDerivation);
+        {
+            observe_catalog_key_derivation(
+                CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok(),
+                probe,
+            )
         }
-        CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok()
+        #[cfg(not(test))]
+        {
+            CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok()
+        }
     }
 
     fn load_committed_once_with_keyring_heads_inner(
@@ -2222,6 +2302,37 @@ impl CoreCommitCoordinator {
         )
     }
 
+    #[cfg(test)]
+    fn commit_with_probe<B, I>(
+        &self,
+        keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        build_next: B,
+        invalidate: I,
+        probe: &mut CommitProbe<'_>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+    {
+        let keyring = FrkKeyring::single(keys);
+        let mut hook = |_| Ok(());
+        self.commit_internal_with_keyring_and_hook(
+            &keyring,
+            keys,
+            prepared_revisions,
+            preconditions,
+            CommitMode::Normal,
+            build_next,
+            CommitCallbacks {
+                invalidate,
+                hook: &mut hook,
+            },
+            Some(probe),
+        )
+    }
+
     /// Commits a normal catalog generation while retained cutover pointers may
     /// still require older FRK versions. `active_keys` encrypts the new catalog.
     pub fn commit_with_keyring<B, I>(
@@ -2250,6 +2361,8 @@ impl CoreCommitCoordinator {
                 invalidate,
                 hook: &mut hook,
             },
+            #[cfg(test)]
+            None,
         )
     }
 
@@ -2303,6 +2416,8 @@ impl CoreCommitCoordinator {
             mode,
             build_next,
             callbacks,
+            #[cfg(test)]
+            None,
         )
     }
 
@@ -2316,6 +2431,7 @@ impl CoreCommitCoordinator {
         mode: CommitMode,
         build_next: B,
         callbacks: CommitCallbacks<'_, I, H>,
+        #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) -> Result<CommitOutcome, CommitError>
     where
         B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
@@ -2323,11 +2439,65 @@ impl CoreCommitCoordinator {
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
         let (event, recovery_pending, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
+            #[cfg(test)]
+            let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
+                &self.root_dir,
+                &self.fs_dir,
+                || {
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(CommitStage::KernelLock);
+                    }
+                },
+            )?;
+            #[cfg(not(test))]
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
+            #[cfg(test)]
+            let authoritative = {
+                let (result, counts) = {
+                    let mut observe_load_stage = |stage| {
+                        let commit_stage = match stage {
+                            CatalogLoadStage::PointerIo => Some(CommitStage::PointerIo),
+                            CatalogLoadStage::KeyDerivation => Some(CommitStage::KeyDerivation),
+                            CatalogLoadStage::CatalogFileIo | CatalogLoadStage::CatalogCrypto => {
+                                Some(CommitStage::CatalogIoCrypto)
+                            }
+                            CatalogLoadStage::KernelLock
+                            | CatalogLoadStage::CacheAccess
+                            | CatalogLoadStage::SecondHeadRead => None,
+                        };
+                        if let (Some(probe), Some(stage)) = (probe.as_deref_mut(), commit_stage) {
+                            probe.stage(stage);
+                        }
+                    };
+                    let mut load_probe = CatalogLoadProbe::observed(&mut observe_load_stage);
+                    let result = self.load_committed_recovering_with_keyring_and_hook_inner(
+                        &commit_lock,
+                        keyring,
+                        &mut |_| Ok(()),
+                        Some(&mut load_probe),
+                    );
+                    let counts = (
+                        load_probe.pointer_reads,
+                        load_probe.catalog_file_reads,
+                        load_probe.catalog_decrypts,
+                        load_probe.catalog_encodes,
+                    );
+                    (result, counts)
+                };
+                if let Some(probe) = probe.as_deref_mut() {
+                    probe.absorb_catalog_load_counts(counts.0, counts.1, counts.2, counts.3);
+                }
+                result?
+            };
+            #[cfg(not(test))]
             let authoritative =
                 self.load_committed_recovering_with_keyring(&commit_lock, keyring)?;
+            let initial_pointers = self
+                .cache
+                .current()
+                .map_or_else(PointerSet::default, |snapshot| snapshot.pointers.clone());
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
@@ -2382,14 +2552,63 @@ impl CoreCommitCoordinator {
                 &next_catalog,
                 prepared_revisions,
             )?;
-            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = self
-                .publish_catalog_pointer_with_hook(
+            let next_catalog = Arc::new(next_catalog);
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CommitStage::PreconditionAndBuild);
+            }
+            #[cfg(test)]
+            let publication = {
+                let mut observed_hook = |point| {
+                    let result = (callbacks.hook)(point);
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(CommitStage::FailureHook);
+                    }
+                    result
+                };
+                self.publish_catalog_pointer_with_hook(
                     active_keys,
                     &next_catalog,
                     HEAD_FILE,
                     matches!(mode, CommitMode::FirstMutation { .. }),
-                    callbacks.hook,
-                )?;
+                    &mut observed_hook,
+                )
+            };
+            #[cfg(not(test))]
+            let publication = self.publish_catalog_pointer_with_hook(
+                active_keys,
+                &next_catalog,
+                HEAD_FILE,
+                matches!(mode, CommitMode::FirstMutation { .. }),
+                callbacks.hook,
+            );
+            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) =
+                match publication {
+                    Ok(publication) => publication,
+                    Err(error) => {
+                        self.reconcile_cache_after_commit_publication_error(
+                            &initial_pointers,
+                            keyring,
+                            mode,
+                            #[cfg(test)]
+                            probe.as_deref_mut(),
+                        );
+                        return Err(error);
+                    }
+                };
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CommitStage::EncryptionAndPublication);
+            }
+            self.publish_commit_cache_authority(
+                keyring,
+                mode,
+                &head,
+                Arc::clone(&next_catalog),
+                recovery_pending,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            );
             let event = InvalidationEvent {
                 generation: head.generation(),
                 catalog_hash: head.catalog_hash().to_owned(),
@@ -2406,9 +2625,24 @@ impl CoreCommitCoordinator {
             )
         };
 
-        (callbacks.hook)(CommitFailurePoint::BeforeInvalidation)?;
-        let invalidation_delivered = (callbacks.invalidate)(event.clone()).is_ok();
-        (callbacks.hook)(CommitFailurePoint::AfterInvalidation)?;
+        let before_invalidation = (callbacks.hook)(CommitFailurePoint::BeforeInvalidation);
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.stage(CommitStage::FailureHook);
+        }
+        before_invalidation?;
+        let invalidation_result = (callbacks.invalidate)(event.clone());
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.stage(CommitStage::InvalidationCallback);
+        }
+        let invalidation_delivered = invalidation_result.is_ok();
+        let after_invalidation = (callbacks.hook)(CommitFailurePoint::AfterInvalidation);
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.stage(CommitStage::FailureHook);
+        }
+        after_invalidation?;
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
@@ -2417,6 +2651,157 @@ impl CoreCommitCoordinator {
             bytes_written,
             catalog_plaintext_bytes,
         })
+    }
+
+    fn publish_commit_cache_authority(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        mode: CommitMode,
+        head: &HeadRecord,
+        catalog: Arc<CatalogGeneration>,
+        recovery_pending: bool,
+        #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+    ) {
+        if recovery_pending {
+            self.cache.clear();
+            return;
+        }
+        let final_pointers = match self.load_commit_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        ) {
+            Ok(pointers) => pointers,
+            Err(_) => {
+                self.cache.clear();
+                return;
+            }
+        };
+        let exact_final_authority = final_pointers.head.as_ref() == Some(head)
+            && (!matches!(mode, CommitMode::FirstMutation { .. })
+                || (final_pointers.receipt.as_ref() == Some(head)
+                    && final_pointers.complete.as_ref() == Some(head)));
+        if !exact_final_authority {
+            self.cache.clear();
+            return;
+        }
+        let Some(key) = self.commit_cache_lookup_key(
+            &final_pointers,
+            keyring,
+            #[cfg(test)]
+            probe,
+        ) else {
+            self.cache.clear();
+            return;
+        };
+        self.cache
+            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                &key, catalog, None,
+            )));
+    }
+
+    fn reconcile_cache_after_commit_publication_error(
+        &self,
+        initial_pointers: &PointerSet,
+        keyring: &FrkKeyring<'_>,
+        mode: CommitMode,
+        #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+    ) {
+        let final_pointers = match self.load_commit_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        ) {
+            Ok(pointers) => pointers,
+            Err(_) => {
+                self.cache.clear();
+                return;
+            }
+        };
+        if &final_pointers == initial_pointers {
+            return;
+        }
+        if matches!(mode, CommitMode::FirstMutation { .. })
+            || self.validate_pinned_layout().is_err()
+        {
+            self.cache.clear();
+            return;
+        }
+        let authenticated = self.load_committed_once_with_keyring_heads_inner(
+            keyring,
+            final_pointers.head.clone(),
+            final_pointers.receipt.clone(),
+            final_pointers.complete.clone(),
+            #[cfg(test)]
+            None,
+        );
+        let Ok(Some(committed)) = authenticated else {
+            self.cache.clear();
+            return;
+        };
+        let Some(key) = self.commit_cache_lookup_key(
+            &final_pointers,
+            keyring,
+            #[cfg(test)]
+            probe,
+        ) else {
+            self.cache.clear();
+            return;
+        };
+        self.cache
+            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                &key,
+                Arc::clone(&committed.catalog),
+                None,
+            )));
+    }
+
+    fn commit_cache_lookup_key(
+        &self,
+        pointers: &PointerSet,
+        keyring: &FrkKeyring<'_>,
+        #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
+    ) -> Option<CacheLookupKey> {
+        let head = pointers.head.as_ref()?;
+        let active_keys = keyring.require(head.required_frk_version()).ok()?;
+        #[cfg(test)]
+        {
+            observe_commit_key_derivation(
+                CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok(),
+                probe,
+            )
+        }
+        #[cfg(not(test))]
+        {
+            CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok()
+        }
+    }
+
+    fn load_commit_pointer_set(
+        &self,
+        #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+    ) -> Result<PointerSet, CommitError> {
+        #[cfg(test)]
+        {
+            let (result, pointer_reads) = {
+                let mut observe_load_stage = |stage| {
+                    if stage == CatalogLoadStage::PointerIo {
+                        if let Some(probe) = probe.as_deref_mut() {
+                            probe.stage(CommitStage::PointerIo);
+                        }
+                    }
+                };
+                let mut load_probe = CatalogLoadProbe::observed(&mut observe_load_stage);
+                let result = self.load_pointer_set(Some(&mut load_probe));
+                (result, load_probe.pointer_reads)
+            };
+            if let Some(probe) = probe {
+                probe.pointer_reads += pointer_reads;
+            }
+            result
+        }
+        #[cfg(not(test))]
+        {
+            self.load_pointer_set()
+        }
     }
 
     #[cfg(not(test))]

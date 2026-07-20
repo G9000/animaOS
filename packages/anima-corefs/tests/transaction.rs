@@ -9,15 +9,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anima_corefs::catalog::{
-    CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, ObjectLifecycle,
-    WrappedObjectDekRecord,
+    CatalogEntryCommon, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
+    ObjectLifecycle, WrappedObjectDekRecord,
 };
 use anima_corefs::crypto::{
-    derive_corefs_subkeys, wrap_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKeyAad, ObjectKind,
-    SecretBytes,
+    derive_corefs_subkeys, wrap_object_dek, CryptoError, FrkSubkeys, ObjectBaseAad, ObjectKeyAad,
+    ObjectKind, SecretBytes,
 };
 use anima_corefs::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION};
 use anima_corefs::folders::{FolderOwner, PortableName};
+use anima_corefs::head::HeadError;
 use anima_corefs::id::OpaqueId;
 use anima_corefs::policy::AnimaAccess;
 use anima_corefs::transaction::{
@@ -288,6 +289,108 @@ fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
     assert_eq!(committed.catalog().generation(), 3);
 
     drop(other);
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn another_coordinator_advance_is_observed_by_commit() {
+    let root = reset_root("cross-coordinator-commit-cache-miss");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+
+    other
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |current, generation| {
+                assert_eq!(current.unwrap().generation(), 2);
+                Ok(catalog(generation, "Note.md", &prepared))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let outcome = coordinator
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |current, generation| {
+                assert_eq!(current.unwrap().generation(), 3);
+                Ok(catalog(generation, "Note.md", &prepared))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 4);
+    assert_eq!(
+        coordinator
+            .load_committed(&keys)
+            .unwrap()
+            .unwrap()
+            .head()
+            .generation(),
+        4
+    );
+
+    drop(other);
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_rejects_wrong_same_version_active_material_before_cache() {
+    let root = reset_root("commit-wrong-same-version-active-material");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let wrong_same_version =
+        derive_corefs_subkeys(&SecretBytes::new(vec![0x43; 32]).unwrap(), 1).unwrap();
+
+    let error = coordinator
+        .commit(
+            &wrong_same_version,
+            &[],
+            &[],
+            |_, _| panic!("wrong active material must fail before the build closure"),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CommitError::Head(HeadError::Catalog(CatalogError::Crypto(
+            CryptoError::Authentication
+        )))
+    ));
+
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();
 }

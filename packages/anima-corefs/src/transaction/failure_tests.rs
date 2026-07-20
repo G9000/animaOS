@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use crate::catalog::{
     CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, ObjectLifecycle,
@@ -13,6 +14,7 @@ use crate::id::OpaqueId;
 use crate::policy::AnimaAccess;
 use crate::rotation::{FrkKeyring, RotationError};
 
+use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet};
 use super::{
     CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode,
     CoreCommitCoordinator, PreparedObjectRevision, PublicationTarget,
@@ -353,6 +355,253 @@ fn post_head_cutover_marker_failures_report_recovery_pending_success() {
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn pre_head_failure_keeps_only_the_prior_snapshot() {
+    let root = reset_root("pre-head-keeps-prior-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let prior = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("successful first mutation should cache its authoritative snapshot");
+    assert_eq!(prior.catalog().generation(), 2);
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::TemporaryCreated,
+    };
+
+    let error = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected pre-HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap_err();
+    match error {
+        CommitError::Io(error) => {
+            assert_eq!(error.to_string(), "injected pre-HEAD failure");
+        }
+        error => panic!("expected original injected I/O error, got {error}"),
+    }
+
+    let after = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("pre-HEAD failure should retain the prior snapshot");
+    assert!(Arc::ptr_eq(&prior, &after));
+    assert_eq!(after.catalog().generation(), 2);
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn post_head_failure_reconciles_cache_to_durable_authority() {
+    let root = reset_root("post-head-reconciles-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let prior = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .unwrap();
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::DestinationSynced,
+    };
+
+    let error = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected post-HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap_err();
+    match error {
+        CommitError::Io(error) => {
+            assert_eq!(error.to_string(), "injected post-HEAD failure");
+        }
+        error => panic!("expected original injected I/O error, got {error}"),
+    }
+
+    let after = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("durable post-HEAD authority should remain cached");
+    assert!(!Arc::ptr_eq(&prior, &after));
+    assert_eq!(after.catalog().generation(), 3);
+    let loaded = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(loaded.head().generation(), 3);
+    assert!(std::ptr::eq(loaded.catalog(), after.catalog().as_ref()));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn post_head_recovery_pending_clears_the_cache() {
+    let root = reset_root("post-head-recovery-pending-clears-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    let validation = coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    assert!(
+        coordinator.cache.current().is_none(),
+        "validation-only initialization must not publish authoritative cache state"
+    );
+    let keyring = FrkKeyring::single(&keys);
+    let stale_key = CacheLookupKey::derive(
+        PointerSet {
+            head: None,
+            receipt: None,
+            complete: None,
+        },
+        CORE_ID,
+        &keyring,
+        &keys,
+    )
+    .unwrap();
+    coordinator
+        .cache
+        .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+            &stale_key,
+            Arc::new(validation.catalog().clone()),
+            None,
+        )));
+    let precondition = CatalogPrecondition::object(
+        validation.catalog(),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let next = prepare(&coordinator, &keys, 2, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::CutoverReceipt,
+        phase: PublicationPhase::TemporaryCreated,
+    };
+
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::FirstMutation { cutover_epoch: 1 },
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected post-HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+
+    assert!(outcome.recovery_pending());
+    assert!(coordinator.cache.inner.lock().unwrap().is_none());
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
