@@ -1462,3 +1462,57 @@ async def test_generate_embedding_normalizes_cache_key_for_equivalent_text(
     assert first == [0.1, 0.2, 0.3]
     assert second == [0.1, 0.2, 0.3]
     assert call_args == ["hello world"]
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_openai_compatible_marks_provider_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # P2: the batch path (backfill/re-embed) used to swallow an HTTP outage and
+    # return None entries WITHOUT recording the cooldown, so http_backend_status
+    # kept reporting "ready" while batch embeddings were actually failing. It
+    # must mark the provider unavailable on the SAME key the status reads.
+    from anima_server.services.agent import embeddings as embeddings_module
+
+    request = httpx.Request("POST", "http://127.0.0.1:8000/v1/embeddings")
+
+    class _FailingAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FailingAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def post(self, *args: object, **kwargs: object) -> object:
+            raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "settings",
+        SimpleNamespace(
+            agent_provider="vllm",
+            agent_base_url="http://127.0.0.1:8000/v1",
+            agent_api_key="",
+            agent_embedding_provider="vllm",
+            agent_embedding_base_url="",
+            agent_embedding_model="",
+            agent_embedding_api_key="",
+            agent_extraction_model="",
+        ),
+    )
+    monkeypatch.setattr(embeddings_module.httpx, "AsyncClient", _FailingAsyncClient)
+    embeddings_module._provider_unavailable_until.clear()
+
+    # Sanity: healthy before the outage.
+    assert embeddings_module.http_backend_status("vllm") == "ready"
+
+    results = await embeddings_module._batch_embed_openai_compatible(["a", "b"])
+
+    assert results == [None, None]
+    # The batch outage is now visible to the trust surface.
+    assert embeddings_module.http_backend_status("vllm") == "failed_retrying"
+
+    embeddings_module._provider_unavailable_until.clear()

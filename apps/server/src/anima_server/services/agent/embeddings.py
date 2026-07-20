@@ -1632,13 +1632,26 @@ async def _batch_embed_openai_compatible(
                             if abs_idx < len(results) and isinstance(embedding, list):
                                 results[abs_idx] = embedding
                 break  # Success — move to next batch
-            except Exception:
+            except Exception as exc:
                 current_batch = current_batch // 2
                 if current_batch < 1:
                     logger.warning(
                         "Batch embedding failed for chunk at offset %d after retries",
                         start,
                     )
+                    # Record the provider outage on the SAME key
+                    # http_backend_status reads, so a batch-path failure
+                    # (backfill/re-embed) shows up as unhealthy in
+                    # /api/capabilities and the health check — the single-embed
+                    # path already does this, and without it a batch outage
+                    # would leave the trust surface reporting "ready".
+                    if isinstance(exc, httpx.HTTPError):
+                        _mark_provider_unavailable(
+                            _provider_failure_key(provider),
+                            provider=provider,
+                            base_url=base_url,
+                            exc=exc,
+                        )
                     break
                 logger.debug(
                     "Batch embedding failed, retrying with batch_size=%d",
