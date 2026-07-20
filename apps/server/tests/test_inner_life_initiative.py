@@ -471,6 +471,60 @@ def test_master_presence_pause_blocks_fire_even_with_initiative_enabled() -> Non
     runtime_engine.dispose()
 
 
+def test_material_backed_drive_with_no_material_does_not_fire_or_call_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): a material-backed drive (here
+    pattern_insight, which only resets on surfacing) can cross threshold and
+    then lose its source before the tick fires — the pattern MemoryItem is
+    distilled/superseded, so gather_drive_material returns "". _fire must
+    treat missing material as a no-fire BEFORE calling the LLM, so no generic
+    or unsupported message is generated and no phantom log row is written."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    _seed_enabled_user(
+        soul_factory, runtime_factory,
+        pressures={"pattern_insight": 0.99},
+        updated_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+    # A pattern finding existed but has since been distilled away — the
+    # active-item filter in gather_drive_material excludes it, so no material.
+    with soul_factory() as db_:
+        db_.add(
+            MemoryItem(
+                user_id=1, category="pattern", content="a pattern once shareable",
+                distilled_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        db_.commit()
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        raise AssertionError("LLM must not be called when material is missing")
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    ok = tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1,
+        local_now=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
+    )
+    assert ok is True  # tick succeeded, it simply didn't fire
+
+    with soul_factory() as db_:
+        assert db_.scalars(select(InitiativeLog)).all() == []  # no phantom row
+    with runtime_factory() as db_:
+        assert db_.scalars(select(PendingInitiative)).all() == []
+        # Pressure is left intact (only gently leaked, NOT hard-reset to 0) so
+        # it can still fire once real material returns.
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.pattern_insight > 0.5
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # 4. Drive-tagged generation
 # ---------------------------------------------------------------------------

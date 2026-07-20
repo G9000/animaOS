@@ -746,6 +746,21 @@ def _fire(
     material = gather_drive_material(
         soul_db, user_id=user_id, drive=decision.drive, now=now
     )
+    # No material -> no fire. A material-backed drive (unresolved_thread /
+    # pattern_insight / dream_residue) can cross threshold and then lose its
+    # source between accumulation and this tick (the MemoryItem is superseded
+    # or distilled, the foresight closes) — gather_drive_material returns "".
+    # relational/novelty always return a non-empty descriptive fallback, so an
+    # empty string here always means a material-backed drive with nothing left
+    # to say. Bail BEFORE the LLM so the "every sentence traces to the specific
+    # material" prompt rule can't be violated with a generic message, and
+    # without logging a phantom fire. The pressure is left intact (caller only
+    # resets on a real fire), so it can fire later if real material reappears.
+    if not material.strip():
+        logger.debug(
+            "No material for drive %s user %s — skipping fire", decision.drive, user_id
+        )
+        return False, None
     affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=now)
 
     try:
