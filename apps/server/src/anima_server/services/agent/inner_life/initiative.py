@@ -916,21 +916,42 @@ def tick_initiative_for_user(
             fires_today, fires_this_week = count_recent_fires(
                 soul_db, user_id=user_id, now=local_now
             )
-            record = DriveRecord(
-                pressures=updated_pressures,
-                last_fired_at=row.last_fired_at,
-                last_user_turn_at=row.last_user_turn_at,
-                unanswered_initiatives=row.unanswered_initiatives,
-            )
             gate_config = get_gate_config(presence_values)
-            decision = should_fire(
-                record,
-                gate_config,
-                local_now,
-                closeness,
-                fires_today=fires_today,
-                fires_this_week=fires_this_week,
-            )
+            # Select the drive to fire. should_fire() always returns the
+            # highest-pressure qualifying drive; but a material-backed drive
+            # (e.g. pattern_insight) can sit above threshold with NO material
+            # left — its source MemoryItem was superseded/distilled after it
+            # accumulated. Firing it is impossible (no material), yet leaving it
+            # dominant would monopolize every tick for its whole leak window
+            # (~85h at tau=240h) and starve lower-pressure drives that DO have
+            # material. So reset any material-less dominant drive and re-select,
+            # bounded by the drive count. The reset is persisted so the stale
+            # pressure doesn't just reappear next tick.
+            decision = None
+            for _ in range(len(DRIVE_NAMES)):
+                record = DriveRecord(
+                    pressures=updated_pressures,
+                    last_fired_at=row.last_fired_at,
+                    last_user_turn_at=row.last_user_turn_at,
+                    unanswered_initiatives=row.unanswered_initiatives,
+                )
+                candidate = should_fire(
+                    record,
+                    gate_config,
+                    local_now,
+                    closeness,
+                    fires_today=fires_today,
+                    fires_this_week=fires_this_week,
+                )
+                if candidate is None:
+                    break
+                if gather_drive_material(
+                    soul_db, user_id=user_id, drive=candidate.drive, now=local_now
+                ).strip():
+                    decision = candidate
+                    break
+                updated_pressures = reset_drive(updated_pressures, candidate.drive)
+                _apply_pressures(row, updated_pressures, now=local_now)
 
             if decision is None:
                 runtime_db.commit()

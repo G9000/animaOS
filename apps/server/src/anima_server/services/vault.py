@@ -9,6 +9,7 @@ import os
 import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -508,6 +509,42 @@ def export_vault(
     }
 
 
+def _clear_runtime_proactive_state(
+    user_id: int, runtime_factory: Callable[..., Session] | None = None
+) -> None:
+    """Delete a user's IL3 RUNTIME-tier proactive state (pending initiatives +
+    drive pressures) after a vault import. This state is ephemeral/rebuildable
+    and never carried in the vault, so pre-import rows must not survive a
+    restore and surface stale proactive messages. Best-effort: a cold/headless
+    transfer may have no runtime store, so any failure is logged and swallowed
+    rather than failing the import. ``runtime_factory`` is an injection seam
+    for tests; production resolves the process runtime session factory."""
+    try:
+        from anima_server.models.runtime_consciousness import (
+            DriveStateRow,
+            PendingInitiative,
+        )
+
+        if runtime_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            runtime_db.query(PendingInitiative).filter(
+                PendingInitiative.user_id == user_id
+            ).delete()
+            runtime_db.query(DriveStateRow).filter(
+                DriveStateRow.user_id == user_id
+            ).delete()
+            runtime_db.commit()
+    except Exception:
+        vault_logger.warning(
+            "Could not clear runtime proactive state on import for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+
 def import_vault(
     db: Session,
     vault: str,
@@ -577,6 +614,17 @@ def import_vault(
         _re_encrypt_snapshot_fields(database, user_id)
 
     restore_database_snapshot(db, database, scope=vault_scope)
+    # The restore replaced the soul-store InitiativeLog rows, but IL3 also has
+    # RUNTIME-tier proactive state (PendingInitiative — the pollable message
+    # text + its initiative_log_id — and DriveStateRow pressures) that the
+    # vault deliberately treats as ephemeral and never imports. Left in place,
+    # a pre-import PendingInitiative could still be served by the /initiatives
+    # endpoint after reauth, pointing at provenance that no longer exists or at
+    # a restored, unrelated log. Clear that runtime proactive state so it can't
+    # outlive the import. Guarded: cold/headless transfers may have no runtime
+    # store initialized, and it's rebuildable, so a failure here is non-fatal.
+    if user_id is not None:
+        _clear_runtime_proactive_state(user_id)
     write_data_snapshot(user_files, user_id=user_id)
 
     # Cold transfers and exact same-hierarchy restores carry the exported

@@ -477,9 +477,10 @@ def test_material_backed_drive_with_no_material_does_not_fire_or_call_llm(
     """Regression (PR review, P2): a material-backed drive (here
     pattern_insight, which only resets on surfacing) can cross threshold and
     then lose its source before the tick fires — the pattern MemoryItem is
-    distilled/superseded, so gather_drive_material returns "". _fire must
-    treat missing material as a no-fire BEFORE calling the LLM, so no generic
-    or unsupported message is generated and no phantom log row is written."""
+    distilled/superseded, so gather_drive_material returns "". The tick must
+    (a) not fire or call the LLM, and (b) RESET the material-less drive so its
+    stale pressure can't stay dominant and starve other valid drives for the
+    whole leak window (a later PR-review finding)."""
     soul_engine = _create_soul_engine()
     runtime_engine = _create_runtime_engine()
     soul_factory = _make_factory(soul_engine)
@@ -516,10 +517,67 @@ def test_material_backed_drive_with_no_material_does_not_fire_or_call_llm(
         assert db_.scalars(select(InitiativeLog)).all() == []  # no phantom row
     with runtime_factory() as db_:
         assert db_.scalars(select(PendingInitiative)).all() == []
-        # Pressure is left intact (only gently leaked, NOT hard-reset to 0) so
-        # it can still fire once real material returns.
+        # The stale, material-less drive is reset so it stops dominating
+        # selection (would otherwise block valid drives for its leak window).
         row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
-        assert row.pattern_insight > 0.5
+        assert row.pattern_insight == 0.0
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_material_less_dominant_drive_does_not_block_a_lower_valid_drive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): should_fire() picks the highest-pressure
+    drive, so a material-less drive stuck above threshold (here pattern_insight
+    with no MemoryItem) must not monopolize the tick. The tick resets it and
+    re-selects, firing the next-highest drive that DOES have material
+    (unresolved_thread, backed by a real in-horizon foresight) in the SAME
+    tick."""
+    from anima_server.services.data_crypto import ef
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    now = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    # pattern_insight is highest but has NO pattern item; unresolved_thread is
+    # lower but backed by a real, open, in-horizon foresight.
+    _seed_enabled_user(
+        soul_factory, runtime_factory,
+        pressures={"pattern_insight": 0.99, "unresolved_thread": 0.8},
+        updated_at=now - timedelta(hours=1),
+    )
+    with soul_factory() as db_:
+        db_.add(
+            ForesightSignal(
+                user_id=1,
+                content=ef(1, "the trip you have coming up", table="foresight_signals", field="content"),
+                evidence="mentioned it", status="active",
+                start_date=date(2026, 1, 11), confidence=0.9,
+            )
+        )
+        db_.commit()
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        assert decision.drive == DRIVE_UNRESOLVED_THREAD  # never the empty one
+        return f"about: {material}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
+    assert ok is True
+
+    with soul_factory() as db_:
+        logs = db_.scalars(select(InitiativeLog)).all()
+        assert len(logs) == 1
+        assert logs[0].drive == DRIVE_UNRESOLVED_THREAD  # the valid drive fired
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.pattern_insight == 0.0  # material-less drive was reset
+        assert row.unresolved_thread == 0.0  # fired -> reset by the caller
 
     soul_engine.dispose()
     runtime_engine.dispose()
@@ -2026,6 +2084,41 @@ def test_full_scope_restore_clears_preexisting_initiative_log_rows(db: Session) 
     rows = db.scalars(select(InitiativeLog)).all()
     assert len(rows) == 1  # the stale local row was cleared, not duplicated
     assert rows[0].generated_text == "restored from vault"
+
+
+def test_import_clears_runtime_proactive_state_for_the_user() -> None:
+    """Regression (PR review, P2): a vault import replaces the soul-store
+    InitiativeLog but the vault never carries runtime-tier proactive state, so
+    pre-import PendingInitiative / DriveStateRow rows would otherwise survive
+    and let /initiatives serve a stale message whose provenance was replaced.
+    _clear_runtime_proactive_state must delete that runtime state for the
+    imported user only, leaving other users untouched."""
+    from anima_server.services.vault import _clear_runtime_proactive_state
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    with runtime_factory() as db_:
+        for uid in (1, 2):
+            db_.add(DriveStateRow(user_id=uid, relational=0.9, updated_at=datetime(2026, 1, 1, tzinfo=UTC)))
+            db_.add(
+                PendingInitiative(
+                    user_id=uid, drive=DRIVE_RELATIONAL, text="stale pending message",
+                    initiative_log_id=999, created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                )
+            )
+        db_.commit()
+
+    _clear_runtime_proactive_state(1, runtime_factory=runtime_factory)
+
+    with runtime_factory() as db_:
+        # User 1's runtime proactive state is gone; user 2 is untouched.
+        assert db_.scalars(select(PendingInitiative).where(PendingInitiative.user_id == 1)).all() == []
+        assert db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).all() == []
+        assert len(db_.scalars(select(PendingInitiative).where(PendingInitiative.user_id == 2)).all()) == 1
+        assert len(db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 2)).all()) == 1
+
+    runtime_engine.dispose()
 
 
 def test_eval_reset_clears_initiative_log(db: Session) -> None:
