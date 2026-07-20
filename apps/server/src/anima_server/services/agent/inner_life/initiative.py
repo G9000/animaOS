@@ -31,7 +31,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -72,6 +72,25 @@ _PATTERN_CATEGORY = "pattern"
 # never drifts from the lifecycle state machine (an item is promoted
 # active -> due -> occurred before it finally goes stale/cancelled).
 _OPEN_FORESIGHT_STATUSES: frozenset[str] = FORESIGHT_ACTIVE_STATUSES
+
+
+def _open_in_horizon_foresight(user_id: int, today: date, horizon_days: int):
+    """The single definition of "an open, in-horizon foresight thread" for
+    IL3, ordered soonest-first. BOTH the ``unresolved_thread`` grow signal and
+    ``gather_drive_material`` build from this so they can never disagree about
+    which item is driving the pressure — the material spoken must be the same
+    item that actually accumulated the drive (matching start_date presence and
+    the horizon window, not just status)."""
+    return (
+        select(ForesightSignal)
+        .where(
+            ForesightSignal.user_id == user_id,
+            ForesightSignal.status.in_(_OPEN_FORESIGHT_STATUSES),
+            ForesightSignal.start_date.isnot(None),
+            ForesightSignal.start_date <= today + timedelta(days=horizon_days),
+        )
+        .order_by(ForesightSignal.start_date.asc())
+    )
 
 
 def _clamp01(value: float) -> float:
@@ -424,19 +443,11 @@ def resolve_drive_signals(
     # NOT just "active": sweep_foresight_lifecycle promotes active -> due the
     # moment an item enters its window (exactly when it's most timely), so an
     # active-only filter would stop the drive growing right when it matters.
-    # gather_drive_material uses the same set so the two never disagree.
+    # gather_drive_material builds from the SAME query so the item that grew
+    # the drive is exactly the item the fired message talks about.
     horizon_days = settings.initiative_unresolved_thread_horizon_days
     unresolved_thread_open = (
-        soul_db.scalar(
-            select(ForesightSignal.id)
-            .where(
-                ForesightSignal.user_id == user_id,
-                ForesightSignal.status.in_(_OPEN_FORESIGHT_STATUSES),
-                ForesightSignal.start_date.isnot(None),
-                ForesightSignal.start_date <= today + timedelta(days=horizon_days),
-            )
-            .limit(1)
-        )
+        soul_db.scalar(_open_in_horizon_foresight(user_id, today, horizon_days).limit(1))
         is not None
     )
     # When no open in-horizon thread remains, the source has closed
@@ -574,20 +585,23 @@ def _resolve_affect_line(runtime_db: Session, *, user_id: int, now: datetime) ->
         return "steady"
 
 
-def gather_drive_material(soul_db: Session, *, user_id: int, drive: str) -> str:
+def gather_drive_material(
+    soul_db: Session, *, user_id: int, drive: str, now: datetime
+) -> str:
     """The SPECIFIC accumulated material behind the firing drive — the
     concrete foresight item / pattern finding, not just "a drive fired".
     ``relational``/``novelty`` have no single discrete source row, so they
-    get a short descriptive fallback instead of decrypted content."""
+    get a short descriptive fallback instead of decrypted content.
+
+    ``now`` scopes the ``unresolved_thread`` lookup to the SAME open,
+    in-horizon window its grow signal used (see ``_open_in_horizon_foresight``)
+    so the message speaks to the item that actually drove the pressure, never
+    an unrelated out-of-horizon or start_date-less open row."""
     if drive == DRIVE_UNRESOLVED_THREAD:
+        today = now.astimezone(UTC).date()
+        horizon_days = settings.initiative_unresolved_thread_horizon_days
         row = soul_db.scalar(
-            select(ForesightSignal)
-            .where(
-                ForesightSignal.user_id == user_id,
-                ForesightSignal.status.in_(_OPEN_FORESIGHT_STATUSES),
-            )
-            .order_by(ForesightSignal.start_date.asc())
-            .limit(1)
+            _open_in_horizon_foresight(user_id, today, horizon_days).limit(1)
         )
         if row is None:
             return ""
@@ -724,7 +738,9 @@ def _fire(
     per-user session, which commits once at the end (mirrors IL-006's
     per-item savepoint isolation in ``retrieval_feedback.py``).
     """
-    material = gather_drive_material(soul_db, user_id=user_id, drive=decision.drive)
+    material = gather_drive_material(
+        soul_db, user_id=user_id, drive=decision.drive, now=now
+    )
     affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=now)
 
     try:

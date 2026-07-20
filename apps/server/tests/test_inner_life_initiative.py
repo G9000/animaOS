@@ -1163,9 +1163,61 @@ def test_resolve_signals_due_and_occurred_foresight_still_count_as_open(
     assert signals.unresolved_thread_open is True
     assert signals.unresolved_thread_resolved is False
     # The material lookup agrees with the grow signal (open set, not active-only).
-    material = initiative.gather_drive_material(db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD)
+    material = initiative.gather_drive_material(
+        db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD,
+        now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
+    )
     assert "thread" in material
     runtime_engine.dispose()
+
+
+def test_material_matches_the_in_horizon_item_not_an_unrelated_open_row(
+    db: Session,
+) -> None:
+    """Regression (PR review, P2): `gather_drive_material` must scope to the
+    SAME open+in-horizon window the grow signal used. With an in-horizon row
+    (which actually drove the pressure) plus an unrelated open row that either
+    has no `start_date` or sits beyond the horizon, an order-by-start_date-only
+    lookup could surface the wrong row (SQLite sorts NULLs first) — making the
+    fired message talk about the wrong future item."""
+    from anima_server.config import settings
+    from anima_server.services.data_crypto import ef
+
+    today = date(2026, 1, 10)
+    horizon = settings.initiative_unresolved_thread_horizon_days
+
+    # (a) an open row with NO start_date — would sort first under a naive ASC.
+    db.add(
+        ForesightSignal(
+            user_id=1,
+            content=ef(1, "no-date thread", table="foresight_signals", field="content"),
+            evidence="x", status="active", start_date=None, confidence=0.9,
+        )
+    )
+    # (b) an open row far beyond the horizon.
+    db.add(
+        ForesightSignal(
+            user_id=1,
+            content=ef(1, "far-future thread", table="foresight_signals", field="content"),
+            evidence="x", status="active",
+            start_date=today + timedelta(days=horizon + 30), confidence=0.9,
+        )
+    )
+    # (c) the real in-horizon item that accumulated the drive.
+    db.add(
+        ForesightSignal(
+            user_id=1,
+            content=ef(1, "in-horizon thread", table="foresight_signals", field="content"),
+            evidence="x", status="active", start_date=today + timedelta(days=1), confidence=0.9,
+        )
+    )
+    db.commit()
+
+    material = initiative.gather_drive_material(
+        db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD,
+        now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
+    )
+    assert material == "in-horizon thread"
 
 
 def test_resolve_signals_closed_source_marks_thread_resolved(db: Session) -> None:
