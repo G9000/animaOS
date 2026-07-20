@@ -444,6 +444,96 @@ fn pre_head_failure_keeps_only_the_prior_snapshot() {
 }
 
 #[test]
+fn post_rename_pre_sync_failure_preserves_the_prior_snapshot() {
+    let root = reset_root("post-rename-pre-sync-keeps-prior-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let prior = coordinator
+        .cache
+        .current()
+        .expect("successful first mutation should cache its authoritative snapshot");
+    assert_eq!(prior.catalog().generation(), 2);
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::DestinationPublished,
+    };
+
+    let error = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected pre-durable HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap_err();
+    match error {
+        CommitError::Io(error) => {
+            assert_eq!(error.to_string(), "injected pre-durable HEAD failure");
+        }
+        error => panic!("expected original injected I/O error, got {error}"),
+    }
+
+    let after = coordinator
+        .cache
+        .current()
+        .expect("pre-durable HEAD failure should retain the prior snapshot");
+    assert!(Arc::ptr_eq(&prior, &after));
+    assert_eq!(after.catalog().generation(), 2);
+
+    let observer = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    assert_eq!(
+        observer
+            .load_committed(&keys)
+            .unwrap()
+            .expect("the rename should already be visible")
+            .head()
+            .generation(),
+        3
+    );
+
+    drop(observer);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn post_head_failure_reconciles_cache_to_durable_authority() {
     let root = reset_root("post-head-reconciles-cache");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();

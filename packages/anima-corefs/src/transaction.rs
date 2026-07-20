@@ -932,6 +932,14 @@ fn observe_commit_key_derivation<T>(value: T, probe: Option<&mut CommitProbe<'_>
     value
 }
 
+#[cfg(test)]
+fn observe_commit_failure_hook<T>(value: T, probe: Option<&mut CommitProbe<'_>>) -> T {
+    if let Some(probe) = probe {
+        probe.stage(CommitStage::FailureHook);
+    }
+    value
+}
+
 pub struct CoreCommitCoordinator {
     core_id: String,
     // Task 4 integrates lookup/replacement into the existing load paths.
@@ -2557,14 +2565,25 @@ impl CoreCommitCoordinator {
             if let Some(probe) = probe.as_deref_mut() {
                 probe.stage(CommitStage::PreconditionAndBuild);
             }
-            #[cfg(test)]
+            let mut authoritative_head_synced = false;
             let publication = {
                 let mut observed_hook = |point| {
-                    let result = (callbacks.hook)(point);
-                    if let Some(probe) = probe.as_deref_mut() {
-                        probe.stage(CommitStage::FailureHook);
+                    if point
+                        == (CommitFailurePoint::Publication {
+                            target: PublicationTarget::AuthoritativeHead,
+                            phase: PublicationPhase::DestinationSynced,
+                        })
+                    {
+                        authoritative_head_synced = true;
                     }
-                    result
+                    #[cfg(test)]
+                    {
+                        observe_commit_failure_hook((callbacks.hook)(point), probe.as_deref_mut())
+                    }
+                    #[cfg(not(test))]
+                    {
+                        (callbacks.hook)(point)
+                    }
                 };
                 self.publish_catalog_pointer_with_hook(
                     active_keys,
@@ -2574,25 +2593,19 @@ impl CoreCommitCoordinator {
                     &mut observed_hook,
                 )
             };
-            #[cfg(not(test))]
-            let publication = self.publish_catalog_pointer_with_hook(
-                active_keys,
-                &next_catalog,
-                HEAD_FILE,
-                matches!(mode, CommitMode::FirstMutation { .. }),
-                callbacks.hook,
-            );
             let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) =
                 match publication {
                     Ok(publication) => publication,
                     Err(error) => {
-                        self.reconcile_cache_after_commit_publication_error(
-                            &initial_pointers,
-                            keyring,
-                            mode,
-                            #[cfg(test)]
-                            probe.as_deref_mut(),
-                        );
+                        if authoritative_head_synced {
+                            self.reconcile_cache_after_commit_publication_error(
+                                &initial_pointers,
+                                keyring,
+                                mode,
+                                #[cfg(test)]
+                                probe.as_deref_mut(),
+                            );
+                        }
                         return Err(error);
                     }
                 };
