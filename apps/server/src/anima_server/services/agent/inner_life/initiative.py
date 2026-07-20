@@ -688,11 +688,15 @@ def _fire(
     decision: DriveDecision,
     now: datetime,
     delivery: InitiativeDelivery,
-) -> bool:
+) -> tuple[bool, InitiativeLog | None]:
     """Attempt generation, ALWAYS write one provenance row (success or a
-    logged failed attempt), and deliver on success. Returns whether a real
-    message was fired and delivered — the caller only resets drive pressure
-    and ``last_fired_at`` when this is True.
+    logged failed attempt), and deliver on success. Returns ``(delivered,
+    log_row)``: ``delivered`` is whether a real message was fired and the
+    delivery adapter accepted it — the caller only resets drive pressure and
+    ``last_fired_at`` when it is True. ``log_row`` is the pending (uncommitted)
+    provenance row so the caller can flip ``delivered`` to True only *after*
+    the runtime store's ``PendingInitiative`` is durable (see the two-phase
+    commit note in ``tick_initiative_for_user``).
 
     Each DB effect is wrapped in its own savepoint so a failure in one step
     (e.g. delivery) can never corrupt the other pending writes in this
@@ -744,10 +748,10 @@ def _fire(
         logger.warning(
             "Initiative provenance log failed for user %s", user_id, exc_info=True
         )
-        return False
+        return False, None
 
     if text is None or log_row is None:
-        return False
+        return False, log_row
 
     try:
         with runtime_db.begin_nested():
@@ -765,11 +769,13 @@ def _fire(
             decision.drive,
             exc_info=True,
         )
-        return False
+        return False, log_row
 
-    with soul_db.begin_nested():
-        log_row.delivered = result.delivered
-    return result.delivered
+    # NB: ``log_row.delivered`` is intentionally left False here. The caller
+    # flips it to True only after the runtime store commit persists the
+    # ``PendingInitiative`` row, so the provenance log can never over-claim a
+    # delivery that a failed runtime commit never actually made durable.
+    return result.delivered, log_row
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +864,7 @@ def tick_initiative_for_user(
                 runtime_db.commit()
                 return True
 
-            fired = _fire(
+            fired, log_row = _fire(
                 soul_db,
                 runtime_db,
                 user_id=user_id,
@@ -874,8 +880,19 @@ def tick_initiative_for_user(
                     row, reset_drive(updated_pressures, decision.drive), now=local_now
                 )
 
+            # Two-phase commit across the split soul/runtime stores. Commit the
+            # soul store (provenance log) FIRST so the runtime store's
+            # ``PendingInitiative`` — the thing a client actually polls and sees
+            # — can never become durable without its ``InitiativeLog`` already
+            # committed: a delivered message always has provenance. Only after
+            # the runtime commit makes the delivery durable do we flip
+            # ``log_row.delivered`` to True, so the log never over-claims a
+            # delivery a failed runtime commit would have rolled back.
             soul_db.commit()
             runtime_db.commit()
+            if fired and log_row is not None:
+                log_row.delivered = True
+                soul_db.commit()
         return True
     except Exception:
         logger.warning("Initiative tick failed for user %s", user_id, exc_info=True)

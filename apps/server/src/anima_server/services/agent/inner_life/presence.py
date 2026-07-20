@@ -435,6 +435,11 @@ def run_presence_tick(
                 tick_initiative_for_user,
             )
 
+            # Idle-only invariant: active users are `continue`d above, so this
+            # is the ONLY call site for initiatives and it fires exclusively for
+            # idle users. The gate chain models `idle` as a satisfied invariant
+            # rather than re-checking it — keep it that way by never calling
+            # `tick_initiative_for_user` for a user outside this idle loop.
             tick_initiative_for_user(
                 soul_db_factory,
                 runtime_db_factory,
