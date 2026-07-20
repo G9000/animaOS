@@ -22,9 +22,10 @@ use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::catalog::encrypt_catalog_generation_for_publication_with_observer;
 use crate::catalog::{
-    catalog_generation_physical_name, decrypt_catalog_generation,
-    encrypt_catalog_generation_with_plaintext_size, CatalogCutoverMarker, CatalogError,
+    encrypt_catalog_generation_for_publication, CatalogCutoverMarker, CatalogError,
     CatalogGeneration, CatalogGenerationEntry, CatalogObject, ContentHash, ObjectLifecycle,
     ObjectPhysicalName, WrappedObjectDekRecord, MAX_CATALOG_ENVELOPE_SIZE,
 };
@@ -787,6 +788,13 @@ struct CommitCallbacks<'a, I, H> {
     hook: &'a mut H,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct CoordinatorPublicationProbe {
+    ciphertext_hashes: usize,
+    catalog_decrypts: usize,
+}
+
 pub struct CoreCommitCoordinator {
     core_id: String,
     core_root: PathBuf,
@@ -1531,8 +1539,7 @@ impl CoreCommitCoordinator {
             OsStr::new(&catalog_name),
             MAX_CATALOG_ENVELOPE_SIZE,
         )?;
-        head.verify_catalog(keys, &self.core_id, &encrypted_catalog)?;
-        let catalog = decrypt_catalog_generation(keys, &self.core_id, &encrypted_catalog)?;
+        let catalog = head.verify_and_decrypt_catalog(keys, &self.core_id, &encrypted_catalog)?;
         Ok((head, catalog))
     }
 
@@ -2045,6 +2052,7 @@ impl CoreCommitCoordinator {
         })
     }
 
+    #[cfg(not(test))]
     fn publish_catalog_pointer_with_hook<H>(
         &self,
         keys: &FrkSubkeys,
@@ -2056,9 +2064,88 @@ impl CoreCommitCoordinator {
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        let (encrypted_catalog, catalog_plaintext_bytes) =
-            encrypt_catalog_generation_with_plaintext_size(keys, &self.core_id, catalog)?;
-        let catalog_name = catalog_generation_physical_name(&encrypted_catalog)?;
+        self.publish_catalog_pointer_with_hook_inner(
+            keys,
+            catalog,
+            pointer_name,
+            publish_cutover_receipt,
+            hook,
+        )
+    }
+
+    #[cfg(test)]
+    fn publish_catalog_pointer_with_hook<H>(
+        &self,
+        keys: &FrkSubkeys,
+        catalog: &CatalogGeneration,
+        pointer_name: &str,
+        publish_cutover_receipt: bool,
+        hook: &mut H,
+    ) -> Result<(HeadRecord, String, bool, u64, usize), CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        self.publish_catalog_pointer_with_hook_inner(
+            keys,
+            catalog,
+            pointer_name,
+            publish_cutover_receipt,
+            hook,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    fn publish_catalog_pointer_with_hook_observed<H>(
+        &self,
+        keys: &FrkSubkeys,
+        catalog: &CatalogGeneration,
+        pointer_name: &str,
+        publish_cutover_receipt: bool,
+        hook: &mut H,
+        probe: &mut CoordinatorPublicationProbe,
+    ) -> Result<(HeadRecord, String, bool, u64, usize), CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        self.publish_catalog_pointer_with_hook_inner(
+            keys,
+            catalog,
+            pointer_name,
+            publish_cutover_receipt,
+            hook,
+            Some(probe),
+        )
+    }
+
+    fn publish_catalog_pointer_with_hook_inner<H>(
+        &self,
+        keys: &FrkSubkeys,
+        catalog: &CatalogGeneration,
+        pointer_name: &str,
+        publish_cutover_receipt: bool,
+        hook: &mut H,
+        #[cfg(test)] mut probe: Option<&mut CoordinatorPublicationProbe>,
+    ) -> Result<(HeadRecord, String, bool, u64, usize), CommitError>
+    where
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        #[cfg(test)]
+        let publication = match probe.as_deref_mut() {
+            Some(probe) => {
+                let mut observe_hash = || probe.ciphertext_hashes += 1;
+                encrypt_catalog_generation_for_publication_with_observer(
+                    keys,
+                    &self.core_id,
+                    catalog,
+                    &mut observe_hash,
+                )?
+            }
+            None => encrypt_catalog_generation_for_publication(keys, &self.core_id, catalog)?,
+        };
+        #[cfg(not(test))]
+        let publication = encrypt_catalog_generation_for_publication(keys, &self.core_id, catalog)?;
+        let catalog_name = publication.physical_name().to_owned();
         self.validate_pinned_layout()?;
         let mut catalog_hook = |phase| {
             hook(CommitFailurePoint::Publication {
@@ -2069,19 +2156,42 @@ impl CoreCommitCoordinator {
         publish_immutable_in_with_hook(
             &self.catalogs_dir,
             OsStr::new(&catalog_name),
-            &encrypted_catalog,
+            publication.encrypted(),
             &mut catalog_hook,
         )?;
-        let head = HeadRecord::new_for_catalog(
+        #[cfg(test)]
+        let head = match probe {
+            Some(probe) => {
+                let mut observe_decrypt = || probe.catalog_decrypts += 1;
+                HeadRecord::new_for_publication_with_observer(
+                    keys,
+                    &self.core_id,
+                    catalog,
+                    &publication,
+                    keys.frk_version(),
+                    &mut observe_decrypt,
+                )?
+            }
+            None => HeadRecord::new_for_publication(
+                keys,
+                &self.core_id,
+                catalog,
+                &publication,
+                keys.frk_version(),
+            )?,
+        };
+        #[cfg(not(test))]
+        let head = HeadRecord::new_for_publication(
             keys,
             &self.core_id,
-            &encrypted_catalog,
+            catalog,
+            &publication,
             keys.frk_version(),
         )?;
         let encoded_head = encode_head(&head)?;
         let head_bytes =
             u64::try_from(encoded_head.len()).map_err(|_| CommitError::GenerationExhausted)?;
-        let mut bytes_written = u64::try_from(encrypted_catalog.len())
+        let mut bytes_written = u64::try_from(publication.encrypted().len())
             .map_err(|_| CommitError::GenerationExhausted)?
             .checked_add(head_bytes)
             .ok_or(CommitError::GenerationExhausted)?;
@@ -2148,7 +2258,7 @@ impl CoreCommitCoordinator {
             catalog_name,
             recovery_pending,
             bytes_written,
-            catalog_plaintext_bytes,
+            publication.plaintext_size(),
         ))
     }
 
@@ -3014,6 +3124,49 @@ mod tests {
             });
 
         assert!(lock_hold_duration >= bookkeeping_delay);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trusted_publication_path_hashes_once_and_decrypts_zero_times() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-trusted-publication-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, "01JCORE").unwrap();
+        let keys = derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), 3).unwrap();
+        let catalog = CatalogGeneration::new(
+            7,
+            vec![CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                None,
+                PortableName::parse("Core").unwrap(),
+                FolderOwner::User,
+                AnimaAccess::Write,
+            ))],
+        )
+        .unwrap();
+        let mut probe = super::CoordinatorPublicationProbe::default();
+
+        let (head, catalog_name, _, _, _) = coordinator
+            .publish_catalog_pointer_with_hook_observed(
+                &keys,
+                &catalog,
+                "VALIDATION_HEAD",
+                false,
+                &mut |_| Ok(()),
+                &mut probe,
+            )
+            .unwrap();
+
+        assert_eq!(probe.ciphertext_hashes, 1);
+        assert_eq!(probe.catalog_decrypts, 0);
+        assert_eq!(head.generation(), catalog.generation());
+        assert!(coordinator.catalogs_path().join(catalog_name).is_file());
+        assert!(coordinator.validation_head_path().is_file());
+
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }

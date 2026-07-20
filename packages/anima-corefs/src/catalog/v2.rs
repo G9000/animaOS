@@ -34,6 +34,7 @@ const V2_MAGIC: &[u8; 8] = b"ACATV2\0\0";
 const V2_HEADER_SIZE: usize = 34;
 const V2_TAG_LENGTH: usize = 16;
 const V2_GENERATION_LABEL_PREFIX: &str = "anima-catalog-generation-v2:";
+const PUBLICATION_KEY_IDENTITY_LABEL: &[u8] = b"anima-corefs-catalog-publication-key-identity-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogClientMetadata {
@@ -1235,6 +1236,69 @@ impl CatalogGenerationEnvelopeInfo {
     }
 }
 
+pub(crate) struct CatalogPublication<'catalog> {
+    encrypted: Vec<u8>,
+    plaintext_size: usize,
+    info: CatalogGenerationEnvelopeInfo,
+    digest: [u8; 32],
+    physical_name: String,
+    origin_core_id: String,
+    origin_frk_version: u32,
+    catalog_key_identity: [u8; 32],
+    source_catalog: &'catalog CatalogGeneration,
+}
+
+impl CatalogPublication<'_> {
+    pub(crate) fn encrypted(&self) -> &[u8] {
+        &self.encrypted
+    }
+
+    pub(crate) fn plaintext_size(&self) -> usize {
+        self.plaintext_size
+    }
+
+    pub(crate) fn info(&self) -> CatalogGenerationEnvelopeInfo {
+        self.info
+    }
+
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+
+    pub(crate) fn physical_name(&self) -> &str {
+        &self.physical_name
+    }
+
+    pub(crate) fn origin_core_id(&self) -> &str {
+        &self.origin_core_id
+    }
+
+    pub(crate) fn origin_frk_version(&self) -> u32 {
+        self.origin_frk_version
+    }
+
+    pub(crate) fn matches_catalog_key_material(
+        &self,
+        keys: &FrkSubkeys,
+    ) -> Result<bool, CatalogError> {
+        Ok(self.catalog_key_identity == catalog_publication_key_identity(keys)?)
+    }
+
+    pub(crate) fn is_source_catalog(&self, catalog: &CatalogGeneration) -> bool {
+        // The retained borrow makes this a safe identity check and prevents the
+        // source catalog from moving while its publication artifact is live.
+        std::ptr::eq(self.source_catalog, catalog)
+    }
+}
+
+fn catalog_publication_key_identity(keys: &FrkSubkeys) -> Result<[u8; 32], CatalogError> {
+    let hkdf = Hkdf::<Sha256>::new(None, keys.catalog().as_slice());
+    let mut identity = [0_u8; 32];
+    hkdf.expand(PUBLICATION_KEY_IDENTITY_LABEL, &mut identity)
+        .map_err(|_| CryptoError::Derivation)?;
+    Ok(identity)
+}
+
 pub fn encrypt_catalog_generation(
     keys: &FrkSubkeys,
     core_id: &str,
@@ -1278,6 +1342,62 @@ pub(crate) fn encrypt_catalog_generation_with_plaintext_size(
     Ok((output, plaintext_size))
 }
 
+#[cfg(not(test))]
+pub(crate) fn encrypt_catalog_generation_for_publication<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    encrypt_catalog_generation_for_publication_inner(keys, core_id, payload)
+}
+
+#[cfg(test)]
+pub(crate) fn encrypt_catalog_generation_for_publication<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    encrypt_catalog_generation_for_publication_inner(keys, core_id, payload, None)
+}
+
+fn encrypt_catalog_generation_for_publication_inner<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+    #[cfg(test)] mut observe_hash: Option<&mut dyn FnMut()>,
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    let (encrypted, plaintext_size) =
+        encrypt_catalog_generation_with_plaintext_size(keys, core_id, payload)?;
+    let info = inspect_catalog_generation_envelope(&encrypted)?;
+    #[cfg(test)]
+    if let Some(observer) = observe_hash.as_mut() {
+        observer();
+    }
+    let digest: [u8; 32] = Sha256::digest(&encrypted).into();
+    let physical_name = format_catalog_generation_physical_name(info.generation(), &digest);
+    Ok(CatalogPublication {
+        encrypted,
+        plaintext_size,
+        info,
+        digest,
+        physical_name,
+        origin_core_id: core_id.to_owned(),
+        origin_frk_version: keys.frk_version(),
+        catalog_key_identity: catalog_publication_key_identity(keys)?,
+        source_catalog: payload,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn encrypt_catalog_generation_for_publication_with_observer<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+    observe_hash: &mut dyn FnMut(),
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    encrypt_catalog_generation_for_publication_inner(keys, core_id, payload, Some(observe_hash))
+}
+
 pub fn decrypt_catalog_generation(
     keys: &FrkSubkeys,
     core_id: &str,
@@ -1313,11 +1433,21 @@ pub fn inspect_catalog_generation_envelope(
 pub fn catalog_generation_physical_name(encoded: &[u8]) -> Result<String, CatalogError> {
     let info = inspect_catalog_generation_envelope(encoded)?;
     let digest: [u8; 32] = Sha256::digest(encoded).into();
-    Ok(format!(
-        "catalog-{:020}-{}.acore",
-        info.generation,
-        super::hex_bytes(&digest)
+    Ok(format_catalog_generation_physical_name(
+        info.generation(),
+        &digest,
     ))
+}
+
+pub(crate) fn format_catalog_generation_physical_name(
+    generation: u64,
+    digest: &[u8; 32],
+) -> String {
+    format!(
+        "catalog-{:020}-{}.acore",
+        generation,
+        super::hex_bytes(digest)
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1914,20 +2044,40 @@ fn map_bounded_error(error: BoundedJsonError) -> CatalogError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use sha2::{Digest, Sha256};
+
     use crate::crypto::{
         derive_corefs_subkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
         OBJECT_WRAP_ALGORITHM,
     };
     use crate::folders::{FolderOwner, PortableName};
+    use crate::head::HeadRecord;
     use crate::id::OpaqueId;
     use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
 
     use super::{
-        decode_catalog_generation, encode_catalog_generation, v2_generation_key,
+        catalog_generation_physical_name, decode_catalog_generation, encode_catalog_generation,
+        encrypt_catalog_generation_for_publication_with_observer, v2_generation_key,
         CatalogCutoverMarker, CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry,
         CatalogObject, ContentHash, FolderLifecycle, FolderTrashMetadata, ObjectLifecycle,
         ObjectPhysicalName, WrappedObjectDekRecord,
     };
+
+    fn minimal_catalog(generation: u64) -> CatalogGeneration {
+        CatalogGeneration::new(
+            generation,
+            vec![CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                None,
+                PortableName::parse("Core").unwrap(),
+                FolderOwner::User,
+                AnimaAccess::Write,
+            ))],
+        )
+        .unwrap()
+    }
 
     #[test]
     fn v2_generation_keys_are_domain_separated_from_v1() {
@@ -2110,5 +2260,40 @@ mod tests {
         let mut wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         wire["cutoverMarker"]["legacyRollbackDisabled"] = serde_json::json!(false);
         assert!(decode_catalog_generation(&serde_json::to_vec(&wire).unwrap()).is_err());
+    }
+
+    #[test]
+    fn publication_artifact_reuses_one_digest_for_name_and_head() {
+        let keys = derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), 3).unwrap();
+        let catalog = minimal_catalog(7);
+        let hashes = Cell::new(0);
+        let mut observe_hash = || hashes.set(hashes.get() + 1);
+
+        let publication = encrypt_catalog_generation_for_publication_with_observer(
+            &keys,
+            "01JCORE",
+            &catalog,
+            &mut observe_hash,
+        )
+        .unwrap();
+        let head = HeadRecord::new_for_publication(
+            &keys,
+            "01JCORE",
+            &catalog,
+            &publication,
+            keys.frk_version(),
+        )
+        .unwrap();
+        let expected_digest: [u8; 32] = Sha256::digest(publication.encrypted()).into();
+        let expected_hex = crate::catalog::hex_bytes(&expected_digest);
+
+        assert_eq!(hashes.get(), 1);
+        assert_eq!(publication.digest(), expected_digest);
+        assert_eq!(
+            publication.physical_name(),
+            catalog_generation_physical_name(publication.encrypted()).unwrap()
+        );
+        assert!(publication.physical_name().contains(&expected_hex));
+        assert_eq!(head.catalog_hash(), expected_hex);
     }
 }
