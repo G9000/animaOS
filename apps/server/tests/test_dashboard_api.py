@@ -1880,3 +1880,47 @@ def test_config_update_piggyback_echo_is_not_treated_as_provider_switch() -> Non
             assert settings.agent_embedding_api_key == "sk-piggyback"
         finally:
             _restore_config_settings(original)
+
+
+def test_config_update_piggyback_survives_chat_provider_change_in_same_put() -> None:
+    """P2: changing the CHAT provider in the same PUT that echoes a piggyback
+    embeddingProvider must not clear the piggyback credential. The 'provider
+    changed?' check compares against the embedding provider effective BEFORE
+    the handler mutates agent_provider — not a fresh resolve that would see the
+    already-updated chat provider and misdetect a switch."""
+    original = _snapshot_config_settings()
+
+    with managed_test_client("anima-dashboard-test-") as client:
+        try:
+            reg = _register_user(client)
+            user_id = reg["id"]
+            headers = {"x-anima-unlock": reg["unlockToken"]}
+
+            settings.agent_provider = "openai"
+            settings.agent_embedding_provider = ""  # piggyback onto chat=openai
+            settings.agent_embedding_model = ""
+            settings.agent_embedding_api_key = "sk-piggyback"
+            settings.agent_embedding_base_url = ""
+
+            config = client.get(f"/api/config/{user_id}", headers=headers).json()
+            assert config["embeddingProvider"] == "openai"
+
+            # Change the CHAT provider (openai -> vllm) while the form still
+            # echoes the stale resolved embeddingProvider ("openai").
+            resp = client.put(
+                f"/api/config/{user_id}",
+                headers=headers,
+                json={
+                    "provider": "vllm",
+                    "model": "some-vllm-model",
+                    "ollamaUrl": "http://localhost:8000/v1",
+                    "embeddingProvider": config["embeddingProvider"],
+                },
+            )
+            assert resp.status_code == 200
+
+            # The piggyback key survived — the chat change did not trip a false
+            # embedding-provider switch.
+            assert settings.agent_embedding_api_key == "sk-piggyback"
+        finally:
+            _restore_config_settings(original)

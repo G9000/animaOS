@@ -457,6 +457,16 @@ async def update_config(
 
     await _validate_prospective_ollama_targets(payload)
 
+    # Capture the embedding provider that is effective RIGHT NOW, before any
+    # mutation below. The embedding "provider changed?" check further down must
+    # compare against this — not a fresh resolve after settings.agent_provider
+    # has already been reassigned. For a piggyback config (raw
+    # agent_embedding_provider "", resolving to the chat provider), a PUT that
+    # ALSO changes the chat provider would otherwise resolve the "old" provider
+    # against the NEW chat provider and misdetect a switch, clearing the
+    # piggyback credential on a save the user only meant as a chat change.
+    old_effective_embedding_provider = resolve_embedding_provider()
+
     settings.agent_provider = payload.provider
     settings.agent_model = payload.model
     settings.agent_extraction_model = (payload.extractionModel or "").strip()
@@ -490,18 +500,17 @@ async def update_config(
         # those still apply, against the currently-configured embedding
         # provider. Only fields present in the payload are touched.
         if embedding_provider is not None:
-            # Compare against the currently-RESOLVED provider, not the raw
-            # stored agent_embedding_provider. For a piggyback config (raw ""
-            # but resolving to the chat provider because a key/base-URL is
-            # set), get_config echoes that resolved provider, and the desktop
-            # replays it on ANY save. Comparing against the raw "" would read
-            # that echo as a switch and wrongly clear the piggyback key/base-
-            # URL/model below — an unrelated settings save could delete the
-            # only embedding credential and break dense retrieval. Resolve
-            # before mutating (settings.agent_embedding_provider still holds
-            # the old value here).
-            current_effective_provider = resolve_embedding_provider()
-            provider_changed = embedding_provider != current_effective_provider
+            # Compare against the provider that was effective BEFORE this
+            # handler mutated anything (captured above as
+            # old_effective_embedding_provider) — not the raw stored
+            # agent_embedding_provider, and not a fresh resolve (which would
+            # see the already-updated chat provider). For a piggyback config
+            # (raw "" resolving to the chat provider), get_config echoes that
+            # resolved provider and the desktop replays it on ANY save;
+            # comparing against the pre-mutation effective provider means such
+            # an echo is not misread as a switch that clears the piggyback
+            # key/base-URL/model.
+            provider_changed = embedding_provider != old_effective_embedding_provider
             settings.agent_embedding_provider = embedding_provider
             if provider_changed:
                 # An embedding-provider switch without an explicit override

@@ -912,3 +912,41 @@ def test_reranker_load_model_returns_its_own_model_not_a_clobbered_global(
 
     result = reranker_module._load_model()
     assert result is a_model
+
+
+def test_reranker_scoring_failure_latches_and_status_reports_failed(
+    monkeypatch: Any,
+) -> None:
+    """P3 (mirrors the fastembed inference-failure fix): a reranker model that
+    LOADS but raises during model.rerank() must latch a failure so
+    backend_status() reports failed_retrying (not a false ready) and the
+    cooldown prevents re-scoring every query — the load latch alone doesn't
+    cover a scoring-time error."""
+    reranker_module._reset_model_cache_for_tests()
+    clock = {"now": 7000.0}
+    monkeypatch.setattr(reranker_module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(settings, "retrieval_reranker", "local")
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "xenova/rr")
+
+    score_calls = {"n": 0}
+
+    class _ScoringFailModel:
+        def rerank(self, query: str, docs: Any) -> Any:
+            score_calls["n"] += 1
+            raise RuntimeError("cross-encoder blew up")
+
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: _ScoringFailModel())
+
+    cands = [(1, "a"), (2, "b")]
+    assert reranker_module.rerank_chunk_ids("q", cands) is None
+    assert score_calls["n"] == 1
+    assert reranker_module.backend_status() == "failed_retrying"
+
+    # Within the cooldown: no re-scoring.
+    assert reranker_module.rerank_chunk_ids("q", cands) is None
+    assert score_calls["n"] == 1
+
+    # After the cooldown lapses: one more attempt.
+    clock["now"] = 7000.0 + reranker_module._RETRY_TTL_SECONDS + 1
+    assert reranker_module.rerank_chunk_ids("q", cands) is None
+    assert score_calls["n"] == 2

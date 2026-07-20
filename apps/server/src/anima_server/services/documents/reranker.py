@@ -65,7 +65,15 @@ def rerank_chunk_ids(
     Returns chunk ids in reranked order, or ``None`` when reranking is off
     or unavailable (callers keep the fused order).
     """
+    global _failed
     if settings.retrieval_reranker != "local" or len(candidates) < 2:
+        return None
+    model_name = settings.retrieval_reranker_model
+    # A model can LOAD fine but then raise at scoring time. Honor the cooldown
+    # here too so a scoring-failing model isn't re-hit every query and, more
+    # importantly, so backend_status() reports failed_retrying (it only checks
+    # the load latch) instead of a false "ready".
+    if _cooldown_active(model_name):
         return None
     model = _load_model()
     if model is None:
@@ -80,6 +88,10 @@ def rerank_chunk_ids(
         return [chunk_id for (chunk_id, _text), _score in ranked]
     except Exception:
         logger.warning("Reranker scoring failed; using fused order", exc_info=True)
+        # Latch the scoring failure (copy-on-write, same as the load path) so
+        # the cooldown above applies and the trust surface reports it.
+        with _model_lock:
+            _failed = {**_failed, model_name: time.monotonic()}
         return None
 
 
