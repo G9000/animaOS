@@ -886,6 +886,40 @@ enum CommitStage {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RotationStage {
+    KernelLock,
+    PointerIo,
+    KeyDerivation,
+    CatalogIoCrypto,
+    ObjectRewrap,
+    EncryptionAndPublication,
+    FailureHook,
+    InvalidationCallback,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct RotationProbe<'a> {
+    observe_stage: Option<&'a mut dyn FnMut(RotationStage)>,
+}
+
+#[cfg(test)]
+impl<'a> RotationProbe<'a> {
+    fn observed(observe_stage: &'a mut dyn FnMut(RotationStage)) -> Self {
+        Self {
+            observe_stage: Some(observe_stage),
+        }
+    }
+
+    fn stage(&mut self, stage: RotationStage) {
+        if let Some(observer) = self.observe_stage.as_mut() {
+            observer(stage);
+        }
+    }
+}
+
+#[cfg(test)]
 #[derive(Default)]
 struct CommitProbe<'a> {
     pointer_reads: usize,
@@ -2032,6 +2066,8 @@ impl CoreCommitCoordinator {
             expected_generation,
             invalidate,
             &mut |_| Ok(()),
+            #[cfg(test)]
+            None,
         )
     }
 
@@ -2042,18 +2078,66 @@ impl CoreCommitCoordinator {
         expected_generation: u64,
         invalidate: I,
         hook: &mut H,
+        #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
     ) -> Result<CommitOutcome, CommitError>
     where
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
         let (event, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
+            #[cfg(test)]
+            let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
+                &self.root_dir,
+                &self.fs_dir,
+                || {
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(RotationStage::KernelLock);
+                    }
+                },
+            )?;
+            #[cfg(not(test))]
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
+            #[cfg(test)]
+            let committed = {
+                let mut observe_load_stage = |stage| {
+                    let rotation_stage = match stage {
+                        CatalogLoadStage::PointerIo => Some(RotationStage::PointerIo),
+                        CatalogLoadStage::KeyDerivation => Some(RotationStage::KeyDerivation),
+                        CatalogLoadStage::CatalogFileIo | CatalogLoadStage::CatalogCrypto => {
+                            Some(RotationStage::CatalogIoCrypto)
+                        }
+                        CatalogLoadStage::KernelLock
+                        | CatalogLoadStage::CacheAccess
+                        | CatalogLoadStage::SecondHeadRead => None,
+                    };
+                    if let (Some(probe), Some(stage)) = (probe.as_deref_mut(), rotation_stage) {
+                        probe.stage(stage);
+                    }
+                };
+                let mut load_probe = CatalogLoadProbe::observed(&mut observe_load_stage);
+                self.load_committed_recovering_with_keyring_and_hook_inner(
+                    &commit_lock,
+                    keyring,
+                    &mut |_| Ok(()),
+                    Some(&mut load_probe),
+                )?
+            };
+            #[cfg(not(test))]
             let committed = self
                 .load_committed_recovering_with_keyring(&commit_lock, keyring)?
                 .ok_or(CommitError::CoreNotInitialized)?;
+            #[cfg(test)]
+            let committed = committed.ok_or(CommitError::CoreNotInitialized)?;
+            let initial_pointers = self.load_rotation_pointer_set(
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
+            if initial_pointers.head.as_ref() != Some(committed.head()) {
+                self.cache.clear();
+                return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
+            }
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
                 return Err(RotationError::GenerationMismatch {
@@ -2090,21 +2174,51 @@ impl CoreCommitCoordinator {
             let next_generation = actual_generation
                 .checked_add(1)
                 .ok_or(RotationError::GenerationExhausted)?;
-            let next_catalog = committed.catalog.rewrap_for_frk_rotation(
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(RotationStage::ObjectRewrap);
+            }
+            let next_catalog = Arc::new(committed.catalog.rewrap_for_frk_rotation(
                 &self.core_id,
                 keyring,
                 pending_keys,
                 next_generation,
-            )?;
-            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = self
-                .publish_catalog_pointer_with_hook(
+            )?);
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(RotationStage::CatalogIoCrypto);
+                probe.stage(RotationStage::EncryptionAndPublication);
+            }
+            let (head, _, recovery_pending, bytes_written, catalog_plaintext_bytes) = {
+                let mut observed_hook = |point| {
+                    #[cfg(test)]
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(RotationStage::FailureHook);
+                    }
+                    hook(point)
+                };
+                self.publish_catalog_pointer_with_hook(
                     pending_keys,
                     &next_catalog,
                     HEAD_FILE,
                     false,
-                    hook,
-                )?;
+                    &mut observed_hook,
+                )?
+            };
             debug_assert!(!recovery_pending);
+            let expected_final_pointers = PointerSet {
+                head: Some(head.clone()),
+                receipt: initial_pointers.receipt,
+                complete: initial_pointers.complete,
+            };
+            self.publish_rotation_cache_authority(
+                keyring,
+                pending_keys,
+                &expected_final_pointers,
+                Arc::clone(&next_catalog),
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            );
             let event = InvalidationEvent {
                 generation: head.generation(),
                 catalog_hash: head.catalog_hash().to_owned(),
@@ -2120,9 +2234,23 @@ impl CoreCommitCoordinator {
             )
         };
 
-        hook(CommitFailurePoint::BeforeInvalidation)?;
+        let before_invalidation = hook(CommitFailurePoint::BeforeInvalidation);
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.stage(RotationStage::FailureHook);
+        }
+        before_invalidation?;
         let invalidation_delivered = invalidate(event.clone()).is_ok();
-        hook(CommitFailurePoint::AfterInvalidation)?;
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.stage(RotationStage::InvalidationCallback);
+        }
+        let after_invalidation = hook(CommitFailurePoint::AfterInvalidation);
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.stage(RotationStage::FailureHook);
+        }
+        after_invalidation?;
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
@@ -2131,6 +2259,97 @@ impl CoreCommitCoordinator {
             bytes_written,
             catalog_plaintext_bytes,
         })
+    }
+
+    fn load_rotation_pointer_set(
+        &self,
+        #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
+    ) -> Result<PointerSet, CommitError> {
+        #[cfg(test)]
+        {
+            let mut observe_load_stage = |stage| {
+                if stage == CatalogLoadStage::PointerIo {
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(RotationStage::PointerIo);
+                    }
+                }
+            };
+            let mut load_probe = CatalogLoadProbe::observed(&mut observe_load_stage);
+            self.load_pointer_set(Some(&mut load_probe))
+        }
+        #[cfg(not(test))]
+        {
+            self.load_pointer_set()
+        }
+    }
+
+    fn publish_rotation_cache_authority(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+        expected_pointers: &PointerSet,
+        catalog: Arc<CatalogGeneration>,
+        #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
+    ) {
+        let final_pointers = match self.load_rotation_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        ) {
+            Ok(pointers) => pointers,
+            Err(_) => {
+                self.cache.clear();
+                return;
+            }
+        };
+        if &final_pointers != expected_pointers {
+            self.cache.clear();
+            return;
+        }
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.stage(RotationStage::KeyDerivation);
+        }
+        let Some(key) = self.rotation_cache_lookup_key(&final_pointers, keyring, pending_keys)
+        else {
+            self.cache.clear();
+            return;
+        };
+        self.cache
+            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                &key, catalog, None,
+            )));
+    }
+
+    fn rotation_cache_lookup_key(
+        &self,
+        pointers: &PointerSet,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+    ) -> Option<CacheLookupKey> {
+        if !pointers.is_complete_non_recovery_shape() {
+            return None;
+        }
+        let mut versions = pointers.required_frk_versions();
+        versions.sort_unstable();
+        versions.dedup();
+        let selected = versions
+            .into_iter()
+            .map(|version| {
+                if version == pending_keys.frk_version() {
+                    Some(pending_keys)
+                } else {
+                    keyring.require(version).ok()
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let complete_keyring = FrkKeyring::new(selected).ok()?;
+        CacheLookupKey::derive(
+            pointers.clone(),
+            &self.core_id,
+            &complete_keyring,
+            pending_keys,
+        )
+        .ok()
     }
 
     pub fn initialize_validation_snapshot<B>(

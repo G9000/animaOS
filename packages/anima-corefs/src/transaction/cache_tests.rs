@@ -22,6 +22,7 @@ use super::cache::{
 use super::{
     CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitFailurePoint, CommitMode,
     CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget,
+    RotationProbe, RotationStage,
 };
 use crate::publication::PublicationPhase;
 
@@ -652,6 +653,71 @@ fn recovery_holds_no_cache_guard_during_lock_io_crypto_or_hooks() {
         "recovery catalog crypto was not observed through the scoped probe"
     );
     assert!(stages.borrow().contains(&CatalogLoadStage::KernelLock));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rotation_holds_no_cache_guard_during_lock_io_crypto_or_hooks() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-rotation-guard-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys(0x11, 1);
+    let pending_keys = keys(0x22, 2);
+    seed_committed(&coordinator, &old_keys);
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+    let mut stages = Vec::new();
+    let mut observe_stage = |stage| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held during rotation stage {stage:?}"
+        );
+        stages.push(stage);
+    };
+    let mut probe = RotationProbe::observed(&mut observe_stage);
+    let mut hook = |_| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held inside rotation publication hook"
+        );
+        Ok(())
+    };
+
+    coordinator
+        .rotate_frk_with_hook(
+            &keyring,
+            &pending_keys,
+            2,
+            |_| {
+                assert!(
+                    coordinator.cache.inner.try_lock().is_ok(),
+                    "cache mutex held inside rotation invalidation callback"
+                );
+                Ok(())
+            },
+            &mut hook,
+            Some(&mut probe),
+        )
+        .unwrap();
+
+    for expected in [
+        RotationStage::KernelLock,
+        RotationStage::PointerIo,
+        RotationStage::KeyDerivation,
+        RotationStage::CatalogIoCrypto,
+        RotationStage::ObjectRewrap,
+        RotationStage::EncryptionAndPublication,
+        RotationStage::FailureHook,
+        RotationStage::InvalidationCallback,
+    ] {
+        assert!(
+            stages.contains(&expected),
+            "missing rotation stage {expected:?}"
+        );
+    }
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }

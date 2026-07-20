@@ -512,6 +512,73 @@ fn frk_rotation_rewraps_live_deks_without_rewriting_object_ciphertext() {
 }
 
 #[test]
+fn cached_load_rejects_wrong_same_version_retained_material() {
+    let root = reset_root("cached-wrong-retained-material");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let retained_keys = keys(0x42, 1);
+    let active_keys = keys(0x43, 2);
+    seed_committed(&coordinator, &retained_keys);
+    let exact_keyring = FrkKeyring::new([&retained_keys, &active_keys]).unwrap();
+    coordinator
+        .rotate_frk(&exact_keyring, &active_keys, 2, |_| Ok(()))
+        .unwrap();
+    coordinator
+        .load_committed_with_keyring(&exact_keyring)
+        .unwrap()
+        .unwrap();
+    let wrong_same_version = keys(0x55, 1);
+    let wrong_keyring = FrkKeyring::new([&wrong_same_version, &active_keys]).unwrap();
+
+    assert!(coordinator
+        .load_committed_with_keyring(&wrong_keyring)
+        .is_err());
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn successful_rotation_replaces_cache_only_after_cutover_completion() {
+    let root = reset_root("successful-rotation-cache-replacement");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys(0x42, 1);
+    let pending_keys = keys(0x43, 2);
+    seed_committed(&coordinator, &old_keys);
+    coordinator.load_committed(&old_keys).unwrap().unwrap();
+    let before = fs::read_dir(coordinator.catalogs_path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<std::collections::HashSet<_>>();
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+    let mut callback_generation = None;
+
+    let outcome = coordinator
+        .rotate_frk(&keyring, &pending_keys, 2, |_| {
+            let new_catalog = fs::read_dir(coordinator.catalogs_path())
+                .map_err(|error| error.to_string())?
+                .map(|entry| entry.map(|value| value.file_name()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|name| !before.contains(name))
+                .ok_or_else(|| "rotation did not publish a new catalog".to_owned())?;
+            fs::remove_file(coordinator.catalogs_path().join(new_catalog))
+                .map_err(|error| error.to_string())?;
+            let cached = coordinator
+                .load_committed_with_keyring(&keyring)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "rotated HEAD was not committed".to_owned())?;
+            callback_generation = Some(cached.head().generation());
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 3);
+    assert_eq!(callback_generation, Some(3));
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn rotation_rejects_stale_generation_and_non_newer_keys_before_publication() {
     let root = reset_root("preconditions");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();

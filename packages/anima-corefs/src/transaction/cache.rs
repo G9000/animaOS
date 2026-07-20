@@ -139,7 +139,7 @@ impl PointerSet {
         }
     }
 
-    fn required_frk_versions(&self) -> Vec<u32> {
+    pub(super) fn required_frk_versions(&self) -> Vec<u32> {
         [&self.head, &self.receipt, &self.complete]
             .into_iter()
             .filter_map(Option::as_ref)

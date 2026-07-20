@@ -898,10 +898,10 @@ fn cutover_recovery_replaces_cache_only_after_verified_completion() {
     let active_keys = pending_keys();
     let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
     coordinator.load_committed(&old_keys).unwrap().unwrap();
-    let prior = coordinator.cache.current().unwrap();
     coordinator
         .rotate_frk(&keyring, &active_keys, 2, |_| Ok(()))
         .unwrap();
+    let prior = coordinator.cache.current().unwrap();
     std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
     let commit_lock =
         CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
@@ -1566,7 +1566,7 @@ fn helper_process_crashes_at_failure_point() {
             let pending_keys = pending_keys();
             let keyring = FrkKeyring::new([&keys, &pending_keys]).unwrap();
             coordinator
-                .rotate_frk_with_hook(&keyring, &pending_keys, 2, |_| Ok(()), &mut hook)
+                .rotate_frk_with_hook(&keyring, &pending_keys, 2, |_| Ok(()), &mut hook, None)
                 .unwrap();
         }
         "recovery" => {
