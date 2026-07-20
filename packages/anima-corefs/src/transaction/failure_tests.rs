@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 
 use crate::catalog::{
     CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, ObjectLifecycle,
@@ -17,7 +19,7 @@ use crate::rotation::{FrkKeyring, RotationError};
 use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet};
 use super::{
     CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode,
-    CoreCommitCoordinator, PreparedObjectRevision, PublicationTarget,
+    CoreCommitCoordinator, CoreCommitLock, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
 
@@ -781,6 +783,273 @@ fn torn_unlocked_cutover_observation_is_retried_under_the_commit_lock() {
         .unwrap();
 
     assert_eq!(committed.head().generation(), 2);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn receipt_without_head_bypasses_cache_and_runs_recovery() {
+    let root = reset_root("receipt-without-head-cache-miss");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let prior = coordinator.cache.current().unwrap();
+    std::fs::remove_file(coordinator.head_path()).unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+
+    assert_eq!(committed.head().generation(), 2);
+    assert!(coordinator.head_path().is_file());
+    assert!(coordinator.cutover_complete_path().is_file());
+    assert!(!Arc::ptr_eq(&prior, &coordinator.cache.current().unwrap()));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_head_with_completion_bypasses_cache_and_runs_recovery() {
+    let root = reset_root("missing-head-with-completion-cache-miss");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    std::fs::remove_file(coordinator.head_path()).unwrap();
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::AuthoritativeHeadMissingAfterCutover)
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn divergent_receipt_and_completion_bypass_cache() {
+    let root = reset_root("divergent-receipt-completion-cache-miss");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    std::fs::copy(
+        coordinator.validation_head_path(),
+        coordinator.cutover_complete_path(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn seed_mixed_frk_completion_gap(root: &Path) {
+    seed_committed(root);
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let active_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    coordinator
+        .rotate_frk(&keyring, &active_keys, 2, |_| Ok(()))
+        .unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+}
+
+#[test]
+fn mixed_frk_recovery_derives_every_required_catalog_key_identity() {
+    let root = reset_root("mixed-frk-recovery-identities");
+    seed_mixed_frk_completion_gap(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let active_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+
+    let committed = coordinator
+        .load_committed_recovering_with_keyring(&commit_lock, &keyring)
+        .unwrap()
+        .unwrap();
+    drop(commit_lock);
+
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.head().required_frk_version(), 2);
+    let snapshot = coordinator.cache.current().unwrap();
+    let exact =
+        CacheLookupKey::derive(snapshot.pointers.clone(), CORE_ID, &keyring, &active_keys).unwrap();
+    assert_eq!(exact.required_catalog_versions(), &[1, 2]);
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &coordinator.cache.get(&exact).unwrap()
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cutover_recovery_replaces_cache_only_after_verified_completion() {
+    let root = reset_root("mixed-frk-recovery-cache-publication");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let active_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    coordinator.load_committed(&old_keys).unwrap().unwrap();
+    let prior = coordinator.cache.current().unwrap();
+    coordinator
+        .rotate_frk(&keyring, &active_keys, 2, |_| Ok(()))
+        .unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+    let mut saw_durable_completion = false;
+
+    let committed = coordinator
+        .load_committed_recovering_with_keyring_and_hook_inner(
+            &commit_lock,
+            &keyring,
+            &mut |point| {
+                if let CommitFailurePoint::Publication {
+                    target: PublicationTarget::CutoverComplete,
+                    phase,
+                } = point
+                {
+                    assert!(Arc::ptr_eq(&prior, &coordinator.cache.current().unwrap()));
+                    if phase == PublicationPhase::DestinationSynced {
+                        saw_durable_completion = true;
+                    }
+                }
+                Ok(())
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    drop(commit_lock);
+
+    assert!(saw_durable_completion);
+    assert_eq!(committed.head().generation(), 3);
+    let replacement = coordinator.cache.current().unwrap();
+    assert!(!Arc::ptr_eq(&prior, &replacement));
+    assert_eq!(replacement.catalog().generation(), 3);
+    assert_eq!(replacement.pointers.head.as_ref(), Some(committed.head()));
+    assert_eq!(replacement.pointers.receipt, replacement.pointers.complete);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn seed_single_version_completion_gap(root: &Path) {
+    seed_validation(root);
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let keys = keys();
+    let current = coordinator
+        .load_validation_snapshot(&keys)
+        .unwrap()
+        .unwrap()
+        .catalog()
+        .clone();
+    let precondition =
+        CatalogPrecondition::object(&current, &OpaqueId::parse(OBJECT_ID).unwrap(), 1).unwrap();
+    let next = prepare(&coordinator, &keys, 2, b"committed");
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::FirstMutation { cutover_epoch: 1 },
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point
+                        == (CommitFailurePoint::Publication {
+                            target: PublicationTarget::CutoverComplete,
+                            phase: PublicationPhase::TemporaryCreated,
+                        })
+                    {
+                        return Err(std::io::Error::other("leave completion pending"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+    assert!(outcome.recovery_pending());
+}
+
+#[test]
+fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() {
+    let root = reset_root("concurrent-load-recovery-and-commit");
+    seed_single_version_completion_gap(&root);
+    let timeout = Duration::from_secs(5);
+    let (recovery_entered_tx, recovery_entered_rx) = mpsc::channel();
+    let (release_recovery_tx, release_recovery_rx) = mpsc::channel();
+    let (recovery_done_tx, recovery_done_rx) = mpsc::channel();
+    let recovery_root = root.clone();
+    let recovery_thread = thread::spawn(move || {
+        let coordinator = CoreCommitCoordinator::new(&recovery_root, CORE_ID).unwrap();
+        let result = coordinator.load_committed_with_hook(&keys(), &mut |point| {
+            if point
+                == (CommitFailurePoint::Publication {
+                    target: PublicationTarget::CutoverComplete,
+                    phase: PublicationPhase::TemporaryCreated,
+                })
+            {
+                recovery_entered_tx.send(()).unwrap();
+                release_recovery_rx.recv_timeout(timeout).unwrap();
+            }
+            Ok(())
+        });
+        recovery_done_tx
+            .send(result.map(|value| value.unwrap().head().generation()))
+            .unwrap();
+    });
+
+    recovery_entered_rx.recv_timeout(timeout).unwrap();
+    let commit_root = root.clone();
+    let (commit_done_tx, commit_done_rx) = mpsc::channel();
+    let commit_thread = thread::spawn(move || {
+        let coordinator = CoreCommitCoordinator::new(&commit_root, CORE_ID).unwrap();
+        let active_keys = keys();
+        let result = coordinator.commit(
+            &active_keys,
+            &[],
+            &[],
+            |current, generation| {
+                CatalogGeneration::new(generation, current.unwrap().entries().to_vec())
+            },
+            |_| Ok(()),
+        );
+        commit_done_tx
+            .send(result.map(|outcome| outcome.generation()))
+            .unwrap();
+    });
+    assert!(matches!(
+        commit_done_rx.recv_timeout(timeout).unwrap(),
+        Err(CommitError::LockBusy)
+    ));
+    release_recovery_tx.send(()).unwrap();
+    assert_eq!(recovery_done_rx.recv_timeout(timeout).unwrap().unwrap(), 2);
+    recovery_thread.join().unwrap();
+    commit_thread.join().unwrap();
+
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let active_keys = keys();
+    let outcome = coordinator
+        .commit(
+            &active_keys,
+            &[],
+            &[],
+            |current, generation| {
+                CatalogGeneration::new(generation, current.unwrap().entries().to_vec())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(outcome.generation(), 3);
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -1472,6 +1472,9 @@ impl CoreCommitCoordinator {
         keyring: &FrkKeyring<'_>,
         #[cfg(test)] probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Option<CacheLookupKey> {
+        if !pointers.is_complete_non_recovery_shape() {
+            return None;
+        }
         let head = pointers.head.as_ref()?;
         let active_keys = keyring.require(head.required_frk_version()).ok()?;
         #[cfg(test)]
@@ -1593,13 +1596,7 @@ impl CoreCommitCoordinator {
         self.load_committed_recovering_with_hook(&commit_lock, keys, hook)
     }
 
-    fn load_committed_once(
-        &self,
-        keys: &FrkSubkeys,
-    ) -> Result<Option<CommittedCatalog>, CommitError> {
-        self.load_committed_once_with_hook(keys, || {})
-    }
-
+    #[cfg(test)]
     fn load_committed_once_with_hook<R>(
         &self,
         keys: &FrkSubkeys,
@@ -1712,13 +1709,6 @@ impl CoreCommitCoordinator {
             }));
         }
 
-        let mut versions = HashSet::new();
-        for head in [&pointers.head, &pointers.receipt, &pointers.complete]
-            .into_iter()
-            .flatten()
-        {
-            versions.insert(head.required_frk_version());
-        }
         let full_load = self.load_committed_once_with_keyring_heads_inner(
             keyring,
             pointers.head.clone(),
@@ -1727,27 +1717,30 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe.as_deref_mut(),
         );
-        let mut recovered = false;
-        let committed = if versions.len() <= 1
-            && matches!(
-                &full_load,
-                Err(CommitError::CutoverRecoveryRequired
-                    | CommitError::AuthoritativeHeadMissingAfterCutover
-                    | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
-            ) {
-            recovered = true;
-            match versions.into_iter().next() {
-                Some(version) => {
-                    self.recover_cutover_with_hook(commit_lock, keyring.require(version)?, hook)
-                }
-                None => Ok(None),
+        let recovery_required = matches!(
+            &full_load,
+            Err(CommitError::CutoverRecoveryRequired
+                | CommitError::AuthoritativeHeadMissingAfterCutover
+                | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+        );
+        let committed = if recovery_required {
+            let recovery = self.recover_cutover_with_keyring_and_hook_inner(
+                commit_lock,
+                keyring,
+                hook,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            );
+            match recovery {
+                Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt) => full_load,
+                other => other,
             }
         } else {
             full_load
         };
 
         if let Ok(Some(committed_catalog)) = committed.as_ref() {
-            let replacement_key = if recovered {
+            let replacement_key = if recovery_required {
                 let final_pointers = self.load_pointer_set(
                     #[cfg(test)]
                     probe.as_deref_mut(),
@@ -1769,6 +1762,8 @@ impl CoreCommitCoordinator {
                         None,
                     )));
             }
+        } else if recovery_required {
+            self.cache.clear();
         }
         committed
     }
@@ -1792,24 +1787,40 @@ impl CoreCommitCoordinator {
         )
     }
 
-    fn recover_cutover_with_hook<H>(
+    fn recover_cutover_with_keyring_and_hook_inner<H>(
         &self,
         _commit_lock: &CoreCommitLock,
-        keys: &FrkSubkeys,
+        keyring: &FrkKeyring<'_>,
         hook: &mut H,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Result<Option<CommittedCatalog>, CommitError>
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
-        match self.load_committed_once(keys) {
-            Err(CommitError::CutoverRecoveryRequired) => {}
-            other => return other,
-        }
-
-        let committed = self.load_pointer(keys, HEAD_FILE)?;
-        let receipt = self.load_pointer(keys, CUTOVER_RECEIPT_FILE)?;
-        let receipt_head = match (committed, receipt) {
-            (None, Some((receipt_head, receipt_catalog)))
+        let pointers = self.load_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
+        let committed = match pointers.head {
+            Some(head) => Some(self.load_pointer_for_head_inner(
+                keyring,
+                head,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?),
+            None => None,
+        };
+        let receipt = match pointers.receipt {
+            Some(head) => Some(self.load_pointer_for_head_inner(
+                keyring,
+                head,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?),
+            None => None,
+        };
+        let receipt_head = match (committed, receipt, pointers.complete) {
+            (None, Some((receipt_head, receipt_catalog)), None)
                 if receipt_catalog.cutover_marker().is_some() =>
             {
                 let encoded_head = encode_head(&receipt_head)?;
@@ -1830,12 +1841,12 @@ impl CoreCommitCoordinator {
                 )?;
                 receipt_head
             }
-            (Some((head, catalog)), Some((receipt_head, receipt_catalog)))
+            (Some((head, catalog)), Some((receipt_head, receipt_catalog)), None)
                 if cutover_lineage_is_valid(&head, &catalog, &receipt_head, &receipt_catalog) =>
             {
                 receipt_head
             }
-            (Some((head, catalog)), None) if catalog.cutover_marker().is_some() => {
+            (Some((head, catalog)), None, None) if catalog.cutover_marker().is_some() => {
                 let encoded_head = encode_head(&head)?;
                 self.validate_pinned_layout()?;
                 let mut receipt_hook = |phase| {
@@ -1871,7 +1882,18 @@ impl CoreCommitCoordinator {
             &mut complete_hook,
         )?;
         self.validate_pinned_layout()?;
-        self.load_committed_once(keys)
+        let final_pointers = self.load_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
+        self.load_committed_once_with_keyring_heads_inner(
+            keyring,
+            final_pointers.head,
+            final_pointers.receipt,
+            final_pointers.complete,
+            #[cfg(test)]
+            probe,
+        )
     }
 
     pub fn load_validation_snapshot(

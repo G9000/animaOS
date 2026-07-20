@@ -128,6 +128,17 @@ pub(super) struct PointerSet {
 }
 
 impl PointerSet {
+    pub(super) fn is_complete_non_recovery_shape(&self) -> bool {
+        match (&self.head, &self.receipt, &self.complete) {
+            (Some(head), Some(receipt), Some(complete)) => {
+                receipt == complete
+                    && head.generation() >= receipt.generation()
+                    && (head.generation() != receipt.generation() || head == receipt)
+            }
+            _ => false,
+        }
+    }
+
     fn required_frk_versions(&self) -> Vec<u32> {
         [&self.head, &self.receipt, &self.complete]
             .into_iter()

@@ -20,9 +20,10 @@ use super::cache::{
     ValidatedObjectBinding, ValidatedObjectState,
 };
 use super::{
-    CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitMode, CommitProbe, CommitStage,
-    CoreCommitCoordinator,
+    CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitFailurePoint, CommitMode,
+    CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget,
 };
+use crate::publication::PublicationPhase;
 
 const CORE_ID: &str = "cache-core";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -565,6 +566,92 @@ fn commit_holds_no_cache_guard_during_kernel_lock_io_crypto_build_hooks_or_inval
             "missing commit stage {expected:?}"
         );
     }
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recovery_holds_no_cache_guard_during_lock_io_crypto_or_hooks() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-recovery-guard-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    coordinator
+        .initialize_validation_snapshot(&keys, &[], |generation| Ok((*catalog(generation)).clone()))
+        .unwrap();
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            &[],
+            &[],
+            CommitMode::FirstMutation { cutover_epoch: 1 },
+            |_, generation| Ok((*catalog(generation)).clone()),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point
+                        == (CommitFailurePoint::Publication {
+                            target: PublicationTarget::CutoverComplete,
+                            phase: PublicationPhase::TemporaryCreated,
+                        })
+                    {
+                        return Err(std::io::Error::other("leave completion pending"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+    assert!(outcome.recovery_pending());
+
+    let stages = std::cell::RefCell::new(Vec::new());
+    let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
+        &coordinator.root_dir,
+        &coordinator.fs_dir,
+        || {
+            assert!(coordinator.cache.inner.try_lock().is_ok());
+            stages.borrow_mut().push(CatalogLoadStage::KernelLock);
+        },
+    )
+    .unwrap();
+    let mut observe_stage = |stage| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held during recovery stage {stage:?}"
+        );
+        stages.borrow_mut().push(stage);
+    };
+    let mut probe = CatalogLoadProbe::observed(&mut observe_stage);
+    let committed = coordinator
+        .load_committed_recovering_with_keyring_and_hook_inner(
+            &commit_lock,
+            &FrkKeyring::single(&keys),
+            &mut |_| {
+                assert!(
+                    coordinator.cache.inner.try_lock().is_ok(),
+                    "cache mutex held inside recovery publication hook"
+                );
+                Ok(())
+            },
+            Some(&mut probe),
+        )
+        .unwrap()
+        .unwrap();
+    drop(commit_lock);
+
+    assert_eq!(committed.head().generation(), 2);
+    assert!(
+        probe.pointer_reads > 3,
+        "recovery pointer I/O was not observed through the scoped probe"
+    );
+    assert!(
+        probe.catalog_decrypts > 1,
+        "recovery catalog crypto was not observed through the scoped probe"
+    );
+    assert!(stages.borrow().contains(&CatalogLoadStage::KernelLock));
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
