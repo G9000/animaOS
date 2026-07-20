@@ -659,16 +659,21 @@ def count_unanswered_initiatives(soul_db: Session, *, user_id: int) -> int:
 
 
 def count_recent_fires(soul_db: Session, *, user_id: int, now: datetime) -> tuple[int, int]:
-    """(fires in the last 24h, fires in the last 7 days) — only rows that
-    actually produced a message (``generated_text is not None``); a failed
-    generation attempt never counts against the rate cap."""
+    """(fires in the last 24h, fires in the last 7 days) — only DELIVERED
+    initiatives count against the rate cap. A failed generation (no text) or a
+    generated-but-undelivered attempt (delivery adapter returned
+    ``delivered=False`` / raised) never reached the user, so it must not
+    consume their daily/weekly quota. ``delivered=True`` implies
+    ``generated_text is not None``, so this also excludes failed generations.
+    Re-generation spam on a persistent delivery failure is bounded separately
+    by the cooldown (``last_fired_at`` is set on any successful generation)."""
     now_utc = now.astimezone(UTC)
     week_cutoff = now_utc - timedelta(days=7)
     day_cutoff = now_utc - timedelta(hours=24)
     fired_ats = soul_db.scalars(
         select(InitiativeLog.fired_at).where(
             InitiativeLog.user_id == user_id,
-            InitiativeLog.generated_text.isnot(None),
+            InitiativeLog.delivered.is_(True),
             InitiativeLog.fired_at >= week_cutoff,
         )
     ).all()
@@ -965,10 +970,23 @@ def tick_initiative_for_user(
                 now=local_now,
                 delivery=delivery or PendingInitiativeDelivery(),
             )
+            # A successful GENERATION (text produced, log row written) starts
+            # the cooldown even if DELIVERY then failed — otherwise, since a
+            # failed delivery no longer consumes the rate cap
+            # (count_recent_fires counts only delivered rows), a persistent
+            # delivery failure would re-generate a fresh LLM message every
+            # tick. `generated_text` is None only when generation itself
+            # failed, so this covers exactly the "generated but maybe not
+            # delivered" case.
+            generated = log_row is not None and log_row.generated_text is not None
+            if generated:
+                row.last_fired_at = local_now.astimezone(UTC)
+            # Surfacing the material and resetting the drive happen ONLY on an
+            # actual delivery — a message the user never received must not mark
+            # its pattern surfaced or drain the drive that still needs voicing.
             if fired:
                 if decision.drive == DRIVE_PATTERN_INSIGHT:
                     row.pattern_insight_surfaced_at = local_now.astimezone(UTC)
-                row.last_fired_at = local_now.astimezone(UTC)
                 _apply_pressures(
                     row, reset_drive(updated_pressures, decision.drive), now=local_now
                 )

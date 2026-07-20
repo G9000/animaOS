@@ -635,6 +635,66 @@ def test_generate_initiative_message_carries_drive_and_material(
     assert "forbidden" in captured["prompt"].lower()
 
 
+def test_failed_delivery_frees_quota_but_starts_cooldown_and_keeps_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR review (P2): a generated-but-undelivered initiative must NOT consume
+    the rate-cap quota (the user never received it), yet must still start the
+    cooldown so a persistent delivery failure can't re-generate an LLM message
+    every tick. The drive's pressure is left intact (not reset) since nothing
+    was actually voiced."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    now = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    _seed_enabled_user(
+        soul_factory, runtime_factory,
+        pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+    )
+
+    calls = {"n": 0}
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        calls["n"] += 1
+        return "hello"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    failing = _StubDelivery(delivered=False)
+    ok = tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1, local_now=now, delivery=failing
+    )
+    assert ok is True
+    assert calls["n"] == 1  # generation happened once
+
+    with soul_factory() as db_:
+        logs = db_.scalars(select(InitiativeLog)).all()
+        assert len(logs) == 1
+        assert logs[0].delivered is False  # logged the attempt, not delivered
+        assert logs[0].generated_text is not None
+        # Undelivered -> quota untouched, so the user isn't rate-limited for a
+        # message they never received.
+        assert count_recent_fires(db_, user_id=1, now=now) == (0, 0)
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.last_fired_at is not None  # cooldown started (spam guard)
+        assert row.relational > 0.9  # pressure NOT reset — nothing was voiced
+
+    # Second tick within the cooldown window must NOT re-generate, even though
+    # the quota is free — the cooldown is what bounds LLM spam here.
+    ok2 = tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1,
+        local_now=now + timedelta(hours=1), delivery=failing,
+    )
+    assert ok2 is True
+    assert calls["n"] == 1  # still 1 — cooldown blocked re-generation
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 def test_generate_initiative_message_returns_none_on_empty_output(
     monkeypatch: pytest.MonkeyPatch, db: Session
 ) -> None:
@@ -966,7 +1026,7 @@ def test_provenance_log_reconstructs_why_it_fired(db: Session) -> None:
     # reconstructable from this one row.
 
 
-def test_count_recent_fires_only_counts_real_messages(db: Session) -> None:
+def test_count_recent_fires_only_counts_delivered_messages(db: Session) -> None:
     now = datetime(2026, 1, 10, tzinfo=UTC)
     db.add_all(
         [
@@ -974,9 +1034,17 @@ def test_count_recent_fires_only_counts_real_messages(db: Session) -> None:
                 user_id=1, fired_at=now - timedelta(hours=1), drive=DRIVE_RELATIONAL,
                 pressure_snapshot={}, gate_states={}, generated_text="hi", delivered=True,
             ),
+            # Failed generation (no text) — never counts.
             InitiativeLog(
                 user_id=1, fired_at=now - timedelta(hours=2), drive=DRIVE_RELATIONAL,
                 pressure_snapshot={}, gate_states={}, generated_text=None, delivered=False,
+            ),
+            # Generated but NOT delivered (delivery adapter returned False /
+            # raised) — the user never received it, so it must NOT consume the
+            # rate-cap quota (PR review, P2).
+            InitiativeLog(
+                user_id=1, fired_at=now - timedelta(minutes=30), drive=DRIVE_RELATIONAL,
+                pressure_snapshot={}, gate_states={}, generated_text="undelivered", delivered=False,
             ),
             InitiativeLog(
                 user_id=1, fired_at=now - timedelta(days=3), drive=DRIVE_NOVELTY,
@@ -990,7 +1058,10 @@ def test_count_recent_fires_only_counts_real_messages(db: Session) -> None:
     )
     db.commit()
     today, week = count_recent_fires(db, user_id=1, now=now)
-    assert today == 1  # the failed-attempt row and the 10-day-old row don't count
+    # Only delivered rows within the window: 1 today, 2 this week. The
+    # failed-generation, the generated-but-undelivered, and the 10-day-old row
+    # are all excluded.
+    assert today == 1
     assert week == 2
 
 
