@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from datetime import tzinfo as _tzinfo
 from functools import lru_cache
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -104,7 +104,7 @@ def system_zoneinfo() -> _tzinfo:
     if tz_name:
         try:
             return ZoneInfo(tz_name.strip())
-        except Exception:
+        except ZoneInfoNotFoundError:
             logger.warning(
                 "TZ=%r is not a valid IANA zone; trying /etc/localtime", tz_name
             )
@@ -116,10 +116,20 @@ def system_zoneinfo() -> _tzinfo:
             return ZoneInfo(target[idx + len(marker):])
     except Exception:
         pass
-    logger.warning(
-        "Could not resolve an IANA timezone; falling back to the current fixed "
-        "UTC offset (DST transitions inside long gaps will be misplaced)"
-    )
+    try:
+        from dateutil import tz
+
+        tzlocal = tz.tzlocal()
+        logger.warning(
+            "Could not resolve an IANA timezone; using OS-local rules from "
+            "dateutil.tz.tzlocal()."
+        )
+        return tzlocal
+    except Exception:
+        logger.warning(
+            "Could not resolve an IANA timezone; falling back to the current fixed "
+            "UTC offset (DST transitions inside long gaps will be misplaced)"
+        )
     return datetime.now().astimezone().tzinfo or UTC
 
 

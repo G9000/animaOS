@@ -1,0 +1,257 @@
+{
+  "benchmarkBinary": {
+    "fileId": 2814749768803186,
+    "path": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-zglli7en\\release\\catalog_benchmark.exe",
+    "sha256": "136533f7bc7e6ed1bb512251be04988ee50b041702843a868303859133e2f7fd",
+    "volumeSerial": 4008503144
+  },
+  "benchmarkBuild": {
+    "cargoLockSha256": "15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd",
+    "command": [
+      "cargo",
+      "+1.75.0",
+      "build",
+      "--release",
+      "--locked",
+      "-p",
+      "anima-corefs",
+      "--bin",
+      "catalog_benchmark",
+      "--target-dir",
+      "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-zglli7en"
+    ],
+    "forcedEnvironment": {
+      "CARGO_INCREMENTAL": "0"
+    },
+    "preservedForAudit": true,
+    "rustc": "rustc 1.75.0 (82e1608df 2023-12-21)\nbinary: rustc\ncommit-hash: 82e1608dfa6e0b5569232559e3d385fea5a93112\ncommit-date: 2023-12-21\nhost: x86_64-pc-windows-msvc\nrelease: 1.75.0\nLLVM version: 17.0.6",
+    "sanitizedEnvironmentRemoved": [],
+    "sourceCommit": "d9944ff9d692f8aa6b46edb2b70c96edc31d59ba",
+    "targetDirectory": "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-zglli7en"
+  },
+  "benchmarkCommand": [
+    "C:\\Users\\leoca\\AppData\\Local\\Temp\\anima-corefs-catalog-build-zglli7en\\release\\catalog_benchmark.exe",
+    "--target",
+    "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1",
+    "--warmups",
+    "30",
+    "--samples",
+    "200"
+  ],
+  "fixtures": [
+    {
+      "bytesWritten": 1651287,
+      "commitMs": {
+        "p50": 185.8358,
+        "p95": 207.7262,
+        "p99": 234.85590000000002
+      },
+      "finalCatalogCount": 232,
+      "finalHeadGeneration": 232,
+      "fixtureManifestSha256": "d1f8817ba635359cc10208d86b79652dc0e2180c2514f1e1d0634a96ebcb40c4",
+      "liveCount": 5000,
+      "lockHoldMs": {
+        "p50": 184.6036,
+        "p95": 205.5434,
+        "p99": 232.3799
+      },
+      "measuredSerializedSizeBytes": {
+        "max": 1651077,
+        "min": 1651076
+      },
+      "name": "medium",
+      "productionSerializationsPerCommit": 1,
+      "publicationPath": [
+        "commit-lock",
+        "serialize",
+        "encrypt",
+        "temporary-file-write",
+        "durable-flush",
+        "atomic-rename",
+        "directory-durability",
+        "fs-head-write-flush"
+      ],
+      "sampleCount": 200,
+      "serializedSizeBytes": 1651077,
+      "tombstoneCount": 500,
+      "totalBytesWritten": 330257266,
+      "totalCount": 5500,
+      "warmupCommits": 30,
+      "warmupSerializedSizeBytes": {
+        "max": 1651076,
+        "min": 1651075
+      }
+    },
+    {
+      "bytesWritten": 8255287,
+      "commitMs": {
+        "p50": 964.5645000000001,
+        "p95": 1060.9271,
+        "p99": 1187.1569
+      },
+      "finalCatalogCount": 232,
+      "finalHeadGeneration": 232,
+      "fixtureManifestSha256": "1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5",
+      "liveCount": 25000,
+      "lockHoldMs": {
+        "p50": 957.1449,
+        "p95": 1054.3168999999998,
+        "p99": 1176.9187000000002
+      },
+      "measuredSerializedSizeBytes": {
+        "max": 8255077,
+        "min": 8255076
+      },
+      "name": "maximum-live",
+      "productionSerializationsPerCommit": 1,
+      "publicationPath": [
+        "commit-lock",
+        "serialize",
+        "encrypt",
+        "temporary-file-write",
+        "durable-flush",
+        "atomic-rename",
+        "directory-durability",
+        "fs-head-write-flush"
+      ],
+      "sampleCount": 200,
+      "serializedSizeBytes": 8255077,
+      "tombstoneCount": 2500,
+      "totalBytesWritten": 1651057266,
+      "totalCount": 27500,
+      "warmupCommits": 30,
+      "warmupSerializedSizeBytes": {
+        "max": 8255076,
+        "min": 8255075
+      }
+    },
+    {
+      "bytesWritten": 16777426,
+      "commitMs": {
+        "p50": 856.8919000000001,
+        "p95": 1131.7692,
+        "p99": 1337.3144
+      },
+      "finalCatalogCount": 232,
+      "finalHeadGeneration": 232,
+      "fixtureManifestSha256": "26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87",
+      "liveCount": 25000,
+      "lockHoldMs": {
+        "p50": 851.9065,
+        "p95": 1123.8901,
+        "p99": 1328.9722
+      },
+      "measuredSerializedSizeBytes": {
+        "max": 16777216,
+        "min": 16777216
+      },
+      "name": "serialized-limit",
+      "productionSerializationsPerCommit": 1,
+      "publicationPath": [
+        "commit-lock",
+        "serialize",
+        "encrypt",
+        "temporary-file-write",
+        "durable-flush",
+        "atomic-rename",
+        "directory-durability",
+        "fs-head-write-flush"
+      ],
+      "sampleCount": 200,
+      "serializedSizeBytes": 16777216,
+      "tombstoneCount": 0,
+      "totalBytesWritten": 3355485133,
+      "totalCount": 25000,
+      "warmupCommits": 30,
+      "warmupSerializedSizeBytes": {
+        "max": 16777216,
+        "min": 16777216
+      }
+    }
+  ],
+  "gates": {
+    "allPassed": false,
+    "durableWrite4KiBP95Le5Ms": true,
+    "maximumLiveP95Le250Ms": false,
+    "maximumLiveSerializedSizeLe16MiB": true,
+    "mediumP95Le100Ms": false,
+    "serializedLimitP95Le250Ms": false
+  },
+  "generatedAt": "2026-07-19T19:12:30.642475Z",
+  "measuredCommits": 200,
+  "profile": {
+    "architecture": "x64",
+    "durabilityEvidence": {
+      "acceptableProperty": "flush-and-write-through-supported",
+      "flushCacheSupported": true,
+      "hardwarePowerProtection": "unknown-not-reported",
+      "nvCacheEnabled": false,
+      "publicationUsesWriteThroughAndDirectorySync": true,
+      "softwareFlushMethod": "FlushFileBuffers",
+      "source": "live-storage-write-cache-property-and-publication-path",
+      "userDefinedPowerProtection": false,
+      "writeCacheEnabled": true,
+      "writeCacheType": "write-back",
+      "writeThroughSupported": true
+    },
+    "durableWrite4KiB": {
+      "flushMethod": "FlushFileBuffers",
+      "p50Ms": 0.5909,
+      "p95Ms": 0.758,
+      "p99Ms": 0.8897,
+      "sampleCount": 200,
+      "warmupCount": 30
+    },
+    "durableWrite4KiBP95Ms": 0.758,
+    "excludedStorageClasses": [
+      "OneDrive-synchronized",
+      "network",
+      "removable",
+      "RAM-disk",
+      "write-cache-without-durability"
+    ],
+    "hostEvidence": {
+      "cpu": "AMD Ryzen 9 9900X 12-Core Processor",
+      "cpuArchitectureCodes": [
+        9
+      ],
+      "logicalProcessors": 24,
+      "osCaption": "Microsoft Windows 11 Pro",
+      "osVersion": "10.0.26200",
+      "physicalCores": 12,
+      "ramBytes": 66157015040,
+      "ramGiB": 61.61,
+      "source": "live-cim"
+    },
+    "mode": "reference",
+    "storageEvidence": {
+      "busType": "NVMe",
+      "diskNumber": 0,
+      "driveType": "fixed",
+      "filesystem": "NTFS",
+      "healthStatus": "Healthy",
+      "internal": true,
+      "mappingVerified": true,
+      "mediaType": "SSD",
+      "model": "WD_BLACK SN850X 2000GB",
+      "operationalStatus": "OK",
+      "partitionDiskNumber": 0,
+      "physicalDeviceId": "0",
+      "physicalLocation": "Integrated : Bus 2 : Device 0 : Function 0 : Adapter 1",
+      "serialNumber": "E823_8FA6_BF53_0001_001B_448B_4D41_83EC.",
+      "source": "live-cim-volume-disk-physical-disk-mapping",
+      "volumeRoot": "C:\\"
+    },
+    "target": "C:\\Users\\leoca\\AppData\\Local\\animaOS\\benchmarks\\corefs-catalog-reference-v1"
+  },
+  "schemaVersion": 1,
+  "sourceCommit": "d9944ff9d692f8aa6b46edb2b70c96edc31d59ba",
+  "versions": {
+    "aesGcm": "0.10.3",
+    "animaCorefs": "0.1.0",
+    "argon2": "0.5.3",
+    "rust": "rustc 1.75.0 (82e1608df 2023-12-21)",
+    "serdeJson": "1.0.150"
+  },
+  "warmupCommits": 30
+}
