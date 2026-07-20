@@ -134,7 +134,11 @@ def _load_model() -> Any | None:
                 exc_info=True,
             )
             return None
-    return _loaded.model
+    # Return the model THIS call loaded, not a re-read of the global _loaded:
+    # after the lock is released, another thread loading a different reranker
+    # model could rebind _loaded before we return, handing back the wrong
+    # model here.
+    return model
 
 
 def backend_status() -> str:

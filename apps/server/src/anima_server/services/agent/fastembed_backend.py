@@ -140,7 +140,11 @@ def _load_model(model_name: str) -> Any | None:
                 exc_info=True,
             )
             return None
-    return _loaded.model
+    # Return the model THIS call loaded, not a re-read of the global _loaded:
+    # once the lock is released, another thread loading a DIFFERENT model can
+    # rebind _loaded before we return, and reading it here would hand back the
+    # wrong model's vectors for our requested name.
+    return model
 
 
 def _resolve_current_model_name() -> str:

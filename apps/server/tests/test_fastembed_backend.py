@@ -434,3 +434,29 @@ def test_inference_failure_latches_and_status_reports_failed(monkeypatch) -> Non
     clock["now"] = 3000.0 + fastembed_backend._RETRY_TTL_SECONDS + 1
     assert fastembed_backend.embed_texts(["z"], model_name="bge") == [None]
     assert embed_calls["n"] == 2
+
+
+def test_load_model_returns_its_own_model_not_a_clobbered_global(monkeypatch) -> None:
+    """Regression: _load_model must return the model IT loaded, not a re-read
+    of the global _loaded — a concurrent load of a DIFFERENT model can rebind
+    _loaded between this call's lock release and its return, which would hand
+    back the wrong model's vectors for the requested name. Forced
+    deterministically by clobbering _loaded during the post-load membership
+    check (standing in for the concurrent rebind window)."""
+    fastembed_backend._reset_backend_for_tests()
+    a_model = _FakeModel()
+    other_model = _FakeModel()
+
+    monkeypatch.setattr(fastembed_backend, "_create_model", lambda name: a_model)
+
+    class _ClobberingFailed(dict):
+        def __contains__(self, key: object) -> bool:
+            fastembed_backend._loaded = fastembed_backend._Loaded(
+                name="other-model", model=other_model
+            )
+            return False
+
+    monkeypatch.setattr(fastembed_backend, "_failed", _ClobberingFailed())
+
+    result = fastembed_backend._load_model("model-a")
+    assert result is a_model  # not the clobbered "other-model"

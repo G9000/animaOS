@@ -886,3 +886,29 @@ def test_blurb_generation_invalidates_stale_chunk_vectors(
         )
     )
     assert remaining is None
+
+
+def test_reranker_load_model_returns_its_own_model_not_a_clobbered_global(
+    monkeypatch: Any,
+) -> None:
+    """Regression (mirrors the fastembed backend): reranker _load_model must
+    return the model IT loaded, not a re-read of the global _loaded that a
+    concurrent different-model load could rebind before the return."""
+    reranker_module._reset_model_cache_for_tests()
+    monkeypatch.setattr(settings, "retrieval_reranker_model", "model-a")
+
+    a_model = object()
+    other_model = object()
+    monkeypatch.setattr(reranker_module, "_create_model", lambda: a_model)
+
+    class _ClobberingFailed(dict):
+        def __contains__(self, key: object) -> bool:
+            reranker_module._loaded = reranker_module._Loaded(
+                name="other-model", model=other_model
+            )
+            return False
+
+    monkeypatch.setattr(reranker_module, "_failed", _ClobberingFailed())
+
+    result = reranker_module._load_model()
+    assert result is a_model
