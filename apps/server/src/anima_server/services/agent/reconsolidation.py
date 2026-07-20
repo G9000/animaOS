@@ -73,6 +73,7 @@ DEFAULT_LIFETIME_DRIFT_CAP = 0.3
 
 FIELD_EMOTIONAL_SALIENCE = "emotional_salience"
 FIELD_STABILITY_CLASS = "stability_class"
+FIELD_EVIDENCE_STRENGTH = "evidence_strength"
 
 _STABILITY_RANK_TO_CLASS = {rank: cls for cls, rank in _STABILITY_STRENGTH.items()}
 _MAX_STABILITY_RANK = max(_STABILITY_STRENGTH.values())
@@ -104,6 +105,7 @@ class ReconsolidationState:
 
     emotional_salience: float
     stability_class: str
+    evidence_strength: float = 0.8
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,8 @@ class ReconsolidationResult:
     stability_upgraded: bool
     lifetime_drift_total: float
     drift_capped: bool
+    evidence_strength: float = 0.8
+    evidence_strength_delta: float = 0.0
 
 
 def reconsolidate_salience(
@@ -168,13 +172,23 @@ def reconsolidate_salience(
         drift_cap, lifetime_drift_so_far + abs(emotional_salience_delta)
     )
 
-    # Identity items get recency/confidence refresh ONLY (PRD IL6) — no
-    # affect nudge (handled above) and no stability change. An item can
-    # reach here as memory_class="identity" with a non-stable stability
-    # class via LLM-set salience payloads, so the exemption must gate the
-    # stability upgrade too, not just the affect nudge.
+    # Identity items get a CONFIDENCE REFRESH ONLY (PRD IL6): recall
+    # reaffirms a core identity fact, so its evidence_strength is nudged
+    # toward the 1.0 ceiling — but no affect nudge (handled above) and no
+    # stability change. An item can reach here as memory_class="identity"
+    # with a non-stable stability class via LLM-set salience payloads, so
+    # the exemption must gate the stability upgrade too. Non-identity items
+    # reconsolidate via affect + stability instead and leave evidence
+    # strength to the normal extraction/consolidation path.
+    evidence_strength = state.evidence_strength
+    evidence_strength_delta = 0.0
     if is_identity:
         new_stability_class, stability_upgraded = state.stability_class, False
+        new_evidence = _clamp01(
+            state.evidence_strength + eta * (1.0 - state.evidence_strength)
+        )
+        evidence_strength_delta = new_evidence - state.evidence_strength
+        evidence_strength = new_evidence
     else:
         new_stability_class, stability_upgraded = _upgrade_stability(state.stability_class)
 
@@ -185,6 +199,8 @@ def reconsolidate_salience(
         stability_upgraded=stability_upgraded,
         lifetime_drift_total=lifetime_drift_total,
         drift_capped=drift_capped,
+        evidence_strength=evidence_strength,
+        evidence_strength_delta=evidence_strength_delta,
     )
 
 
@@ -263,6 +279,9 @@ def apply_reconsolidation(
     state = ReconsolidationState(
         emotional_salience=float(item.emotional_salience or 0.0),
         stability_class=item.stability_class or STABILITY_STABLE,
+        evidence_strength=float(
+            item.evidence_strength if item.evidence_strength is not None else 0.8
+        ),
     )
     lifetime_drift_so_far = float(getattr(item, "reconsolidation_drift", 0.0) or 0.0)
 
@@ -304,7 +323,25 @@ def apply_reconsolidation(
         )
         item.stability_class = result.stability_class
 
-    if result.emotional_salience_delta != 0.0 or result.stability_upgraded:
+    if result.evidence_strength_delta != 0.0:
+        soul_db.add(
+            ReconsolidationLog(
+                user_id=item.user_id,
+                memory_item_id=item.id,
+                applied_at=ref_now,
+                field=FIELD_EVIDENCE_STRENGTH,
+                old_value=state.evidence_strength,
+                new_value=result.evidence_strength,
+                eta=eta,
+            )
+        )
+        item.evidence_strength = result.evidence_strength
+
+    if (
+        result.emotional_salience_delta != 0.0
+        or result.stability_upgraded
+        or result.evidence_strength_delta != 0.0
+    ):
         soul_db.flush()
 
     return result

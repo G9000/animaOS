@@ -160,19 +160,36 @@ def test_stability_upgrades_one_rung_and_never_downgrades() -> None:
     assert result.stability_upgraded is False
 
 
-def test_identity_items_get_recency_refresh_only() -> None:
-    """Identity exemption (PRD IL6): no affect nudge, no drift, and NO
-    stability change either — even for an identity item that arrives with a
-    non-stable stability_class (possible via LLM-set salience)."""
-    state = ReconsolidationState(emotional_salience=0.3, stability_class="temporary")
+def test_identity_items_get_confidence_refresh_only() -> None:
+    """Identity exemption (PRD IL6): recall gives a CONFIDENCE refresh only
+    — evidence_strength nudged toward its 1.0 ceiling — with no affect
+    nudge, no drift, and no stability change (even when the identity item
+    arrives with a non-stable stability_class via LLM-set salience)."""
+    state = ReconsolidationState(
+        emotional_salience=0.3, stability_class="temporary", evidence_strength=0.6
+    )
     result = reconsolidate_salience(state, 0.9, 0.05, 0.0, is_identity=True)
 
+    # No affect nudge, no drift, no stability change.
     assert result.emotional_salience == 0.3
     assert result.emotional_salience_delta == 0.0
     assert result.lifetime_drift_total == 0.0
-    # Stability is NOT upgraded for identity items — refresh only.
     assert result.stability_class == "temporary"
     assert result.stability_upgraded is False
+    # Confidence refresh: evidence_strength moves toward 1.0 by eta.
+    assert result.evidence_strength == pytest.approx(0.6 + 0.05 * (1.0 - 0.6))
+    assert result.evidence_strength_delta == pytest.approx(0.05 * (1.0 - 0.6))
+
+
+def test_nonidentity_items_do_not_get_confidence_refresh() -> None:
+    """Non-identity recall reconsolidates via affect + stability; it leaves
+    evidence_strength to the extraction/consolidation path."""
+    state = ReconsolidationState(
+        emotional_salience=0.3, stability_class="temporary", evidence_strength=0.6
+    )
+    result = reconsolidate_salience(state, 0.9, 0.05, 0.0, is_identity=False)
+    assert result.evidence_strength == 0.6
+    assert result.evidence_strength_delta == 0.0
 
 
 def test_no_affect_signal_skips_emotional_nudge_but_stability_still_applies() -> None:
@@ -851,3 +868,31 @@ def test_ignored_memory_in_mixed_run_still_reconsolidates() -> None:
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+def test_apply_reconsolidation_refreshes_identity_confidence_and_logs(db: Session) -> None:
+    """End-to-end: an identity item recalled gets its evidence_strength
+    bumped and a provenance log row written (reversible), with no affect or
+    stability change."""
+    item = _make_item(
+        db, memory_class="identity", content="My name is Alex",
+        emotional_salience=0.3, stability_class="stable",
+    )
+    item.evidence_strength = 0.6
+    db.flush()
+    before_salience = item.emotional_salience
+
+    result = apply_reconsolidation(db, item, current_affect_magnitude=0.9, eta=0.05)
+    db.flush()
+
+    assert result is not None
+    assert item.evidence_strength == pytest.approx(0.6 + 0.05 * (1.0 - 0.6))
+    assert item.emotional_salience == before_salience  # no affect nudge
+    logs = db.scalars(
+        select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == item.id)
+    ).all()
+    assert [row.field for row in logs] == ["evidence_strength"]
+    # Reversible: the original evidence_strength is reconstructable.
+    reconstructed = original_salience_from_log(db, item_id=item.id)
+    assert reconstructed is not None
+    assert reconstructed["evidence_strength"] == pytest.approx(0.6)

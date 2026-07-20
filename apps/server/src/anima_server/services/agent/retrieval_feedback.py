@@ -419,13 +419,18 @@ def sync_retrieval_feedback(
                 result = None
             else:
                 if result is not None and (
-                    result.emotional_salience_delta != 0.0 or result.stability_upgraded
+                    result.emotional_salience_delta != 0.0
+                    or result.stability_upgraded
+                    or result.evidence_strength_delta != 0.0
                 ):
                     reconsolidated_items[item_id] = {
                         "emotional_salience_delta": round(
                             result.emotional_salience_delta, 6
                         ),
                         "stability_upgraded": result.stability_upgraded,
+                        "evidence_strength_delta": round(
+                            result.evidence_strength_delta, 6
+                        ),
                         "lifetime_drift_total": round(result.lifetime_drift_total, 6),
                     }
 
