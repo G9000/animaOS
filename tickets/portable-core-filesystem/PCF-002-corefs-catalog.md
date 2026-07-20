@@ -8,8 +8,9 @@
 - Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
+- Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-20 04:03 MYT
+- Updated: 2026-07-20 11:32 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -157,6 +158,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-20 03:14 MYT - Archived the prior create-only target intact as `corefs-catalog-reference-v1.pre-main-rebase-20260720-025814` and reran the exact 30/200 profile from clean source `d9944ff9d692f8aa6b46edb2b70c96edc31d59ba`. Independent validation held the LocalAppData target chain and preserved binary, matched source, exact target/argv, private build record, committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`, and binary identity (volume serial `4008503144`, file ID `2814749768803186`) with binary SHA-256 `136533f7bc7e6ed1bb512251be04988ee50b041702843a868303859133e2f7fd`. Closed-schema/cross-field validation passed; direct inspection confirmed HEAD plus 232 catalogs, object counts 500/2,500/0, and zero temporary files. Artifact SHA-256 is `1fd7f1d7d6bb5c99e95793cfd6ba285329a4d982190ff675448cae3aacd6c63e`. Durable-write p95 passed at 0.7580 ms and maximum-live size passed at 8,255,077 bytes, while medium, maximum-live, and serialized-limit commit/lock p95 values remained red at 207.7262/205.5434 ms, 1,060.9271/1,054.3169 ms, and 1,131.7692/1,123.8901 ms. PCF-002 remains blocked with its original Started value preserved; plan Steps 12 and 13 remain open.
 - 2026-07-20 03:49 MYT - Resumed PCF-002 after the user approved a conservative catalog-commit performance revision: an exact-HEAD authenticated in-process snapshot cache plus removal of redundant validation for already-validated immutable catalog state, without changing the full-generation format, durability sequence, object-file layout checks, benchmark timer, or acceptance gates. Work continues in isolated branch `codex/pcf-002-catalog-performance` from merged main `5a3a7a0f`; the clean baseline passed the full Rust 1.75 CoreFS suite and all 121 benchmark-contract tests. The original Started value is preserved, and PCF-003 remains ineligible until the exact 30/200 latency gates pass and PCF-002 completes.
 - 2026-07-20 04:03 MYT - Committed the catalog-commit performance design and completed two independent spec-review passes. The first pass found same-version key-material cache binding and cache/kernel-lock ordering gaps; commit `1f1fd365` added domain-separated catalog/object-wrap key identities, short-lived `Arc` cache access, explicit kernel-lock-first ordering, and focused authentication/concurrency regressions. The second pass approved the revised spec with no remaining issues. Implementation planning remains gated on user review of the written spec.
+- 2026-07-20 11:32 MYT - The user approved the independently reviewed catalog-commit performance design. Added the dated test-first implementation plan with exact file ownership, cache/authentication and lock-order regressions, correctness gates, an unchanged 30/200 benchmark decision point, synchronized pass/blocker branches, and an explicit stop before external actions. No implementation, push, PR, review request, or monitoring action has started.
 
 ## Validation
 

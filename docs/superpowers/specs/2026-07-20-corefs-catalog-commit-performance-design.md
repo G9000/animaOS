@@ -2,9 +2,11 @@
 
 **Date:** 2026-07-20
 
-**Status:** Independently reviewed and approved; pending user review before implementation planning
+**Status:** User-approved; implementation plan written, execution not started
 
 **Ticket:** PCF-002 Step 12
+
+**Implementation plan:** `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 
 **Branch:** `codex/pcf-002-catalog-performance`
 
