@@ -75,6 +75,14 @@ def _create_model(model_name: str) -> Any:
 
 
 def embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None]:
+    global _failed
+    # A model can LOAD fine but then raise at inference time. That is still a
+    # failure of this model, so honor its cooldown here too — otherwise a
+    # loaded-but-inference-failing model would be re-hit every call and, worse,
+    # backend_status() would keep reporting "ready" (it only looks at the load
+    # latch) while embeds actually return None.
+    if _cooldown_active(model_name):
+        return [None] * len(texts)
     model = _load_model(model_name)
     if model is None:
         return [None] * len(texts)
@@ -82,6 +90,11 @@ def embed_texts(texts: list[str], *, model_name: str) -> list[list[float] | None
         return [list(map(float, vector)) for vector in model.embed(texts)]
     except Exception:
         logger.warning("fastembed inference failed; degrading to no dense arm", exc_info=True)
+        # Latch the inference failure (copy-on-write, same as the load path)
+        # so the cooldown above applies AND backend_status()/capabilities
+        # report this model as failed_retrying rather than a false "ready".
+        with _lock:
+            _failed = {**_failed, model_name: time.monotonic()}
         return [None] * len(texts)
 
 

@@ -1110,7 +1110,11 @@ async def _task_reparse_pending_documents(
         return "parsing pack not ready"
 
     factory = runtime_db_factory or get_runtime_session_factory()
-    budget = settings.document_auto_reparse_budget
+    # Clamp to >= 0 before it's used as a slice bound: a negative budget (e.g.
+    # a misconfigured ANIMA_DOCUMENT_AUTO_REPARSE_BUDGET=-1) would make
+    # `candidates[:budget]` slice from the END (`[:-1]`), reparsing almost the
+    # entire legacy-document queue in one cycle — the opposite of bounded.
+    budget = max(0, settings.document_auto_reparse_budget)
 
     def _reparse_cycle() -> str:
         reparsed = 0

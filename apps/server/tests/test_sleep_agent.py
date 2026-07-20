@@ -1406,6 +1406,41 @@ class TestReparsePendingDocumentsTask:
         assert "could not be parsed" in result
 
     @pytest.mark.asyncio()
+    async def test_negative_budget_clamps_to_zero(self, rt_factory, monkeypatch):
+        """A misconfigured negative budget must not turn candidates[:budget]
+        into a slice-from-the-end (`[:-1]`) that reparses almost the whole
+        legacy queue in one cycle. It clamps to 0 — nothing is reparsed."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", -1)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="upgraded", chunk_count=1)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3, 4, 5],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # Clamped to 0 — NOT [:-1] which would have reparsed docs 1..4.
+        assert calls == []
+
+    @pytest.mark.asyncio()
     async def test_upgraded_still_commits_and_counts(self, rt_factory, monkeypatch):
         """Regression guard alongside the upgraded_unembedded fix above: a
         normal successful upgrade must still commit and count as reparsed —

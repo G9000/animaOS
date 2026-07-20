@@ -399,3 +399,38 @@ def test_failed_latch_preserves_each_models_cooldown(monkeypatch) -> None:
     clock["now"] = 1000.0 + fastembed_backend._RETRY_TTL_SECONDS + 1
     assert fastembed_backend._load_model("model-a") is None
     assert calls == ["model-a"]
+
+
+def test_inference_failure_latches_and_status_reports_failed(monkeypatch) -> None:
+    """P2: a model that LOADS but raises during embed() must latch a failure so
+    backend_status()/capabilities report 'failed_retrying' (not a false
+    'ready') and the cooldown prevents re-hitting it every call — the load
+    latch alone doesn't cover a runtime inference error."""
+    clock = {"now": 3000.0}
+    monkeypatch.setattr(fastembed_backend.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(fastembed_backend, "_resolve_current_model_name", lambda: "bge")
+
+    embed_calls = {"n": 0}
+
+    class _InferenceFailingModel:
+        def embed(self, texts):
+            embed_calls["n"] += 1
+            raise RuntimeError("onnx inference blew up")
+
+    monkeypatch.setattr(
+        fastembed_backend, "_create_model", lambda model_name: _InferenceFailingModel()
+    )
+
+    # Loads fine, then embed() raises -> [None] and the failure is latched.
+    assert fastembed_backend.embed_texts(["x"], model_name="bge") == [None]
+    assert embed_calls["n"] == 1
+    assert fastembed_backend.backend_status() == "failed_retrying"
+
+    # A second call within the cooldown does NOT re-run failing inference.
+    assert fastembed_backend.embed_texts(["y"], model_name="bge") == [None]
+    assert embed_calls["n"] == 1
+
+    # After the cooldown lapses, it tries once more.
+    clock["now"] = 3000.0 + fastembed_backend._RETRY_TTL_SECONDS + 1
+    assert fastembed_backend.embed_texts(["z"], model_name="bge") == [None]
+    assert embed_calls["n"] == 2
