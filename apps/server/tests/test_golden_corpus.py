@@ -133,12 +133,20 @@ def _load_generator_module() -> ModuleType:
 
 
 def test_generate_fixtures_is_deterministic(tmp_path: Path) -> None:
-    """No docling needed — pure PDF-byte generation must be reproducible.
+    """No docling needed — PDF generation must be reproducible.
 
-    Runs the checked-in generator twice into separate directories and
-    diffs every byte, including the rasterized scanned.pdf (the one fixture
-    with an external rendering step via pypdfium2).
+    The three hand-built text PDFs and gold.json are pure deterministic byte
+    output, so they are byte-compared both run-to-run and against the
+    checked-in copies. scanned.pdf is the one fixture with a rasterization step
+    (pypdfium2 render -> Pillow image -> zlib-compressed XObject); its exact
+    bytes depend on the pypdfium2 / Pillow / zlib versions (Codex hit a 1-byte
+    Flate-length difference across environments), so byte-comparing it against
+    the checked-in copy is not portable. Instead assert its LOAD-BEARING
+    invariant — a genuine image-only PDF with no extractable text layer, which
+    is exactly what makes the OCR path meaningful.
     """
+    from anima_server.services.documents.pdfium_text import extract_pdf_text_pdfium
+
     generator = _load_generator_module()
     output_a = tmp_path / "run_a"
     output_b = tmp_path / "run_b"
@@ -146,19 +154,29 @@ def test_generate_fixtures_is_deterministic(tmp_path: Path) -> None:
     generator.generate_all(output_a)
     generator.generate_all(output_b)
 
-    names = ["simple.pdf", "multicolumn.pdf", "tables.pdf", "scanned.pdf", "gold.json"]
-    for name in names:
+    # In-environment reproducibility: two runs identical for every fixture
+    # (same env -> same raster -> same zlib, so scanned.pdf is stable here).
+    all_names = ["simple.pdf", "multicolumn.pdf", "tables.pdf", "scanned.pdf", "gold.json"]
+    for name in all_names:
         content_a = (output_a / name).read_bytes()
         content_b = (output_b / name).read_bytes()
         assert content_a == content_b, f"{name} was not byte-identical across two runs"
 
-    for name in names:
+    # Cross-environment: the deterministic fixtures must match the checked-in
+    # copies so a stale generator is caught.
+    for name in ["simple.pdf", "multicolumn.pdf", "tables.pdf", "gold.json"]:
         checked_in = (FIXTURES_DIR / name).read_bytes()
         generated = (output_a / name).read_bytes()
         assert checked_in == generated, (
             f"checked-in {name} is stale relative to generate_fixtures.py — "
             "regenerate with `python tests/fixtures/golden_corpus/generate_fixtures.py`"
         )
+
+    # scanned.pdf: assert the invariant (image-only, no text layer) on both the
+    # freshly generated copy and the checked-in one, rather than byte-equality.
+    for scanned_path in ((output_a / "scanned.pdf"), (FIXTURES_DIR / "scanned.pdf")):
+        with pytest.raises(RuntimeError, match="no extractable text"):
+            extract_pdf_text_pdfium(str(scanned_path))
 
 
 def test_prefetch_models_import_path_is_valid() -> None:
