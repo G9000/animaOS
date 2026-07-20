@@ -35,12 +35,22 @@ Let the companion send an unprompted message when a named drive pressure crosses
 ## Activity Log
 
 - 2026-07-15 16:55 MYT - Ticket created.
+- 2026-07-20 MYT - Implemented: pure drive accumulators (`inner_life/drives.py`), five-gate chain + edge wiring (`inner_life/initiative.py`), delivery seam + pollable default + fetch/ack route (`inner_life/delivery.py`), drive-tagged generation prompt, soul migration `20260720_0001` (InitiativeLog + PresenceConfig columns) and runtime migration `030` (DriveState + PendingInitiative), vault export/import + eval-reset, per-user presence-tick integration.
+- 2026-07-20 MYT - Review gate: task review (Approved, 1 Important fixed) + adversarial whole-branch review. Whole-branch review caught a Critical wiring bug — the presence tick passed the shared `SessionLocal` instead of resolving the per-user soul store, leaving IL3 inert in the SQLite deployment; fixed with a `user_id -> factory` resolver + regression test. Two-phase soul/runtime commit hardened so the provenance log never over-claims delivery.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_initiative.py -p no:randomly -q` -> 63 passed
+  - `bun run test` -> 54 failed / 2822 passed / 2 skipped (54 = pre-existing CoreFS/keyslots/recovery/vault/encrypted-core baseline; zero IL-003 regressions)
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/inner_life/{drives,initiative,delivery}.py`
+  - `apps/server/src/anima_server/services/agent/inner_life/presence.py`
+  - `apps/server/src/anima_server/services/agent/templates/prompts/initiative_message.md.j2`
+  - `apps/server/alembic_core/versions/20260720_0001_add_initiative.py`
+  - `apps/server/alembic_runtime/versions/030_drive_state_pending_initiative.py`
+  - `apps/server/src/anima_server/{main.py,db/session.py,services/vault.py,services/eval_reset.py}`
+  - `apps/server/tests/test_inner_life_initiative.py`
 - Notes:
-  - none
+  - Off by default (`PresenceConfig.initiative_enabled`); no initiative can fire while disabled, in quiet hours, or over caps.
+  - `dream_residue` drive and `OSNotificationDelivery` are documented stubs (dream cycle is IL-007; Tauri notification layer is a follow-up).
