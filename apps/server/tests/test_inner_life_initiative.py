@@ -1265,6 +1265,49 @@ def test_resolve_signals_due_and_occurred_foresight_still_count_as_open(
     runtime_engine.dispose()
 
 
+def test_foresight_horizon_uses_local_tick_date_not_utc(db: Session) -> None:
+    """Regression (PR review, P2): the horizon must compare foresight
+    start_date (a user-local calendar date) against the LOCAL tick date, not
+    the UTC date. At 00:30 local in UTC+8 the UTC date is the previous day, so
+    an item at the far edge of the horizon (start_date == local_today +
+    horizon) is in-window locally but would fall out if the UTC date were
+    used. Both the grow signal and the material lookup must agree on local."""
+    from anima_server.config import settings
+    from anima_server.services.data_crypto import ef
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    tz8 = timezone(timedelta(hours=8))
+    local_now = datetime(2026, 7, 21, 0, 30, tzinfo=tz8)  # UTC: 2026-07-20 16:30
+    horizon = settings.initiative_unresolved_thread_horizon_days
+    # Far edge of the horizon relative to the LOCAL date. Under the local date
+    # (Jul 21) this is exactly in-window; under the UTC date (Jul 20) it is one
+    # day past the edge and would be excluded.
+    edge_start = date(2026, 7, 21) + timedelta(days=horizon)
+
+    db.add(
+        ForesightSignal(
+            user_id=1,
+            content=ef(1, "horizon-edge thread", table="foresight_signals", field="content"),
+            evidence="mentioned it", status="active", start_date=edge_start, confidence=0.9,
+        )
+    )
+    db.commit()
+
+    with runtime_factory() as rdb:
+        signals, _ = initiative.resolve_drive_signals(
+            db, rdb, user_id=1, now=local_now,
+            last_user_turn_at=None, pattern_marker=None,
+        )
+    assert signals.unresolved_thread_open is True  # in-window on the LOCAL date
+    material = initiative.gather_drive_material(
+        db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD, now=local_now,
+    )
+    assert material == "horizon-edge thread"
+    runtime_engine.dispose()
+
+
 def test_material_matches_the_in_horizon_item_not_an_unrelated_open_row(
     db: Session,
 ) -> None:

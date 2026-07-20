@@ -440,7 +440,12 @@ def resolve_drive_signals(
     ``last_fired_at`` is only ever moved forward).
     """
     now_utc = now.astimezone(UTC)
-    today = now_utc.date()
+    # Foresight start_date is a user-local CALENDAR date, so the horizon must
+    # compare against the LOCAL tick date, not the UTC date — converting to UTC
+    # first would shift the window across local midnight in non-UTC zones (an
+    # item due "today" could be treated as tomorrow/yesterday). now is already
+    # the local-time view; instant math below still uses now_utc.
+    today = now.date()
 
     # unresolved_thread: an OPEN ForesightSignal whose start_date horizon is
     # approaching (within the configured window) or already here. "Open" is
@@ -603,7 +608,7 @@ def gather_drive_material(
     so the message speaks to the item that actually drove the pressure, never
     an unrelated out-of-horizon or start_date-less open row."""
     if drive == DRIVE_UNRESOLVED_THREAD:
-        today = now.astimezone(UTC).date()
+        today = now.date()  # local calendar date, matching the grow signal
         horizon_days = settings.initiative_unresolved_thread_horizon_days
         row = soul_db.scalar(
             _open_in_horizon_foresight(user_id, today, horizon_days).limit(1)
