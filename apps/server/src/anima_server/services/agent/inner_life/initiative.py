@@ -891,6 +891,17 @@ def tick_initiative_for_user(
             soul_db.commit()
             runtime_db.commit()
             if fired and log_row is not None:
+                # Residual two-phase-commit window (inherent to spanning two
+                # physical DBs without an outbox): if THIS commit crashes after
+                # the runtime commit already made the delivery durable, the log
+                # under-claims (delivered stays False for a delivered message).
+                # This fails safe — it can never cause over-firing: rate caps
+                # (`count_recent_fires`) count by `generated_text is not None`,
+                # not `delivered`, and `last_fired_at` was already committed
+                # above, so the cooldown gate still holds. The only effect is
+                # `count_unanswered_initiatives` (backoff) undercounting by one.
+                # A true fix (transactional outbox / reconciliation) is a
+                # cross-cutting follow-up, not scoped to IL3.
                 log_row.delivered = True
                 soul_db.commit()
         return True
