@@ -1129,6 +1129,123 @@ def test_resolve_signals_ignores_resolved_foresight_signal(db: Session) -> None:
     runtime_engine.dispose()
 
 
+def test_resolve_signals_due_and_occurred_foresight_still_count_as_open(
+    db: Session,
+) -> None:
+    """Regression (PR review, P2): `sweep_foresight_lifecycle` promotes an
+    item active -> due the moment it enters its window (the most timely
+    moment), then -> occurred once past its end. Both are still OPEN
+    unresolved threads and must keep the drive growing; an active-only filter
+    would drop the signal exactly when the event becomes relevant. The
+    material lookup uses the same open set, so it resolves too."""
+    from anima_server.services.data_crypto import ef
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    today = date(2026, 1, 10)
+
+    for status, start in (("due", today), ("occurred", today - timedelta(days=2))):
+        db.add(
+            ForesightSignal(
+                user_id=1,
+                content=ef(1, f"{status} thread", table="foresight_signals", field="content"),
+                evidence="mentioned it", status=status, start_date=start, confidence=0.9,
+            )
+        )
+    db.commit()
+
+    with runtime_factory() as rdb:
+        signals, _ = initiative.resolve_drive_signals(
+            db, rdb, user_id=1,
+            now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
+            last_user_turn_at=None, pattern_marker=None,
+        )
+    assert signals.unresolved_thread_open is True
+    assert signals.unresolved_thread_resolved is False
+    # The material lookup agrees with the grow signal (open set, not active-only).
+    material = initiative.gather_drive_material(db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD)
+    assert "thread" in material
+    runtime_engine.dispose()
+
+
+def test_resolve_signals_closed_source_marks_thread_resolved(db: Session) -> None:
+    """Regression (PR review, P2): when the foresight source closes
+    (cancelled/stale, or none remains open in the horizon), the edge must
+    signal `unresolved_thread_resolved` so the drive resets instead of
+    lingering — otherwise leftover pressure could fire with no material."""
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    today = date(2026, 1, 10)
+
+    db.add(
+        ForesightSignal(
+            user_id=1, content="cancelled plan", evidence="mentioned it",
+            status="cancelled", start_date=today + timedelta(days=1), confidence=0.9,
+        )
+    )
+    db.commit()
+
+    with runtime_factory() as rdb:
+        signals, _ = initiative.resolve_drive_signals(
+            db, rdb, user_id=1,
+            now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
+            last_user_turn_at=None, pattern_marker=None,
+        )
+    assert signals.unresolved_thread_open is False
+    assert signals.unresolved_thread_resolved is True
+    runtime_engine.dispose()
+
+
+def test_closed_foresight_source_resets_pressure_and_blocks_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): high `unresolved_thread` pressure whose
+    source has closed must reset (not slow-leak) so it cannot fire an
+    initiative with no material. Pre-fix, `reset` was `user_turn_occurred`
+    only, so a cancelled/stale source left the pressure near its old value
+    and it would fire on empty material; post-fix the tick zeroes it."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    # Pressure is already above threshold, but the only foresight source is
+    # cancelled — the classic "fired the drive, then the plan fell through".
+    _seed_enabled_user(
+        soul_factory, runtime_factory,
+        pressures={"unresolved_thread": 0.99},
+        updated_at=datetime(2026, 1, 9, 12, 0, tzinfo=UTC),
+    )
+    with soul_factory() as db_:
+        db_.add(
+            ForesightSignal(
+                user_id=1, content="cancelled plan", evidence="mentioned it",
+                status="cancelled", start_date=date(2026, 1, 11), confidence=0.9,
+            )
+        )
+        db_.commit()
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        raise AssertionError("must not fire — source closed, no material")
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    ok = tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1,
+        local_now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
+    )
+    assert ok is True  # tick succeeded (it just didn't fire)
+
+    with soul_factory() as db_:
+        assert db_.scalars(select(InitiativeLog)).all() == []
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.unresolved_thread == 0.0  # reset, not left lingering
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 def test_resolve_signals_pattern_shareable_respects_surfaced_marker(db: Session) -> None:
     runtime_engine = _create_runtime_engine()
     runtime_factory = _make_factory(runtime_engine)

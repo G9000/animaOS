@@ -79,6 +79,13 @@ class DriveSignals:
       dormant.
     - ``user_turn_occurred``: any user turn happened since the last tick —
       resets ``unresolved_thread`` and ``relational``.
+    - ``unresolved_thread_resolved``: the foresight source that fed
+      ``unresolved_thread`` is no longer an open item in the horizon (it was
+      resolved/cancelled/occurred-then-stale, or none exists) — also resets
+      ``unresolved_thread``, so the pressure can never linger (and fire) after
+      its material is gone. Distinct from ``unresolved_thread_open`` being
+      False: a bare ``DriveSignals()`` leaves this False so the pure leak path
+      is unchanged; the edge sets it explicitly.
     - ``novel_topic_discussed``: a genuinely new topic came up — resets
       ``novelty``.
     """
@@ -89,6 +96,7 @@ class DriveSignals:
     novelty_repetitive: bool = False
     dream_residue_present: bool = False
     user_turn_occurred: bool = False
+    unresolved_thread_resolved: bool = False
     novel_topic_discussed: bool = False
 
 
@@ -144,7 +152,10 @@ def advance_drives(
         unresolved_thread=_advance_one(
             state.unresolved_thread,
             grow=signals.unresolved_thread_open,
-            reset=signals.user_turn_occurred,
+            # Reset on a user turn OR when the source thread has closed — the
+            # latter guarantees the pressure can't linger and fire once its
+            # material is gone (see DriveSignals.unresolved_thread_resolved).
+            reset=signals.user_turn_occurred or signals.unresolved_thread_resolved,
             growth_rate=config.growth_unresolved_thread,
             leak_tau_hours=config.leak_tau_hours,
             delta_hours=delta_hours,

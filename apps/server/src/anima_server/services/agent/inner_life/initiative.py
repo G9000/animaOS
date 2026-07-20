@@ -45,6 +45,7 @@ from anima_server.services.agent.inner_life.delivery import (
     InitiativeDelivery,
     PendingInitiativeDelivery,
 )
+from anima_server.services.agent.foresight import FORESIGHT_ACTIVE_STATUSES
 from anima_server.services.agent.inner_life.drives import (
     DRIVE_DREAM_RESIDUE,
     DRIVE_NAMES,
@@ -65,6 +66,12 @@ logger = logging.getLogger(__name__)
 # Pattern-synthesis storage constant (avoids importing pattern_synthesis.py's
 # private helpers; this string is its public storage contract).
 _PATTERN_CATEGORY = "pattern"
+
+# The foresight statuses that still count as an OPEN, unresolved thread for
+# IL3 — reuse foresight's own canonical set ({active, due, occurred}) so this
+# never drifts from the lifecycle state machine (an item is promoted
+# active -> due -> occurred before it finally goes stale/cancelled).
+_OPEN_FORESIGHT_STATUSES: frozenset[str] = FORESIGHT_ACTIVE_STATUSES
 
 
 def _clamp01(value: float) -> float:
@@ -411,15 +418,20 @@ def resolve_drive_signals(
     now_utc = now.astimezone(UTC)
     today = now_utc.date()
 
-    # unresolved_thread: an active ForesightSignal whose start_date horizon
-    # is approaching (within the configured window) or already here.
+    # unresolved_thread: an OPEN ForesightSignal whose start_date horizon is
+    # approaching (within the configured window) or already here. "Open" is
+    # the canonical FORESIGHT_ACTIVE_STATUSES set ({active, due, occurred}),
+    # NOT just "active": sweep_foresight_lifecycle promotes active -> due the
+    # moment an item enters its window (exactly when it's most timely), so an
+    # active-only filter would stop the drive growing right when it matters.
+    # gather_drive_material uses the same set so the two never disagree.
     horizon_days = settings.initiative_unresolved_thread_horizon_days
     unresolved_thread_open = (
         soul_db.scalar(
             select(ForesightSignal.id)
             .where(
                 ForesightSignal.user_id == user_id,
-                ForesightSignal.status == "active",
+                ForesightSignal.status.in_(_OPEN_FORESIGHT_STATUSES),
                 ForesightSignal.start_date.isnot(None),
                 ForesightSignal.start_date <= today + timedelta(days=horizon_days),
             )
@@ -427,6 +439,11 @@ def resolve_drive_signals(
         )
         is not None
     )
+    # When no open in-horizon thread remains, the source has closed
+    # (resolved/cancelled/occurred-then-stale, or none ever existed) — reset
+    # the drive so leftover pressure can never fire with no material to speak
+    # to. Firing therefore implies an open source in the SAME tick.
+    unresolved_thread_resolved = not unresolved_thread_open
 
     # pattern_insight: an active pattern-synthesis MemoryItem not yet
     # surfaced (created after the last surface marker, or ever if none).
@@ -500,6 +517,7 @@ def resolve_drive_signals(
         novelty_repetitive=novelty_repetitive,
         dream_residue_present=False,  # IL-007 stub — wired but dormant
         user_turn_occurred=user_turn_occurred,
+        unresolved_thread_resolved=unresolved_thread_resolved,
         novel_topic_discussed=novel_topic_discussed,
     )
     return signals, latest_message_at
@@ -564,7 +582,10 @@ def gather_drive_material(soul_db: Session, *, user_id: int, drive: str) -> str:
     if drive == DRIVE_UNRESOLVED_THREAD:
         row = soul_db.scalar(
             select(ForesightSignal)
-            .where(ForesightSignal.user_id == user_id, ForesightSignal.status == "active")
+            .where(
+                ForesightSignal.user_id == user_id,
+                ForesightSignal.status.in_(_OPEN_FORESIGHT_STATUSES),
+            )
             .order_by(ForesightSignal.start_date.asc())
             .limit(1)
         )
