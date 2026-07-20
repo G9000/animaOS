@@ -144,3 +144,88 @@ class PresenceCatchup(RuntimeBase):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class DriveStateRow(RuntimeBase):
+    """Persisted IL3 drive-pressure state (rebuildable — see
+    ``services.agent.inner_life.drives`` for the pure accumulator math this
+    backs). One row per user.
+
+    ``updated_at`` is the Ī”t reference the presence tick uses to compute
+    elapsed hours since the last advance (mirrors ``AffectStateRow``) — it is
+    bookkeeping the PRD's drive table doesn't name explicitly, same as
+    ``AffectStateRow.updated_at`` for IL1.
+
+    ``pattern_insight_surfaced_at`` is similar bookkeeping specific to the
+    ``pattern_insight`` drive: unlike ``unresolved_thread`` (which resets
+    structurally whenever its ForesightSignal is no longer open) or
+    ``relational``/``novelty`` (reset by an observable turn/topic event),
+    "not yet shared" for a pattern-synthesis finding has no natural
+    structural marker — pattern MemoryItem rows persist forever once
+    created. This column is the "has this finding already been surfaced"
+    marker the growth signal needs; it only advances when an initiative
+    actually fires on ``pattern_insight`` (``reset_drive`` at the edge).
+
+    ``last_fired_at``/``unanswered_initiatives`` feed the gate chain's
+    adaptive cooldown (``services.agent.inner_life.initiative.should_fire``);
+    ``last_user_turn_at`` is what lets the tick detect a NEW user turn since
+    the previous tick (a raw ``RuntimeThread.last_message_at`` read can't
+    distinguish "the same old message" from "a new one" on its own).
+    """
+
+    __tablename__ = "drive_states"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    unresolved_thread: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    pattern_insight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    relational: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    novelty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    dream_residue: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_fired_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    last_user_turn_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    pattern_insight_surfaced_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMPTZ, nullable=True
+    )
+    unanswered_initiatives: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class PendingInitiative(RuntimeBase):
+    """A fired IL3 initiative awaiting client pickup (the default,
+    always-available delivery adapter — see
+    ``services.agent.inner_life.delivery.PendingInitiativeDelivery``).
+
+    ``initiative_log_id`` references ``InitiativeLog.id`` in the SOUL store
+    by plain integer, not a SQL foreign key — the two tables live in
+    different physical databases (runtime Postgres/SQLite vs. SQLCipher
+    soul store), the same cross-tier reference style already used by
+    ``MemoryRetrievalFeedback.memory_item_id``. ``delivered`` flips true once
+    a client GET has returned the row; ``acknowledged`` flips true via the
+    ack API route, which is also what marks the soul-store ``InitiativeLog``
+    row ``answered`` for the cooldown backoff.
+    """
+
+    __tablename__ = "pending_initiatives"
+    __table_args__ = (
+        Index("ix_pending_initiatives_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    initiative_log_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    drive: Mapped[str] = mapped_column(String(32), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    delivered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ,
+        nullable=False,
+        server_default=func.now(),
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)

@@ -27,6 +27,7 @@ from anima_server.models import (
     EmotionalSignal,
     ExperienceClusterState,
     ForesightSignal,
+    InitiativeLog,
     KGEntity,
     KGRelation,
     LatentTrace,
@@ -172,6 +173,7 @@ _MEMORY_TABLES = frozenset(
         "memoryClaims",
         "tendencyContributions",
         "reconsolidationLog",
+        "initiativeLog",
     }
 )
 
@@ -217,6 +219,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "memoryClaims",
         "tendencyContributions",
         "reconsolidationLog",
+        "initiativeLog",
     }
 )
 
@@ -915,6 +918,10 @@ def export_database_snapshot(
             _scoped(select(ReconsolidationLog), ReconsolidationLog)
         ).all()
     ]
+    initiative_log = [
+        serialize_initiative_log_record(row, deks=deks)
+        for row in db.scalars(_scoped(select(InitiativeLog), InitiativeLog)).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -937,6 +944,7 @@ def export_database_snapshot(
         "memoryClaims": memory_claims,
         "tendencyContributions": tendency_contributions,
         "reconsolidationLog": reconsolidation_log,
+        "initiativeLog": initiative_log,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -977,6 +985,7 @@ def restore_database_snapshot(
     memory_claims_payload = snapshot.get("memoryClaims", [])
     tendency_contributions_payload = snapshot.get("tendencyContributions", [])
     reconsolidation_log_payload = snapshot.get("reconsolidationLog", [])
+    initiative_log_payload = snapshot.get("initiativeLog", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -1363,6 +1372,24 @@ def restore_database_snapshot(
                     old_value=float(record.get("old_value") or 0.0),
                     new_value=float(record.get("new_value") or 0.0),
                     eta=float(record.get("eta") or 0.0),
+                )
+            )
+
+        for record in initiative_log_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                InitiativeLog(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    fired_at=parse_optional_datetime(record.get("fired_at")),
+                    drive=str(record["drive"]),
+                    pressure_snapshot=record.get("pressure_snapshot") or {},
+                    gate_states=record.get("gate_states") or {},
+                    generated_text=coerce_optional_str(record.get("generated_text")),
+                    delivered=bool(record.get("delivered", False)),
+                    answered=bool(record.get("answered", False)),
+                    created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
 
@@ -2352,6 +2379,36 @@ def serialize_reconsolidation_log_record(
     }
 
 
+def serialize_initiative_log_record(
+    row: InitiativeLog,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """IL3 push-initiative provenance row. ``generated_text`` is the one
+    free-text field (field-encrypted like ``foresight_signals.content``);
+    ``pressure_snapshot``/``gate_states`` are numeric/boolean JSON only, no
+    ``deks`` needed for those two (mirrors ``TendencyContribution``/
+    ``ReconsolidationLog``)."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "fired_at": serialize_optional_datetime(row.fired_at),
+        "drive": row.drive,
+        "pressure_snapshot": row.pressure_snapshot,
+        "gate_states": row.gate_states,
+        "generated_text": _decrypt_field_value(
+            row.generated_text,
+            deks,
+            table="initiative_log",
+            field="generated_text",
+            user_id=row.user_id,
+        ),
+        "delivered": row.delivered,
+        "answered": row.answered,
+        "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
 def serialize_experience_cluster_state_record(
     state: ExperienceClusterState,
 ) -> dict[str, Any]:
@@ -2716,6 +2773,15 @@ def _re_encrypt_snapshot_fields(
                     table="foresight_signals",
                     field="relative_text",
                 )
+
+    for initiative in snapshot.get("initiativeLog", []):
+        if isinstance(initiative, dict) and initiative.get("generated_text"):
+            initiative["generated_text"] = _re_encrypt_field_value(
+                initiative["generated_text"],
+                user_id,
+                table="initiative_log",
+                field="generated_text",
+            )
 
     for experience in snapshot.get("agentExperiences", []):
         if isinstance(experience, dict):

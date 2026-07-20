@@ -38,6 +38,7 @@ TABLE_DOMAIN_MAP: dict[str, str] = {
     "diary_attachments": DOMAIN_MEMORIES,
     "emotional_signals": DOMAIN_EMOTIONS,
     "self_model_blocks": DOMAIN_SELFMODEL,
+    "initiative_log": DOMAIN_MEMORIES,
 }
 
 DEFAULT_DOMAIN = DOMAIN_MEMORIES

@@ -1313,3 +1313,56 @@ class ReconsolidationLog(Base):
     old_value: Mapped[float] = mapped_column(Float, nullable=False)
     new_value: Mapped[float] = mapped_column(Float, nullable=False)
     eta: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class InitiativeLog(Base):
+    """IL3 push-initiative provenance row: the answer to "why did it message me?"
+
+    Written exactly once per gate-chain pass that clears every gate and has a
+    dominant drive (``services.agent.inner_life.initiative.tick_initiative_for_user``),
+    whether or not message generation actually succeeded — a failed
+    generation still writes a row here with ``generated_text=None`` and
+    ``delivered=False`` (a logged best-effort attempt, per PRD IL3: "on
+    generation failure ... log the attempt"), so every gate-chain pass that
+    reached the fire step is inspectable, not just the successful ones.
+    ``pressure_snapshot``/``gate_states`` are numeric/boolean JSON only (all
+    five drive pressures and every named gate at fire time) — no external
+    content beyond the one generated message itself. ``generated_text`` is
+    field-encrypted like other free-text soul columns (see
+    ``services.data_crypto`` domain map); pressure/gate JSON needs no such
+    encryption (numeric/boolean only, mirrors ``TendencyContribution`` /
+    ``ReconsolidationLog``). ``answered`` flips true via the pending-initiative
+    ack API route once the user acknowledges the delivered message — it is
+    what feeds the gate chain's unanswered-initiative cooldown backoff.
+    """
+
+    __tablename__ = "initiative_log"
+    __table_args__ = (
+        Index("ix_initiative_log_user_fired", "user_id", "fired_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    drive: Mapped[str] = mapped_column(String(32), nullable=False)
+    pressure_snapshot: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    gate_states: Mapped[dict[str, bool]] = mapped_column(JSON, nullable=False)
+    generated_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    answered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

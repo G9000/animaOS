@@ -212,6 +212,36 @@ def _repair_legacy_diary_schema(connection: Connection) -> None:
             diary_columns.add(column_name)
 
 
+def _repair_legacy_presence_schema(connection: Connection) -> None:
+    """Add current presence_configs columns to legacy SQLite tables stamped
+    past migrations (IL3: initiative_enabled/quiet_hours_*)."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    presence_columns = _sqlite_column_names(connection, "presence_configs")
+    if not presence_columns:
+        return
+
+    for column_name, ddl in (
+        (
+            "initiative_enabled",
+            "ALTER TABLE presence_configs "
+            "ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
+        ),
+        (
+            "quiet_hours_start",
+            "ALTER TABLE presence_configs ADD COLUMN quiet_hours_start INTEGER",
+        ),
+        (
+            "quiet_hours_end",
+            "ALTER TABLE presence_configs ADD COLUMN quiet_hours_end INTEGER",
+        ),
+    ):
+        if column_name not in presence_columns:
+            connection.exec_driver_sql(ddl)
+            presence_columns.add(column_name)
+
+
 def _make_engine(database_url: str | None = None) -> Engine:
     url = database_url or settings.database_url
     ensure_database_directory(url)
@@ -445,6 +475,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
             _repair_legacy_diary_schema(connection)
+            _repair_legacy_presence_schema(connection)
             command.stamp(cfg, "head")
             logger.info("Stamped legacy database at Alembic head.")
         else:
@@ -463,6 +494,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
             _repair_legacy_diary_schema(connection)
+            _repair_legacy_presence_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 

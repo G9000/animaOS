@@ -1,0 +1,882 @@
+"""IL3 — Gate chain, firing decision, and the presence-tick edge wiring.
+
+Pure part (no DB, no LLM, no clock reads): ``GateConfig``/``GateStates``/
+``DriveRecord``/``DriveDecision`` and the functions that turn a
+``DriveRecord`` + gate config + already-resolved ``now``/``closeness`` into a
+fire-or-not decision — ``compute_gate_states``, ``dominant_drive``,
+``should_fire``. All five gates from the PRD are represented:
+
+1. ``PresenceConfig.initiative_enabled`` — off by default (opt-in).
+2. Outside user-configured quiet hours.
+3. Adaptive cooldown: 24h base, scaled down toward 8h as closeness rises,
+   scaled up after unanswered initiatives.
+4. Rate caps: <=1/day, <=3/week (counted from ``InitiativeLog`` at the edge).
+5. Idle-only — NOT re-checked here. ``tick_initiative_for_user`` is only
+   ever invoked by ``run_presence_tick`` for users already excluded from the
+   tick's idle set, exactly like the IL1 affect tick — so this gate is
+   satisfied by construction, not by a runtime check. ``GateStates.idle`` is
+   still recorded (always ``True``) purely for provenance completeness.
+
+Edge part: signal resolution (ForesightSignal / pattern MemoryItem / contact
+cadence / topic diversity / the dream-residue stub), the closeness proxy,
+persistence of ``DriveStateRow``, the ONE small-LLM generation call, the
+``InitiativeLog`` provenance write, delivery, and the per-user presence-tick
+sibling function itself. Zero LLM anywhere except
+``generate_initiative_message`` (source-level test asserts this).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from anima_server.config import settings
+from anima_server.models import ForesightSignal, InitiativeLog, MemoryEpisode, MemoryItem
+from anima_server.models.runtime import RuntimeThread
+from anima_server.models.runtime_consciousness import DriveStateRow
+from anima_server.services.agent.inner_life.delivery import (
+    InitiativeDelivery,
+    PendingInitiativeDelivery,
+)
+from anima_server.services.agent.inner_life.drives import (
+    DRIVE_DREAM_RESIDUE,
+    DRIVE_NAMES,
+    DRIVE_NOVELTY,
+    DRIVE_PATTERN_INSIGHT,
+    DRIVE_RELATIONAL,
+    DRIVE_UNRESOLVED_THREAD,
+    DriveConfig,
+    DriveSignals,
+    DriveState,
+    advance_drives,
+    reset_drive,
+)
+from anima_server.services.data_crypto import df, ef
+
+logger = logging.getLogger(__name__)
+
+# Pattern-synthesis storage constant (avoids importing pattern_synthesis.py's
+# private helpers; this string is its public storage contract).
+_PATTERN_CATEGORY = "pattern"
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Pure: gate chain + firing decision
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class GateConfig:
+    enabled: bool
+    quiet_hours_start: int | None
+    quiet_hours_end: int | None
+    cooldown_base_hours: float = 24.0
+    cooldown_min_hours: float = 8.0
+    cooldown_backoff_factor: float = 1.5
+    cooldown_max_hours: float = 168.0
+    max_per_day: int = 1
+    max_per_week: int = 3
+    thetas: dict[str, float] | None = None
+
+    def theta(self, drive: str) -> float:
+        if self.thetas and drive in self.thetas:
+            return self.thetas[drive]
+        return 0.7
+
+
+@dataclass(frozen=True, slots=True)
+class GateStates:
+    enabled: bool
+    outside_quiet_hours: bool
+    cooldown_elapsed: bool
+    under_daily_cap: bool
+    under_weekly_cap: bool
+    idle: bool = True
+
+    @property
+    def all_pass(self) -> bool:
+        return (
+            self.enabled
+            and self.outside_quiet_hours
+            and self.cooldown_elapsed
+            and self.under_daily_cap
+            and self.under_weekly_cap
+            and self.idle
+        )
+
+    def as_dict(self) -> dict[str, bool]:
+        return {
+            "enabled": self.enabled,
+            "outside_quiet_hours": self.outside_quiet_hours,
+            "cooldown_elapsed": self.cooldown_elapsed,
+            "under_daily_cap": self.under_daily_cap,
+            "under_weekly_cap": self.under_weekly_cap,
+            "idle": self.idle,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DriveRecord:
+    """Full per-user IL3 state the gate chain needs: the five pressures plus
+    firing bookkeeping (``drives.DriveState`` covers only the pressures)."""
+
+    pressures: DriveState
+    last_fired_at: datetime | None = None
+    last_user_turn_at: datetime | None = None
+    unanswered_initiatives: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DriveDecision:
+    drive: str
+    pressure: float
+    pressure_snapshot: dict[str, float]
+    gate_states: dict[str, bool]
+
+
+def _in_quiet_hours(hour: int, start: int | None, end: int | None) -> bool:
+    if start is None or end is None or start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end  # wraps past midnight
+
+
+def effective_cooldown_hours(
+    config: GateConfig, *, closeness: float, unanswered_initiatives: int
+) -> float:
+    """24h base scaled down toward the configured floor as closeness rises,
+    scaled up after unanswered initiatives (PRD IL3 gate 3)."""
+    closeness = _clamp01(closeness)
+    base = config.cooldown_base_hours - (
+        config.cooldown_base_hours - config.cooldown_min_hours
+    ) * closeness
+    base = max(config.cooldown_min_hours, base)
+    backoff = config.cooldown_backoff_factor ** max(0, unanswered_initiatives)
+    return min(config.cooldown_max_hours, base * backoff)
+
+
+def dominant_drive(
+    pressures: DriveState, config: GateConfig
+) -> tuple[str, float] | None:
+    """The highest-pressure drive that meets or exceeds its own theta, or
+    ``None`` if no drive qualifies. Ties break by ``DRIVE_NAMES`` order."""
+    candidates = [
+        (name, getattr(pressures, name))
+        for name in DRIVE_NAMES
+        if getattr(pressures, name) >= config.theta(name)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda pair: pair[1])
+
+
+def compute_gate_states(
+    record: DriveRecord,
+    config: GateConfig,
+    now: datetime,
+    *,
+    closeness: float,
+    fires_today: int,
+    fires_this_week: int,
+) -> GateStates:
+    """All five gates, evaluated independently so tests (and provenance) can
+    see exactly which one blocked. ``now`` must already be a local-time-view
+    datetime (see ``inner_life.presence.system_zoneinfo``/``resolve_local_now``)
+    — quiet hours read ``now.hour`` directly, the same local-time discipline
+    IL2 established."""
+    cooldown_hours = effective_cooldown_hours(
+        config,
+        closeness=closeness,
+        unanswered_initiatives=record.unanswered_initiatives,
+    )
+    if record.last_fired_at is None:
+        cooldown_elapsed = True
+    else:
+        last_fired_utc = _as_utc(record.last_fired_at)
+        now_utc = now.astimezone(UTC)
+        elapsed_hours = (now_utc - last_fired_utc).total_seconds() / 3600.0
+        cooldown_elapsed = elapsed_hours >= cooldown_hours
+
+    return GateStates(
+        enabled=config.enabled,
+        outside_quiet_hours=not _in_quiet_hours(
+            now.hour, config.quiet_hours_start, config.quiet_hours_end
+        ),
+        cooldown_elapsed=cooldown_elapsed,
+        under_daily_cap=fires_today < config.max_per_day,
+        under_weekly_cap=fires_this_week < config.max_per_week,
+        idle=True,
+    )
+
+
+def should_fire(
+    record: DriveRecord,
+    config: GateConfig,
+    now: datetime,
+    closeness: float,
+    *,
+    fires_today: int,
+    fires_this_week: int,
+) -> DriveDecision | None:
+    """The dominant drive if every gate passes and some drive is at/above
+    its threshold; ``None`` otherwise. Provably cannot fire when
+    ``config.enabled`` is False, regardless of pressure — ``GateStates.all_pass``
+    ANDs every gate, and ``enabled`` is one of them."""
+    gates = compute_gate_states(
+        record,
+        config,
+        now,
+        closeness=closeness,
+        fires_today=fires_today,
+        fires_this_week=fires_this_week,
+    )
+    dominant = dominant_drive(record.pressures, config)
+    if dominant is None or not gates.all_pass:
+        return None
+    drive, pressure = dominant
+    return DriveDecision(
+        drive=drive,
+        pressure=pressure,
+        pressure_snapshot=record.pressures.as_dict(),
+        gate_states=gates.as_dict(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Edge: config resolution
+# ---------------------------------------------------------------------------
+
+
+def get_drive_config() -> DriveConfig:
+    return DriveConfig(
+        growth_unresolved_thread=settings.initiative_growth_unresolved_thread,
+        growth_pattern_insight=settings.initiative_growth_pattern_insight,
+        growth_relational=settings.initiative_growth_relational,
+        growth_novelty=settings.initiative_growth_novelty,
+        growth_dream_residue=settings.initiative_growth_dream_residue,
+        leak_tau_hours=settings.initiative_pressure_leak_tau_hours,
+    )
+
+
+def get_gate_config(presence_values: object) -> GateConfig:
+    """Build a ``GateConfig`` from ``Settings`` + a ``PresenceConfigValues``
+    (typed loosely to avoid a hard import cycle with ``presence_config.py``,
+    which itself only needs the model, not this module)."""
+    return GateConfig(
+        enabled=bool(getattr(presence_values, "initiative_enabled", False)),
+        quiet_hours_start=getattr(presence_values, "quiet_hours_start", None),
+        quiet_hours_end=getattr(presence_values, "quiet_hours_end", None),
+        cooldown_base_hours=settings.initiative_cooldown_base_hours,
+        cooldown_min_hours=settings.initiative_cooldown_min_hours,
+        cooldown_backoff_factor=settings.initiative_cooldown_backoff_factor,
+        cooldown_max_hours=settings.initiative_cooldown_max_hours,
+        max_per_day=settings.initiative_max_per_day,
+        max_per_week=settings.initiative_max_per_week,
+        thetas={
+            DRIVE_UNRESOLVED_THREAD: settings.initiative_theta_unresolved_thread,
+            DRIVE_PATTERN_INSIGHT: settings.initiative_theta_pattern_insight,
+            DRIVE_RELATIONAL: settings.initiative_theta_relational,
+            DRIVE_NOVELTY: settings.initiative_theta_novelty,
+            DRIVE_DREAM_RESIDUE: settings.initiative_theta_dream_residue,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Edge: closeness proxy
+# ---------------------------------------------------------------------------
+
+
+def resolve_closeness_signal(
+    runtime_db: Session | None, *, user_id: int, now: datetime
+) -> float:
+    """Documented PROXY for relationship closeness (PRD IL3 gate 3 names
+    "closeness from the self-model human block"). No structured closeness
+    scalar exists yet: the self-model ``human`` section is free-text prose
+    (``self_model.py``), and ``conversation_policy.RelationshipPolicy.stage``
+    is computed per-turn from rendered memory blocks that don't exist outside
+    a live turn — unavailable to a background sweep with no turn context.
+
+    Proxy: relationship age since first contact (the oldest ``RuntimeThread``
+    for this user), saturating linearly to full closeness (1.0) at
+    ``settings.initiative_closeness_full_days``. Superseded cleanly once the
+    self-model carries a real structured closeness value. Measured against
+    the CALLER's ``now`` (never the wall clock), like every other IL3 edge
+    function, so it stays deterministic under an injected tick time.
+    """
+    if runtime_db is None:
+        return 0.0
+    first_contact = runtime_db.scalar(
+        select(func.min(RuntimeThread.created_at)).where(RuntimeThread.user_id == user_id)
+    )
+    if first_contact is None:
+        return 0.0
+    age_days = (now.astimezone(UTC) - _as_utc(first_contact)).total_seconds() / 86400.0
+    return _clamp01(age_days / settings.initiative_closeness_full_days)
+
+
+# ---------------------------------------------------------------------------
+# Edge: DriveStateRow persistence
+# ---------------------------------------------------------------------------
+
+
+def _get_or_seed_drive_row(
+    runtime_db: Session, *, user_id: int, for_update: bool = False
+) -> DriveStateRow:
+    stmt = select(DriveStateRow).where(DriveStateRow.user_id == user_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    row = runtime_db.scalar(stmt)
+    if row is not None:
+        return row
+
+    row = DriveStateRow(user_id=user_id, updated_at=datetime.now(UTC))
+    try:
+        with runtime_db.begin_nested():
+            runtime_db.add(row)
+            runtime_db.flush()
+    except IntegrityError:
+        row = runtime_db.scalar(stmt)
+        if row is None:
+            raise
+    return row
+
+
+def _pressures_of(row: DriveStateRow) -> DriveState:
+    return DriveState(
+        unresolved_thread=row.unresolved_thread,
+        pattern_insight=row.pattern_insight,
+        relational=row.relational,
+        novelty=row.novelty,
+        dream_residue=row.dream_residue,
+    )
+
+
+def _apply_pressures(row: DriveStateRow, pressures: DriveState, *, now: datetime) -> None:
+    row.unresolved_thread = pressures.unresolved_thread
+    row.pattern_insight = pressures.pattern_insight
+    row.relational = pressures.relational
+    row.novelty = pressures.novelty
+    row.dream_residue = pressures.dream_residue
+    row.updated_at = now.astimezone(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Edge: signal resolution
+# ---------------------------------------------------------------------------
+
+
+def _topics_of(episode: MemoryEpisode) -> frozenset[str]:
+    raw = episode.topics_json or []
+    return frozenset(
+        str(topic).strip().casefold() for topic in raw if topic is not None and str(topic).strip()
+    )
+
+
+def resolve_drive_signals(
+    soul_db: Session,
+    runtime_db: Session,
+    *,
+    user_id: int,
+    now: datetime,
+    last_user_turn_at: datetime | None,
+    pattern_marker: datetime | None,
+) -> tuple[DriveSignals, datetime | None]:
+    """Resolve every IL3 grow/reset boolean for one tick.
+
+    Returns ``(signals, latest_message_at)`` — the latter is the newest
+    ``RuntimeThread.last_message_at`` seen this tick, for the caller to
+    persist as the new ``last_user_turn_at`` marker regardless of whether it
+    triggered a reset this cycle (idempotent max, mirrors how
+    ``last_fired_at`` is only ever moved forward).
+    """
+    now_utc = now.astimezone(UTC)
+    today = now_utc.date()
+
+    # unresolved_thread: an active ForesightSignal whose start_date horizon
+    # is approaching (within the configured window) or already here.
+    horizon_days = settings.initiative_unresolved_thread_horizon_days
+    unresolved_thread_open = (
+        soul_db.scalar(
+            select(ForesightSignal.id)
+            .where(
+                ForesightSignal.user_id == user_id,
+                ForesightSignal.status == "active",
+                ForesightSignal.start_date.isnot(None),
+                ForesightSignal.start_date <= today + timedelta(days=horizon_days),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+    # pattern_insight: an active pattern-synthesis MemoryItem not yet
+    # surfaced (created after the last surface marker, or ever if none).
+    # "Active item" guard (superseded_by/distilled_at both unset) mirrors
+    # the same family of checks IL5/IL6 apply at every MemoryItem query site.
+    pattern_query = select(MemoryItem.id).where(
+        MemoryItem.user_id == user_id,
+        MemoryItem.category == _PATTERN_CATEGORY,
+        MemoryItem.superseded_by.is_(None),
+        MemoryItem.distilled_at.is_(None),
+    )
+    if pattern_marker is not None:
+        pattern_query = pattern_query.where(MemoryItem.created_at > _as_utc(pattern_marker))
+    pattern_shareable = soul_db.scalar(pattern_query.limit(1)) is not None
+
+    # relational: days since last contact vs. the cadence proxy (see
+    # Settings.initiative_relational_cadence_days docstring — no learned
+    # per-relationship cadence model exists yet).
+    latest_message_at = runtime_db.scalar(
+        select(func.max(RuntimeThread.last_message_at)).where(
+            RuntimeThread.user_id == user_id
+        )
+    )
+    latest_message_at = _as_utc(latest_message_at)
+    if latest_message_at is None:
+        relational_overdue = False
+        user_turn_occurred = False
+    else:
+        days_since_contact = (now_utc - latest_message_at).total_seconds() / 86400.0
+        relational_overdue = days_since_contact >= settings.initiative_relational_cadence_days
+        marker = _as_utc(last_user_turn_at)
+        user_turn_occurred = marker is None or latest_message_at > marker
+
+    # novelty: recent episodes stay topically repetitive while energy is
+    # high; resets when a genuinely new topic appears in the newest episode.
+    recent_episodes = list(
+        soul_db.scalars(
+            select(MemoryEpisode)
+            .where(MemoryEpisode.user_id == user_id)
+            .order_by(MemoryEpisode.id.desc())
+            .limit(settings.initiative_novelty_episode_window)
+        ).all()
+    )
+    novelty_repetitive = False
+    novel_topic_discussed = False
+    if len(recent_episodes) >= 2:
+        topic_sets = [_topics_of(ep) for ep in recent_episodes]
+        total_mentions = sum(len(topics) for topics in topic_sets)
+        distinct_topics: set[str] = set()
+        for topics in topic_sets:
+            distinct_topics |= topics
+        if total_mentions > 0:
+            repetition_ratio = 1.0 - (len(distinct_topics) / total_mentions)
+            energy_high = _current_energy(runtime_db, user_id=user_id, now=now) >= (
+                settings.initiative_novelty_energy_threshold
+            )
+            novelty_repetitive = (
+                repetition_ratio >= settings.initiative_novelty_repetition_threshold
+                and energy_high
+            )
+            newest_topics = topic_sets[0]
+            older_topics: set[str] = set()
+            for topics in topic_sets[1:]:
+                older_topics |= topics
+            novel_topic_discussed = bool(newest_topics - older_topics)
+
+    signals = DriveSignals(
+        unresolved_thread_open=unresolved_thread_open,
+        pattern_shareable=pattern_shareable,
+        relational_overdue=relational_overdue,
+        novelty_repetitive=novelty_repetitive,
+        dream_residue_present=False,  # IL-007 stub — wired but dormant
+        user_turn_occurred=user_turn_occurred,
+        novel_topic_discussed=novel_topic_discussed,
+    )
+    return signals, latest_message_at
+
+
+def _current_energy(runtime_db: Session, *, user_id: int, now: datetime) -> float:
+    """Current energy for the novelty gate, or a neutral 0.5 when no real
+    affect signal exists yet.
+
+    A freshly-seeded default affect state is a config baseline, not a real
+    reading (same principle as IL-006's ``resolve_current_affect_magnitude``):
+    only read the relaxed energy when an ``AffectStateRow`` has actually been
+    persisted, so a brand-new user's novelty gate isn't driven by the seed's
+    energy baseline. Relaxes to the CALLER's ``now`` (never the wall clock)
+    so this stays deterministic under an injected tick time, exactly like
+    every other IL3 edge function.
+    """
+    try:
+        from anima_server.models.runtime_consciousness import AffectStateRow
+        from anima_server.services.agent.inner_life.affect import relax
+        from anima_server.services.agent.inner_life.store import (
+            get_affect_config,
+            get_affect_state,
+        )
+
+        row = runtime_db.scalar(
+            select(AffectStateRow).where(AffectStateRow.user_id == user_id)
+        )
+        if row is None:
+            return 0.5
+
+        config = get_affect_config()
+        stored = get_affect_state(runtime_db, user_id=user_id, config=config)
+        current = relax(stored, now.astimezone(UTC), config)
+        return current.energy
+    except Exception:
+        return 0.5
+
+
+def _resolve_affect_line(runtime_db: Session, *, user_id: int, now: datetime) -> str:
+    try:
+        from anima_server.services.agent.inner_life.affect import relax, render_affect
+        from anima_server.services.agent.inner_life.store import (
+            get_affect_config,
+            get_affect_state,
+        )
+
+        config = get_affect_config()
+        stored = get_affect_state(runtime_db, user_id=user_id, config=config)
+        current = relax(stored, now.astimezone(UTC), config)
+        return render_affect(current, previous=stored)
+    except Exception:
+        logger.debug("Affect line unavailable for initiative for user %s", user_id, exc_info=True)
+        return "steady"
+
+
+def gather_drive_material(soul_db: Session, *, user_id: int, drive: str) -> str:
+    """The SPECIFIC accumulated material behind the firing drive — the
+    concrete foresight item / pattern finding, not just "a drive fired".
+    ``relational``/``novelty`` have no single discrete source row, so they
+    get a short descriptive fallback instead of decrypted content."""
+    if drive == DRIVE_UNRESOLVED_THREAD:
+        row = soul_db.scalar(
+            select(ForesightSignal)
+            .where(ForesightSignal.user_id == user_id, ForesightSignal.status == "active")
+            .order_by(ForesightSignal.start_date.asc())
+            .limit(1)
+        )
+        if row is None:
+            return ""
+        return df(user_id, row.content, table="foresight_signals", field="content")
+    if drive == DRIVE_PATTERN_INSIGHT:
+        row = soul_db.scalar(
+            select(MemoryItem)
+            .where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.category == _PATTERN_CATEGORY,
+                MemoryItem.superseded_by.is_(None),
+                MemoryItem.distilled_at.is_(None),
+            )
+            .order_by(MemoryItem.created_at.desc())
+            .limit(1)
+        )
+        if row is None:
+            return ""
+        return df(user_id, row.content, table="memory_items", field="content")
+    if drive == DRIVE_RELATIONAL:
+        return "It has been a while since we last talked."
+    if drive == DRIVE_NOVELTY:
+        return "Our recent conversations have circled the same few topics."
+    return ""  # dream_residue: IL-007 stub
+
+
+# ---------------------------------------------------------------------------
+# Edge: rate-cap / unanswered-count queries (provenance log reads)
+# ---------------------------------------------------------------------------
+
+
+def count_unanswered_initiatives(soul_db: Session, *, user_id: int) -> int:
+    return int(
+        soul_db.scalar(
+            select(func.count())
+            .select_from(InitiativeLog)
+            .where(
+                InitiativeLog.user_id == user_id,
+                InitiativeLog.delivered.is_(True),
+                InitiativeLog.answered.is_(False),
+            )
+        )
+        or 0
+    )
+
+
+def count_recent_fires(soul_db: Session, *, user_id: int, now: datetime) -> tuple[int, int]:
+    """(fires in the last 24h, fires in the last 7 days) — only rows that
+    actually produced a message (``generated_text is not None``); a failed
+    generation attempt never counts against the rate cap."""
+    now_utc = now.astimezone(UTC)
+    week_cutoff = now_utc - timedelta(days=7)
+    day_cutoff = now_utc - timedelta(hours=24)
+    fired_ats = soul_db.scalars(
+        select(InitiativeLog.fired_at).where(
+            InitiativeLog.user_id == user_id,
+            InitiativeLog.generated_text.isnot(None),
+            InitiativeLog.fired_at >= week_cutoff,
+        )
+    ).all()
+    today = sum(1 for ts in fired_ats if _as_utc(ts) >= day_cutoff)
+    return today, len(fired_ats)
+
+
+# ---------------------------------------------------------------------------
+# Edge: generation (the ONE LLM seam in all of IL3)
+# ---------------------------------------------------------------------------
+
+
+async def generate_initiative_message(
+    soul_db: Session,
+    *,
+    user_id: int,
+    decision: DriveDecision,
+    material: str,
+    affect_line: str,
+) -> str | None:
+    """The single small-LLM call IL3 makes. Returns ``None`` on any failure
+    or empty output — the caller logs a best-effort attempt and fires
+    nothing (PRD: "on generation failure: no message, reset nothing")."""
+    from anima_server.services.agent.llm_json import call_llm_for_text
+    from anima_server.services.agent.prompt_loader import PromptLoader
+
+    try:
+        prompt = PromptLoader.from_db(soul_db, user_id).initiative_message(
+            drive=decision.drive,
+            material=material,
+            affect_line=affect_line,
+        )
+        text = await call_llm_for_text(
+            "You write ONE short unprompted message from the companion's own "
+            "initiative. Respond with plain text only: no quotes, no JSON, "
+            "no preamble.",
+            prompt,
+        )
+    except Exception:
+        logger.warning(
+            "Initiative message generation failed for user %s drive %s",
+            user_id,
+            decision.drive,
+            exc_info=True,
+        )
+        return None
+
+    text = (text or "").strip()
+    return text or None
+
+
+# ---------------------------------------------------------------------------
+# Edge: fire (generate + log + deliver), savepoint-isolated
+# ---------------------------------------------------------------------------
+
+
+def _fire(
+    soul_db: Session,
+    runtime_db: Session,
+    *,
+    user_id: int,
+    decision: DriveDecision,
+    now: datetime,
+    delivery: InitiativeDelivery,
+) -> bool:
+    """Attempt generation, ALWAYS write one provenance row (success or a
+    logged failed attempt), and deliver on success. Returns whether a real
+    message was fired and delivered — the caller only resets drive pressure
+    and ``last_fired_at`` when this is True.
+
+    Each DB effect is wrapped in its own savepoint so a failure in one step
+    (e.g. delivery) can never corrupt the other pending writes in this
+    per-user session, which commits once at the end (mirrors IL-006's
+    per-item savepoint isolation in ``retrieval_feedback.py``).
+    """
+    material = gather_drive_material(soul_db, user_id=user_id, drive=decision.drive)
+    affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=now)
+
+    try:
+        text = asyncio.run(
+            generate_initiative_message(
+                soul_db,
+                user_id=user_id,
+                decision=decision,
+                material=material,
+                affect_line=affect_line,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Initiative generation raised for user %s drive %s",
+            user_id,
+            decision.drive,
+            exc_info=True,
+        )
+        text = None
+
+    log_row: InitiativeLog | None = None
+    try:
+        with soul_db.begin_nested():
+            log_row = InitiativeLog(
+                user_id=user_id,
+                fired_at=now,
+                drive=decision.drive,
+                pressure_snapshot=decision.pressure_snapshot,
+                gate_states=decision.gate_states,
+                generated_text=(
+                    ef(user_id, text, table="initiative_log", field="generated_text")
+                    if text
+                    else None
+                ),
+                delivered=False,
+                answered=False,
+            )
+            soul_db.add(log_row)
+            soul_db.flush()
+    except Exception:
+        logger.warning(
+            "Initiative provenance log failed for user %s", user_id, exc_info=True
+        )
+        return False
+
+    if text is None or log_row is None:
+        return False
+
+    try:
+        with runtime_db.begin_nested():
+            result = delivery.deliver(
+                runtime_db,
+                user_id=user_id,
+                drive=decision.drive,
+                text=text,
+                initiative_log_id=log_row.id,
+            )
+    except Exception:
+        logger.warning(
+            "Initiative delivery failed for user %s drive %s",
+            user_id,
+            decision.drive,
+            exc_info=True,
+        )
+        return False
+
+    with soul_db.begin_nested():
+        log_row.delivered = result.delivered
+    return result.delivered
+
+
+# ---------------------------------------------------------------------------
+# Edge: per-user presence-tick sibling
+# ---------------------------------------------------------------------------
+
+
+def tick_initiative_for_user(
+    soul_db_factory: Callable[..., Session],
+    runtime_db_factory: Callable[..., Session],
+    *,
+    user_id: int,
+    local_now: datetime,
+    drive_config: DriveConfig | None = None,
+    delivery: InitiativeDelivery | None = None,
+) -> bool:
+    """Advance this user's drive pressures and, if opted in and every gate
+    passes, fire the dominant one. Always advances the accumulators
+    (regardless of ``initiative_enabled``) so pressure isn't artificially
+    frozen while a user has the feature off and later turns it on.
+
+    Isolated exactly like ``presence._tick_one_user``: any exception here is
+    logged and swallowed, never propagated, so one user's failure can never
+    abort the sweep or poison another user's session (each user gets its own
+    fresh ``soul_db``/``runtime_db`` pair, never shared across users).
+    """
+    try:
+        from anima_server.services.presence_config import get_presence_config_values
+
+        with runtime_db_factory() as runtime_db, soul_db_factory() as soul_db:
+            presence_values = get_presence_config_values(soul_db, user_id)
+
+            row = _get_or_seed_drive_row(runtime_db, user_id=user_id, for_update=True)
+            delta_hours = max(
+                0.0,
+                (local_now.astimezone(UTC) - _as_utc(row.updated_at)).total_seconds()
+                / 3600.0,
+            )
+            signals, latest_message_at = resolve_drive_signals(
+                soul_db,
+                runtime_db,
+                user_id=user_id,
+                now=local_now,
+                last_user_turn_at=row.last_user_turn_at,
+                pattern_marker=row.pattern_insight_surfaced_at,
+            )
+            updated_pressures = advance_drives(
+                _pressures_of(row),
+                signals,
+                delta_hours,
+                drive_config or get_drive_config(),
+            )
+            _apply_pressures(row, updated_pressures, now=local_now)
+            if latest_message_at is not None and (
+                row.last_user_turn_at is None
+                or latest_message_at > _as_utc(row.last_user_turn_at)
+            ):
+                row.last_user_turn_at = latest_message_at
+            row.unanswered_initiatives = count_unanswered_initiatives(soul_db, user_id=user_id)
+
+            if not presence_values.initiative_enabled:
+                runtime_db.commit()
+                return True
+
+            closeness = resolve_closeness_signal(runtime_db, user_id=user_id, now=local_now)
+            fires_today, fires_this_week = count_recent_fires(
+                soul_db, user_id=user_id, now=local_now
+            )
+            record = DriveRecord(
+                pressures=updated_pressures,
+                last_fired_at=row.last_fired_at,
+                last_user_turn_at=row.last_user_turn_at,
+                unanswered_initiatives=row.unanswered_initiatives,
+            )
+            gate_config = get_gate_config(presence_values)
+            decision = should_fire(
+                record,
+                gate_config,
+                local_now,
+                closeness,
+                fires_today=fires_today,
+                fires_this_week=fires_this_week,
+            )
+
+            if decision is None:
+                runtime_db.commit()
+                return True
+
+            fired = _fire(
+                soul_db,
+                runtime_db,
+                user_id=user_id,
+                decision=decision,
+                now=local_now,
+                delivery=delivery or PendingInitiativeDelivery(),
+            )
+            if fired:
+                if decision.drive == DRIVE_PATTERN_INSIGHT:
+                    row.pattern_insight_surfaced_at = local_now.astimezone(UTC)
+                row.last_fired_at = local_now.astimezone(UTC)
+                _apply_pressures(
+                    row, reset_drive(updated_pressures, decision.drive), now=local_now
+                )
+
+            soul_db.commit()
+            runtime_db.commit()
+        return True
+    except Exception:
+        logger.warning("Initiative tick failed for user %s", user_id, exc_info=True)
+        return False

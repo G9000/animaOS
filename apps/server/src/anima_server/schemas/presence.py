@@ -12,6 +12,9 @@ class PresenceConfigResponse(BaseModel):
     memoryNudgesEnabled: bool
     checkInNudgesEnabled: bool
     customInstruction: str | None = None
+    initiativeEnabled: bool = False
+    quietHoursStart: int | None = None
+    quietHoursEnd: int | None = None
 
 
 class PresenceConfigUpdateRequest(BaseModel):
@@ -22,6 +25,9 @@ class PresenceConfigUpdateRequest(BaseModel):
     memoryNudgesEnabled: bool | None = None
     checkInNudgesEnabled: bool | None = None
     customInstruction: str | None = Field(default=None, max_length=500)
+    initiativeEnabled: bool | None = None
+    quietHoursStart: int | None = Field(default=None, ge=0, le=23)
+    quietHoursEnd: int | None = Field(default=None, ge=0, le=23)
 
     @field_validator("customInstruction")
     @classmethod
@@ -30,3 +36,17 @@ class PresenceConfigUpdateRequest(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+
+class PendingInitiativeResponse(BaseModel):
+    id: int
+    drive: str
+    text: str
+    createdAt: str
+    delivered: bool
+    acknowledged: bool
+
+
+class PendingInitiativesResponse(BaseModel):
+    userId: int
+    initiatives: list[PendingInitiativeResponse]

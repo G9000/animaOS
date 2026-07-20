@@ -370,6 +370,7 @@ def run_presence_tick(
     config: AffectConfig | None = None,
     active_window_seconds: int | None = None,
     tz: _tzinfo | None = None,
+    soul_db_factory: Callable[..., Session] | None = None,
 ) -> PresenceTickResult:
     """Relax and accumulate allostatic load for every idle user.
 
@@ -388,6 +389,18 @@ def run_presence_tick(
     test seam; it defaults from `settings.presence_active_window_seconds`.
     `tz` is a test seam for the local zone; it defaults from
     `system_zoneinfo()` (or `now`'s own zone when `now` is aware).
+
+    `soul_db_factory` opts a caller into also advancing IL3 drive
+    accumulators (and firing an initiative if opted in and gated through)
+    for the same idle set, via `inner_life.initiative.tick_initiative_for_user`
+    — one call per idle user, isolated from the affect tick and from each
+    other exactly like `_tick_one_user`. Left `None` (the default), this
+    function's behavior is byte-for-byte what it was before IL3: existing
+    callers and tests that don't pass it see no new DB access, no new
+    tables touched, nothing. Production wiring (`main.py`) passes the real
+    soul-store session factory; the initiative tick's own opt-in gate
+    (`PresenceConfig.initiative_enabled`, off by default) is what actually
+    prevents unwanted messages, not this parameter.
     """
     local_now = resolve_local_now(now, tz)
     now_utc = local_now.astimezone(UTC)
@@ -417,5 +430,16 @@ def run_presence_tick(
             config=resolved_config,
         ):
             ticked += 1
+        if soul_db_factory is not None:
+            from anima_server.services.agent.inner_life.initiative import (
+                tick_initiative_for_user,
+            )
+
+            tick_initiative_for_user(
+                soul_db_factory,
+                runtime_db_factory,
+                user_id=user_id,
+                local_now=local_now,
+            )
 
     return PresenceTickResult(users_ticked=ticked, users_skipped_active=skipped)
