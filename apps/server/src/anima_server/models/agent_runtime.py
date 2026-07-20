@@ -302,6 +302,19 @@ class MemoryItem(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # IL6 recall-reconsolidation: cumulative absolute emotional_salience
+    # drift applied by reconsolidation across this item's whole life,
+    # bounded by ``reconsolidation_lifetime_drift_cap`` (default 0.3).
+    # Tracked separately from ``emotional_salience`` itself so the cap is
+    # exactly enforceable regardless of how the field's absolute value
+    # wanders from other write paths (merge_salience, decay, etc.) — see
+    # ``services/agent/reconsolidation.py``.
+    reconsolidation_drift: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.0,
+        server_default=text("0.0"),
+    )
 
     tag_entries: Mapped[list[MemoryItemTag]] = relationship(
         cascade="all, delete-orphan",
@@ -1254,3 +1267,49 @@ class TendencyContribution(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class ReconsolidationLog(Base):
+    """IL6 recall-reconsolidation provenance ledger row.
+
+    Every applied per-field nudge (post drift-cap) writes exactly one row
+    here preserving the ORIGINAL pre-nudge value in ``old_value`` — a
+    no-op (cap already exhausted, or a zero delta) writes nothing.
+    Reversibility is exact by construction: reconstructing the
+    pre-reconsolidation salience never replays/sums deltas (which would
+    accumulate floating-point error across N applications) — it just reads
+    the OLDEST logged ``old_value`` per field, which IS the original
+    extracted value (see
+    ``services.agent.reconsolidation.original_salience_from_log``).
+
+    Numeric only, no content (soul-store, portable, included in vault
+    export/import — mirrors ``TendencyContribution``). ``field`` is one of
+    ``"emotional_salience"`` (raw [0,1] value) or ``"stability_class"``
+    (the ``_STABILITY_STRENGTH`` rank, not the string, to keep this table
+    numeric-only).
+    """
+
+    __tablename__ = "reconsolidation_log"
+    __table_args__ = (
+        Index("ix_reconsolidation_log_user_id", "user_id"),
+        Index("ix_reconsolidation_log_item", "memory_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    memory_item_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    field: Mapped[str] = mapped_column(String(32), nullable=False)
+    old_value: Mapped[float] = mapped_column(Float, nullable=False)
+    new_value: Mapped[float] = mapped_column(Float, nullable=False)
+    eta: Mapped[float] = mapped_column(Float, nullable=False)

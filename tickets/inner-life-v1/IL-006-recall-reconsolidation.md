@@ -1,17 +1,17 @@
 # IL-006 - Recall reconsolidation (F2 extension)
 
-- Status: backlog
+- Status: done
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/agent/heat_scoring.py`, `apps/server/src/anima_server/services/agent/memory_salience.py`, `apps/server/src/anima_server/services/agent/provenance.py`
 - Parent: `IL-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 17:10 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-19 05:10 MYT
+- Started: 2026-07-19 03:35 MYT
+- Completed: 2026-07-19 05:10 MYT
 
 ## Goal
 

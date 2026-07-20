@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 from anima_server.models.runtime_memory import MemoryRetrievalFeedback
 from anima_server.services.agent.state import AgentRetrievalTrace
 from anima_server.services.agent.text_processing import prepare_embedding_text
+
+logger = logging.getLogger(__name__)
 
 _MIN_TOKEN_LENGTH = 3
 _MIN_SUBSTRING_MATCH_LENGTH = 24
@@ -242,6 +245,7 @@ def sync_retrieval_feedback(
             "importance_deltas": {},
             "evidence_heat_factors": {},
             "heat_decay_factors": {},
+            "reconsolidated_items": {},
         }
 
     row_ids = [int(row.id) for row in rows]
@@ -301,17 +305,42 @@ def sync_retrieval_feedback(
             "importance_deltas": {},
             "evidence_heat_factors": evidence_heat_factors,
             "heat_decay_factors": {},
+            "reconsolidated_items": {},
         }
 
+    from anima_server.config import settings
     from anima_server.models import MemoryItem
     from anima_server.services.agent.heat_scoring import compute_heat_for_item
+    from anima_server.services.agent.reconsolidation import (
+        apply_reconsolidation,
+        resolve_current_affect_magnitude,
+    )
 
     ref_now = datetime.now(UTC)
     importance_deltas: dict[int, int] = {}
     applied_evidence_heat_factors: dict[int, float] = {}
     heat_decay_factors: dict[int, float] = {}
+    reconsolidated_items: dict[int, dict[str, float | bool]] = {}
 
-    for item_id in sorted(set(used_counts) | set(corrected_counts) | set(zero_reference_counts)):
+    # IL6: resolved ONCE per sync cycle (not per item) — it is a per-user
+    # affect reading, not a per-item one. None means "no affect signal yet"
+    # (see resolve_current_affect_magnitude), in which case every item below
+    # still gets its stability-upgrade check but no emotional_salience nudge.
+    current_affect_magnitude = resolve_current_affect_magnitude(
+        runtime_db, user_id=user_id
+    )
+
+    # unused_counts (per-row, pre-grouping) is the true "rendered but the
+    # answer ignored it" signal — including memories ignored in a MIXED run
+    # that also used another memory, which zero_reference_counts (per-run,
+    # only when the whole run was ignored) misses. Include it so those items
+    # are iterated and can reconsolidate.
+    for item_id in sorted(
+        set(used_counts)
+        | set(corrected_counts)
+        | set(zero_reference_counts)
+        | set(unused_counts)
+    ):
         item = soul_db.get(MemoryItem, item_id)
         if item is None:
             continue
@@ -347,6 +376,64 @@ def sync_retrieval_feedback(
         if heat_value is not None and (delta != 0 or evidence_heat_factor is not None or decay_count > 0):
             item.heat = heat_value
 
+        # IL6 recall reconsolidation: fires for every memory RENDERED INTO
+        # CONTEXT this cycle — recall is what makes a trace labile (PRD IL6:
+        # "rendered into the model's context, not merely scored"), whether
+        # or not the answer went on to cite it. Every feedback outcome row
+        # means the item was placed in the prompt, so the rendered set is
+        # used + zero_reference (ignored-but-rendered). Corrected items are
+        # EXCLUDED: a correction contradicts the memory, so reconsolidation
+        # must not strengthen (nudge/stability-upgrade) it. At most once per
+        # item per cycle. Superseded and IL5 distilled-tombstone items are
+        # skipped (the "active item" guard family) — apply_reconsolidation
+        # re-checks this too, but skipping here avoids the call entirely.
+        # Per-item try/except isolation: one item's failure must never abort
+        # the rest of this sync (matches IL4/IL5 loops).
+        rendered_in_context = (
+            item_id in used_counts or item_id in unused_counts
+        ) and item_id not in corrected_counts
+        if rendered_in_context and item.superseded_by is None and item.distilled_at is None:
+            try:
+                # This loop flushes per item and commits once at the end,
+                # so a bare rollback on failure would discard every prior
+                # item's nudge in this pass. A per-item SAVEPOINT confines a
+                # failed apply_reconsolidation's partial flush to just that
+                # item, keeping the session usable for the rest of the loop
+                # and the final commit (the soul-writer call site has no
+                # surrounding try/except).
+                with soul_db.begin_nested():
+                    result = apply_reconsolidation(
+                        soul_db,
+                        item,
+                        current_affect_magnitude=current_affect_magnitude,
+                        eta=settings.reconsolidation_eta,
+                        drift_cap=settings.reconsolidation_lifetime_drift_cap,
+                        now=ref_now,
+                    )
+            except Exception:
+                logger.exception(
+                    "IL6 reconsolidation failed for memory item %s (user %s)",
+                    item_id,
+                    user_id,
+                )
+                result = None
+            else:
+                if result is not None and (
+                    result.emotional_salience_delta != 0.0
+                    or result.stability_upgraded
+                    or result.evidence_strength_delta != 0.0
+                ):
+                    reconsolidated_items[item_id] = {
+                        "emotional_salience_delta": round(
+                            result.emotional_salience_delta, 6
+                        ),
+                        "stability_upgraded": result.stability_upgraded,
+                        "evidence_strength_delta": round(
+                            result.evidence_strength_delta, 6
+                        ),
+                        "lifetime_drift_total": round(result.lifetime_drift_total, 6),
+                    }
+
     soul_db.flush()
     soul_db.commit()
 
@@ -381,6 +468,7 @@ def sync_retrieval_feedback(
         "importance_deltas": importance_deltas,
         "evidence_heat_factors": applied_evidence_heat_factors,
         "heat_decay_factors": heat_decay_factors,
+        "reconsolidated_items": reconsolidated_items,
     }
 
 
