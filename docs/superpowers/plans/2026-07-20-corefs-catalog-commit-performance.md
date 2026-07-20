@@ -183,16 +183,24 @@ fn trusted_encoder_keeps_the_bounded_preflight() { /* oversized value fails befo
 
 #[test]
 fn untrusted_decode_still_rejects_noncanonical_bytes() { /* existing strictness remains */ }
+
+#[test]
+fn zero_epoch_cutover_marker_is_rejected_before_the_fast_path() { /* constructor returns error */ }
+
+#[test]
+fn caller_created_invalid_graph_never_reaches_the_marker_fast_path() { /* orphan/duplicate/cycle cases */ }
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [ ] **Step 2: Run the new fast-path tests as RED plus fail-closed characterizations as GREEN**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs catalog::v2::tests::validated_marker_path_preserves_canonical_bytes -- --exact
 cargo +1.75.0 test --locked -p anima-corefs catalog::v2::tests::trusted_encoder_keeps_the_bounded_preflight -- --exact
+cargo +1.75.0 test --locked -p anima-corefs catalog::v2::tests::zero_epoch_cutover_marker_is_rejected_before_the_fast_path -- --exact
+cargo +1.75.0 test --locked -p anima-corefs catalog::v2::tests::caller_created_invalid_graph_never_reaches_the_marker_fast_path -- --exact
 ```
 
-Expected: FAIL because no validated encoder/marker seam exists.
+Expected: the validated encoder/marker tests FAIL because the new seam does not exist; the zero-epoch and invalid caller-created graph characterizations PASS through existing constructors. For the graph test, cover at least orphan parent, duplicate stable ID, and folder cycle and assert the exact existing `CatalogError` before `with_cutover_marker` can be called.
 
 - [ ] **Step 3: Separate validated internal encoding from public validation**
 
@@ -213,7 +221,7 @@ Public `encode_catalog_generation` validates before calling it. Coordinator publ
 
 - [ ] **Step 4: Make the existing crate-private marker transition O(1)**
 
-Because `CatalogGeneration` fields are private and `CatalogCutoverMarker` is validated at construction, make `with_cutover_marker` update only the marker in release builds. A debug-only assertion may run full validation, but production commit code must not rescan entries.
+Because `CatalogGeneration` fields are private and `CatalogCutoverMarker::new` rejects epoch zero, make `with_cutover_marker` update only the marker in release builds. A debug-only assertion may run full validation, but production commit code must not rescan entries. Do not add an unchecked marker constructor, expose catalog fields, or accept entries outside `CatalogGeneration::new`; the two GREEN characterizations are the proof boundary for caller-created values.
 
 - [ ] **Step 5: Run focused and complete catalog tests**
 
@@ -222,7 +230,7 @@ cargo +1.75.0 test --locked -p anima-corefs catalog::v2::tests -- --nocapture
 cargo +1.75.0 test --locked -p anima-corefs --test catalog --test catalog_entries
 ```
 
-Expected: PASS; canonical bytes, allocation bounds, reserved-state protection, graph validation, and non-canonical rejection are unchanged.
+Expected: PASS, including the exact zero-epoch and orphan/duplicate/cycle characterizations; canonical bytes, allocation bounds, reserved-state protection, graph validation, and non-canonical rejection are unchanged.
 
 - [ ] **Step 6: Commit Task 2**
 
@@ -297,6 +305,7 @@ struct PointerSet {
 struct ValidatedObjectBinding {
     object_id: OpaqueId,
     revision: u64,
+    object_key_epoch: u32,
     physical_name: ObjectPhysicalName,
     content_hash: ContentHash,
     kind: ObjectKind,
@@ -378,7 +387,7 @@ fn another_coordinator_advancing_head_forces_unlocked_load_miss() { /* shared ro
 fn unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto() { /* try_lock succeeds */ }
 ```
 
-- [ ] **Step 2: Run every unlocked-load test and verify RED**
+- [ ] **Step 2: Run RED cache-counter tests and pre-change GREEN authority characterizations**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto -- --exact
@@ -387,7 +396,7 @@ cargo +1.75.0 test --locked -p anima-corefs --test transaction another_coordinat
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto -- --exact
 ```
 
-Expected: FAIL because unlocked loads do not have pointer-set cache selection or scoped work counters.
+Expected: `unlocked_exact_hit...` and `unlocked_load_holds_no_cache_guard...` FAIL because pointer-set cache selection/counters do not exist. `unlocked_second_head_change...` and `another_coordinator...` PASS before caching, characterizing the existing authority behavior that the optimized path must preserve.
 
 - [ ] **Step 3: Implement the unlocked load path**
 
@@ -455,10 +464,10 @@ Expected: PASS; the observed order is kernel lock, pointer I/O/key derivation, s
 fn same_coordinator_commit_reuses_only_the_exact_authenticated_head() { /* second commit hit */ }
 
 #[test]
-fn another_coordinator_advancing_head_forces_commit_cache_miss() { /* shared root */ }
+fn another_coordinator_advance_is_observed_by_commit() { /* shared root; existing authority */ }
 
 #[test]
-fn cached_commit_rejects_wrong_same_version_active_material() { /* same version, different FRK */ }
+fn commit_rejects_wrong_same_version_active_material_before_cache() { /* existing authentication */ }
 
 #[test]
 fn pre_head_failure_keeps_only_the_prior_snapshot() { /* publication hook */ }
@@ -472,18 +481,18 @@ fn commit_holds_no_cache_guard_during_kernel_lock_io_crypto_build_hooks_or_inval
 
 The same-coordinator hit counter and stage observer live in crate-private `transaction::cache_tests`; public cross-coordinator/wrong-key behavior remains in `tests/transaction.rs`. The stage observer is invocation-scoped and is called immediately after kernel-lock acquisition, pointer I/O, key derivation, precondition/build, encryption/publication, failure hook, and invalidation callback boundaries. Each callback asserts `cache.inner.try_lock().is_ok()`; it does not alter production order.
 
-- [ ] **Step 2: Run every normal-commit test and verify RED**
+- [ ] **Step 2: Run RED cache-state/guard tests and pre-change GREEN authority characterizations**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::same_coordinator_commit_reuses_only_the_exact_authenticated_head -- --exact
-cargo +1.75.0 test --locked -p anima-corefs --test transaction another_coordinator_advancing_head_forces_commit_cache_miss -- --exact
-cargo +1.75.0 test --locked -p anima-corefs --test transaction cached_commit_rejects_wrong_same_version_active_material -- --exact
+cargo +1.75.0 test --locked -p anima-corefs --test transaction another_coordinator_advance_is_observed_by_commit -- --exact
+cargo +1.75.0 test --locked -p anima-corefs --test transaction commit_rejects_wrong_same_version_active_material_before_cache -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::failure_tests::pre_head_failure_keeps_only_the_prior_snapshot -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::failure_tests::post_head_recovery_pending_clears_the_cache -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::commit_holds_no_cache_guard_during_kernel_lock_io_crypto_build_hooks_or_invalidation -- --exact
 ```
 
-Expected: FAIL because normal commits do not select/publish exact snapshots or expose the scoped guard-stage proof.
+Expected: the same-coordinator cache counter, pre/post-HEAD cache-state tests, and guard-stage proof FAIL because cache integration is absent. The cross-coordinator and wrong-key public characterizations PASS before caching and must remain green after implementation.
 
 - [ ] **Step 3: Implement kernel-lock-first normal commit selection**
 
@@ -653,6 +662,8 @@ fn changed_wrapped_dek_never_reuses_binding() { /* unwrap occurs/fails */ }
 #[test]
 fn wrong_object_wrap_key_identity_never_reuses_binding() { /* same version, other material */ }
 #[test]
+fn changed_object_key_epoch_never_reuses_binding() { /* epoch-only mismatch */ }
+#[test]
 fn cache_hit_rejects_missing_object() { /* existing safe-open helper */ }
 #[test]
 fn cache_hit_rejects_empty_object() { /* zero length */ }
@@ -664,12 +675,13 @@ fn cache_hit_rejects_replaced_object() { /* opened/linked identity */ }
 fn cache_hit_rejects_unexpected_hard_link() { /* link-count policy */ }
 ```
 
-- [ ] **Step 2: Run every proposed test and verify RED**
+- [ ] **Step 2: Run RED binding-cache tests and pre-change GREEN safe-open characterizations**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::exact_cached_object_tuple_skips_repeated_dek_unwrap -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::changed_wrapped_dek_never_reuses_binding -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::wrong_object_wrap_key_identity_never_reuses_binding -- --exact
+cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::changed_object_key_epoch_never_reuses_binding -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction cache_hit_rejects_missing_object -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction cache_hit_rejects_empty_object -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction cache_hit_rejects_symlinked_object -- --exact
@@ -677,11 +689,11 @@ cargo +1.75.0 test --locked -p anima-corefs --test transaction cache_hit_rejects
 cargo +1.75.0 test --locked -p anima-corefs --test transaction cache_hit_rejects_unexpected_hard_link -- --exact
 ```
 
-Expected: FAIL because prepared-revision validation neither returns nor consumes non-empty `ValidatedObjectState`.
+Expected: the four binding-cache tests FAIL because prepared-revision validation neither returns nor consumes non-empty `ValidatedObjectState`. The missing, empty, symlink, replacement, and unexpected-hard-link tests PASS through the uncached safe-open path as pre-change characterizations; rerun all nine after caching.
 
 - [ ] **Step 3: Populate and consume the Task 3 object-state API**
 
-Make `validate_prepared_revisions` return immutable state for the next authoritative catalog. Each binding covers exact object ID, revision, physical name, content hash, kind, complete wrapped-DEK record, and a domain-separated non-secret binding digest. A cache hit requires exact snapshot pointers plus exact object-wrap key identity and exact tuple equality. A changed wrapper or wrong material never reuses a binding. On a miss, an unchanged exact tuple unwraps at most once; new/changed objects retain exact prepared token, wrapped-key, length, encrypted-hash, and binding checks.
+Make `validate_prepared_revisions` return immutable state for the next authoritative catalog. Each binding covers exact object ID, revision, object-key epoch, physical name, content hash, kind, complete wrapped-DEK record, and a domain-separated non-secret binding digest. A cache hit requires exact snapshot pointers plus exact object-wrap key identity and exact tuple equality. An epoch-only difference, changed wrapper, or wrong material never reuses a binding. On a miss, an unchanged exact tuple unwraps at most once; new/changed objects retain exact prepared token, wrapped-key, length, encrypted-hash, epoch, and binding checks.
 
 - [ ] **Step 4: Preserve safe opens on all cache hits**
 
@@ -706,9 +718,50 @@ Expected: PASS; exact hits perform zero repeated unwraps while all five invalid-
 
 **Files:**
 - Modify only when a failing regression exposes a defect in Task 1-8 files
+- Modify: `packages/anima-corefs/src/benchmark.rs` for one private timing wrapper
+- Test: `packages/anima-corefs/src/benchmark.rs` (new focused unit test)
+- Test: `packages/anima-corefs/tests/catalog_benchmark.rs` (existing publication/full-byte characterizations)
 - No reference artifact update in this task
 
-- [ ] **Step 1: Run format and diff hygiene**
+- [ ] **Step 1: Add a failing proof that timing wraps the complete public commit call**
+
+Add a private `measure_public_commit` helper used by the measured loop and a unit test:
+
+```rust
+#[test]
+fn measured_interval_wraps_the_complete_public_commit_callback() {
+    // The closure records entry/exit and sleeps briefly; elapsed includes the sleep
+    // and is returned only after the full closure result.
+}
+```
+
+Retain the existing integration characterizations `percentile_uses_deterministic_nearest_rank_and_report_schema_has_required_metrics` (publication path begins `commit-lock`, ends `fs-head-write-flush`, one production serialization) and `measured_runner_publishes_real_exact_catalogs_for_all_reference_generations` (real full-size catalog bytes, final HEAD and catalog count).
+
+- [ ] **Step 2: Run the new RED test and existing GREEN benchmark characterizations**
+
+```powershell
+cargo +1.75.0 test --locked -p anima-corefs benchmark::tests::measured_interval_wraps_the_complete_public_commit_callback -- --exact
+cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark percentile_uses_deterministic_nearest_rank_and_report_schema_has_required_metrics -- --exact
+cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark measured_runner_publishes_real_exact_catalogs_for_all_reference_generations -- --exact
+```
+
+Expected: the new helper test FAILS to compile; both existing characterization tests PASS.
+
+- [ ] **Step 3: Implement the timing wrapper and rerun all four benchmark-contract properties**
+
+The helper takes a closure, captures `Instant::now()` immediately before invoking it, and computes elapsed immediately after it returns. The measured loop calls it with the exact public `coordinator.commit(...)` call; catalog construction outside `commit` remains outside the timer, while builder callback execution, validation, complete serialization/encryption, kernel lock, durable HEAD-last publication, and invalidation inside public `commit` remain inside.
+
+```powershell
+cargo +1.75.0 test --locked -p anima-corefs benchmark::tests::measured_interval_wraps_the_complete_public_commit_callback -- --exact
+cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark percentile_uses_deterministic_nearest_rank_and_report_schema_has_required_metrics -- --exact
+cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark measured_runner_publishes_real_exact_catalogs_for_all_reference_generations -- --exact
+git add packages/anima-corefs/src/benchmark.rs packages/anima-corefs/tests/catalog_benchmark.rs
+git -c commit.gpgsign=false commit -m "test: prove complete CoreFS benchmark commit timing"
+```
+
+Expected: PASS. Together these exact tests prove benchmark contract item 16: lock acquisition first, HEAD publication last, complete public `commit` wall time, and real full catalog bytes.
+
+- [ ] **Step 4: Run format and diff hygiene**
 
 ```powershell
 cargo +1.75.0 fmt -p anima-corefs -- --check
@@ -718,7 +771,7 @@ git status --short
 
 Expected: PASS and clean worktree.
 
-- [ ] **Step 2: Run full Rust 1.75, strict Clippy, and Python gates**
+- [ ] **Step 5: Run full Rust 1.75, strict Clippy, and Python gates**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs
@@ -729,12 +782,14 @@ uv run --locked --project apps/server pytest apps/server/tests/test_corefs_catal
 
 Expected: all CoreFS tests pass (only existing crash helpers ignored), strict Clippy passes, and at least the existing 121 benchmark-contract tests pass.
 
-- [ ] **Step 3: Run and assert a disposable 1/5 release diagnostic**
+- [ ] **Step 6: Run and assert a disposable 1/5 release diagnostic**
 
 ```powershell
 $diag = Join-Path $env:TEMP ("anima-corefs-catalog-diagnostic-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $diagJson = "$diag.json"
 cargo +1.75.0 run --release --locked -p anima-corefs --bin catalog_benchmark -- --target $diag --warmups 1 --samples 5 | Tee-Object -FilePath $diagJson
+$diagnosticExit = $LASTEXITCODE
+if ($diagnosticExit -ne 0) { throw "diagnostic benchmark exited $diagnosticExit" }
 $report = Get-Content -Raw -LiteralPath $diagJson | ConvertFrom-Json
 $expected = @{
   'medium' = @{ live = 5000; tombstone = 500; total = 5500; baseline = 207.7262 }
@@ -754,11 +809,11 @@ foreach ($fixture in $report.fixtures) {
 
 Expected: exit 0 and every assertion passes. This diagnostic is directional, not acceptance evidence.
 
-- [ ] **Step 4: Handle a correctness or diagnostic failure explicitly**
+- [ ] **Step 7: Handle a correctness or diagnostic failure explicitly**
 
 If correctness, provenance-shape, or safe-open assertions fail, add a focused RED regression in the originating task's test file, make the narrow approved fix, commit it separately as `fix: preserve CoreFS catalog commit invariants`, and rerun all of Task 9. If correctness passes but a directional timing assertion fails, use only the approved scoped counters to locate unfinished redundant work; add a focused RED/GREEN fix and commit `perf: complete approved CoreFS catalog fast path`, then rerun all of Task 9. If resolving it requires a new format, weaker open/durability/recovery rule, fixture/timer/threshold change, or other unapproved architecture, stop and return for design approval.
 
-- [ ] **Step 5: Confirm source cleanliness for provenance**
+- [ ] **Step 8: Confirm source cleanliness for provenance**
 
 ```powershell
 git status --short
@@ -797,6 +852,10 @@ $target = [IO.Path]::GetFullPath((Join-Path $benchmarkRoot 'corefs-catalog-refer
 if (-not $target.StartsWith($benchmarkRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'unsafe benchmark target' }
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'
 uv run --locked --project apps/server python apps/server/scripts/benchmark_corefs_catalog.py --reference --target $target
+$referenceExit = $LASTEXITCODE
+if ($referenceExit -ne 0 -and $referenceExit -ne 2) { throw "reference benchmark exited unexpected code $referenceExit" }
+if ($referenceExit -eq 0) { Write-Output 'reference command passed; validate green artifact' }
+if ($referenceExit -eq 2) { Write-Output 'reference command produced a red artifact; validate it, then take blocker branch' }
 ```
 
 Expected pass path: exit 0. Exit 2 is allowed only because the strict artifact was produced with one or more unchanged red gates; continue provenance validation, then take the blocker branch.
