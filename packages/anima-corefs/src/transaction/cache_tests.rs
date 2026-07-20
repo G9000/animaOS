@@ -19,7 +19,7 @@ use super::cache::{
     AuthenticatedCommitSnapshot, CacheError, CacheLookupKey, CommitCache, PointerSet,
     ValidatedObjectBinding, ValidatedObjectState,
 };
-use super::CoreCommitCoordinator;
+use super::{CatalogLoadProbe, CatalogLoadStage, CoreCommitCoordinator};
 
 const CORE_ID: &str = "cache-core";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -66,6 +66,22 @@ fn snapshot(key: &CacheLookupKey, generation: u64) -> Arc<AuthenticatedCommitSna
         catalog(generation),
         Some(Arc::new(ValidatedObjectState::empty())),
     ))
+}
+
+fn seed_committed(coordinator: &CoreCommitCoordinator, keys: &FrkSubkeys) {
+    coordinator
+        .initialize_validation_snapshot(keys, &[], |generation| Ok((*catalog(generation)).clone()))
+        .unwrap();
+    coordinator
+        .commit_first_mutation(
+            keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok((*catalog(generation)).clone()),
+            |_| Ok(()),
+        )
+        .unwrap();
 }
 
 fn binding(object_id: &str, fill: u8) -> ValidatedObjectBinding {
@@ -212,6 +228,127 @@ fn cache_guard_is_released_before_external_probe() {
     let _ = std::fs::remove_dir_all(&root);
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     assert!(coordinator.cache.inner.try_lock().is_ok());
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocked_second_head_change_discards_the_candidate_hit() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-second-head-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    assert_eq!(
+        coordinator
+            .load_committed(&keys)
+            .unwrap()
+            .unwrap()
+            .head()
+            .generation(),
+        2
+    );
+    let keyring = FrkKeyring::single(&keys);
+    let candidate = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("the warmed exact snapshot should be a candidate");
+    assert_eq!(candidate.catalog().generation(), 2);
+
+    let committed = coordinator
+        .load_committed_with_keyring_observation_hook(&keyring, || {
+            let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+            other
+                .commit(
+                    &keys,
+                    &[],
+                    &[],
+                    |_, generation| Ok((*catalog(generation)).clone()),
+                    |_| Ok(()),
+                )
+                .unwrap();
+        })
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.catalog().generation(), 3);
+    assert!(!std::ptr::eq(
+        committed.catalog(),
+        candidate.catalog().as_ref()
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-unlocked-hit-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    coordinator
+        .load_committed_with_probe(&keys, &mut CatalogLoadProbe::default())
+        .unwrap()
+        .unwrap();
+    let mut probe = CatalogLoadProbe::default();
+
+    let committed = coordinator
+        .load_committed_with_probe(&keys, &mut probe)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.head().generation(), 2);
+    assert_eq!(probe.pointer_reads, 4);
+    assert_eq!(probe.catalog_file_reads, 0);
+    assert_eq!(probe.catalog_decrypts, 0);
+    assert_eq!(probe.catalog_encodes, 0);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-unlocked-guard-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    let mut stages = Vec::new();
+    let mut assert_cache_free = |stage| {
+        assert!(
+            coordinator.cache.inner.try_lock().is_ok(),
+            "cache mutex held during {stage:?}"
+        );
+        stages.push(stage);
+    };
+    let mut probe = CatalogLoadProbe::observed(&mut assert_cache_free);
+
+    coordinator
+        .load_committed_with_probe(&keys, &mut probe)
+        .unwrap()
+        .unwrap();
+
+    assert!(stages.contains(&CatalogLoadStage::PointerIo));
+    assert!(stages.contains(&CatalogLoadStage::KeyDerivation));
+    assert!(stages.contains(&CatalogLoadStage::CacheAccess));
+    assert!(stages.contains(&CatalogLoadStage::CatalogFileIo));
+    assert!(stages.contains(&CatalogLoadStage::CatalogCrypto));
+    assert!(stages.contains(&CatalogLoadStage::SecondHeadRead));
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }

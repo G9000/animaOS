@@ -247,6 +247,52 @@ fn commit_initial(
 }
 
 #[test]
+fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
+    let root = reset_root("cross-coordinator-unlocked-cache-miss");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .load_committed(&keys)
+            .unwrap()
+            .unwrap()
+            .head()
+            .generation(),
+        2
+    );
+
+    other
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.catalog().generation(), 3);
+
+    drop(other);
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn prepares_authenticated_immutable_object_revisions_without_taking_the_commit_lock() {
     let root = reset_root("prepare-outside-lock");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();

@@ -11,6 +11,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cap_fs_ext::MetadataExt as _;
@@ -25,7 +26,7 @@ use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use self::cache::CommitCache;
+use self::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet};
 
 #[cfg(test)]
 use crate::catalog::encrypt_catalog_generation_for_publication_with_observer;
@@ -675,7 +676,7 @@ impl PreparedObjectRevision {
 #[derive(Debug)]
 pub struct CommittedCatalog {
     head: HeadRecord,
-    catalog: CatalogGeneration,
+    catalog: Arc<CatalogGeneration>,
 }
 
 impl CommittedCatalog {
@@ -684,7 +685,7 @@ impl CommittedCatalog {
     }
 
     pub fn catalog(&self) -> &CatalogGeneration {
-        &self.catalog
+        self.catalog.as_ref()
     }
 }
 
@@ -798,6 +799,62 @@ struct CommitCallbacks<'a, I, H> {
 struct CoordinatorPublicationProbe {
     ciphertext_hashes: usize,
     catalog_decrypts: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CatalogLoadStage {
+    PointerIo,
+    KeyDerivation,
+    CacheAccess,
+    CatalogFileIo,
+    CatalogCrypto,
+    SecondHeadRead,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CatalogLoadProbe<'a> {
+    pointer_reads: usize,
+    catalog_file_reads: usize,
+    catalog_decrypts: usize,
+    catalog_encodes: usize,
+    observe_stage: Option<&'a mut dyn FnMut(CatalogLoadStage)>,
+}
+
+#[cfg(test)]
+impl<'a> CatalogLoadProbe<'a> {
+    fn observed(observe_stage: &'a mut dyn FnMut(CatalogLoadStage)) -> Self {
+        Self {
+            observe_stage: Some(observe_stage),
+            ..Self::default()
+        }
+    }
+
+    fn stage(&mut self, stage: CatalogLoadStage) {
+        if let Some(observer) = self.observe_stage.as_mut() {
+            observer(stage);
+        }
+    }
+
+    fn pointer_read(&mut self) {
+        self.pointer_reads += 1;
+        self.stage(CatalogLoadStage::PointerIo);
+    }
+
+    fn catalog_file_read(&mut self) {
+        self.catalog_file_reads += 1;
+        self.stage(CatalogLoadStage::CatalogFileIo);
+    }
+
+    fn catalog_crypto_started(&mut self) {
+        self.stage(CatalogLoadStage::CatalogCrypto);
+    }
+
+    fn catalog_crypto_completed(&mut self) {
+        self.catalog_decrypts += 1;
+        self.catalog_encodes += 1;
+    }
 }
 
 pub struct CoreCommitCoordinator {
@@ -1174,7 +1231,20 @@ impl CoreCommitCoordinator {
         &self,
         keys: &FrkSubkeys,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
-        self.load_committed_with_hook(keys, &mut |_| Ok(()))
+        self.load_committed_with_keyring(&FrkKeyring::single(keys))
+    }
+
+    #[cfg(test)]
+    fn load_committed_with_probe(
+        &self,
+        keys: &FrkSubkeys,
+        probe: &mut CatalogLoadProbe<'_>,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        self.load_committed_with_keyring_observation_hook_inner(
+            &FrkKeyring::single(keys),
+            || {},
+            Some(probe),
+        )
     }
 
     /// Reads the version declared by the current HEAD so the session can select
@@ -1202,27 +1272,85 @@ impl CoreCommitCoordinator {
     fn load_committed_with_keyring_observation_hook<R>(
         &self,
         keyring: &FrkKeyring<'_>,
-        after_head_read: R,
+        after_candidate_selection: R,
+    ) -> Result<Option<CommittedCatalog>, CommitError>
+    where
+        R: FnOnce(),
+    {
+        self.load_committed_with_keyring_observation_hook_inner(
+            keyring,
+            after_candidate_selection,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn load_committed_with_keyring_observation_hook_inner<R>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        after_candidate_selection: R,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Result<Option<CommittedCatalog>, CommitError>
     where
         R: FnOnce(),
     {
         self.validate_pinned_layout()?;
-        let committed_head = self.load_pointer_head(HEAD_FILE)?;
-        after_head_read();
-        let receipt_head = self.load_pointer_head(CUTOVER_RECEIPT_FILE)?;
-        let complete_head = self.load_pointer_head(CUTOVER_COMPLETE_FILE)?;
-        if self.load_pointer_head(HEAD_FILE)? != committed_head {
+        let pointers = self.load_pointer_set(
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
+        let lookup_key = self.cache_lookup_key(
+            &pointers,
+            keyring,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        );
+        let cached = lookup_key.as_ref().and_then(|key| self.cache.get(key));
+        #[cfg(test)]
+        if lookup_key.is_some() {
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CatalogLoadStage::CacheAccess);
+            }
+        }
+        after_candidate_selection();
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.stage(CatalogLoadStage::SecondHeadRead);
+        }
+        if self.load_pointer_head_inner(
+            HEAD_FILE,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )? != pointers.head
+        {
             let _lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
             return self.load_committed_recovering_with_keyring(keyring);
         }
-        let committed = self.load_committed_once_with_keyring_heads(
+
+        if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
+            return Ok(Some(CommittedCatalog {
+                head,
+                catalog: Arc::clone(snapshot.catalog()),
+            }));
+        }
+
+        let committed = self.load_committed_once_with_keyring_heads_inner(
             keyring,
-            committed_head,
-            receipt_head,
-            complete_head,
+            pointers.head.clone(),
+            pointers.receipt.clone(),
+            pointers.complete.clone(),
+            #[cfg(test)]
+            probe,
         );
+        if let (Some(key), Ok(Some(committed))) = (lookup_key.as_ref(), committed.as_ref()) {
+            self.cache
+                .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                    key,
+                    Arc::clone(&committed.catalog),
+                    None,
+                )));
+        }
         if !matches!(
             &committed,
             Err(CommitError::CutoverRecoveryRequired
@@ -1236,12 +1364,45 @@ impl CoreCommitCoordinator {
         self.load_committed_recovering_with_keyring(keyring)
     }
 
+    fn cache_lookup_key(
+        &self,
+        pointers: &PointerSet,
+        keyring: &FrkKeyring<'_>,
+        #[cfg(test)] probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Option<CacheLookupKey> {
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.stage(CatalogLoadStage::KeyDerivation);
+        }
+        let head = pointers.head.as_ref()?;
+        let active_keys = keyring.require(head.required_frk_version()).ok()?;
+        CacheLookupKey::derive(pointers.clone(), &self.core_id, keyring, active_keys).ok()
+    }
+
     fn load_committed_once_with_keyring_heads(
         &self,
         keyring: &FrkKeyring<'_>,
         committed_head: Option<HeadRecord>,
         receipt_head: Option<HeadRecord>,
         complete_head: Option<HeadRecord>,
+    ) -> Result<Option<CommittedCatalog>, CommitError> {
+        self.load_committed_once_with_keyring_heads_inner(
+            keyring,
+            committed_head,
+            receipt_head,
+            complete_head,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn load_committed_once_with_keyring_heads_inner(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        committed_head: Option<HeadRecord>,
+        receipt_head: Option<HeadRecord>,
+        complete_head: Option<HeadRecord>,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
         if committed_head.is_none() && receipt_head.is_none() && complete_head.is_none() {
             return Ok(None);
@@ -1253,7 +1414,12 @@ impl CoreCommitCoordinator {
                 Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
             };
         };
-        let committed = self.load_pointer_for_head(keyring, committed_head)?;
+        let committed = self.load_pointer_for_head_inner(
+            keyring,
+            committed_head,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
         let (Some(receipt_head), Some(complete_head)) = (receipt_head, complete_head) else {
             return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
         };
@@ -1262,8 +1428,18 @@ impl CoreCommitCoordinator {
         }
 
         if keyring.contains(receipt_head.required_frk_version()) {
-            let receipt = self.load_pointer_for_head(keyring, receipt_head.clone())?;
-            let complete = self.load_pointer_for_head(keyring, complete_head)?;
+            let receipt = self.load_pointer_for_head_inner(
+                keyring,
+                receipt_head.clone(),
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
+            let complete = self.load_pointer_for_head_inner(
+                keyring,
+                complete_head,
+                #[cfg(test)]
+                probe,
+            )?;
             if complete.0 != receipt.0
                 || complete.1.cutover_marker() != receipt.1.cutover_marker()
                 || !cutover_lineage_is_valid(&committed.0, &committed.1, &receipt.0, &receipt.1)
@@ -1272,7 +1448,7 @@ impl CoreCommitCoordinator {
             }
             return Ok(Some(CommittedCatalog {
                 head: committed.0,
-                catalog: committed.1,
+                catalog: Arc::new(committed.1),
             }));
         }
 
@@ -1283,10 +1459,11 @@ impl CoreCommitCoordinator {
         }
         Ok(Some(CommittedCatalog {
             head: committed.0,
-            catalog: committed.1,
+            catalog: Arc::new(committed.1),
         }))
     }
 
+    #[cfg(test)]
     fn load_committed_with_hook<H>(
         &self,
         keys: &FrkSubkeys,
@@ -1298,6 +1475,7 @@ impl CoreCommitCoordinator {
         self.load_committed_with_observation_hook(keys, hook, || {})
     }
 
+    #[cfg(test)]
     fn load_committed_with_observation_hook<H, R>(
         &self,
         keys: &FrkSubkeys,
@@ -1377,7 +1555,10 @@ impl CoreCommitCoordinator {
                 {
                     return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
                 }
-                Ok(Some(CommittedCatalog { head, catalog }))
+                Ok(Some(CommittedCatalog {
+                    head,
+                    catalog: Arc::new(catalog),
+                }))
             }
             _ => Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt),
         }
@@ -1522,7 +1703,46 @@ impl CoreCommitCoordinator {
             .map(Some)
     }
 
+    fn load_pointer_set(
+        &self,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Result<PointerSet, CommitError> {
+        Ok(PointerSet {
+            head: self.load_pointer_head_inner(
+                HEAD_FILE,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?,
+            receipt: self.load_pointer_head_inner(
+                CUTOVER_RECEIPT_FILE,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?,
+            complete: self.load_pointer_head_inner(
+                CUTOVER_COMPLETE_FILE,
+                #[cfg(test)]
+                probe,
+            )?,
+        })
+    }
+
     fn load_pointer_head(&self, pointer_name: &str) -> Result<Option<HeadRecord>, CommitError> {
+        self.load_pointer_head_inner(
+            pointer_name,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn load_pointer_head_inner(
+        &self,
+        pointer_name: &str,
+        #[cfg(test)] probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Result<Option<HeadRecord>, CommitError> {
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.pointer_read();
+        }
         let encoded_head =
             match read_bounded_in(&self.fs_dir, OsStr::new(pointer_name), MAX_HEAD_SIZE) {
                 Ok(encoded) => encoded,
@@ -1537,18 +1757,44 @@ impl CoreCommitCoordinator {
         keyring: &FrkKeyring<'_>,
         head: HeadRecord,
     ) -> Result<(HeadRecord, CatalogGeneration), CommitError> {
+        self.load_pointer_for_head_inner(
+            keyring,
+            head,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn load_pointer_for_head_inner(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        head: HeadRecord,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Result<(HeadRecord, CatalogGeneration), CommitError> {
         let keys = keyring.require(head.required_frk_version())?;
         let catalog_name = format!(
             "catalog-{:020}-{}.acore",
             head.generation(),
             head.catalog_hash()
         );
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.catalog_file_read();
+        }
         let encrypted_catalog = read_bounded_in(
             &self.catalogs_dir,
             OsStr::new(&catalog_name),
             MAX_CATALOG_ENVELOPE_SIZE,
         )?;
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.catalog_crypto_started();
+        }
         let catalog = head.verify_and_decrypt_catalog(keys, &self.core_id, &encrypted_catalog)?;
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.catalog_crypto_completed();
+        }
         Ok((head, catalog))
     }
 
@@ -1980,7 +2226,7 @@ impl CoreCommitCoordinator {
                         .ok_or(CommitError::CoreNotInitialized)?;
                     CommittedCatalog {
                         head: validation.head,
-                        catalog: validation.catalog,
+                        catalog: Arc::new(validation.catalog),
                     }
                 }
                 CommitMode::Normal => {

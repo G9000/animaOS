@@ -214,9 +214,8 @@ impl ValidatedObjectState {
 pub(super) struct AuthenticatedCommitSnapshot {
     pub(super) pointers: PointerSet,
     pub(super) key_ids: RequiredCacheKeyIds,
-    // Task 4 consumes the authenticated catalog; Task 8 consumes object bindings.
-    #[allow(dead_code)]
-    pub(super) catalog: Arc<CatalogGeneration>,
+    catalog: Arc<CatalogGeneration>,
+    // Task 8 consumes object bindings.
     #[allow(dead_code)]
     pub(super) objects: Option<Arc<ValidatedObjectState>>,
 }
@@ -233,6 +232,10 @@ impl AuthenticatedCommitSnapshot {
             catalog,
             objects,
         }
+    }
+
+    pub(super) fn catalog(&self) -> &Arc<CatalogGeneration> {
+        &self.catalog
     }
 
     fn matches(&self, key: &CacheLookupKey) -> bool {
