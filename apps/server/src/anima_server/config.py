@@ -183,6 +183,41 @@ class Settings(BaseSettings):
     latent_fold_rate: float = Field(default=0.5, ge=0.0, le=1.0)
     latent_weekly_decay: float = Field(default=0.98, ge=0.0, le=1.0)
     latent_max_traces_per_user: int = Field(default=500, ge=1)
+    # IL3 drive accumulators + push initiative (see
+    # services/agent/inner_life/drives.py, inner_life/initiative.py). The
+    # feature itself is off by default at PresenceConfig.initiative_enabled
+    # (a per-user opt-in column, not a setting) — these values only take
+    # effect once a user turns it on.
+    initiative_cooldown_base_hours: float = Field(default=24.0, ge=1.0)
+    initiative_cooldown_min_hours: float = Field(default=8.0, ge=0.0)
+    initiative_cooldown_backoff_factor: float = Field(default=1.5, ge=1.0)
+    initiative_cooldown_max_hours: float = Field(default=168.0, ge=1.0)
+    initiative_max_per_day: int = Field(default=1, ge=0)
+    initiative_max_per_week: int = Field(default=3, ge=0)
+    initiative_pressure_leak_tau_hours: float = Field(default=240.0, ge=1.0)
+    initiative_theta_unresolved_thread: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_pattern_insight: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_relational: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_novelty: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_dream_residue: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_growth_unresolved_thread: float = Field(default=0.10, ge=0.0)
+    initiative_growth_pattern_insight: float = Field(default=0.08, ge=0.0)
+    initiative_growth_relational: float = Field(default=0.05, ge=0.0)
+    initiative_growth_novelty: float = Field(default=0.05, ge=0.0)
+    initiative_growth_dream_residue: float = Field(default=0.05, ge=0.0)
+    # Contact-cadence proxy: no learned per-relationship cadence model
+    # exists yet, so "relational" grows once days-since-contact exceeds this
+    # fixed baseline (documented proxy — see initiative.py).
+    initiative_relational_cadence_days: float = Field(default=3.0, ge=0.1)
+    initiative_unresolved_thread_horizon_days: float = Field(default=3.0, ge=0.0)
+    # Closeness proxy: relationship age (days since first contact) saturates
+    # linearly to full closeness (1.0) at this many days — see
+    # initiative.resolve_closeness_signal for why no structured closeness
+    # scalar is available yet.
+    initiative_closeness_full_days: float = Field(default=120.0, ge=1.0)
+    initiative_novelty_episode_window: int = Field(default=6, ge=1)
+    initiative_novelty_repetition_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    initiative_novelty_energy_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     # IL5 forgetting-as-distillation (see services/agent/distillation.py).
     # Pure DB work with no LLM calls, but capped per sleep run to bound
     # work — ge=1 so a misconfigured cap can't silently disable the sweep.

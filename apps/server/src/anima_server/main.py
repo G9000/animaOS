@@ -172,10 +172,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             while True:
                 await asyncio.sleep(settings.presence_tick_interval_seconds)
                 try:
+                    from .db.session import (
+                        SessionLocal,
+                        get_user_session_factory,
+                        is_sqlite_mode,
+                    )
                     from .services.agent.inner_life.presence import run_presence_tick
 
+                    def _soul_db_factory_for(user_id: int):
+                        # The soul store is physically per-user in the desktop
+                        # SQLite deployment; resolve each user's own factory so
+                        # the initiative tick reads/writes that user's migrated
+                        # database, never the shared (unmigrated) SessionLocal.
+                        if is_sqlite_mode():
+                            return get_user_session_factory(user_id)
+                        return SessionLocal
+
                     await asyncio.to_thread(
-                        run_presence_tick, get_runtime_session_factory()
+                        run_presence_tick,
+                        get_runtime_session_factory(),
+                        soul_db_factory_for=_soul_db_factory_for,
                     )
                 except Exception:
                     logger.warning("Presence tick error", exc_info=True)

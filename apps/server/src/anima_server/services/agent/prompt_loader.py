@@ -360,6 +360,30 @@ class PromptLoader:
             assistant_response=assistant_response,
         )
 
+    # -----------------------------------------------------------------------
+    # Push initiative (IL3)
+    # -----------------------------------------------------------------------
+
+    def initiative_message(
+        self,
+        *,
+        drive: str,
+        material: str,
+        affect_line: str,
+    ) -> str:
+        """Render the IL3 drive-tagged unprompted-message prompt.
+
+        Carries the dominant drive tag, the current affect rendering, and
+        the SPECIFIC accumulated material that drove the fire — and forbids
+        generic check-in filler (see the template's hard rules).
+        """
+        return self.render(
+            "initiative_message",
+            drive=drive,
+            material=material,
+            affect_line=affect_line,
+        )
+
 
 def get_prompt_loader(db_session, user_id: int) -> PromptLoader:
     """Get a PromptLoader instance for the given user."""

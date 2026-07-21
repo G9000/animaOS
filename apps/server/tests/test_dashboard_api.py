@@ -164,6 +164,9 @@ def test_presence_config_defaults_and_update() -> None:
             "memoryNudgesEnabled": True,
             "checkInNudgesEnabled": True,
             "customInstruction": None,
+            "initiativeEnabled": False,
+            "quietHoursStart": None,
+            "quietHoursEnd": None,
         }
 
         resp = client.put(
@@ -177,6 +180,9 @@ def test_presence_config_defaults_and_update() -> None:
                 "memoryNudgesEnabled": True,
                 "checkInNudgesEnabled": False,
                 "customInstruction": "mention Tappy gently",
+                "initiativeEnabled": True,
+                "quietHoursStart": 22,
+                "quietHoursEnd": 7,
             },
         )
 
@@ -190,6 +196,9 @@ def test_presence_config_defaults_and_update() -> None:
             "memoryNudgesEnabled": True,
             "checkInNudgesEnabled": False,
             "customInstruction": "mention Tappy gently",
+            "initiativeEnabled": True,
+            "quietHoursStart": 22,
+            "quietHoursEnd": 7,
         }
 
 

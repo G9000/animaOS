@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -27,6 +28,7 @@ from anima_server.models import (
     EmotionalSignal,
     ExperienceClusterState,
     ForesightSignal,
+    InitiativeLog,
     KGEntity,
     KGRelation,
     LatentTrace,
@@ -172,6 +174,7 @@ _MEMORY_TABLES = frozenset(
         "memoryClaims",
         "tendencyContributions",
         "reconsolidationLog",
+        "initiativeLog",
     }
 )
 
@@ -217,6 +220,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "memoryClaims",
         "tendencyContributions",
         "reconsolidationLog",
+        "initiativeLog",
     }
 )
 
@@ -505,6 +509,42 @@ def export_vault(
     }
 
 
+def _clear_runtime_proactive_state(
+    user_id: int, runtime_factory: Callable[..., Session] | None = None
+) -> None:
+    """Delete a user's IL3 RUNTIME-tier proactive state (pending initiatives +
+    drive pressures) after a vault import. This state is ephemeral/rebuildable
+    and never carried in the vault, so pre-import rows must not survive a
+    restore and surface stale proactive messages. Best-effort: a cold/headless
+    transfer may have no runtime store, so any failure is logged and swallowed
+    rather than failing the import. ``runtime_factory`` is an injection seam
+    for tests; production resolves the process runtime session factory."""
+    try:
+        from anima_server.models.runtime_consciousness import (
+            DriveStateRow,
+            PendingInitiative,
+        )
+
+        if runtime_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            runtime_db.query(PendingInitiative).filter(
+                PendingInitiative.user_id == user_id
+            ).delete()
+            runtime_db.query(DriveStateRow).filter(
+                DriveStateRow.user_id == user_id
+            ).delete()
+            runtime_db.commit()
+    except Exception:
+        vault_logger.warning(
+            "Could not clear runtime proactive state on import for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+
 def import_vault(
     db: Session,
     vault: str,
@@ -574,6 +614,17 @@ def import_vault(
         _re_encrypt_snapshot_fields(database, user_id)
 
     restore_database_snapshot(db, database, scope=vault_scope)
+    # The restore replaced the soul-store InitiativeLog rows, but IL3 also has
+    # RUNTIME-tier proactive state (PendingInitiative — the pollable message
+    # text + its initiative_log_id — and DriveStateRow pressures) that the
+    # vault deliberately treats as ephemeral and never imports. Left in place,
+    # a pre-import PendingInitiative could still be served by the /initiatives
+    # endpoint after reauth, pointing at provenance that no longer exists or at
+    # a restored, unrelated log. Clear that runtime proactive state so it can't
+    # outlive the import. Guarded: cold/headless transfers may have no runtime
+    # store initialized, and it's rebuildable, so a failure here is non-fatal.
+    if user_id is not None:
+        _clear_runtime_proactive_state(user_id)
     write_data_snapshot(user_files, user_id=user_id)
 
     # Cold transfers and exact same-hierarchy restores carry the exported
@@ -915,6 +966,10 @@ def export_database_snapshot(
             _scoped(select(ReconsolidationLog), ReconsolidationLog)
         ).all()
     ]
+    initiative_log = [
+        serialize_initiative_log_record(row, deks=deks)
+        for row in db.scalars(_scoped(select(InitiativeLog), InitiativeLog)).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -937,6 +992,7 @@ def export_database_snapshot(
         "memoryClaims": memory_claims,
         "tendencyContributions": tendency_contributions,
         "reconsolidationLog": reconsolidation_log,
+        "initiativeLog": initiative_log,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -977,6 +1033,7 @@ def restore_database_snapshot(
     memory_claims_payload = snapshot.get("memoryClaims", [])
     tendency_contributions_payload = snapshot.get("tendencyContributions", [])
     reconsolidation_log_payload = snapshot.get("reconsolidationLog", [])
+    initiative_log_payload = snapshot.get("initiativeLog", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -992,6 +1049,12 @@ def restore_database_snapshot(
         # referencing it, or a reused id could reattach to a stale log).
         db.query(ReconsolidationLog).delete()
         db.query(TendencyContribution).delete()
+        # IL3 provenance log: same reused-id/stale-row hazard as the other
+        # provenance ledgers above — without this, restoring into a DB that
+        # already has initiative_log rows either raises
+        # "UNIQUE constraint failed: initiative_log.id" (id collision) or
+        # leaves stale rows behind (no FK to scrub them via cascade).
+        db.query(InitiativeLog).delete()
         # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
         # (no foreign_keys pragma), so claim evidence must be deleted
         # explicitly BEFORE its claims — mirroring MemoryItemEvidence and
@@ -1363,6 +1426,24 @@ def restore_database_snapshot(
                     old_value=float(record.get("old_value") or 0.0),
                     new_value=float(record.get("new_value") or 0.0),
                     eta=float(record.get("eta") or 0.0),
+                )
+            )
+
+        for record in initiative_log_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                InitiativeLog(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    fired_at=parse_optional_datetime(record.get("fired_at")),
+                    drive=str(record["drive"]),
+                    pressure_snapshot=record.get("pressure_snapshot") or {},
+                    gate_states=record.get("gate_states") or {},
+                    generated_text=coerce_optional_str(record.get("generated_text")),
+                    delivered=bool(record.get("delivered", False)),
+                    answered=bool(record.get("answered", False)),
+                    created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
 
@@ -2352,6 +2433,36 @@ def serialize_reconsolidation_log_record(
     }
 
 
+def serialize_initiative_log_record(
+    row: InitiativeLog,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """IL3 push-initiative provenance row. ``generated_text`` is the one
+    free-text field (field-encrypted like ``foresight_signals.content``);
+    ``pressure_snapshot``/``gate_states`` are numeric/boolean JSON only, no
+    ``deks`` needed for those two (mirrors ``TendencyContribution``/
+    ``ReconsolidationLog``)."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "fired_at": serialize_optional_datetime(row.fired_at),
+        "drive": row.drive,
+        "pressure_snapshot": row.pressure_snapshot,
+        "gate_states": row.gate_states,
+        "generated_text": _decrypt_field_value(
+            row.generated_text,
+            deks,
+            table="initiative_log",
+            field="generated_text",
+            user_id=row.user_id,
+        ),
+        "delivered": row.delivered,
+        "answered": row.answered,
+        "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
 def serialize_experience_cluster_state_record(
     state: ExperienceClusterState,
 ) -> dict[str, Any]:
@@ -2716,6 +2827,15 @@ def _re_encrypt_snapshot_fields(
                     table="foresight_signals",
                     field="relative_text",
                 )
+
+    for initiative in snapshot.get("initiativeLog", []):
+        if isinstance(initiative, dict) and initiative.get("generated_text"):
+            initiative["generated_text"] = _re_encrypt_field_value(
+                initiative["generated_text"],
+                user_id,
+                table="initiative_log",
+                field="generated_text",
+            )
 
     for experience in snapshot.get("agentExperiences", []):
         if isinstance(experience, dict):

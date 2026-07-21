@@ -18,6 +18,7 @@ from anima_server.models import (
     ForgetAuditLog,
     GrowthLogEntry,
     IdentityBlock,
+    InitiativeLog,
     KGEntity,
     KGRelation,
     MemoryClaim,
@@ -49,6 +50,8 @@ from anima_server.models.runtime_consciousness import (
     ActiveIntention,
     AffectStateRow,
     CurrentEmotion,
+    DriveStateRow,
+    PendingInitiative,
     PresenceCatchup,
     WorkingContext,
 )
@@ -111,6 +114,13 @@ def _reset_runtime_state(
         deleted,
         "presence_catchup",
         delete(PresenceCatchup).where(PresenceCatchup.user_id == user_id),
+    )
+    _delete(db, deleted, "drive_states", delete(DriveStateRow).where(DriveStateRow.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "pending_initiatives",
+        delete(PendingInitiative).where(PendingInitiative.user_id == user_id),
     )
     _delete(
         db,
@@ -253,6 +263,15 @@ def _reset_soul_state(
         deleted,
         "reconsolidation_log",
         delete(ReconsolidationLog).where(ReconsolidationLog.user_id == user_id),
+    )
+    # IL3 provenance log: no FK targets (it references nothing but the
+    # user), so ordering relative to memory_items/claims doesn't matter —
+    # deleted here alongside the other IL provenance ledgers for locality.
+    _delete(
+        db,
+        deleted,
+        "initiative_log",
+        delete(InitiativeLog).where(InitiativeLog.user_id == user_id),
     )
     _delete(db, deleted, "memory_claims", delete(MemoryClaim).where(MemoryClaim.user_id == user_id))
     _update(
