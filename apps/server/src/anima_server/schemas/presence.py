@@ -15,6 +15,7 @@ class PresenceConfigResponse(BaseModel):
     initiativeEnabled: bool = False
     quietHoursStart: int | None = None
     quietHoursEnd: int | None = None
+    dreamSharing: str = "on_ask"
 
 
 class PresenceConfigUpdateRequest(BaseModel):
@@ -28,6 +29,7 @@ class PresenceConfigUpdateRequest(BaseModel):
     initiativeEnabled: bool | None = None
     quietHoursStart: int | None = Field(default=None, ge=0, le=23)
     quietHoursEnd: int | None = Field(default=None, ge=0, le=23)
+    dreamSharing: str | None = Field(default=None, pattern="^(off|on_ask|ambient)$")
 
     @field_validator("customInstruction")
     @classmethod

@@ -65,6 +65,7 @@ def _serialize(values: PresenceConfigValues) -> PresenceConfigResponse:
         initiativeEnabled=values.initiative_enabled,
         quietHoursStart=values.quiet_hours_start,
         quietHoursEnd=values.quiet_hours_end,
+        dreamSharing=values.dream_sharing,
     )
 
 
