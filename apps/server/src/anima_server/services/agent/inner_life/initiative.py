@@ -423,6 +423,50 @@ def _topics_of(episode: MemoryEpisode) -> frozenset[str]:
     )
 
 
+def _unsurfaced_pattern_query(user_id: int, pattern_marker: datetime | None):
+    """Active pattern-synthesis MemoryItems not yet voiced, OLDEST first.
+
+    The single shared predicate for the grow signal (existence check),
+    ``gather_drive_material`` (which item to voice), and the surfaced-marker
+    advance after firing — using one query for all three is what makes
+    surfacing item N never silently mark item N+1..K as surfaced too (PR
+    review: "track surfaced pattern rows individually"). Oldest-first +
+    advancing the marker to the JUST-VOICED item's own ``created_at`` (never
+    ``now``) means a still-unvoiced newer item always stays above the new
+    marker and keeps accumulating ``pattern_insight`` on its own.
+    "Active item" guard (superseded_by/distilled_at both unset) mirrors the
+    same family of checks IL5/IL6 apply at every MemoryItem query site.
+    """
+    query = select(MemoryItem).where(
+        MemoryItem.user_id == user_id,
+        MemoryItem.category == _PATTERN_CATEGORY,
+        MemoryItem.superseded_by.is_(None),
+        MemoryItem.distilled_at.is_(None),
+    )
+    if pattern_marker is not None:
+        query = query.where(MemoryItem.created_at > _as_utc(pattern_marker))
+    return query.order_by(MemoryItem.created_at.asc())
+
+
+def _next_pattern_marker(
+    soul_db: Session,
+    *,
+    user_id: int,
+    pattern_marker: datetime | None,
+    fallback: datetime,
+) -> datetime:
+    """The value to advance ``pattern_insight_surfaced_at`` to after voicing
+    one pattern item: that item's OWN ``created_at``, never ``now`` — using
+    ``now`` would mark every OTHER unvoiced item created before this tick as
+    surfaced too, even though only one was ever actually voiced (PR review:
+    "track surfaced pattern rows individually"). ``fallback`` covers the
+    should-not-happen case of no row resolving (a pattern fire only reaches
+    this point after ``gather_drive_material`` already confirmed non-empty
+    material from this identical query)."""
+    row = soul_db.scalar(_unsurfaced_pattern_query(user_id, pattern_marker).limit(1))
+    return row.created_at if row is not None else fallback
+
+
 def resolve_drive_signals(
     soul_db: Session,
     runtime_db: Session,
@@ -469,17 +513,13 @@ def resolve_drive_signals(
 
     # pattern_insight: an active pattern-synthesis MemoryItem not yet
     # surfaced (created after the last surface marker, or ever if none).
-    # "Active item" guard (superseded_by/distilled_at both unset) mirrors
-    # the same family of checks IL5/IL6 apply at every MemoryItem query site.
-    pattern_query = select(MemoryItem.id).where(
-        MemoryItem.user_id == user_id,
-        MemoryItem.category == _PATTERN_CATEGORY,
-        MemoryItem.superseded_by.is_(None),
-        MemoryItem.distilled_at.is_(None),
+    # Shares its predicate with gather_drive_material and the post-fire
+    # marker advance (see _unsurfaced_pattern_query) so all three always
+    # agree on the same item.
+    pattern_shareable = (
+        soul_db.scalar(_unsurfaced_pattern_query(user_id, pattern_marker).limit(1))
+        is not None
     )
-    if pattern_marker is not None:
-        pattern_query = pattern_query.where(MemoryItem.created_at > _as_utc(pattern_marker))
-    pattern_shareable = soul_db.scalar(pattern_query.limit(1)) is not None
 
     # relational: days since last contact vs. the cadence proxy (see
     # Settings.initiative_relational_cadence_days docstring — no learned
@@ -597,7 +637,12 @@ def _resolve_affect_line(runtime_db: Session, *, user_id: int, now: datetime) ->
 
 
 def gather_drive_material(
-    soul_db: Session, *, user_id: int, drive: str, now: datetime
+    soul_db: Session,
+    *,
+    user_id: int,
+    drive: str,
+    now: datetime,
+    pattern_marker: datetime | None = None,
 ) -> str:
     """The SPECIFIC accumulated material behind the firing drive — the
     concrete foresight item / pattern finding, not just "a drive fired".
@@ -607,7 +652,14 @@ def gather_drive_material(
     ``now`` scopes the ``unresolved_thread`` lookup to the SAME open,
     in-horizon window its grow signal used (see ``_open_in_horizon_foresight``)
     so the message speaks to the item that actually drove the pressure, never
-    an unrelated out-of-horizon or start_date-less open row."""
+    an unrelated out-of-horizon or start_date-less open row.
+
+    ``pattern_marker`` (``DriveStateRow.pattern_insight_surfaced_at``) scopes
+    the ``pattern_insight`` lookup to the SAME oldest-unsurfaced item
+    ``resolve_drive_signals`` used for its grow signal (see
+    ``_unsurfaced_pattern_query``), so when multiple findings are unsurfaced
+    at once, voicing the oldest one never silently skips the newer ones —
+    each gets its own turn across successive fires."""
     if drive == DRIVE_UNRESOLVED_THREAD:
         today = now.date()  # local calendar date, matching the grow signal
         horizon_days = settings.initiative_unresolved_thread_horizon_days
@@ -618,17 +670,7 @@ def gather_drive_material(
             return ""
         return df(user_id, row.content, table="foresight_signals", field="content")
     if drive == DRIVE_PATTERN_INSIGHT:
-        row = soul_db.scalar(
-            select(MemoryItem)
-            .where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.category == _PATTERN_CATEGORY,
-                MemoryItem.superseded_by.is_(None),
-                MemoryItem.distilled_at.is_(None),
-            )
-            .order_by(MemoryItem.created_at.desc())
-            .limit(1)
-        )
+        row = soul_db.scalar(_unsurfaced_pattern_query(user_id, pattern_marker).limit(1))
         if row is None:
             return ""
         return df(user_id, row.content, table="memory_items", field="content")
@@ -739,6 +781,7 @@ def _fire(
     decision: DriveDecision,
     now: datetime,
     delivery: InitiativeDelivery,
+    pattern_marker: datetime | None = None,
 ) -> tuple[bool, InitiativeLog | None]:
     """Attempt generation, ALWAYS write one provenance row (success or a
     logged failed attempt), and deliver on success. Returns ``(delivered,
@@ -755,7 +798,8 @@ def _fire(
     per-item savepoint isolation in ``retrieval_feedback.py``).
     """
     material = gather_drive_material(
-        soul_db, user_id=user_id, drive=decision.drive, now=now
+        soul_db, user_id=user_id, drive=decision.drive, now=now,
+        pattern_marker=pattern_marker,
     )
     # No material -> no fire. A material-backed drive (unresolved_thread /
     # pattern_insight / dream_residue) can cross threshold and then lose its
@@ -952,7 +996,8 @@ def tick_initiative_for_user(
                 if candidate is None:
                     break
                 if gather_drive_material(
-                    soul_db, user_id=user_id, drive=candidate.drive, now=local_now
+                    soul_db, user_id=user_id, drive=candidate.drive, now=local_now,
+                    pattern_marker=row.pattern_insight_surfaced_at,
                 ).strip():
                     decision = candidate
                     break
@@ -983,6 +1028,7 @@ def tick_initiative_for_user(
                 decision=decision,
                 now=local_now,
                 delivery=delivery or PendingInitiativeDelivery(),
+                pattern_marker=row.pattern_insight_surfaced_at,
             )
             # A successful GENERATION (text produced, log row written) starts
             # the cooldown even if DELIVERY then failed — otherwise, since a
@@ -1000,7 +1046,17 @@ def tick_initiative_for_user(
             # its pattern surfaced or drain the drive that still needs voicing.
             if fired:
                 if decision.drive == DRIVE_PATTERN_INSIGHT:
-                    row.pattern_insight_surfaced_at = local_now.astimezone(UTC)
+                    # Advance to the JUST-VOICED item's own created_at, not
+                    # `now` — otherwise every other still-unvoiced pattern
+                    # finding created before this tick would be silently
+                    # marked surfaced too, even though only one was ever
+                    # actually voiced.
+                    row.pattern_insight_surfaced_at = _next_pattern_marker(
+                        soul_db,
+                        user_id=user_id,
+                        pattern_marker=row.pattern_insight_surfaced_at,
+                        fallback=local_now.astimezone(UTC),
+                    )
                 _apply_pressures(
                     row, reset_drive(updated_pressures, decision.drive), now=local_now
                 )

@@ -1831,6 +1831,120 @@ def test_resolve_signals_pattern_shareable_respects_surfaced_marker(db: Session)
     runtime_engine.dispose()
 
 
+def test_gather_pattern_material_voices_oldest_unsurfaced_item_first(db: Session) -> None:
+    """Regression (PR review, P2): with multiple unsurfaced pattern items,
+    gather_drive_material must voice the OLDEST one first (not the newest),
+    matching the FIFO order _next_pattern_marker/resolve_drive_signals share
+    — otherwise advancing the marker to `now` after voicing the newest item
+    would silently mark all the older, never-voiced ones as surfaced too."""
+    db.add_all(
+        [
+            MemoryItem(
+                user_id=1, content="oldest finding", category="pattern",
+                importance=3, source="pattern_synthesis",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            MemoryItem(
+                user_id=1, content="newest finding", category="pattern",
+                importance=3, source="pattern_synthesis",
+                created_at=datetime(2026, 1, 3, tzinfo=UTC),
+            ),
+        ]
+    )
+    db.commit()
+
+    material = initiative.gather_drive_material(
+        db, user_id=1, drive=DRIVE_PATTERN_INSIGHT,
+        now=datetime(2026, 1, 4, tzinfo=UTC), pattern_marker=None,
+    )
+    assert material == "oldest finding"
+
+
+def test_multiple_unsurfaced_patterns_each_get_their_own_turn_across_fires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): "Track surfaced pattern rows
+    individually". Two pattern findings are unsurfaced at once (e.g. one
+    sleep-synthesis run producing several). Firing on the first must NOT
+    silently mark the second as surfaced too (the old bug: the marker was
+    set to `now`, which is after BOTH items' created_at) — the second must
+    still be shareable and get its own fire on a later tick."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    with soul_factory() as db_:
+        db_.add_all(
+            [
+                MemoryItem(
+                    user_id=1, content="oldest finding", category="pattern",
+                    importance=3, source="pattern_synthesis",
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                MemoryItem(
+                    user_id=1, content="newest finding", category="pattern",
+                    importance=3, source="pattern_synthesis",
+                    created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                ),
+            ]
+        )
+        db_.commit()
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"pattern_insight": 0.9})
+
+    voiced_material: list[str] = []
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        voiced_material.append(material)
+        return f"about: {material}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    first_now = datetime(2026, 1, 3, 8, 0, tzinfo=UTC)
+    tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=first_now)
+
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.pattern_insight_surfaced_at.replace(tzinfo=UTC) == datetime(2026, 1, 1, tzinfo=UTC)
+        assert row.pattern_insight == 0.0  # reset after firing
+
+        # Re-grow pattern_insight above threshold for a second fire, past
+        # the base cooldown (24h).
+        row.pattern_insight = 0.9
+        row.updated_at = first_now
+        db_.commit()
+
+    # Mark the first fire answered so the unanswered-initiative cooldown
+    # BACKOFF (a real, separate gate behavior — see
+    # test_unanswered_initiative_increases_cooldown_end_to_end) doesn't
+    # interfere with isolating THIS test's concern: multiple unsurfaced
+    # pattern items each getting their own turn.
+    with soul_factory() as db_:
+        db_.scalars(select(InitiativeLog)).one().answered = True
+        db_.commit()
+
+    second_now = first_now + timedelta(hours=25)
+    tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=second_now)
+
+    assert voiced_material == ["oldest finding", "newest finding"]
+
+    with soul_factory() as db_:
+        logs = db_.scalars(
+            select(InitiativeLog).order_by(InitiativeLog.fired_at.asc())
+        ).all()
+        assert len(logs) == 2
+        assert logs[0].generated_text == "about: oldest finding"
+        assert logs[1].generated_text == "about: newest finding"
+
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.pattern_insight_surfaced_at.replace(tzinfo=UTC) == datetime(2026, 1, 2, tzinfo=UTC)
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 def test_resolve_signals_relational_overdue_and_user_turn_detection(db: Session) -> None:
     runtime_engine = _create_runtime_engine()
     runtime_factory = _make_factory(runtime_engine)
