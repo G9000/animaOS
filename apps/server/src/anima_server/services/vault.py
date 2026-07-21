@@ -2634,6 +2634,13 @@ def reset_identity_sequences(db: Session) -> None:
         "experience_cluster_state",
         "agent_skills",
         "latent_traces",
+        # IL provenance tables restored with explicit ids — their PG sequences
+        # must be advanced past the imported max or the next insert reuses an
+        # imported id and hits a PK conflict. dream_journal is IL7's; initiative_log
+        # (IL3) and reconsolidation_log (IL6) had the same latent gap.
+        "reconsolidation_log",
+        "initiative_log",
+        "dream_journal",
         "agent_threads",
         "agent_runs",
         "agent_steps",

@@ -43,7 +43,7 @@ from anima_server.services.agent.reconsolidation import (
     apply_reconsolidation,
     resolve_current_affect_magnitude,
 )
-from anima_server.services.data_crypto import DOMAIN_MEMORIES, df, ef
+from anima_server.services.data_crypto import DOMAIN_CONVERSATIONS, DOMAIN_MEMORIES, df, ef
 from anima_server.services.sessions import get_active_dek
 
 logger = logging.getLogger(__name__)
@@ -176,18 +176,25 @@ def _gather_candidates(
     return rows, candidates
 
 
-def _random_transcript_fragment(
-    user_id: int, dek: bytes, rng: random.Random
-) -> str | None:
+def _random_transcript_fragment(user_id: int, rng: random.Random) -> str | None:
     """One random old user-utterance fragment from the on-disk transcript
     archive. Best-effort: any I/O or decryption failure yields None (the dream
-    still runs on memory + latent material)."""
+    still runs on memory + latent material).
+
+    Transcripts live in the CONVERSATIONS crypto domain (not memories), so this
+    fetches that DEK itself rather than reusing the caller's memories DEK, and
+    resolves the on-disk archive path via ``resolve_transcript_path`` (a
+    ``.jsonl.enc``/``.jsonl`` sidecar sibling, never the bare stem)."""
     try:
         from anima_server.services.agent.transcript_archive import (
             decrypt_transcript,
             load_transcript_sidecar,
+            resolve_transcript_path,
         )
 
+        conv_dek = get_active_dek(user_id, DOMAIN_CONVERSATIONS)
+        if conv_dek is None:
+            return None
         transcripts_dir = settings.data_dir / "transcripts"
         if not transcripts_dir.exists():
             return None
@@ -198,10 +205,10 @@ def _random_transcript_fragment(
             if not sidecar or sidecar.get("user_id") != user_id:
                 continue
             thread_id = sidecar.get("thread_id")
-            enc_path = meta_path.with_name(meta_path.name.replace(".meta.json", ""))
-            if not enc_path.exists() or thread_id is None:
+            enc_path = resolve_transcript_path(meta_path)
+            if enc_path is None or thread_id is None:
                 continue
-            messages = decrypt_transcript(enc_path, dek=dek, thread_id=int(thread_id))
+            messages = decrypt_transcript(enc_path, dek=conv_dek, thread_id=int(thread_id))
             user_msgs = [
                 str(m.get("content", "")).strip()
                 for m in messages
@@ -346,7 +353,7 @@ def run_dream_for_user(
                     )
                 ).all()
             )
-            transcript_fragment = _random_transcript_fragment(user_id, dek, rng)
+            transcript_fragment = _random_transcript_fragment(user_id, rng)
             affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=local_now)
 
             generated = asyncio.run(

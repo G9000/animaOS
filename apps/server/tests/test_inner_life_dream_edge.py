@@ -328,6 +328,58 @@ def test_share_worthy_dream_raises_dream_residue_signal() -> None:
     re.dispose()
 
 
+def test_dream_sharing_off_suppresses_dream_residue() -> None:
+    """Regression (PR review, P2): dreamSharing='off' means the user never wants
+    dreams surfaced, so a share-worthy unsurfaced dream must NOT raise the
+    dream_residue grow signal, and its material lookup must return empty (so any
+    pressure that accumulated while it was on is reset by the material-less-drive
+    guard instead of firing an unsolicited dream initiative)."""
+    from anima_server.services.agent.inner_life import initiative
+    from anima_server.services.agent.inner_life.drives import DRIVE_DREAM_RESIDUE
+
+    se, re = _soul_engine(), _runtime_engine()
+    sf, rf = _factory(se), _factory(re)
+    with sf() as db_:
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="a shareworthy dream",
+            source_refs={}, affect_delta={}, share_worthy=True, surfaced=False,
+        ))
+        db_.commit()
+
+    with sf() as soul_db, rf() as runtime_db:
+        signals, _ = initiative.resolve_drive_signals(
+            soul_db, runtime_db, user_id=1, now=NIGHT,
+            last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
+            dream_sharing="off",
+        )
+        assert signals.dream_residue_present is False  # opted out -> no grow
+        material = initiative.gather_drive_material(
+            soul_db, user_id=1, drive=DRIVE_DREAM_RESIDUE, now=NIGHT,
+            dream_sharing="off",
+        )
+        assert material == ""  # opted out -> no material -> material-less reset
+        # Sanity: with sharing on, the same dream DOES raise the signal.
+        signals_on, _ = initiative.resolve_drive_signals(
+            soul_db, runtime_db, user_id=1, now=NIGHT,
+            last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
+            dream_sharing="on_ask",
+        )
+        assert signals_on.dream_residue_present is True
+    se.dispose()
+    re.dispose()
+
+
+def test_transcript_fragment_needs_conversations_dek(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (PR review, P3): transcripts are in the CONVERSATIONS crypto
+    domain, so the fragment fetch must use that DEK — not the memories DEK the
+    dream otherwise runs on. With no conversations DEK it returns None rather
+    than trying to decrypt with the wrong key."""
+    import random
+
+    monkeypatch.setattr(dream_edge, "get_active_dek", lambda user_id, domain=None: None)
+    assert dream_edge._random_transcript_fragment(1, random.Random(1)) is None
+
+
 # --------------------------------------------------------------------------
 # Vault round-trip + eval-reset
 # --------------------------------------------------------------------------

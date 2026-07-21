@@ -514,6 +514,7 @@ def resolve_drive_signals(
     last_user_turn_at: datetime | None,
     pattern_marker: datetime | None,
     pattern_marker_id: int | None = None,
+    dream_sharing: str = "on_ask",
 ) -> tuple[DriveSignals, datetime | None]:
     """Resolve every IL3 grow/reset boolean for one tick.
 
@@ -614,8 +615,13 @@ def resolve_drive_signals(
             novel_topic_discussed = bool(newest_topics - older_topics)
 
     # dream_residue: a share-worthy IL7 dream that hasn't been surfaced yet
-    # (see inner_life.dream_edge). Grows the drive until the dream is voiced.
-    dream_residue_present = (
+    # (see inner_life.dream_edge). Grows the drive until the dream is voiced —
+    # but ONLY when dream surfacing is not opted out. dream_sharing="off" means
+    # the user never wants dreams mentioned, so a dream must never become an
+    # initiative: suppress the grow signal (gather_drive_material returns "" in
+    # that case too, so any pressure that accumulated while it was on is reset
+    # by the material-less-drive guard instead of firing).
+    dream_residue_present = dream_sharing != "off" and (
         soul_db.scalar(
             select(DreamJournal.id)
             .where(
@@ -700,6 +706,7 @@ def gather_drive_material(
     now: datetime,
     pattern_marker: datetime | None = None,
     pattern_marker_id: int | None = None,
+    dream_sharing: str = "on_ask",
 ) -> str:
     """The SPECIFIC accumulated material behind the firing drive — the
     concrete foresight item / pattern finding, not just "a drive fired".
@@ -738,6 +745,10 @@ def gather_drive_material(
     if drive == DRIVE_NOVELTY:
         return "Our recent conversations have circled the same few topics."
     if drive == DRIVE_DREAM_RESIDUE:
+        # Opted out of dream surfacing -> no material, so the material-less-drive
+        # guard resets any lingering dream_residue instead of firing it.
+        if dream_sharing == "off":
+            return ""
         # The newest share-worthy, unsurfaced IL7 dream (see inner_life.dream_edge).
         row = soul_db.scalar(
             select(DreamJournal)
@@ -857,6 +868,7 @@ def _fire(
     delivery: InitiativeDelivery,
     pattern_marker: datetime | None = None,
     pattern_marker_id: int | None = None,
+    dream_sharing: str = "on_ask",
 ) -> tuple[bool, InitiativeLog | None]:
     """Attempt generation, ALWAYS write one provenance row (success or a
     logged failed attempt), and deliver on success. Returns ``(delivered,
@@ -875,6 +887,7 @@ def _fire(
     material = gather_drive_material(
         soul_db, user_id=user_id, drive=decision.drive, now=now,
         pattern_marker=pattern_marker, pattern_marker_id=pattern_marker_id,
+        dream_sharing=dream_sharing,
     )
     # No material -> no fire. A material-backed drive (unresolved_thread /
     # pattern_insight / dream_residue) can cross threshold and then lose its
@@ -1016,6 +1029,7 @@ def tick_initiative_for_user(
                 last_user_turn_at=row.last_user_turn_at,
                 pattern_marker=row.pattern_insight_surfaced_at,
                 pattern_marker_id=row.pattern_insight_surfaced_id,
+                dream_sharing=presence_values.dream_sharing,
             )
             updated_pressures = advance_drives(
                 _pressures_of(row),
@@ -1075,6 +1089,7 @@ def tick_initiative_for_user(
                     soul_db, user_id=user_id, drive=candidate.drive, now=local_now,
                     pattern_marker=row.pattern_insight_surfaced_at,
                     pattern_marker_id=row.pattern_insight_surfaced_id,
+                    dream_sharing=presence_values.dream_sharing,
                 ).strip():
                     decision = candidate
                     break
@@ -1107,6 +1122,7 @@ def tick_initiative_for_user(
                 delivery=delivery or PendingInitiativeDelivery(),
                 pattern_marker=row.pattern_insight_surfaced_at,
                 pattern_marker_id=row.pattern_insight_surfaced_id,
+                dream_sharing=presence_values.dream_sharing,
             )
             # A successful GENERATION (text produced, log row written) starts
             # the cooldown even if DELIVERY then failed — otherwise, since a
