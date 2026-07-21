@@ -7,9 +7,9 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
-from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
