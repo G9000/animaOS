@@ -1,16 +1,16 @@
 # IL-007 - Dream cycle (F5 extension)
 
-- Status: backlog
+- Status: in_progress
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/agent/sleep_agent.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/server/src/anima_server/models`
 - Parent: `IL-000`
 - Depends on: `IL-001`, `IL-002`, `IL-006`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-15 17:25 MYT
-- Started:
+- Updated: 2026-07-21 MYT
+- Started: 2026-07-21 MYT
 - Completed:
 
 ## Goal
