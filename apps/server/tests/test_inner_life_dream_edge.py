@@ -20,7 +20,6 @@ from anima_server.models.runtime import RuntimeThread
 from anima_server.models.runtime_consciousness import AffectStateRow, PresenceCatchup
 from anima_server.services.agent.inner_life import dream_edge
 from anima_server.services.agent.inner_life.dream import DreamConfig
-from anima_server.services.presence_config import get_or_create_presence_config
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -117,7 +116,8 @@ def test_short_idle_does_not_dream() -> None:
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is False
     with sf() as db_:
         assert db_.scalars(select(DreamJournal)).all() == []
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_outside_night_window_does_not_dream() -> None:
@@ -127,7 +127,8 @@ def test_outside_night_window_does_not_dream() -> None:
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=DAY) is False
     with sf() as db_:
         assert db_.scalars(select(DreamJournal)).all() == []
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_per_night_cap_blocks_second_dream() -> None:
@@ -143,7 +144,8 @@ def test_per_night_cap_blocks_second_dream() -> None:
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is False
     with sf() as db_:
         assert len(db_.scalars(select(DreamJournal)).all()) == 1  # no new dream
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_no_active_dek_skips_dream(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,7 +156,8 @@ def test_no_active_dek_skips_dream(monkeypatch: pytest.MonkeyPatch) -> None:
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is False
     with sf() as db_:
         assert db_.scalars(select(DreamJournal)).all() == []
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 # --------------------------------------------------------------------------
@@ -184,7 +187,8 @@ def test_eligible_dream_writes_journal_and_all_effects() -> None:
     with rf() as db_:
         affect = db_.scalars(select(AffectStateRow).where(AffectStateRow.user_id == 1)).one()
         assert affect.valence > 0.1  # nudged upward by the warm dream
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_low_significance_material_is_not_share_worthy() -> None:
@@ -195,7 +199,8 @@ def test_low_significance_material_is_not_share_worthy() -> None:
     with sf() as db_:
         d = db_.scalars(select(DreamJournal)).one()
         assert d.share_worthy is False
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_identity_only_memories_yield_no_dream() -> None:
@@ -205,7 +210,8 @@ def test_identity_only_memories_yield_no_dream() -> None:
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is False
     with sf() as db_:
         assert db_.scalars(select(DreamJournal)).all() == []
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_rolling_cap_prunes_oldest() -> None:
@@ -226,7 +232,8 @@ def test_rolling_cap_prunes_oldest() -> None:
         assert len(rows) == 3  # capped
         assert rows[-1].narrative == "a hallway of half-finished letters"  # newest kept
         assert "old 0" not in [r.narrative for r in rows]  # oldest pruned
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 # --------------------------------------------------------------------------
@@ -250,7 +257,8 @@ def test_catchup_marker_fires_outside_night_and_is_cleared() -> None:
     with rf() as db_:
         row = db_.scalars(select(PresenceCatchup).where(PresenceCatchup.user_id == 1)).one()
         assert row.dream_deferred is False  # marker consumed
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 def test_catchup_marker_persists_when_transiently_ineligible(
@@ -273,7 +281,8 @@ def test_catchup_marker_persists_when_transiently_ineligible(
     with rf() as db_:
         row = db_.scalars(select(PresenceCatchup).where(PresenceCatchup.user_id == 1)).one()
         assert row.dream_deferred is True  # marker PRESERVED for a later retry
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 # --------------------------------------------------------------------------
@@ -315,7 +324,8 @@ def test_share_worthy_dream_raises_dream_residue_signal() -> None:
             last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
         )
         assert signals.dream_residue_present is False
-    se.dispose(); re.dispose()
+    se.dispose()
+    re.dispose()
 
 
 # --------------------------------------------------------------------------

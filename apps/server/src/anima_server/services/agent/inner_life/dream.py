@@ -68,7 +68,7 @@ class DreamCandidate:
 def is_night_window(local_hour: int, config: DreamConfig = DEFAULT_DREAM_CONFIG) -> bool:
     """Whether ``local_hour`` (0..23, user-local) is inside the night window.
     Handles a window that wraps past midnight (start > end), though the PRD
-    default 00:00–06:00 does not wrap."""
+    default 00:00-06:00 does not wrap."""
     start, end = config.night_start_hour, config.night_end_hour
     if start <= end:
         return start <= local_hour < end

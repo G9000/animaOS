@@ -12,7 +12,6 @@ like ``initiative.tick_initiative_for_user``.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 from collections.abc import Callable
@@ -91,7 +90,7 @@ def _idle_hours(runtime_db: Session, *, user_id: int, now: datetime) -> float:
 def _night_window_start(local_now: datetime, config: DreamConfig) -> datetime:
     """The start instant of the night window that ``local_now`` falls in (or
     the most recent one), used to enforce the per-night cap. For the default
-    00:00–06:00 window this is local midnight of the current day."""
+    00:00-06:00 window this is local midnight of the current day."""
     start = local_now.replace(
         hour=config.night_start_hour, minute=0, second=0, microsecond=0
     )
