@@ -109,12 +109,47 @@ class OSNotificationDelivery(InitiativeDelivery):
         )
 
 
+def _reconcile_soul_delivered(
+    soul_db: Session | None, *, user_id: int, log_ids: list[int]
+) -> None:
+    """Best-effort mark the given ``InitiativeLog`` rows ``delivered`` — the
+    durable runtime side (a fetched/acked ``PendingInitiative``) is proof the
+    user received the message, so reconcile the soul log if the two-phase
+    ``delivered=True`` commit in ``tick_initiative_for_user`` had failed after
+    the runtime commit. Without this, ``count_recent_fires`` (which filters
+    ``delivered``) would keep undercounting and let a close user get another
+    initiative inside the cap.
+
+    Savepoint-isolated: a transient locked/corrupt per-user soul DB must not
+    poison the caller's session (the API route commits it afterwards), so a
+    failure here rolls back only the nested block and is swallowed.
+    """
+    if soul_db is None or not log_ids:
+        return
+    try:
+        from anima_server.models import InitiativeLog
+
+        with soul_db.begin_nested():
+            for log_id in log_ids:
+                log_row = soul_db.get(InitiativeLog, log_id)
+                if log_row is not None and log_row.user_id == user_id:
+                    log_row.delivered = True
+            soul_db.flush()
+    except Exception:
+        logger.warning(
+            "Failed to reconcile InitiativeLog.delivered for user %s", user_id, exc_info=True
+        )
+
+
 def list_and_mark_delivered(
-    runtime_db: Session, *, user_id: int
+    runtime_db: Session, *, user_id: int, soul_db: Session | None = None
 ) -> list[PendingInitiative]:
     """Every not-yet-acknowledged pending initiative for ``user_id``,
     oldest first — and marks each ``delivered`` (the client has now been
-    handed the row) as a side effect."""
+    handed the row) as a side effect. When ``soul_db`` is supplied, also
+    best-effort reconciles the soul-store ``InitiativeLog.delivered`` flag for
+    the fetched rows — the poll is the first proof of delivery, so it must not
+    rely on a later ack to make ``count_recent_fires`` count the message."""
     rows = list(
         runtime_db.scalars(
             select(PendingInitiative)
@@ -129,6 +164,9 @@ def list_and_mark_delivered(
         row.delivered = True
     if rows:
         runtime_db.flush()
+        _reconcile_soul_delivered(
+            soul_db, user_id=user_id, log_ids=[row.initiative_log_id for row in rows]
+        )
     return rows
 
 
@@ -161,19 +199,25 @@ def acknowledge_pending_initiative(
         try:
             from anima_server.models import InitiativeLog
 
-            log_row = soul_db.get(InitiativeLog, row.initiative_log_id)
-            if log_row is not None and log_row.user_id == user_id:
-                # An acknowledgement is definitive proof the user received the
-                # message, so reconcile `delivered` too — not just `answered`.
-                # If the two-phase `delivered=True` commit in
-                # tick_initiative_for_user failed after the runtime PendingInitiative
-                # was already durable, the log would otherwise stay
-                # delivered=False and count_recent_fires (which filters
-                # delivered) would undercount, letting a close user get another
-                # initiative inside the 24h cap.
-                log_row.delivered = True
-                log_row.answered = True
-                soul_db.flush()
+            # Savepoint-isolated: if the soul flush raises (e.g. a transient
+            # locked/corrupt per-user soul DB), roll back only this nested block
+            # so the session stays usable — otherwise the API route's
+            # subsequent db.commit() would raise and the runtime ack would roll
+            # back too, defeating the best-effort intent.
+            with soul_db.begin_nested():
+                log_row = soul_db.get(InitiativeLog, row.initiative_log_id)
+                if log_row is not None and log_row.user_id == user_id:
+                    # An acknowledgement is definitive proof the user received
+                    # the message, so reconcile `delivered` too — not just
+                    # `answered`. If the two-phase `delivered=True` commit in
+                    # tick_initiative_for_user failed after the runtime
+                    # PendingInitiative was already durable, the log would
+                    # otherwise stay delivered=False and count_recent_fires
+                    # (which filters delivered) would undercount, letting a
+                    # close user get another initiative inside the 24h cap.
+                    log_row.delivered = True
+                    log_row.answered = True
+                    soul_db.flush()
         except Exception:
             logger.warning(
                 "Failed to mark InitiativeLog answered for pending initiative %s",

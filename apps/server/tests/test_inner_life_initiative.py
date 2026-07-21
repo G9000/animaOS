@@ -1270,6 +1270,87 @@ def test_ack_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     runtime_engine.dispose()
 
 
+def test_poll_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
+    """Regression (PR review, P2): the poll (GET /initiatives) is the FIRST
+    proof of delivery, so list_and_mark_delivered must also best-effort
+    reconcile InitiativeLog.delivered — not rely on a later ack. Otherwise a
+    two-phase under-claim (delivered=False) that the client polls but doesn't
+    ack stays uncounted by count_recent_fires."""
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    db.commit()
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        db.commit()
+        assert len(fetched) == 1
+
+    refreshed = db.get(InitiativeLog, log_row.id)
+    assert refreshed.delivered is True  # reconciled by the poll, before any ack
+    assert refreshed.answered is False  # poll is delivery, not acknowledgement
+    assert count_recent_fires(db, user_id=1, now=now) == (1, 1)
+
+    runtime_engine.dispose()
+
+
+def test_ack_soul_failure_is_isolated_and_keeps_session_usable(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR review, P2): if the soul-store update during ack raises
+    (e.g. a transient locked/corrupt per-user DB), it must be savepoint-
+    isolated so the soul session is NOT left in a failed transaction state —
+    the API route calls db.commit() right after, which must still succeed —
+    and the runtime ack must still stand."""
+    now = datetime(2026, 1, 6, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi", delivered=False,
+    )
+    db.add(log_row)
+    db.commit()
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+        pid = rdb.scalars(select(PendingInitiative)).one().id
+
+        def boom(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("simulated locked/corrupt soul DB")
+
+        monkeypatch.setattr(db, "get", boom)
+        row = acknowledge_pending_initiative(rdb, soul_db=db, user_id=1, pending_id=pid)
+        rdb.commit()
+        assert row is not None
+        assert row.acknowledged is True  # runtime ack stood despite soul failure
+
+    # The soul session must not be poisoned — the route commits right after.
+    db.commit()  # would raise if the savepoint hadn't isolated the failure
+
+    runtime_engine.dispose()
+
+
 def test_runtime_biginteger_pk_autoincrements_on_sqlite() -> None:
     """Regression (PR review, P2): runtime models use BigInteger PKs sized for
     PostgreSQL, but SQLite only aliases rowid (autoincrement) for a column

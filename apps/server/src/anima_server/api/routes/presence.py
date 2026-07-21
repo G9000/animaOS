@@ -84,11 +84,16 @@ def list_pending_initiatives(
     user_id: int,
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
+    db: Session = Depends(get_db),
 ) -> PendingInitiativesResponse:
     """Fetch every not-yet-acknowledged IL3 initiative for this user (the
-    default pollable delivery channel — see ``inner_life/delivery.py``)."""
+    default pollable delivery channel — see ``inner_life/delivery.py``). The
+    poll is the first proof of delivery, so it also best-effort reconciles the
+    soul-store ``InitiativeLog.delivered`` flag (see the two-phase-commit note
+    in ``tick_initiative_for_user``)."""
     require_unlocked_user(request, user_id)
-    rows = list_and_mark_delivered(runtime_db, user_id=user_id)
+    rows = list_and_mark_delivered(runtime_db, user_id=user_id, soul_db=db)
+    db.commit()
     return PendingInitiativesResponse(
         userId=user_id,
         initiatives=[_pending_initiative_response(row) for row in rows],
