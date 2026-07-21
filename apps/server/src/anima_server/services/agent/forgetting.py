@@ -75,6 +75,9 @@ class ForgetResult:
     # were scrubbed or which were deleted outright because forgetting this
     # memory's sources emptied them (PRD IL4 "right-to-forget integration").
     latent_traces_scrubbed: int = 0
+    # IL7 right-to-forget integration: dream_journal rows deleted because they
+    # were seeded from (and their narrative derived from) a forgotten memory.
+    dream_journal_scrubbed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +405,36 @@ def _scrub_latent_traces_for_forget(
         user_id=user_id,
         source_message_ids=source_message_ids,
     )
+
+
+def _scrub_dream_journal_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    forgotten_memory_item_ids: set[int],
+) -> int:
+    """Delete IL7 dream_journal rows seeded from a forgotten memory (PRD F7
+    right-to-forget; P1 review finding). A dream's ``narrative`` is derived from
+    the DECRYPTED content of its source memories and the row is vault-exported,
+    so forgetting a source item must take any dream built on it with it —
+    redacting derived prose is unreliable, so the whole entry is deleted. Keyed
+    on the ``source_refs.memory_item_ids`` recorded at dream time."""
+    from anima_server.models import DreamJournal
+
+    if not forgotten_memory_item_ids:
+        return 0
+    deleted = 0
+    for row in db.scalars(
+        select(DreamJournal).where(DreamJournal.user_id == user_id)
+    ).all():
+        refs = row.source_refs or {}
+        ids = refs.get("memory_item_ids") if isinstance(refs, dict) else None
+        if isinstance(ids, list) and forgotten_memory_item_ids.intersection(
+            int(i) for i in ids if isinstance(i, int)
+        ):
+            db.delete(row)
+            deleted += 1
+    return deleted
 
 
 def forget_latent_traces_for_topic(
@@ -796,6 +829,11 @@ def forget_memory(
             result.latent_traces_scrubbed += forget_latent_traces_by_topic(
                 db, user_id=user_id, topic_key=topic_key
             )
+    # IL7: any dream seeded from a forgotten memory carries its (derived)
+    # content + provenance in durable, vault-exported state — delete those.
+    result.dream_journal_scrubbed = _scrub_dream_journal_for_forget(
+        db, user_id=user_id, forgotten_memory_item_ids=set(chain_ids)
+    )
     _delete_profile_fields_for_forget(
         db,
         user_id=user_id,

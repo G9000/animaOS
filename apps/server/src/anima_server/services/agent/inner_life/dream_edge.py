@@ -304,26 +304,44 @@ def run_dream_for_user(
     an unencrypted narrative, so it is skipped, mirroring IL3)."""
     rng = rng or random.Random()
     try:
+        from anima_server.services.agent.inner_life.initiative import (
+            _get_or_seed_drive_row,
+        )
+
         with runtime_db_factory() as runtime_db, soul_db_factory() as soul_db:
             catchup = _peek_catchup_marker(runtime_db, user_id=user_id)
             idle_hours = _idle_hours(runtime_db, user_id=user_id, now=local_now)
             dreams_tonight = _dreams_this_night(
                 soul_db, user_id=user_id, local_now=local_now, config=config
             )
+            # Bound the extraction call to <=1/night even when generation
+            # persistently fails (a failed dream writes no dream_journal row, so
+            # dreams_tonight alone would let the 60s tick retry all night). The
+            # attempt marker is set once we reach the extraction call, so any
+            # attempt this night window blocks another.
+            drive_row = _get_or_seed_drive_row(runtime_db, user_id=user_id)
+            night_start = _night_window_start(local_now, config).astimezone(UTC)
+            attempted_this_night = (
+                drive_row.last_dream_attempt_at is not None
+                and _as_utc(drive_row.last_dream_attempt_at) >= night_start
+            )
             # Two eligibility paths: the normal night-window gate, OR a deferred
             # catch-up dream (still idle + under the per-night cap, but the night
             # window is waived — it is the "while you were away" wake-up dream).
-            # The marker is NOT consumed here — only once a dream is actually
-            # recorded — so a transient miss retries next idle window.
-            eligible = is_dream_eligible(
-                idle_hours=idle_hours,
-                local_hour=local_now.hour,
-                dreams_tonight=dreams_tonight,
-                config=config,
-            ) or (
-                catchup
-                and idle_hours >= config.idle_hours_min
-                and dreams_tonight < config.max_dreams_per_night
+            # The catch-up marker is NOT consumed here — only once a dream is
+            # actually recorded — so a transient miss retries next idle window.
+            eligible = not attempted_this_night and (
+                is_dream_eligible(
+                    idle_hours=idle_hours,
+                    local_hour=local_now.hour,
+                    dreams_tonight=dreams_tonight,
+                    config=config,
+                )
+                or (
+                    catchup
+                    and idle_hours >= config.idle_hours_min
+                    and dreams_tonight < config.max_dreams_per_night
+                )
             )
             if not eligible:
                 return False
@@ -356,6 +374,11 @@ def run_dream_for_user(
             transcript_fragment = _random_transcript_fragment(user_id, rng)
             affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=local_now)
 
+            # Mark the attempt BEFORE the extraction call — a failed/empty
+            # generation must still count against tonight's cap so the tick
+            # doesn't re-call the model every 60s during an outage.
+            drive_row.last_dream_attempt_at = local_now.astimezone(UTC)
+
             generated = asyncio.run(
                 generate_dream_narrative(
                     soul_db,
@@ -368,6 +391,7 @@ def run_dream_for_user(
                 )
             )
             if generated is None:
+                runtime_db.commit()  # persist the attempt marker (bounds retries)
                 return False
 
             share_worthy = is_share_worthy(selected, config)

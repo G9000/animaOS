@@ -380,6 +380,77 @@ def test_transcript_fragment_needs_conversations_dek(monkeypatch: pytest.MonkeyP
     assert dream_edge._random_transcript_fragment(1, random.Random(1)) is None
 
 
+def test_forgetting_scrubs_dreams_built_on_the_forgotten_memory() -> None:
+    """Regression (PR review, P1): a dream's narrative is derived from decrypted
+    memory content and the row is vault-exported, so forgetting a source memory
+    must delete any dream seeded from it. Dreams that don't reference the
+    forgotten id are untouched."""
+    from anima_server.services.agent.forgetting import _scrub_dream_journal_for_forget
+
+    se = _soul_engine()
+    sf = _factory(se)
+    with sf() as db_:
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="dream about item 5",
+            source_refs={"memory_item_ids": [5, 9]}, affect_delta={}, share_worthy=True,
+        ))
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="unrelated dream",
+            source_refs={"memory_item_ids": [42]}, affect_delta={}, share_worthy=False,
+        ))
+        db_.commit()
+
+    with sf() as db_:
+        scrubbed = _scrub_dream_journal_for_forget(
+            db_, user_id=1, forgotten_memory_item_ids={5}
+        )
+        db_.commit()
+        assert scrubbed == 1
+
+    with sf() as db_:
+        narratives = [r.narrative for r in db_.scalars(select(DreamJournal)).all()]
+        assert narratives == ["unrelated dream"]  # the item-5 dream is gone
+    se.dispose()
+
+
+def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): a failed/empty extraction call writes no
+    dream_journal row, so without an attempt marker the 60s tick would re-call
+    the model all night. The attempt is recorded (last_dream_attempt_at) so a
+    second eligible tick the same night does NOT call the model again."""
+    from anima_server.models.runtime_consciousness import DriveStateRow
+
+    se, re = _soul_engine(), _runtime_engine()
+    sf, rf = _factory(se), _factory(re)
+    _seed_user(sf, rf)
+
+    calls = {"n": 0}
+
+    async def failing_generate(soul_db, *, user_id, material, latent_topics, transcript_fragment, affect_line, client=None):
+        calls["n"] += 1
+        return None  # model outage / empty output
+
+    monkeypatch.setattr(dream_edge, "generate_dream_narrative", failing_generate)
+
+    assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is False
+    assert calls["n"] == 1  # attempted once
+    with rf() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.last_dream_attempt_at is not None  # attempt recorded
+    with sf() as db_:
+        assert db_.scalars(select(DreamJournal)).all() == []  # no row written
+
+    # A second eligible tick the same night must NOT re-call the model.
+    assert dream_edge.run_dream_for_user(
+        sf, rf, user_id=1, local_now=NIGHT + timedelta(minutes=1)
+    ) is False
+    assert calls["n"] == 1  # still 1 — attempt marker blocked the retry
+    se.dispose()
+    re.dispose()
+
+
 # --------------------------------------------------------------------------
 # Vault round-trip + eval-reset
 # --------------------------------------------------------------------------
