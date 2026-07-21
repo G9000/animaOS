@@ -1945,6 +1945,109 @@ def test_multiple_unsurfaced_patterns_each_get_their_own_turn_across_fires(
     runtime_engine.dispose()
 
 
+def test_same_timestamp_pattern_sibling_still_counts_as_unsurfaced(db: Session) -> None:
+    """Regression (PR review, P2): two unsurfaced pattern items can share an
+    identical `created_at` (same-second bulk insert, or a vault restore). A
+    strict `created_at > marker` (timestamp alone) would exclude BOTH the
+    one just surfaced and its still-unvoiced same-timestamp sibling. The
+    marker must be compared as the (created_at, id) PAIR so the sibling
+    still counts as unsurfaced."""
+    same_instant = datetime(2026, 1, 1, tzinfo=UTC)
+    older = MemoryItem(
+        user_id=1, content="first finding", category="pattern",
+        importance=3, source="pattern_synthesis", created_at=same_instant,
+    )
+    newer = MemoryItem(
+        user_id=1, content="second finding", category="pattern",
+        importance=3, source="pattern_synthesis", created_at=same_instant,
+    )
+    db.add_all([older, newer])
+    db.commit()
+    assert older.created_at == newer.created_at  # genuinely identical timestamps
+
+    # Surfacing `older` advances the marker to (same_instant, older.id).
+    marker_at, marker_id = initiative._next_pattern_marker(
+        db, user_id=1, pattern_marker=None, pattern_marker_id=None,
+        fallback=same_instant,
+    )
+    assert marker_at == same_instant
+    assert marker_id == older.id
+
+    # `newer` — same timestamp, higher id — must STILL be shareable/voiceable,
+    # never silently dropped just because its created_at doesn't exceed the
+    # marker.
+    material = initiative.gather_drive_material(
+        db, user_id=1, drive=DRIVE_PATTERN_INSIGHT, now=datetime(2026, 1, 2, tzinfo=UTC),
+        pattern_marker=marker_at, pattern_marker_id=marker_id,
+    )
+    assert material == "second finding"
+
+
+def test_pattern_siblings_at_the_same_timestamp_each_fire_in_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end version of the tie-break regression: two pattern items
+    with the EXACT SAME created_at must each still get their own initiative
+    across successive fires, not have the second one silently excluded by
+    the first's surfaced marker."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    same_instant = datetime(2026, 1, 1, tzinfo=UTC)
+    with soul_factory() as db_:
+        db_.add_all(
+            [
+                MemoryItem(
+                    user_id=1, content="tied finding A", category="pattern",
+                    importance=3, source="pattern_synthesis", created_at=same_instant,
+                ),
+                MemoryItem(
+                    user_id=1, content="tied finding B", category="pattern",
+                    importance=3, source="pattern_synthesis", created_at=same_instant,
+                ),
+            ]
+        )
+        db_.commit()
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"pattern_insight": 0.9})
+
+    voiced_material: list[str] = []
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        voiced_material.append(material)
+        return f"about: {material}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    first_now = datetime(2026, 1, 3, 8, 0, tzinfo=UTC)
+    tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=first_now)
+
+    with soul_factory() as db_:
+        db_.scalars(select(InitiativeLog)).one().answered = True
+        db_.commit()
+
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.pattern_insight_surfaced_id is not None
+        row.pattern_insight = 0.9
+        row.updated_at = first_now
+        db_.commit()
+
+    second_now = first_now + timedelta(hours=25)
+    tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=second_now)
+
+    # Both tied items got their own fire — the second was NOT silently
+    # dropped by the first's same-timestamp marker.
+    assert voiced_material == ["tied finding A", "tied finding B"]
+    with soul_factory() as db_:
+        assert len(db_.scalars(select(InitiativeLog)).all()) == 2
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 def test_resolve_signals_relational_overdue_and_user_turn_detection(db: Session) -> None:
     runtime_engine = _create_runtime_engine()
     runtime_factory = _make_factory(runtime_engine)

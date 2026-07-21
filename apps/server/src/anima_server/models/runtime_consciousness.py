@@ -165,6 +165,15 @@ class DriveStateRow(RuntimeBase):
     created. This column is the "has this finding already been surfaced"
     marker the growth signal needs; it only advances when an initiative
     actually fires on ``pattern_insight`` (``reset_drive`` at the edge).
+    ``pattern_insight_surfaced_id`` is a same-timestamp tie-breaker: two
+    unsurfaced pattern rows can share an identical ``created_at`` (same-second
+    bulk insert, or a vault restore), and ``created_at`` alone can't
+    distinguish "the one just surfaced" from "its still-unvoiced sibling at
+    the same instant" — a strict ``created_at > marker`` would silently drop
+    both. The pair ``(pattern_insight_surfaced_at, pattern_insight_surfaced_id)``
+    is compared lexicographically (see
+    ``services.agent.inner_life.initiative._unsurfaced_pattern_query``), so a
+    same-timestamp sibling with a higher id still counts as unsurfaced.
 
     ``last_fired_at``/``unanswered_initiatives`` feed the gate chain's
     adaptive cooldown (``services.agent.inner_life.initiative.should_fire``);
@@ -186,6 +195,9 @@ class DriveStateRow(RuntimeBase):
     last_user_turn_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     pattern_insight_surfaced_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMPTZ, nullable=True
+    )
+    pattern_insight_surfaced_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
     )
     unanswered_initiatives: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(

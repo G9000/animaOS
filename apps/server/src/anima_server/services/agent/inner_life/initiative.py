@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -423,7 +423,11 @@ def _topics_of(episode: MemoryEpisode) -> frozenset[str]:
     )
 
 
-def _unsurfaced_pattern_query(user_id: int, pattern_marker: datetime | None):
+def _unsurfaced_pattern_query(
+    user_id: int,
+    pattern_marker: datetime | None,
+    pattern_marker_id: int | None = None,
+):
     """Active pattern-synthesis MemoryItems not yet voiced, OLDEST first.
 
     The single shared predicate for the grow signal (existence check),
@@ -431,9 +435,19 @@ def _unsurfaced_pattern_query(user_id: int, pattern_marker: datetime | None):
     advance after firing — using one query for all three is what makes
     surfacing item N never silently mark item N+1..K as surfaced too (PR
     review: "track surfaced pattern rows individually"). Oldest-first +
-    advancing the marker to the JUST-VOICED item's own ``created_at`` (never
-    ``now``) means a still-unvoiced newer item always stays above the new
-    marker and keeps accumulating ``pattern_insight`` on its own.
+    advancing the marker to the JUST-VOICED item's own ``(created_at, id)``
+    (never ``now``) means a still-unvoiced newer item always stays above the
+    new marker and keeps accumulating ``pattern_insight`` on its own.
+
+    The marker is compared as the PAIR ``(created_at, id)``, not
+    ``created_at`` alone: two unsurfaced items can share an identical
+    ``created_at`` (same-second bulk insert, or a vault restore), and a
+    strict ``created_at > marker`` would then exclude BOTH the one just
+    surfaced and its still-unvoiced same-timestamp sibling (PR review: "use a
+    row id tie-breaker"). A missing ``pattern_marker_id`` (legacy rows
+    written before this column existed) falls back to including every item
+    AT the marker timestamp, never excluding one on incomplete information.
+
     "Active item" guard (superseded_by/distilled_at both unset) mirrors the
     same family of checks IL5/IL6 apply at every MemoryItem query site.
     """
@@ -444,8 +458,20 @@ def _unsurfaced_pattern_query(user_id: int, pattern_marker: datetime | None):
         MemoryItem.distilled_at.is_(None),
     )
     if pattern_marker is not None:
-        query = query.where(MemoryItem.created_at > _as_utc(pattern_marker))
-    return query.order_by(MemoryItem.created_at.asc())
+        marker_utc = _as_utc(pattern_marker)
+        if pattern_marker_id is None:
+            query = query.where(MemoryItem.created_at >= marker_utc)
+        else:
+            query = query.where(
+                or_(
+                    MemoryItem.created_at > marker_utc,
+                    and_(
+                        MemoryItem.created_at == marker_utc,
+                        MemoryItem.id > pattern_marker_id,
+                    ),
+                )
+            )
+    return query.order_by(MemoryItem.created_at.asc(), MemoryItem.id.asc())
 
 
 def _next_pattern_marker(
@@ -453,18 +479,24 @@ def _next_pattern_marker(
     *,
     user_id: int,
     pattern_marker: datetime | None,
+    pattern_marker_id: int | None,
     fallback: datetime,
-) -> datetime:
-    """The value to advance ``pattern_insight_surfaced_at`` to after voicing
-    one pattern item: that item's OWN ``created_at``, never ``now`` — using
-    ``now`` would mark every OTHER unvoiced item created before this tick as
-    surfaced too, even though only one was ever actually voiced (PR review:
-    "track surfaced pattern rows individually"). ``fallback`` covers the
-    should-not-happen case of no row resolving (a pattern fire only reaches
-    this point after ``gather_drive_material`` already confirmed non-empty
-    material from this identical query)."""
-    row = soul_db.scalar(_unsurfaced_pattern_query(user_id, pattern_marker).limit(1))
-    return row.created_at if row is not None else fallback
+) -> tuple[datetime, int | None]:
+    """The ``(created_at, id)`` pair to advance ``pattern_insight_surfaced_at``/
+    ``pattern_insight_surfaced_id`` to after voicing one pattern item — that
+    item's OWN identity, never ``now`` — using ``now`` would mark every OTHER
+    unvoiced item created before this tick as surfaced too, even though only
+    one was ever actually voiced (PR review: "track surfaced pattern rows
+    individually"). ``fallback`` covers the should-not-happen case of no row
+    resolving (a pattern fire only reaches this point after
+    ``gather_drive_material`` already confirmed non-empty material from this
+    identical query)."""
+    row = soul_db.scalar(
+        _unsurfaced_pattern_query(user_id, pattern_marker, pattern_marker_id).limit(1)
+    )
+    if row is None:
+        return fallback, pattern_marker_id
+    return row.created_at, row.id
 
 
 def resolve_drive_signals(
@@ -475,6 +507,7 @@ def resolve_drive_signals(
     now: datetime,
     last_user_turn_at: datetime | None,
     pattern_marker: datetime | None,
+    pattern_marker_id: int | None = None,
 ) -> tuple[DriveSignals, datetime | None]:
     """Resolve every IL3 grow/reset boolean for one tick.
 
@@ -517,7 +550,9 @@ def resolve_drive_signals(
     # marker advance (see _unsurfaced_pattern_query) so all three always
     # agree on the same item.
     pattern_shareable = (
-        soul_db.scalar(_unsurfaced_pattern_query(user_id, pattern_marker).limit(1))
+        soul_db.scalar(
+            _unsurfaced_pattern_query(user_id, pattern_marker, pattern_marker_id).limit(1)
+        )
         is not None
     )
 
@@ -643,6 +678,7 @@ def gather_drive_material(
     drive: str,
     now: datetime,
     pattern_marker: datetime | None = None,
+    pattern_marker_id: int | None = None,
 ) -> str:
     """The SPECIFIC accumulated material behind the firing drive — the
     concrete foresight item / pattern finding, not just "a drive fired".
@@ -670,7 +706,9 @@ def gather_drive_material(
             return ""
         return df(user_id, row.content, table="foresight_signals", field="content")
     if drive == DRIVE_PATTERN_INSIGHT:
-        row = soul_db.scalar(_unsurfaced_pattern_query(user_id, pattern_marker).limit(1))
+        row = soul_db.scalar(
+            _unsurfaced_pattern_query(user_id, pattern_marker, pattern_marker_id).limit(1)
+        )
         if row is None:
             return ""
         return df(user_id, row.content, table="memory_items", field="content")
@@ -782,6 +820,7 @@ def _fire(
     now: datetime,
     delivery: InitiativeDelivery,
     pattern_marker: datetime | None = None,
+    pattern_marker_id: int | None = None,
 ) -> tuple[bool, InitiativeLog | None]:
     """Attempt generation, ALWAYS write one provenance row (success or a
     logged failed attempt), and deliver on success. Returns ``(delivered,
@@ -799,7 +838,7 @@ def _fire(
     """
     material = gather_drive_material(
         soul_db, user_id=user_id, drive=decision.drive, now=now,
-        pattern_marker=pattern_marker,
+        pattern_marker=pattern_marker, pattern_marker_id=pattern_marker_id,
     )
     # No material -> no fire. A material-backed drive (unresolved_thread /
     # pattern_insight / dream_residue) can cross threshold and then lose its
@@ -940,6 +979,7 @@ def tick_initiative_for_user(
                 now=local_now,
                 last_user_turn_at=row.last_user_turn_at,
                 pattern_marker=row.pattern_insight_surfaced_at,
+                pattern_marker_id=row.pattern_insight_surfaced_id,
             )
             updated_pressures = advance_drives(
                 _pressures_of(row),
@@ -998,6 +1038,7 @@ def tick_initiative_for_user(
                 if gather_drive_material(
                     soul_db, user_id=user_id, drive=candidate.drive, now=local_now,
                     pattern_marker=row.pattern_insight_surfaced_at,
+                    pattern_marker_id=row.pattern_insight_surfaced_id,
                 ).strip():
                     decision = candidate
                     break
@@ -1029,6 +1070,7 @@ def tick_initiative_for_user(
                 now=local_now,
                 delivery=delivery or PendingInitiativeDelivery(),
                 pattern_marker=row.pattern_insight_surfaced_at,
+                pattern_marker_id=row.pattern_insight_surfaced_id,
             )
             # A successful GENERATION (text produced, log row written) starts
             # the cooldown even if DELIVERY then failed — otherwise, since a
@@ -1046,17 +1088,20 @@ def tick_initiative_for_user(
             # its pattern surfaced or drain the drive that still needs voicing.
             if fired:
                 if decision.drive == DRIVE_PATTERN_INSIGHT:
-                    # Advance to the JUST-VOICED item's own created_at, not
-                    # `now` — otherwise every other still-unvoiced pattern
-                    # finding created before this tick would be silently
-                    # marked surfaced too, even though only one was ever
-                    # actually voiced.
-                    row.pattern_insight_surfaced_at = _next_pattern_marker(
+                    # Advance to the JUST-VOICED item's own (created_at, id),
+                    # not `now` — otherwise every other still-unvoiced pattern
+                    # finding created before this tick (including a same-
+                    # timestamp sibling) would be silently marked surfaced
+                    # too, even though only one was ever actually voiced.
+                    marker_at, marker_id = _next_pattern_marker(
                         soul_db,
                         user_id=user_id,
                         pattern_marker=row.pattern_insight_surfaced_at,
+                        pattern_marker_id=row.pattern_insight_surfaced_id,
                         fallback=local_now.astimezone(UTC),
                     )
+                    row.pattern_insight_surfaced_at = marker_at
+                    row.pattern_insight_surfaced_id = marker_id
                 _apply_pressures(
                     row, reset_drive(updated_pressures, decision.drive), now=local_now
                 )
