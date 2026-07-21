@@ -451,6 +451,48 @@ def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
     re.dispose()
 
 
+@pytest.mark.parametrize(
+    "value,expected",
+    [(0.4, 0.4), (1, 1.0), ("1.5", 1.5), ("warm", 0.0), (None, 0.0), ({}, 0.0)],
+)
+def test_coerce_delta(value: object, expected: float) -> None:
+    assert dream_edge._coerce_delta(value) == expected
+
+
+def test_nonnumeric_delta_does_not_raise_and_yields_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR review, P2): parseable JSON with a non-numeric delta
+    ("valence_delta": "warm") must not raise out of generate_dream_narrative
+    (that would escape run_dream_for_user's outer handler and roll back the
+    attempt marker). It is coerced to a 0 nudge and the valid narrative kept."""
+    import asyncio
+
+    # Drop the autouse stubs (esp. the generate_dream_narrative stub) so we
+    # exercise the REAL generate_dream_narrative + its delta coercion.
+    monkeypatch.undo()
+
+    async def fake_json(system, prompt, *, expect="object", client=None):
+        return {"narrative": "a warm blurred hallway", "valence_delta": "warm", "arousal_delta": None}
+
+    monkeypatch.setattr("anima_server.services.agent.llm_json.call_llm_for_json", fake_json)
+
+    se = _soul_engine()
+    sf = _factory(se)
+    with sf() as soul_db:
+        out = asyncio.run(
+            dream_edge.generate_dream_narrative(
+                soul_db, user_id=1, material=["m"], latent_topics=[],
+                transcript_fragment=None, affect_line="steady", client=object(),
+            )
+        )
+    assert out is not None
+    assert out["narrative"] == "a warm blurred hallway"
+    assert out["valence_delta"] == 0.0  # "warm" -> 0.0, no raise
+    assert out["arousal_delta"] == 0.0  # None -> 0.0
+    se.dispose()
+
+
 # --------------------------------------------------------------------------
 # Vault round-trip + eval-reset
 # --------------------------------------------------------------------------

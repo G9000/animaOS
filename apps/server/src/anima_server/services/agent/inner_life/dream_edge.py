@@ -264,12 +264,25 @@ async def generate_dream_narrative(
     narrative = str(result.get("narrative", "")).strip()
     if not narrative:
         return None
+    # Coerce the deltas defensively: a parseable dream with a non-numeric delta
+    # ("valence_delta": "warm") must NOT raise here — that would escape to
+    # run_dream_for_user's outer handler and roll back the just-set attempt
+    # marker, reopening the per-night retry storm. A bad delta is simply a 0
+    # nudge; the (valid) narrative is still recorded.
     return {
         "narrative": narrative,
-        "valence_delta": float(result.get("valence_delta", 0.0) or 0.0),
-        "arousal_delta": float(result.get("arousal_delta", 0.0) or 0.0),
-        "energy_delta": float(result.get("energy_delta", 0.0) or 0.0),
+        "valence_delta": _coerce_delta(result.get("valence_delta")),
+        "arousal_delta": _coerce_delta(result.get("arousal_delta")),
+        "energy_delta": _coerce_delta(result.get("energy_delta")),
     }
+
+
+def _coerce_delta(value: object) -> float:
+    """A dream affect delta as a float, or 0.0 for missing/non-numeric output."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _prune_journal(soul_db: Session, *, user_id: int, cap: int) -> None:
@@ -395,10 +408,11 @@ def run_dream_for_user(
                 return False
 
             share_worthy = is_share_worthy(selected, config)
+            # Deltas are already coerced to float in generate_dream_narrative.
             v, a, e = scale_affect_delta(
-                float(generated["valence_delta"]),
-                float(generated["arousal_delta"]),
-                float(generated["energy_delta"]),
+                generated["valence_delta"],  # type: ignore[arg-type]
+                generated["arousal_delta"],  # type: ignore[arg-type]
+                generated["energy_delta"],  # type: ignore[arg-type]
                 config,
             )
 
