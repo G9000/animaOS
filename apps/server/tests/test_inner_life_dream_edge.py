@@ -54,7 +54,7 @@ def _stub_crypto_and_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dream_edge, "df", lambda user_id, value, **kw: value)
     monkeypatch.setattr(dream_edge, "ef", lambda user_id, value, **kw: value)
 
-    async def fake_generate(soul_db, *, user_id, material, latent_topics, transcript_fragment, affect_line, client=None):
+    async def fake_generate(soul_db, *, user_id, material, latent_topics, affect_line, client=None):
         return {
             "narrative": "a hallway of half-finished letters",
             "valence_delta": 0.4,
@@ -369,17 +369,6 @@ def test_dream_sharing_off_suppresses_dream_residue() -> None:
     re.dispose()
 
 
-def test_transcript_fragment_needs_conversations_dek(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression (PR review, P3): transcripts are in the CONVERSATIONS crypto
-    domain, so the fragment fetch must use that DEK — not the memories DEK the
-    dream otherwise runs on. With no conversations DEK it returns None rather
-    than trying to decrypt with the wrong key."""
-    import random
-
-    monkeypatch.setattr(dream_edge, "get_active_dek", lambda user_id, domain=None: None)
-    assert dream_edge._random_transcript_fragment(1, random.Random(1)) is None
-
-
 def test_forgetting_scrubs_dreams_built_on_the_forgotten_memory() -> None:
     """Regression (PR review, P1): a dream's narrative is derived from decrypted
     memory content and the row is vault-exported, so forgetting a source memory
@@ -488,7 +477,7 @@ def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
 
     calls = {"n": 0}
 
-    async def failing_generate(soul_db, *, user_id, material, latent_topics, transcript_fragment, affect_line, client=None):
+    async def failing_generate(soul_db, *, user_id, material, latent_topics, affect_line, client=None):
         calls["n"] += 1
         return None  # model outage / empty output
 
@@ -543,7 +532,7 @@ def test_nonnumeric_delta_does_not_raise_and_yields_zero(
         out = asyncio.run(
             dream_edge.generate_dream_narrative(
                 soul_db, user_id=1, material=["m"], latent_topics=[],
-                transcript_fragment=None, affect_line="steady", client=object(),
+                affect_line="steady", client=object(),
             )
         )
     assert out is not None

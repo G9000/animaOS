@@ -43,7 +43,7 @@ from anima_server.services.agent.reconsolidation import (
     apply_reconsolidation,
     resolve_current_affect_magnitude,
 )
-from anima_server.services.data_crypto import DOMAIN_CONVERSATIONS, DOMAIN_MEMORIES, df, ef
+from anima_server.services.data_crypto import DOMAIN_MEMORIES, df, ef
 from anima_server.services.sessions import get_active_dek
 
 logger = logging.getLogger(__name__)
@@ -176,51 +176,15 @@ def _gather_candidates(
     return rows, candidates
 
 
-def _random_transcript_fragment(user_id: int, rng: random.Random) -> str | None:
-    """One random old user-utterance fragment from the on-disk transcript
-    archive. Best-effort: any I/O or decryption failure yields None (the dream
-    still runs on memory + latent material).
-
-    Transcripts live in the CONVERSATIONS crypto domain (not memories), so this
-    fetches that DEK itself rather than reusing the caller's memories DEK, and
-    resolves the on-disk archive path via ``resolve_transcript_path`` (a
-    ``.jsonl.enc``/``.jsonl`` sidecar sibling, never the bare stem)."""
-    try:
-        from anima_server.services.agent.transcript_archive import (
-            decrypt_transcript,
-            load_transcript_sidecar,
-            resolve_transcript_path,
-        )
-
-        conv_dek = get_active_dek(user_id, DOMAIN_CONVERSATIONS)
-        if conv_dek is None:
-            return None
-        transcripts_dir = settings.data_dir / "transcripts"
-        if not transcripts_dir.exists():
-            return None
-        metas = list(transcripts_dir.glob("*.meta.json"))
-        rng.shuffle(metas)
-        for meta_path in metas:
-            sidecar = load_transcript_sidecar(meta_path)
-            if not sidecar or sidecar.get("user_id") != user_id:
-                continue
-            thread_id = sidecar.get("thread_id")
-            enc_path = resolve_transcript_path(meta_path)
-            if enc_path is None or thread_id is None:
-                continue
-            messages = decrypt_transcript(enc_path, dek=conv_dek, thread_id=int(thread_id))
-            user_msgs = [
-                str(m.get("content", "")).strip()
-                for m in messages
-                if m.get("role") == "user" and str(m.get("content", "")).strip()
-            ]
-            if user_msgs:
-                fragment = rng.choice(user_msgs)
-                return fragment[:280]
-        return None
-    except Exception:
-        logger.debug("Transcript fragment unavailable for dream (user %s)", user_id, exc_info=True)
-        return None
+# NOTE: The PRD's "one random old transcript-utterance fragment" was
+# deliberately dropped from dream material. It baked the HIGHEST-sensitivity
+# raw content (verbatim old user utterances) into a durable, vault-exported
+# dream narrative, and making that fully forgettable spans several
+# transcript-deletion paths (thread delete, archive prune, forget) with no
+# single provenance hook — a standing right-to-forget hazard. Dreams retain
+# rich, already-forgettable material (important-but-cold memories + latent
+# traces, both scrubbed on forget). Re-adding it needs cross-path provenance
+# + scrubbing — tracked as a follow-up, not part of IL-007.
 
 
 async def generate_dream_narrative(
@@ -229,7 +193,6 @@ async def generate_dream_narrative(
     user_id: int,
     material: list[str],
     latent_topics: list[str],
-    transcript_fragment: str | None,
     affect_line: str,
     client: object | None = None,
 ) -> dict[str, object] | None:
@@ -243,7 +206,6 @@ async def generate_dream_narrative(
         prompt = PromptLoader.from_db(soul_db, user_id).dream_narrative(
             material=material,
             latent_topics=latent_topics,
-            transcript_fragment=transcript_fragment,
             affect_line=affect_line,
         )
         result = await call_llm_for_json(
@@ -384,7 +346,6 @@ def run_dream_for_user(
                     )
                 ).all()
             )
-            transcript_fragment = _random_transcript_fragment(user_id, rng)
             affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=local_now)
 
             # Mark the attempt BEFORE the extraction call — a failed/empty
@@ -398,7 +359,6 @@ def run_dream_for_user(
                     user_id=user_id,
                     material=material,
                     latent_topics=latent_topics,
-                    transcript_fragment=transcript_fragment,
                     affect_line=affect_line,
                     client=client,
                 )
@@ -426,7 +386,6 @@ def run_dream_for_user(
                     source_refs={
                         "memory_item_ids": sorted(selected_refs),
                         "latent_topic_keys": latent_topics,
-                        "transcript_fragment_used": transcript_fragment is not None,
                     },
                     affect_delta={"valence": v, "arousal": a, "energy": e},
                     share_worthy=share_worthy,

@@ -389,21 +389,19 @@ class PromptLoader:
         *,
         material: list[str],
         latent_topics: list[str],
-        transcript_fragment: str | None,
         affect_line: str,
     ) -> str:
         """Render the IL7 dream-narrative prompt.
 
         Carries the important-but-cold memory fragments, any recurring latent
-        undercurrents (structural topic keys — content-free), one old
-        user-utterance fragment, and the current affect rendering. Asks for a
-        JSON object with the narrative and bounded affect deltas.
+        undercurrents (structural topic keys — content-free), and the current
+        affect rendering. Asks for a JSON object with the narrative and bounded
+        affect deltas.
         """
         return self.render(
             "dream_narrative",
             material=material,
             latent_topics=latent_topics,
-            transcript_fragment=transcript_fragment,
             affect_line=affect_line,
         )
 
