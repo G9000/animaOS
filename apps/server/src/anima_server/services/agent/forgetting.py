@@ -411,27 +411,37 @@ def _scrub_dream_journal_for_forget(
     db: Session,
     *,
     user_id: int,
-    forgotten_memory_item_ids: set[int],
+    forgotten_memory_item_ids: set[int] | None = None,
+    forgotten_topic_keys: set[str] | None = None,
 ) -> int:
-    """Delete IL7 dream_journal rows seeded from a forgotten memory (PRD F7
-    right-to-forget; P1 review finding). A dream's ``narrative`` is derived from
-    the DECRYPTED content of its source memories and the row is vault-exported,
-    so forgetting a source item must take any dream built on it with it —
-    redacting derived prose is unreliable, so the whole entry is deleted. Keyed
-    on the ``source_refs.memory_item_ids`` recorded at dream time."""
+    """Delete IL7 dream_journal rows seeded from forgotten material (PRD F7
+    right-to-forget; P1 review findings). A dream's ``narrative`` is derived
+    from the DECRYPTED content of its source memories AND its latent-trace
+    topics, and the row is vault-exported, so forgetting EITHER kind of source
+    must take any dream built on it with it — redacting derived prose is
+    unreliable, so the whole entry is deleted. Matches on the
+    ``source_refs.memory_item_ids`` and ``source_refs.latent_topic_keys``
+    recorded at dream time."""
     from anima_server.models import DreamJournal
 
-    if not forgotten_memory_item_ids:
+    forgotten_memory_item_ids = forgotten_memory_item_ids or set()
+    forgotten_topic_keys = forgotten_topic_keys or set()
+    if not forgotten_memory_item_ids and not forgotten_topic_keys:
         return 0
     deleted = 0
     for row in db.scalars(
         select(DreamJournal).where(DreamJournal.user_id == user_id)
     ).all():
-        refs = row.source_refs or {}
-        ids = refs.get("memory_item_ids") if isinstance(refs, dict) else None
-        if isinstance(ids, list) and forgotten_memory_item_ids.intersection(
+        refs = row.source_refs if isinstance(row.source_refs, dict) else {}
+        ids = refs.get("memory_item_ids")
+        keys = refs.get("latent_topic_keys")
+        mem_hit = isinstance(ids, list) and forgotten_memory_item_ids.intersection(
             int(i) for i in ids if isinstance(i, int)
-        ):
+        )
+        topic_hit = isinstance(keys, list) and forgotten_topic_keys.intersection(
+            str(k) for k in keys
+        )
+        if mem_hit or topic_hit:
             db.delete(row)
             deleted += 1
     return deleted
@@ -541,6 +551,11 @@ def purge_latent_traces_matching_topic(
         for trace in all_traces
         if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
     ]
+    # IL7: dreams built on any purged topic hold its key + derived prose in
+    # durable, vault-exported state — scrub them by the purged topic_keys.
+    _scrub_dream_journal_for_forget(
+        db, user_id=user_id, forgotten_topic_keys={trace.topic_key for trace in traces}
+    )
     for trace in traces:
         db.delete(trace)
     if traces:
@@ -822,17 +837,23 @@ def forget_memory(
     from anima_server.services.agent.claims import derive_topic_key
     from anima_server.services.agent.latent_traces import forget_latent_traces_by_topic
 
+    forgotten_topic_keys: set[str] = set()
     for item in chain_items:
         content_plain = df(user_id, item.content, table="memory_items", field="content")
         for category in {item.category, "minor_observation"}:
             topic_key = derive_topic_key(content_plain, category)
+            forgotten_topic_keys.add(topic_key)
             result.latent_traces_scrubbed += forget_latent_traces_by_topic(
                 db, user_id=user_id, topic_key=topic_key
             )
     # IL7: any dream seeded from a forgotten memory carries its (derived)
-    # content + provenance in durable, vault-exported state — delete those.
+    # content + provenance in durable, vault-exported state — delete those,
+    # matching both the forgotten memory ids and their latent-topic keys.
     result.dream_journal_scrubbed = _scrub_dream_journal_for_forget(
-        db, user_id=user_id, forgotten_memory_item_ids=set(chain_ids)
+        db,
+        user_id=user_id,
+        forgotten_memory_item_ids=set(chain_ids),
+        forgotten_topic_keys=forgotten_topic_keys,
     )
     _delete_profile_fields_for_forget(
         db,

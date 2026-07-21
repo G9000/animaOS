@@ -35,15 +35,17 @@ turns the shipped seam into a user-visible feature.
   implementing the `InitiativeDelivery` seam via the Tauri notification shell.
 - End-to-end coverage: opt in -> drive fires -> client receives and
   acknowledges -> `PendingInitiative` marked delivered/acknowledged.
-- **Presence-config client exposure (added from PR #115 review, P2):** the
-  backend added `initiativeEnabled`, `quietHoursStart`, `quietHoursEnd` to the
-  presence config, but the shared `PresenceConfig`/`PresenceConfigUpdate` in
+- **Presence-config client exposure (from PR #115 + PR #116 review, P2):** the
+  backend added `initiativeEnabled`, `quietHoursStart`, `quietHoursEnd` (IL3) and
+  `dreamSharing` (`off|on_ask|ambient`, IL7) to the presence config, but the
+  shared `PresenceConfig`/`PresenceConfigUpdate` in
   `packages/api-client/src/types.ts` still omits them and the desktop save path
-  in `apps/desktop/src/pages/Presence.tsx` doesn't send them. Add the fields to
-  the typed client AND desktop controls (an opt-in toggle + quiet-hours
-  inputs), so a user can actually enable the off-by-default gate and configure
-  quiet hours. Until then IL3 is reachable only by callers that bypass the
-  typed client. (Backend contract is complete; this is the client half.)
+  in `apps/desktop/src/pages/Presence.tsx` doesn't send them. Add all four fields
+  to the typed client AND desktop controls (initiative opt-in toggle, quiet-hours
+  inputs, and a dream-sharing selector), so a user can actually enable the
+  off-by-default gate, configure quiet hours, and choose dream surfacing. Until
+  then those settings are reachable only by callers that bypass the typed client.
+  (Backend contract is complete; this is the client half.)
 
 ## Acceptance
 

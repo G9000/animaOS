@@ -413,6 +413,66 @@ def test_forgetting_scrubs_dreams_built_on_the_forgotten_memory() -> None:
     se.dispose()
 
 
+def test_scrub_dreams_by_forgotten_latent_topic_keys() -> None:
+    """Regression (PR review, P1): dreams are also seeded from latent-trace
+    topics, so purging a latent topic must delete dreams referencing it — the
+    narrative is derived from those topics and the row is vault-exported."""
+    from anima_server.services.agent.forgetting import _scrub_dream_journal_for_forget
+
+    se = _soul_engine()
+    sf = _factory(se)
+    with sf() as db_:
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="dream on a recurring theme",
+            source_refs={"memory_item_ids": [], "latent_topic_keys": ["topic:commute-stress"]},
+            affect_delta={}, share_worthy=True,
+        ))
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="other-topic dream",
+            source_refs={"memory_item_ids": [], "latent_topic_keys": ["topic:gardening"]},
+            affect_delta={}, share_worthy=False,
+        ))
+        db_.commit()
+
+    with sf() as db_:
+        scrubbed = _scrub_dream_journal_for_forget(
+            db_, user_id=1, forgotten_topic_keys={"topic:commute-stress"}
+        )
+        db_.commit()
+        assert scrubbed == 1
+    with sf() as db_:
+        assert [r.narrative for r in db_.scalars(select(DreamJournal)).all()] == ["other-topic dream"]
+    se.dispose()
+
+
+def test_topic_purge_scrubs_dreams_built_on_that_topic() -> None:
+    """Regression (PR review, P1): the topic-purge path
+    (purge_latent_traces_matching_topic) must scrub dreams built on the purged
+    topic, not just the LatentTrace rows."""
+    from anima_server.models.agent_runtime import LatentTrace
+    from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
+
+    se = _soul_engine()
+    sf = _factory(se)
+    with sf() as db_:
+        db_.add(LatentTrace(user_id=1, topic_key="commute_stress", kind="minor_observation", weight=0.6))
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="a dream about the commute",
+            source_refs={"memory_item_ids": [], "latent_topic_keys": ["commute_stress"]},
+            affect_delta={}, share_worthy=True,
+        ))
+        db_.commit()
+
+    with sf() as db_:
+        purged = purge_latent_traces_matching_topic(db_, user_id=1, topic="commute stress")
+        db_.commit()
+        assert purged == 1
+    with sf() as db_:
+        assert db_.scalars(select(DreamJournal)).all() == []  # dream scrubbed too
+        assert db_.scalars(select(LatentTrace)).all() == []
+    se.dispose()
+
+
 def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
