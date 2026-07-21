@@ -214,7 +214,7 @@ def _repair_legacy_diary_schema(connection: Connection) -> None:
 
 def _repair_legacy_presence_schema(connection: Connection) -> None:
     """Add current presence_configs columns to legacy SQLite tables stamped
-    past migrations (IL3: initiative_enabled/quiet_hours_*)."""
+    past migrations (IL3: initiative_enabled/quiet_hours_*; IL7: dream_sharing)."""
     if connection.dialect.name != "sqlite":
         return
 
@@ -235,6 +235,11 @@ def _repair_legacy_presence_schema(connection: Connection) -> None:
         (
             "quiet_hours_end",
             "ALTER TABLE presence_configs ADD COLUMN quiet_hours_end INTEGER",
+        ),
+        (
+            "dream_sharing",
+            "ALTER TABLE presence_configs "
+            "ADD COLUMN dream_sharing VARCHAR(16) NOT NULL DEFAULT 'on_ask'",
         ),
     ):
         if column_name not in presence_columns:
