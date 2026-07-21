@@ -105,6 +105,22 @@ def _make_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def _default_active_dek(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests in this file exercise `tick_initiative_for_user`/`_fire`
+    directly against a raw in-memory soul DB with no real login/unlock
+    session, so the REAL `get_active_dek` would return `None` for every
+    test user and universally trip the "no active DEK" skip (see
+    `test_fire_skipped_when_no_active_memories_dek`, which deliberately
+    overrides this back to `None` — a test's own `monkeypatch.setattr` runs
+    after this autouse fixture and wins). Default everyone else to an
+    active fake DEK so the DEK gate doesn't require every other fire test
+    to know about it."""
+    monkeypatch.setattr(
+        initiative, "get_active_dek", lambda user_id, domain=None: b"test-dek-bytes"
+    )
+
+
 def _default_gate_config(**overrides: object) -> GateConfig:
     values: dict[str, object] = dict(
         enabled=True,
@@ -785,6 +801,79 @@ def _seed_enabled_user(
         db_.commit()
 
 
+def test_fire_skipped_when_no_active_memories_dek(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (PR review): the background presence tick may run with no
+    active memories DEK (session locked/expired, or never unlocked yet).
+    `df()`/`ef()` both fail OPEN — return the value unchanged — when no DEK
+    is cached, which would let a fire prompt the LLM with raw ciphertext
+    (foresight/pattern material) AND commit an UNENCRYPTED
+    `initiative_log.generated_text` regardless of which drive fired,
+    breaking the field-encryption invariant every other soul-store free-text
+    column keeps. Firing must be skipped entirely — no LLM call, no
+    InitiativeLog, no PendingInitiative — until a DEK is available again;
+    pressure is preserved (not reset) so it fires normally next tick."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"relational": 0.9})
+    monkeypatch.setattr(initiative, "get_active_dek", lambda user_id, domain: None)
+
+    generate_called = False
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        nonlocal generate_called
+        generate_called = True
+        return "should never be reached"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
+    assert ok is True
+    assert generate_called is False  # never even attempted
+
+    with soul_factory() as db_:
+        assert db_.scalars(select(InitiativeLog)).all() == []
+    with runtime_factory() as db_:
+        assert db_.scalars(select(PendingInitiative)).all() == []
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.last_fired_at is None
+        assert row.relational > 0.0  # pressure preserved, not reset
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_fire_proceeds_once_a_dek_is_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confirms the skip above is specifically gated on DEK availability —
+    the same tick fires normally once one is active."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"relational": 0.9})
+    monkeypatch.setattr(initiative, "get_active_dek", lambda user_id, domain: b"fake-dek-bytes")
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return "hi"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
+
+    with soul_factory() as db_:
+        logs = db_.scalars(select(InitiativeLog)).all()
+        assert len(logs) == 1
+        assert logs[0].generated_text is not None
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
 def test_fully_passing_state_fires_exactly_the_dominant_drive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1358,11 +1447,10 @@ def test_runtime_biginteger_pk_autoincrements_on_sqlite() -> None:
     'NOT NULL constraint failed'. runtime_base registers a PRODUCTION @compiles
     hook so BigInteger emits INTEGER on SQLite; without it every runtime table
     (not just IL3's) breaks on a SQLite runtime backend."""
+    from anima_server.db.runtime_base import _compile_biginteger_sqlite
     from sqlalchemy import BigInteger
     from sqlalchemy.dialects import sqlite
     from sqlalchemy.schema import CreateTable
-
-    from anima_server.db.runtime_base import _compile_biginteger_sqlite
 
     # The production hook exists and maps BigInteger -> INTEGER on SQLite.
     assert _compile_biginteger_sqlite(BigInteger(), None) == "INTEGER"

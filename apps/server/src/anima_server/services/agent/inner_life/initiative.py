@@ -41,11 +41,11 @@ from anima_server.config import settings
 from anima_server.models import ForesightSignal, InitiativeLog, MemoryEpisode, MemoryItem
 from anima_server.models.runtime import RuntimeThread
 from anima_server.models.runtime_consciousness import DriveStateRow
+from anima_server.services.agent.foresight import FORESIGHT_ACTIVE_STATUSES
 from anima_server.services.agent.inner_life.delivery import (
     InitiativeDelivery,
     PendingInitiativeDelivery,
 )
-from anima_server.services.agent.foresight import FORESIGHT_ACTIVE_STATUSES
 from anima_server.services.agent.inner_life.drives import (
     DRIVE_DREAM_RESIDUE,
     DRIVE_NAMES,
@@ -59,7 +59,8 @@ from anima_server.services.agent.inner_life.drives import (
     advance_drives,
     reset_drive,
 )
-from anima_server.services.data_crypto import df, ef
+from anima_server.services.data_crypto import DOMAIN_MEMORIES, df, ef
+from anima_server.services.sessions import get_active_dek
 
 logger = logging.getLogger(__name__)
 
@@ -959,6 +960,19 @@ def tick_initiative_for_user(
                 _apply_pressures(row, updated_pressures, now=local_now)
 
             if decision is None:
+                runtime_db.commit()
+                return True
+
+            # Require an active memories DEK before firing. `_fire` decrypts
+            # foresight/pattern material via `df()` and encrypts the generated
+            # text via `ef()` — both fail OPEN (return the value unchanged)
+            # when no DEK is cached, which would let a foresight/pattern fire
+            # prompt the LLM with raw ciphertext AND commit an unencrypted
+            # `initiative_log.generated_text` regardless of which drive fired.
+            # Skip this tick entirely (pressure stays elevated, nothing
+            # logged) until the user's session is unlocked again; the next
+            # tick with an active DEK fires normally.
+            if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
                 runtime_db.commit()
                 return True
 
