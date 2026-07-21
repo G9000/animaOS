@@ -38,7 +38,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.models import ForesightSignal, InitiativeLog, MemoryEpisode, MemoryItem
+from anima_server.models import (
+    DreamJournal,
+    ForesightSignal,
+    InitiativeLog,
+    MemoryEpisode,
+    MemoryItem,
+)
 from anima_server.models.runtime import RuntimeThread
 from anima_server.models.runtime_consciousness import DriveStateRow
 from anima_server.services.agent.foresight import FORESIGHT_ACTIVE_STATUSES
@@ -607,12 +613,27 @@ def resolve_drive_signals(
                 older_topics |= topics
             novel_topic_discussed = bool(newest_topics - older_topics)
 
+    # dream_residue: a share-worthy IL7 dream that hasn't been surfaced yet
+    # (see inner_life.dream_edge). Grows the drive until the dream is voiced.
+    dream_residue_present = (
+        soul_db.scalar(
+            select(DreamJournal.id)
+            .where(
+                DreamJournal.user_id == user_id,
+                DreamJournal.share_worthy.is_(True),
+                DreamJournal.surfaced.is_(False),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
     signals = DriveSignals(
         unresolved_thread_open=unresolved_thread_open,
         pattern_shareable=pattern_shareable,
         relational_overdue=relational_overdue,
         novelty_repetitive=novelty_repetitive,
-        dream_residue_present=False,  # IL-007 stub — wired but dormant
+        dream_residue_present=dream_residue_present,
         user_turn_occurred=user_turn_occurred,
         unresolved_thread_resolved=unresolved_thread_resolved,
         novel_topic_discussed=novel_topic_discussed,
@@ -716,7 +737,22 @@ def gather_drive_material(
         return "It has been a while since we last talked."
     if drive == DRIVE_NOVELTY:
         return "Our recent conversations have circled the same few topics."
-    return ""  # dream_residue: IL-007 stub
+    if drive == DRIVE_DREAM_RESIDUE:
+        # The newest share-worthy, unsurfaced IL7 dream (see inner_life.dream_edge).
+        row = soul_db.scalar(
+            select(DreamJournal)
+            .where(
+                DreamJournal.user_id == user_id,
+                DreamJournal.share_worthy.is_(True),
+                DreamJournal.surfaced.is_(False),
+            )
+            .order_by(DreamJournal.dreamt_at.desc())
+            .limit(1)
+        )
+        if row is None:
+            return ""
+        return df(user_id, row.narrative, table="dream_journal", field="narrative")
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +1138,21 @@ def tick_initiative_for_user(
                     )
                     row.pattern_insight_surfaced_at = marker_at
                     row.pattern_insight_surfaced_id = marker_id
+                if decision.drive == DRIVE_DREAM_RESIDUE:
+                    # Mark the just-voiced dream surfaced so it stops re-raising
+                    # dream_residue (mirrors pattern_insight's surface marker).
+                    dream_row = soul_db.scalar(
+                        select(DreamJournal)
+                        .where(
+                            DreamJournal.user_id == user_id,
+                            DreamJournal.share_worthy.is_(True),
+                            DreamJournal.surfaced.is_(False),
+                        )
+                        .order_by(DreamJournal.dreamt_at.desc())
+                        .limit(1)
+                    )
+                    if dream_row is not None:
+                        dream_row.surfaced = True
                 _apply_pressures(
                     row, reset_drive(updated_pressures, decision.drive), now=local_now
                 )
