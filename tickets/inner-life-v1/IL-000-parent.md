@@ -23,7 +23,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 | --- | --- | --- | --- |
 | `IL-001` | Affect state vector with decay-to-baseline dynamics | `done` | none |
 | `IL-002` | Presence tick loop and offline catch-up | `done` | `IL-001` |
-| `IL-003` | Drive accumulators and push initiative channel | `backlog` | `IL-001`, `IL-002` |
+| `IL-003` | Drive accumulators and push initiative channel | `done` | `IL-001`, `IL-002` |
 | `IL-004` | Latent trace buffer and crystallization | `done` | none |
 | `IL-005` | Forgetting as distillation (F7 extension) | `done` | none |
 | `IL-006` | Recall reconsolidation (F2 extension) | `done` | none |
@@ -36,6 +36,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-18 19:29 MYT - `IL-005` done: forgetting as distillation (branch feature/il-005-distillation), task review clean, final review fixes applied.
 - 2026-07-19 05:10 MYT - `IL-006` done: recall reconsolidation (branch feature/il-006-reconsolidation), task review approved after 1 fix round, final whole-branch review (controller-run, spend limit) clean.
 - 2026-07-16 13:30 MYT - `IL-002` done: presence tick loop and offline catch-up (branch feature/il-002-presence-tick), pending review.
+- 2026-07-21 07:27 MYT - `IL-003` done: drive accumulators and push initiative (branch feature/il-003-initiative, merged main as `5e38dbf`, PR #115). First user-visible Inner Life behavior. Task review + adversarial whole-branch review (Critical wiring fix: per-user soul-store resolution) + 8 further PR review rounds, all fixed with regression tests. Client-side delivery wiring intentionally deferred, filed as `IL-008`.
 
 ## Deliverables
 
