@@ -1366,3 +1366,49 @@ class InitiativeLog(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class DreamJournal(Base):
+    """IL7 dream-cycle entry: one recombination of important-but-cold material
+    into a short narrative during an idle night window.
+
+    Soul-store (portable, encrypted, vault-exported) — unlike IL1/IL3 runtime
+    state, a dream is durable autobiographical content the companion may later
+    surface. ``narrative`` is field-encrypted like other free-text soul columns
+    (see ``services.data_crypto`` domain map); ``source_refs`` and
+    ``affect_delta`` are numeric/structural JSON only (the memory-item ids /
+    latent-trace ids / transcript ref that seeded the dream, and the applied
+    valence/arousal/energy deltas) so provenance is inspectable without leaking
+    content. ``share_worthy`` records whether the dream drew on high-significance
+    material and therefore raised IL3 ``dream_residue``. The table is capped at
+    a rolling 30 rows per user in the write path (no schema-level cap)."""
+
+    __tablename__ = "dream_journal"
+    __table_args__ = (
+        Index("ix_dream_journal_user_dreamt", "user_id", "dreamt_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dreamt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    narrative: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    affect_delta: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    share_worthy: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    surfaced: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
