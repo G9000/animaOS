@@ -25,6 +25,7 @@ from anima_server.models import (
     AgentSkill,
     AgentStep,
     AgentThread,
+    DreamJournal,
     EmotionalSignal,
     ExperienceClusterState,
     ForesightSignal,
@@ -175,6 +176,7 @@ _MEMORY_TABLES = frozenset(
         "tendencyContributions",
         "reconsolidationLog",
         "initiativeLog",
+        "dreamJournal",
     }
 )
 
@@ -221,6 +223,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "tendencyContributions",
         "reconsolidationLog",
         "initiativeLog",
+        "dreamJournal",
     }
 )
 
@@ -970,6 +973,10 @@ def export_database_snapshot(
         serialize_initiative_log_record(row, deks=deks)
         for row in db.scalars(_scoped(select(InitiativeLog), InitiativeLog)).all()
     ]
+    dream_journal = [
+        serialize_dream_journal_record(row, deks=deks)
+        for row in db.scalars(_scoped(select(DreamJournal), DreamJournal)).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -993,6 +1000,7 @@ def export_database_snapshot(
         "tendencyContributions": tendency_contributions,
         "reconsolidationLog": reconsolidation_log,
         "initiativeLog": initiative_log,
+        "dreamJournal": dream_journal,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -1034,6 +1042,7 @@ def restore_database_snapshot(
     tendency_contributions_payload = snapshot.get("tendencyContributions", [])
     reconsolidation_log_payload = snapshot.get("reconsolidationLog", [])
     initiative_log_payload = snapshot.get("initiativeLog", [])
+    dream_journal_payload = snapshot.get("dreamJournal", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -1055,6 +1064,8 @@ def restore_database_snapshot(
         # "UNIQUE constraint failed: initiative_log.id" (id collision) or
         # leaves stale rows behind (no FK to scrub them via cascade).
         db.query(InitiativeLog).delete()
+        # IL7 dream journal: same reused-id/stale-row hazard as the ledgers above.
+        db.query(DreamJournal).delete()
         # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
         # (no foreign_keys pragma), so claim evidence must be deleted
         # explicitly BEFORE its claims — mirroring MemoryItemEvidence and
@@ -1443,6 +1454,23 @@ def restore_database_snapshot(
                     generated_text=coerce_optional_str(record.get("generated_text")),
                     delivered=bool(record.get("delivered", False)),
                     answered=bool(record.get("answered", False)),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        for record in dream_journal_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                DreamJournal(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    dreamt_at=parse_optional_datetime(record.get("dreamt_at")),
+                    narrative=str(record.get("narrative") or ""),
+                    source_refs=record.get("source_refs") or {},
+                    affect_delta=record.get("affect_delta") or {},
+                    share_worthy=bool(record.get("share_worthy", False)),
+                    surfaced=bool(record.get("surfaced", False)),
                     created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
@@ -2463,6 +2491,34 @@ def serialize_initiative_log_record(
     }
 
 
+def serialize_dream_journal_record(
+    row: DreamJournal,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """IL7 dream-journal row. ``narrative`` is the one free-text field
+    (field-encrypted like ``initiative_log.generated_text``); ``source_refs``
+    and ``affect_delta`` are numeric/structural JSON only (no ``deks``
+    needed)."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "dreamt_at": serialize_optional_datetime(row.dreamt_at),
+        "narrative": _decrypt_field_value(
+            row.narrative,
+            deks,
+            table="dream_journal",
+            field="narrative",
+            user_id=row.user_id,
+        ),
+        "source_refs": row.source_refs,
+        "affect_delta": row.affect_delta,
+        "share_worthy": row.share_worthy,
+        "surfaced": row.surfaced,
+        "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
 def serialize_experience_cluster_state_record(
     state: ExperienceClusterState,
 ) -> dict[str, Any]:
@@ -2835,6 +2891,15 @@ def _re_encrypt_snapshot_fields(
                 user_id,
                 table="initiative_log",
                 field="generated_text",
+            )
+
+    for dream in snapshot.get("dreamJournal", []):
+        if isinstance(dream, dict) and dream.get("narrative"):
+            dream["narrative"] = _re_encrypt_field_value(
+                dream["narrative"],
+                user_id,
+                table="dream_journal",
+                field="narrative",
             )
 
     for experience in snapshot.get("agentExperiences", []):

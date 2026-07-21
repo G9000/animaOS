@@ -12,6 +12,7 @@ from anima_server.models import (
     AgentThread,
     BackgroundTaskRun,
     CoreEmotionalPattern,
+    DreamJournal,
     EmotionalSignal,
     ExperienceClusterState,
     ForesightSignal,
@@ -272,6 +273,14 @@ def _reset_soul_state(
         deleted,
         "initiative_log",
         delete(InitiativeLog).where(InitiativeLog.user_id == user_id),
+    )
+    # IL7 dream journal: user-scoped soul content (no FK to memory_items —
+    # source_refs is JSON), deleted here alongside the other IL soul state.
+    _delete(
+        db,
+        deleted,
+        "dream_journal",
+        delete(DreamJournal).where(DreamJournal.user_id == user_id),
     )
     _delete(db, deleted, "memory_claims", delete(MemoryClaim).where(MemoryClaim.user_id == user_id))
     _update(
