@@ -122,5 +122,18 @@ def ack_pending_initiative(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Pending initiative not found.",
         )
+    # Build the response before committing so an expire-on-commit session can't
+    # invalidate `row`'s attributes out from under us.
+    response = _pending_initiative_response(row)
+    # Two-store ordering: commit the RUNTIME ack (the durable proof the user
+    # acknowledged) BEFORE the soul reconciliation. `acknowledge_pending_initiative`
+    # only flushed the runtime update; `get_runtime_db` would otherwise commit it
+    # at dependency teardown, i.e. AFTER this handler's soul `db.commit()`. If
+    # that late runtime commit then failed, the soul log would durably claim
+    # `answered`/`delivered` while `PendingInitiative.acknowledged` rolled back —
+    # over-claiming an ack and dropping the unanswered-backoff for a row still
+    # being served. Committing runtime first makes a soul-side failure the safe
+    # direction (soul under-claims; the pending row is already acked).
+    runtime_db.commit()
     db.commit()
-    return _pending_initiative_response(row)
+    return response

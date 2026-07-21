@@ -1,4 +1,4 @@
-# IL-008 - Wire push-initiative delivery into the client
+# IL-008 - Wire push-initiative into the client (delivery + config UI)
 
 - Status: backlog
 - Priority: P2
@@ -35,6 +35,15 @@ turns the shipped seam into a user-visible feature.
   implementing the `InitiativeDelivery` seam via the Tauri notification shell.
 - End-to-end coverage: opt in -> drive fires -> client receives and
   acknowledges -> `PendingInitiative` marked delivered/acknowledged.
+- **Presence-config client exposure (added from PR #115 review, P2):** the
+  backend added `initiativeEnabled`, `quietHoursStart`, `quietHoursEnd` to the
+  presence config, but the shared `PresenceConfig`/`PresenceConfigUpdate` in
+  `packages/api-client/src/types.ts` still omits them and the desktop save path
+  in `apps/desktop/src/pages/Presence.tsx` doesn't send them. Add the fields to
+  the typed client AND desktop controls (an opt-in toggle + quiet-hours
+  inputs), so a user can actually enable the off-by-default gate and configure
+  quiet hours. Until then IL3 is reachable only by callers that bypass the
+  typed client. (Backend contract is complete; this is the client half.)
 
 ## Acceptance
 
