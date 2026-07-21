@@ -2310,8 +2310,10 @@ def test_presence_tick_resolves_soul_factory_per_user(
 
     result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=resolver)
     assert result.users_ticked == 2
-    # The resolver was consulted once per idle user, with the real user_id.
-    assert sorted(resolved_for) == [1, 2]
+    # The resolver was consulted per idle user with the real user_id (both the
+    # IL3 initiative tick and the IL7 dream tick resolve per-user, so each id
+    # appears at least once — never a single shared factory for everyone).
+    assert set(resolved_for) == {1, 2}
 
     # Each user's provenance lands in ITS OWN soul database, never the other's.
     with soul_factory_1() as db_:
