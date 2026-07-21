@@ -6,6 +6,7 @@ import type {
   AgentResponse,
   AgentStateData,
   AuthResponse,
+  CapabilitiesResponse,
   ChangePasswordResponse,
   CorefsCredentialResponse,
   CoreFsOperationRequest,
@@ -28,6 +29,8 @@ import type {
   DiaryFolderData,
   DocumentWorkflow,
   DocumentWorkflowActionResponse,
+  ParsingPackStatus,
+  ReparseResult,
   EmotionalContextData,
   GraphEntity,
   GraphEntityDetail,
@@ -801,6 +804,16 @@ export function createApiClient(options: ApiClientOptions) {
           `/documents/workflows/${workflowId}/resume`,
           { method: "POST" },
         ),
+      parsingPack: () =>
+        request<ParsingPackStatus>("/documents/parsing-pack"),
+      downloadParsingPack: () =>
+        request<ParsingPackStatus>("/documents/parsing-pack/download", {
+          method: "POST",
+        }),
+      reparse: (documentId: number) =>
+        request<ReparseResult>(`/documents/${documentId}/reparse`, {
+          method: "POST",
+        }),
     },
     knowledge: {
       listSources: (userId: number, limit?: number) => {
@@ -886,6 +899,11 @@ export function createApiClient(options: ApiClientOptions) {
           apiKey?: string;
           ollamaUrl?: string;
           systemPrompt?: string;
+          // Embedding provider selection; "" resets to the bundled default
+          // (clears the explicit provider/model/key settings).
+          embeddingProvider?: string;
+          embeddingModel?: string;
+          embeddingApiKey?: string;
         },
       ) =>
         request<{ status: string }>(`/config/${userId}`, {
@@ -1242,6 +1260,8 @@ export function createApiClient(options: ApiClientOptions) {
           environment?: string;
           provisioned?: boolean;
         }>("/health"),
+      capabilities: () =>
+        request<CapabilitiesResponse>("/capabilities"),
     },
     db: {
       verifyPassword: (password: string) =>

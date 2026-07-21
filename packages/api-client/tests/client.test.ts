@@ -665,6 +665,211 @@ describe("createApiClient error handling", () => {
     ]);
   });
 
+  test("calls parsing-pack and reparse endpoints with auth headers", async () => {
+    const requests: Array<{
+      url: string;
+      method: string;
+      unlockHeader: string | null;
+      nonceHeader: string | null;
+      body?: unknown;
+    }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        const headers = new Headers(init?.headers);
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          unlockHeader: headers.get("x-anima-unlock"),
+          nonceHeader: headers.get("x-anima-nonce"),
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        if (String(input).endsWith("/reparse")) {
+          return new Response(
+            JSON.stringify({ status: "upgraded", chunk_count: 12 }),
+          );
+        }
+        return new Response(
+          JSON.stringify({ state: "ready", progress: null, error: null }),
+        );
+      },
+    });
+
+    const packStatus = await api.documents.parsingPack();
+    const downloadStatus = await api.documents.downloadParsingPack();
+    const reparseResult = await api.documents.reparse(42);
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/documents/parsing-pack",
+        method: "GET",
+        unlockHeader: "unlock-token",
+        nonceHeader: "sidecar-nonce",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/documents/parsing-pack/download",
+        method: "POST",
+        unlockHeader: "unlock-token",
+        nonceHeader: "sidecar-nonce",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/documents/42/reparse",
+        method: "POST",
+        unlockHeader: "unlock-token",
+        nonceHeader: "sidecar-nonce",
+        body: undefined,
+      },
+    ]);
+    expect(packStatus).toEqual({ state: "ready", progress: null, error: null });
+    expect(downloadStatus).toEqual({ state: "ready", progress: null, error: null });
+    expect(reparseResult).toEqual({ status: "upgraded", chunk_count: 12 });
+  });
+
+  test("requests system capabilities with auth headers", async () => {
+    let requestedUrl = "";
+    let requestMethod = "";
+    let requestHeaders: Headers | null = null;
+    const capabilities = {
+      parsingPack: { state: "ready", progress: null, error: null },
+      embeddings: {
+        provider: "fastembed",
+        model: "BAAI/bge-small-en-v1.5",
+        dim: 384,
+        backend: "ready",
+      },
+      reranker: {
+        enabled: true,
+        model: "Xenova/ms-marco-MiniLM-L-6-v2",
+        backend: "cold",
+      },
+      llm: { configured: true },
+      contextualChunks: true,
+      fullDocumentContext: true,
+    };
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestMethod = init?.method || "GET";
+        requestHeaders = new Headers(init?.headers);
+        return new Response(JSON.stringify(capabilities));
+      },
+    });
+
+    const result = await api.system.capabilities();
+
+    expect(requestedUrl).toBe("https://api.test/api/capabilities");
+    expect(requestMethod).toBe("GET");
+    expect(requestHeaders?.get("x-anima-unlock")).toBe("unlock-token");
+    expect(requestHeaders?.get("x-anima-nonce")).toBe("sidecar-nonce");
+    expect(result).toEqual(capabilities);
+    expect(result.embeddings.backend).toBe("ready");
+    expect(result.llm.configured).toBe(true);
+  });
+
+  test("gets agent config including resolved embedding fields", async () => {
+    let requestedUrl = "";
+    let requestHeaders: Headers | null = null;
+    const config = {
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      extractionModel: null,
+      ollamaUrl: null,
+      hasApiKey: false,
+      systemPrompt: null,
+      embeddingProvider: "fastembed",
+      embeddingModel: "BAAI/bge-small-en-v1.5",
+      embeddingIsExplicit: false,
+      hasEmbeddingApiKey: false,
+    };
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestHeaders = new Headers(init?.headers);
+        return new Response(JSON.stringify(config));
+      },
+    });
+
+    const result = await api.config.get(1);
+
+    expect(requestedUrl).toBe("https://api.test/api/config/1");
+    expect(requestHeaders?.get("x-anima-unlock")).toBe("unlock-token");
+    expect(requestHeaders?.get("x-anima-nonce")).toBe("sidecar-nonce");
+    expect(result).toEqual(config);
+    expect(result.embeddingProvider).toBe("fastembed");
+    expect(result.embeddingIsExplicit).toBe(false);
+  });
+
+  test("updates agent config with embedding provider fields", async () => {
+    let requestedUrl = "";
+    let requestMethod = "";
+    let requestBody: unknown;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestMethod = init?.method || "GET";
+        requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+        return new Response(JSON.stringify({ status: "updated" }));
+      },
+    });
+
+    const result = await api.config.update(1, {
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-embed-test",
+    });
+
+    expect(requestedUrl).toBe("https://api.test/api/config/1");
+    expect(requestMethod).toBe("PUT");
+    expect(requestBody).toEqual({
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-embed-test",
+    });
+    expect(result).toEqual({ status: "updated" });
+  });
+
+  test("resets embedding provider to bundled default with empty string", async () => {
+    let requestBody: unknown;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      getUnlockToken: () => "unlock-token",
+      getNonce: () => "sidecar-nonce",
+      fetchImpl: async (_input, init) => {
+        requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+        return new Response(JSON.stringify({ status: "updated" }));
+      },
+    });
+
+    await api.config.update(1, {
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "",
+    });
+
+    expect(requestBody).toEqual({
+      provider: "ollama",
+      model: "vaultbox/qwen3.5-uncensored:35b",
+      embeddingProvider: "",
+    });
+  });
+
   test("calls knowledge library endpoints", async () => {
     const requests: Array<{ url: string; method: string; bodyType: string; body?: unknown }> = [];
     const api = createApiClient({

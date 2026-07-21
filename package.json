@@ -28,7 +28,7 @@
     "dev:animus": "cargo run -p animus",
     "test:animus": "cargo test -p animus",
     "check:repo": "bun run scripts/check-repo-organization.ts",
-    "python:sync": "uv sync --all-packages",
+    "python:sync": "uv sync --all-packages --all-extras",
     "python:lock": "uv lock",
     "db:server:revision": "node ./scripts/server-db-revision.cjs",
     "db:server:heads": "node ./scripts/run-nx.cjs run server:db-heads",

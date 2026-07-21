@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -145,9 +146,27 @@ def reparse_document(
     return ReparseResult(status="upgraded", chunk_count=len(rows))
 
 
-def list_reparse_candidates(runtime_db: Session, *, user_id: int) -> list[int]:
+_DOCLING_REPARSE_FAILED_AT_KEY = "docling_reparse_failed_at"
+
+
+def list_reparse_candidates(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    failure_cooldown_hours: int | None = None,
+) -> list[int]:
+    """Documents eligible for auto-reparse, oldest first.
+
+    A document that Docling failed to parse (``mark_docling_reparse_failed``)
+    is excluded while its failure is within ``failure_cooldown_hours`` — this
+    stops a single persistently-unparseable file, which sorts first by id and
+    stays an indexed non-docling candidate, from consuming the per-cycle
+    budget on every cycle and starving valid documents behind it. The
+    exclusion is a cooldown, not permanent, so a transient failure still gets
+    retried later. ``failure_cooldown_hours=None`` (or 0) disables the filter.
+    """
     stmt = (
-        select(RuntimeDocument.id)
+        select(RuntimeDocument.id, RuntimeDocument.metadata_json)
         .where(
             RuntimeDocument.user_id == user_id,
             RuntimeDocument.status == "indexed",
@@ -155,7 +174,56 @@ def list_reparse_candidates(runtime_db: Session, *, user_id: int) -> list[int]:
         )
         .order_by(RuntimeDocument.id)
     )
-    return list(runtime_db.scalars(stmt).all())
+    rows = runtime_db.execute(stmt).all()
+    if not failure_cooldown_hours:
+        return [doc_id for doc_id, _ in rows]
+
+    cutoff = datetime.now(UTC) - timedelta(hours=failure_cooldown_hours)
+    candidates: list[int] = []
+    for doc_id, metadata in rows:
+        failed_at = _parse_failed_at((metadata or {}).get(_DOCLING_REPARSE_FAILED_AT_KEY))
+        if failed_at is not None and failed_at > cutoff:
+            continue
+        candidates.append(doc_id)
+    return candidates
 
 
-__all__ = ["ReparseResult", "list_reparse_candidates", "reparse_document"]
+def mark_docling_reparse_failed(
+    runtime_db: Session, *, user_id: int, document_id: int
+) -> None:
+    """Record that Docling failed on this document, so the auto-reparse loop
+    can apply a cooldown (see ``list_reparse_candidates``).
+
+    Stored in the document's ``metadata_json`` — no schema change — and only
+    the marker is written (the caller is expected to have rolled back any
+    failed reparse mutations first, then commit this). Idempotent per call:
+    it just refreshes the timestamp.
+    """
+    document = get_document_for_user(
+        runtime_db, user_id=user_id, document_id=document_id
+    )
+    if document is None:
+        return
+    metadata = dict(document.metadata_json or {})
+    metadata[_DOCLING_REPARSE_FAILED_AT_KEY] = datetime.now(UTC).isoformat()
+    document.metadata_json = metadata
+    runtime_db.add(document)
+    runtime_db.flush()
+
+
+def _parse_failed_at(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+__all__ = [
+    "ReparseResult",
+    "list_reparse_candidates",
+    "mark_docling_reparse_failed",
+    "reparse_document",
+]
