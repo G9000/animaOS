@@ -253,6 +253,29 @@ def test_catchup_marker_fires_outside_night_and_is_cleared() -> None:
     se.dispose(); re.dispose()
 
 
+def test_catchup_marker_persists_when_transiently_ineligible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the catch-up marker must NOT be consumed when a dream can't
+    actually run (here the session is locked — no DEK). Otherwise the deferred
+    wake-up dream would be silently lost instead of retrying next idle window."""
+    se, re = _soul_engine(), _runtime_engine()
+    sf, rf = _factory(se), _factory(re)
+    _seed_user(sf, rf)
+    monkeypatch.setattr(dream_edge, "get_active_dek", lambda user_id, domain=None: None)
+    with rf() as db_:
+        db_.add(PresenceCatchup(user_id=1, gap_seconds=90000, components="", dream_deferred=True))
+        db_.commit()
+
+    assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=DAY) is False
+    with sf() as db_:
+        assert db_.scalars(select(DreamJournal)).all() == []
+    with rf() as db_:
+        row = db_.scalars(select(PresenceCatchup).where(PresenceCatchup.user_id == 1)).one()
+        assert row.dream_deferred is True  # marker PRESERVED for a later retry
+    se.dispose(); re.dispose()
+
+
 # --------------------------------------------------------------------------
 # IL3 dream_residue integration
 # --------------------------------------------------------------------------

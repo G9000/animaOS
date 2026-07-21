@@ -119,20 +119,33 @@ def _dreams_this_night(
     )
 
 
-def _consume_catchup_marker(runtime_db: Session, *, user_id: int) -> bool:
+def _peek_catchup_marker(runtime_db: Session, *, user_id: int) -> bool:
     """Whether a deferred catch-up dream is pending (IL2 set it when an offline
-    gap covered an eligible night window). Clears the marker as it reads it, so
-    a gap yields exactly ONE wake-up dream regardless of length."""
-    row = runtime_db.scalar(
+    gap covered an eligible night window). Read-only — the marker is cleared by
+    ``_clear_catchup_marker`` ONLY once a dream is actually recorded, so a
+    transient miss (session locked, no material yet) retries in the next idle
+    window instead of silently losing the wake-up dream."""
+    return (
+        runtime_db.scalar(
+            select(PresenceCatchup.id).where(
+                PresenceCatchup.user_id == user_id,
+                PresenceCatchup.dream_deferred.is_(True),
+            )
+        )
+        is not None
+    )
+
+
+def _clear_catchup_marker(runtime_db: Session, *, user_id: int) -> None:
+    """Clear the deferred-dream marker after a catch-up dream has been recorded,
+    so a gap yields exactly ONE wake-up dream regardless of length."""
+    for row in runtime_db.scalars(
         select(PresenceCatchup).where(
             PresenceCatchup.user_id == user_id,
             PresenceCatchup.dream_deferred.is_(True),
         )
-    )
-    if row is None:
-        return False
-    row.dream_deferred = False
-    return True
+    ).all():
+        row.dream_deferred = False
 
 
 def _gather_candidates(
@@ -286,7 +299,7 @@ def run_dream_for_user(
     rng = rng or random.Random()
     try:
         with runtime_db_factory() as runtime_db, soul_db_factory() as soul_db:
-            catchup = _consume_catchup_marker(runtime_db, user_id=user_id)
+            catchup = _peek_catchup_marker(runtime_db, user_id=user_id)
             idle_hours = _idle_hours(runtime_db, user_id=user_id, now=local_now)
             dreams_tonight = _dreams_this_night(
                 soul_db, user_id=user_id, local_now=local_now, config=config
@@ -294,6 +307,8 @@ def run_dream_for_user(
             # Two eligibility paths: the normal night-window gate, OR a deferred
             # catch-up dream (still idle + under the per-night cap, but the night
             # window is waived — it is the "while you were away" wake-up dream).
+            # The marker is NOT consumed here — only once a dream is actually
+            # recorded — so a transient miss retries next idle window.
             eligible = is_dream_eligible(
                 idle_hours=idle_hours,
                 local_hour=local_now.hour,
@@ -305,23 +320,17 @@ def run_dream_for_user(
                 and dreams_tonight < config.max_dreams_per_night
             )
             if not eligible:
-                if catchup:
-                    runtime_db.commit()  # persist the cleared marker
                 return False
 
             # df/ef fail open without a DEK — never dream on a locked session.
             dek = get_active_dek(user_id, DOMAIN_MEMORIES)
             if dek is None:
-                if catchup:
-                    runtime_db.commit()
                 return False
 
             rows, candidates = _gather_candidates(
                 soul_db, user_id=user_id, now=local_now, config=config
             )
             if not candidates:
-                if catchup:
-                    runtime_db.commit()
                 return False
             selected = sample_material(candidates, rng, config)
             selected_refs = {c.ref for c in selected}
@@ -353,8 +362,6 @@ def run_dream_for_user(
                 )
             )
             if generated is None:
-                if catchup:
-                    runtime_db.commit()
                 return False
 
             share_worthy = is_share_worthy(selected, config)
@@ -404,6 +411,11 @@ def run_dream_for_user(
 
             # Effect 4 (dream_residue) is passive: IL3's resolve_drive_signals
             # reads share-worthy, unsurfaced dream_journal rows — no write here.
+            #
+            # A dream is now recorded, so consume any deferred catch-up marker —
+            # exactly one wake-up dream per gap, regardless of length.
+            if catchup:
+                _clear_catchup_marker(runtime_db, user_id=user_id)
             soul_db.commit()
             runtime_db.commit()
             return True
