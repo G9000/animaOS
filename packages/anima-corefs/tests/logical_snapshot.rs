@@ -145,7 +145,10 @@ fn read_directory_returns_authenticated_file_metadata() {
         .find(|entry| entry.path.as_str() == "Notes/Alpha.md")
         .unwrap();
     assert_eq!(alpha.metadata.kind, EntryKind::File);
-    assert_eq!(alpha.metadata.size, b"caf\xc3\xa9\nneedle one\n".len() as u64);
+    assert_eq!(
+        alpha.metadata.size,
+        b"caf\xc3\xa9\nneedle one\n".len() as u64
+    );
     assert_eq!(alpha.metadata.content, ContentClassification::Text);
 
     let binary = entries

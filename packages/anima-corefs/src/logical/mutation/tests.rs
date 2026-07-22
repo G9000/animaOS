@@ -725,7 +725,12 @@ fn object_file_count(fixture: &Fixture) -> usize {
     fs::read_dir(fixture.coordinator.objects_path())
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().map(|kind| kind.is_file()).unwrap_or(false))
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
         .count()
 }
 
