@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-22 12:28 MYT
+- Updated: 2026-07-22 12:51 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -180,6 +180,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-20 11:32 MYT - The user approved PCF-002's independently reviewed catalog-performance design. Linked a dated test-first implementation plan that preserves the full-generation, durability, recovery, object-open, fixture, timer, and threshold contracts and stops for a new design decision if the exact 30/200 gates remain red. PCF-002 and this parent remain in progress; PCF-003 remains backlog and dependency-ineligible. No external action was taken.
 - 2026-07-20 12:04 MYT - PCF-002's dated implementation plan completed independent review after executable cache-authority, recovery/rotation, safe-open, benchmark-timing, provenance, and conditional-parent-blocker corrections. Final verdict: Approved with no remaining issues. PCF-002 and this parent remain in progress, PCF-003 remains dependency-ineligible, implementation has not started, and no external action was taken.
 - 2026-07-22 12:28 MYT - Resumed the interrupted local PCF-002 catalog-performance execution on branch `codex/pcf-002-catalog-performance` in worktree `.worktrees/pcf-002-catalog-performance`. Reconciled approved Tasks 1-5 through `6527d2d2` and completed Task 6 recovery/rotation review at `dfaa35ba` after test-proof repairs and a test-first pointer-tuple authority fix. All 12 focused Task 6 regressions, the full Rust 1.75 CoreFS suite, all-target check, strict Clippy, scoped rustfmt, and diff hygiene passed; independent spec and quality reviews approved the final head. PCF-002 and this parent remain `in_progress`, PCF-003 remains dependency-ineligible, Task 7 is next, and no external action was taken.
+- 2026-07-22 12:51 MYT - Completed PCF-002 catalog-performance Task 7 at `5bb38b61`: replaced two catalog-sized precondition maps with one canonical stable-ID ordered merge while preserving exact public error variants, payloads, display text, and source-before-destination precedence. The 15-row old/new oracle, focused public cases, 28-test transaction integration target, strict Clippy, scoped rustfmt, and diff hygiene passed; independent spec and quality reviews approved the task. One non-blocking review note remains to add direct `Ordering::Less` and alternating-transition oracle rows if this validator is revisited. PCF-002 and this parent remain `in_progress`, PCF-003 remains dependency-ineligible, Task 8 is next, and no external action was taken.
 
 ## Validation
 

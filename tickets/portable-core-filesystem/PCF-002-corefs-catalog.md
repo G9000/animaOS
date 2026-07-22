@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-22 12:28 MYT
+- Updated: 2026-07-22 12:51 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -161,6 +161,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-20 11:32 MYT - The user approved the independently reviewed catalog-commit performance design. Added the dated test-first implementation plan with exact file ownership, cache/authentication and lock-order regressions, correctness gates, an unchanged 30/200 benchmark decision point, synchronized pass/blocker branches, and an explicit stop before external actions. No implementation, push, PR, review request, or monitoring action has started.
 - 2026-07-20 12:04 MYT - Completed independent implementation-plan review. Review-driven revisions made the complete object/key-cache types buildable in their first task; split unlocked load, locked load, normal commit, recovery, rotation, precondition, and object-binding work into test-first commits; added explicit pointer/key/guard/safe-open/marker/graph/benchmark-timing/provenance regressions; classified pre-change GREEN characterizations separately from new RED cache seams; and made exact reference exit/provenance/blocker handling executable. The final independent verdict is Approved with no remaining issues. Execution has not started and no external action was taken.
 - 2026-07-22 12:28 MYT - Resumed the interrupted local execution on branch `codex/pcf-002-catalog-performance` in worktree `.worktrees/pcf-002-catalog-performance`. Reconciled performance Tasks 1-5 as implemented and review-approved through `6527d2d2`, then completed Task 6 recovery/rotation review at `dfaa35ba`: corrected the completion-only and shared-cache concurrency proofs, added RED/GREEN recovery and rotation pointer-drift regressions, and bound cache publication to the exact reauthenticated pointer tuple. All 12 focused Task 6 regressions, the full Rust 1.75 CoreFS suite, all-target check, strict Clippy, scoped rustfmt, and diff hygiene passed; independent spec and quality reviews approved the final head. PCF-002 remains `in_progress`, Task 7 ordered preconditions is next, PCF-003 remains dependency-ineligible, and no external action was taken.
+- 2026-07-22 12:51 MYT - Completed catalog-performance Task 7 at `5bb38b61`: replaced both catalog-sized precondition maps with one canonical stable-ID ordered merge, retaining exact source-before-destination error precedence and limiting new allocation to vacancy-precondition IDs. The 15-row old/new oracle, focused public cases, 28-test transaction integration target, strict Clippy, scoped rustfmt, and diff hygiene passed; independent spec and quality reviews approved the task. Recorded the quality review's non-blocking follow-up to add direct `Ordering::Less` and alternating-transition oracle rows if this validator changes again. PCF-002 remains `in_progress`, Task 8 cached object bindings is next, PCF-003 remains dependency-ineligible, and no external action was taken.
 
 ## Validation
 
