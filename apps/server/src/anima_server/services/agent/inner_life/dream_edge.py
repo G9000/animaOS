@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -28,7 +29,6 @@ from anima_server.models.runtime_consciousness import PresenceCatchup
 from anima_server.services.agent.heat_scoring import compute_heat_for_item
 from anima_server.services.agent.inner_life.affect import apply_turn_deltas
 from anima_server.services.agent.inner_life.dream import (
-    DEFAULT_DREAM_CONFIG,
     DreamCandidate,
     DreamConfig,
     is_dream_eligible,
@@ -39,7 +39,6 @@ from anima_server.services.agent.inner_life.dream import (
 from anima_server.services.agent.inner_life.store import get_affect_state, save_affect_state
 from anima_server.services.agent.memory_salience import MEMORY_CLASS_IDENTITY
 from anima_server.services.agent.reconsolidation import (
-    DEFAULT_DREAM_ETA,
     apply_reconsolidation,
     resolve_current_affect_magnitude,
 )
@@ -240,11 +239,16 @@ async def generate_dream_narrative(
 
 
 def _coerce_delta(value: object) -> float:
-    """A dream affect delta as a float, or 0.0 for missing/non-numeric output."""
+    """A dream affect delta as a float, or 0.0 for missing/non-numeric/non-finite
+    output. NaN/Infinity must be rejected too: float('nan') succeeds, and NaN
+    survives scale_affect_delta's clamp as the positive cap, so a malformed
+    model field would otherwise apply the MAXIMUM positive nudge instead of
+    no-oping."""
     try:
-        return float(value)  # type: ignore[arg-type]
+        result = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+    return result if math.isfinite(result) else 0.0
 
 
 def _prune_journal(soul_db: Session, *, user_id: int, cap: int) -> None:
@@ -267,7 +271,7 @@ def run_dream_for_user(
     *,
     user_id: int,
     local_now: datetime,
-    config: DreamConfig = DEFAULT_DREAM_CONFIG,
+    config: DreamConfig | None = None,
     rng: random.Random | None = None,
     client: object | None = None,
 ) -> bool:
@@ -276,7 +280,13 @@ def run_dream_for_user(
     session pair, all exceptions logged and swallowed so one user never aborts
     the sweep. No effect ever happens without an active memories DEK (df/ef
     fail open — a dream without a DEK would feed ciphertext to the LLM and store
-    an unencrypted narrative, so it is skipped, mirroring IL3)."""
+    an unencrypted narrative, so it is skipped, mirroring IL3).
+
+    ``config`` defaults to one whose ``dream_eta`` comes from the operator
+    setting (``ANIMA_RECONSOLIDATION_DREAM_ETA``) so tuning/disabling dream
+    reconsolidation actually takes effect; a caller may pass its own config."""
+    if config is None:
+        config = DreamConfig(dream_eta=settings.reconsolidation_dream_eta)
     rng = rng or random.Random()
     try:
         from anima_server.services.agent.inner_life.initiative import (
@@ -403,13 +413,14 @@ def run_dream_for_user(
                 state=apply_turn_deltas(affect_state, v, a, e),
             )
 
-            # Effect 3: reduced-strength (η=0.02) reconsolidation on touched
-            # memories. apply_reconsolidation itself skips superseded/distilled
-            # and confines identity to confidence-only.
+            # Effect 3: reduced-strength reconsolidation on touched memories,
+            # at the configured dream eta (operator-tunable; 0 disables it).
+            # apply_reconsolidation itself skips superseded/distilled and
+            # confines identity to confidence-only.
             magnitude = resolve_current_affect_magnitude(runtime_db, user_id=user_id)
             for row in selected_rows:
                 apply_reconsolidation(
-                    soul_db, row, current_affect_magnitude=magnitude, eta=DEFAULT_DREAM_ETA
+                    soul_db, row, current_affect_magnitude=magnitude, eta=config.dream_eta
                 )
 
             # Effect 4 (dream_residue) is passive: IL3's resolve_drive_signals

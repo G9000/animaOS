@@ -502,10 +502,41 @@ def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
 
 @pytest.mark.parametrize(
     "value,expected",
-    [(0.4, 0.4), (1, 1.0), ("1.5", 1.5), ("warm", 0.0), (None, 0.0), ({}, 0.0)],
+    [
+        (0.4, 0.4), (1, 1.0), ("1.5", 1.5), ("warm", 0.0), (None, 0.0), ({}, 0.0),
+        # Non-finite must be rejected: float('nan') 'succeeds' but NaN survives
+        # the clamp as the positive cap (a max positive nudge), so -> 0.0.
+        ("nan", 0.0), ("inf", 0.0), ("-inf", 0.0), (float("nan"), 0.0), (float("inf"), 0.0),
+    ],
 )
 def test_coerce_delta(value: object, expected: float) -> None:
     assert dream_edge._coerce_delta(value) == expected
+
+
+def test_reconsolidation_uses_configured_dream_eta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (PR review, P2): the dream reconsolidation pass must use the
+    configured dream_eta (operator-tunable via ANIMA_RECONSOLIDATION_DREAM_ETA),
+    not a hard-coded 0.02 — so tuning/disabling it actually takes effect."""
+    from anima_server.services.agent.inner_life.dream import DreamConfig
+
+    se, re = _soul_engine(), _runtime_engine()
+    sf, rf = _factory(se), _factory(re)
+    _seed_user(sf, rf)
+
+    seen: list[float] = []
+
+    def spy_reconsolidate(soul_db, item, *, current_affect_magnitude, eta, **kw):
+        seen.append(eta)
+        return None
+
+    monkeypatch.setattr(dream_edge, "apply_reconsolidation", spy_reconsolidate)
+
+    assert dream_edge.run_dream_for_user(
+        sf, rf, user_id=1, local_now=NIGHT, config=DreamConfig(dream_eta=0.005)
+    ) is True
+    assert seen and all(e == 0.005 for e in seen)  # the configured eta, not 0.02
+    se.dispose()
+    re.dispose()
 
 
 def test_nonnumeric_delta_does_not_raise_and_yields_zero(
