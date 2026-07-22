@@ -915,10 +915,11 @@ for row in artifact["fixtures"]:
     assert (row["liveCount"], row["tombstoneCount"], row["totalCount"]) == (live, tombstone, total)
     assert row["warmupCommits"] == 30 and row["sampleCount"] == 200
     assert row["finalHeadGeneration"] == 232 and row["finalCatalogCount"] == 232
-    root = target / row["name"] / "fs"
-    assert (root / "HEAD").is_file()
-    assert len(list((root / "catalogs").iterdir())) == row["finalCatalogCount"]
-    assert len(list((root / "objects").iterdir())) == object_count
+    catalog_root = target / row["name"] / "fs"
+    object_root = target / row["name"] / "objects"
+    assert (catalog_root / "HEAD").is_file()
+    assert len(list((catalog_root / "catalogs").iterdir())) == row["finalCatalogCount"]
+    assert len(list(object_root.iterdir())) == object_count
     assert not any(path.name.endswith(".tmp") for path in (target / row["name"]).rglob("*"))
 bench.validate_and_finalize_report(
     artifact,

@@ -6,7 +6,7 @@
 
 **Task 10 local evidence (2026-07-22):** The unchanged 30-warm-up/200-sample reference run passed the medium, serialized-limit, durable-write, and maximum-live serialized-size gates, but maximum-live commit p95 was 299.6261 ms against the unchanged 250 ms gate. The strict artifact is preserved with `allPassed: false`; clearance requires a separately approved architecture revision.
 
-**Task 10 validation note:** The literal plan Step 3 direct-inspection snippet used the stale path `<fixture>/fs/objects`. Production `run_fixture_benchmark(&fixture_root)` passes the fixture root to `CoreCommitCoordinator::new(root)`, and retained integration coverage reads `<fixture>/objects`. The literal assertion failure was preserved; the same read-only provenance, schema, generation, catalog, object-count, and temporary-file assertions passed with the production-canonical sibling object root. The plan was not edited because doing so would have changed the source commit bound into the generated artifact.
+**Task 10 validation note:** The original plan Step 3 direct-inspection snippet used the stale path `<fixture>/fs/objects`. Production `run_fixture_benchmark(&fixture_root)` passes the fixture root to `CoreCommitCoordinator::new(root)`, and retained integration coverage reads `<fixture>/objects`. The literal assertion failure was preserved; the same read-only provenance, schema, generation, catalog, object-count, and temporary-file assertions passed with the production-canonical sibling object root. The plan now records that canonical layout. This documentation-only correction does not change the source commit, binary, timings, target, hashes, or artifact provenance and does not require another 30/200 run.
 
 **Ticket:** PCF-002 Step 12
 
