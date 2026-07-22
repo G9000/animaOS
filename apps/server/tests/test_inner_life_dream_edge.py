@@ -661,15 +661,19 @@ def test_dream_journal_serialize_roundtrip() -> None:
     with sf() as db_:
         db_.add(DreamJournal(
             id=7, user_id=1, dreamt_at=NIGHT, narrative="ENC(a dream)",
-            source_refs={"memory_item_ids": [1, 2]}, affect_delta={"valence": 0.03},
-            share_worthy=True, surfaced=False,
+            source_refs={"memory_item_ids": [1, 2], "latent_topic_keys": ["ENC(topic:x)"]},
+            affect_delta={"valence": 0.03}, share_worthy=True, surfaced=False,
         ))
         db_.commit()
         row = db_.scalars(select(DreamJournal)).one()
         rec = serialize_dream_journal_record(row, deks=None)
     assert rec["id"] == 7
     assert rec["narrative"] == "ENC(a dream)"  # deks=None -> value passthrough
-    assert rec["source_refs"] == {"memory_item_ids": [1, 2]}
+    # source_refs is decrypted for export (deks=None -> passthrough here); the
+    # encrypted latent_topic_keys are carried through the decrypt path, not
+    # exported as opaque ciphertext that a re-import couldn't re-key.
+    assert rec["source_refs"]["memory_item_ids"] == [1, 2]
+    assert rec["source_refs"]["latent_topic_keys"] == ["ENC(topic:x)"]
     assert rec["share_worthy"] is True
     se.dispose()
 

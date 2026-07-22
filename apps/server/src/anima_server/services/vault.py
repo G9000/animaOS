@@ -2496,10 +2496,21 @@ def serialize_dream_journal_record(
     *,
     deks: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
-    """IL7 dream-journal row. ``narrative`` is the one free-text field
-    (field-encrypted like ``initiative_log.generated_text``); ``source_refs``
-    and ``affect_delta`` are numeric/structural JSON only (no ``deks``
-    needed)."""
+    """IL7 dream-journal row. ``narrative`` AND ``source_refs.latent_topic_keys``
+    are field-encrypted (the topic keys embed content slugs), so both are
+    decrypted here and re-encrypted on import — exporting the per-field
+    ciphertext verbatim would leave it under the old key hierarchy and break
+    forget/purge after an import. ``memory_item_ids``/``affect_delta`` are
+    numeric only."""
+    source_refs = dict(row.source_refs) if isinstance(row.source_refs, dict) else {}
+    keys = source_refs.get("latent_topic_keys")
+    if isinstance(keys, list):
+        source_refs["latent_topic_keys"] = [
+            _decrypt_field_value(
+                k, deks, table="dream_journal", field="source_refs", user_id=row.user_id
+            )
+            for k in keys
+        ]
     return {
         "id": row.id,
         "user_id": row.user_id,
@@ -2511,7 +2522,7 @@ def serialize_dream_journal_record(
             field="narrative",
             user_id=row.user_id,
         ),
-        "source_refs": row.source_refs,
+        "source_refs": source_refs,
         "affect_delta": row.affect_delta,
         "share_worthy": row.share_worthy,
         "surfaced": row.surfaced,
@@ -2901,13 +2912,26 @@ def _re_encrypt_snapshot_fields(
             )
 
     for dream in snapshot.get("dreamJournal", []):
-        if isinstance(dream, dict) and dream.get("narrative"):
+        if not isinstance(dream, dict):
+            continue
+        if dream.get("narrative"):
             dream["narrative"] = _re_encrypt_field_value(
                 dream["narrative"],
                 user_id,
                 table="dream_journal",
                 field="narrative",
             )
+        # source_refs.latent_topic_keys are field-encrypted too — re-encrypt
+        # them under the importing hierarchy so post-import forget/purge can
+        # decrypt and match them.
+        refs = dream.get("source_refs")
+        if isinstance(refs, dict) and isinstance(refs.get("latent_topic_keys"), list):
+            refs["latent_topic_keys"] = [
+                _re_encrypt_field_value(
+                    k, user_id, table="dream_journal", field="source_refs"
+                )
+                for k in refs["latent_topic_keys"]
+            ]
 
     for experience in snapshot.get("agentExperiences", []):
         if isinstance(experience, dict):
