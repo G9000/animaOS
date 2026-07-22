@@ -10,7 +10,7 @@
 
 **PR #117 authority corrections (2026-07-23):** Exact cache selection is not durable catalog authority by itself. Every cache hit must reopen every distinct bounded catalog named by the exact HEAD/receipt/completion tuple and verify each SHA-256 before returning or building from the cached decoded catalog; equal records are authenticated once. Missing, truncated, or changed current or retained bytes clear the cache and fail closed. The hit still skips decryption, decoding, invariant validation, and canonical re-encoding.
 
-**PR #117 reference evidence (2026-07-23):** The source-bound exact 30/200 rerun from corrective commit `dd9ef8d8743e63eb0577bc4cdc2b6489afd65101` retained the same gate outcome. Medium p95 is `75.6318` ms, maximum-live p95 is `298.6453` ms, serialized-limit p95 is `246.7518` ms, durable-write p95 is `1.0836` ms, and maximum-live serialized size is `8,255,077` bytes. Only `maximumLiveP95Le250Ms` remains false. Independent source/binary/Cargo.lock/target/argv/schema/count/generation/temp-file validation and all 121 benchmark-contract tests passed.
+**PR #117 reference evidence (2026-07-23):** The source-bound exact 30/200 rerun from retained-tuple correction commit `f16a2f6dd594beafbb214bb1ff744b888922f244` retained the same gate outcome. Medium p50/p95/p99 is `67.9843/78.9163/84.2530` ms, maximum-live is `251.3036/361.1692/442.4276` ms, serialized-limit is `126.0642/157.8677/169.2512` ms, durable-write p95 is `1.5972` ms, and maximum-live serialized size is `8,255,077` bytes. Only `maximumLiveP95Le250Ms` remains false. Independent source/binary/Cargo.lock/target/argv/schema/count/generation/temp-file validation and all 121 benchmark-contract tests passed.
 
 **Ticket:** PCF-002 Step 12
 
