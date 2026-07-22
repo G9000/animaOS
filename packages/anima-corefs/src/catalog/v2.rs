@@ -34,6 +34,7 @@ const V2_MAGIC: &[u8; 8] = b"ACATV2\0\0";
 const V2_HEADER_SIZE: usize = 34;
 const V2_TAG_LENGTH: usize = 16;
 const V2_GENERATION_LABEL_PREFIX: &str = "anima-catalog-generation-v2:";
+const PUBLICATION_KEY_IDENTITY_LABEL: &[u8] = b"anima-corefs-catalog-publication-key-identity-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogClientMetadata {
@@ -583,6 +584,17 @@ impl CatalogGenerationEntry {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CatalogOperation {
+    CompleteInvariantValidation,
+    BoundedPreflight,
+    MaterializingSerialization,
+}
+
+#[cfg(test)]
+type CatalogOperationProbe = Vec<CatalogOperation>;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogGeneration {
     generation: u64,
@@ -604,7 +616,10 @@ impl CatalogGeneration {
             entries,
             cutover_marker: None,
         };
-        value.validate()?;
+        value.validate(
+            #[cfg(test)]
+            None,
+        )?;
         Ok(value)
     }
 
@@ -621,12 +636,40 @@ impl CatalogGeneration {
     }
 
     pub(crate) fn with_cutover_marker(
-        mut self,
+        self,
         cutover_marker: CatalogCutoverMarker,
     ) -> Result<Self, CatalogError> {
+        self.with_cutover_marker_inner(
+            cutover_marker,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn with_cutover_marker_inner(
+        mut self,
+        cutover_marker: CatalogCutoverMarker,
+        #[cfg(test)] _operation_probe: Option<&mut CatalogOperationProbe>,
+    ) -> Result<Self, CatalogError> {
         self.cutover_marker = Some(cutover_marker);
-        self.validate()?;
+        #[cfg(debug_assertions)]
+        {
+            let validation = self.validate_invariants(
+                #[cfg(test)]
+                _operation_probe,
+            );
+            debug_assert!(validation.is_ok(), "validated catalog invariant violated");
+        }
         Ok(self)
+    }
+
+    #[cfg(test)]
+    fn with_cutover_marker_with_probe(
+        self,
+        cutover_marker: CatalogCutoverMarker,
+        operation_probe: &mut CatalogOperationProbe,
+    ) -> Result<Self, CatalogError> {
+        self.with_cutover_marker_inner(cutover_marker, Some(operation_probe))
     }
 
     pub fn cutover_marker(&self) -> Option<&CatalogCutoverMarker> {
@@ -708,7 +751,24 @@ impl CatalogGeneration {
         }
     }
 
-    fn validate(&self) -> Result<(), CatalogError> {
+    fn validate(
+        &self,
+        #[cfg(test)] operation_probe: Option<&mut CatalogOperationProbe>,
+    ) -> Result<(), CatalogError> {
+        self.validate_invariants(
+            #[cfg(test)]
+            operation_probe,
+        )
+    }
+
+    fn validate_invariants(
+        &self,
+        #[cfg(test)] operation_probe: Option<&mut CatalogOperationProbe>,
+    ) -> Result<(), CatalogError> {
+        #[cfg(test)]
+        if let Some(probe) = operation_probe {
+            probe.push(CatalogOperation::CompleteInvariantValidation);
+        }
         if self.generation == 0 {
             return Err(CatalogError::InvalidFormat("generation must be positive"));
         }
@@ -1155,20 +1215,79 @@ struct WireCutoverMarker {
 }
 
 pub fn encode_catalog_generation(payload: &CatalogGeneration) -> Result<Vec<u8>, CatalogError> {
-    encode_catalog_generation_with_shape(payload, PhysicalNameWireShape::Current)
+    payload.validate(
+        #[cfg(test)]
+        None,
+    )?;
+    encode_validated_catalog_generation_with_shape(payload, PhysicalNameWireShape::Current)
 }
 
-fn encode_catalog_generation_with_shape(
+fn encode_validated_catalog_generation_with_shape(
     payload: &CatalogGeneration,
     physical_name_shape: PhysicalNameWireShape,
 ) -> Result<Vec<u8>, CatalogError> {
-    payload.validate()?;
+    encode_validated_catalog_generation_with_shape_inner(
+        payload,
+        physical_name_shape,
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn encode_validated_catalog_generation_with_shape_and_probe(
+    payload: &CatalogGeneration,
+    physical_name_shape: PhysicalNameWireShape,
+    operation_probe: &mut CatalogOperationProbe,
+) -> Result<Vec<u8>, CatalogError> {
+    encode_validated_catalog_generation_with_shape_inner(
+        payload,
+        physical_name_shape,
+        Some(operation_probe),
+    )
+}
+
+fn encode_validated_catalog_generation_with_shape_inner(
+    payload: &CatalogGeneration,
+    physical_name_shape: PhysicalNameWireShape,
+    #[cfg(test)] mut operation_probe: Option<&mut CatalogOperationProbe>,
+) -> Result<Vec<u8>, CatalogError> {
     let wire = WireCatalogGenerationRef {
         catalog: payload,
         physical_name_shape,
     };
-    bounded_json_preflight(&wire, MAX_CATALOG_PLAINTEXT_SIZE).map_err(map_bounded_error)?;
-    bounded_json_to_vec(&wire, MAX_CATALOG_PLAINTEXT_SIZE).map_err(map_bounded_error)
+    preflight_validated_catalog(
+        &wire,
+        #[cfg(test)]
+        operation_probe.as_deref_mut(),
+    )?;
+    materialize_validated_catalog(
+        &wire,
+        #[cfg(test)]
+        operation_probe,
+    )
+}
+
+fn preflight_validated_catalog(
+    wire: &WireCatalogGenerationRef<'_>,
+    #[cfg(test)] operation_probe: Option<&mut CatalogOperationProbe>,
+) -> Result<(), CatalogError> {
+    #[cfg(test)]
+    if let Some(probe) = operation_probe {
+        probe.push(CatalogOperation::BoundedPreflight);
+    }
+    bounded_json_preflight(wire, MAX_CATALOG_PLAINTEXT_SIZE).map_err(map_bounded_error)
+}
+
+fn materialize_validated_catalog(
+    wire: &WireCatalogGenerationRef<'_>,
+    #[cfg(test)] operation_probe: Option<&mut CatalogOperationProbe>,
+) -> Result<Vec<u8>, CatalogError> {
+    #[cfg(test)]
+    if let Some(probe) = operation_probe {
+        probe.push(CatalogOperation::MaterializingSerialization);
+    }
+    bounded_json_to_vec(wire, MAX_CATALOG_PLAINTEXT_SIZE).map_err(map_bounded_error)
 }
 
 fn decode_catalog_generation(encoded: &[u8]) -> Result<CatalogGeneration, CatalogError> {
@@ -1181,7 +1300,11 @@ fn decode_catalog_generation(encoded: &[u8]) -> Result<CatalogGeneration, Catalo
     }
     let physical_name_shape = physical_name_wire_shape(&wire)?;
     let payload = from_wire(wire)?;
-    if encode_catalog_generation_with_shape(&payload, physical_name_shape)? != encoded {
+    payload.validate(
+        #[cfg(test)]
+        None,
+    )?;
+    if encode_validated_catalog_generation_with_shape(&payload, physical_name_shape)? != encoded {
         return Err(CatalogError::InvalidFormat("non-canonical catalog"));
     }
     Ok(payload)
@@ -1235,11 +1358,79 @@ impl CatalogGenerationEnvelopeInfo {
     }
 }
 
+pub(crate) struct CatalogPublication<'catalog> {
+    encrypted: Vec<u8>,
+    plaintext_size: usize,
+    info: CatalogGenerationEnvelopeInfo,
+    digest: [u8; 32],
+    physical_name: String,
+    origin_core_id: String,
+    origin_frk_version: u32,
+    catalog_key_identity: [u8; 32],
+    source_catalog: &'catalog CatalogGeneration,
+}
+
+impl CatalogPublication<'_> {
+    pub(crate) fn encrypted(&self) -> &[u8] {
+        &self.encrypted
+    }
+
+    pub(crate) fn plaintext_size(&self) -> usize {
+        self.plaintext_size
+    }
+
+    pub(crate) fn info(&self) -> CatalogGenerationEnvelopeInfo {
+        self.info
+    }
+
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+
+    pub(crate) fn physical_name(&self) -> &str {
+        &self.physical_name
+    }
+
+    pub(crate) fn origin_core_id(&self) -> &str {
+        &self.origin_core_id
+    }
+
+    pub(crate) fn origin_frk_version(&self) -> u32 {
+        self.origin_frk_version
+    }
+
+    pub(crate) fn matches_catalog_key_material(
+        &self,
+        keys: &FrkSubkeys,
+    ) -> Result<bool, CatalogError> {
+        Ok(self.catalog_key_identity == catalog_publication_key_identity(keys)?)
+    }
+
+    pub(crate) fn is_source_catalog(&self, catalog: &CatalogGeneration) -> bool {
+        // The retained borrow makes this a safe identity check and prevents the
+        // source catalog from moving while its publication artifact is live.
+        std::ptr::eq(self.source_catalog, catalog)
+    }
+}
+
+fn catalog_publication_key_identity(keys: &FrkSubkeys) -> Result<[u8; 32], CatalogError> {
+    let hkdf = Hkdf::<Sha256>::new(None, keys.catalog().as_slice());
+    let mut identity = [0_u8; 32];
+    hkdf.expand(PUBLICATION_KEY_IDENTITY_LABEL, &mut identity)
+        .map_err(|_| CryptoError::Derivation)?;
+    Ok(identity)
+}
+
 pub fn encrypt_catalog_generation(
     keys: &FrkSubkeys,
     core_id: &str,
     payload: &CatalogGeneration,
 ) -> Result<Vec<u8>, CatalogError> {
+    validate_v2_core_id(core_id)?;
+    payload.validate(
+        #[cfg(test)]
+        None,
+    )?;
     encrypt_catalog_generation_with_plaintext_size(keys, core_id, payload)
         .map(|(encoded, _)| encoded)
 }
@@ -1249,8 +1440,28 @@ pub(crate) fn encrypt_catalog_generation_with_plaintext_size(
     core_id: &str,
     payload: &CatalogGeneration,
 ) -> Result<(Vec<u8>, usize), CatalogError> {
+    encrypt_catalog_generation_with_plaintext_size_inner(
+        keys,
+        core_id,
+        payload,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn encrypt_catalog_generation_with_plaintext_size_inner(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &CatalogGeneration,
+    #[cfg(test)] operation_probe: Option<&mut CatalogOperationProbe>,
+) -> Result<(Vec<u8>, usize), CatalogError> {
     validate_v2_core_id(core_id)?;
-    let plaintext = encode_catalog_generation(payload)?;
+    let plaintext = encode_validated_catalog_generation_with_shape_inner(
+        payload,
+        PhysicalNameWireShape::Current,
+        #[cfg(test)]
+        operation_probe,
+    )?;
     let plaintext_size = plaintext.len();
     let generation_key = v2_generation_key(keys.catalog(), payload.generation)?;
     let cipher = Aes256Gcm::new_from_slice(generation_key.as_slice())
@@ -1276,6 +1487,89 @@ pub(crate) fn encrypt_catalog_generation_with_plaintext_size(
     output.extend_from_slice(&ciphertext_length.to_le_bytes());
     output.extend_from_slice(&ciphertext);
     Ok((output, plaintext_size))
+}
+
+pub(crate) fn encrypt_catalog_generation_for_publication<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    encrypt_catalog_generation_for_publication_inner(
+        keys,
+        core_id,
+        payload,
+        #[cfg(test)]
+        None,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn encrypt_catalog_generation_for_publication_inner<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+    #[cfg(test)] mut observe_hash: Option<&mut dyn FnMut()>,
+    #[cfg(test)] operation_probe: Option<&mut CatalogOperationProbe>,
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    let (encrypted, plaintext_size) = encrypt_catalog_generation_with_plaintext_size_inner(
+        keys,
+        core_id,
+        payload,
+        #[cfg(test)]
+        operation_probe,
+    )?;
+    let info = inspect_catalog_generation_envelope(&encrypted)?;
+    #[cfg(test)]
+    if let Some(observer) = observe_hash.as_mut() {
+        observer();
+    }
+    let digest: [u8; 32] = Sha256::digest(&encrypted).into();
+    let physical_name = format_catalog_generation_physical_name(info.generation(), &digest);
+    Ok(CatalogPublication {
+        encrypted,
+        plaintext_size,
+        info,
+        digest,
+        physical_name,
+        origin_core_id: core_id.to_owned(),
+        origin_frk_version: keys.frk_version(),
+        catalog_key_identity: catalog_publication_key_identity(keys)?,
+        source_catalog: payload,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn encrypt_catalog_generation_for_publication_with_observer<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+    observe_hash: &mut dyn FnMut(),
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    encrypt_catalog_generation_for_publication_inner(
+        keys,
+        core_id,
+        payload,
+        Some(observe_hash),
+        None,
+    )
+}
+
+#[cfg(test)]
+fn encrypt_catalog_generation_for_publication_with_probes<'catalog>(
+    keys: &FrkSubkeys,
+    core_id: &str,
+    payload: &'catalog CatalogGeneration,
+    observe_hash: &mut dyn FnMut(),
+    operation_probe: &mut CatalogOperationProbe,
+) -> Result<CatalogPublication<'catalog>, CatalogError> {
+    encrypt_catalog_generation_for_publication_inner(
+        keys,
+        core_id,
+        payload,
+        Some(observe_hash),
+        Some(operation_probe),
+    )
 }
 
 pub fn decrypt_catalog_generation(
@@ -1313,11 +1607,21 @@ pub fn inspect_catalog_generation_envelope(
 pub fn catalog_generation_physical_name(encoded: &[u8]) -> Result<String, CatalogError> {
     let info = inspect_catalog_generation_envelope(encoded)?;
     let digest: [u8; 32] = Sha256::digest(encoded).into();
-    Ok(format!(
-        "catalog-{:020}-{}.acore",
-        info.generation,
-        super::hex_bytes(&digest)
+    Ok(format_catalog_generation_physical_name(
+        info.generation(),
+        &digest,
     ))
+}
+
+pub(crate) fn format_catalog_generation_physical_name(
+    generation: u64,
+    digest: &[u8; 32],
+) -> String {
+    format!(
+        "catalog-{:020}-{}.acore",
+        generation,
+        super::hex_bytes(digest)
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1914,20 +2218,88 @@ fn map_bounded_error(error: BoundedJsonError) -> CatalogError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+
     use crate::crypto::{
         derive_corefs_subkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
         OBJECT_WRAP_ALGORITHM,
     };
-    use crate::folders::{FolderOwner, PortableName};
+    use crate::folders::{ClientId, FolderOwner, PortableName};
+    use crate::head::HeadRecord;
     use crate::id::OpaqueId;
     use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
 
     use super::{
-        decode_catalog_generation, encode_catalog_generation, v2_generation_key,
-        CatalogCutoverMarker, CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry,
-        CatalogObject, ContentHash, FolderLifecycle, FolderTrashMetadata, ObjectLifecycle,
-        ObjectPhysicalName, WrappedObjectDekRecord,
+        catalog_generation_physical_name, decode_catalog_generation, encode_catalog_generation,
+        encode_validated_catalog_generation_with_shape_and_probe,
+        encrypt_catalog_generation_for_publication_with_probes, v2_generation_key,
+        CatalogClientMetadata, CatalogCutoverMarker, CatalogEntryCommon, CatalogError,
+        CatalogGeneration, CatalogGenerationEntry, CatalogObject, CatalogOperation,
+        CatalogOperationProbe, ContentHash, FolderLifecycle, FolderTrashMetadata, ObjectLifecycle,
+        ObjectPhysicalName, PhysicalNameWireShape, WrappedObjectDekRecord,
+        MAX_CATALOG_PLAINTEXT_SIZE,
     };
+
+    fn minimal_catalog(generation: u64) -> CatalogGeneration {
+        CatalogGeneration::new(
+            generation,
+            vec![CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                None,
+                PortableName::parse("Core").unwrap(),
+                FolderOwner::User,
+                AnimaAccess::Write,
+            ))],
+        )
+        .unwrap()
+    }
+
+    fn object_catalog(generation: u64) -> CatalogGeneration {
+        let root_id = OpaqueId::parse("01J00000000000000000000000").unwrap();
+        CatalogGeneration::new(
+            generation,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    root_id.clone(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::object(
+                    CatalogEntryCommon::new(
+                        OpaqueId::parse("01J00000000000000000000001").unwrap(),
+                        Some(root_id),
+                        PortableName::parse("Note.md").unwrap(),
+                        FolderOwner::User,
+                        AnimaAccess::Write,
+                    ),
+                    CatalogObject::new(
+                        1,
+                        ObjectPhysicalName::parse("object-0123456789abcdef0123456789abcdef.acore")
+                            .unwrap(),
+                        ContentHash::parse(&"ab".repeat(32)).unwrap(),
+                        ObjectKind::Note,
+                        WrappedObjectDekRecord::from_parts(
+                            1,
+                            1,
+                            OBJECT_WRAP_ALGORITHM,
+                            OBJECT_KEY_ENVELOPE_VERSION,
+                            &[7; 12],
+                            vec![9; 48],
+                        )
+                        .unwrap(),
+                        ObjectLifecycle::Live,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap()
+    }
 
     #[test]
     fn v2_generation_keys_are_domain_separated_from_v1() {
@@ -2110,5 +2482,275 @@ mod tests {
         let mut wire: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         wire["cutoverMarker"]["legacyRollbackDisabled"] = serde_json::json!(false);
         assert!(decode_catalog_generation(&serde_json::to_vec(&wire).unwrap()).is_err());
+    }
+
+    #[test]
+    fn marker_fast_path_only_runs_the_debug_invariant_assertion() {
+        let mut marker_operations = CatalogOperationProbe::default();
+        let catalog = object_catalog(7)
+            .with_cutover_marker_with_probe(
+                CatalogCutoverMarker::new(9).unwrap(),
+                &mut marker_operations,
+            )
+            .unwrap();
+        assert_eq!(catalog.cutover_marker().unwrap().epoch(), 9);
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            marker_operations,
+            &[CatalogOperation::CompleteInvariantValidation]
+        );
+        #[cfg(not(debug_assertions))]
+        assert!(marker_operations.is_empty());
+    }
+
+    #[test]
+    fn validated_marker_path_preserves_canonical_bytes() {
+        let catalog = object_catalog(7)
+            .with_cutover_marker(CatalogCutoverMarker::new(9).unwrap())
+            .unwrap();
+
+        let public = encode_catalog_generation(&catalog).unwrap();
+        let mut trusted_operations = CatalogOperationProbe::default();
+        let trusted = encode_validated_catalog_generation_with_shape_and_probe(
+            &catalog,
+            PhysicalNameWireShape::Current,
+            &mut trusted_operations,
+        )
+        .unwrap();
+
+        assert_eq!(trusted, public);
+        assert_eq!(
+            trusted_operations,
+            &[
+                CatalogOperation::BoundedPreflight,
+                CatalogOperation::MaterializingSerialization,
+            ]
+        );
+        assert_eq!(
+            decode_catalog_generation(&trusted).unwrap(),
+            object_catalog(7)
+                .with_cutover_marker(CatalogCutoverMarker::new(9).unwrap())
+                .unwrap()
+        );
+
+        let physical_field = "\"physical_name\":\"object-0123456789abcdef0123456789abcdef.acore\",";
+        let legacy = String::from_utf8(public)
+            .unwrap()
+            .replacen(physical_field, "", 1)
+            .into_bytes();
+        let legacy_catalog = decode_catalog_generation(&legacy).unwrap();
+        let mut legacy_operations = CatalogOperationProbe::default();
+        let trusted_legacy = encode_validated_catalog_generation_with_shape_and_probe(
+            &legacy_catalog,
+            PhysicalNameWireShape::Legacy,
+            &mut legacy_operations,
+        )
+        .unwrap();
+
+        assert_eq!(trusted_legacy, legacy);
+        assert_eq!(
+            legacy_operations,
+            &[
+                CatalogOperation::BoundedPreflight,
+                CatalogOperation::MaterializingSerialization,
+            ]
+        );
+    }
+
+    #[test]
+    fn trusted_encoder_keeps_the_bounded_preflight() {
+        let client = ClientId::parse("journal.app").unwrap();
+        let metadata = CatalogClientMetadata::new(
+            &client,
+            vec![(
+                "client:journal.app:huge",
+                json!("x".repeat(MAX_CATALOG_PLAINTEXT_SIZE + 1)),
+            )],
+        )
+        .unwrap();
+        let mut operations = CatalogOperationProbe::default();
+        let catalog = CatalogGeneration::new(
+            1,
+            vec![CatalogGenerationEntry::folder(
+                CatalogEntryCommon::new(
+                    OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )
+                .with_client_metadata(metadata),
+            )],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            encode_validated_catalog_generation_with_shape_and_probe(
+                &catalog,
+                PhysicalNameWireShape::Current,
+                &mut operations,
+            ),
+            Err(CatalogError::LimitExceeded("catalog plaintext"))
+        ));
+        assert_eq!(operations, &[CatalogOperation::BoundedPreflight]);
+    }
+
+    #[test]
+    fn untrusted_decode_still_rejects_noncanonical_bytes() {
+        let mut noncanonical = encode_catalog_generation(&minimal_catalog(1)).unwrap();
+        noncanonical.push(b'\n');
+
+        assert!(matches!(
+            decode_catalog_generation(&noncanonical),
+            Err(CatalogError::InvalidFormat("non-canonical catalog"))
+        ));
+    }
+
+    #[test]
+    fn zero_epoch_cutover_marker_is_rejected_before_the_fast_path() {
+        assert!(matches!(
+            CatalogCutoverMarker::new(0),
+            Err(CatalogError::InvalidFormat(
+                "cutover epoch must be positive"
+            ))
+        ));
+    }
+
+    #[test]
+    fn caller_created_invalid_graph_never_reaches_the_marker_fast_path() {
+        let root_id = OpaqueId::parse("01J00000000000000000000000").unwrap();
+        let orphan_parent_id = OpaqueId::parse("01J00000000000000000000009").unwrap();
+        let orphan = CatalogGeneration::new(
+            1,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    root_id.clone(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    OpaqueId::parse("01J00000000000000000000001").unwrap(),
+                    Some(orphan_parent_id),
+                    PortableName::parse("Orphan").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+            ],
+        );
+        assert!(matches!(
+            orphan,
+            Err(CatalogError::InvalidFormat("catalog entry orphan"))
+        ));
+
+        let duplicate_id = "01J00000000000000000000001";
+        let duplicate = CatalogGeneration::new(
+            1,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    root_id.clone(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    OpaqueId::parse(duplicate_id).unwrap(),
+                    Some(root_id.clone()),
+                    PortableName::parse("First").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    OpaqueId::parse(duplicate_id).unwrap(),
+                    Some(root_id.clone()),
+                    PortableName::parse("Second").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+            ],
+        );
+        assert!(matches!(
+            duplicate,
+            Err(CatalogError::DuplicateStableId(id)) if id == duplicate_id
+        ));
+
+        let first_id = OpaqueId::parse("01J00000000000000000000001").unwrap();
+        let second_id = OpaqueId::parse("01J00000000000000000000002").unwrap();
+        let cycle = CatalogGeneration::new(
+            1,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    root_id,
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    first_id.clone(),
+                    Some(second_id.clone()),
+                    PortableName::parse("First").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    second_id,
+                    Some(first_id),
+                    PortableName::parse("Second").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+            ],
+        );
+        assert!(matches!(
+            cycle,
+            Err(CatalogError::InvalidFormat("catalog parent cycle"))
+        ));
+    }
+
+    #[test]
+    fn publication_artifact_reuses_one_digest_for_name_and_head() {
+        let keys = derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), 3).unwrap();
+        let mut operations = CatalogOperationProbe::default();
+        let catalog = object_catalog(7);
+        let hashes = Cell::new(0);
+        let mut observe_hash = || hashes.set(hashes.get() + 1);
+
+        let publication = encrypt_catalog_generation_for_publication_with_probes(
+            &keys,
+            "01JCORE",
+            &catalog,
+            &mut observe_hash,
+            &mut operations,
+        )
+        .unwrap();
+        let head = HeadRecord::new_for_publication(
+            &keys,
+            "01JCORE",
+            &catalog,
+            &publication,
+            keys.frk_version(),
+        )
+        .unwrap();
+        let expected_digest: [u8; 32] = Sha256::digest(publication.encrypted()).into();
+        let expected_hex = crate::catalog::hex_bytes(&expected_digest);
+
+        assert_eq!(hashes.get(), 1);
+        assert_eq!(publication.digest(), expected_digest);
+        assert_eq!(
+            publication.physical_name(),
+            catalog_generation_physical_name(publication.encrypted()).unwrap()
+        );
+        assert!(publication.physical_name().contains(&expected_hex));
+        assert_eq!(head.catalog_hash(), expected_hex);
+        assert_eq!(
+            operations,
+            &[
+                CatalogOperation::BoundedPreflight,
+                CatalogOperation::MaterializingSerialization,
+            ]
+        );
     }
 }

@@ -754,6 +754,28 @@ mod fingerprint_tests {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measured_interval_wraps_the_complete_public_commit_callback() {
+        let mut events = Vec::new();
+        let minimum_elapsed = Duration::from_millis(20);
+
+        let (result, elapsed) = measure_public_commit(|| {
+            events.push("entry");
+            std::thread::sleep(minimum_elapsed);
+            events.push("exit");
+            "complete"
+        });
+
+        assert_eq!(result, "complete");
+        assert_eq!(events, ["entry", "exit"]);
+        assert!(elapsed >= minimum_elapsed);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BenchmarkRunConfig {
     pub warmup_commits: usize,
@@ -868,6 +890,13 @@ pub fn percentile_nearest_rank(samples: &[Duration], percentile: f64) -> Duratio
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
+fn measure_public_commit<T>(commit: impl FnOnce() -> T) -> (T, Duration) {
+    let started = Instant::now();
+    let result = commit();
+    let elapsed = started.elapsed();
+    (result, elapsed)
+}
+
 pub fn run_fixture_benchmark(
     root: &Path,
     fixture: &CatalogBenchmarkFixture,
@@ -973,15 +1002,17 @@ pub fn run_fixture_benchmark(
                     "benchmark generation overflow",
                 ))?;
         let next_catalog = fixture.commit_catalog(&entries, generation)?;
-        let started = Instant::now();
-        let outcome = coordinator.commit(
-            &keys,
-            &[],
-            &[precondition],
-            |_, _| Ok(next_catalog),
-            |_| Ok(()),
-        )?;
-        commit_samples.push(started.elapsed());
+        let (outcome, elapsed) = measure_public_commit(|| {
+            coordinator.commit(
+                &keys,
+                &[],
+                &[precondition],
+                |_, _| Ok(next_catalog),
+                |_| Ok(()),
+            )
+        });
+        let outcome = outcome?;
+        commit_samples.push(elapsed);
         require_measured_catalog_size(fixture, outcome.catalog_plaintext_bytes())?;
         lock_samples.push(outcome.lock_hold_duration());
         bytes_written = bytes_written.max(outcome.bytes_written());

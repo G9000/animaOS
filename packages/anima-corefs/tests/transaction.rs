@@ -9,15 +9,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anima_corefs::catalog::{
-    CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, ObjectLifecycle,
-    WrappedObjectDekRecord,
+    CatalogEntryCommon, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
+    ObjectLifecycle, WrappedObjectDekRecord,
 };
 use anima_corefs::crypto::{
-    derive_corefs_subkeys, wrap_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKeyAad, ObjectKind,
-    SecretBytes,
+    derive_corefs_subkeys, wrap_object_dek, CryptoError, FrkSubkeys, ObjectBaseAad, ObjectKeyAad,
+    ObjectKind, SecretBytes,
 };
 use anima_corefs::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION};
 use anima_corefs::folders::{FolderOwner, PortableName};
+use anima_corefs::head::HeadError;
 use anima_corefs::id::OpaqueId;
 use anima_corefs::policy::AnimaAccess;
 use anima_corefs::transaction::{
@@ -244,6 +245,319 @@ fn commit_initial(
         .unwrap();
     assert_eq!(snapshot.head().generation(), 1);
     prepared
+}
+
+fn seed_cached_object(
+    name: &str,
+) -> (
+    std::path::PathBuf,
+    CoreCommitCoordinator,
+    FrkSubkeys,
+    PreparedObjectRevision,
+) {
+    let root = reset_root(name);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    (root, coordinator, keys, prepared)
+}
+
+fn unchanged_cached_commit(
+    coordinator: &CoreCommitCoordinator,
+    keys: &FrkSubkeys,
+    prepared: &PreparedObjectRevision,
+) -> Result<anima_corefs::transaction::CommitOutcome, CommitError> {
+    coordinator.commit(
+        keys,
+        &[],
+        &[],
+        |_, generation| Ok(catalog(generation, "Note.md", prepared)),
+        |_| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    if std::os::windows::fs::symlink_file(target, link).is_ok() {
+        return Ok(());
+    }
+
+    fn wsl_path(path: &Path) -> std::io::Result<String> {
+        let output = Command::new("wsl.exe")
+            .arg("wslpath")
+            .arg("-a")
+            .arg(path.to_string_lossy().replace('\\', "/"))
+            .output()?;
+        if !output.status.success() {
+            return Err(std::io::Error::other("wslpath failed"));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    let target = wsl_path(target)?;
+    let link = wsl_path(link)?;
+    let output = Command::new("wsl.exe")
+        .arg("-e")
+        .arg("ln")
+        .arg("-s")
+        .arg(target)
+        .arg(link)
+        .output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("wsl ln failed"))
+    }
+}
+
+#[test]
+fn cache_hit_rejects_missing_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-missing-object");
+    fs::remove_file(
+        coordinator
+            .objects_path()
+            .join(prepared.physical_name().as_str()),
+    )
+    .unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_empty_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-empty-object");
+    fs::write(
+        coordinator
+            .objects_path()
+            .join(prepared.physical_name().as_str()),
+        [],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        unchanged_cached_commit(&coordinator, &keys, &prepared),
+        Err(CommitError::ReferencedObjectMissing { .. })
+    ));
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_symlinked_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-symlink-object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    let detached = coordinator.objects_path().join("detached-object.acore");
+    fs::rename(&object_path, &detached).unwrap();
+    create_file_symlink(&detached, &object_path).unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_replaced_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-replaced-object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    let detached = coordinator.objects_path().join("detached-object.acore");
+    fs::rename(&object_path, detached).unwrap();
+    fs::create_dir(&object_path).unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_unexpected_hard_link() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-hard-link-object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    fs::hard_link(
+        object_path,
+        coordinator.objects_path().join("unexpected-object-link"),
+    )
+    .unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
+    let root = reset_root("cross-coordinator-unlocked-cache-miss");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .load_committed(&keys)
+            .unwrap()
+            .unwrap()
+            .head()
+            .generation(),
+        2
+    );
+
+    other
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.catalog().generation(), 3);
+
+    drop(other);
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn another_coordinator_advance_is_observed_by_commit() {
+    let root = reset_root("cross-coordinator-commit-cache-miss");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+
+    other
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |current, generation| {
+                assert_eq!(current.unwrap().generation(), 2);
+                Ok(catalog(generation, "Note.md", &prepared))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    let outcome = coordinator
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |current, generation| {
+                assert_eq!(current.unwrap().generation(), 3);
+                Ok(catalog(generation, "Note.md", &prepared))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 4);
+    assert_eq!(
+        coordinator
+            .load_committed(&keys)
+            .unwrap()
+            .unwrap()
+            .head()
+            .generation(),
+        4
+    );
+
+    drop(other);
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_rejects_wrong_same_version_active_material_before_cache() {
+    let root = reset_root("commit-wrong-same-version-active-material");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let wrong_same_version =
+        derive_corefs_subkeys(&SecretBytes::new(vec![0x43; 32]).unwrap(), 1).unwrap();
+
+    let error = coordinator
+        .commit(
+            &wrong_same_version,
+            &[],
+            &[],
+            |_, _| panic!("wrong active material must fail before the build closure"),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CommitError::Head(HeadError::Catalog(CatalogError::Crypto(
+            CryptoError::Authentication
+        )))
+    ));
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -537,8 +851,15 @@ fn every_changed_source_and_new_destination_requires_a_precondition() {
         .unwrap_err();
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::MissingSourcePrecondition { .. })
+        CommitError::Conflict(CommitConflict::MissingSourcePrecondition { ref stable_id })
+            if stable_id == OBJECT_ID
     ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "CoreFS commit conflict: changed catalog source is missing a precondition: {OBJECT_ID}"
+        )
+    );
 
     let source = object_precondition(&coordinator, &keys, 1);
     let error = coordinator
@@ -546,15 +867,36 @@ fn every_changed_source_and_new_destination_requires_a_precondition() {
             &keys,
             17,
             std::slice::from_ref(&prepared_two),
-            &[source],
+            std::slice::from_ref(&source),
             |_, next_generation| Ok(catalog(next_generation, "Renamed.md", &prepared_two)),
             |_| Ok(()),
         )
         .unwrap_err();
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::MissingDestinationPrecondition { .. })
+        CommitError::Conflict(CommitConflict::MissingDestinationPrecondition {
+            ref parent_id,
+            ref name,
+        }) if parent_id == ROOT_ID && name == "Renamed.md"
     ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "CoreFS commit conflict: new catalog destination is missing a vacancy precondition: parent={ROOT_ID}, name=Renamed.md"
+        )
+    );
+
+    let destination = vacant_precondition(&coordinator, &keys, "Renamed.md");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            17,
+            std::slice::from_ref(&prepared_two),
+            &[source.clone(), source, destination.clone(), destination],
+            |_, next_generation| Ok(catalog(next_generation, "Renamed.md", &prepared_two)),
+            |_| Ok(()),
+        )
+        .unwrap();
 
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();
@@ -649,8 +991,13 @@ fn stale_path_revision_and_destination_preconditions_fail_before_build() {
 
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::PathOrRevision { .. })
+        CommitError::Conflict(CommitConflict::PathOrRevision { ref stable_id })
+            if stable_id == OBJECT_ID
     ));
+    assert_eq!(
+        error.to_string(),
+        format!("CoreFS commit conflict: catalog path or revision changed for {OBJECT_ID}")
+    );
     assert_eq!(fs::read(coordinator.head_path()).unwrap(), committed_head);
     assert_eq!(
         fs::read_dir(coordinator.catalogs_path()).unwrap().count(),
@@ -670,8 +1017,18 @@ fn stale_path_revision_and_destination_preconditions_fail_before_build() {
         .unwrap_err();
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::DestinationOccupied { .. })
+        CommitError::Conflict(CommitConflict::DestinationOccupied {
+            ref parent_id,
+            ref name,
+        })
+            if parent_id == ROOT_ID && name == "Renamed.md"
     ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "CoreFS commit conflict: catalog destination is occupied: parent={ROOT_ID}, name=Renamed.md"
+        )
+    );
 
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();

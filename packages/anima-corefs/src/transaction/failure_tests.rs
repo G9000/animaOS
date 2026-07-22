@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 
 use crate::catalog::{
     CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject, ObjectLifecycle,
@@ -13,9 +16,11 @@ use crate::id::OpaqueId;
 use crate::policy::AnimaAccess;
 use crate::rotation::{FrkKeyring, RotationError};
 
+use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet};
 use super::{
-    CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode,
-    CoreCommitCoordinator, PreparedObjectRevision, PublicationTarget,
+    CatalogLoadProbe, CatalogLoadStage, CatalogPrecondition, CommitCallbacks, CommitError,
+    CommitFailurePoint, CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator,
+    CoreCommitLock, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
 
@@ -356,6 +361,417 @@ fn post_head_cutover_marker_failures_report_recovery_pending_success() {
 }
 
 #[test]
+fn pre_head_failure_keeps_only_the_prior_snapshot() {
+    let root = reset_root("pre-head-keeps-prior-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let prior = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("successful first mutation should cache its authoritative snapshot");
+    assert_eq!(prior.catalog().generation(), 2);
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::TemporaryCreated,
+    };
+
+    let error = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected pre-HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap_err();
+    match error {
+        CommitError::Io(error) => {
+            assert_eq!(error.to_string(), "injected pre-HEAD failure");
+        }
+        error => panic!("expected original injected I/O error, got {error}"),
+    }
+
+    let after = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("pre-HEAD failure should retain the prior snapshot");
+    assert!(Arc::ptr_eq(&prior, &after));
+    assert_eq!(after.catalog().generation(), 2);
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn post_rename_pre_sync_failure_preserves_the_prior_snapshot() {
+    let root = reset_root("post-rename-pre-sync-keeps-prior-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let prior = coordinator
+        .cache
+        .current()
+        .expect("successful first mutation should cache its authoritative snapshot");
+    assert_eq!(prior.catalog().generation(), 2);
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::DestinationPublished,
+    };
+
+    let error = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected pre-durable HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap_err();
+    match error {
+        CommitError::Io(error) => {
+            assert_eq!(error.to_string(), "injected pre-durable HEAD failure");
+        }
+        error => panic!("expected original injected I/O error, got {error}"),
+    }
+
+    let after = coordinator
+        .cache
+        .current()
+        .expect("pre-durable HEAD failure should retain the prior snapshot");
+    assert!(Arc::ptr_eq(&prior, &after));
+    assert_eq!(after.catalog().generation(), 2);
+
+    let observer = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    assert_eq!(
+        observer
+            .load_committed(&keys)
+            .unwrap()
+            .expect("the rename should already be visible")
+            .head()
+            .generation(),
+        3
+    );
+
+    drop(observer);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn post_head_failure_reconciles_cache_to_durable_authority() {
+    let root = reset_root("post-head-reconciles-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let prior = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .unwrap();
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::DestinationSynced,
+    };
+
+    let error = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected post-HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap_err();
+    match error {
+        CommitError::Io(error) => {
+            assert_eq!(error.to_string(), "injected post-HEAD failure");
+        }
+        error => panic!("expected original injected I/O error, got {error}"),
+    }
+
+    let after = coordinator
+        .cache
+        .inner
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("durable post-HEAD authority should remain cached");
+    assert!(!Arc::ptr_eq(&prior, &after));
+    assert_eq!(after.catalog().generation(), 3);
+    let loaded = coordinator.load_committed(&keys).unwrap().unwrap();
+    assert_eq!(loaded.head().generation(), 3);
+    assert!(std::ptr::eq(loaded.catalog(), after.catalog().as_ref()));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn post_head_recovery_pending_clears_the_cache() {
+    let root = reset_root("post-head-recovery-pending-clears-cache");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    let validation = coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    assert!(
+        coordinator.cache.current().is_none(),
+        "validation-only initialization must not publish authoritative cache state"
+    );
+    let keyring = FrkKeyring::single(&keys);
+    let stale_key = CacheLookupKey::derive(
+        PointerSet {
+            head: None,
+            receipt: None,
+            complete: None,
+        },
+        CORE_ID,
+        &keyring,
+        &keys,
+    )
+    .unwrap();
+    coordinator
+        .cache
+        .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+            &stale_key,
+            Arc::new(validation.catalog().clone()),
+            None,
+        )));
+    let precondition = CatalogPrecondition::object(
+        validation.catalog(),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let next = prepare(&coordinator, &keys, 2, b"next");
+    let failure_point = CommitFailurePoint::Publication {
+        target: PublicationTarget::CutoverReceipt,
+        phase: PublicationPhase::TemporaryCreated,
+    };
+
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::FirstMutation { cutover_epoch: 1 },
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        return Err(std::io::Error::other("injected post-HEAD failure"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+
+    assert!(outcome.recovery_pending());
+    assert!(coordinator.cache.inner.lock().unwrap().is_none());
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn normal_success_clears_cache_when_retained_receipt_changes_after_head_sync() {
+    let root = reset_root("normal-success-retained-receipt-mismatch");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let prior = coordinator
+        .cache
+        .current()
+        .expect("first mutation should cache the authenticated retained markers");
+    let precondition =
+        CatalogPrecondition::object(prior.catalog(), &OpaqueId::parse(OBJECT_ID).unwrap(), 2)
+            .unwrap();
+    let next = prepare(&coordinator, &keys, 3, b"next");
+    let mutate_after_head_sync = CommitFailurePoint::Publication {
+        target: PublicationTarget::AuthoritativeHead,
+        phase: PublicationPhase::DestinationSynced,
+    };
+
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::Normal,
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == mutate_after_head_sync {
+                        std::fs::remove_file(coordinator.cutover_receipt_path())?;
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+
+    assert_eq!(outcome.generation(), 3);
+    assert!(
+        coordinator.cache.current().is_none(),
+        "a malformed retained marker tuple must not become exact cache authority"
+    );
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn torn_unlocked_cutover_observation_is_retried_under_the_commit_lock() {
     let root = reset_root("torn-cutover-observation");
     seed_validation(&root);
@@ -368,6 +784,405 @@ fn torn_unlocked_cutover_observation_is_retried_under_the_commit_lock() {
         .unwrap();
 
     assert_eq!(committed.head().generation(), 2);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn receipt_without_head_bypasses_cache_and_runs_recovery() {
+    let root = reset_root("receipt-without-head-cache-miss");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let prior = coordinator.cache.current().unwrap();
+    std::fs::remove_file(coordinator.head_path()).unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+    let committed = coordinator.load_committed(&keys).unwrap().unwrap();
+
+    assert_eq!(committed.head().generation(), 2);
+    assert!(coordinator.head_path().is_file());
+    assert!(coordinator.cutover_complete_path().is_file());
+    assert!(!Arc::ptr_eq(&prior, &coordinator.cache.current().unwrap()));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_head_with_completion_bypasses_cache_and_runs_recovery() {
+    let root = reset_root("missing-head-with-completion-cache-miss");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let prior = coordinator.cache.current().unwrap();
+    std::fs::remove_file(coordinator.head_path()).unwrap();
+    std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+
+    assert!(!coordinator.head_path().exists());
+    assert!(!coordinator.cutover_receipt_path().exists());
+    assert!(coordinator.cutover_complete_path().is_file());
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::LockBusy)
+    ));
+    assert!(Arc::ptr_eq(&prior, &coordinator.cache.current().unwrap()));
+    drop(commit_lock);
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+    assert!(
+        coordinator.cache.current().is_none(),
+        "ambiguous completion-only authority must clear the stale cache"
+    );
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn divergent_receipt_and_completion_bypass_cache() {
+    let root = reset_root("divergent-receipt-completion-cache-miss");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    std::fs::copy(
+        coordinator.validation_head_path(),
+        coordinator.cutover_complete_path(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn seed_mixed_frk_completion_gap(root: &Path) {
+    seed_committed(root);
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let active_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    coordinator
+        .rotate_frk(&keyring, &active_keys, 2, |_| Ok(()))
+        .unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+}
+
+#[test]
+fn mixed_frk_recovery_derives_every_required_catalog_key_identity() {
+    let root = reset_root("mixed-frk-recovery-identities");
+    seed_mixed_frk_completion_gap(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let active_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+
+    let committed = coordinator
+        .load_committed_recovering_with_keyring(&commit_lock, &keyring)
+        .unwrap()
+        .unwrap();
+    drop(commit_lock);
+
+    assert_eq!(committed.head().generation(), 3);
+    assert_eq!(committed.head().required_frk_version(), 2);
+    let snapshot = coordinator.cache.current().unwrap();
+    let exact =
+        CacheLookupKey::derive(snapshot.pointers.clone(), CORE_ID, &keyring, &active_keys).unwrap();
+    assert_eq!(exact.required_catalog_versions(), &[1, 2]);
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &coordinator.cache.get(&exact).unwrap()
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cutover_recovery_replaces_cache_only_after_verified_completion() {
+    let root = reset_root("mixed-frk-recovery-cache-publication");
+    seed_committed(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys();
+    let active_keys = pending_keys();
+    let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    coordinator.load_committed(&old_keys).unwrap().unwrap();
+    coordinator
+        .rotate_frk(&keyring, &active_keys, 2, |_| Ok(()))
+        .unwrap();
+    let prior = coordinator.cache.current().unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+    let mut saw_durable_completion = false;
+
+    let committed = coordinator
+        .load_committed_recovering_with_keyring_and_hook_inner(
+            &commit_lock,
+            &keyring,
+            &mut |point| {
+                if let CommitFailurePoint::Publication {
+                    target: PublicationTarget::CutoverComplete,
+                    phase,
+                } = point
+                {
+                    assert!(Arc::ptr_eq(&prior, &coordinator.cache.current().unwrap()));
+                    if phase == PublicationPhase::DestinationSynced {
+                        saw_durable_completion = true;
+                    }
+                }
+                Ok(())
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    drop(commit_lock);
+
+    assert!(saw_durable_completion);
+    assert_eq!(committed.head().generation(), 3);
+    let replacement = coordinator.cache.current().unwrap();
+    assert!(!Arc::ptr_eq(&prior, &replacement));
+    assert_eq!(replacement.catalog().generation(), 3);
+    assert_eq!(replacement.pointers.head.as_ref(), Some(committed.head()));
+    assert_eq!(replacement.pointers.receipt, replacement.pointers.complete);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn seed_single_version_completion_gap(root: &Path) {
+    seed_validation(root);
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let keys = keys();
+    let current = coordinator
+        .load_validation_snapshot(&keys)
+        .unwrap()
+        .unwrap()
+        .catalog()
+        .clone();
+    let precondition =
+        CatalogPrecondition::object(&current, &OpaqueId::parse(OBJECT_ID).unwrap(), 1).unwrap();
+    let next = prepare(&coordinator, &keys, 2, b"committed");
+    let outcome = coordinator
+        .commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&next),
+            &[precondition],
+            CommitMode::FirstMutation { cutover_epoch: 1 },
+            |_, generation| Ok(catalog(generation, &next)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point
+                        == (CommitFailurePoint::Publication {
+                            target: PublicationTarget::CutoverComplete,
+                            phase: PublicationPhase::TemporaryCreated,
+                        })
+                    {
+                        return Err(std::io::Error::other("leave completion pending"));
+                    }
+                    Ok(())
+                },
+            },
+        )
+        .unwrap();
+    assert!(outcome.recovery_pending());
+}
+
+#[test]
+fn recovery_rejects_replaced_pointer_tuple_before_cache_publication() {
+    let root = reset_root("recovery-replaced-pointer-tuple");
+    seed_single_version_completion_gap(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let active_keys = keys();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+    let completion_synced = std::cell::Cell::new(false);
+    let post_completion_crypto_stages = std::cell::Cell::new(0);
+    let pointers_replaced = std::cell::Cell::new(false);
+    let mut replace_after_final_tuple_read = |stage| {
+        if completion_synced.get() && stage == CatalogLoadStage::CatalogCrypto {
+            let stage_count = post_completion_crypto_stages.get() + 1;
+            post_completion_crypto_stages.set(stage_count);
+            if stage_count == 3 {
+                std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+                std::fs::copy(
+                    coordinator.validation_head_path(),
+                    coordinator.cutover_receipt_path(),
+                )
+                .unwrap();
+                std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+                std::fs::copy(
+                    coordinator.validation_head_path(),
+                    coordinator.cutover_complete_path(),
+                )
+                .unwrap();
+                pointers_replaced.set(true);
+            }
+        }
+    };
+    let mut observe_completion = |point| {
+        if point
+            == (CommitFailurePoint::Publication {
+                target: PublicationTarget::CutoverComplete,
+                phase: PublicationPhase::DestinationSynced,
+            })
+        {
+            completion_synced.set(true);
+        }
+        Ok(())
+    };
+
+    let result = {
+        let mut probe = CatalogLoadProbe::observed(&mut replace_after_final_tuple_read);
+        coordinator.load_committed_recovering_with_keyring_and_hook_inner(
+            &commit_lock,
+            &FrkKeyring::single(&active_keys),
+            &mut observe_completion,
+            Some(&mut probe),
+        )
+    };
+
+    assert!(
+        pointers_replaced.get(),
+        "the replacement seam was not reached"
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+        ),
+        "recovery accepted a catalog authenticated against an earlier pointer tuple: {result:?}"
+    );
+    assert!(
+        coordinator.cache.current().is_none(),
+        "recovery cached authority that was not authenticated against the replacement tuple"
+    );
+    drop(commit_lock);
+    assert!(matches!(
+        coordinator.load_committed(&active_keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() {
+    let root = reset_root("concurrent-load-recovery-and-commit");
+    seed_single_version_completion_gap(&root);
+    let timeout = Duration::from_secs(5);
+    let coordinator = Arc::new(CoreCommitCoordinator::new(&root, CORE_ID).unwrap());
+    let (recovery_kernel_lock_tx, recovery_kernel_lock_rx) = mpsc::channel();
+    let (release_recovery_tx, release_recovery_rx) = mpsc::channel();
+    let (recovery_done_tx, recovery_done_rx) = mpsc::channel();
+    let recovery_coordinator = Arc::clone(&coordinator);
+    let recovery_thread = thread::spawn(move || {
+        let result = recovery_coordinator.load_committed_with_hook(&keys(), &mut |point| {
+            if point
+                == (CommitFailurePoint::Publication {
+                    target: PublicationTarget::CutoverComplete,
+                    phase: PublicationPhase::TemporaryCreated,
+                })
+            {
+                assert!(
+                    recovery_coordinator.cache.inner.try_lock().is_ok(),
+                    "recovery held the shared cache mutex while holding CoreCommitLock"
+                );
+                recovery_kernel_lock_tx.send(()).unwrap();
+                release_recovery_rx.recv_timeout(timeout).unwrap();
+            }
+            Ok(())
+        });
+        recovery_done_tx
+            .send(result.map(|value| value.unwrap().head().generation()))
+            .unwrap();
+    });
+
+    recovery_kernel_lock_rx.recv_timeout(timeout).unwrap();
+    let (cache_accessed_tx, cache_accessed_rx) = mpsc::channel();
+    let (first_commit_done_tx, first_commit_done_rx) = mpsc::channel();
+    let (retry_commit_tx, retry_commit_rx) = mpsc::channel();
+    let (commit_kernel_lock_tx, commit_kernel_lock_rx) = mpsc::channel();
+    let (commit_done_tx, commit_done_rx) = mpsc::channel();
+    let commit_coordinator = Arc::clone(&coordinator);
+    let commit_thread = thread::spawn(move || {
+        assert!(
+            commit_coordinator.cache.current().is_none(),
+            "recovery published shared cache authority before cutover completion"
+        );
+        cache_accessed_tx.send(()).unwrap();
+        let active_keys = keys();
+        let first_result = commit_coordinator.commit(
+            &active_keys,
+            &[],
+            &[],
+            |current, generation| {
+                CatalogGeneration::new(generation, current.unwrap().entries().to_vec())
+            },
+            |_| Ok(()),
+        );
+        first_commit_done_tx
+            .send(first_result.map(|outcome| outcome.generation()))
+            .unwrap();
+        retry_commit_rx.recv_timeout(timeout).unwrap();
+
+        let mut observe_stage = |stage| {
+            if stage == CommitStage::KernelLock {
+                assert!(
+                    commit_coordinator.cache.inner.try_lock().is_ok(),
+                    "commit held the shared cache mutex while holding CoreCommitLock"
+                );
+                commit_kernel_lock_tx.send(()).unwrap();
+            }
+        };
+        let mut probe = CommitProbe::observed(&mut observe_stage);
+        let result = commit_coordinator.commit_with_probe(
+            &active_keys,
+            &[],
+            &[],
+            |current, generation| {
+                CatalogGeneration::new(generation, current.unwrap().entries().to_vec())
+            },
+            |_| Ok(()),
+            &mut probe,
+        );
+        commit_done_tx
+            .send(result.map(|outcome| outcome.generation()))
+            .unwrap();
+    });
+
+    cache_accessed_rx.recv_timeout(timeout).unwrap();
+    assert!(matches!(
+        first_commit_done_rx.recv_timeout(timeout).unwrap(),
+        Err(CommitError::LockBusy)
+    ));
+    release_recovery_tx.send(()).unwrap();
+    assert_eq!(recovery_done_rx.recv_timeout(timeout).unwrap().unwrap(), 2);
+    assert_eq!(
+        coordinator.cache.current().unwrap().catalog().generation(),
+        2
+    );
+    retry_commit_tx.send(()).unwrap();
+    commit_kernel_lock_rx.recv_timeout(timeout).unwrap();
+    assert_eq!(commit_done_rx.recv_timeout(timeout).unwrap().unwrap(), 3);
+    recovery_thread.join().unwrap();
+    commit_thread.join().unwrap();
+
+    assert_eq!(
+        coordinator.cache.current().unwrap().catalog().generation(),
+        3
+    );
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -884,7 +1699,7 @@ fn helper_process_crashes_at_failure_point() {
             let pending_keys = pending_keys();
             let keyring = FrkKeyring::new([&keys, &pending_keys]).unwrap();
             coordinator
-                .rotate_frk_with_hook(&keyring, &pending_keys, 2, |_| Ok(()), &mut hook)
+                .rotate_frk_with_hook(&keyring, &pending_keys, 2, |_| Ok(()), &mut hook, None)
                 .unwrap();
         }
         "recovery" => {
