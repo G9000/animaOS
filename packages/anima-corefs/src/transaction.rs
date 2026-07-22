@@ -27,7 +27,10 @@ use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use self::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet};
+use self::cache::{
+    AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet, ValidatedObjectBinding,
+    ValidatedObjectState,
+};
 
 #[cfg(test)]
 use crate::catalog::encrypt_catalog_generation_for_publication_with_observer;
@@ -927,6 +930,7 @@ struct CommitProbe<'a> {
     catalog_file_reads: usize,
     catalog_decrypts: usize,
     catalog_encodes: usize,
+    object_dek_unwraps: usize,
     observe_stage: Option<&'a mut dyn FnMut(CommitStage)>,
 }
 
@@ -956,6 +960,10 @@ impl<'a> CommitProbe<'a> {
         self.catalog_file_reads += catalog_file_reads;
         self.catalog_decrypts += catalog_decrypts;
         self.catalog_encodes += catalog_encodes;
+    }
+
+    fn object_dek_unwrap(&mut self) {
+        self.object_dek_unwraps += 1;
     }
 }
 
@@ -1191,8 +1199,14 @@ impl CoreCommitCoordinator {
                 stable_id: object_id.as_str().to_owned(),
             });
         }
-        if catalog_object_key_binding(active_keys, &self.core_id, object_id, source)?
-            != object_key_binding(old_object_key)
+        if catalog_object_key_binding(
+            active_keys,
+            &self.core_id,
+            object_id,
+            source,
+            #[cfg(test)]
+            None,
+        )? != object_key_binding(old_object_key)
         {
             return Err(CommitError::ReferencedObjectKeyMismatch {
                 stable_id: object_id.as_str().to_owned(),
@@ -2474,9 +2488,11 @@ impl CoreCommitCoordinator {
             &self.objects_dir,
             keys,
             &self.core_id,
-            None,
-            &catalog,
+            (None, &catalog),
             prepared_revisions,
+            None,
+            #[cfg(test)]
+            None,
         )?;
         let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
             keys,
@@ -2560,9 +2576,11 @@ impl CoreCommitCoordinator {
             &self.objects_dir,
             keys,
             &self.core_id,
-            Some(&current.catalog),
-            &next_catalog,
+            (Some(&current.catalog), &next_catalog),
             prepared_revisions,
+            None,
+            #[cfg(test)]
+            None,
         )?;
         let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
             keys,
@@ -2818,6 +2836,15 @@ impl CoreCommitCoordinator {
                 .cache
                 .current()
                 .map_or_else(PointerSet::default, |snapshot| snapshot.pointers.clone());
+            let cached_objects = CacheLookupKey::derive(
+                initial_pointers.clone(),
+                &self.core_id,
+                keyring,
+                active_keys,
+            )
+            .ok()
+            .and_then(|key| self.cache.get(&key))
+            .and_then(|snapshot| snapshot.objects.clone());
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
@@ -2864,14 +2891,16 @@ impl CoreCommitCoordinator {
             }
             let next_catalog = mode.apply_cutover_marker(&current, next_catalog)?;
             validate_precondition_coverage(current.catalog(), &next_catalog, preconditions)?;
-            validate_prepared_revisions(
+            let validated_objects = Arc::new(validate_prepared_revisions(
                 &self.objects_dir,
                 active_keys,
                 &self.core_id,
-                Some(current.catalog()),
-                &next_catalog,
+                (Some(current.catalog()), &next_catalog),
                 prepared_revisions,
-            )?;
+                cached_objects.as_deref(),
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?);
             let next_catalog = Arc::new(next_catalog);
             #[cfg(test)]
             if let Some(probe) = probe.as_deref_mut() {
@@ -2940,6 +2969,7 @@ impl CoreCommitCoordinator {
                 keyring,
                 &expected_final_pointers,
                 Arc::clone(&next_catalog),
+                validated_objects,
                 recovery_pending,
                 #[cfg(test)]
                 probe.as_deref_mut(),
@@ -2993,6 +3023,7 @@ impl CoreCommitCoordinator {
         keyring: &FrkKeyring<'_>,
         expected_pointers: &PointerSet,
         catalog: Arc<CatalogGeneration>,
+        objects: Arc<ValidatedObjectState>,
         recovery_pending: bool,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) {
@@ -3025,7 +3056,9 @@ impl CoreCommitCoordinator {
         };
         self.cache
             .replace(Arc::new(AuthenticatedCommitSnapshot::new(
-                &key, catalog, None,
+                &key,
+                catalog,
+                Some(objects),
             )));
     }
 
@@ -3665,10 +3698,12 @@ fn validate_prepared_revisions(
     objects_dir: &Dir,
     keys: &FrkSubkeys,
     core_id: &str,
-    current: Option<&CatalogGeneration>,
-    next: &CatalogGeneration,
+    catalogs: (Option<&CatalogGeneration>, &CatalogGeneration),
     prepared: &[PreparedObjectRevision],
-) -> Result<(), CommitError> {
+    cached: Option<&ValidatedObjectState>,
+    #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+) -> Result<ValidatedObjectState, CommitError> {
+    let (current, next) = catalogs;
     let mut by_physical_name = HashMap::new();
     for value in prepared {
         if by_physical_name
@@ -3691,28 +3726,45 @@ fn validate_prepared_revisions(
         })
         .collect();
     let mut consumed = HashSet::new();
+    let mut validated = Vec::with_capacity(current_objects.len().max(prepared.len()));
 
     for entry in next.entries() {
         let Some(object) = entry.object_payload() else {
             continue;
         };
-        let next_key_binding =
-            catalog_object_key_binding(keys, core_id, entry.stable_id(), object)?;
+        let candidate = ValidatedObjectBinding::from_catalog_object(entry.stable_id(), object)?;
         let unchanged = current_objects
             .get(entry.stable_id().as_str())
             .is_some_and(|current| same_object_body(current, object));
         if unchanged {
-            let current_object = current_objects[entry.stable_id().as_str()];
-            let current_key_binding =
-                catalog_object_key_binding(keys, core_id, entry.stable_id(), current_object)?;
-            if current_key_binding != next_key_binding {
-                return Err(CommitError::ReferencedObjectKeyMismatch {
-                    stable_id: entry.stable_id().as_str().to_owned(),
-                });
-            }
             validate_existing_object_file(objects_dir, object.physical_name())?;
+            if cached
+                .and_then(|state| state.get(entry.stable_id()))
+                .is_some_and(|binding| binding == &candidate)
+            {
+                validated.push(candidate);
+                continue;
+            }
+            catalog_object_key_binding(
+                keys,
+                core_id,
+                entry.stable_id(),
+                object,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
+            validated.push(candidate);
             continue;
         }
+
+        let next_key_binding = catalog_object_key_binding(
+            keys,
+            core_id,
+            entry.stable_id(),
+            object,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
 
         let Some(token) = by_physical_name.get(object.physical_name().as_str()) else {
             return Err(CommitError::MissingPreparedRevision {
@@ -3735,6 +3787,7 @@ fn validate_prepared_revisions(
         }
         validate_prepared_file(objects_dir, token)?;
         consumed.insert(token.physical_name.as_str());
+        validated.push(candidate);
     }
 
     if let Some(unused) = prepared
@@ -3745,7 +3798,7 @@ fn validate_prepared_revisions(
             physical_name: unused.physical_name.as_str().to_owned(),
         });
     }
-    Ok(())
+    Ok(ValidatedObjectState::from_catalog_bindings(validated)?)
 }
 
 fn same_object_body(current: &CatalogObject, next: &CatalogObject) -> bool {
@@ -3762,6 +3815,7 @@ fn catalog_object_key_binding(
     core_id: &str,
     stable_id: &OpaqueId,
     object: &CatalogObject,
+    #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<[u8; 32], CommitError> {
     let record = object.wrapped_dek();
     let aad = ObjectKeyAad::new(
@@ -3774,6 +3828,10 @@ fn catalog_object_key_binding(
         record.frk_version(),
     )?;
     let wrapped = record.to_wrapped_object_dek()?;
+    #[cfg(test)]
+    if let Some(probe) = probe {
+        probe.object_dek_unwrap();
+    }
     let object_key = unwrap_object_dek(keys, &wrapped, &aad)?;
     Ok(object_key_binding(&object_key))
 }

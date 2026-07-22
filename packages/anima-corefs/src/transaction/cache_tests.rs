@@ -1,15 +1,20 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsStr;
+use std::io::Cursor;
 use std::sync::Arc;
 use std::thread;
+
+use cap_std::{ambient_authority, fs::Dir};
 
 use crate::catalog::{
     encrypt_catalog_generation, CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry,
     CatalogObject, ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
 };
 use crate::crypto::{
-    derive_corefs_subkeys, FrkSubkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
-    OBJECT_WRAP_ALGORITHM,
+    derive_corefs_subkeys, FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes,
+    OBJECT_KEY_ENVELOPE_VERSION, OBJECT_WRAP_ALGORITHM,
 };
+use crate::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION};
 use crate::folders::{FolderOwner, PortableName};
 use crate::head::HeadRecord;
 use crate::id::OpaqueId;
@@ -21,10 +26,10 @@ use super::cache::{
     ValidatedObjectBinding, ValidatedObjectState,
 };
 use super::{
-    precondition_covers_source, CatalogLoadProbe, CatalogLoadStage, CatalogPrecondition,
-    CommitCallbacks, CommitConflict, CommitError, CommitFailurePoint, CommitMode, CommitProbe,
-    CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget, RotationProbe,
-    RotationStage,
+    precondition_covers_source, validate_opened_regular_file, CatalogLoadProbe, CatalogLoadStage,
+    CatalogPrecondition, CommitCallbacks, CommitConflict, CommitError, CommitFailurePoint,
+    CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock,
+    PreparedObjectRevision, PublicationTarget, RotationProbe, RotationStage,
 };
 use crate::publication::PublicationPhase;
 
@@ -92,6 +97,123 @@ fn seed_committed(coordinator: &CoreCommitCoordinator, keys: &FrkSubkeys) {
             |_| Ok(()),
         )
         .unwrap();
+}
+
+fn prepare_cached_object(
+    coordinator: &CoreCommitCoordinator,
+    keys: &FrkSubkeys,
+) -> PreparedObjectRevision {
+    let object_key = SecretBytes::new(vec![0x71; 32]).unwrap();
+    let aad = ObjectBaseAad::new(
+        CORE_ID,
+        FIRST_OBJECT_ID,
+        ObjectKind::Note,
+        ENVELOPE_VERSION,
+        1,
+        1,
+    )
+    .unwrap();
+    let body = b"cached object body";
+    let metadata = EnvelopeMetadata::for_body(
+        ObjectKind::Note.as_str(),
+        FIRST_OBJECT_ID,
+        1,
+        "2026-07-22T00:00:00Z",
+        "2026-07-22T00:00:00Z",
+        "text/markdown",
+        BTreeMap::new(),
+        BodyEncoding::Utf8,
+        body,
+    )
+    .unwrap();
+    let encoded = encode_envelope(&object_key, &aad, &metadata, body).unwrap();
+    coordinator
+        .prepare_object_revision(keys, &object_key, &aad, &mut Cursor::new(encoded))
+        .unwrap()
+}
+
+fn cached_object_catalog(
+    generation: u64,
+    prepared: &PreparedObjectRevision,
+    wrapped_dek: WrappedObjectDekRecord,
+) -> CatalogGeneration {
+    CatalogGeneration::new(
+        generation,
+        vec![
+            CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                OpaqueId::parse(ROOT_ID).unwrap(),
+                None,
+                PortableName::parse("Core").unwrap(),
+                FolderOwner::User,
+                AnimaAccess::Write,
+            )),
+            CatalogGenerationEntry::object(
+                CatalogEntryCommon::new(
+                    OpaqueId::parse(FIRST_OBJECT_ID).unwrap(),
+                    Some(OpaqueId::parse(ROOT_ID).unwrap()),
+                    PortableName::parse("Note.md").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                ),
+                CatalogObject::new(
+                    prepared.revision(),
+                    prepared.physical_name().clone(),
+                    prepared.content_hash().clone(),
+                    ObjectKind::Note,
+                    wrapped_dek,
+                    ObjectLifecycle::Live,
+                )
+                .unwrap(),
+            ),
+        ],
+    )
+    .unwrap()
+}
+
+fn seed_committed_object(
+    coordinator: &CoreCommitCoordinator,
+    keys: &FrkSubkeys,
+) -> PreparedObjectRevision {
+    let prepared = prepare_cached_object(coordinator, keys);
+    coordinator
+        .initialize_validation_snapshot(keys, std::slice::from_ref(&prepared), |generation| {
+            Ok(cached_object_catalog(
+                generation,
+                &prepared,
+                prepared.wrapped_dek().clone(),
+            ))
+        })
+        .unwrap();
+    coordinator
+        .commit_first_mutation(
+            keys,
+            1,
+            &[],
+            &[],
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    prepared
+}
+
+fn object_precondition(
+    coordinator: &CoreCommitCoordinator,
+    keys: &FrkSubkeys,
+) -> CatalogPrecondition {
+    let committed = coordinator.load_committed(keys).unwrap().unwrap();
+    CatalogPrecondition::object(
+        committed.catalog(),
+        &OpaqueId::parse(FIRST_OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap()
 }
 
 fn binding(object_id: &str, fill: u8) -> ValidatedObjectBinding {
@@ -1274,4 +1396,200 @@ fn empty_validated_object_state_is_buildable_and_searchable() {
             object_id: FIRST_OBJECT_ID.to_owned()
         }
     );
+}
+
+#[test]
+fn exact_cached_object_tuple_skips_repeated_dek_unwrap() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-object-binding-hit-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    let prepared = seed_committed_object(&coordinator, &keys);
+    let mut probe = CommitProbe::default();
+
+    coordinator
+        .commit_with_probe(
+            &keys,
+            &[],
+            &[],
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            |_| Ok(()),
+            &mut probe,
+        )
+        .unwrap();
+
+    assert_eq!(probe.object_dek_unwraps, 0);
+    assert!(coordinator
+        .cache
+        .current()
+        .unwrap()
+        .objects
+        .as_ref()
+        .is_some_and(|objects| objects
+            .get(&OpaqueId::parse(FIRST_OBJECT_ID).unwrap())
+            .is_some()));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_opened_linked_identity_mismatch() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-opened-linked-mismatch-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let object_path = root.join("object.acore");
+    let detached_path = root.join("detached-object.acore");
+    std::fs::write(&object_path, b"original object").unwrap();
+    let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+    let opened = dir.open("object.acore").unwrap().into_std();
+    std::fs::rename(&object_path, detached_path).unwrap();
+    std::fs::write(&object_path, b"replacement object").unwrap();
+
+    assert!(matches!(
+        validate_opened_regular_file(&dir, OsStr::new("object.acore"), &opened),
+        Err(CommitError::InvalidCoreLayout)
+    ));
+
+    drop(opened);
+    drop(dir);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn changed_wrapped_dek_never_reuses_binding() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-changed-wrapper-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    let prepared = seed_committed_object(&coordinator, &keys);
+    assert!(coordinator.cache.current().unwrap().objects.is_some());
+    let precondition = object_precondition(&coordinator, &keys);
+    let record = prepared.wrapped_dek();
+    let wrapped = record.to_wrapped_object_dek().unwrap();
+    let mut ciphertext = wrapped.ciphertext().to_vec();
+    ciphertext[0] ^= 0x80;
+    let changed = WrappedObjectDekRecord::from_parts(
+        record.frk_version(),
+        record.object_key_epoch(),
+        wrapped.algorithm(),
+        wrapped.envelope_version(),
+        wrapped.nonce(),
+        ciphertext,
+    )
+    .unwrap();
+    let mut probe = CommitProbe::default();
+
+    let result = coordinator.commit_with_probe(
+        &keys,
+        &[],
+        &[precondition],
+        |_, generation| Ok(cached_object_catalog(generation, &prepared, changed)),
+        |_| Ok(()),
+        &mut probe,
+    );
+
+    assert!(matches!(result, Err(CommitError::Crypto(_))));
+    assert_eq!(probe.object_dek_unwraps, 1);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn wrong_object_wrap_key_identity_never_reuses_binding() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-wrong-object-wrap-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let first = keys(0x11, 1);
+    let other_material = keys(0x22, 1);
+    let prepared = seed_committed_object(&coordinator, &first);
+    let snapshot = coordinator.cache.current().unwrap();
+    assert!(snapshot.objects.is_some());
+    let exact_keyring = FrkKeyring::single(&first);
+    let wrong = lookup_key(snapshot.pointers.clone(), &exact_keyring, &other_material);
+    assert!(coordinator.cache.get(&wrong).is_none());
+
+    let mut probe = CommitProbe::default();
+    let mut hook = |_| Ok(());
+    let result = coordinator.commit_internal_with_keyring_and_hook(
+        &exact_keyring,
+        &other_material,
+        &[],
+        &[],
+        CommitMode::Normal,
+        |_, generation| {
+            Ok(cached_object_catalog(
+                generation,
+                &prepared,
+                prepared.wrapped_dek().clone(),
+            ))
+        },
+        CommitCallbacks {
+            invalidate: |_| Ok(()),
+            hook: &mut hook,
+        },
+        Some(&mut probe),
+    );
+
+    assert!(matches!(result, Err(CommitError::Crypto(_))));
+    assert_eq!(probe.object_dek_unwraps, 1);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn changed_object_key_epoch_never_reuses_binding() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-changed-object-epoch-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    let prepared = seed_committed_object(&coordinator, &keys);
+    assert!(coordinator.cache.current().unwrap().objects.is_some());
+    let precondition = object_precondition(&coordinator, &keys);
+    let record = prepared.wrapped_dek();
+    let wrapped = record.to_wrapped_object_dek().unwrap();
+    let changed_epoch = WrappedObjectDekRecord::from_parts(
+        record.frk_version(),
+        record.object_key_epoch() + 1,
+        wrapped.algorithm(),
+        wrapped.envelope_version(),
+        wrapped.nonce(),
+        wrapped.ciphertext().to_vec(),
+    )
+    .unwrap();
+    let mut probe = CommitProbe::default();
+
+    let result = coordinator.commit_with_probe(
+        &keys,
+        &[],
+        &[precondition],
+        |_, generation| Ok(cached_object_catalog(generation, &prepared, changed_epoch)),
+        |_| Ok(()),
+        &mut probe,
+    );
+
+    assert!(matches!(result, Err(CommitError::Crypto(_))));
+    assert_eq!(probe.object_dek_unwraps, 1);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -3,9 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
-use crate::catalog::{CatalogGeneration, ContentHash, ObjectPhysicalName, WrappedObjectDekRecord};
+use crate::catalog::{
+    CatalogError, CatalogGeneration, CatalogObject, ContentHash, ObjectPhysicalName,
+    WrappedObjectDekRecord,
+};
 use crate::crypto::{FrkSubkeys, ObjectKind};
 use crate::head::HeadRecord;
 use crate::id::OpaqueId;
@@ -14,6 +17,7 @@ use crate::rotation::{FrkKeyring, RotationError};
 const CACHE_ID_DOMAIN: &[u8] = b"anima-corefs-commit-cache-key-id-v1\0";
 const CATALOG_KEY_PURPOSE: &[u8] = b"catalog";
 const OBJECT_WRAP_KEY_PURPOSE: &[u8] = b"object-wrap";
+const OBJECT_BINDING_DOMAIN: &[u8] = b"anima-corefs-validated-object-binding-v1\0";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CatalogKeyCacheId([u8; 32]);
@@ -186,6 +190,46 @@ pub(super) struct ValidatedObjectBinding {
     pub(super) binding_digest: [u8; 32],
 }
 
+impl ValidatedObjectBinding {
+    pub(super) fn from_catalog_object(
+        object_id: &OpaqueId,
+        object: &CatalogObject,
+    ) -> Result<Self, CatalogError> {
+        let wrapped_dek = object.wrapped_dek().clone();
+        let wrapped = wrapped_dek.to_wrapped_object_dek()?;
+        let mut hasher = Sha256::new();
+        hasher.update(OBJECT_BINDING_DOMAIN);
+        hash_binding_field(&mut hasher, object_id.as_str().as_bytes());
+        hasher.update(object.revision().to_be_bytes());
+        hasher.update(object.object_key_epoch().to_be_bytes());
+        hash_binding_field(&mut hasher, object.physical_name().as_str().as_bytes());
+        hash_binding_field(&mut hasher, object.content_hash().as_str().as_bytes());
+        hash_binding_field(&mut hasher, object.kind().as_str().as_bytes());
+        hasher.update(wrapped_dek.frk_version().to_be_bytes());
+        hasher.update(wrapped_dek.object_key_epoch().to_be_bytes());
+        hash_binding_field(&mut hasher, wrapped.algorithm().as_bytes());
+        hasher.update(wrapped.envelope_version().to_be_bytes());
+        hash_binding_field(&mut hasher, wrapped.nonce());
+        hash_binding_field(&mut hasher, wrapped.ciphertext());
+
+        Ok(Self {
+            object_id: object_id.clone(),
+            revision: object.revision(),
+            object_key_epoch: object.object_key_epoch(),
+            physical_name: object.physical_name().clone(),
+            content_hash: object.content_hash().clone(),
+            kind: object.kind(),
+            wrapped_dek,
+            binding_digest: hasher.finalize().into(),
+        })
+    }
+}
+
+fn hash_binding_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct ValidatedObjectState {
     by_object_id: Box<[ValidatedObjectBinding]>,
@@ -219,6 +263,19 @@ impl ValidatedObjectState {
             .ok()
             .map(|index| &self.by_object_id[index])
     }
+
+    pub(super) fn from_catalog_bindings(
+        bindings: Vec<ValidatedObjectBinding>,
+    ) -> Result<Self, CatalogError> {
+        Self::from_bindings(bindings).map_err(|error| match error {
+            CacheError::DuplicateObjectId { object_id } => {
+                CatalogError::DuplicateStableId(object_id)
+            }
+            CacheError::CoreIdTooLong | CacheError::KeyIdDerivation | CacheError::Rotation(_) => {
+                CatalogError::InvalidFormat("invalid validated object cache state")
+            }
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -226,8 +283,6 @@ pub(super) struct AuthenticatedCommitSnapshot {
     pub(super) pointers: PointerSet,
     pub(super) key_ids: RequiredCacheKeyIds,
     catalog: Arc<CatalogGeneration>,
-    // Task 8 consumes object bindings.
-    #[allow(dead_code)]
     pub(super) objects: Option<Arc<ValidatedObjectState>>,
 }
 

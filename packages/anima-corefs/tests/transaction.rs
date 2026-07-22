@@ -247,6 +247,171 @@ fn commit_initial(
     prepared
 }
 
+fn seed_cached_object(
+    name: &str,
+) -> (
+    std::path::PathBuf,
+    CoreCommitCoordinator,
+    FrkSubkeys,
+    PreparedObjectRevision,
+) {
+    let root = reset_root(name);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys();
+    let prepared = commit_initial(&coordinator, &keys);
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            &[],
+            &[],
+            |_, generation| Ok(catalog(generation, "Note.md", &prepared)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    (root, coordinator, keys, prepared)
+}
+
+fn unchanged_cached_commit(
+    coordinator: &CoreCommitCoordinator,
+    keys: &FrkSubkeys,
+    prepared: &PreparedObjectRevision,
+) -> Result<anima_corefs::transaction::CommitOutcome, CommitError> {
+    coordinator.commit(
+        keys,
+        &[],
+        &[],
+        |_, generation| Ok(catalog(generation, "Note.md", prepared)),
+        |_| Ok(()),
+    )
+}
+
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    if std::os::windows::fs::symlink_file(target, link).is_ok() {
+        return Ok(());
+    }
+
+    fn wsl_path(path: &Path) -> std::io::Result<String> {
+        let output = Command::new("wsl.exe")
+            .arg("wslpath")
+            .arg("-a")
+            .arg(path.to_string_lossy().replace('\\', "/"))
+            .output()?;
+        if !output.status.success() {
+            return Err(std::io::Error::other("wslpath failed"));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    let target = wsl_path(target)?;
+    let link = wsl_path(link)?;
+    let output = Command::new("wsl.exe")
+        .arg("-e")
+        .arg("ln")
+        .arg("-s")
+        .arg(target)
+        .arg(link)
+        .output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("wsl ln failed"))
+    }
+}
+
+#[test]
+fn cache_hit_rejects_missing_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-missing-object");
+    fs::remove_file(
+        coordinator
+            .objects_path()
+            .join(prepared.physical_name().as_str()),
+    )
+    .unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_empty_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-empty-object");
+    fs::write(
+        coordinator
+            .objects_path()
+            .join(prepared.physical_name().as_str()),
+        [],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        unchanged_cached_commit(&coordinator, &keys, &prepared),
+        Err(CommitError::ReferencedObjectMissing { .. })
+    ));
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_symlinked_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-symlink-object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    let detached = coordinator.objects_path().join("detached-object.acore");
+    fs::rename(&object_path, &detached).unwrap();
+    create_file_symlink(&detached, &object_path).unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_replaced_object() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-replaced-object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    let detached = coordinator.objects_path().join("detached-object.acore");
+    fs::rename(&object_path, detached).unwrap();
+    fs::create_dir(&object_path).unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_hit_rejects_unexpected_hard_link() {
+    let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-hard-link-object");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    fs::hard_link(
+        object_path,
+        coordinator.objects_path().join("unexpected-object-link"),
+    )
+    .unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
     let root = reset_root("cross-coordinator-unlocked-cache-miss");
