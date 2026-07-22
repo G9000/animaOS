@@ -26,15 +26,17 @@ The cache is an optimization, never an authority. Every commit still acquires th
 
 ## Context and blocker
 
-PCF-002 cannot complete until the fixed reference profile passes all catalog gates. The latest source/binary/Cargo.lock/target-bound 30-warm-up/200-sample artifact passed provenance, schema, direct fixture inspection, durable-write latency, and maximum-live size. These commit and lock-hold p95 gates remain red:
+PCF-002 cannot complete until the fixed reference profile passes all catalog gates. The current source/binary/Cargo.lock/target-bound 30-warm-up/200-sample artifact at source commit `699b3277411231f37c1ee688fef4519a5caf4f68` passed provenance, schema, direct fixture inspection, durable-write latency, maximum-live size, medium latency, and serialized-limit latency. Only the maximum-live p95 gate remains red:
 
-| Fixture | Entries | Commit p95 | Gate |
-|---|---:|---:|---:|
-| medium | 5,000 live + 500 tombstones | 207.7262 ms | 100 ms |
-| maximum-live | 25,000 live + 2,500 tombstones | 1,060.9271 ms | 250 ms |
-| serialized-limit | exact 16 MiB catalog | 1,131.7692 ms | 250 ms |
+| Fixture | Entries | Commit p95 | Gate | Result |
+|---|---:|---:|---:|---|
+| medium | 5,000 live + 500 tombstones | 57.4526 ms | 100 ms | Pass |
+| maximum-live | 25,000 live + 2,500 tombstones | 299.6261 ms | 250 ms | Fail |
+| serialized-limit | exact 16 MiB catalog | 88.0664 ms | 250 ms | Pass |
 
-The near-linear growth from 5,500 to 27,500 entries, and the similar maximum-live and exact-16-MiB timings despite their different byte sizes, point to repeated per-entry work as the primary constraint rather than durable I/O or ciphertext size alone.
+The optimized result separates maximum-live from the similarly sized serialized-limit fixture: maximum-live retains 2,500 tombstone object files and records p50/p95/p99 `204.7008/299.6261/905.1425` ms, while serialized-limit has no object files and records `71.4878/88.0664/90.6130` ms. The remaining blocker is therefore concentrated in the object-bearing workload and its tail variability, including the intentionally preserved safe-open and validated-state rebuild work, rather than catalog byte size alone. Any architecture revision must preserve those object-file, durability, recovery, fixture, timer, and threshold contracts.
+
+The checked artifact intentionally contains raw storage-device identity, physical-location evidence, and username-bearing absolute paths so the local reference run is auditable. It contains no credentials, tokens, or content secrets. Any later publication must separately and explicitly accept that machine-identifying disclosure.
 
 ## Goals
 

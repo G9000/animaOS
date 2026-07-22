@@ -935,6 +935,8 @@ print({"allPassed": artifact["gates"]["allPassed"], "binaryIdentity": (binary_ev
 '@ | uv run --locked --project apps/server python -
 ```
 
+The snippet above is the generation-time validator: before the evidence commit, current `HEAD` is the source commit measured into the artifact. A post-handoff audit must instead use the artifact's recorded `sourceCommit`, verify the benchmark source surface and committed `Cargo.lock` at that commit, and confirm that later commits are limited to the generated evidence and documentation/state synchronization. It must not rewrite the artifact to the later metadata-only `HEAD`.
+
 Expected: PASS whether gates are green or red. The validator enforces the closed schema and recalculated gates; the explicit assertions bind current source, binary file identity/hash/path, private build/Cargo.lock, exact target/argv, fixture logical counts, on-disk object/catalog counts, and final generations.
 
 - [ ] **Step 4: Re-run the full contract plus named provenance/identity regressions**
