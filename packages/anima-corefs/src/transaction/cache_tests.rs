@@ -1442,6 +1442,52 @@ fn exact_cached_object_tuple_skips_repeated_dek_unwrap() {
 }
 
 #[test]
+fn first_mutation_after_all_authoritative_pointers_disappear_never_reuses_stale_object_bindings() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-stale-first-mutation-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    let prepared = seed_committed_object(&coordinator, &keys);
+    assert!(coordinator.cache.current().unwrap().objects.is_some());
+    std::fs::remove_file(&coordinator.head_path).unwrap();
+    std::fs::remove_file(&coordinator.cutover_receipt_path).unwrap();
+    std::fs::remove_file(&coordinator.cutover_complete_path).unwrap();
+    assert!(coordinator.validation_head_path.exists());
+
+    let keyring = FrkKeyring::single(&keys);
+    let mut probe = CommitProbe::default();
+    let mut hook = |_| Ok(());
+    coordinator
+        .commit_internal_with_keyring_and_hook(
+            &keyring,
+            &keys,
+            &[],
+            &[],
+            CommitMode::FirstMutation { cutover_epoch: 1 },
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut hook,
+            },
+            Some(&mut probe),
+        )
+        .unwrap();
+
+    assert_eq!(probe.object_dek_unwraps, 1);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cache_hit_rejects_opened_linked_identity_mismatch() {
     let root = std::env::temp_dir().join(format!(
         "anima-corefs-cache-opened-linked-mismatch-{}",

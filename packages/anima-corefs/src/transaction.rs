@@ -1837,7 +1837,7 @@ impl CoreCommitCoordinator {
                     Arc::clone(&committed_catalog.catalog),
                     None,
                 )));
-        } else if recovery_required {
+        } else if recovery_required || matches!(&committed, Ok(None)) {
             self.cache.clear();
         }
         committed
@@ -2832,19 +2832,28 @@ impl CoreCommitCoordinator {
             #[cfg(not(test))]
             let authoritative =
                 self.load_committed_recovering_with_keyring(&commit_lock, keyring)?;
-            let initial_pointers = self
-                .cache
-                .current()
+            let initial_snapshot = self.cache.current();
+            let initial_pointers = initial_snapshot
+                .as_ref()
                 .map_or_else(PointerSet::default, |snapshot| snapshot.pointers.clone());
-            let cached_objects = CacheLookupKey::derive(
-                initial_pointers.clone(),
-                &self.core_id,
-                keyring,
-                active_keys,
-            )
-            .ok()
-            .and_then(|key| self.cache.get(&key))
-            .and_then(|snapshot| snapshot.objects.clone());
+            let cached_objects = match (mode, authoritative.as_ref(), initial_snapshot.as_ref()) {
+                (CommitMode::Normal, Some(authoritative), Some(snapshot))
+                    if snapshot.pointers.head.as_ref() == Some(&authoritative.head)
+                        && Arc::ptr_eq(snapshot.catalog(), &authoritative.catalog) =>
+                {
+                    CacheLookupKey::derive(
+                        initial_pointers.clone(),
+                        &self.core_id,
+                        keyring,
+                        active_keys,
+                    )
+                    .ok()
+                    .and_then(|key| self.cache.get(&key))
+                    .filter(|matched| Arc::ptr_eq(matched, snapshot))
+                    .and_then(|matched| matched.objects.clone())
+                }
+                _ => None,
+            };
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
