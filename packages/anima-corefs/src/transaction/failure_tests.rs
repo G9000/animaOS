@@ -18,8 +18,8 @@ use crate::rotation::{FrkKeyring, RotationError};
 
 use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet};
 use super::{
-    CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode,
-    CoreCommitCoordinator, CoreCommitLock, PreparedObjectRevision, PublicationTarget,
+    CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode, CommitProbe,
+    CommitStage, CoreCommitCoordinator, CoreCommitLock, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
 
@@ -815,12 +815,30 @@ fn missing_head_with_completion_bypasses_cache_and_runs_recovery() {
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let keys = keys();
     coordinator.load_committed(&keys).unwrap().unwrap();
+    let prior = coordinator.cache.current().unwrap();
     std::fs::remove_file(coordinator.head_path()).unwrap();
+    std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+
+    assert!(!coordinator.head_path().exists());
+    assert!(!coordinator.cutover_receipt_path().exists());
+    assert!(coordinator.cutover_complete_path().is_file());
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::LockBusy)
+    ));
+    assert!(Arc::ptr_eq(&prior, &coordinator.cache.current().unwrap()));
+    drop(commit_lock);
 
     assert!(matches!(
         coordinator.load_committed(&keys),
-        Err(CommitError::AuthoritativeHeadMissingAfterCutover)
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
     ));
+    assert!(
+        coordinator.cache.current().is_none(),
+        "ambiguous completion-only authority must clear the stale cache"
+    );
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -985,20 +1003,24 @@ fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() {
     let root = reset_root("concurrent-load-recovery-and-commit");
     seed_single_version_completion_gap(&root);
     let timeout = Duration::from_secs(5);
-    let (recovery_entered_tx, recovery_entered_rx) = mpsc::channel();
+    let coordinator = Arc::new(CoreCommitCoordinator::new(&root, CORE_ID).unwrap());
+    let (recovery_kernel_lock_tx, recovery_kernel_lock_rx) = mpsc::channel();
     let (release_recovery_tx, release_recovery_rx) = mpsc::channel();
     let (recovery_done_tx, recovery_done_rx) = mpsc::channel();
-    let recovery_root = root.clone();
+    let recovery_coordinator = Arc::clone(&coordinator);
     let recovery_thread = thread::spawn(move || {
-        let coordinator = CoreCommitCoordinator::new(&recovery_root, CORE_ID).unwrap();
-        let result = coordinator.load_committed_with_hook(&keys(), &mut |point| {
+        let result = recovery_coordinator.load_committed_with_hook(&keys(), &mut |point| {
             if point
                 == (CommitFailurePoint::Publication {
                     target: PublicationTarget::CutoverComplete,
                     phase: PublicationPhase::TemporaryCreated,
                 })
             {
-                recovery_entered_tx.send(()).unwrap();
+                assert!(
+                    recovery_coordinator.cache.inner.try_lock().is_ok(),
+                    "recovery held the shared cache mutex while holding CoreCommitLock"
+                );
+                recovery_kernel_lock_tx.send(()).unwrap();
                 release_recovery_rx.recv_timeout(timeout).unwrap();
             }
             Ok(())
@@ -1008,13 +1030,21 @@ fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() {
             .unwrap();
     });
 
-    recovery_entered_rx.recv_timeout(timeout).unwrap();
-    let commit_root = root.clone();
+    recovery_kernel_lock_rx.recv_timeout(timeout).unwrap();
+    let (cache_accessed_tx, cache_accessed_rx) = mpsc::channel();
+    let (first_commit_done_tx, first_commit_done_rx) = mpsc::channel();
+    let (retry_commit_tx, retry_commit_rx) = mpsc::channel();
+    let (commit_kernel_lock_tx, commit_kernel_lock_rx) = mpsc::channel();
     let (commit_done_tx, commit_done_rx) = mpsc::channel();
+    let commit_coordinator = Arc::clone(&coordinator);
     let commit_thread = thread::spawn(move || {
-        let coordinator = CoreCommitCoordinator::new(&commit_root, CORE_ID).unwrap();
+        assert!(
+            commit_coordinator.cache.current().is_none(),
+            "recovery published shared cache authority before cutover completion"
+        );
+        cache_accessed_tx.send(()).unwrap();
         let active_keys = keys();
-        let result = coordinator.commit(
+        let first_result = commit_coordinator.commit(
             &active_keys,
             &[],
             &[],
@@ -1023,23 +1053,22 @@ fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() {
             },
             |_| Ok(()),
         );
-        commit_done_tx
-            .send(result.map(|outcome| outcome.generation()))
+        first_commit_done_tx
+            .send(first_result.map(|outcome| outcome.generation()))
             .unwrap();
-    });
-    assert!(matches!(
-        commit_done_rx.recv_timeout(timeout).unwrap(),
-        Err(CommitError::LockBusy)
-    ));
-    release_recovery_tx.send(()).unwrap();
-    assert_eq!(recovery_done_rx.recv_timeout(timeout).unwrap().unwrap(), 2);
-    recovery_thread.join().unwrap();
-    commit_thread.join().unwrap();
+        retry_commit_rx.recv_timeout(timeout).unwrap();
 
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
-    let active_keys = keys();
-    let outcome = coordinator
-        .commit(
+        let mut observe_stage = |stage| {
+            if stage == CommitStage::KernelLock {
+                assert!(
+                    commit_coordinator.cache.inner.try_lock().is_ok(),
+                    "commit held the shared cache mutex while holding CoreCommitLock"
+                );
+                commit_kernel_lock_tx.send(()).unwrap();
+            }
+        };
+        let mut probe = CommitProbe::observed(&mut observe_stage);
+        let result = commit_coordinator.commit_with_probe(
             &active_keys,
             &[],
             &[],
@@ -1047,9 +1076,34 @@ fn concurrent_unlocked_load_recovery_and_commit_do_not_invert_locks() {
                 CatalogGeneration::new(generation, current.unwrap().entries().to_vec())
             },
             |_| Ok(()),
-        )
-        .unwrap();
-    assert_eq!(outcome.generation(), 3);
+            &mut probe,
+        );
+        commit_done_tx
+            .send(result.map(|outcome| outcome.generation()))
+            .unwrap();
+    });
+
+    cache_accessed_rx.recv_timeout(timeout).unwrap();
+    assert!(matches!(
+        first_commit_done_rx.recv_timeout(timeout).unwrap(),
+        Err(CommitError::LockBusy)
+    ));
+    release_recovery_tx.send(()).unwrap();
+    assert_eq!(recovery_done_rx.recv_timeout(timeout).unwrap().unwrap(), 2);
+    assert_eq!(
+        coordinator.cache.current().unwrap().catalog().generation(),
+        2
+    );
+    retry_commit_tx.send(()).unwrap();
+    commit_kernel_lock_rx.recv_timeout(timeout).unwrap();
+    assert_eq!(commit_done_rx.recv_timeout(timeout).unwrap().unwrap(), 3);
+    recovery_thread.join().unwrap();
+    commit_thread.join().unwrap();
+
+    assert_eq!(
+        coordinator.cache.current().unwrap().catalog().generation(),
+        3
+    );
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
