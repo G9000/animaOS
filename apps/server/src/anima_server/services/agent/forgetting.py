@@ -440,8 +440,10 @@ def _scrub_dream_journal_for_forget(
         mem_hit = isinstance(ids, list) and forgotten_memory_item_ids.intersection(
             int(i) for i in ids if isinstance(i, int)
         )
+        # latent_topic_keys are field-encrypted (they embed content slugs) —
+        # decrypt to match against the forgotten (plaintext) keys.
         topic_hit = isinstance(keys, list) and forgotten_topic_keys.intersection(
-            str(k) for k in keys
+            df(user_id, str(k), table="dream_journal", field="source_refs") for k in keys
         )
         if mem_hit or topic_hit:
             db.delete(row)
@@ -469,8 +471,14 @@ def _scrub_dreams_matching_topic_tokens(
     ).all():
         refs = row.source_refs if isinstance(row.source_refs, dict) else {}
         keys = refs.get("latent_topic_keys")
+        # Keys are field-encrypted (content-bearing slugs) — decrypt before
+        # applying the whole-token predicate.
         if isinstance(keys, list) and any(
-            topic_tokens <= _topic_key_content_tokens(str(k)) for k in keys
+            topic_tokens
+            <= _topic_key_content_tokens(
+                df(user_id, str(k), table="dream_journal", field="source_refs")
+            )
+            for k in keys
         ):
             db.delete(row)
             deleted += 1

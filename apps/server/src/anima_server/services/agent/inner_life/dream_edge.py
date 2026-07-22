@@ -389,8 +389,11 @@ def run_dream_for_user(
                 config,
             )
 
-            # Effect 1: dream_journal row (narrative field-encrypted; refs/deltas
-            # are numeric/structural provenance only). Then enforce the cap.
+            # Effect 1: dream_journal row. narrative + latent_topic_keys are
+            # field-encrypted: derive_topic_key embeds a slug of the actual
+            # user value/content, so a raw key would leak content tokens in this
+            # otherwise-numeric JSON. memory_item_ids are opaque ints. The forget
+            # paths decrypt these keys to match (they always run with a DEK).
             soul_db.add(
                 DreamJournal(
                     user_id=user_id,
@@ -398,7 +401,10 @@ def run_dream_for_user(
                     narrative=ef(user_id, generated["narrative"], table="dream_journal", field="narrative"),
                     source_refs={
                         "memory_item_ids": sorted(selected_refs),
-                        "latent_topic_keys": latent_topics,
+                        "latent_topic_keys": [
+                            ef(user_id, k, table="dream_journal", field="source_refs")
+                            for k in latent_topics
+                        ],
                     },
                     affect_delta={"valence": v, "arousal": a, "energy": e},
                     share_worthy=share_worthy,

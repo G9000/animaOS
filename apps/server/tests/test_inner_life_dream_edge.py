@@ -191,6 +191,36 @@ def test_eligible_dream_writes_journal_and_all_effects() -> None:
     re.dispose()
 
 
+def test_latent_topic_keys_are_encrypted_in_source_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (PR review, P1): derive_topic_key embeds a slug of the user's
+    value/content, so latent_topic_keys must be field-encrypted in source_refs,
+    not stored raw in this otherwise-numeric JSON."""
+    from anima_server.models.agent_runtime import LatentTrace
+
+    se, re = _soul_engine(), _runtime_engine()
+    sf, rf = _factory(se), _factory(re)
+    _seed_user(sf, rf)
+    with sf() as db_:  # a latent trace above the weight threshold to be included
+        db_.add(LatentTrace(
+            user_id=1, topic_key="user:profile:employer:acme-corp", kind="minor_observation", weight=0.9,
+        ))
+        db_.commit()
+
+    # A spy ef that marks what it encrypted (overrides the autouse passthrough).
+    monkeypatch.setattr(dream_edge, "ef", lambda user_id, value, **kw: f"ENC:{value}")
+
+    assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is True
+    with sf() as db_:
+        d = db_.scalars(select(DreamJournal)).one()
+        keys = d.source_refs["latent_topic_keys"]
+        assert keys == ["ENC:user:profile:employer:acme-corp"]  # encrypted, not raw
+        # The raw content slug never appears unencrypted in the JSON provenance.
+        assert "acme-corp" not in str({k: v for k, v in d.source_refs.items()
+                                       if k != "latent_topic_keys"})
+    se.dispose()
+    re.dispose()
+
+
 def test_low_significance_material_is_not_share_worthy() -> None:
     se, re = _soul_engine(), _runtime_engine()
     sf, rf = _factory(se), _factory(re)
