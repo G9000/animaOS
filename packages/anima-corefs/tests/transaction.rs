@@ -686,8 +686,15 @@ fn every_changed_source_and_new_destination_requires_a_precondition() {
         .unwrap_err();
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::MissingSourcePrecondition { .. })
+        CommitError::Conflict(CommitConflict::MissingSourcePrecondition { ref stable_id })
+            if stable_id == OBJECT_ID
     ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "CoreFS commit conflict: changed catalog source is missing a precondition: {OBJECT_ID}"
+        )
+    );
 
     let source = object_precondition(&coordinator, &keys, 1);
     let error = coordinator
@@ -695,15 +702,36 @@ fn every_changed_source_and_new_destination_requires_a_precondition() {
             &keys,
             17,
             std::slice::from_ref(&prepared_two),
-            &[source],
+            std::slice::from_ref(&source),
             |_, next_generation| Ok(catalog(next_generation, "Renamed.md", &prepared_two)),
             |_| Ok(()),
         )
         .unwrap_err();
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::MissingDestinationPrecondition { .. })
+        CommitError::Conflict(CommitConflict::MissingDestinationPrecondition {
+            ref parent_id,
+            ref name,
+        }) if parent_id == ROOT_ID && name == "Renamed.md"
     ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "CoreFS commit conflict: new catalog destination is missing a vacancy precondition: parent={ROOT_ID}, name=Renamed.md"
+        )
+    );
+
+    let destination = vacant_precondition(&coordinator, &keys, "Renamed.md");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            17,
+            std::slice::from_ref(&prepared_two),
+            &[source.clone(), source, destination.clone(), destination],
+            |_, next_generation| Ok(catalog(next_generation, "Renamed.md", &prepared_two)),
+            |_| Ok(()),
+        )
+        .unwrap();
 
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();
@@ -798,8 +826,13 @@ fn stale_path_revision_and_destination_preconditions_fail_before_build() {
 
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::PathOrRevision { .. })
+        CommitError::Conflict(CommitConflict::PathOrRevision { ref stable_id })
+            if stable_id == OBJECT_ID
     ));
+    assert_eq!(
+        error.to_string(),
+        format!("CoreFS commit conflict: catalog path or revision changed for {OBJECT_ID}")
+    );
     assert_eq!(fs::read(coordinator.head_path()).unwrap(), committed_head);
     assert_eq!(
         fs::read_dir(coordinator.catalogs_path()).unwrap().count(),
@@ -819,8 +852,18 @@ fn stale_path_revision_and_destination_preconditions_fail_before_build() {
         .unwrap_err();
     assert!(matches!(
         error,
-        CommitError::Conflict(CommitConflict::DestinationOccupied { .. })
+        CommitError::Conflict(CommitConflict::DestinationOccupied {
+            ref parent_id,
+            ref name,
+        })
+            if parent_id == ROOT_ID && name == "Renamed.md"
     ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "CoreFS commit conflict: catalog destination is occupied: parent={ROOT_ID}, name=Renamed.md"
+        )
+    );
 
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();

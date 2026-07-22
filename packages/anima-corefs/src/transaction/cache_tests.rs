@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 
 use crate::catalog::{
     encrypt_catalog_generation, CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry,
-    ContentHash, ObjectPhysicalName, WrappedObjectDekRecord,
+    CatalogObject, ContentHash, ObjectLifecycle, ObjectPhysicalName, WrappedObjectDekRecord,
 };
 use crate::crypto::{
     derive_corefs_subkeys, FrkSubkeys, ObjectKind, SecretBytes, OBJECT_KEY_ENVELOPE_VERSION,
@@ -20,9 +21,10 @@ use super::cache::{
     ValidatedObjectBinding, ValidatedObjectState,
 };
 use super::{
-    CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitError, CommitFailurePoint,
-    CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget,
-    RotationProbe, RotationStage,
+    precondition_covers_source, CatalogLoadProbe, CatalogLoadStage, CatalogPrecondition,
+    CommitCallbacks, CommitConflict, CommitError, CommitFailurePoint, CommitMode, CommitProbe,
+    CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget, RotationProbe,
+    RotationStage,
 };
 use crate::publication::PublicationPhase;
 
@@ -30,6 +32,9 @@ const CORE_ID: &str = "cache-core";
 const ROOT_ID: &str = "01J00000000000000000000000";
 const FIRST_OBJECT_ID: &str = "01J00000000000000000000001";
 const SECOND_OBJECT_ID: &str = "01J00000000000000000000002";
+const THIRD_OBJECT_ID: &str = "01J00000000000000000000003";
+const FOURTH_OBJECT_ID: &str = "01J00000000000000000000004";
+const FIFTH_OBJECT_ID: &str = "01J00000000000000000000005";
 
 fn keys(fill: u8, version: u32) -> FrkSubkeys {
     derive_corefs_subkeys(&SecretBytes::new(vec![fill; 32]).unwrap(), version).unwrap()
@@ -111,6 +116,461 @@ fn binding(object_id: &str, fill: u8) -> ValidatedObjectBinding {
         )
         .unwrap(),
         binding_digest: [fill; 32],
+    }
+}
+
+fn coverage_common(stable_id: &str, parent_id: Option<&str>, name: &str) -> CatalogEntryCommon {
+    CatalogEntryCommon::new(
+        OpaqueId::parse(stable_id).unwrap(),
+        parent_id.map(|value| OpaqueId::parse(value).unwrap()),
+        PortableName::parse(name).unwrap(),
+        FolderOwner::User,
+        AnimaAccess::Write,
+    )
+}
+
+fn coverage_folder(stable_id: &str, parent_id: Option<&str>, name: &str) -> CatalogGenerationEntry {
+    CatalogGenerationEntry::folder(coverage_common(stable_id, parent_id, name))
+}
+
+fn coverage_object(
+    stable_id: &str,
+    parent_id: &str,
+    name: &str,
+    revision: u64,
+    fill: u8,
+    lifecycle: ObjectLifecycle,
+) -> CatalogGenerationEntry {
+    CatalogGenerationEntry::object(
+        coverage_common(stable_id, Some(parent_id), name),
+        CatalogObject::new(
+            revision,
+            ObjectPhysicalName::parse(&format!(
+                "object-{}.acore",
+                format!("{fill:02x}").repeat(16)
+            ))
+            .unwrap(),
+            ContentHash::parse(&format!("{fill:02x}").repeat(32)).unwrap(),
+            ObjectKind::Note,
+            WrappedObjectDekRecord::from_parts(
+                1,
+                u32::from(fill),
+                OBJECT_WRAP_ALGORITHM,
+                OBJECT_KEY_ENVELOPE_VERSION,
+                &[fill; 12],
+                vec![fill; 48],
+            )
+            .unwrap(),
+            lifecycle,
+        )
+        .unwrap(),
+    )
+}
+
+fn coverage_catalog(generation: u64, entries: Vec<CatalogGenerationEntry>) -> CatalogGeneration {
+    CatalogGeneration::new(generation, entries).unwrap()
+}
+
+fn source_precondition(catalog: &CatalogGeneration, stable_id: &str) -> CatalogPrecondition {
+    let stable_id = OpaqueId::parse(stable_id).unwrap();
+    let entry = catalog
+        .entries()
+        .iter()
+        .find(|entry| entry.stable_id() == &stable_id)
+        .unwrap();
+    if let Some(object) = entry.object_payload() {
+        CatalogPrecondition::object(catalog, &stable_id, object.revision()).unwrap()
+    } else {
+        CatalogPrecondition::folder(catalog, &stable_id).unwrap()
+    }
+}
+
+fn destination_precondition(
+    catalog: &CatalogGeneration,
+    parent_id: &str,
+    name: &str,
+) -> CatalogPrecondition {
+    CatalogPrecondition::vacant(
+        catalog,
+        &OpaqueId::parse(parent_id).unwrap(),
+        PortableName::parse(name).unwrap(),
+    )
+    .unwrap()
+}
+
+fn reference_precondition_coverage(
+    current: &CatalogGeneration,
+    next: &CatalogGeneration,
+    preconditions: &[CatalogPrecondition],
+) -> Result<(), CommitError> {
+    let current_by_id: HashMap<_, _> = current
+        .entries()
+        .iter()
+        .map(|entry| (entry.stable_id().as_str(), entry))
+        .collect();
+    let next_by_id: HashMap<_, _> = next
+        .entries()
+        .iter()
+        .map(|entry| (entry.stable_id().as_str(), entry))
+        .collect();
+
+    for entry in current.entries() {
+        if next_by_id
+            .get(entry.stable_id().as_str())
+            .is_some_and(|next_entry| *next_entry == entry)
+        {
+            continue;
+        }
+        if !preconditions
+            .iter()
+            .any(|precondition| precondition_covers_source(precondition, entry))
+        {
+            return Err(CommitConflict::MissingSourcePrecondition {
+                stable_id: entry.stable_id().as_str().to_owned(),
+            }
+            .into());
+        }
+    }
+
+    for entry in next.entries() {
+        let moved_or_created =
+            current_by_id
+                .get(entry.stable_id().as_str())
+                .map_or(true, |current_entry| {
+                    current_entry.parent_id() != entry.parent_id()
+                        || current_entry.name() != entry.name()
+                });
+        if !moved_or_created {
+            continue;
+        }
+        let Some(parent_id) = entry.parent_id() else {
+            continue;
+        };
+        if !current_by_id.contains_key(parent_id.as_str()) {
+            continue;
+        }
+        if !preconditions.iter().any(|precondition| {
+            matches!(precondition,
+                CatalogPrecondition::Vacant(expected)
+                    if expected.parent_path.stable_id() == parent_id
+                        && expected.name == *entry.name()
+            )
+        }) {
+            return Err(CommitConflict::MissingDestinationPrecondition {
+                parent_id: parent_id.as_str().to_owned(),
+                name: entry.name().as_str().to_owned(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn coverage_outcome(result: Result<(), CommitError>) -> Result<(), (String, String)> {
+    result.map_err(|error| (format!("{error:?}"), error.to_string()))
+}
+
+#[test]
+fn ordered_coverage_matches_changed_created_moved_deleted_and_parent_cases() {
+    struct Case {
+        name: &'static str,
+        current: CatalogGeneration,
+        next: CatalogGeneration,
+        preconditions: Vec<CatalogPrecondition>,
+    }
+
+    let unchanged = coverage_catalog(
+        1,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_object(
+                FIRST_OBJECT_ID,
+                ROOT_ID,
+                "Note.md",
+                1,
+                1,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+
+    let changed = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_object(
+                FIRST_OBJECT_ID,
+                ROOT_ID,
+                "Note.md",
+                2,
+                2,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+    let changed_source = source_precondition(&unchanged, FIRST_OBJECT_ID);
+
+    let moved_current = coverage_catalog(
+        1,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIRST_OBJECT_ID, Some(ROOT_ID), "Source"),
+            coverage_folder(SECOND_OBJECT_ID, Some(ROOT_ID), "Destination"),
+            coverage_object(
+                FOURTH_OBJECT_ID,
+                FIRST_OBJECT_ID,
+                "Note.md",
+                1,
+                3,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+    let moved_next = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIRST_OBJECT_ID, Some(ROOT_ID), "Source"),
+            coverage_folder(SECOND_OBJECT_ID, Some(ROOT_ID), "Destination"),
+            coverage_object(
+                FOURTH_OBJECT_ID,
+                SECOND_OBJECT_ID,
+                "Moved.md",
+                1,
+                3,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+
+    let created_current = coverage_catalog(1, vec![coverage_folder(ROOT_ID, None, "Core")]);
+    let created_next = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_object(
+                FIRST_OBJECT_ID,
+                ROOT_ID,
+                "Created.md",
+                1,
+                4,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+
+    let deleted_current = unchanged.clone();
+    let deleted_next = coverage_catalog(2, vec![coverage_folder(ROOT_ID, None, "Core")]);
+
+    let tombstone_current = coverage_catalog(
+        1,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(THIRD_OBJECT_ID, Some(ROOT_ID), "Trash"),
+            coverage_object(
+                FOURTH_OBJECT_ID,
+                ROOT_ID,
+                "Deleted.md",
+                1,
+                5,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+    let tombstone_next = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(THIRD_OBJECT_ID, Some(ROOT_ID), "Trash"),
+            coverage_object(
+                FOURTH_OBJECT_ID,
+                THIRD_OBJECT_ID,
+                "Deleted.md",
+                1,
+                5,
+                ObjectLifecycle::tombstone(OpaqueId::parse(THIRD_OBJECT_ID).unwrap(), 1).unwrap(),
+            ),
+        ],
+    );
+
+    let parent_current = coverage_catalog(
+        1,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIRST_OBJECT_ID, Some(ROOT_ID), "Source"),
+            coverage_folder(SECOND_OBJECT_ID, Some(ROOT_ID), "Destination"),
+        ],
+    );
+    let parent_next = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIRST_OBJECT_ID, Some(SECOND_OBJECT_ID), "MovedSource"),
+            coverage_folder(SECOND_OBJECT_ID, Some(ROOT_ID), "Destination"),
+        ],
+    );
+
+    let subtree_current = coverage_catalog(1, vec![coverage_folder(ROOT_ID, None, "Core")]);
+    let subtree_next = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIRST_OBJECT_ID, Some(ROOT_ID), "NewFolder"),
+            coverage_object(
+                SECOND_OBJECT_ID,
+                FIRST_OBJECT_ID,
+                "Nested.md",
+                1,
+                6,
+                ObjectLifecycle::Live,
+            ),
+        ],
+    );
+
+    let boundary_current = coverage_catalog(
+        1,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIFTH_OBJECT_ID, Some(ROOT_ID), "High"),
+        ],
+    );
+    let boundary_next = coverage_catalog(
+        2,
+        vec![
+            coverage_folder(ROOT_ID, None, "Core"),
+            coverage_folder(FIRST_OBJECT_ID, Some(ROOT_ID), "Low"),
+        ],
+    );
+
+    let stale_catalog = changed.clone();
+    let stale_source = source_precondition(&stale_catalog, FIRST_OBJECT_ID);
+    let duplicate_destination = destination_precondition(&created_current, ROOT_ID, "Created.md");
+
+    let cases = vec![
+        Case {
+            name: "unchanged",
+            current: unchanged.clone(),
+            next: unchanged.clone(),
+            preconditions: vec![],
+        },
+        Case {
+            name: "content change",
+            current: unchanged.clone(),
+            next: changed.clone(),
+            preconditions: vec![changed_source.clone()],
+        },
+        Case {
+            name: "rename and move",
+            current: moved_current.clone(),
+            next: moved_next,
+            preconditions: vec![
+                source_precondition(&moved_current, FOURTH_OBJECT_ID),
+                destination_precondition(&moved_current, SECOND_OBJECT_ID, "Moved.md"),
+            ],
+        },
+        Case {
+            name: "create",
+            current: created_current.clone(),
+            next: created_next.clone(),
+            preconditions: vec![destination_precondition(
+                &created_current,
+                ROOT_ID,
+                "Created.md",
+            )],
+        },
+        Case {
+            name: "delete",
+            current: deleted_current.clone(),
+            next: deleted_next,
+            preconditions: vec![source_precondition(&deleted_current, FIRST_OBJECT_ID)],
+        },
+        Case {
+            name: "tombstone",
+            current: tombstone_current.clone(),
+            next: tombstone_next,
+            preconditions: vec![
+                source_precondition(&tombstone_current, FOURTH_OBJECT_ID),
+                destination_precondition(&tombstone_current, THIRD_OBJECT_ID, "Deleted.md"),
+            ],
+        },
+        Case {
+            name: "source parent change",
+            current: parent_current.clone(),
+            next: parent_next,
+            preconditions: vec![
+                source_precondition(&parent_current, FIRST_OBJECT_ID),
+                destination_precondition(&parent_current, SECOND_OBJECT_ID, "MovedSource"),
+            ],
+        },
+        Case {
+            name: "new subtree only needs its existing parent",
+            current: subtree_current.clone(),
+            next: subtree_next,
+            preconditions: vec![destination_precondition(
+                &subtree_current,
+                ROOT_ID,
+                "NewFolder",
+            )],
+        },
+        Case {
+            name: "duplicate source preconditions",
+            current: unchanged.clone(),
+            next: changed.clone(),
+            preconditions: vec![changed_source.clone(), changed_source],
+        },
+        Case {
+            name: "duplicate destination preconditions",
+            current: created_current.clone(),
+            next: created_next.clone(),
+            preconditions: vec![duplicate_destination.clone(), duplicate_destination],
+        },
+        Case {
+            name: "stale revision still covers the source at the coverage layer",
+            current: unchanged.clone(),
+            next: changed,
+            preconditions: vec![stale_source],
+        },
+        Case {
+            name: "missing source",
+            current: unchanged,
+            next: coverage_catalog(2, vec![coverage_folder(ROOT_ID, None, "Core")]),
+            preconditions: vec![],
+        },
+        Case {
+            name: "missing destination under an existing parent",
+            current: created_current.clone(),
+            next: created_next,
+            preconditions: vec![],
+        },
+        Case {
+            name: "stable ID boundary preserves source-before-destination error precedence",
+            current: boundary_current.clone(),
+            next: boundary_next.clone(),
+            preconditions: vec![],
+        },
+        Case {
+            name: "stable ID boundary ordering succeeds with both preconditions",
+            current: boundary_current.clone(),
+            next: boundary_next,
+            preconditions: vec![
+                source_precondition(&boundary_current, FIFTH_OBJECT_ID),
+                destination_precondition(&boundary_current, ROOT_ID, "Low"),
+            ],
+        },
+    ];
+
+    for case in cases {
+        let expected = coverage_outcome(reference_precondition_coverage(
+            &case.current,
+            &case.next,
+            &case.preconditions,
+        ));
+        let actual = coverage_outcome(super::validate_precondition_coverage_ordered(
+            &case.current,
+            &case.next,
+            &case.preconditions,
+        ));
+        assert_eq!(actual, expected, "{}", case.name);
     }
 }
 

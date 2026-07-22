@@ -3,6 +3,7 @@
 #[cfg_attr(not(test), allow(dead_code))]
 mod cache;
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt;
@@ -3500,67 +3501,147 @@ fn validate_precondition_coverage(
     next: &CatalogGeneration,
     preconditions: &[CatalogPrecondition],
 ) -> Result<(), CommitError> {
-    let current_by_id: HashMap<_, _> = current
-        .entries()
+    validate_precondition_coverage_ordered(current, next, preconditions)
+}
+
+fn validate_precondition_coverage_ordered(
+    current: &CatalogGeneration,
+    next: &CatalogGeneration,
+    preconditions: &[CatalogPrecondition],
+) -> Result<(), CommitError> {
+    let current_entries = current.entries();
+    let next_entries = next.entries();
+    let vacant_destinations: HashSet<(&str, &str)> = preconditions
         .iter()
-        .map(|entry| (entry.stable_id().as_str(), entry))
-        .collect();
-    let next_by_id: HashMap<_, _> = next
-        .entries()
-        .iter()
-        .map(|entry| (entry.stable_id().as_str(), entry))
+        .filter_map(|precondition| match precondition {
+            CatalogPrecondition::Vacant(expected)
+                if catalog_contains_stable_id(
+                    current_entries,
+                    expected.parent_path.stable_id(),
+                ) =>
+            {
+                Some((
+                    expected.parent_path.stable_id().as_str(),
+                    expected.name.as_str(),
+                ))
+            }
+            CatalogPrecondition::Object(_)
+            | CatalogPrecondition::Folder(_)
+            | CatalogPrecondition::Vacant(_) => None,
+        })
         .collect();
 
-    for entry in current.entries() {
-        if next_by_id
-            .get(entry.stable_id().as_str())
-            .is_some_and(|next_entry| *next_entry == entry)
-        {
-            continue;
-        }
-        if !preconditions
-            .iter()
-            .any(|precondition| precondition_covers_source(precondition, entry))
-        {
-            return Err(CommitConflict::MissingSourcePrecondition {
-                stable_id: entry.stable_id().as_str().to_owned(),
+    let mut current_index = 0;
+    let mut next_index = 0;
+    let mut missing_destination = None;
+
+    while current_index < current_entries.len() || next_index < next_entries.len() {
+        match (
+            current_entries.get(current_index),
+            next_entries.get(next_index),
+        ) {
+            (Some(current_entry), Some(next_entry)) => {
+                match current_entry
+                    .stable_id()
+                    .as_str()
+                    .cmp(next_entry.stable_id().as_str())
+                {
+                    Ordering::Less => {
+                        require_source_precondition(current_entry, preconditions)?;
+                        current_index += 1;
+                    }
+                    Ordering::Equal => {
+                        if current_entry != next_entry {
+                            require_source_precondition(current_entry, preconditions)?;
+                            if current_entry.parent_id() != next_entry.parent_id()
+                                || current_entry.name() != next_entry.name()
+                            {
+                                missing_destination = missing_destination.or_else(|| {
+                                    uncovered_existing_destination(
+                                        current_entries,
+                                        next_entry,
+                                        &vacant_destinations,
+                                    )
+                                });
+                            }
+                        }
+                        current_index += 1;
+                        next_index += 1;
+                    }
+                    Ordering::Greater => {
+                        missing_destination = missing_destination.or_else(|| {
+                            uncovered_existing_destination(
+                                current_entries,
+                                next_entry,
+                                &vacant_destinations,
+                            )
+                        });
+                        next_index += 1;
+                    }
+                }
             }
-            .into());
+            (Some(current_entry), None) => {
+                require_source_precondition(current_entry, preconditions)?;
+                current_index += 1;
+            }
+            (None, Some(next_entry)) => {
+                missing_destination = missing_destination.or_else(|| {
+                    uncovered_existing_destination(
+                        current_entries,
+                        next_entry,
+                        &vacant_destinations,
+                    )
+                });
+                next_index += 1;
+            }
+            (None, None) => break,
         }
     }
 
-    for entry in next.entries() {
-        let moved_or_created =
-            current_by_id
-                .get(entry.stable_id().as_str())
-                .map_or(true, |current_entry| {
-                    current_entry.parent_id() != entry.parent_id()
-                        || current_entry.name() != entry.name()
-                });
-        if !moved_or_created {
-            continue;
+    if let Some((parent_id, name)) = missing_destination {
+        return Err(CommitConflict::MissingDestinationPrecondition {
+            parent_id: parent_id.to_owned(),
+            name: name.to_owned(),
         }
-        let Some(parent_id) = entry.parent_id() else {
-            continue;
-        };
-        if !current_by_id.contains_key(parent_id.as_str()) {
-            continue;
-        }
-        if !preconditions.iter().any(|precondition| {
-            matches!(precondition,
-                CatalogPrecondition::Vacant(expected)
-                    if expected.parent_path.stable_id() == parent_id
-                        && expected.name == *entry.name()
-            )
-        }) {
-            return Err(CommitConflict::MissingDestinationPrecondition {
-                parent_id: parent_id.as_str().to_owned(),
-                name: entry.name().as_str().to_owned(),
-            }
-            .into());
-        }
+        .into());
     }
     Ok(())
+}
+
+fn require_source_precondition(
+    entry: &CatalogGenerationEntry,
+    preconditions: &[CatalogPrecondition],
+) -> Result<(), CommitError> {
+    if preconditions
+        .iter()
+        .any(|precondition| precondition_covers_source(precondition, entry))
+    {
+        return Ok(());
+    }
+    Err(CommitConflict::MissingSourcePrecondition {
+        stable_id: entry.stable_id().as_str().to_owned(),
+    }
+    .into())
+}
+
+fn uncovered_existing_destination<'a>(
+    current_entries: &[CatalogGenerationEntry],
+    entry: &'a CatalogGenerationEntry,
+    vacant_destinations: &HashSet<(&str, &str)>,
+) -> Option<(&'a str, &'a str)> {
+    let parent_id = entry.parent_id()?;
+    if !catalog_contains_stable_id(current_entries, parent_id)
+        || vacant_destinations.contains(&(parent_id.as_str(), entry.name().as_str()))
+    {
+        return None;
+    }
+    Some((parent_id.as_str(), entry.name().as_str()))
+}
+
+fn catalog_contains_stable_id(entries: &[CatalogGenerationEntry], stable_id: &OpaqueId) -> bool {
+    entries
+        .binary_search_by(|entry| entry.stable_id().as_str().cmp(stable_id.as_str()))
+        .is_ok()
 }
 
 fn precondition_covers_source(
