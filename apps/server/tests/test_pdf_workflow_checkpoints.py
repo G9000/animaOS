@@ -60,6 +60,13 @@ pytest_plugins = ("conftest_runtime",)
 _TEST_EMBEDDING_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
+@pytest.fixture(autouse=True)
+def _disable_contextual_blurbs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep workflow tests independent from the live contextual LLM path."""
+
+    monkeypatch.setattr(settings, "contextual_chunks", "off")
+
+
 @dataclass
 class _Calls:
     extracted: int = 0

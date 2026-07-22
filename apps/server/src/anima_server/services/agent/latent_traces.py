@@ -226,9 +226,11 @@ def scrub_latent_traces_for_forgotten_sources(
     *,
     user_id: int,
     source_message_ids: Iterable[int],
-) -> int:
+) -> set[str]:
     """Remove evidence_refs pointing at forgotten sources; delete traces
-    left with no surviving evidence.
+    left with no surviving evidence. Returns the set of affected traces'
+    ``topic_key``s (scrubbed or deleted) — the caller needs these to scrub any
+    IL7 dream built on those topics; ``len()`` of the result is the count.
 
     Called from ``forgetting.forget_memory`` with the same
     ``source_message_ids`` it already computes for its own derived-reference
@@ -237,14 +239,14 @@ def scrub_latent_traces_for_forgotten_sources(
     """
     forgotten = {int(mid) for mid in source_message_ids if mid is not None}
     if not forgotten:
-        return 0
+        return set()
 
     traces = list(
         soul_db.scalars(
             select(LatentTrace).where(LatentTrace.user_id == user_id)
         ).all()
     )
-    scrubbed = 0
+    affected_keys: set[str] = set()
     for trace in traces:
         refs = trace.evidence_refs or []
         surviving = [
@@ -252,7 +254,7 @@ def scrub_latent_traces_for_forgotten_sources(
         ]
         if len(surviving) == len(refs):
             continue
-        scrubbed += 1
+        affected_keys.add(trace.topic_key)
         if surviving:
             # Right-to-forget must take the WEIGHT the forgotten evidence
             # earned, not just its refs — otherwise a trace mostly built by
@@ -263,7 +265,7 @@ def scrub_latent_traces_for_forgotten_sources(
         else:
             soul_db.delete(trace)
     soul_db.flush()
-    return scrubbed
+    return affected_keys
 
 
 def forget_latent_traces_by_topic(

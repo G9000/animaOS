@@ -502,6 +502,23 @@ class TestForgetMemory:
         db.flush()
         pattern_id = pattern.id
 
+        # IL7 (PR #116 P1): a dream that sampled the DERIVED pattern item must
+        # be scrubbed on forget — dreams can sample pattern rows, and the
+        # narrative is derived from the now-forgotten content.
+        from anima_server.models import DreamJournal
+
+        db.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=datetime(2026, 1, 2, tzinfo=UTC),
+                narrative="a dream about the aurora launch pressure",
+                source_refs={"memory_item_ids": [pattern_id], "latent_topic_keys": []},
+                affect_delta={},
+                share_worthy=True,
+            )
+        )
+        db.flush()
+
         result = forget_memory(db, memory_id=item.id, user_id=1)
 
         assert deletes == []
@@ -509,6 +526,9 @@ class TestForgetMemory:
         db.refresh(episode)
         assert episode.needs_regeneration is True
         assert db.get(MemoryItem, pattern_id) is None
+        # The dream built on the derived pattern item is scrubbed.
+        assert result.dream_journal_scrubbed == 1
+        assert db.scalars(select(DreamJournal)).all() == []
         db.commit()
         deleted_record_ids = {int(call["record_id"]) for call in deletes}
         assert deleted_record_ids == {item.id, pattern_id}

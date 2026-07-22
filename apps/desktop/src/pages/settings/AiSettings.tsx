@@ -24,6 +24,29 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
   { name: "anthropic",  defaultModel: "claude-haiku-4-5-20251001",        requiresApiKey: true },
 ];
 
+// Embedding-capable providers only — openrouter/anthropic have no embeddings
+// endpoint (server skips them entirely) and scaffold is chat-only, so none
+// of the three are offered here. fastembed IS offered here even though it's
+// excluded from the chat provider list above (it has no chat completion).
+const EMBEDDING_PROVIDERS = ["fastembed", "ollama", "openai", "vllm", "doubleword"] as const;
+// Must mirror the server's local/no-key-required embedding providers — see
+// apps/server/.../services/agent/embeddings.py::_validate_embedding_provider_
+// configuration, which only requires an embedding API key for
+// openrouter/moonshot/openai/doubleword (openrouter/moonshot aren't even
+// offered here, see EMBEDDING_PROVIDERS above). fastembed (in-process ONNX,
+// no HTTP endpoint) and ollama/vllm (local OpenAI-compatible servers with a
+// default localhost base URL, no key) are the local/no-consent-needed set;
+// openai/doubleword are cloud and gated behind the Cloud toggle above.
+const EMBEDDING_LOCAL_PROVIDERS = new Set(["fastembed", "ollama", "vllm"]);
+const EMBEDDING_DEFAULT_MODELS: Record<string, string> = {
+  fastembed: "BAAI/bge-small-en-v1.5",
+  ollama: "nomic-embed-text",
+  openai: "text-embedding-3-small",
+  vllm: "text-embedding-3-small",
+  doubleword: "Qwen/Qwen3-Embedding-8B",
+};
+const BUNDLED_EMBEDDING_MODEL = EMBEDDING_DEFAULT_MODELS.fastembed;
+
 const LOCAL_PROVIDERS = new Set(["ollama", "vllm"]);
 const CLOUD_STORAGE_KEY = "anima:cloud-providers-enabled";
 const keyHintKey = (p: string) => `anima:key-hint:${p}`;
@@ -61,6 +84,12 @@ export default function AiSettings() {
   const [modelSearch, setModelSearch] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [replacingKey, setReplacingKey] = useState(false);
+  const [embeddingAdvanced, setEmbeddingAdvanced] = useState(false);
+  const [embeddingProvider, setEmbeddingProvider] = useState("fastembed");
+  const [embeddingModel, setEmbeddingModel] = useState(BUNDLED_EMBEDDING_MODEL);
+  const [embeddingApiKey, setEmbeddingApiKey] = useState("");
+  const [showEmbeddingApiKey, setShowEmbeddingApiKey] = useState(false);
+  const [replacingEmbeddingKey, setReplacingEmbeddingKey] = useState(false);
 
   const loadOllamaModels = async (baseUrl: string) => {
     setOllamaModelsLoading(true);
@@ -79,11 +108,14 @@ export default function AiSettings() {
         setProviders(providerList);
         setConfig(loadedConfig);
         setProvider(loadedConfig.provider);
-        if (!LOCAL_PROVIDERS.has(loadedConfig.provider)) { setCloudEnabled(true); localStorage.setItem(CLOUD_STORAGE_KEY, "true"); }
+        if (!LOCAL_PROVIDERS.has(loadedConfig.provider) || !EMBEDDING_LOCAL_PROVIDERS.has(loadedConfig.embeddingProvider)) { setCloudEnabled(true); localStorage.setItem(CLOUD_STORAGE_KEY, "true"); }
         setModel(loadedConfig.model);
         setExtractionModel(loadedConfig.extractionModel || "");
         setOllamaUrl(loadedConfig.ollamaUrl || OLLAMA_DEFAULT_URL);
         setSystemPrompt(loadedConfig.systemPrompt || "");
+        setEmbeddingAdvanced(loadedConfig.embeddingIsExplicit);
+        setEmbeddingProvider(loadedConfig.embeddingProvider);
+        setEmbeddingModel(loadedConfig.embeddingModel);
       })
       .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load AI settings."); });
     return () => { cancelled = true; };
@@ -104,11 +136,21 @@ export default function AiSettings() {
   const requiresKey = selectedProvider?.requiresApiKey ?? provider !== "ollama";
   const isCloudProvider = !LOCAL_PROVIDERS.has(provider);
   const providerHasKey = (config?.hasApiKey && config.provider === provider) || Boolean(getKeyHint(provider));
+  const embeddingProviderHasKey = Boolean(config?.hasEmbeddingApiKey) && config?.embeddingProvider === embeddingProvider;
 
   const handleEnableCloud = () => { setCloudEnabled(true); localStorage.setItem(CLOUD_STORAGE_KEY, "true"); };
   const handleDisableCloud = () => {
     setCloudEnabled(false); localStorage.removeItem(CLOUD_STORAGE_KEY);
     if (isCloudProvider) handleProviderChange(localProviders[0]?.name || "ollama");
+    if (!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)) {
+      handleEmbeddingProviderChange("fastembed");
+      // Also close the Advanced panel so buildEmbeddingUpdate sends the
+      // reset sentinel ({embeddingProvider: ""}) instead of an EXPLICIT
+      // {embeddingProvider: "fastembed", ...} — otherwise this only pins
+      // the value to fastembed instead of resetting it, and the save
+      // stops tracking future bundled-default changes.
+      setEmbeddingAdvanced(false);
+    }
   };
   const handleProviderChange = (next: string) => {
     setProvider(next);
@@ -119,15 +161,82 @@ export default function AiSettings() {
     if (next === "ollama") void loadOllamaModels(ollamaUrl || OLLAMA_DEFAULT_URL);
   };
 
+  const handleEmbeddingProviderChange = (next: string) => {
+    setEmbeddingProvider(next);
+    setEmbeddingModel(EMBEDDING_DEFAULT_MODELS[next] || "");
+    setEmbeddingApiKey(""); setReplacingEmbeddingKey(false); setSaved(false); setError("");
+  };
+
+  const buildEmbeddingUpdate = () =>
+    embeddingAdvanced
+      ? {
+          embeddingProvider,
+          // Send the raw model string, including "" — an intentionally
+          // cleared Model field must reach the server so it can reset the
+          // model to the provider default. Coercing "" to undefined omits the
+          // field, and the PUT route only clears agent_embedding_model when
+          // the field is present, so a stale/invalid model would survive the
+          // user deleting it. (embeddingProvider is always sent here, so this
+          // is never mistaken for the reset sentinel.)
+          embeddingModel,
+          // The key keeps ||undefined: an empty masked input means "unchanged"
+          // (there is a separate explicit Remove flow), not "clear it".
+          embeddingApiKey: embeddingApiKey || undefined,
+        }
+      : { embeddingProvider: "" };
+
+  const applyRefreshedConfig = async () => {
+    if (user?.id == null) return;
+    const refreshed = await api.config.get(user.id);
+    setConfig(refreshed);
+    setEmbeddingAdvanced(refreshed.embeddingIsExplicit);
+    setEmbeddingProvider(refreshed.embeddingProvider);
+    setEmbeddingModel(refreshed.embeddingModel);
+  };
+
   const handleSave = async () => {
     if (user?.id == null) return;
     setSaving(true); setSaved(false); setError("");
     try {
-      await api.config.update(user.id, { provider, model, extractionModel: extractionModel || undefined, apiKey: apiKey || undefined, ollamaUrl, systemPrompt: systemPrompt || undefined });
-      setConfig({ provider, model, extractionModel: extractionModel || null, ollamaUrl, systemPrompt: systemPrompt || null, hasApiKey: config?.hasApiKey || Boolean(apiKey) });
+      await api.config.update(user.id, {
+        provider, model,
+        extractionModel: extractionModel || undefined,
+        apiKey: apiKey || undefined,
+        ollamaUrl,
+        systemPrompt: systemPrompt || undefined,
+        ...buildEmbeddingUpdate(),
+      });
       if (apiKey) setKeyHint(provider, apiKey);
-      setApiKey(""); setReplacingKey(false); setSaved(true); setTimeout(() => setSaved(false), 2500);
+      await applyRefreshedConfig();
+      setApiKey(""); setReplacingKey(false);
+      setEmbeddingApiKey(""); setReplacingEmbeddingKey(false);
+      setSaved(true); setTimeout(() => setSaved(false), 2500);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to save."); }
+    finally { setSaving(false); }
+  };
+
+  const handleRemoveEmbeddingKey = async () => {
+    if (user?.id == null) return;
+    setSaving(true); setSaved(false); setError("");
+    try {
+      await api.config.update(user.id, {
+        provider, model,
+        extractionModel: extractionModel || undefined,
+        ollamaUrl,
+        systemPrompt: systemPrompt || undefined,
+        embeddingProvider,
+        embeddingModel: embeddingModel || undefined,
+        embeddingApiKey: "",
+      });
+      // Re-fetch rather than optimistically assuming hasEmbeddingApiKey is
+      // now false: _resolve_embedding_api_key() may still resolve a key for
+      // this provider from the per-provider store or an env var (e.g.
+      // DOUBLEWORD_API_KEY) even after the dedicated field is cleared, so
+      // the backend's real resolved state — not local optimism — must
+      // drive the UI (get_config's hasEmbeddingApiKey, commit c7c9b10).
+      await applyRefreshedConfig();
+      setSaved(true); setTimeout(() => setSaved(false), 2500);
+    } catch (err) { setError(err instanceof Error ? err.message : "Failed to remove key."); }
     finally { setSaving(false); }
   };
 
@@ -183,7 +292,10 @@ export default function AiSettings() {
                   Cloud provider active — {provider}
                 </p>
                 <p className="font-mono text-[9px] text-foreground/55 tracking-wide leading-relaxed">
-                  Your messages are processed by {provider}'s servers. Everything else — your memories, vault, diary, and personal data — never leaves this device and remains fully encrypted.
+                  Your messages are processed by {provider}'s servers.{" "}
+                  {EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)
+                    ? "Everything else — your memories, vault, diary, and personal data — never leaves this device and remains fully encrypted."
+                    : `Your embedding provider (${embeddingProvider}) is also cloud-based — see the Embeddings card below for what that sends off-device.`}
                 </p>
               </div>
             </div>
@@ -191,6 +303,124 @@ export default function AiSettings() {
             <p className="font-mono text-[9px] text-foreground/30 tracking-wide mt-3 leading-relaxed">
               Enable cloud to unlock hosted models. Only messages are sent — memories stay encrypted on-device.
             </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Embeddings ── */}
+      <div className={`${glass}`}>
+        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
+          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Embeddings</h2>
+          <div className="flex items-center gap-2.5">
+            <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-foreground/40">
+              Advanced {embeddingAdvanced ? "on" : "off"}
+            </span>
+            <MiniToggle checked={embeddingAdvanced} onChange={(v) => { setEmbeddingAdvanced(v); setSaved(false); if (!v) { setEmbeddingApiKey(""); setReplacingEmbeddingKey(false); } }} />
+          </div>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {!embeddingAdvanced ? (
+            <p className="font-mono text-[9px] text-foreground/40 tracking-wide leading-relaxed">
+              Built-in (recommended) — {BUNDLED_EMBEDDING_MODEL}, runs on this device.
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Provider</label>
+                <select
+                  value={embeddingProvider}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (cloudEnabled || EMBEDDING_LOCAL_PROVIDERS.has(next)) handleEmbeddingProviderChange(next);
+                  }}
+                  className={INPUT}
+                >
+                  {EMBEDDING_PROVIDERS.map((p) => (
+                    <option key={p} value={p} disabled={!cloudEnabled && !EMBEDDING_LOCAL_PROVIDERS.has(p)}>
+                      {p}{EMBEDDING_LOCAL_PROVIDERS.has(p) ? " (local)" : " (cloud)"}{p === "fastembed" ? " — built-in" : ""}
+                      {!cloudEnabled && !EMBEDDING_LOCAL_PROVIDERS.has(p) ? " — enable cloud to use" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Model</label>
+                <input
+                  type="text"
+                  value={embeddingModel}
+                  onChange={(e) => { setEmbeddingModel(e.target.value); setSaved(false); }}
+                  className={INPUT}
+                  placeholder={EMBEDDING_DEFAULT_MODELS[embeddingProvider] || "Embedding model identifier..."}
+                />
+                <p className="font-mono text-[8px] text-foreground/20 leading-relaxed">
+                  Changing the provider or model re-checks the embedding contract; existing memories are re-embedded automatically.
+                </p>
+              </div>
+              {!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider) && (
+                <div className="border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 flex items-start gap-3">
+                  <svg className="shrink-0 mt-0.5 text-amber-400/70" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 2L1.5 13.5h13L8 2z" />
+                    <path d="M8 7v3M8 11.5v.5" />
+                  </svg>
+                  <div className="space-y-1.5">
+                    <p className="font-mono text-[10px] text-amber-300/80 tracking-[0.12em] uppercase font-semibold">
+                      Cloud embedding provider active — {embeddingProvider}
+                    </p>
+                    <p className="font-mono text-[9px] text-foreground/55 tracking-wide leading-relaxed">
+                      Unlike chat, this sends more than messages: the text of your memories and document chunks is transmitted to {embeddingProvider}'s servers to be embedded. This overrides the "memories stay encrypted on-device" guarantee shown above for anything that gets embedded with this provider.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider) && (
+                <div className="space-y-2">
+                  <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">API Key</label>
+                  {embeddingProviderHasKey && !replacingEmbeddingKey ? (
+                    <div className="flex items-center justify-between border border-foreground/[0.08] px-4 py-3">
+                      <span className="font-mono text-[10px] text-foreground/40 tracking-wide">sk-·····················</span>
+                      <div className="flex items-center gap-3">
+                        <button type="button" onClick={() => setReplacingEmbeddingKey(true)}
+                          className="font-mono text-[8px] tracking-[0.16em] uppercase text-foreground/40 hover:text-foreground/70 transition-colors">
+                          Change
+                        </button>
+                        <button type="button" onClick={handleRemoveEmbeddingKey} disabled={saving}
+                          className="font-mono text-[8px] tracking-[0.16em] uppercase text-destructive/50 hover:text-destructive/80 disabled:opacity-30 transition-colors">
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        <input
+                          type={showEmbeddingApiKey ? "text" : "password"}
+                          value={embeddingApiKey}
+                          onChange={(e) => { setEmbeddingApiKey(e.target.value); setSaved(false); }}
+                          className={`${INPUT} pr-9`}
+                          placeholder="Paste your API key..."
+                          autoComplete="off"
+                          autoFocus={replacingEmbeddingKey}
+                        />
+                        <button type="button" onClick={() => setShowEmbeddingApiKey((v) => !v)}
+                          className={cn(
+                            "absolute right-3 top-1/2 -translate-y-1/2 transition-colors",
+                            showEmbeddingApiKey ? "text-accent hover:text-accent/70" : "text-foreground/25 hover:text-foreground/55",
+                          )}>
+                          {showEmbeddingApiKey ? <EyeOffIcon size="sm" /> : <EyeIcon size="sm" />}
+                        </button>
+                      </div>
+                      {replacingEmbeddingKey && (
+                        <button type="button" onClick={() => { setReplacingEmbeddingKey(false); setEmbeddingApiKey(""); }}
+                          className="font-mono text-[8px] tracking-[0.14em] uppercase text-foreground/30 hover:text-foreground/60 transition-colors">
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -952,10 +952,13 @@ def test_forget_scrubs_ref_but_keeps_trace_when_other_evidence_survives():
         scrubbed = scrub_latent_traces_for_forgotten_sources(
             soul_db, user_id=user.id, source_message_ids=[101]
         )
-        assert scrubbed == 1
+        assert len(scrubbed) == 1
 
         trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id))
         assert trace is not None
+        # The scrub returns the affected topic_key so callers (forget_memory)
+        # can also scrub IL7 dreams built on that latent topic (PR #116 P1).
+        assert scrubbed == {trace.topic_key}
         assert len(trace.evidence_refs) == 1
         assert trace.evidence_refs[0]["source_message_ids"] == [202]
         # Right-to-forget takes the forgotten evidence's WEIGHT too: the
@@ -1232,7 +1235,7 @@ async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypat
             scrubbed = scrub_latent_traces_for_forgotten_sources(
                 soul_db, user_id=user_id, source_message_ids=[99]
             )
-            assert scrubbed == 1
+            assert len(scrubbed) == 1
             soul_db.commit()
 
         async def _ok(*_args, **_kwargs):

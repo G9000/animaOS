@@ -618,6 +618,44 @@ async def check_memory_pipeline(
     )
 
 
+async def check_retrieval_capabilities(
+    user_id: int,
+    *,
+    capabilities: dict[str, Any] | None = None,
+) -> CheckResult:
+    """Check embeddings backend and parsing-pack readiness for document retrieval.
+
+    Shares its snapshot with ``GET /api/capabilities`` (see
+    ``services/capabilities.collect_capabilities``) so the two surfaces never
+    disagree about what "healthy" means for the bundled retrieval stack.
+    """
+    start = time.monotonic()
+    if capabilities is None:
+        from anima_server.services.capabilities import collect_capabilities
+
+        capabilities = collect_capabilities()
+
+    embeddings_backend = capabilities["embeddings"]["backend"]
+    parsing_pack = capabilities["parsingPack"]
+
+    issues: list[str] = []
+    if embeddings_backend == "failed_retrying":
+        issues.append("embeddings backend failed, retrying")
+    if parsing_pack["state"] == "error":
+        issues.append(f"parsing pack error: {parsing_pack.get('error')}")
+
+    elapsed = (time.monotonic() - start) * 1000
+    status = "unhealthy" if issues else "healthy"
+    message = "; ".join(issues) if issues else "Retrieval capabilities healthy"
+    return CheckResult(
+        name="retrieval_capabilities",
+        status=status,
+        message=message,
+        details=capabilities,
+        duration_ms=elapsed,
+    )
+
+
 def _count(db: Any, statement: Any) -> int:
     return int(db.execute(statement).scalar_one() or 0)
 

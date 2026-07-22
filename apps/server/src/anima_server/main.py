@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .api.routes.auth import router as auth_router
+from .api.routes.capabilities import router as capabilities_router
 from .api.routes.chat import router as chat_router
 from .api.routes.config import router as config_router
 from .api.routes.consciousness import router as consciousness_router
@@ -171,10 +172,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             while True:
                 await asyncio.sleep(settings.presence_tick_interval_seconds)
                 try:
+                    from .db.session import (
+                        SessionLocal,
+                        get_user_session_factory,
+                        is_sqlite_mode,
+                    )
                     from .services.agent.inner_life.presence import run_presence_tick
 
+                    def _soul_db_factory_for(user_id: int):
+                        # The soul store is physically per-user in the desktop
+                        # SQLite deployment; resolve each user's own factory so
+                        # the initiative tick reads/writes that user's migrated
+                        # database, never the shared (unmigrated) SessionLocal.
+                        if is_sqlite_mode():
+                            return get_user_session_factory(user_id)
+                        return SessionLocal
+
                     await asyncio.to_thread(
-                        run_presence_tick, get_runtime_session_factory()
+                        run_presence_tick,
+                        get_runtime_session_factory(),
+                        soul_db_factory_for=_soul_db_factory_for,
                     )
                 except Exception:
                     logger.warning("Presence tick error", exc_info=True)
@@ -182,6 +199,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         sweep_tasks.append(asyncio.create_task(_periodic_inactivity_sweep()))
         sweep_tasks.append(asyncio.create_task(_periodic_prune_sweep()))
         sweep_tasks.append(asyncio.create_task(_periodic_presence_tick()))
+
+        from .services.agent.fastembed_backend import warm_up_retrieval_models
+
+        # Load the bundled retrieval models (fastembed embeddings, and the
+        # local reranker when enabled) off the chat/request path so the
+        # first query after startup doesn't pay for the load. Cancelled on
+        # shutdown like the sweep tasks above; never raises.
+        sweep_tasks.append(
+            asyncio.create_task(asyncio.to_thread(warm_up_retrieval_models))
+        )
 
         # Install structured health event logger
         health_logger = get_event_logger()
@@ -349,6 +376,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(auth_router)
+    app.include_router(capabilities_router)
     app.include_router(chat_router)
     app.include_router(config_router)
     app.include_router(consciousness_router)

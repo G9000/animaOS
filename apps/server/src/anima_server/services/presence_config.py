@@ -18,6 +18,12 @@ class PresenceConfigValues:
     memory_nudges_enabled: bool = True
     checkin_nudges_enabled: bool = True
     custom_instruction: str | None = None
+    # IL3 push initiative — off by default (non-negotiable opt-in).
+    initiative_enabled: bool = False
+    quiet_hours_start: int | None = None
+    quiet_hours_end: int | None = None
+    # IL7 dream surfacing gate: off | on_ask | ambient (default on_ask).
+    dream_sharing: str = "on_ask"
 
 
 def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
@@ -55,6 +61,7 @@ def update_presence_config(
         "taskNudgesEnabled": "task_nudges_enabled",
         "memoryNudgesEnabled": "memory_nudges_enabled",
         "checkInNudgesEnabled": "checkin_nudges_enabled",
+        "initiativeEnabled": "initiative_enabled",
     }
 
     for payload_key, model_key in field_map.items():
@@ -66,8 +73,39 @@ def update_presence_config(
             updates.get("customInstruction")
         )
 
+    for payload_key, model_key in (
+        ("quietHoursStart", "quiet_hours_start"),
+        ("quietHoursEnd", "quiet_hours_end"),
+    ):
+        if payload_key in updates:
+            setattr(row, model_key, _normalize_quiet_hour(updates.get(payload_key)))
+
+    if "dreamSharing" in updates:
+        row.dream_sharing = _normalize_dream_sharing(updates.get("dreamSharing"))
+
     db.flush()
     return _to_values(row)
+
+
+_DREAM_SHARING_MODES = ("off", "on_ask", "ambient")
+
+
+def _normalize_dream_sharing(value: object) -> str:
+    """Coerce to a valid dream-sharing mode; anything unrecognized falls back
+    to the default ``on_ask`` rather than persisting a bad value."""
+    if isinstance(value, str) and value in _DREAM_SHARING_MODES:
+        return value
+    return "on_ask"
+
+
+def _normalize_quiet_hour(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        hour = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return hour if 0 <= hour <= 23 else None
 
 
 def _normalize_instruction(value: object) -> str | None:
@@ -87,4 +125,8 @@ def _to_values(row: PresenceConfig) -> PresenceConfigValues:
         memory_nudges_enabled=row.memory_nudges_enabled,
         checkin_nudges_enabled=row.checkin_nudges_enabled,
         custom_instruction=row.custom_instruction,
+        initiative_enabled=row.initiative_enabled,
+        quiet_hours_start=row.quiet_hours_start,
+        quiet_hours_end=row.quiet_hours_end,
+        dream_sharing=row.dream_sharing,
     )

@@ -1,6 +1,6 @@
 ---
 title: Document Processing Architecture
-description: PDF upload, tiered parsing, checkpointed ingestion, structured chunking, hybrid RAG, agentic document tools, and chat citation behavior
+description: PDF upload, Docling-backed parsing with a pdfium preview fallback, checkpointed ingestion, structured chunking, hybrid RAG, agentic document tools, and chat citation behavior
 category: architecture
 ---
 
@@ -148,19 +148,36 @@ The workflow deliberately reuses durable intermediate artifacts:
 - If document chunks changed, `replace_document_chunks()` deletes stale chunk rows and stale `document_chunk` embeddings before inserting replacements.
 - If a document is marked indexed but embeddings are missing after an embedding-table reset, document search and approval paths attempt to re-embed missing chunks.
 
-## Tiered Text Extraction And Structured Chunking
+## Text Extraction And Structured Chunking
 
-Parsing is tiered (`services/documents/parsing.py`, `ANIMA_DOCUMENT_PARSER_TIER`):
+Docling is the only durable parser; there are no quality tiers and no
+escalation heuristics (`services/documents/parsing.py`):
 
-- **fast** — `pypdf` only. Rejects unreadable PDFs, attempts empty-password
-  decryption, rejects locked PDFs, extracts page-by-page, and normalizes
-  spacing.
-- **quality** — Docling (optional `anima-server[docling]` extra, lazy-loaded):
-  layout analysis, table structure, and OCR for scanned pages, emitting
-  markdown per page.
-- **auto** (default) — fast path first, escalating to Docling when extraction
-  quality looks poor or pages are scanned. Without the extra installed,
-  scanned PDFs fail with a clear message naming the extra.
+- **Preview path** — `pypdfium2` (bundled, no extra required) extracts
+  page-by-page text, which is normalized for spacing. This is what every
+  document gets immediately, before the quality parser is available.
+  Documents extracted this way are stamped `parse_quality="preview"`.
+- **Docling durable parse** — when the parsing pack (the `anima-server[docling]`
+  extra plus its downloaded model weights) is ready, `extract_document_text()`
+  always uses it instead: layout analysis, table structure, and OCR for
+  scanned pages, emitting markdown per page. Documents parsed this way are
+  stamped `parse_quality="docling"`. A Docling crash falls back to the
+  preview path rather than failing the ingest.
+- **Parsing-pack download-on-demand** — the `docling` extra is a build-time
+  install, but its model weights are fetched lazily: the first time the pack
+  isn't ready, `ensure_parsing_pack()` kicks off a background download
+  (`services/documents/parsing_pack.py`) and the current call falls through
+  to the preview path. `GET /api/documents/parsing-pack` reports status
+  (`absent` / `downloading` / `ready` / `error`); `POST
+  /api/documents/parsing-pack/download` can trigger or retry it explicitly.
+  A scanned PDF (no text layer) with the pack not yet ready raises
+  `DocumentAwaitingParserError`, a transient condition distinct from a
+  permanent parsing failure — see Failure Modes below.
+- **Reparse upgrade** — once the pack is ready, `services/documents/reparse.py`
+  re-extracts, re-chunks, re-embeds, and re-syncs source spans for any
+  preview/legacy document, stamping it `parse_quality="docling"`. This can be
+  triggered manually or by the sleep agent's auto-reparse policy (see Flags
+  And Extras).
 
 Chunking is structure-aware (`chunk_pages_structured()` over the
 `services/ingestion/structured.py` intermediate):
@@ -173,10 +190,11 @@ Chunking is structure-aware (`chunk_pages_structured()` over the
 - Each chunk records `chunk_index`, `content_text`, `page_start`, `page_end`,
   and `section_title` (the heading path, e.g. `Guide > Inspection`).
 
-With `ANIMA_CONTEXTUAL_CHUNKS=on` (default off), each chunk additionally gets
+With `ANIMA_CONTEXTUAL_CHUNKS=on` (default on), each chunk additionally gets
 an LLM-generated context blurb at the embed step, stored in chunk metadata
 and prepended to the embedding and lexical-index text only — evidence text
-shown to the model or user never includes it.
+shown to the model or user never includes it. Set it to `off` to skip the
+extra LLM call per chunk at ingest time.
 
 ## Embedding And Indexing
 
@@ -220,10 +238,11 @@ The search path is:
    `BM25Index`); a lexical failure degrades to dense-only ordering, never to
    empty results.
 6. Fuse both rankings with reciprocal-rank fusion (k=60).
-7. Optional rerank stage (`ANIMA_RETRIEVAL_RERANKER=local`, `reranker`
-   extra): over-fetch to `ANIMA_RETRIEVAL_RERANK_CANDIDATES` (50), score with
-   a local cross-encoder, return top-k. Flag off, extra absent, or any
-   failure keeps the fused order.
+7. Rerank stage (`ANIMA_RETRIEVAL_RERANKER`, default `local`): over-fetch to
+   `ANIMA_RETRIEVAL_RERANK_CANDIDATES` (50), score with a bundled fastembed
+   ONNX cross-encoder (`Xenova/ms-marco-MiniLM-L-6-v2`, no extra install
+   required), return top-k. Flag `off`, or any model-load/scoring failure,
+   keeps the fused order.
 8. Hydrate hits back into chunk and document rows.
 9. Return `DocumentRagResult` objects with filename, page range, section title, chunk text, and similarity.
 
@@ -356,7 +375,9 @@ The default API dependency currently indexes and summarizes PDFs but does not pr
 | Invalid PDF header | 400 |
 | Unreadable PDF | resume returns an error |
 | Password-protected encrypted PDF | resume returns an error |
-| No extractable text (scanned PDF) | with the `docling` extra, OCR runs; without it, resume fails with a message naming the extra |
+| No extractable text (scanned PDF), parsing pack not ready | `extract_document_text()` raises `DocumentAwaitingParserError`; a background pack download is kicked off automatically and the ingest step surfaces the transient error until the pack is ready (or is retried via `POST /api/documents/parsing-pack/download`) |
+| No extractable text (scanned PDF), pack download previously failed | raises `DocumentParsingError` including the recorded failure reason; a fresh download attempt is started automatically |
+| No extractable text (scanned PDF), `docling` extra not installed | raises `DocumentParsingError` naming the `docling` extra |
 | Embedding provider unavailable or returns no vector | document remains unindexed; callers can resume later |
 | Stale chunk embeddings | search and approval paths try to re-embed or reject incomplete indexing |
 
@@ -364,15 +385,19 @@ The default API dependency currently indexes and summarizes PDFs but does not pr
 
 | Setting / extra | Default | Effect |
 | --- | --- | --- |
-| `ANIMA_DOCUMENT_PARSER_TIER` | `auto` | `fast` (pypdf), `quality` (Docling), `auto` (escalate on poor quality/scans) |
-| `anima-server[docling]` extra | not installed | Enables the quality parsing tier and OCR |
+| `anima-server[docling]` extra | not installed (recommended for local dev: install via `--all-extras`) | Enables the Docling durable parser and OCR; without it, only the pdfium preview path is available |
 | `ANIMA_DOCUMENT_CONTEXT_CHUNK_LIMIT` | 15 | Chunks retrieved for the injected primer |
 | `ANIMA_DOCUMENT_CONTEXT_CHUNK_CHAR_CAP` | 2500 | Safety cap on primer chunk text (no routine truncation) |
 | `ANIMA_DOCUMENT_TOOL_TURN_CHAR_BUDGET` | 40000 | Per-turn cap on tool-fetched document text |
 | `ANIMA_DOCUMENT_TOOL_READ_CHAR_LIMIT` | 6000 | Per-call cap for `read_document_section` |
-| `ANIMA_CONTEXTUAL_CHUNKS` | `off` | LLM context blurbs prepended to embedding/lexical index text |
-| `ANIMA_RETRIEVAL_RERANKER` | `off` | `local` enables the cross-encoder rerank stage |
-| `anima-server[reranker]` extra | not installed | sentence-transformers for the local reranker |
+| `ANIMA_DOCUMENT_FULL_CONTEXT` | `auto` | When every selected document's text fits the budget, injects whole documents instead of retrieved chunks (`off` disables) |
+| `ANIMA_DOCUMENT_FULL_CONTEXT_BUDGET_RATIO` | 0.5 | Fraction of the resolved context budget the full-document block may use |
+| `ANIMA_DOCUMENT_FULL_CONTEXT_CHAR_CAP` | 120000 | Hard character ceiling for the full-document block regardless of window size |
+| `ANIMA_DOCUMENT_AUTO_REPARSE` | `on` | Sleep-agent auto-reparse: once the parsing pack finishes downloading, automatically upgrade preview/legacy-quality documents to Docling quality |
+| `ANIMA_DOCUMENT_AUTO_REPARSE_BUDGET` | 2 | Documents re-parsed per sleep cycle |
+| `ANIMA_CONTEXTUAL_CHUNKS` | `on` | LLM context blurbs prepended to embedding/lexical index text |
+| `ANIMA_RETRIEVAL_RERANKER` | `local` | `local` enables the cross-encoder rerank stage; `off` disables it |
+| `ANIMA_RETRIEVAL_RERANKER_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Bundled fastembed ONNX cross-encoder model used for reranking (no extra install) |
 | `ANIMA_KNOWLEDGE_COMPILER` | `llm` | OKF concept compilation backend (`deterministic` forces the stub) |
 | `ANIMA_KNOWLEDGE_AUTOCOMPILE` | `markdown_only` | Sleep-agent auto-compile policy (`off`, `markdown_only`, `all`) |
 
@@ -384,7 +409,7 @@ Important regression coverage lives in:
 | --- | --- |
 | `apps/server/tests/test_documents_api.py` | document route validation and workflow API behavior |
 | `apps/server/tests/test_pdf_text.py` | PDF text extraction behavior |
-| `apps/server/tests/test_document_parsing.py` | tiered parsing, quality escalation, Docling extra absence |
+| `apps/server/tests/test_document_parsing.py` | preview/Docling extraction, parsing-pack states, `DocumentAwaitingParserError` semantics |
 | `apps/server/tests/test_document_chunking.py` | paragraph chunking, overlap, structured chunking |
 | `apps/server/tests/test_structured_document.py` | markdown/page structure parsing and section chunking |
 | `apps/server/tests/test_document_rag.py` | embedding, pgvector source rows, hybrid search, stale vector repair |

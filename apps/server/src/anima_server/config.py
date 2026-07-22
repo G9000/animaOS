@@ -83,6 +83,22 @@ class Settings(BaseSettings):
     document_full_context_budget_ratio: float = 0.5
     # Hard ceiling in characters regardless of window size.
     document_full_context_char_cap: int = 120_000
+    # Sleep-agent auto-reparse: once the Docling parsing pack finishes
+    # downloading, automatically re-parse preview/legacy-quality documents
+    # that were ingested before it was ready, closing the loop without
+    # requiring a manual reparse click.
+    document_auto_reparse: Literal["off", "on"] = "on"
+    # Documents re-parsed per sleep cycle. Docling parsing runs
+    # synchronously and can take minutes on large PDFs, so this keeps a
+    # single cycle bounded.
+    document_auto_reparse_budget: int = 2
+    # After Docling fails on a specific document (parse_degraded), the
+    # auto-reparse loop records the failure and excludes that document from
+    # candidacy for this many hours — so one persistently-unparseable file
+    # can't monopolize the per-cycle budget and starve valid documents behind
+    # it, while still allowing a periodic retry in case the failure was
+    # transient. Set to 0 to disable the cooldown (retry every cycle).
+    document_auto_reparse_failure_cooldown_hours: int = 24
     # Contextual retrieval blurbs: when "on", each document chunk gets an
     # LLM-generated context line stored in chunk metadata and prepended to
     # the chunk text for embedding and lexical indexing only (never shown
@@ -167,10 +183,53 @@ class Settings(BaseSettings):
     latent_fold_rate: float = Field(default=0.5, ge=0.0, le=1.0)
     latent_weekly_decay: float = Field(default=0.98, ge=0.0, le=1.0)
     latent_max_traces_per_user: int = Field(default=500, ge=1)
+    # IL3 drive accumulators + push initiative (see
+    # services/agent/inner_life/drives.py, inner_life/initiative.py). The
+    # feature itself is off by default at PresenceConfig.initiative_enabled
+    # (a per-user opt-in column, not a setting) — these values only take
+    # effect once a user turns it on.
+    initiative_cooldown_base_hours: float = Field(default=24.0, ge=1.0)
+    initiative_cooldown_min_hours: float = Field(default=8.0, ge=0.0)
+    initiative_cooldown_backoff_factor: float = Field(default=1.5, ge=1.0)
+    initiative_cooldown_max_hours: float = Field(default=168.0, ge=1.0)
+    initiative_max_per_day: int = Field(default=1, ge=0)
+    initiative_max_per_week: int = Field(default=3, ge=0)
+    initiative_pressure_leak_tau_hours: float = Field(default=240.0, ge=1.0)
+    initiative_theta_unresolved_thread: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_pattern_insight: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_relational: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_novelty: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_theta_dream_residue: float = Field(default=0.7, ge=0.0, le=1.0)
+    initiative_growth_unresolved_thread: float = Field(default=0.10, ge=0.0)
+    initiative_growth_pattern_insight: float = Field(default=0.08, ge=0.0)
+    initiative_growth_relational: float = Field(default=0.05, ge=0.0)
+    initiative_growth_novelty: float = Field(default=0.05, ge=0.0)
+    initiative_growth_dream_residue: float = Field(default=0.05, ge=0.0)
+    # Contact-cadence proxy: no learned per-relationship cadence model
+    # exists yet, so "relational" grows once days-since-contact exceeds this
+    # fixed baseline (documented proxy — see initiative.py).
+    initiative_relational_cadence_days: float = Field(default=3.0, ge=0.1)
+    initiative_unresolved_thread_horizon_days: float = Field(default=3.0, ge=0.0)
+    # Closeness proxy: relationship age (days since first contact) saturates
+    # linearly to full closeness (1.0) at this many days — see
+    # initiative.resolve_closeness_signal for why no structured closeness
+    # scalar is available yet.
+    initiative_closeness_full_days: float = Field(default=120.0, ge=1.0)
+    initiative_novelty_episode_window: int = Field(default=6, ge=1)
+    initiative_novelty_repetition_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    initiative_novelty_energy_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     # IL5 forgetting-as-distillation (see services/agent/distillation.py).
     # Pure DB work with no LLM calls, but capped per sleep run to bound
     # work — ge=1 so a misconfigured cap can't silently disable the sweep.
     distill_max_per_run: int = Field(default=20, ge=1)
+    # IL6 recall reconsolidation (see services/agent/reconsolidation.py).
+    # eta is the PRD-default nudge step; dream_eta is IL-007's
+    # reduced-strength touch on the same edge. The lifetime drift cap
+    # bounds cumulative |Δemotional_salience| from reconsolidation only,
+    # per item, forever.
+    reconsolidation_eta: float = Field(default=0.05, ge=0.0, le=1.0)
+    reconsolidation_dream_eta: float = Field(default=0.02, ge=0.0, le=1.0)
+    reconsolidation_lifetime_drift_cap: float = Field(default=0.3, ge=0.0, le=1.0)
     message_ttl_days: int = 30
     transcript_retention_days: int = -1
     background_task_run_retention_days: int = 30
@@ -324,15 +383,6 @@ KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "BAAI/bge-small-en-v1.5": 384,
 }
 
-_DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
-    "ollama": "nomic-embed-text",
-    "openrouter": "openai/text-embedding-3-small",
-    "openai": "text-embedding-3-small",
-    "vllm": "text-embedding-3-small",
-    "doubleword": "Qwen/Qwen3-Embedding-8B",
-    "fastembed": "BAAI/bge-small-en-v1.5",
-}
-
 _detected_embedding_dim: int | None = None
 
 
@@ -355,60 +405,28 @@ def _normalize_embedding_model_name(model: str) -> str:
     return normalized
 
 
-def _resolve_default_embedding_provider() -> str:
-    """Mirror ``embeddings._resolve_embedding_provider()``'s resolution order.
-
-    Duplicated (rather than imported) to avoid a circular import between
-    ``config`` and ``services.agent.embeddings``. Keep both in sync: explicit
-    ``agent_embedding_provider`` wins; otherwise the bundled ``fastembed``
-    provider is the default, except when the user configured embedding
-    details (model, base URL, or API key) against their chat provider
-    without naming an embedding provider — that legacy piggyback is
-    preserved as a real signal of intent.
-
-    KEEP IN SYNC with ``embeddings._resolve_embedding_provider``, which
-    duplicates this same piggyback-signal rule.
-    """
-    configured = settings.agent_embedding_provider.strip()
-    if configured:
-        return configured
-    embedding_model = settings.agent_embedding_model.strip()
-    embedding_base_url = getattr(settings, "agent_embedding_base_url", "").strip()
-    embedding_api_key = getattr(settings, "agent_embedding_api_key", "").strip()
-    if embedding_model or embedding_base_url or embedding_api_key:
-        return settings.agent_provider.strip() or "ollama"
-    return "fastembed"
-
-
 def resolve_embedding_dim() -> int:
     """Return the embedding dimension for the active model.
 
     Priority: detected at runtime > known lookup > config fallback.
 
-    ``agent_extraction_model`` is a CHAT model setting, not embedding intent
-    — it is only consulted as a legacy fallback when the resolved provider
-    is an explicitly-configured non-fastembed piggyback provider. For the
-    bundled ``fastembed`` provider it must be skipped entirely: a chat model
-    name (e.g. "qwen2.5:3b") isn't in ``KNOWN_EMBEDDING_DIMS``, so it would
-    silently fall through to the 768 config fallback while the bundled
-    default model is actually 384-dim.  (Rejected alternative: keep the old
-    unconditional piggyback for fastembed too — that reads chat config as
-    embedding config; the contract-migration machinery already moves such
-    installs onto the bundled default uniformly.)
-
-    KEEP IN SYNC with ``embeddings._resolve_embedding_model``, which
-    duplicates this same fastembed-skips-extraction-model rule for model
-    resolution.
+    Provider/model resolution (including the fastembed-skips-extraction-
+    model rule) is delegated to
+    ``services.agent.embedding_resolution`` — the single copy shared with
+    ``services.agent.embeddings``, imported lazily here (module scope would
+    create an import cycle: ``embedding_resolution`` is imported by this
+    module and must not import ``config`` back at module scope).
     """
     if _detected_embedding_dim is not None:
         return _detected_embedding_dim
-    embed_provider = _resolve_default_embedding_provider()
-    model = settings.agent_embedding_model.strip()
-    if not model and embed_provider != "fastembed":
-        model = settings.agent_extraction_model.strip()
-    if not model:
-        model = _DEFAULT_EMBEDDING_MODELS.get(
-            embed_provider, "nomic-embed-text")
+
+    from anima_server.services.agent.embedding_resolution import (
+        resolve_embedding_model,
+        resolve_embedding_provider,
+    )
+
+    embed_provider = resolve_embedding_provider()
+    model = resolve_embedding_model(embed_provider)
     if model in KNOWN_EMBEDDING_DIMS:
         return KNOWN_EMBEDDING_DIMS[model]
     normalized_model = _normalize_embedding_model_name(model)

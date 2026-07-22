@@ -24,6 +24,7 @@ def get_default_registry() -> HealthCheckRegistry:
         check_db_integrity,
         check_llm_connectivity,
         check_memory_pipeline,
+        check_retrieval_capabilities,
     )
 
     registry = HealthCheckRegistry()
@@ -31,6 +32,7 @@ def get_default_registry() -> HealthCheckRegistry:
     registry.register("llm_connectivity", check_llm_connectivity)
     registry.register("background_tasks", check_background_tasks)
     registry.register("memory_pipeline", check_memory_pipeline)
+    registry.register("retrieval_capabilities", check_retrieval_capabilities)
     return registry
 
 

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -24,9 +25,11 @@ from anima_server.models import (
     AgentSkill,
     AgentStep,
     AgentThread,
+    DreamJournal,
     EmotionalSignal,
     ExperienceClusterState,
     ForesightSignal,
+    InitiativeLog,
     KGEntity,
     KGRelation,
     LatentTrace,
@@ -35,6 +38,7 @@ from anima_server.models import (
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
+    ReconsolidationLog,
     SelfModelBlock,
     SoulKeyslot,
     Task,
@@ -170,6 +174,9 @@ _MEMORY_TABLES = frozenset(
         "latentTraces",
         "memoryClaims",
         "tendencyContributions",
+        "reconsolidationLog",
+        "initiativeLog",
+        "dreamJournal",
     }
 )
 
@@ -214,6 +221,9 @@ _CAPSULE_CARD_TABLES = frozenset(
         "latentTraces",
         "memoryClaims",
         "tendencyContributions",
+        "reconsolidationLog",
+        "initiativeLog",
+        "dreamJournal",
     }
 )
 
@@ -502,6 +512,42 @@ def export_vault(
     }
 
 
+def _clear_runtime_proactive_state(
+    user_id: int, runtime_factory: Callable[..., Session] | None = None
+) -> None:
+    """Delete a user's IL3 RUNTIME-tier proactive state (pending initiatives +
+    drive pressures) after a vault import. This state is ephemeral/rebuildable
+    and never carried in the vault, so pre-import rows must not survive a
+    restore and surface stale proactive messages. Best-effort: a cold/headless
+    transfer may have no runtime store, so any failure is logged and swallowed
+    rather than failing the import. ``runtime_factory`` is an injection seam
+    for tests; production resolves the process runtime session factory."""
+    try:
+        from anima_server.models.runtime_consciousness import (
+            DriveStateRow,
+            PendingInitiative,
+        )
+
+        if runtime_factory is None:
+            from anima_server.db.runtime import get_runtime_session_factory
+
+            runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            runtime_db.query(PendingInitiative).filter(
+                PendingInitiative.user_id == user_id
+            ).delete()
+            runtime_db.query(DriveStateRow).filter(
+                DriveStateRow.user_id == user_id
+            ).delete()
+            runtime_db.commit()
+    except Exception:
+        vault_logger.warning(
+            "Could not clear runtime proactive state on import for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+
 def import_vault(
     db: Session,
     vault: str,
@@ -571,6 +617,17 @@ def import_vault(
         _re_encrypt_snapshot_fields(database, user_id)
 
     restore_database_snapshot(db, database, scope=vault_scope)
+    # The restore replaced the soul-store InitiativeLog rows, but IL3 also has
+    # RUNTIME-tier proactive state (PendingInitiative — the pollable message
+    # text + its initiative_log_id — and DriveStateRow pressures) that the
+    # vault deliberately treats as ephemeral and never imports. Left in place,
+    # a pre-import PendingInitiative could still be served by the /initiatives
+    # endpoint after reauth, pointing at provenance that no longer exists or at
+    # a restored, unrelated log. Clear that runtime proactive state so it can't
+    # outlive the import. Guarded: cold/headless transfers may have no runtime
+    # store initialized, and it's rebuildable, so a failure here is non-fatal.
+    if user_id is not None:
+        _clear_runtime_proactive_state(user_id)
     write_data_snapshot(user_files, user_id=user_id)
 
     # Cold transfers and exact same-hierarchy restores carry the exported
@@ -906,6 +963,20 @@ def export_database_snapshot(
             _scoped(select(TendencyContribution), TendencyContribution)
         ).all()
     ]
+    reconsolidation_log = [
+        serialize_reconsolidation_log_record(row)
+        for row in db.scalars(
+            _scoped(select(ReconsolidationLog), ReconsolidationLog)
+        ).all()
+    ]
+    initiative_log = [
+        serialize_initiative_log_record(row, deks=deks)
+        for row in db.scalars(_scoped(select(InitiativeLog), InitiativeLog)).all()
+    ]
+    dream_journal = [
+        serialize_dream_journal_record(row, deks=deks)
+        for row in db.scalars(_scoped(select(DreamJournal), DreamJournal)).all()
+    ]
     return {
         "users": users,
         "userKeys": user_keys,
@@ -927,6 +998,9 @@ def export_database_snapshot(
         "latentTraces": latent_traces,
         "memoryClaims": memory_claims,
         "tendencyContributions": tendency_contributions,
+        "reconsolidationLog": reconsolidation_log,
+        "initiativeLog": initiative_log,
+        "dreamJournal": dream_journal,
         "agentThreads": agent_threads,
         "agentRuns": agent_runs,
         "agentSteps": agent_steps,
@@ -966,6 +1040,9 @@ def restore_database_snapshot(
     latent_traces_payload = snapshot.get("latentTraces", [])
     memory_claims_payload = snapshot.get("memoryClaims", [])
     tendency_contributions_payload = snapshot.get("tendencyContributions", [])
+    reconsolidation_log_payload = snapshot.get("reconsolidationLog", [])
+    initiative_log_payload = snapshot.get("initiativeLog", [])
+    dream_journal_payload = snapshot.get("dreamJournal", [])
     agent_threads_payload = snapshot.get("agentThreads", [])
     agent_runs_payload = snapshot.get("agentRuns", [])
     agent_steps_payload = snapshot.get("agentSteps", [])
@@ -975,7 +1052,20 @@ def restore_database_snapshot(
     is_full = scope == "full"
 
     try:
+        # IL6: like TendencyContribution, this must go before MemoryItem
+        # (bulk deletes bypass ORM cascade and SQLite FKs are not enforced,
+        # so a later-deleted memory_items row would leave orphaned log rows
+        # referencing it, or a reused id could reattach to a stale log).
+        db.query(ReconsolidationLog).delete()
         db.query(TendencyContribution).delete()
+        # IL3 provenance log: same reused-id/stale-row hazard as the other
+        # provenance ledgers above — without this, restoring into a DB that
+        # already has initiative_log rows either raises
+        # "UNIQUE constraint failed: initiative_log.id" (id collision) or
+        # leaves stale rows behind (no FK to scrub them via cascade).
+        db.query(InitiativeLog).delete()
+        # IL7 dream journal: same reused-id/stale-row hazard as the ledgers above.
+        db.query(DreamJournal).delete()
         # Bulk deletes bypass ORM cascade and SQLite FKs are not enforced
         # (no foreign_keys pragma), so claim evidence must be deleted
         # explicitly BEFORE its claims — mirroring MemoryItemEvidence and
@@ -1231,6 +1321,7 @@ def restore_database_snapshot(
                     evolves_from_item_id=coerce_optional_int(record.get("evolves_from_item_id")),
                     evolution_kind=coerce_optional_str(record.get("evolution_kind")),
                     distilled_at=parse_optional_datetime(record.get("distilled_at")),
+                    reconsolidation_drift=float(record.get("reconsolidation_drift") or 0.0),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
                 )
@@ -1329,6 +1420,57 @@ def restore_database_snapshot(
                     tombstone_item_id=int(record["tombstone_item_id"]),
                     tendency_claim_id=int(record["tendency_claim_id"]),
                     contribution_vector=record.get("contribution_vector") or {},
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        for record in reconsolidation_log_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                ReconsolidationLog(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    memory_item_id=int(record["memory_item_id"]),
+                    applied_at=parse_optional_datetime(record.get("applied_at")),
+                    field=str(record["field"]),
+                    old_value=float(record.get("old_value") or 0.0),
+                    new_value=float(record.get("new_value") or 0.0),
+                    eta=float(record.get("eta") or 0.0),
+                )
+            )
+
+        for record in initiative_log_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                InitiativeLog(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    fired_at=parse_optional_datetime(record.get("fired_at")),
+                    drive=str(record["drive"]),
+                    pressure_snapshot=record.get("pressure_snapshot") or {},
+                    gate_states=record.get("gate_states") or {},
+                    generated_text=coerce_optional_str(record.get("generated_text")),
+                    delivered=bool(record.get("delivered", False)),
+                    answered=bool(record.get("answered", False)),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        for record in dream_journal_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                DreamJournal(
+                    id=int(record["id"]),
+                    user_id=int(record["user_id"]),
+                    dreamt_at=parse_optional_datetime(record.get("dreamt_at")),
+                    narrative=str(record.get("narrative") or ""),
+                    source_refs=record.get("source_refs") or {},
+                    affect_delta=record.get("affect_delta") or {},
+                    share_worthy=bool(record.get("share_worthy", False)),
+                    surfaced=bool(record.get("surfaced", False)),
                     created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
@@ -1833,6 +1975,7 @@ def serialize_memory_item_record(
         "evolves_from_item_id": item.evolves_from_item_id,
         "evolution_kind": item.evolution_kind,
         "distilled_at": serialize_optional_datetime(item.distilled_at),
+        "reconsolidation_drift": item.reconsolidation_drift,
         "created_at": serialize_optional_datetime(item.created_at),
         "updated_at": serialize_optional_datetime(item.updated_at),
     }
@@ -2297,6 +2440,96 @@ def serialize_tendency_contribution_record(
     }
 
 
+def serialize_reconsolidation_log_record(
+    row: ReconsolidationLog,
+) -> dict[str, Any]:
+    """IL6 provenance ledger row: ``old_value``/``new_value`` are numeric
+    only (never content, see ``ReconsolidationLog`` docstring), so — like
+    ``TendencyContribution`` — this needs no ``deks`` argument. Preserving
+    this table verbatim across export/import is what makes
+    ``original_salience_from_log`` reversibility survive a vault
+    round-trip."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "memory_item_id": row.memory_item_id,
+        "applied_at": serialize_optional_datetime(row.applied_at),
+        "field": row.field,
+        "old_value": row.old_value,
+        "new_value": row.new_value,
+        "eta": row.eta,
+    }
+
+
+def serialize_initiative_log_record(
+    row: InitiativeLog,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """IL3 push-initiative provenance row. ``generated_text`` is the one
+    free-text field (field-encrypted like ``foresight_signals.content``);
+    ``pressure_snapshot``/``gate_states`` are numeric/boolean JSON only, no
+    ``deks`` needed for those two (mirrors ``TendencyContribution``/
+    ``ReconsolidationLog``)."""
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "fired_at": serialize_optional_datetime(row.fired_at),
+        "drive": row.drive,
+        "pressure_snapshot": row.pressure_snapshot,
+        "gate_states": row.gate_states,
+        "generated_text": _decrypt_field_value(
+            row.generated_text,
+            deks,
+            table="initiative_log",
+            field="generated_text",
+            user_id=row.user_id,
+        ),
+        "delivered": row.delivered,
+        "answered": row.answered,
+        "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
+def serialize_dream_journal_record(
+    row: DreamJournal,
+    *,
+    deks: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """IL7 dream-journal row. ``narrative`` AND ``source_refs.latent_topic_keys``
+    are field-encrypted (the topic keys embed content slugs), so both are
+    decrypted here and re-encrypted on import — exporting the per-field
+    ciphertext verbatim would leave it under the old key hierarchy and break
+    forget/purge after an import. ``memory_item_ids``/``affect_delta`` are
+    numeric only."""
+    source_refs = dict(row.source_refs) if isinstance(row.source_refs, dict) else {}
+    keys = source_refs.get("latent_topic_keys")
+    if isinstance(keys, list):
+        source_refs["latent_topic_keys"] = [
+            _decrypt_field_value(
+                k, deks, table="dream_journal", field="source_refs", user_id=row.user_id
+            )
+            for k in keys
+        ]
+    return {
+        "id": row.id,
+        "user_id": row.user_id,
+        "dreamt_at": serialize_optional_datetime(row.dreamt_at),
+        "narrative": _decrypt_field_value(
+            row.narrative,
+            deks,
+            table="dream_journal",
+            field="narrative",
+            user_id=row.user_id,
+        ),
+        "source_refs": source_refs,
+        "affect_delta": row.affect_delta,
+        "share_worthy": row.share_worthy,
+        "surfaced": row.surfaced,
+        "created_at": serialize_optional_datetime(row.created_at),
+    }
+
+
 def serialize_experience_cluster_state_record(
     state: ExperienceClusterState,
 ) -> dict[str, Any]:
@@ -2412,6 +2645,13 @@ def reset_identity_sequences(db: Session) -> None:
         "experience_cluster_state",
         "agent_skills",
         "latent_traces",
+        # IL provenance tables restored with explicit ids — their PG sequences
+        # must be advanced past the imported max or the next insert reuses an
+        # imported id and hits a PK conflict. dream_journal is IL7's; initiative_log
+        # (IL3) and reconsolidation_log (IL6) had the same latent gap.
+        "reconsolidation_log",
+        "initiative_log",
+        "dream_journal",
         "agent_threads",
         "agent_runs",
         "agent_steps",
@@ -2661,6 +2901,37 @@ def _re_encrypt_snapshot_fields(
                     table="foresight_signals",
                     field="relative_text",
                 )
+
+    for initiative in snapshot.get("initiativeLog", []):
+        if isinstance(initiative, dict) and initiative.get("generated_text"):
+            initiative["generated_text"] = _re_encrypt_field_value(
+                initiative["generated_text"],
+                user_id,
+                table="initiative_log",
+                field="generated_text",
+            )
+
+    for dream in snapshot.get("dreamJournal", []):
+        if not isinstance(dream, dict):
+            continue
+        if dream.get("narrative"):
+            dream["narrative"] = _re_encrypt_field_value(
+                dream["narrative"],
+                user_id,
+                table="dream_journal",
+                field="narrative",
+            )
+        # source_refs.latent_topic_keys are field-encrypted too — re-encrypt
+        # them under the importing hierarchy so post-import forget/purge can
+        # decrypt and match them.
+        refs = dream.get("source_refs")
+        if isinstance(refs, dict) and isinstance(refs.get("latent_topic_keys"), list):
+            refs["latent_topic_keys"] = [
+                _re_encrypt_field_value(
+                    k, user_id, table="dream_journal", field="source_refs"
+                )
+                for k in refs["latent_topic_keys"]
+            ]
 
     for experience in snapshot.get("agentExperiences", []):
         if isinstance(experience, dict):

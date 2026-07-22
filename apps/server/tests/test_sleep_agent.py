@@ -19,6 +19,7 @@ from anima_server.services.agent.sleep_agent import (
     _task_consolidation,
     _task_episode_gen,
     _task_graph_ingestion,
+    _task_reparse_pending_documents,
     get_last_processed_message_id,
     run_sleeptime_agents,
     should_run_sleeptime,
@@ -1060,6 +1061,11 @@ class TestRunSleeptimeAgents:
                 return_value={"ok": True},
             ),
             patch(
+                "anima_server.services.agent.sleep_agent._task_reparse_pending_documents",
+                new_callable=AsyncMock,
+                return_value="no documents pending reparse",
+            ),
+            patch(
                 "anima_server.services.agent.sleep_agent._should_run_expensive",
                 return_value=False,
             ),
@@ -1084,7 +1090,7 @@ class TestRunSleeptimeAgents:
                 runtime_db_factory=rt_factory,
             )
 
-        assert len(run_ids) == 7
+        assert len(run_ids) == 8
         task_types = {r.split(":")[0] for r in run_ids}
         assert task_types == {
             "consolidation",
@@ -1094,11 +1100,12 @@ class TestRunSleeptimeAgents:
             "foresight_lifecycle",
             "episode_gen",
             "knowledge_autocompile",
+            "document_reparse",
         }
 
         with rt_factory() as db:
             runs = list(db.scalars(select(RuntimeBackgroundTaskRun)).all())
-            assert len(runs) == 7
+            assert len(runs) == 8
             assert all(r.status == "completed" for r in runs)
 
 
@@ -1161,6 +1168,517 @@ class TestGraphIngestionTask:
             db_factory=db_factory,
         )
         assert result == {"entities": 0, "relations": 0, "pruned": 0}
+
+
+# ── Auto-reparse task ─────────────────────────────────────────────────
+
+
+class TestReparsePendingDocumentsTask:
+    """_task_reparse_pending_documents — closes the loop on preview/legacy
+    documents once the parsing pack is ready. Patches ``parsing_pack_ready``,
+    ``list_reparse_candidates`` and ``reparse_document`` at their
+    sleep_agent module import site (imported at module scope there, not
+    lazily inside the task, precisely so these tests can patch them)."""
+
+    @pytest.mark.asyncio()
+    async def test_skips_when_policy_off(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "off")
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready"
+        ) as pack_ready, patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates"
+        ) as candidates:
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        pack_ready.assert_not_called()
+        candidates.assert_not_called()
+        assert isinstance(result, str)
+        assert "disabled" in result
+
+    @pytest.mark.asyncio()
+    async def test_skips_when_pack_not_ready(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=False,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates"
+        ) as candidates, patch(
+            "anima_server.services.agent.sleep_agent.reparse_document"
+        ) as reparse_fn:
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        candidates.assert_not_called()
+        reparse_fn.assert_not_called()
+        assert isinstance(result, str)
+        assert "not ready" in result
+
+    @pytest.mark.asyncio()
+    async def test_processes_at_most_budget_candidates(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 2)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="upgraded", chunk_count=3)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert calls == [1, 2]
+        assert "reparsed 2" in result
+
+    @pytest.mark.asyncio()
+    async def test_aborts_loop_on_parser_unavailable(self, rt_factory, monkeypatch):
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="parser_unavailable", detail="not installed")
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # The loop stops at the first unhealthy status instead of burning
+        # the rest of the budget on a parser that's clearly sick.
+        assert calls == [1]
+        assert "reparsed 0" in result
+        assert "pending" in result
+
+    @pytest.mark.asyncio()
+    async def test_upgraded_unembedded_rolls_back_and_aborts(
+        self, rt_factory, monkeypatch
+    ):
+        """FINDING A: reparse_document() calls replace_document_chunks()
+        (resets the document to non-indexed and deletes old chunk vectors)
+        *before* embedding. If the embedding backend is down, the document
+        comes back "upgraded_unembedded" — docling-quality chunks written,
+        but the document left non-indexed because nothing embedded. If the
+        cycle committed that, a previously-searchable indexed preview
+        document becomes invisible to search AND drops out of
+        list_reparse_candidates (which requires status=="indexed") —
+        orphaned forever. The cycle must instead roll back (discarding the
+        flushed-but-uncommitted reset so the original indexed preview
+        survives), not count the document as reparsed, and abort the rest
+        of the budget since an unavailable embedding backend affects every
+        candidate identically."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+        rollback_calls: list[int] = []
+        commit_calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="upgraded_unembedded", chunk_count=3)
+
+        def spying_factory(*args, **kwargs):
+            session = rt_factory(*args, **kwargs)
+            original_rollback = session.rollback
+            original_commit = session.commit
+
+            def _spy_rollback():
+                rollback_calls.append(1)
+                return original_rollback()
+
+            def _spy_commit():
+                commit_calls.append(1)
+                return original_commit()
+
+            session.rollback = _spy_rollback
+            session.commit = _spy_commit
+            return session
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=spying_factory,
+            )
+
+        # Only the first candidate is attempted — the cycle aborts instead
+        # of repeating the same unembedded dance for candidates 2 and 3.
+        assert calls == [1]
+        # The flushed replace_document_chunks reset must be rolled back, not
+        # committed — committing it is exactly the orphaning bug.
+        assert rollback_calls == [1]
+        assert commit_calls == []
+        assert "reparsed 0" in result
+        assert "embeddings unavailable" in result
+        assert "pending" in result
+
+    @pytest.mark.asyncio()
+    async def test_parse_degraded_skips_and_continues(self, rt_factory, monkeypatch):
+        """A per-document Docling crash (parse_degraded) must NOT abort the
+        cycle: the offending file sorts first by id and stays an indexed
+        preview candidate, so aborting on it would head-of-line-block every
+        document behind it forever. The loop skips it and keeps going."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            if document_id == 1:
+                return ReparseResult(status="parse_degraded", detail="docling crashed")
+            return ReparseResult(status="upgraded", chunk_count=3)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # All three candidates attempted — the degraded doc #1 did NOT block
+        # #2 and #3 (the head-of-line-blocking bug).
+        assert calls == [1, 2, 3]
+        assert "reparsed 2" in result
+        assert "could not be parsed" in result
+
+    @pytest.mark.asyncio()
+    async def test_reparse_document_raising_does_not_crash_cycle(
+        self, rt_factory, monkeypatch
+    ):
+        """reparse_document can RAISE (bad stored path / unreadable PDF) rather
+        than return a status. That must be handled like a per-document failure
+        — skip + record + continue — not crash the cycle or (since candidates
+        are id-ordered) crash every run on a broken low-id document."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            if document_id == 1:
+                raise RuntimeError("Failed to read PDF file: no such file")
+            return ReparseResult(status="upgraded", chunk_count=2)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # The raise on doc #1 did NOT crash the cycle or block #2/#3.
+        assert calls == [1, 2, 3]
+        assert "reparsed 2" in result
+        assert "could not be parsed" in result
+
+    @pytest.mark.asyncio()
+    async def test_negative_budget_clamps_to_zero(self, rt_factory, monkeypatch):
+        """A misconfigured negative budget must not turn candidates[:budget]
+        into a slice-from-the-end (`[:-1]`) that reparses almost the whole
+        legacy queue in one cycle. It clamps to 0 — nothing is reparsed."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", -1)
+
+        calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            calls.append(document_id)
+            return ReparseResult(status="upgraded", chunk_count=1)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3, 4, 5],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        # Clamped to 0 — NOT [:-1] which would have reparsed docs 1..4.
+        assert calls == []
+
+    @pytest.mark.asyncio()
+    async def test_upgraded_still_commits_and_counts(self, rt_factory, monkeypatch):
+        """Regression guard alongside the upgraded_unembedded fix above: a
+        normal successful upgrade must still commit and count as reparsed —
+        the fix must not accidentally make every reparse roll back."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        commit_calls: list[int] = []
+        rollback_calls: list[int] = []
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            return ReparseResult(status="upgraded", chunk_count=3)
+
+        def spying_factory(*args, **kwargs):
+            session = rt_factory(*args, **kwargs)
+            original_rollback = session.rollback
+            original_commit = session.commit
+
+            def _spy_rollback():
+                rollback_calls.append(1)
+                return original_rollback()
+
+            def _spy_commit():
+                commit_calls.append(1)
+                return original_commit()
+
+            session.rollback = _spy_rollback
+            session.commit = _spy_commit
+            return session
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=spying_factory,
+            )
+
+        assert commit_calls == [1, 1]
+        assert rollback_calls == []
+        assert result == "reparsed 2 documents"
+
+    @pytest.mark.asyncio()
+    async def test_session_lifecycle_stays_on_worker_thread(
+        self, rt_factory, monkeypatch
+    ):
+        """The runtime session must be opened, used, and committed entirely
+        inside the asyncio.to_thread worker (matching soul_writer's
+        convention) — never opened on the event loop and handed across
+        threads, which would also pin a pooled connection to the loop for
+        the full duration of a minutes-long Docling parse."""
+        import threading
+
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+
+        loop_thread = threading.get_ident()
+        factory_threads: list[int] = []
+        reparse_threads: list[int] = []
+
+        def spying_factory(*args, **kwargs):
+            factory_threads.append(threading.get_ident())
+            return rt_factory(*args, **kwargs)
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            reparse_threads.append(threading.get_ident())
+            return ReparseResult(status="upgraded", chunk_count=1)
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=spying_factory,
+            )
+
+        assert result == "reparsed 1 documents"
+        # The session was created off the event loop, on the same worker
+        # thread that ran the reparse itself.
+        assert factory_threads and reparse_threads
+        assert factory_threads[0] != loop_thread
+        assert factory_threads[0] == reparse_threads[0]
+
+    @pytest.mark.asyncio()
+    async def test_not_found_excluded_from_pending_count(
+        self, rt_factory, monkeypatch
+    ):
+        """A concurrently-deleted document (not_found) is gone, not pending —
+        it must not inflate the '(M pending)' arithmetic in the summary."""
+        from anima_server.config import settings
+        from anima_server.services.documents.reparse import ReparseResult
+
+        monkeypatch.setattr(settings, "document_auto_reparse", "on")
+        monkeypatch.setattr(settings, "document_auto_reparse_budget", 5)
+
+        statuses = {1: "upgraded", 2: "not_found", 3: "upgraded"}
+
+        def fake_reparse_document(runtime_db, *, user_id, document_id):
+            return ReparseResult(status=statuses[document_id])
+
+        with patch(
+            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+            return_value=True,
+        ), patch(
+            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+            return_value=[1, 2, 3],
+        ), patch(
+            "anima_server.services.agent.sleep_agent.reparse_document",
+            side_effect=fake_reparse_document,
+        ):
+            result = await _task_reparse_pending_documents(
+                user_id=1,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert result == "reparsed 2 documents"
+
+    @pytest.mark.asyncio()
+    async def test_registered_in_always_run_list(self, db_factory, rt_factory):
+        """The orchestrator's always-run group includes document_reparse
+        and records a RuntimeBackgroundTaskRun for it."""
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent._task_consolidation",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_embedding_backfill",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_graph_ingestion",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_heat_decay",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._task_episode_gen",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent._should_run_expensive",
+                return_value=False,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_tasks._should_run_deep_monologue",
+                return_value=False,
+            ),
+            patch(
+                "anima_server.services.agent.companion.get_companion",
+                return_value=None,
+            ),
+        ):
+            run_ids = await run_sleeptime_agents(
+                user_id=1,
+                user_message="hello",
+                assistant_response="hi",
+                db_factory=db_factory,
+                runtime_db_factory=rt_factory,
+            )
+
+        assert any(r.startswith("document_reparse:") for r in run_ids)
+        with rt_factory() as db:
+            run = db.scalar(
+                select(RuntimeBackgroundTaskRun).where(
+                    RuntimeBackgroundTaskRun.task_type == "document_reparse"
+                )
+            )
+            assert run is not None
+            assert run.status == "completed"
 
 
 # ── RuntimeBackgroundTaskRun model ───────────────────────────────────

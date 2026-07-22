@@ -9,8 +9,8 @@ main server-side implementation in this repo.
 ## Commands
 
 ```bash
-uv sync --project apps/server
-uv run --project apps/server uvicorn anima_server.main:app --app-dir apps/server/src --reload --host 127.0.0.1 --port 3031
+uv sync --project apps/server --all-extras
+uv run --all-extras --project apps/server uvicorn anima_server.main:app --app-dir apps/server/src --reload --host 127.0.0.1 --port 3031
 bun run db:server:revision -- "create users table"
 uv run --project apps/server alembic -c apps/server/alembic_core.ini heads
 uv run --project apps/server alembic -c apps/server/alembic_core.ini current
@@ -24,6 +24,20 @@ If you want to use Postgres instead of the default SQLite database, start it fir
 ```bash
 docker compose up -d postgres
 ```
+
+## Document processing
+
+`--all-extras` pulls in the `docling` extra (layout analysis, table
+structure, OCR), which is now on by default for local dev. Docling's model
+weights are not bundled with the extra — the server downloads them on demand
+in the background the first time it starts with the extra installed, and
+PDFs ingested before that download finishes get a pdfium text preview that
+is upgraded automatically once the parsing pack is ready (or on demand via
+`POST /api/documents/parsing-pack/download`). Document retrieval's local
+reranker and the default embedding provider both run on the bundled
+`fastembed` ONNX runtime, so no extra install or API key is required for
+either. See `GET /api/capabilities` for what the running server currently
+supports (parser/model availability included).
 
 ## Database
 

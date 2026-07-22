@@ -302,6 +302,19 @@ class MemoryItem(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # IL6 recall-reconsolidation: cumulative absolute emotional_salience
+    # drift applied by reconsolidation across this item's whole life,
+    # bounded by ``reconsolidation_lifetime_drift_cap`` (default 0.3).
+    # Tracked separately from ``emotional_salience`` itself so the cap is
+    # exactly enforceable regardless of how the field's absolute value
+    # wanders from other write paths (merge_salience, decay, etc.) — see
+    # ``services/agent/reconsolidation.py``.
+    reconsolidation_drift: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.0,
+        server_default=text("0.0"),
+    )
 
     tag_entries: Mapped[list[MemoryItemTag]] = relationship(
         cascade="all, delete-orphan",
@@ -1249,6 +1262,151 @@ class TendencyContribution(Base):
         nullable=False,
     )
     contribution_vector: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ReconsolidationLog(Base):
+    """IL6 recall-reconsolidation provenance ledger row.
+
+    Every applied per-field nudge (post drift-cap) writes exactly one row
+    here preserving the ORIGINAL pre-nudge value in ``old_value`` — a
+    no-op (cap already exhausted, or a zero delta) writes nothing.
+    Reversibility is exact by construction: reconstructing the
+    pre-reconsolidation salience never replays/sums deltas (which would
+    accumulate floating-point error across N applications) — it just reads
+    the OLDEST logged ``old_value`` per field, which IS the original
+    extracted value (see
+    ``services.agent.reconsolidation.original_salience_from_log``).
+
+    Numeric only, no content (soul-store, portable, included in vault
+    export/import — mirrors ``TendencyContribution``). ``field`` is one of
+    ``"emotional_salience"`` (raw [0,1] value) or ``"stability_class"``
+    (the ``_STABILITY_STRENGTH`` rank, not the string, to keep this table
+    numeric-only).
+    """
+
+    __tablename__ = "reconsolidation_log"
+    __table_args__ = (
+        Index("ix_reconsolidation_log_user_id", "user_id"),
+        Index("ix_reconsolidation_log_item", "memory_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    memory_item_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    field: Mapped[str] = mapped_column(String(32), nullable=False)
+    old_value: Mapped[float] = mapped_column(Float, nullable=False)
+    new_value: Mapped[float] = mapped_column(Float, nullable=False)
+    eta: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class InitiativeLog(Base):
+    """IL3 push-initiative provenance row: the answer to "why did it message me?"
+
+    Written exactly once per gate-chain pass that clears every gate and has a
+    dominant drive (``services.agent.inner_life.initiative.tick_initiative_for_user``),
+    whether or not message generation actually succeeded — a failed
+    generation still writes a row here with ``generated_text=None`` and
+    ``delivered=False`` (a logged best-effort attempt, per PRD IL3: "on
+    generation failure ... log the attempt"), so every gate-chain pass that
+    reached the fire step is inspectable, not just the successful ones.
+    ``pressure_snapshot``/``gate_states`` are numeric/boolean JSON only (all
+    five drive pressures and every named gate at fire time) — no external
+    content beyond the one generated message itself. ``generated_text`` is
+    field-encrypted like other free-text soul columns (see
+    ``services.data_crypto`` domain map); pressure/gate JSON needs no such
+    encryption (numeric/boolean only, mirrors ``TendencyContribution`` /
+    ``ReconsolidationLog``). ``answered`` flips true via the pending-initiative
+    ack API route once the user acknowledges the delivered message — it is
+    what feeds the gate chain's unanswered-initiative cooldown backoff.
+    """
+
+    __tablename__ = "initiative_log"
+    __table_args__ = (
+        Index("ix_initiative_log_user_fired", "user_id", "fired_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    drive: Mapped[str] = mapped_column(String(32), nullable=False)
+    pressure_snapshot: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    gate_states: Mapped[dict[str, bool]] = mapped_column(JSON, nullable=False)
+    generated_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    answered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class DreamJournal(Base):
+    """IL7 dream-cycle entry: one recombination of important-but-cold material
+    into a short narrative during an idle night window.
+
+    Soul-store (portable, encrypted, vault-exported) — unlike IL1/IL3 runtime
+    state, a dream is durable autobiographical content the companion may later
+    surface. ``narrative`` is field-encrypted like other free-text soul columns
+    (see ``services.data_crypto`` domain map); ``source_refs`` and
+    ``affect_delta`` are numeric/structural JSON only (the memory-item ids /
+    latent-trace ids / transcript ref that seeded the dream, and the applied
+    valence/arousal/energy deltas) so provenance is inspectable without leaking
+    content. ``share_worthy`` records whether the dream drew on high-significance
+    material and therefore raised IL3 ``dream_residue``. The table is capped at
+    a rolling 30 rows per user in the write path (no schema-level cap)."""
+
+    __tablename__ = "dream_journal"
+    __table_args__ = (
+        Index("ix_dream_journal_user_dreamt", "user_id", "dreamt_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dreamt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    narrative: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    affect_delta: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    share_worthy: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    surfaced: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

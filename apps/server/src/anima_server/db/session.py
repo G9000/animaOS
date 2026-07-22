@@ -167,6 +167,15 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
             "distilled_at",
             "ALTER TABLE memory_items ADD COLUMN distilled_at DATETIME",
         ),
+        (
+            # IL6: same "legacy DB stamped past migrations" gap IL5 hit (P2
+            # review finding) — handled up front here instead of after the
+            # fact. reconsolidation.py reads/writes this column on every
+            # reconsolidation, so a missing column would raise "no such
+            # column: memory_items.reconsolidation_drift" on first recall.
+            "reconsolidation_drift",
+            "ALTER TABLE memory_items ADD COLUMN reconsolidation_drift FLOAT NOT NULL DEFAULT 0.0",
+        ),
     ):
         if column_name not in memory_columns:
             connection.exec_driver_sql(ddl)
@@ -201,6 +210,41 @@ def _repair_legacy_diary_schema(connection: Connection) -> None:
         if column_name not in diary_columns:
             connection.exec_driver_sql(ddl)
             diary_columns.add(column_name)
+
+
+def _repair_legacy_presence_schema(connection: Connection) -> None:
+    """Add current presence_configs columns to legacy SQLite tables stamped
+    past migrations (IL3: initiative_enabled/quiet_hours_*; IL7: dream_sharing)."""
+    if connection.dialect.name != "sqlite":
+        return
+
+    presence_columns = _sqlite_column_names(connection, "presence_configs")
+    if not presence_columns:
+        return
+
+    for column_name, ddl in (
+        (
+            "initiative_enabled",
+            "ALTER TABLE presence_configs "
+            "ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
+        ),
+        (
+            "quiet_hours_start",
+            "ALTER TABLE presence_configs ADD COLUMN quiet_hours_start INTEGER",
+        ),
+        (
+            "quiet_hours_end",
+            "ALTER TABLE presence_configs ADD COLUMN quiet_hours_end INTEGER",
+        ),
+        (
+            "dream_sharing",
+            "ALTER TABLE presence_configs "
+            "ADD COLUMN dream_sharing VARCHAR(16) NOT NULL DEFAULT 'on_ask'",
+        ),
+    ):
+        if column_name not in presence_columns:
+            connection.exec_driver_sql(ddl)
+            presence_columns.add(column_name)
 
 
 def _make_engine(database_url: str | None = None) -> Engine:
@@ -436,6 +480,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
             _repair_legacy_diary_schema(connection)
+            _repair_legacy_presence_schema(connection)
             command.stamp(cfg, "head")
             logger.info("Stamped legacy database at Alembic head.")
         else:
@@ -454,6 +499,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             _repair_legacy_memory_schema(connection)
             _repair_legacy_kg_schema(connection)
             _repair_legacy_diary_schema(connection)
+            _repair_legacy_presence_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 
