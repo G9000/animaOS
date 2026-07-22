@@ -414,14 +414,18 @@ def run_dream_for_user(
             )
 
             # Effect 3: reduced-strength reconsolidation on touched memories,
-            # at the configured dream eta (operator-tunable; 0 disables it).
-            # apply_reconsolidation itself skips superseded/distilled and
-            # confines identity to confidence-only.
-            magnitude = resolve_current_affect_magnitude(runtime_db, user_id=user_id)
-            for row in selected_rows:
-                apply_reconsolidation(
-                    soul_db, row, current_affect_magnitude=magnitude, eta=config.dream_eta
-                )
+            # at the configured dream eta. eta<=0 fully disables the pass — skip
+            # the call entirely rather than relying on apply_reconsolidation,
+            # which no-ops the affect nudge at eta 0 but STILL upgrades stability
+            # classes and writes ReconsolidationLog rows. apply_reconsolidation
+            # itself skips superseded/distilled and confines identity to
+            # confidence-only.
+            if config.dream_eta > 0.0:
+                magnitude = resolve_current_affect_magnitude(runtime_db, user_id=user_id)
+                for row in selected_rows:
+                    apply_reconsolidation(
+                        soul_db, row, current_affect_magnitude=magnitude, eta=config.dream_eta
+                    )
 
             # Effect 4 (dream_residue) is passive: IL3's resolve_drive_signals
             # reads share-worthy, unsurfaced dream_journal rows — no write here.

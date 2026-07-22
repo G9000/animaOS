@@ -539,6 +539,27 @@ def test_reconsolidation_uses_configured_dream_eta(monkeypatch: pytest.MonkeyPat
     re.dispose()
 
 
+def test_zero_dream_eta_fully_skips_reconsolidation() -> None:
+    """Regression (PR review, P2): eta=0 must FULLY disable dream
+    reconsolidation. apply_reconsolidation no-ops the affect nudge at eta 0 but
+    still upgrades stability classes and writes ReconsolidationLog rows, so the
+    call is skipped entirely — no ReconsolidationLog is written."""
+    from anima_server.services.agent.inner_life.dream import DreamConfig
+
+    se, re = _soul_engine(), _runtime_engine()
+    sf, rf = _factory(se), _factory(re)
+    _seed_user(sf, rf)
+
+    assert dream_edge.run_dream_for_user(
+        sf, rf, user_id=1, local_now=NIGHT, config=DreamConfig(dream_eta=0.0)
+    ) is True
+    with sf() as db_:
+        assert db_.scalars(select(DreamJournal)).all()  # dream still recorded
+        assert db_.scalars(select(ReconsolidationLog)).all() == []  # but no reconsolidation
+    se.dispose()
+    re.dispose()
+
+
 def test_nonnumeric_delta_does_not_raise_and_yields_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
