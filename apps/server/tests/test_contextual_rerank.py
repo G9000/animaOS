@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,6 +47,27 @@ class _ScriptedClient:
     async def ainvoke(self, messages: Any) -> Any:
         self.prompts.append("\n".join(str(m.content) for m in messages))
         return SimpleNamespace(content=self._payloads.pop(0))
+
+
+class _LoopAffineClient(_ScriptedClient):
+    """Client double that models an async HTTP client's loop ownership."""
+
+    def __init__(self, *payloads: str) -> None:
+        super().__init__(*payloads)
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.closed = False
+
+    async def ainvoke(self, messages: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        if self.loop is None:
+            self.loop = loop
+        elif self.loop is not loop:
+            raise RuntimeError("client reused across event loops")
+        return await super().ainvoke(messages)
+
+    async def aclose(self) -> None:
+        assert asyncio.get_running_loop() is self.loop
+        self.closed = True
 
 
 def _document_with_chunks(runtime_db, texts: list[str], *, indexed: bool = True):
@@ -132,6 +154,57 @@ def test_blurb_generation_stores_metadata_and_skips_existing(
         llm_client=_ScriptedClient(),
     )
     assert rerun == 0
+
+
+def test_blurb_generation_uses_one_event_loop_for_the_whole_batch(
+    runtime_db, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "contextual_chunks", "on")
+    document, _chunks = _document_with_chunks(runtime_db, ["alpha", "beta"])
+    client = _LoopAffineClient("alpha context", "beta context")
+
+    written = generate_document_chunk_blurbs(
+        runtime_db,
+        user_id=USER_ID,
+        document_id=document.id,
+        llm_client=client,
+    )
+
+    assert written == 2
+    assert len(client.prompts) == 2
+    assert client.closed is False
+
+
+def test_blurb_generation_owns_default_client_on_its_event_loop(
+    runtime_db, monkeypatch: Any
+) -> None:
+    from anima_server.services.agent import llm as llm_module
+
+    monkeypatch.setattr(settings, "contextual_chunks", "on")
+    document, _chunks = _document_with_chunks(runtime_db, ["alpha", "beta"])
+
+    cached_client = _LoopAffineClient("cache warmup")
+    asyncio.run(
+        cached_client.ainvoke([SimpleNamespace(content="bind to a closed loop")])
+    )
+    owned_client = _LoopAffineClient("alpha context", "beta context")
+    monkeypatch.setattr(llm_module, "create_llm", lambda: cached_client)
+    monkeypatch.setattr(
+        llm_module,
+        "create_provider_chat_client",
+        lambda **_kwargs: owned_client,
+    )
+
+    written = generate_document_chunk_blurbs(
+        runtime_db,
+        user_id=USER_ID,
+        document_id=document.id,
+    )
+
+    assert written == 2
+    assert len(cached_client.prompts) == 1
+    assert len(owned_client.prompts) == 2
+    assert owned_client.closed is True
 
 
 def test_blurb_generation_respects_chunk_budget(runtime_db, monkeypatch: Any) -> None:

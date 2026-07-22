@@ -74,25 +74,37 @@ def generate_document_chunk_blurbs(
         )
         return 0
 
+    pending_chunks = [
+        chunk
+        for chunk in chunks
+        if not isinstance(
+            (chunk.metadata_json or {}).get(CONTEXT_BLURB_METADATA_KEY), str
+        )
+    ]
+    if not pending_chunks:
+        return 0
+
+    from anima_server.services.documents.indexing import _run_awaitable
+
+    generated = _run_awaitable(
+        _generate_blurbs(
+            document_id=document.id,
+            prompts=[
+                (chunk.id, _blurb_prompt(document.filename, chunk))
+                for chunk in pending_chunks
+            ],
+            llm_client=llm_client,
+        )
+    )
+    blurbs_by_chunk_id = dict(generated or ())
+
     written = 0
     blurbed_chunk_ids: list[int] = []
-    for chunk in chunks:
-        metadata = dict(chunk.metadata_json or {})
-        if isinstance(metadata.get(CONTEXT_BLURB_METADATA_KEY), str):
-            continue
-        try:
-            blurb = _generate_blurb(document.filename, chunk, llm_client)
-        except Exception:
-            logger.warning(
-                "Contextual blurb generation failed for document %s chunk %s; "
-                "continuing without blurbs",
-                document.id,
-                chunk.id,
-                exc_info=True,
-            )
-            break
+    for chunk in pending_chunks:
+        blurb = blurbs_by_chunk_id.get(chunk.id)
         if not blurb:
             continue
+        metadata = dict(chunk.metadata_json or {})
         metadata[CONTEXT_BLURB_METADATA_KEY] = blurb[:_BLURB_MAX_CHARS]
         chunk.metadata_json = metadata
         runtime_db.add(chunk)
@@ -161,13 +173,8 @@ def _chunk_section_paths(chunk: RuntimeDocumentChunk) -> list[str]:
     return [chunk.section_title] if chunk.section_title else []
 
 
-def _generate_blurb(
-    filename: str,
-    chunk: RuntimeDocumentChunk,
-    llm_client: Any | None,
-) -> str:
-    from anima_server.services.agent.llm_json import call_llm_for_text
-    from anima_server.services.documents.indexing import _run_awaitable
+def _blurb_prompt(filename: str, chunk: RuntimeDocumentChunk) -> str:
+    """Build a blurb prompt while the SQLAlchemy objects stay caller-owned."""
 
     section = f"\nSection: {chunk.section_title}" if chunk.section_title else ""
     pages = ""
@@ -178,15 +185,69 @@ def _generate_blurb(
             else f"\nPages: {chunk.page_start}-{chunk.page_end}"
         )
     excerpt = " ".join(chunk.content_text.split())[:_BLURB_CHUNK_EXCERPT_CHARS]
-    prompt = (
+    return (
         f"Document: {filename}{section}{pages}\n"
         f"Chunk {chunk.chunk_index}:\n{excerpt}\n\n"
         "Write the context sentence now."
     )
-    blurb = _run_awaitable(
-        call_llm_for_text(_BLURB_SYSTEM_PROMPT, prompt, client=llm_client)
-    )
-    return " ".join((blurb or "").split())
+
+
+async def _generate_blurbs(
+    *,
+    document_id: int,
+    prompts: Sequence[tuple[int, str]],
+    llm_client: Any | None,
+) -> list[tuple[int, str]]:
+    """Generate one document's blurbs on one loop with one loop-owned client."""
+
+    from anima_server.services.agent.llm_json import call_llm_for_text
+
+    client = llm_client
+    owns_client = client is None
+    current_chunk_id = prompts[0][0]
+    generated: list[tuple[int, str]] = []
+    try:
+        if client is None:
+            from anima_server.services.agent.llm import create_provider_chat_client
+
+            client = create_provider_chat_client(
+                provider=settings.agent_provider,
+                model=settings.agent_model,
+                timeout=settings.agent_llm_timeout,
+                max_tokens=settings.agent_max_tokens,
+                temperature=settings.agent_temperature,
+            )
+
+        for chunk_id, prompt in prompts:
+            current_chunk_id = chunk_id
+            blurb = await call_llm_for_text(
+                _BLURB_SYSTEM_PROMPT,
+                prompt,
+                client=client,
+            )
+            normalized = " ".join((blurb or "").split())
+            if normalized:
+                generated.append((chunk_id, normalized))
+    except Exception:
+        logger.warning(
+            "Contextual blurb generation failed for document %s chunk %s; "
+            "continuing without blurbs",
+            document_id,
+            current_chunk_id,
+            exc_info=True,
+        )
+    finally:
+        if owns_client and client is not None:
+            close = getattr(client, "aclose", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    logger.warning(
+                        "Failed to close contextual blurb LLM client",
+                        exc_info=True,
+                    )
+    return generated
 
 
 __all__ = [
