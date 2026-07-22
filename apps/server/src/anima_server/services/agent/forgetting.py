@@ -449,6 +449,34 @@ def _scrub_dream_journal_for_forget(
     return deleted
 
 
+def _scrub_dreams_matching_topic_tokens(
+    db: Session,
+    *,
+    user_id: int,
+    topic_tokens: set[str],
+) -> int:
+    """Delete IL7 dream_journal rows any of whose ``latent_topic_keys``
+    token-matches a purged topic (same whole-token predicate the trace purge
+    uses). Unlike the id/exact-key scrub, this matches the DREAM's own refs, so
+    a dream survives neither its source trace being pruned nor capped."""
+    from anima_server.models import DreamJournal
+
+    if not topic_tokens:
+        return 0
+    deleted = 0
+    for row in db.scalars(
+        select(DreamJournal).where(DreamJournal.user_id == user_id)
+    ).all():
+        refs = row.source_refs if isinstance(row.source_refs, dict) else {}
+        keys = refs.get("latent_topic_keys")
+        if isinstance(keys, list) and any(
+            topic_tokens <= _topic_key_content_tokens(str(k)) for k in keys
+        ):
+            db.delete(row)
+            deleted += 1
+    return deleted
+
+
 def forget_latent_traces_for_topic(
     db: Session,
     *,
@@ -554,10 +582,11 @@ def purge_latent_traces_matching_topic(
         if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
     ]
     # IL7: dreams built on any purged topic hold its key + derived prose in
-    # durable, vault-exported state — scrub them by the purged topic_keys.
-    _scrub_dream_journal_for_forget(
-        db, user_id=user_id, forgotten_topic_keys={trace.topic_key for trace in traces}
-    )
+    # durable, vault-exported state — scrub them by the SAME topic-token
+    # predicate applied to the dreams' own latent_topic_keys, NOT only the
+    # live traces' keys: a dream can outlive its source trace (pruned/capped),
+    # so deriving keys from current LatentTrace rows would miss it.
+    _scrub_dreams_matching_topic_tokens(db, user_id=user_id, topic_tokens=topic_tokens)
     for trace in traces:
         db.delete(trace)
     if traces:

@@ -358,10 +358,14 @@ def run_dream_for_user(
             )
             affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=local_now)
 
-            # Mark the attempt BEFORE the extraction call — a failed/empty
-            # generation must still count against tonight's cap so the tick
-            # doesn't re-call the model every 60s during an outage.
+            # Mark the attempt and COMMIT it durably BEFORE the extraction call.
+            # A failed/empty generation — or ANY later effect raising (journal
+            # write/prune, affect save, reconsolidation, the soul commit) — must
+            # still count against tonight's cap; committing here means the outer
+            # exception handler can't roll the marker back and reopen the 60s
+            # retry storm this marker exists to prevent.
             drive_row.last_dream_attempt_at = local_now.astimezone(UTC)
+            runtime_db.commit()
 
             generated = asyncio.run(
                 generate_dream_narrative(
@@ -374,8 +378,7 @@ def run_dream_for_user(
                 )
             )
             if generated is None:
-                runtime_db.commit()  # persist the attempt marker (bounds retries)
-                return False
+                return False  # attempt marker already committed above
 
             share_worthy = is_share_worthy(selected, config)
             # Deltas are already coerced to float in generate_dream_narrative.

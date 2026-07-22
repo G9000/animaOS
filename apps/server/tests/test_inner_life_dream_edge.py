@@ -462,6 +462,30 @@ def test_topic_purge_scrubs_dreams_built_on_that_topic() -> None:
     se.dispose()
 
 
+def test_topic_purge_scrubs_dream_whose_trace_already_gone() -> None:
+    """Regression (PR review, P1): a dream can outlive its source LatentTrace
+    (pruned/capped/deleted). The topic purge must still scrub such a dream by
+    token-matching the dream's own latent_topic_keys, not only live traces."""
+    from anima_server.services.agent.forgetting import purge_latent_traces_matching_topic
+
+    se = _soul_engine()
+    sf = _factory(se)
+    with sf() as db_:  # dream references the topic, but NO LatentTrace row exists
+        db_.add(DreamJournal(
+            user_id=1, dreamt_at=NIGHT, narrative="a dream about the commute",
+            source_refs={"memory_item_ids": [], "latent_topic_keys": ["commute_stress"]},
+            affect_delta={}, share_worthy=True,
+        ))
+        db_.commit()
+
+    with sf() as db_:
+        purge_latent_traces_matching_topic(db_, user_id=1, topic="commute stress")
+        db_.commit()
+    with sf() as db_:
+        assert db_.scalars(select(DreamJournal)).all() == []  # scrubbed despite no trace
+    se.dispose()
+
+
 def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
