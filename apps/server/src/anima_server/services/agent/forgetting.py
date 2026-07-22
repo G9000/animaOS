@@ -391,10 +391,12 @@ def _scrub_latent_traces_for_forget(
     *,
     user_id: int,
     source_message_ids: Iterable[int],
-) -> int:
+) -> set[str]:
     """Scrub latent-trace evidence_refs pointing at a forgotten memory's
     sources (PRD IL4 "right-to-forget integration" — binding, P1 review
     finding). A trace left with no surviving evidence is deleted outright.
+    Returns the affected traces' topic_keys so the caller can also scrub any
+    IL7 dream built on those topics.
     """
     from anima_server.services.agent.latent_traces import (
         scrub_latent_traces_for_forgotten_sources,
@@ -825,11 +827,15 @@ def forget_memory(
             for item in chain_items
         ),
     )
-    result.latent_traces_scrubbed = _scrub_latent_traces_for_forget(
+    # Capture the topic_keys of traces scrubbed via source-message overlap —
+    # a dream may reference one of THOSE topics (not just a memory-text-derived
+    # key), and those rows must be scrubbed too.
+    forgotten_topic_keys: set[str] = _scrub_latent_traces_for_forget(
         db,
         user_id=user_id,
         source_message_ids=source_message_ids,
     )
+    result.latent_traces_scrubbed = len(forgotten_topic_keys)
     # Also delete traces for the forgotten items' own topics: forgetting a
     # confirmed memory about X must take the latent buffer for X with it,
     # not just the refs that shared source messages. The fold lane writes
@@ -837,7 +843,6 @@ def forget_memory(
     from anima_server.services.agent.claims import derive_topic_key
     from anima_server.services.agent.latent_traces import forget_latent_traces_by_topic
 
-    forgotten_topic_keys: set[str] = set()
     for item in chain_items:
         content_plain = df(user_id, item.content, table="memory_items", field="content")
         for category in {item.category, "minor_observation"}:
