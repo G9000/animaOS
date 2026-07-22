@@ -1481,7 +1481,7 @@ impl CoreCommitCoordinator {
 
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
             if let Err(error) = self.reauthenticate_cached_catalog_bytes(
-                &head,
+                &pointers,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             ) {
@@ -1761,7 +1761,7 @@ impl CoreCommitCoordinator {
         }
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
             if let Err(error) = self.reauthenticate_cached_catalog_bytes(
-                &head,
+                &pointers,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             ) {
@@ -2106,6 +2106,47 @@ impl CoreCommitCoordinator {
     }
 
     fn reauthenticate_cached_catalog_bytes(
+        &self,
+        pointers: &PointerSet,
+        #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Result<(), CommitError> {
+        let head = pointers
+            .head
+            .as_ref()
+            .ok_or(CommitError::AuthoritativeHeadMissingAfterCutover)?;
+        self.reauthenticate_cached_catalog_record(
+            head,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
+
+        let receipt = pointers
+            .receipt
+            .as_ref()
+            .ok_or(CommitError::AuthoritativeHeadViolatesCutoverReceipt)?;
+        if receipt != head {
+            self.reauthenticate_cached_catalog_record(
+                receipt,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
+        }
+
+        let complete = pointers
+            .complete
+            .as_ref()
+            .ok_or(CommitError::AuthoritativeHeadViolatesCutoverReceipt)?;
+        if complete != head && complete != receipt {
+            self.reauthenticate_cached_catalog_record(
+                complete,
+                #[cfg(test)]
+                probe,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn reauthenticate_cached_catalog_record(
         &self,
         head: &HeadRecord,
         #[cfg(test)] probe: Option<&mut CatalogLoadProbe<'_>>,

@@ -4,9 +4,9 @@
 
 **Goal:** Make steady-state CoreFS full-catalog commits pass the existing PCF-002 latency gates without changing the V2 wire format, durability/recovery semantics, safe object-file checks, or benchmark contract.
 
-**Architecture:** Keep disk state authoritative and add a process-local `Arc` snapshot selected only after exact pointer and FRK-derived key-identity checks plus SHA-256 reauthentication of the bounded catalog bytes named by HEAD. Remove redundant catalog decrypt/validation and publication-hash passes at the trusted coordinator boundary, retain strict public/untrusted paths, then reduce allocation and unchanged-object key-unwrapping work while continuing to safely reopen every referenced immutable object.
+**Architecture:** Keep disk state authoritative and add a process-local `Arc` snapshot selected only after exact pointer and FRK-derived key-identity checks plus SHA-256 reauthentication of every distinct bounded catalog named by the complete HEAD/receipt/completion tuple. Remove redundant catalog decrypt/validation and publication-hash passes at the trusted coordinator boundary, retain strict public/untrusted paths, then reduce allocation and unchanged-object key-unwrapping work while continuing to safely reopen every referenced immutable object.
 
-**PR #117 correction (2026-07-23):** The original exact-hit steps incorrectly treated a matching in-memory snapshot as sufficient after pointer rereads. Exact hits now reopen and hash the referenced catalog generation; missing or changed durable bytes clear the cache and fail closed while decryption, decoding, validation, and re-encoding remain skipped.
+**PR #117 corrections (2026-07-23):** The original exact-hit steps incorrectly treated a matching in-memory snapshot as sufficient after pointer rereads, then the first correction reauthenticated only the HEAD-named generation. Exact hits now reopen and hash every distinct catalog named by the exact HEAD/receipt/completion tuple, deduplicating equal records. Missing or changed current or retained durable bytes clear the cache and fail closed while decryption, decoding, validation, and re-encoding remain skipped.
 
 **Tech Stack:** Rust 1.75, `cap-std`, `fs4`, `aes-gcm`, `hkdf`, `sha2`, Rust unit/integration tests, Python 3.12/pytest benchmark-contract validation, PowerShell, Git.
 
@@ -381,6 +381,9 @@ fn unlocked_exact_hit_reauthenticates_catalog_bytes_without_crypto() { /* pointe
 
 #[test]
 fn unlocked_cache_hit_rejects_missing_catalog_bytes() { /* exact hit fails closed */ }
+
+#[test]
+fn unlocked_cache_hit_rejects_missing_retained_cutover_catalog_bytes() { /* every distinct pointer catalog is reopened */ }
 
 #[test]
 fn unlocked_cache_hit_rejects_changed_catalog_bytes() { /* HEAD hash mismatch */ }

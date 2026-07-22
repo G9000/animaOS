@@ -102,8 +102,12 @@ fn seed_committed(coordinator: &CoreCommitCoordinator, keys: &FrkSubkeys) {
 }
 
 fn authoritative_catalog_path(coordinator: &CoreCommitCoordinator) -> PathBuf {
+    pointer_catalog_path(coordinator, super::HEAD_FILE)
+}
+
+fn pointer_catalog_path(coordinator: &CoreCommitCoordinator, pointer_name: &str) -> PathBuf {
     let head = coordinator
-        .load_pointer_head(super::HEAD_FILE)
+        .load_pointer_head(pointer_name)
         .unwrap()
         .unwrap();
     coordinator.catalogs_path().join(format!(
@@ -960,6 +964,47 @@ fn unlocked_cache_hit_rejects_changed_catalog_bytes() {
     assert!(matches!(
         coordinator.load_committed(&keys),
         Err(CommitError::Head(HeadError::CatalogMismatch("hash")))
+    ));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocked_cache_hit_rejects_missing_retained_cutover_catalog_bytes() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-unlocked-missing-retained-catalog-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    coordinator
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok((*catalog(generation)).clone()),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let head_catalog = authoritative_catalog_path(&coordinator);
+    let retained_catalog = pointer_catalog_path(&coordinator, super::CUTOVER_RECEIPT_FILE);
+    assert_ne!(head_catalog, retained_catalog);
+    let mut probe = CatalogLoadProbe::default();
+    coordinator
+        .load_committed_with_probe(&keys, &mut probe)
+        .unwrap()
+        .unwrap();
+    assert_eq!(probe.catalog_file_reads, 2);
+    assert_eq!(probe.catalog_decrypts, 0);
+    assert_eq!(probe.catalog_encodes, 0);
+    std::fs::remove_file(retained_catalog).unwrap();
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
     ));
 
     drop(coordinator);

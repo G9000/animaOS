@@ -8,7 +8,7 @@
 
 **Task 10 validation note:** The original plan Step 3 direct-inspection snippet used the stale path `<fixture>/fs/objects`. Production `run_fixture_benchmark(&fixture_root)` passes the fixture root to `CoreCommitCoordinator::new(root)`, and retained integration coverage reads `<fixture>/objects`. The literal assertion failure was preserved; the same read-only provenance, schema, generation, catalog, object-count, and temporary-file assertions passed with the production-canonical sibling object root. The plan now records that canonical layout. This documentation-only correction does not change the source commit, binary, timings, target, hashes, or artifact provenance and does not require another 30/200 run.
 
-**PR #117 authority correction (2026-07-23):** Exact cache selection is not durable catalog authority by itself. Every cache hit must reopen the bounded catalog generation named by HEAD and verify its SHA-256 before returning or building from the cached decoded catalog. Missing, truncated, or changed bytes clear the cache and fail closed. The hit still skips decryption, decoding, invariant validation, and canonical re-encoding.
+**PR #117 authority corrections (2026-07-23):** Exact cache selection is not durable catalog authority by itself. Every cache hit must reopen every distinct bounded catalog named by the exact HEAD/receipt/completion tuple and verify each SHA-256 before returning or building from the cached decoded catalog; equal records are authenticated once. Missing, truncated, or changed current or retained bytes clear the cache and fail closed. The hit still skips decryption, decoding, invariant validation, and canonical re-encoding.
 
 **PR #117 reference evidence (2026-07-23):** The source-bound exact 30/200 rerun from corrective commit `dd9ef8d8743e63eb0577bc4cdc2b6489afd65101` retained the same gate outcome. Medium p95 is `75.6318` ms, maximum-live p95 is `298.6453` ms, serialized-limit p95 is `246.7518` ms, durable-write p95 is `1.0836` ms, and maximum-live serialized size is `8,255,077` bytes. Only `maximumLiveP95Le250Ms` remains false. Independent source/binary/Cargo.lock/target/argv/schema/count/generation/temp-file validation and all 121 benchmark-contract tests passed.
 
@@ -156,7 +156,7 @@ The steady-state normal commit becomes:
 1. acquire `CoreCommitLock` and retain the existing acquisition timestamp;
 2. revalidate pinned root and directory handles;
 3. read and decode HEAD, receipt, and completion records;
-4. derive and compare the required catalog/object-wrap cache identities, then either reauthenticate the referenced durable bytes by hash for an exact cache hit or authenticate/decrypt the referenced catalog once on the full recovery path;
+4. derive and compare the required catalog/object-wrap cache identities, then either reauthenticate every distinct catalog named by the exact pointer tuple for an exact cache hit or authenticate/decrypt the required catalogs on the full recovery path;
 5. validate active FRK version and caller preconditions;
 6. build the next already-validated immutable generation;
 7. apply marker state through the validated-value path;
@@ -195,8 +195,9 @@ Implementation is test-first. Focused regressions must prove:
 12. the validated marker path cannot construct an invalid marker or bypass graph validation for caller-created entries;
 13. ordered precondition coverage rejects the same missing-source and missing-destination cases as the current implementation;
 14. unchanged cached object bindings avoid repeated unwraps, while changed wrappers and wrong FRK bindings still fail;
-15. missing, empty, symlinked, replaced, and unexpected-hard-link object files still fail on a cache hit; and
-16. benchmark measurement still records lock acquisition first, HEAD publication last, complete `commit` wall time, full catalog bytes, and all strict provenance fields.
+15. missing or changed catalog bytes named by HEAD, receipt, or completion still fail on a cache hit, including a retained cutover generation after HEAD advances;
+16. missing, empty, symlinked, replaced, and unexpected-hard-link object files still fail on a cache hit; and
+17. benchmark measurement still records lock acquisition first, HEAD publication last, complete `commit` wall time, full catalog bytes, and all strict provenance fields.
 
 Required broader validation remains:
 
