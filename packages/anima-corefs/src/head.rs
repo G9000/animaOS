@@ -259,6 +259,14 @@ impl HeadRecord {
             .map(drop)
     }
 
+    pub(crate) fn verify_catalog_hash(&self, encrypted_catalog: &[u8]) -> Result<(), HeadError> {
+        self.validate()?;
+        if sha256_hex(encrypted_catalog) != self.catalog_hash {
+            return Err(HeadError::CatalogMismatch("hash"));
+        }
+        Ok(())
+    }
+
     #[cfg(not(test))]
     pub(crate) fn verify_and_decrypt_catalog(
         &self,
@@ -305,9 +313,7 @@ impl HeadRecord {
         if catalog.generation() != self.generation {
             return Err(HeadError::CatalogMismatch("decrypted generation"));
         }
-        if sha256_hex(encrypted_catalog) != self.catalog_hash {
-            return Err(HeadError::CatalogMismatch("hash"));
-        }
+        self.verify_catalog_hash(encrypted_catalog)?;
         Ok(catalog)
     }
 

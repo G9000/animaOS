@@ -4,7 +4,9 @@
 
 **Goal:** Make steady-state CoreFS full-catalog commits pass the existing PCF-002 latency gates without changing the V2 wire format, durability/recovery semantics, safe object-file checks, or benchmark contract.
 
-**Architecture:** Keep disk state authoritative and add a process-local `Arc` snapshot selected only after exact pointer and FRK-derived key-identity checks. Remove redundant catalog decrypt/validation/hash passes at the trusted coordinator boundary, retain strict public/untrusted paths, then reduce allocation and unchanged-object key-unwrapping work while continuing to safely reopen every referenced immutable object.
+**Architecture:** Keep disk state authoritative and add a process-local `Arc` snapshot selected only after exact pointer and FRK-derived key-identity checks plus SHA-256 reauthentication of the bounded catalog bytes named by HEAD. Remove redundant catalog decrypt/validation and publication-hash passes at the trusted coordinator boundary, retain strict public/untrusted paths, then reduce allocation and unchanged-object key-unwrapping work while continuing to safely reopen every referenced immutable object.
+
+**PR #117 correction (2026-07-23):** The original exact-hit steps incorrectly treated a matching in-memory snapshot as sufficient after pointer rereads. Exact hits now reopen and hash the referenced catalog generation; missing or changed durable bytes clear the cache and fail closed while decryption, decoding, validation, and re-encoding remain skipped.
 
 **Tech Stack:** Rust 1.75, `cap-std`, `fs4`, `aes-gcm`, `hkdf`, `sha2`, Rust unit/integration tests, Python 3.12/pytest benchmark-contract validation, PowerShell, Git.
 
@@ -375,7 +377,13 @@ Add invocation-scoped private `CatalogLoadProbe` counters for pointer reads, cat
 
 ```rust
 #[test]
-fn unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() { /* pointers > 0; file/decrypt/encode == 0 */ }
+fn unlocked_exact_hit_reauthenticates_catalog_bytes_without_crypto() { /* pointers > 0; file == 1; decrypt/encode == 0 */ }
+
+#[test]
+fn unlocked_cache_hit_rejects_missing_catalog_bytes() { /* exact hit fails closed */ }
+
+#[test]
+fn unlocked_cache_hit_rejects_changed_catalog_bytes() { /* HEAD hash mismatch */ }
 
 #[test]
 fn unlocked_second_head_change_discards_the_candidate_hit() { /* existing stability read */ }
@@ -390,7 +398,7 @@ fn unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto() { /* try_loc
 - [ ] **Step 2: Run RED cache-counter tests and pre-change GREEN authority characterizations**
 
 ```powershell
-cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto -- --exact
+cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_exact_hit_reauthenticates_catalog_bytes_without_crypto -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction unlocked_second_head_change_discards_the_candidate_hit -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction another_coordinator_advancing_head_forces_unlocked_load_miss -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto -- --exact
@@ -400,14 +408,14 @@ Expected: `unlocked_exact_hit...` and `unlocked_load_holds_no_cache_guard...` FA
 
 - [ ] **Step 3: Implement the unlocked load path**
 
-Refactor HEAD/receipt/completion reads into one `PointerSet`. Derive all required key identities before `CommitCache::get`. On an exact hit, return the cached `Arc<CatalogGeneration>` without opening catalog bytes, decrypting, validating, or re-encoding. On a miss, execute the existing full authentication/recovery path and cache only the authenticated catalog with `objects: None`.
+Refactor HEAD/receipt/completion reads into one `PointerSet`. Derive all required key identities before `CommitCache::get`. On an exact hit, reopen the bounded catalog generation named by HEAD, verify its SHA-256, and return the cached `Arc<CatalogGeneration>` without decrypting, decoding, invariant-validating, or re-encoding. Missing or changed bytes clear the cache and fail closed. On a miss, execute the existing full authentication/recovery path and cache only the authenticated catalog with `objects: None`.
 
 Change private `CommittedCatalog.catalog` storage to `Arc<CatalogGeneration>` while keeping `pub fn catalog(&self) -> &CatalogGeneration`. Public `load_committed` still performs its second HEAD stability read after the cache guard is gone; a changed second read discards the candidate and follows the existing retry/failure contract.
 
 - [ ] **Step 4: Run unlocked-load tests and commit**
 
 ```powershell
-cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto -- --exact
+cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_exact_hit_reauthenticates_catalog_bytes_without_crypto -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction unlocked_second_head_change_discards_the_candidate_hit -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction another_coordinator_advancing_head_forces_unlocked_load_miss -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto -- --exact
@@ -415,20 +423,20 @@ git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/trans
 git -c commit.gpgsign=false commit -m "perf: reuse exact CoreFS snapshot on unlocked load"
 ```
 
-Expected: PASS; pointer records and the second HEAD are reread, while an exact hit performs zero catalog-file reads, decrypts, or encodes.
+Expected: PASS; pointer records and the second HEAD are reread, while an exact hit performs one bounded catalog-file read and hash verification with zero decrypts or encodes. Missing or changed generation bytes fail before returning cached state.
 
 - [ ] **Step 5: Add failing locked-load and lock-order tests**
 
 ```rust
 #[test]
-fn locked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() { /* internal locked loader */ }
+fn locked_exact_hit_reauthenticates_catalog_bytes_without_crypto() { /* internal locked loader */ }
 
 #[test]
 fn locked_load_acquires_kernel_lock_before_cache_and_releases_cache_before_io() { /* ordered stages + try_lock */ }
 ```
 
 ```powershell
-cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::locked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto -- --exact
+cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::locked_exact_hit_reauthenticates_catalog_bytes_without_crypto -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::locked_load_acquires_kernel_lock_before_cache_and_releases_cache_before_io -- --exact
 ```
 
@@ -439,7 +447,7 @@ Expected: FAIL because the locked loader has no exact-hit or stage-observer seam
 The locked helper must require an already-held `CoreCommitLock`, reread/validate the pinned layout and complete pointer set, derive key IDs without the cache mutex, clone at most one snapshot `Arc`, and perform all I/O/crypto after the guard is gone. It must never acquire the cache mutex before the kernel lock.
 
 ```powershell
-cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::locked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto -- --exact
+cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::locked_exact_hit_reauthenticates_catalog_bytes_without_crypto -- --exact
 cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests::locked_load_acquires_kernel_lock_before_cache_and_releases_cache_before_io -- --exact
 cargo +1.75.0 test --locked -p anima-corefs --test transaction
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/cache.rs packages/anima-corefs/src/transaction/cache_tests.rs packages/anima-corefs/tests/transaction.rs

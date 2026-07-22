@@ -8,6 +8,8 @@
 
 **Task 10 validation note:** The original plan Step 3 direct-inspection snippet used the stale path `<fixture>/fs/objects`. Production `run_fixture_benchmark(&fixture_root)` passes the fixture root to `CoreCommitCoordinator::new(root)`, and retained integration coverage reads `<fixture>/objects`. The literal assertion failure was preserved; the same read-only provenance, schema, generation, catalog, object-count, and temporary-file assertions passed with the production-canonical sibling object root. The plan now records that canonical layout. This documentation-only correction does not change the source commit, binary, timings, target, hashes, or artifact provenance and does not require another 30/200 run.
 
+**PR #117 authority correction (2026-07-23):** Exact cache selection is not durable catalog authority by itself. Every cache hit must reopen the bounded catalog generation named by HEAD and verify its SHA-256 before returning or building from the cached decoded catalog. Missing, truncated, or changed bytes clear the cache and fail closed. The hit still skips decryption, decoding, invariant validation, and canonical re-encoding.
+
 **Ticket:** PCF-002 Step 12
 
 **Implementation plan:** `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
@@ -65,7 +67,7 @@ The normal commit currently performs several complete or object-proportional pas
 4. `validate_prepared_revisions` scans the complete next catalog. For every unchanged object it unwraps the current and next Object DEK records, compares derived key bindings, and safely opens the immutable object file.
 5. catalog encryption validates the complete next catalog again, performs the required allocation-free bounded serialization preflight, materializes canonical plaintext, and encrypts it. Catalog naming hashes the full encrypted envelope, then `HeadRecord::new_for_catalog` decrypts and fully validates the just-created envelope and hashes it again before durable publication.
 
-The optimization targets duplicate decrypt/authentication, invariant validation, full-envelope hashing, map allocation, and unchanged-object key unwraps. It does not remove the one bounded canonical plaintext emission or durable publication.
+The optimization targets duplicate decrypt/authentication, invariant validation, redundant publication hashing, map allocation, and unchanged-object key unwraps. It does not remove cache-hit reauthentication of durable catalog bytes, the one bounded canonical plaintext emission, or durable publication.
 
 ## Design
 
@@ -81,7 +83,7 @@ The optimization targets duplicate decrypt/authentication, invariant validation,
 
 Each cache identity is a fixed-length HKDF-derived identifier using an explicit CoreFS cache-binding domain, the Core ID, FRK version, and the applicable high-entropy catalog or object-wrap subkey. It is safe to compare and store but is never accepted as cryptographic authority outside cache selection. The cache contains decrypted catalog metadata already returned by the coordinator today, but it stores no FRK, catalog key, Object DEK, plaintext object content, or new secret material.
 
-For a normal commit, after acquiring the kernel lock and revalidating the pinned layout, the coordinator rereads all authoritative pointer records. A hit requires exact equality with the cached HEAD/receipt/complete tuple, exact Core identity, exact required FRK version, equality of every required catalog-key cache identity, equality of the active object-wrap-key identity before object-binding reuse, and a non-recovery state. The cached catalog was previously authenticated against that exact HEAD and key material and may then replace catalog-file read, hash verification, decryption, decode, and canonical-reencode.
+For a normal commit, after acquiring the kernel lock and revalidating the pinned layout, the coordinator rereads all authoritative pointer records. A hit requires exact equality with the cached HEAD/receipt/complete tuple, exact Core identity, exact required FRK version, equality of every required catalog-key cache identity, equality of the active object-wrap-key identity before object-binding reuse, and a non-recovery state. The coordinator then reopens the bounded catalog generation named by HEAD and verifies its SHA-256. Only that successful durable-byte check permits the cached decoded catalog to replace decryption, decode, invariant validation, and canonical re-encoding.
 
 Any mismatch, missing pointer, malformed pointer, recovery state, FRK-version mismatch, same-version key-identity mismatch, or absent cache becomes a cache miss and uses the existing full load/recovery path. Wrong key material therefore reaches normal catalog authentication and fails closed. A successful full path may refresh the authenticated catalog portion of the cache. Public unlocked `load_committed` retains its existing reread/race handling; a cache match does not eliminate its pointer stability check.
 
@@ -152,7 +154,7 @@ The steady-state normal commit becomes:
 1. acquire `CoreCommitLock` and retain the existing acquisition timestamp;
 2. revalidate pinned root and directory handles;
 3. read and decode HEAD, receipt, and completion records;
-4. derive and compare the required catalog/object-wrap cache identities, then select an exact cache hit or authenticate/decrypt the referenced catalog once on the full recovery path;
+4. derive and compare the required catalog/object-wrap cache identities, then either reauthenticate the referenced durable bytes by hash for an exact cache hit or authenticate/decrypt the referenced catalog once on the full recovery path;
 5. validate active FRK version and caller preconditions;
 6. build the next already-validated immutable generation;
 7. apply marker state through the validated-value path;
@@ -169,6 +171,7 @@ The steady-state normal commit becomes:
 - A process crash loses the cache and returns to the existing disk-only recovery behavior.
 - A concurrent coordinator cannot reuse stale state because it must win the kernel lock and then observe the current pointer tuple.
 - Receipt-only, missing-HEAD-after-cutover, divergent receipt/completion, and mixed-FRK states bypass the cache.
+- Missing, truncated, or changed catalog-generation bytes invalidate an otherwise exact hit, clear the cache, and fail before a load returns or a commit build begins.
 - The cache is never persisted, serialized, transferred, or included in backup/restore.
 - All existing failure-injection points and their HEAD-before/after visibility guarantees remain in force.
 
@@ -176,7 +179,7 @@ The steady-state normal commit becomes:
 
 Implementation is test-first. Focused regressions must prove:
 
-1. a second same-head operation rereads pointer records but does not reread/decrypt/canonical-reencode the current catalog;
+1. a second same-head operation rereads pointer records and rehashes the referenced catalog bytes but does not decrypt, decode, invariant-validate, or canonical-reencode the current catalog;
 2. a cache-miss load decrypts and canonical-validates the referenced catalog exactly once while preserving every HEAD binding check;
 3. publication constructs byte-identical HEAD and physical-name values from one digest without decrypting the coordinator's just-encrypted catalog;
 4. wrong same-version active keys and wrong same-version retained receipt/completion keys miss the cache and fail normal authentication;

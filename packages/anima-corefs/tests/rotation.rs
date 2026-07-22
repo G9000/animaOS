@@ -537,7 +537,7 @@ fn cached_load_rejects_wrong_same_version_retained_material() {
 }
 
 #[test]
-fn successful_rotation_replaces_cache_only_after_cutover_completion() {
+fn successful_rotation_cache_rejects_missing_catalog_after_cutover_completion() {
     let root = reset_root("successful-rotation-cache-replacement");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let old_keys = keys(0x42, 1);
@@ -549,7 +549,7 @@ fn successful_rotation_replaces_cache_only_after_cutover_completion() {
         .map(|entry| entry.unwrap().file_name())
         .collect::<std::collections::HashSet<_>>();
     let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
-    let mut callback_generation = None;
+    let mut callback_rejected_missing_catalog = false;
 
     let outcome = coordinator
         .rotate_frk(&keyring, &pending_keys, 2, |_| {
@@ -563,17 +563,16 @@ fn successful_rotation_replaces_cache_only_after_cutover_completion() {
                 .ok_or_else(|| "rotation did not publish a new catalog".to_owned())?;
             fs::remove_file(coordinator.catalogs_path().join(new_catalog))
                 .map_err(|error| error.to_string())?;
-            let cached = coordinator
-                .load_committed_with_keyring(&keyring)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "rotated HEAD was not committed".to_owned())?;
-            callback_generation = Some(cached.head().generation());
+            callback_rejected_missing_catalog = matches!(
+                coordinator.load_committed_with_keyring(&keyring),
+                Err(CommitError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+            );
             Ok(())
         })
         .unwrap();
 
     assert_eq!(outcome.generation(), 3);
-    assert_eq!(callback_generation, Some(3));
+    assert!(callback_rejected_missing_catalog);
     drop(coordinator);
     fs::remove_dir_all(root).unwrap();
 }

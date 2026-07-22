@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::io::Cursor;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 
@@ -16,7 +18,7 @@ use crate::crypto::{
 };
 use crate::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION};
 use crate::folders::{FolderOwner, PortableName};
-use crate::head::HeadRecord;
+use crate::head::{HeadError, HeadRecord};
 use crate::id::OpaqueId;
 use crate::policy::AnimaAccess;
 use crate::rotation::FrkKeyring;
@@ -97,6 +99,18 @@ fn seed_committed(coordinator: &CoreCommitCoordinator, keys: &FrkSubkeys) {
             |_| Ok(()),
         )
         .unwrap();
+}
+
+fn authoritative_catalog_path(coordinator: &CoreCommitCoordinator) -> PathBuf {
+    let head = coordinator
+        .load_pointer_head(super::HEAD_FILE)
+        .unwrap()
+        .unwrap();
+    coordinator.catalogs_path().join(format!(
+        "catalog-{:020}-{}.acore",
+        head.generation(),
+        head.catalog_hash()
+    ))
 }
 
 fn prepare_cached_object(
@@ -876,7 +890,7 @@ fn unlocked_second_head_change_discards_the_candidate_hit() {
 }
 
 #[test]
-fn unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() {
+fn unlocked_exact_hit_reauthenticates_catalog_bytes_without_crypto() {
     let root = std::env::temp_dir().join(format!(
         "anima-corefs-cache-unlocked-hit-{}",
         std::process::id()
@@ -898,9 +912,91 @@ fn unlocked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() {
 
     assert_eq!(committed.head().generation(), 2);
     assert_eq!(probe.pointer_reads, 4);
-    assert_eq!(probe.catalog_file_reads, 0);
+    assert_eq!(probe.catalog_file_reads, 1);
     assert_eq!(probe.catalog_decrypts, 0);
     assert_eq!(probe.catalog_encodes, 0);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocked_cache_hit_rejects_missing_catalog_bytes() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-unlocked-missing-catalog-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    std::fs::remove_file(authoritative_catalog_path(&coordinator)).unwrap();
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlocked_cache_hit_rejects_changed_catalog_bytes() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-unlocked-changed-catalog-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    let catalog_path = authoritative_catalog_path(&coordinator);
+    let mut changed = std::fs::read(&catalog_path).unwrap();
+    changed[0] ^= 0xff;
+    std::fs::write(catalog_path, changed).unwrap();
+
+    assert!(matches!(
+        coordinator.load_committed(&keys),
+        Err(CommitError::Head(HeadError::CatalogMismatch("hash")))
+    ));
+
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_cache_hit_rejects_missing_catalog_bytes_before_build() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-commit-missing-catalog-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let keys = keys(0x11, 1);
+    seed_committed(&coordinator, &keys);
+    coordinator.load_committed(&keys).unwrap().unwrap();
+    std::fs::remove_file(authoritative_catalog_path(&coordinator)).unwrap();
+    let build_called = Cell::new(false);
+
+    let result = coordinator.commit(
+        &keys,
+        &[],
+        &[],
+        |_, generation| {
+            build_called.set(true);
+            Ok((*catalog(generation)).clone())
+        },
+        |_| Ok(()),
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommitError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+    assert!(!build_called.get());
+
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -943,7 +1039,7 @@ fn unlocked_load_holds_no_cache_guard_during_pointer_io_or_crypto() {
 }
 
 #[test]
-fn locked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() {
+fn locked_exact_hit_reauthenticates_catalog_bytes_without_crypto() {
     let root = std::env::temp_dir().join(format!(
         "anima-corefs-cache-locked-hit-{}",
         std::process::id()
@@ -962,7 +1058,7 @@ fn locked_exact_hit_rereads_pointers_but_not_catalog_bytes_or_crypto() {
 
     assert_eq!(committed.head().generation(), 2);
     assert_eq!(probe.pointer_reads, 3);
-    assert_eq!(probe.catalog_file_reads, 0);
+    assert_eq!(probe.catalog_file_reads, 1);
     assert_eq!(probe.catalog_decrypts, 0);
     assert_eq!(probe.catalog_encodes, 0);
     drop(coordinator);
@@ -1050,7 +1146,7 @@ fn same_coordinator_commit_reuses_only_the_exact_authenticated_head() {
 
     assert_eq!(outcome.generation(), 3);
     assert_eq!(probe.pointer_reads, 6);
-    assert_eq!(probe.catalog_file_reads, 0);
+    assert_eq!(probe.catalog_file_reads, 1);
     assert_eq!(probe.catalog_decrypts, 0);
     assert_eq!(probe.catalog_encodes, 0);
     drop(coordinator);

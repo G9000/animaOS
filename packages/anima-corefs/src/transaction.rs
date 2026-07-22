@@ -1480,6 +1480,14 @@ impl CoreCommitCoordinator {
         }
 
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
+            if let Err(error) = self.reauthenticate_cached_catalog_bytes(
+                &head,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            ) {
+                self.cache.clear();
+                return Err(error);
+            }
             return Ok(Some(CommittedCatalog {
                 head,
                 catalog: Arc::clone(snapshot.catalog()),
@@ -1752,6 +1760,14 @@ impl CoreCommitCoordinator {
             }
         }
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
+            if let Err(error) = self.reauthenticate_cached_catalog_bytes(
+                &head,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            ) {
+                self.cache.clear();
+                return Err(error);
+            }
             return Ok(Some(CommittedCatalog {
                 head,
                 catalog: Arc::clone(snapshot.catalog()),
@@ -2087,6 +2103,29 @@ impl CoreCommitCoordinator {
             probe.catalog_crypto_completed();
         }
         Ok((head, catalog))
+    }
+
+    fn reauthenticate_cached_catalog_bytes(
+        &self,
+        head: &HeadRecord,
+        #[cfg(test)] probe: Option<&mut CatalogLoadProbe<'_>>,
+    ) -> Result<(), CommitError> {
+        let catalog_name = format!(
+            "catalog-{:020}-{}.acore",
+            head.generation(),
+            head.catalog_hash()
+        );
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.catalog_file_read();
+        }
+        let encrypted_catalog = read_bounded_in(
+            &self.catalogs_dir,
+            OsStr::new(&catalog_name),
+            MAX_CATALOG_ENVELOPE_SIZE,
+        )?;
+        head.verify_catalog_hash(&encrypted_catalog)?;
+        Ok(())
     }
 
     /// Rewraps recoverable Object DEKs into a complete next catalog generation
