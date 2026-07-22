@@ -788,6 +788,7 @@ def forget_memory(
             chain_items.append(pred)
 
     # 2. Find and flag derived references for ALL items in the chain
+    derived_pattern_ids: set[int] = set()
     for item in chain_items:
         item_content = df(user_id, item.content, table="memory_items", field="content")
         refs = find_derived_references(
@@ -796,6 +797,10 @@ def forget_memory(
             user_id=user_id,
             exclude_memory_item_ids=chain_ids,
         )
+        # Pattern MemoryItems derived from the forgotten content: dreams can
+        # sample these (only identity-class rows are excluded), so their ids
+        # must join the dream scrub below (P1 right-to-forget).
+        derived_pattern_ids.update(ref.record_id for ref in refs.pattern_items)
         if refs.total > 0:
             result.derived_refs_affected += redact_derived_references(
                 db,
@@ -882,11 +887,12 @@ def forget_memory(
             )
     # IL7: any dream seeded from a forgotten memory carries its (derived)
     # content + provenance in durable, vault-exported state — delete those,
-    # matching both the forgotten memory ids and their latent-topic keys.
+    # matching the forgotten memory ids (incl. derived pattern items a dream
+    # may have sampled) and their latent-topic keys.
     result.dream_journal_scrubbed = _scrub_dream_journal_for_forget(
         db,
         user_id=user_id,
-        forgotten_memory_item_ids=set(chain_ids),
+        forgotten_memory_item_ids=set(chain_ids) | derived_pattern_ids,
         forgotten_topic_keys=forgotten_topic_keys,
     )
     _delete_profile_fields_for_forget(
