@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: in_progress
+- Status: blocked
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-22 14:32 MYT
+- Updated: 2026-07-22 14:43 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | blocked | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -59,6 +59,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - Benchmark evidence (2026-07-20 02:47 MYT): the regenerated source/binary/committed-lock-bound 30/200 artifact and direct fixture-tree inspection passed with kernel-acquisition-inclusive lock samples, while all three catalog latency gates remain red; PCF-002 and this initiative therefore remain blocked and PCF-003 remains ineligible.
 - Integration evidence (2026-07-20 03:14 MYT): PR #110 is cleanly rebased onto current `origin/main` at `2a741d9c`; its stale server dependency metadata is repaired with exactly two `uv.lock` entries, and both `uv lock --check` and the exact Server Ruff workflow command pass.
 - Benchmark evidence (2026-07-20 03:14 MYT): post-rebase exact 30/200 evidence passed held-path provenance, closed-schema validation, and direct fixture-tree inspection. The durable-write and maximum-live size gates pass, but all three latency gates remain red; PCF-002 and this initiative therefore remain blocked and PCF-003 remains ineligible.
+- Benchmark evidence (2026-07-22 14:43 MYT): the unchanged exact 30/200 run passed medium, serialized-limit, durable-write, and maximum-live size gates, but maximum-live commit p95 was `299.6261` ms against the unchanged `250` ms gate. Corrected independent production-layout validation passed source/build/binary/Cargo.lock/target/argv/schema/count/generation/temp-file assertions after preserving the literal Task 10 Step 3 failure from its stale `<fixture>/fs/objects` path. PCF-002 and this parent are blocked; no remaining child is legally eligible, and clearance requires a separately approved architecture revision.
 
 ## Completed Tickets
 
@@ -183,6 +184,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-22 12:51 MYT - Completed PCF-002 catalog-performance Task 7 at `5bb38b61`: replaced two catalog-sized precondition maps with one canonical stable-ID ordered merge while preserving exact public error variants, payloads, display text, and source-before-destination precedence. The 15-row old/new oracle, focused public cases, 28-test transaction integration target, strict Clippy, scoped rustfmt, and diff hygiene passed; independent spec and quality reviews approved the task. One non-blocking review note remains to add direct `Ordering::Less` and alternating-transition oracle rows if this validator is revisited. PCF-002 and this parent remain `in_progress`, PCF-003 remains dependency-ineligible, Task 8 is next, and no external action was taken.
 - 2026-07-22 13:45 MYT - Completed PCF-002 catalog-performance Task 8 through `09a06844`: exact pointer/key/object-tuple-bound cached bindings now skip redundant immutable-object DEK unwraps while every unchanged object still receives a fresh safe-open and filesystem identity validation. Independent spec review caught stale reuse after all authoritative pointers disappeared; a RED/GREEN first-mutation regression now proves a fresh validation unwrap, the all-missing authoritative load clears stale cache authority, and validation/recovery/rotation remain object-state-free. The full Rust 1.75 CoreFS suite, strict Clippy, scoped rustfmt, diff hygiene, and independent spec/quality reviews passed. Task 9 will quantify the review's non-blocking cache-state rebuild cost; a future full-commit regular-file replacement race test remains optional. PCF-002 and this parent remain `in_progress`, PCF-003 remains dependency-ineligible, Task 9 is next, and no external action was taken.
 - 2026-07-22 14:32 MYT - Completed PCF-002 catalog-performance Task 9 at `da58722d`, with inherited Rust 1.75 formatting drift repaired separately at `0b45d248`. A RED missing-helper proof now locks the benchmark timer around the exact complete public commit call while retaining lock-first, durable HEAD-flush-last, one-production-serialization, and real full-catalog characterizations. The exact crate-wide formatter, full Rust 1.75 CoreFS suite, strict Clippy, all 121 Python benchmark-contract tests, and independent spec/quality reviews passed. A disposable 1/5 diagnostic passed every count, generation, and provenance-shape assertion at p95 44.9353 ms medium, 181.3207 ms maximum-live, and 67.7180 ms serialized-limit; it is directional only and did not update acceptance evidence. PCF-002 and this parent remain `in_progress`, PCF-003 remains dependency-ineligible, the unchanged exact 30/200 Task 10 reference run is next, and no external action was taken.
+- 2026-07-22 14:43 MYT - PCF-002 catalog-performance Task 10 archived only the exact prior create-only target, completed the unchanged exact 30/200 reference run in 123.206 seconds, and preserved its exit-2 red artifact. Medium p95 `57.4526` ms, serialized-limit p95 `88.0664` ms, durable-write p95 `0.7948` ms, and maximum-live size `8,255,077` bytes passed; maximum-live p95 `299.6261` ms failed its unchanged `250` ms gate. The literal Step 3 inspection exposed a stale `<fixture>/fs/objects` plan path; the same read-only validator passed with the production-canonical sibling `<fixture>/objects` root established by implementation and integration-test evidence, and the plan remained unchanged to preserve source binding. Re-reading PCF-003 through PCF-010 found no eligible work: PCF-003 depends on blocked PCF-002 and every later child depends on PCF-003 or its downstream chain/gates. PCF-002's row and this parent moved to `blocked`; all other child status/ownership values and completed history remain unchanged. Clearance requires a separately approved architecture revision. No external action was taken.
 
 ## Validation
 
@@ -249,6 +251,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 Step 12 eighth post-review reference evidence: independent source/binary/committed-Cargo.lock/target/build/schema validation and direct fixture-tree inspection passed for source `7dd4fd21954afa6d780927a8fb035ab9b6fae9a0`, artifact SHA-256 `5444255e8f7d116ecb9ccee9e3af6c329376770f45385eb3d6330e3caa86637d`, binary SHA-256 `d4fbcad5d73c6f86076c69a5179e753aefafa8f7810085d9c7cfb2df6a003cad`, and committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`; every fixture completed with HEAD, 232 catalogs, expected object counts, zero temporary files, and kernel-acquisition-through-unlock timing.
   - PR #110 post-main integration: clean rebase onto `2a741d9c`; two-line `uv.lock` project metadata repair; `uv lock --check`; exact Server Ruff workflow command; full Rust 1.75 CoreFS tests; strict all-target Clippy; 121 Python benchmark-contract tests; and diff hygiene passed.
   - PCF-002 Step 12 ninth post-review reference evidence: independent held source/binary/committed-Cargo.lock/target/build/schema validation and direct fixture-tree inspection passed for source `d9944ff9d692f8aa6b46edb2b70c96edc31d59ba`, artifact SHA-256 `1fd7f1d7d6bb5c99e95793cfd6ba285329a4d982190ff675448cae3aacd6c63e`, binary SHA-256 `136533f7bc7e6ed1bb512251be04988ee50b041702843a868303859133e2f7fd`, and committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`; every fixture completed with HEAD, 232 catalogs, expected object counts, zero temporary files, and kernel-acquisition-through-unlock timing.
+  - PCF-002 catalog-performance Task 10: unchanged exact 30/200 command completed in 123.206 seconds with expected exit 2; corrected independent source/build/binary/Cargo.lock/target/argv/closed-schema/count validation passed; the full benchmark contract suite passed `121` tests; the named provenance/identity selection passed `50` tests with `71` deselected; `git diff --check` passed with only the expected generated-JSON LF-to-CRLF notice.
+  - PCF-002 Task 10 evidence: source/build commit `699b3277411231f37c1ee688fef4519a5caf4f68`; artifact SHA-256 `6dfc5f27d7cb1c453d1eb13b900b43395e85d287cca8ee578c79012e3a72b65a`; binary SHA-256 `0060ec96943ac3571b1b89bbd2b057f93600a09fcb9784822090c904bce56ad8`; committed Cargo.lock SHA-256 `15b8c9dd0f6d8cb2aff0a8506107101422a28b3cd670ff61d7b47292b97b69dd`; binary identity `(4008503144, 1125899911792204)`; target identity `(4008503144, 16888498603978946)`; catalogs/generations `232/232` for all fixtures; object counts `500/2500/0`; zero `.tmp` files.
   - scoped Markdown link/anchor, plan action/path, and docs-drift checks
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py apps/server/tests/test_pdf_workflow_checkpoints.py -q`
   - `bun test apps/desktop/tests/journal-content.test.ts apps/desktop/tests/journal-html.test.ts`
@@ -290,6 +294,10 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `apps/server/scripts/benchmark_corefs_catalog.py`
   - `apps/server/tests/test_corefs_catalog_benchmark.py`
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`
+  - `docs/superpowers/specs/2026-07-20-corefs-catalog-commit-performance-design.md`
+  - `tickets/portable-core-filesystem/PCF-002-corefs-catalog.md`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
+  - Task 10 residual risk: maximum-live exact-reference latency remains above its gate and requires a separately approved architecture revision. No remaining child is eligible while PCF-002 is blocked. Publication/current-head review remains separate and unauthorized.
