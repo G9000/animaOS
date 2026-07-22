@@ -199,6 +199,13 @@ class DriveStateRow(RuntimeBase):
     pattern_insight_surfaced_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
+    # IL7: last time a dream was ATTEMPTED (reached the extraction call),
+    # success or failure — bounds the dream to <=1 extraction call per night
+    # even when generation persistently fails (a failed dream writes no
+    # dream_journal row, so this is what the nightly cap counts).
+    last_dream_attempt_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMPTZ, nullable=True
+    )
     unanswered_initiatives: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ,

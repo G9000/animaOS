@@ -384,6 +384,27 @@ class PromptLoader:
             affect_line=affect_line,
         )
 
+    def dream_narrative(
+        self,
+        *,
+        material: list[str],
+        latent_topics: list[str],
+        affect_line: str,
+    ) -> str:
+        """Render the IL7 dream-narrative prompt.
+
+        Carries the important-but-cold memory fragments, any recurring latent
+        undercurrents (structural topic keys — content-free), and the current
+        affect rendering. Asks for a JSON object with the narrative and bounded
+        affect deltas.
+        """
+        return self.render(
+            "dream_narrative",
+            material=material,
+            latent_topics=latent_topics,
+            affect_line=affect_line,
+        )
+
 
 def get_prompt_loader(db_session, user_id: int) -> PromptLoader:
     """Get a PromptLoader instance for the given user."""

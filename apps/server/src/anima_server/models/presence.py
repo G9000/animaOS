@@ -78,6 +78,15 @@ class PresenceConfig(Base):
     )
     quiet_hours_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     quiet_hours_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # IL7 dream surfacing gate: "off" (never mention dreams), "on_ask" (only
+    # when the user asks what it's been up to, or IL3 fires on dream_residue),
+    # or "ambient" (may weave a dream into greetings). Default "on_ask".
+    dream_sharing: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="on_ask",
+        server_default=text("'on_ask'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

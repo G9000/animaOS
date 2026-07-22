@@ -466,4 +466,26 @@ def run_presence_tick(
                     "Initiative tick wiring failed for user %s", user_id, exc_info=True
                 )
 
+            # IL7 dream cycle — sibling of the initiative tick in this same
+            # idle-only loop. run_dream_for_user does its own cheap eligibility
+            # gate (idle >= 4h + night window + <= 1/night, or a consumed
+            # catch-up marker) and only makes the extraction-model call when
+            # eligible, so calling it every tick is fine. Same per-user resolver
+            # + try/except isolation as the initiative tick above.
+            from anima_server.services.agent.inner_life.dream_edge import (
+                run_dream_for_user,
+            )
+
+            try:
+                run_dream_for_user(
+                    soul_db_factory_for(user_id),
+                    runtime_db_factory,
+                    user_id=user_id,
+                    local_now=local_now,
+                )
+            except Exception:
+                logger.warning(
+                    "Dream cycle wiring failed for user %s", user_id, exc_info=True
+                )
+
     return PresenceTickResult(users_ticked=ticked, users_skipped_active=skipped)

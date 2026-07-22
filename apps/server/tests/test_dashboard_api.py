@@ -167,6 +167,7 @@ def test_presence_config_defaults_and_update() -> None:
             "initiativeEnabled": False,
             "quietHoursStart": None,
             "quietHoursEnd": None,
+            "dreamSharing": "on_ask",
         }
 
         resp = client.put(
@@ -183,6 +184,7 @@ def test_presence_config_defaults_and_update() -> None:
                 "initiativeEnabled": True,
                 "quietHoursStart": 22,
                 "quietHoursEnd": 7,
+                "dreamSharing": "ambient",
             },
         )
 
@@ -199,6 +201,7 @@ def test_presence_config_defaults_and_update() -> None:
             "initiativeEnabled": True,
             "quietHoursStart": 22,
             "quietHoursEnd": 7,
+            "dreamSharing": "ambient",
         }
 
 

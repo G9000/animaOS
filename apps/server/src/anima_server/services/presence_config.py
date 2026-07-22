@@ -22,6 +22,8 @@ class PresenceConfigValues:
     initiative_enabled: bool = False
     quiet_hours_start: int | None = None
     quiet_hours_end: int | None = None
+    # IL7 dream surfacing gate: off | on_ask | ambient (default on_ask).
+    dream_sharing: str = "on_ask"
 
 
 def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
@@ -78,8 +80,22 @@ def update_presence_config(
         if payload_key in updates:
             setattr(row, model_key, _normalize_quiet_hour(updates.get(payload_key)))
 
+    if "dreamSharing" in updates:
+        row.dream_sharing = _normalize_dream_sharing(updates.get("dreamSharing"))
+
     db.flush()
     return _to_values(row)
+
+
+_DREAM_SHARING_MODES = ("off", "on_ask", "ambient")
+
+
+def _normalize_dream_sharing(value: object) -> str:
+    """Coerce to a valid dream-sharing mode; anything unrecognized falls back
+    to the default ``on_ask`` rather than persisting a bad value."""
+    if isinstance(value, str) and value in _DREAM_SHARING_MODES:
+        return value
+    return "on_ask"
 
 
 def _normalize_quiet_hour(value: object) -> int | None:
@@ -112,4 +128,5 @@ def _to_values(row: PresenceConfig) -> PresenceConfigValues:
         initiative_enabled=row.initiative_enabled,
         quiet_hours_start=row.quiet_hours_start,
         quiet_hours_end=row.quiet_hours_end,
+        dream_sharing=row.dream_sharing,
     )

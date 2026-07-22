@@ -75,6 +75,9 @@ class ForgetResult:
     # were scrubbed or which were deleted outright because forgetting this
     # memory's sources emptied them (PRD IL4 "right-to-forget integration").
     latent_traces_scrubbed: int = 0
+    # IL7 right-to-forget integration: dream_journal rows deleted because they
+    # were seeded from (and their narrative derived from) a forgotten memory.
+    dream_journal_scrubbed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,10 +391,12 @@ def _scrub_latent_traces_for_forget(
     *,
     user_id: int,
     source_message_ids: Iterable[int],
-) -> int:
+) -> set[str]:
     """Scrub latent-trace evidence_refs pointing at a forgotten memory's
     sources (PRD IL4 "right-to-forget integration" — binding, P1 review
     finding). A trace left with no surviving evidence is deleted outright.
+    Returns the affected traces' topic_keys so the caller can also scrub any
+    IL7 dream built on those topics.
     """
     from anima_server.services.agent.latent_traces import (
         scrub_latent_traces_for_forgotten_sources,
@@ -402,6 +407,82 @@ def _scrub_latent_traces_for_forget(
         user_id=user_id,
         source_message_ids=source_message_ids,
     )
+
+
+def _scrub_dream_journal_for_forget(
+    db: Session,
+    *,
+    user_id: int,
+    forgotten_memory_item_ids: set[int] | None = None,
+    forgotten_topic_keys: set[str] | None = None,
+) -> int:
+    """Delete IL7 dream_journal rows seeded from forgotten material (PRD F7
+    right-to-forget; P1 review findings). A dream's ``narrative`` is derived
+    from the DECRYPTED content of its source memories AND its latent-trace
+    topics, and the row is vault-exported, so forgetting EITHER kind of source
+    must take any dream built on it with it — redacting derived prose is
+    unreliable, so the whole entry is deleted. Matches on the
+    ``source_refs.memory_item_ids`` and ``source_refs.latent_topic_keys``
+    recorded at dream time."""
+    from anima_server.models import DreamJournal
+
+    forgotten_memory_item_ids = forgotten_memory_item_ids or set()
+    forgotten_topic_keys = forgotten_topic_keys or set()
+    if not forgotten_memory_item_ids and not forgotten_topic_keys:
+        return 0
+    deleted = 0
+    for row in db.scalars(
+        select(DreamJournal).where(DreamJournal.user_id == user_id)
+    ).all():
+        refs = row.source_refs if isinstance(row.source_refs, dict) else {}
+        ids = refs.get("memory_item_ids")
+        keys = refs.get("latent_topic_keys")
+        mem_hit = isinstance(ids, list) and forgotten_memory_item_ids.intersection(
+            int(i) for i in ids if isinstance(i, int)
+        )
+        # latent_topic_keys are field-encrypted (they embed content slugs) —
+        # decrypt to match against the forgotten (plaintext) keys.
+        topic_hit = isinstance(keys, list) and forgotten_topic_keys.intersection(
+            df(user_id, str(k), table="dream_journal", field="source_refs") for k in keys
+        )
+        if mem_hit or topic_hit:
+            db.delete(row)
+            deleted += 1
+    return deleted
+
+
+def _scrub_dreams_matching_topic_tokens(
+    db: Session,
+    *,
+    user_id: int,
+    topic_tokens: set[str],
+) -> int:
+    """Delete IL7 dream_journal rows any of whose ``latent_topic_keys``
+    token-matches a purged topic (same whole-token predicate the trace purge
+    uses). Unlike the id/exact-key scrub, this matches the DREAM's own refs, so
+    a dream survives neither its source trace being pruned nor capped."""
+    from anima_server.models import DreamJournal
+
+    if not topic_tokens:
+        return 0
+    deleted = 0
+    for row in db.scalars(
+        select(DreamJournal).where(DreamJournal.user_id == user_id)
+    ).all():
+        refs = row.source_refs if isinstance(row.source_refs, dict) else {}
+        keys = refs.get("latent_topic_keys")
+        # Keys are field-encrypted (content-bearing slugs) — decrypt before
+        # applying the whole-token predicate.
+        if isinstance(keys, list) and any(
+            topic_tokens
+            <= _topic_key_content_tokens(
+                df(user_id, str(k), table="dream_journal", field="source_refs")
+            )
+            for k in keys
+        ):
+            db.delete(row)
+            deleted += 1
+    return deleted
 
 
 def forget_latent_traces_for_topic(
@@ -508,6 +589,12 @@ def purge_latent_traces_matching_topic(
         for trace in all_traces
         if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
     ]
+    # IL7: dreams built on any purged topic hold its key + derived prose in
+    # durable, vault-exported state — scrub them by the SAME topic-token
+    # predicate applied to the dreams' own latent_topic_keys, NOT only the
+    # live traces' keys: a dream can outlive its source trace (pruned/capped),
+    # so deriving keys from current LatentTrace rows would miss it.
+    _scrub_dreams_matching_topic_tokens(db, user_id=user_id, topic_tokens=topic_tokens)
     for trace in traces:
         db.delete(trace)
     if traces:
@@ -709,6 +796,7 @@ def forget_memory(
             chain_items.append(pred)
 
     # 2. Find and flag derived references for ALL items in the chain
+    derived_pattern_ids: set[int] = set()
     for item in chain_items:
         item_content = df(user_id, item.content, table="memory_items", field="content")
         refs = find_derived_references(
@@ -717,6 +805,10 @@ def forget_memory(
             user_id=user_id,
             exclude_memory_item_ids=chain_ids,
         )
+        # Pattern MemoryItems derived from the forgotten content: dreams can
+        # sample these (only identity-class rows are excluded), so their ids
+        # must join the dream scrub below (P1 right-to-forget).
+        derived_pattern_ids.update(ref.record_id for ref in refs.pattern_items)
         if refs.total > 0:
             result.derived_refs_affected += redact_derived_references(
                 db,
@@ -777,11 +869,15 @@ def forget_memory(
             for item in chain_items
         ),
     )
-    result.latent_traces_scrubbed = _scrub_latent_traces_for_forget(
+    # Capture the topic_keys of traces scrubbed via source-message overlap —
+    # a dream may reference one of THOSE topics (not just a memory-text-derived
+    # key), and those rows must be scrubbed too.
+    forgotten_topic_keys: set[str] = _scrub_latent_traces_for_forget(
         db,
         user_id=user_id,
         source_message_ids=source_message_ids,
     )
+    result.latent_traces_scrubbed = len(forgotten_topic_keys)
     # Also delete traces for the forgotten items' own topics: forgetting a
     # confirmed memory about X must take the latent buffer for X with it,
     # not just the refs that shared source messages. The fold lane writes
@@ -793,9 +889,20 @@ def forget_memory(
         content_plain = df(user_id, item.content, table="memory_items", field="content")
         for category in {item.category, "minor_observation"}:
             topic_key = derive_topic_key(content_plain, category)
+            forgotten_topic_keys.add(topic_key)
             result.latent_traces_scrubbed += forget_latent_traces_by_topic(
                 db, user_id=user_id, topic_key=topic_key
             )
+    # IL7: any dream seeded from a forgotten memory carries its (derived)
+    # content + provenance in durable, vault-exported state — delete those,
+    # matching the forgotten memory ids (incl. derived pattern items a dream
+    # may have sampled) and their latent-topic keys.
+    result.dream_journal_scrubbed = _scrub_dream_journal_for_forget(
+        db,
+        user_id=user_id,
+        forgotten_memory_item_ids=set(chain_ids) | derived_pattern_ids,
+        forgotten_topic_keys=forgotten_topic_keys,
+    )
     _delete_profile_fields_for_forget(
         db,
         user_id=user_id,
