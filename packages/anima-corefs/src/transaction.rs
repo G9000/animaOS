@@ -1773,29 +1773,55 @@ impl CoreCommitCoordinator {
             full_load
         };
 
-        if let Ok(Some(committed_catalog)) = committed.as_ref() {
-            let replacement_key = if recovery_required {
-                let final_pointers = self.load_pointer_set(
-                    #[cfg(test)]
-                    probe.as_deref_mut(),
-                )?;
-                self.cache_lookup_key(
-                    &final_pointers,
-                    keyring,
-                    #[cfg(test)]
-                    probe,
-                )
-            } else {
-                lookup_key
+        if recovery_required && matches!(&committed, Ok(Some(_))) {
+            let final_pointers = match self.load_pointer_set(
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            ) {
+                Ok(pointers) => pointers,
+                Err(error) => {
+                    self.cache.clear();
+                    return Err(error);
+                }
             };
+            let verified = self.load_committed_once_with_keyring_heads_inner(
+                keyring,
+                final_pointers.head.clone(),
+                final_pointers.receipt.clone(),
+                final_pointers.complete.clone(),
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            );
+            let Ok(Some(verified_catalog)) = verified.as_ref() else {
+                self.cache.clear();
+                return verified;
+            };
+            let replacement_key = self.cache_lookup_key(
+                &final_pointers,
+                keyring,
+                #[cfg(test)]
+                probe,
+            );
             if let Some(key) = replacement_key.as_ref() {
                 self.cache
                     .replace(Arc::new(AuthenticatedCommitSnapshot::new(
                         key,
-                        Arc::clone(&committed_catalog.catalog),
+                        Arc::clone(&verified_catalog.catalog),
                         None,
                     )));
+            } else {
+                self.cache.clear();
             }
+            return verified;
+        }
+        if let (Some(key), Ok(Some(committed_catalog))) = (lookup_key.as_ref(), committed.as_ref())
+        {
+            self.cache
+                .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                    key,
+                    Arc::clone(&committed_catalog.catalog),
+                    None,
+                )));
         } else if recovery_required {
             self.cache.clear();
         }
@@ -2138,6 +2164,50 @@ impl CoreCommitCoordinator {
                 self.cache.clear();
                 return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
             }
+            #[cfg(test)]
+            let reauthenticated = {
+                let mut observe_load_stage = |stage| {
+                    let rotation_stage = match stage {
+                        CatalogLoadStage::PointerIo => Some(RotationStage::PointerIo),
+                        CatalogLoadStage::KeyDerivation => Some(RotationStage::KeyDerivation),
+                        CatalogLoadStage::CatalogFileIo | CatalogLoadStage::CatalogCrypto => {
+                            Some(RotationStage::CatalogIoCrypto)
+                        }
+                        CatalogLoadStage::KernelLock
+                        | CatalogLoadStage::CacheAccess
+                        | CatalogLoadStage::SecondHeadRead => None,
+                    };
+                    if let (Some(probe), Some(stage)) = (probe.as_deref_mut(), rotation_stage) {
+                        probe.stage(stage);
+                    }
+                };
+                let mut load_probe = CatalogLoadProbe::observed(&mut observe_load_stage);
+                self.load_committed_once_with_keyring_heads_inner(
+                    keyring,
+                    initial_pointers.head.clone(),
+                    initial_pointers.receipt.clone(),
+                    initial_pointers.complete.clone(),
+                    Some(&mut load_probe),
+                )
+            };
+            #[cfg(not(test))]
+            let reauthenticated = self.load_committed_once_with_keyring_heads_inner(
+                keyring,
+                initial_pointers.head.clone(),
+                initial_pointers.receipt.clone(),
+                initial_pointers.complete.clone(),
+            );
+            let committed = match reauthenticated {
+                Ok(Some(committed)) => committed,
+                Ok(None) => {
+                    self.cache.clear();
+                    return Err(CommitError::CoreNotInitialized);
+                }
+                Err(error) => {
+                    self.cache.clear();
+                    return Err(error);
+                }
+            };
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
                 return Err(RotationError::GenerationMismatch {

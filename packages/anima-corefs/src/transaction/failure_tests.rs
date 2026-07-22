@@ -18,8 +18,9 @@ use crate::rotation::{FrkKeyring, RotationError};
 
 use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet};
 use super::{
-    CatalogPrecondition, CommitCallbacks, CommitError, CommitFailurePoint, CommitMode, CommitProbe,
-    CommitStage, CoreCommitCoordinator, CoreCommitLock, PreparedObjectRevision, PublicationTarget,
+    CatalogLoadProbe, CatalogLoadStage, CatalogPrecondition, CommitCallbacks, CommitError,
+    CommitFailurePoint, CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator,
+    CoreCommitLock, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
 
@@ -996,6 +997,84 @@ fn seed_single_version_completion_gap(root: &Path) {
         )
         .unwrap();
     assert!(outcome.recovery_pending());
+}
+
+#[test]
+fn recovery_rejects_replaced_pointer_tuple_before_cache_publication() {
+    let root = reset_root("recovery-replaced-pointer-tuple");
+    seed_single_version_completion_gap(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let active_keys = keys();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+    let completion_synced = std::cell::Cell::new(false);
+    let post_completion_crypto_stages = std::cell::Cell::new(0);
+    let pointers_replaced = std::cell::Cell::new(false);
+    let mut replace_after_final_tuple_read = |stage| {
+        if completion_synced.get() && stage == CatalogLoadStage::CatalogCrypto {
+            let stage_count = post_completion_crypto_stages.get() + 1;
+            post_completion_crypto_stages.set(stage_count);
+            if stage_count == 3 {
+                std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+                std::fs::copy(
+                    coordinator.validation_head_path(),
+                    coordinator.cutover_receipt_path(),
+                )
+                .unwrap();
+                std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+                std::fs::copy(
+                    coordinator.validation_head_path(),
+                    coordinator.cutover_complete_path(),
+                )
+                .unwrap();
+                pointers_replaced.set(true);
+            }
+        }
+    };
+    let mut observe_completion = |point| {
+        if point
+            == (CommitFailurePoint::Publication {
+                target: PublicationTarget::CutoverComplete,
+                phase: PublicationPhase::DestinationSynced,
+            })
+        {
+            completion_synced.set(true);
+        }
+        Ok(())
+    };
+
+    let result = {
+        let mut probe = CatalogLoadProbe::observed(&mut replace_after_final_tuple_read);
+        coordinator.load_committed_recovering_with_keyring_and_hook_inner(
+            &commit_lock,
+            &FrkKeyring::single(&active_keys),
+            &mut observe_completion,
+            Some(&mut probe),
+        )
+    };
+
+    assert!(
+        pointers_replaced.get(),
+        "the replacement seam was not reached"
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+        ),
+        "recovery accepted a catalog authenticated against an earlier pointer tuple: {result:?}"
+    );
+    assert!(
+        coordinator.cache.current().is_none(),
+        "recovery cached authority that was not authenticated against the replacement tuple"
+    );
+    drop(commit_lock);
+    assert!(matches!(
+        coordinator.load_committed(&active_keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

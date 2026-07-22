@@ -20,8 +20,8 @@ use super::cache::{
     ValidatedObjectBinding, ValidatedObjectState,
 };
 use super::{
-    CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitFailurePoint, CommitMode,
-    CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget,
+    CatalogLoadProbe, CatalogLoadStage, CommitCallbacks, CommitError, CommitFailurePoint,
+    CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock, PublicationTarget,
     RotationProbe, RotationStage,
 };
 use crate::publication::PublicationPhase;
@@ -718,6 +718,76 @@ fn rotation_holds_no_cache_guard_during_lock_io_crypto_or_hooks() {
             "missing rotation stage {expected:?}"
         );
     }
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rotation_rejects_replaced_retained_tuple_before_cache_publication() {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-cache-rotation-replaced-tuple-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys(0x11, 1);
+    let pending_keys = keys(0x22, 2);
+    seed_committed(&coordinator, &old_keys);
+    assert_eq!(
+        coordinator.cache.current().unwrap().catalog().generation(),
+        2
+    );
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+    let mut pointer_reads = 0;
+    let mut pointers_replaced = false;
+    let mut replace_before_rotation_tuple_read = |stage| {
+        if stage == RotationStage::PointerIo {
+            pointer_reads += 1;
+            if pointer_reads == 4 {
+                std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+                std::fs::copy(
+                    coordinator.validation_head_path(),
+                    coordinator.cutover_receipt_path(),
+                )
+                .unwrap();
+                std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+                std::fs::copy(
+                    coordinator.validation_head_path(),
+                    coordinator.cutover_complete_path(),
+                )
+                .unwrap();
+                pointers_replaced = true;
+            }
+        }
+    };
+    let result = {
+        let mut probe = RotationProbe::observed(&mut replace_before_rotation_tuple_read);
+        coordinator.rotate_frk_with_hook(
+            &keyring,
+            &pending_keys,
+            2,
+            |_| Ok(()),
+            &mut |_| Ok(()),
+            Some(&mut probe),
+        )
+    };
+
+    assert!(pointers_replaced, "the replacement seam was not reached");
+    assert!(
+        matches!(
+            &result,
+            Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+        ),
+        "rotation accepted retained pointers that were not authenticated with its catalog: {result:?}"
+    );
+    assert!(
+        coordinator.cache.current().is_none(),
+        "rotation cached authority under unauthenticated retained pointers"
+    );
+    assert!(matches!(
+        coordinator.load_committed(&old_keys),
+        Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)
+    ));
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
