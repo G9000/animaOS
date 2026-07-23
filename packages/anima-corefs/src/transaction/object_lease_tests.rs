@@ -1,6 +1,6 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, TryLockError, Weak};
+use std::sync::{Arc, Mutex, TryLockError, Weak};
 use std::time::Duration;
 
 use crate::catalog::{
@@ -24,7 +24,7 @@ use super::object_lease::{
     global_lease_budget, FenceOutcome, LeaseAttemptDecision, LeaseAttemptPolicy, LeaseBudget,
     LeaseBudgetUsage, LeaseMonitorResource, LeaseResourceFactory, MonitorState, MonitorStateCell,
     MonotonicClock, ObjectSetFingerprint, ObjectValidationLease, OptimizationMiss,
-    ValidationAnchor, MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES,
+    PlatformLeaseSupport, ValidationAnchor, MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES,
     MAX_PROCESS_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
 };
 
@@ -52,6 +52,7 @@ struct TestMonitorResource {
     drops: Arc<AtomicUsize>,
     cache: Option<Weak<CommitCache>>,
     dropped_outside_cache_lock: Option<Arc<AtomicUsize>>,
+    budget_at_drop: Option<(Arc<LeaseBudget>, Arc<Mutex<Option<LeaseBudgetUsage>>>)>,
 }
 
 impl fmt::Debug for TestMonitorResource {
@@ -77,6 +78,9 @@ impl Drop for TestMonitorResource {
                 Err(TryLockError::WouldBlock) => {}
             }
         }
+        if let Some((budget, observed)) = &self.budget_at_drop {
+            *observed.lock().unwrap() = Some(budget.usage());
+        }
     }
 }
 
@@ -88,34 +92,57 @@ impl LeaseMonitorResource for TestMonitorResource {
 
 #[derive(Debug)]
 struct TestFactory {
+    platform_supported: bool,
     fail_anchor_at: Option<usize>,
+    monitor_attempts: AtomicUsize,
     anchor_attempts: AtomicUsize,
     monitor_drops: Arc<AtomicUsize>,
     cache: Option<Weak<CommitCache>>,
     dropped_outside_cache_lock: Option<Arc<AtomicUsize>>,
+    budget_at_monitor_drop: Option<(Arc<LeaseBudget>, Arc<Mutex<Option<LeaseBudgetUsage>>>)>,
 }
 
 impl TestFactory {
     fn successful() -> Self {
         Self {
+            platform_supported: true,
             fail_anchor_at: None,
+            monitor_attempts: AtomicUsize::new(0),
             anchor_attempts: AtomicUsize::new(0),
             monitor_drops: Arc::new(AtomicUsize::new(0)),
             cache: None,
             dropped_outside_cache_lock: None,
+            budget_at_monitor_drop: None,
+        }
+    }
+
+    fn unsupported() -> Self {
+        Self {
+            platform_supported: false,
+            ..Self::successful()
         }
     }
 }
 
 impl LeaseResourceFactory for TestFactory {
+    fn platform_support(&self) -> PlatformLeaseSupport {
+        if self.platform_supported {
+            PlatformLeaseSupport::Supported
+        } else {
+            PlatformLeaseSupport::Unsupported
+        }
+    }
+
     fn create_monitor(
         &self,
         _state: Arc<MonitorStateCell>,
     ) -> Result<Box<dyn LeaseMonitorResource>, ()> {
+        self.monitor_attempts.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(TestMonitorResource {
             drops: self.monitor_drops.clone(),
             cache: self.cache.clone(),
             dropped_outside_cache_lock: self.dropped_outside_cache_lock.clone(),
+            budget_at_drop: self.budget_at_monitor_drop.clone(),
         }))
     }
 
@@ -398,22 +425,48 @@ fn catalog_counts_4096_and_4097_select_eligible_and_fallback() {
 
 #[test]
 fn partial_candidate_failure_releases_every_permit() {
-    let budget = LeaseBudget::isolated();
+    let budget = Arc::new(LeaseBudget::isolated());
+    let budget_at_monitor_drop = Arc::new(Mutex::new(None));
     let factory = TestFactory {
         fail_anchor_at: Some(2),
+        budget_at_monitor_drop: Some((budget.clone(), budget_at_monitor_drop.clone())),
         ..TestFactory::successful()
     };
     assert_eq!(
-        acquire(&budget, 5, 3, &factory).unwrap_err(),
+        acquire(budget.as_ref(), 5, 3, &factory).unwrap_err(),
         OptimizationMiss::TransientAcquisition
     );
     assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 3);
     assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *budget_at_monitor_drop.lock().unwrap(),
+        Some(LeaseBudgetUsage {
+            entries: 5,
+            leases: 1,
+            monitor_resources: 3,
+            epoch: 0,
+        }),
+        "the live monitor must be destroyed before any permit becomes available"
+    );
     let usage = budget.usage();
     assert_eq!(usage.entries, 0);
     assert_eq!(usage.leases, 0);
     assert_eq!(usage.monitor_resources, 0);
     assert!(usage.epoch > 0);
+}
+
+#[test]
+fn unsupported_platform_returns_fallback_without_acquiring_resources() {
+    let budget = LeaseBudget::isolated();
+    let factory = TestFactory::unsupported();
+
+    let result = acquire(&budget, 3, 1, &factory);
+
+    assert!(matches!(result, Err(OptimizationMiss::UnsupportedPlatform)));
+    assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(budget.usage(), LeaseBudgetUsage::default());
 }
 
 #[test]

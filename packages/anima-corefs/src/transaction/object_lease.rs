@@ -80,8 +80,6 @@ pub(super) enum ValidationAnchor {
     Windows(Arc<dyn PlatformValidationAnchor>),
     #[cfg(target_os = "macos")]
     Macos(Arc<dyn PlatformValidationAnchor>),
-    #[cfg(not(any(windows, target_os = "macos")))]
-    Unsupported,
     #[cfg(test)]
     Test(u64),
 }
@@ -266,7 +264,15 @@ pub(super) trait LeaseMonitorResource: fmt::Debug + Send + Sync {
     fn fence(&self) -> FenceOutcome;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PlatformLeaseSupport {
+    Supported,
+    Unsupported,
+}
+
 pub(super) trait LeaseResourceFactory {
+    fn platform_support(&self) -> PlatformLeaseSupport;
+
     fn create_monitor(
         &self,
         state: Arc<MonitorStateCell>,
@@ -292,12 +298,22 @@ impl LeasedObjectBinding {
     }
 }
 
+// Field order is the failure-path teardown order. The live monitor must be gone before any
+// process-budget permit can become available to another candidate.
+struct PartialLeaseCandidate {
+    monitor: Box<dyn LeaseMonitorResource>,
+    bindings: Vec<Arc<LeasedObjectBinding>>,
+    slot_permit: LeaseSlotPermit,
+    monitor_resource_permits: Vec<MonitorResourcePermit>,
+    entry_permits: Vec<Arc<EntryPermit>>,
+}
+
 pub(super) struct ObjectValidationLease {
     state: Arc<MonitorStateCell>,
     monitor: Box<dyn LeaseMonitorResource>,
-    bindings: Box<[Arc<LeasedObjectBinding>]>,
+    bindings: Vec<Arc<LeasedObjectBinding>>,
     _slot_permit: LeaseSlotPermit,
-    _monitor_resource_permits: Box<[MonitorResourcePermit]>,
+    _monitor_resource_permits: Vec<MonitorResourcePermit>,
 }
 
 impl fmt::Debug for ObjectValidationLease {
@@ -317,6 +333,11 @@ impl ObjectValidationLease {
         monitor_resource_count: usize,
         factory: &dyn LeaseResourceFactory,
     ) -> Result<Arc<Self>, OptimizationMiss> {
+        if (!cfg!(any(windows, target_os = "macos")) && !cfg!(test))
+            || factory.platform_support() == PlatformLeaseSupport::Unsupported
+        {
+            return Err(OptimizationMiss::UnsupportedPlatform);
+        }
         if bindings.len() > MAX_OBJECT_LEASE_ENTRIES {
             return Err(OptimizationMiss::OverCeiling);
         }
@@ -329,6 +350,7 @@ impl ObjectValidationLease {
             return Err(OptimizationMiss::TransientAcquisition);
         }
 
+        let leased_bindings = Vec::with_capacity(bindings.len());
         let permits = budget
             .try_reserve_exact(bindings.len(), monitor_resource_count)
             .ok_or(OptimizationMiss::BudgetDenied)?;
@@ -342,25 +364,36 @@ impl ObjectValidationLease {
             entry_permits,
             monitor_resource_permits,
         } = permits;
-        let mut leased_bindings = Vec::with_capacity(bindings.len());
-        for (index, (binding, entry_permit)) in bindings.into_iter().zip(entry_permits).enumerate()
-        {
+        let mut candidate = PartialLeaseCandidate {
+            monitor,
+            bindings: leased_bindings,
+            slot_permit: slot,
+            monitor_resource_permits,
+            entry_permits,
+        };
+        for (index, binding) in bindings.into_iter().enumerate() {
             let anchor = factory
                 .create_anchor(index, &binding)
                 .map_err(|_| OptimizationMiss::TransientAcquisition)?;
-            leased_bindings.push(Arc::new(LeasedObjectBinding {
+            let entry_permit = candidate
+                .entry_permits
+                .get(index)
+                .expect("exact lease reservation must provide one permit per binding")
+                .clone();
+            candidate.bindings.push(Arc::new(LeasedObjectBinding {
                 binding,
                 anchor,
                 _entry_permit: entry_permit,
             }));
         }
+        candidate.entry_permits.clear();
 
         Ok(Arc::new(Self {
             state,
-            monitor,
-            bindings: leased_bindings.into_boxed_slice(),
-            _slot_permit: slot,
-            _monitor_resource_permits: monitor_resource_permits.into_boxed_slice(),
+            monitor: candidate.monitor,
+            bindings: candidate.bindings,
+            _slot_permit: candidate.slot_permit,
+            _monitor_resource_permits: candidate.monitor_resource_permits,
         }))
     }
 
@@ -400,10 +433,6 @@ pub(super) enum OptimizationMiss {
     BudgetDenied,
     TransientBackoff,
     TransientAcquisition,
-}
-
-pub(super) fn unavailable_platform_optimization() -> OptimizationMiss {
-    OptimizationMiss::UnsupportedPlatform
 }
 
 pub(super) trait MonotonicClock: Send + Sync {
