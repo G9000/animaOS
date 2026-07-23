@@ -882,6 +882,11 @@ fn notification_worker(shared: Arc<WorkerShared>) {
         #[cfg(test)]
         if let Some(control) = &shared.control {
             control.record_notification_batch_dequeued();
+            if fold_result.is_ok() {
+                control.after_successful_injected_batch();
+            } else {
+                control.before_parser_error_publication();
+            }
         }
         if fold_result.is_err() {
             let mut monitor = shared
@@ -977,12 +982,19 @@ fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Resul
     {
         let result = read_directory_changes_from_handle(file.as_raw_handle(), buffer);
         if result.is_ok() {
-            if let Some(notifications) = shared
+            if let Some(batch) = shared
                 .control
                 .as_ref()
                 .and_then(WindowsLeaseTestControl::take_injected_notification_batch)
             {
-                return encode_notifications_for_test(buffer, &notifications);
+                return match batch {
+                    InjectedNotificationBatchForTest::Semantic(notifications) => {
+                        encode_notifications_for_test(buffer, &notifications)
+                    }
+                    InjectedNotificationBatchForTest::MalformedTail(notifications) => {
+                        encode_malformed_tail_for_test(buffer, &notifications)
+                    }
+                };
             }
         }
         result
@@ -1159,12 +1171,46 @@ fn encode_notifications_for_test(
     })
 }
 
+#[cfg(test)]
+fn encode_malformed_tail_for_test(
+    buffer: &mut [u8],
+    notifications: &[Notification],
+) -> io::Result<u32> {
+    let used = encode_notifications_for_test(buffer, notifications)?;
+    let first_next = usize::try_from(
+        read_u32(buffer.get(0..4).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "missing first notification")
+        })?)
+        .map_err(|()| io::Error::new(io::ErrorKind::InvalidInput, "invalid first header"))?,
+    )
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid first notification"))?;
+    let second_next = usize::try_from(
+        read_u32(buffer.get(first_next..first_next + 4).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "missing second notification")
+        })?)
+        .map_err(|()| io::Error::new(io::ErrorKind::InvalidInput, "invalid second header"))?,
+    )
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid second notification"))?;
+    let malformed_offset = first_next.checked_add(second_next).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "notification offset overflow")
+    })?;
+    buffer
+        .get_mut(malformed_offset + 8..malformed_offset + 12)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing malformed tail"))?
+        .copy_from_slice(&1_u32.to_le_bytes());
+    Ok(used)
+}
+
 fn apply_observed_outcome(
     shared: &WorkerShared,
     monitor: &mut WindowsMonitorState,
     outcome: FenceOutcome,
 ) {
     if outcome == FenceOutcome::Clean {
+        return;
+    }
+    if outcome == FenceOutcome::Unknown {
+        publish_terminal(shared, monitor, FenceOutcome::Unknown);
         return;
     }
     match monitor.active_probe.as_mut() {
@@ -1186,7 +1232,7 @@ fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), 
         .monitor
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    loop {
+    let result = (|| loop {
         let header = buffer.get(offset..offset + HEADER_SIZE).ok_or(())?;
         let next = read_u32(&header[0..4])? as usize;
         let action = read_u32(&header[4..8])?;
@@ -1231,11 +1277,6 @@ fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), 
                 monitor.pending_rename = false;
                 apply_observed_outcome(shared, &mut monitor, FenceOutcome::Unknown);
             }
-            #[cfg(test)]
-            if let Some(control) = &shared.control {
-                control.record_boundary_snapshot(&monitor);
-            }
-            shared.changed.notify_all();
             return Ok(());
         }
         if next % 4 != 0 || next < HEADER_SIZE + name_length {
@@ -1245,7 +1286,17 @@ fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), 
         if offset >= buffer.len() {
             return Err(());
         }
+    })();
+    if result.is_err() {
+        monitor.pending_rename = false;
+        apply_observed_outcome(shared, &mut monitor, FenceOutcome::Unknown);
     }
+    #[cfg(test)]
+    if let Some(control) = &shared.control {
+        control.record_boundary_snapshot(&monitor);
+    }
+    shared.changed.notify_all();
+    result
 }
 
 fn fold_notification(
@@ -1315,7 +1366,6 @@ fn fold_notification(
         }
         _ => apply_observed_outcome(shared, monitor, FenceOutcome::Unknown),
     }
-    shared.changed.notify_all();
 }
 
 fn read_u32(bytes: &[u8]) -> Result<u32, ()> {
@@ -1415,10 +1465,18 @@ pub(in crate::transaction) enum WorkerFaultForTest {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::transaction) struct BoundarySnapshotForTest {
+    pub(in crate::transaction) terminal: FenceOutcome,
     pub(in crate::transaction) acknowledged_fence_generation: u64,
     pub(in crate::transaction) boundary_progress: u64,
     pub(in crate::transaction) deferred_outcome: FenceOutcome,
     pub(in crate::transaction) active_probe_complete: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+enum InjectedNotificationBatchForTest {
+    Semantic(Vec<Notification>),
+    MalformedTail(Vec<Notification>),
 }
 
 #[cfg(test)]
@@ -1454,7 +1512,12 @@ struct WindowsLeaseTestControlInner {
     cleanup_failure: Mutex<CleanupFailureMode>,
     cleanup_blocker: Mutex<Option<File>>,
     worker_faults: Mutex<VecDeque<WorkerFaultForTest>>,
-    injected_notification_batches: Mutex<VecDeque<Vec<Notification>>>,
+    injected_notification_batches: Mutex<VecDeque<InjectedNotificationBatchForTest>>,
+    injected_batch_in_flight: AtomicBool,
+    pause_after_injected_batch: Mutex<CompletionPauseState>,
+    pause_after_injected_batch_changed: Condvar,
+    pause_parser_error_publication: Mutex<CompletionPauseState>,
+    pause_parser_error_publication_changed: Condvar,
     read_pause: Mutex<ReadPauseState>,
     read_pause_changed: Condvar,
     read_pause_wake_active: AtomicBool,
@@ -1608,20 +1671,190 @@ impl WindowsLeaseTestControl {
             .injected_notification_batches
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push_back(vec![
+            .push_back(InjectedNotificationBatchForTest::Semantic(vec![
                 Notification::Added("ORDINARY.ACORE".into()),
                 Notification::Added(probe.into()),
                 Notification::Removed(probe.into()),
                 Notification::Added("AFTER.ACORE".into()),
-            ]);
+            ]));
     }
 
-    fn take_injected_notification_batch(&self) -> Option<Vec<Notification>> {
+    pub(in crate::transaction) fn inject_semantic_unknown_fence_batch(&self, probe: &str) {
+        self.prepare_boundary_snapshot_capture();
+        self.inner
+            .pause_after_injected_batch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .requested = true;
         self.inner
             .injected_notification_batches
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pop_front()
+            .push_back(InjectedNotificationBatchForTest::Semantic(vec![
+                Notification::Added(probe.into()),
+                Notification::Removed(probe.into()),
+                Notification::Added(probe.to_ascii_lowercase()),
+            ]));
+    }
+
+    pub(in crate::transaction) fn inject_malformed_tail_fence_batch(&self, probe: &str) {
+        self.prepare_boundary_snapshot_capture();
+        self.inner
+            .pause_parser_error_publication
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .requested = true;
+        self.inner
+            .injected_notification_batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(InjectedNotificationBatchForTest::MalformedTail(vec![
+                Notification::Added(probe.into()),
+                Notification::Removed(probe.into()),
+                Notification::Added("MALFORMED.ACORE".into()),
+            ]));
+    }
+
+    fn prepare_boundary_snapshot_capture(&self) {
+        self.inner
+            .capture_next_boundary_snapshot
+            .store(true, Ordering::SeqCst);
+        self.inner
+            .freeze_boundary_snapshot
+            .store(false, Ordering::SeqCst);
+    }
+
+    fn take_injected_notification_batch(&self) -> Option<InjectedNotificationBatchForTest> {
+        let batch = self
+            .inner
+            .injected_notification_batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front();
+        if batch.is_some() {
+            self.inner
+                .injected_batch_in_flight
+                .store(true, Ordering::SeqCst);
+        }
+        batch
+    }
+
+    fn after_successful_injected_batch(&self) {
+        if !self
+            .inner
+            .injected_batch_in_flight
+            .swap(false, Ordering::SeqCst)
+        {
+            return;
+        }
+        let mut pause = self
+            .inner
+            .pause_after_injected_batch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !pause.requested {
+            return;
+        }
+        pause.requested = false;
+        pause.paused = true;
+        self.inner.pause_after_injected_batch_changed.notify_all();
+        while !pause.released {
+            pause = self
+                .inner
+                .pause_after_injected_batch_changed
+                .wait(pause)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        pause.paused = false;
+        pause.released = false;
+    }
+
+    pub(in crate::transaction) fn wait_until_after_injected_batch_paused(
+        &self,
+        timeout: Duration,
+    ) -> bool {
+        let pause = self
+            .inner
+            .pause_after_injected_batch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (pause, _) = self
+            .inner
+            .pause_after_injected_batch_changed
+            .wait_timeout_while(pause, timeout, |pause| !pause.paused)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.paused
+    }
+
+    pub(in crate::transaction) fn release_after_injected_batch(&self) {
+        let mut pause = self
+            .inner
+            .pause_after_injected_batch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.released = true;
+        self.inner.pause_after_injected_batch_changed.notify_all();
+    }
+
+    fn before_parser_error_publication(&self) {
+        if !self
+            .inner
+            .injected_batch_in_flight
+            .swap(false, Ordering::SeqCst)
+        {
+            return;
+        }
+        let mut pause = self
+            .inner
+            .pause_parser_error_publication
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !pause.requested {
+            return;
+        }
+        pause.requested = false;
+        pause.paused = true;
+        self.inner
+            .pause_parser_error_publication_changed
+            .notify_all();
+        while !pause.released {
+            pause = self
+                .inner
+                .pause_parser_error_publication_changed
+                .wait(pause)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        pause.paused = false;
+        pause.released = false;
+    }
+
+    pub(in crate::transaction) fn wait_until_parser_error_publication_paused(
+        &self,
+        timeout: Duration,
+    ) -> bool {
+        let pause = self
+            .inner
+            .pause_parser_error_publication
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (pause, _) = self
+            .inner
+            .pause_parser_error_publication_changed
+            .wait_timeout_while(pause, timeout, |pause| !pause.paused)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.paused
+    }
+
+    pub(in crate::transaction) fn release_parser_error_publication(&self) {
+        let mut pause = self
+            .inner
+            .pause_parser_error_publication
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.released = true;
+        self.inner
+            .pause_parser_error_publication_changed
+            .notify_all();
     }
 
     fn record_boundary_snapshot(&self, monitor: &WindowsMonitorState) {
@@ -1641,6 +1874,7 @@ impl WindowsLeaseTestControl {
         }
         if captured || !self.inner.freeze_boundary_snapshot.load(Ordering::SeqCst) {
             *snapshot = Some(BoundarySnapshotForTest {
+                terminal: monitor.terminal,
                 acknowledged_fence_generation: monitor.acknowledged_fence_generation,
                 boundary_progress: monitor.boundary_progress,
                 deferred_outcome: monitor.deferred_outcome,

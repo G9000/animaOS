@@ -721,6 +721,7 @@ mod windows_object_lease_tests {
         assert_eq!(
             after,
             BoundarySnapshotForTest {
+                terminal: FenceOutcome::DirtyAll,
                 acknowledged_fence_generation: before.acknowledged_fence_generation + 1,
                 boundary_progress: before.boundary_progress + 1,
                 deferred_outcome: FenceOutcome::DirtyAll,
@@ -729,6 +730,52 @@ mod windows_object_lease_tests {
             "DirtyAll must remain terminal while exact probe records still prove the requested boundary"
         );
 
+        drop(lease);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_same_buffer_semantic_ambiguity_after_probe_is_immediately_unknown() {
+        let (root, lease, _budget, control) =
+            monitored_lease_with_control("same-buffer-semantic-unknown");
+        let probe = "ALSEM001.TMP";
+        control.queue_probe_name(probe);
+        control.inject_semantic_unknown_fence_batch(probe);
+
+        let outcome = lease.monitor().fence();
+        assert!(control.wait_until_after_injected_batch_paused(Duration::from_secs(2)));
+        let state_at_return = lease.state();
+        let snapshot = control.boundary_snapshot().unwrap();
+        control.release_after_injected_batch();
+
+        assert_eq!(outcome, FenceOutcome::Unknown);
+        assert_eq!(state_at_return, MonitorState::Unknown);
+        assert_eq!(snapshot.terminal, FenceOutcome::Unknown);
+        assert_eq!(snapshot.deferred_outcome, FenceOutcome::Clean);
+        drop(lease);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_same_buffer_malformed_tail_after_probe_is_immediately_unknown() {
+        let (root, lease, _budget, control) =
+            monitored_lease_with_control("same-buffer-malformed-unknown");
+        let probe = "ALMAL001.TMP";
+        control.queue_probe_name(probe);
+        control.inject_malformed_tail_fence_batch(probe);
+
+        let outcome = lease.monitor().fence();
+        assert!(
+            control.wait_until_parser_error_publication_paused(Duration::from_secs(2)),
+            "malformed parser publication barrier was not reached"
+        );
+        let state_at_return = lease.state();
+        control.release_parser_error_publication();
+
+        assert_eq!(outcome, FenceOutcome::Unknown);
+        assert_eq!(state_at_return, MonitorState::Unknown);
         drop(lease);
         assert_no_probe_residue(&root);
         fs::remove_dir_all(root).unwrap();
