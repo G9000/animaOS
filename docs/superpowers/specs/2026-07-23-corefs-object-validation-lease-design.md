@@ -1,7 +1,7 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** User-approved; safety-first Windows teardown correction approved on
-2026-07-23; independent re-review of that correction pending
+**Status:** User-approved; safety-first Windows teardown correction approved and
+independently re-reviewed on 2026-07-23; correction implementation pending
 
 **Ticket:** PCF-002 catalog-performance architecture revision
 
@@ -16,8 +16,8 @@
 **Revision note:** On 2026-07-23 the user approved a safety-first correction that
 separates bounded monitor-fence waits from completion-confirmed Windows teardown,
 requires bounded `O(1)` Windows event publication, and corrects the Windows monitor
-resource reservation to three. The correction is not yet independently re-reviewed
-and this document does not claim its implementation is complete.
+resource reservation to three. The correction was independently re-reviewed and
+approved on 2026-07-23; this document does not claim its implementation is complete.
 
 **Independent review:** The user-approved Windows baseline passed four review/revision
 rounds covering notification-name ambiguity, production link-count behavior,
