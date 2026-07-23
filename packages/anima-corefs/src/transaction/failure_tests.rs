@@ -12,6 +12,7 @@ use crate::catalog::{
 use crate::crypto::{derive_corefs_subkeys, FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes};
 use crate::envelope::{encode_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION};
 use crate::folders::{FolderOwner, PortableName};
+use crate::head::decode_head;
 use crate::id::OpaqueId;
 use crate::policy::AnimaAccess;
 use crate::rotation::{FrkKeyring, RotationError};
@@ -23,6 +24,7 @@ use super::{
     CoreCommitLock, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
+use crate::transaction::object_lease_tests::TestFactory;
 
 const CORE_ID: &str = "core-failure-injection";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -255,6 +257,26 @@ fn seed_committed(root: &Path) {
     commit_seeded_first(root);
 }
 
+fn seed_leased_coordinator(root: &Path) -> (CoreCommitCoordinator, FrkSubkeys) {
+    seed_committed(root);
+    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let keys = keys();
+    coordinator.set_lease_factory_for_test(Arc::new(TestFactory::successful()));
+    coordinator
+        .commit(
+            &keys,
+            &[],
+            &[],
+            |current, generation| {
+                CatalogGeneration::new(generation, current.unwrap().entries().to_vec())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(coordinator.cache.current().unwrap().object_lease.is_some());
+    (coordinator, keys)
+}
+
 fn commit_seeded_first(root: &Path) {
     let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let keys = keys();
@@ -303,6 +325,80 @@ fn seed_legacy_receipt_only(root: &Path) {
     drop(source);
     drop(destination);
     std::fs::remove_dir_all(alternate_root).unwrap();
+}
+
+#[test]
+fn lease_failure_receipt_only_recovery_never_reuses_prior_lease() {
+    let root = reset_root("lease-receipt-only");
+    let (coordinator, keys) = seed_leased_coordinator(&root);
+    std::fs::remove_file(coordinator.head_path()).unwrap();
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+    let recovered = coordinator.load_committed(&keys).unwrap().unwrap();
+
+    assert_eq!(recovered.head().generation(), 2);
+    assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lease_failure_completion_only_and_missing_head_clear_prior_lease() {
+    for (label, remove_receipt) in [("completion-only", true), ("missing-head", false)] {
+        let root = reset_root(&format!("lease-{label}"));
+        let (coordinator, keys) = seed_leased_coordinator(&root);
+        std::fs::remove_file(coordinator.head_path()).unwrap();
+        if remove_receipt {
+            std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+        }
+
+        assert!(coordinator.load_committed(&keys).is_err());
+        assert!(
+            coordinator
+                .cache
+                .current()
+                .map_or(true, |snapshot| snapshot.object_lease.is_none()),
+            "{label} retained stale lease authority"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn lease_failure_divergent_pointer_and_missing_retained_catalog_clear_prior_lease() {
+    for label in ["divergent-pointer", "missing-retained-catalog"] {
+        let root = reset_root(&format!("lease-{label}"));
+        let (coordinator, keys) = seed_leased_coordinator(&root);
+        if label == "divergent-pointer" {
+            std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+            std::fs::copy(
+                coordinator.validation_head_path(),
+                coordinator.cutover_complete_path(),
+            )
+            .unwrap();
+        } else {
+            let receipt =
+                decode_head(&std::fs::read(coordinator.cutover_receipt_path()).unwrap()).unwrap();
+            let retained_catalog = coordinator.catalogs_path().join(format!(
+                "catalog-{:020}-{}.acore",
+                receipt.generation(),
+                receipt.catalog_hash()
+            ));
+            std::fs::remove_file(retained_catalog).unwrap();
+        }
+
+        assert!(coordinator.load_committed(&keys).is_err());
+        assert!(
+            coordinator
+                .cache
+                .current()
+                .map_or(true, |snapshot| snapshot.object_lease.is_none()),
+            "{label} retained stale lease authority"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]
@@ -626,9 +722,10 @@ fn post_head_failure_reconciles_cache_to_durable_authority() {
 }
 
 #[test]
-fn post_head_recovery_pending_clears_the_cache() {
+fn lease_failure_post_head_recovery_pending_clears_candidate_lease() {
     let root = reset_root("post-head-recovery-pending-clears-cache");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    coordinator.set_lease_factory_for_test(Arc::new(TestFactory::successful()));
     let keys = keys();
     let initial = prepare(&coordinator, &keys, 1, b"initial");
     let validation = coordinator

@@ -1792,12 +1792,12 @@ mod lease_candidate_tests {
     use super::*;
     use crate::crypto::{wrap_object_dek, ObjectKeyAad};
     use crate::publication::PublicationPhase;
-    use crate::transaction::object_key_binding;
     use crate::transaction::object_lease::{
         FenceOutcome, LeaseAttemptDecision, LeaseBudget, LeaseMonitorResource, LeasePermitBundle,
         LeaseResourceFactory, LeaseResourcePlan, MonitorStateCell, ValidationAnchor,
         MAX_OBJECT_LEASE_ENTRIES,
     };
+    use crate::transaction::{catalog_object_bindings, object_key_binding};
 
     #[derive(Debug)]
     struct CandidateMonitor {
@@ -2307,7 +2307,7 @@ mod lease_candidate_tests {
             .object_lease
             .clone()
             .expect("durable snapshot omitted its clean candidate");
-        assert_eq!(lease.object_tuple().len(), 1);
+        assert_eq!(lease.object_tuple_len(), 1);
         assert_ne!(
             lease.directory_identity(),
             crate::transaction::object_lease::DirectoryIdentity::default()
@@ -2467,7 +2467,7 @@ mod lease_candidate_tests {
     }
 
     #[test]
-    fn pre_head_failure_never_publishes_candidate_lease() {
+    fn lease_failure_pre_head_never_publishes_candidate_lease() {
         let (root, coordinator, keys, prepared) = setup("pre-head-failure");
         let factory = CandidateFactory::supported([]);
         coordinator.set_lease_factory_for_test(factory.clone());
@@ -2978,6 +2978,521 @@ mod lease_candidate_tests {
         assert_eq!(usage.leases, 1);
         assert_eq!(usage.monitor_resources, 3);
         drop(lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_failure_callback_failure_drops_published_lease() {
+        let (root, coordinator, keys, prepared) = setup("callback-failure-drop");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_some());
+
+        let outcome = coordinator
+            .commit(
+                &keys,
+                &[],
+                &[],
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                |_| Err("runtime invalidation failed".to_owned()),
+            )
+            .unwrap();
+
+        assert!(!outcome.invalidation_delivered());
+        assert!(
+            coordinator.cache.current().unwrap().object_lease.is_none(),
+            "callback failure retained object-lease authority"
+        );
+        let usage = coordinator.lease_budget.usage();
+        assert_eq!(usage.entries, 0);
+        assert_eq!(usage.leases, 0);
+        assert_eq!(usage.monitor_resources, 0);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_failure_callback_panic_drops_published_lease() {
+        let (root, coordinator, keys, prepared) = setup("callback-panic-drop");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = coordinator.commit(
+                &keys,
+                &[],
+                &[],
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                |_| -> Result<(), String> { panic!("injected invalidation callback panic") },
+            );
+        }));
+
+        assert!(result.is_err());
+        assert!(
+            coordinator
+                .cache
+                .current()
+                .map_or(true, |snapshot| snapshot.object_lease.is_none()),
+            "callback panic retained published lease authority"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_failure_all_missing_pointers_clear_stale_lease() {
+        let (root, coordinator, keys, prepared) = setup("all-pointers-missing");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_some());
+
+        std::fs::remove_file(coordinator.head_path()).unwrap();
+        std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+        std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+        assert!(coordinator.load_committed(&keys).unwrap().is_none());
+        assert!(coordinator.cache.current().is_none());
+        let usage = coordinator.lease_budget.usage();
+        assert_eq!(usage.entries, 0);
+        assert_eq!(usage.leases, 0);
+        assert_eq!(usage.monitor_resources, 0);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_failure_first_mutation_never_consumes_stale_pointerless_lease() {
+        let (root, coordinator, keys, prepared) = setup("first-mutation-stale-lease");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let stale = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        std::fs::remove_file(coordinator.head_path()).unwrap();
+        std::fs::remove_file(coordinator.cutover_receipt_path()).unwrap();
+        std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+        coordinator
+            .commit_first_mutation(
+                &keys,
+                2,
+                &[],
+                &[],
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+
+        let replacement = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&stale, &replacement));
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 2);
+        drop(stale);
+        drop(replacement);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_failure_before_and_after_invalidation_hooks_drop_durable_lease() {
+        for (label, failure_point) in [
+            (
+                "before-callback-hook",
+                CommitFailurePoint::BeforeInvalidation,
+            ),
+            ("after-callback-hook", CommitFailurePoint::AfterInvalidation),
+        ] {
+            let (root, coordinator, keys, prepared) = setup(label);
+            coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+            let mut seed_probe = CommitProbe::default();
+            commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+            let mut hook = |point| {
+                if point == failure_point {
+                    Err(std::io::Error::other("injected callback-boundary failure"))
+                } else {
+                    Ok(())
+                }
+            };
+
+            let result = coordinator.commit_internal_with_hook(
+                &keys,
+                &[],
+                &[],
+                CommitMode::Normal,
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                CommitCallbacks {
+                    invalidate: |_| Ok(()),
+                    hook: &mut hook,
+                },
+            );
+
+            assert!(result.is_err());
+            assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+            drop(coordinator);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn lease_failure_pre_head_after_warm_hit_drops_prior_lease() {
+        let (root, coordinator, keys, prepared) = setup("warm-pre-head-failure");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let prior_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        let mut hook = |point| {
+            if point
+                == (CommitFailurePoint::Publication {
+                    target: PublicationTarget::AuthoritativeHead,
+                    phase: PublicationPhase::TemporaryCreated,
+                })
+            {
+                Err(std::io::Error::other("injected warm pre-HEAD failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let result = coordinator.commit_internal_with_hook(
+            &keys,
+            &[],
+            &[],
+            CommitMode::Normal,
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut hook,
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(coordinator
+            .cache
+            .current()
+            .map_or(true, |snapshot| snapshot.object_lease.is_none()));
+        assert_ne!(
+            prior_lease.state(),
+            crate::transaction::object_lease::MonitorState::Clean
+        );
+        drop(prior_lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_rotation_carries_exact_anchors_only_after_verified_cutover() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-carry");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let prior_generation = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .as_ref()
+            .unwrap()
+            .monitor_generation();
+        factory.fence_attempts.store(0, Ordering::SeqCst);
+        factory.metadata_queries.store(0, Ordering::SeqCst);
+
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+        let outcome = coordinator
+            .rotate_frk(&keyring, &pending_keys, 3, |_| Ok(()))
+            .unwrap();
+
+        assert_eq!(outcome.generation(), 4);
+        let snapshot = coordinator.cache.current().unwrap();
+        let carried = snapshot
+            .object_lease
+            .as_ref()
+            .expect("verified rotation dropped exact platform anchors");
+        assert_eq!(carried.monitor_generation(), prior_generation);
+        assert_eq!(factory.fence_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 1);
+        let next_bindings = catalog_object_bindings(snapshot.catalog()).unwrap();
+        assert!(carried.matches_object_tuple(&next_bindings));
+        drop(snapshot);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_rotation_callback_failure_drops_carried_lease() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-callback-drop");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+        let outcome = coordinator
+            .rotate_frk(&keyring, &pending_keys, 3, |_| {
+                Err("rotation callback failed".to_owned())
+            })
+            .unwrap();
+
+        assert!(!outcome.invalidation_delivered());
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_rotation_mixed_key_error_drops_prior_lease() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-mixed-key");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let prior_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        let wrong_old_keys = keys(0x7f, old_keys.frk_version());
+        let pending_keys = keys(0x52, 2);
+        let mixed_keyring = FrkKeyring::new([&wrong_old_keys, &pending_keys]).unwrap();
+
+        assert!(coordinator
+            .rotate_frk(&mixed_keyring, &pending_keys, 3, |_| Ok(()))
+            .is_err());
+        assert!(
+            coordinator
+                .cache
+                .current()
+                .map_or(true, |snapshot| snapshot.object_lease.is_none()),
+            "mixed-key rotation retained lease authority"
+        );
+        assert_ne!(
+            prior_lease.state(),
+            crate::transaction::object_lease::MonitorState::Clean
+        );
+        drop(prior_lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_rotation_monitor_uncertainty_drops_prior_lease() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-monitor-unknown");
+        let factory = CandidateFactory::supported([FenceOutcome::Clean, FenceOutcome::Unknown]);
+        coordinator.set_lease_factory_for_test(factory);
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+        coordinator
+            .rotate_frk(&keyring, &pending_keys, 3, |_| Ok(()))
+            .unwrap();
+
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_unlocks_kernel_and_cache_before_callback() {
+        let (root, coordinator, keys, prepared) = setup("callback-lock-order");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        let mut stages = Vec::new();
+        let mut observe_stage = |stage| {
+            assert!(
+                coordinator.lease_budget.guard_available_for_test(),
+                "budget mutex held during {stage:?}"
+            );
+            assert!(
+                lease.tuple_guard_available_for_test(),
+                "lease tuple mutex held during {stage:?}"
+            );
+            assert!(
+                factory.outcomes.try_lock().is_ok(),
+                "monitor-state mutex held during {stage:?}"
+            );
+            stages.push(stage);
+        };
+        let mut probe = CommitProbe::observed(&mut observe_stage);
+
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[],
+                &[],
+                |_, generation| {
+                    assert!(coordinator.cache.inner.try_lock().is_ok());
+                    assert!(coordinator.lease_budget.guard_available_for_test());
+                    assert!(lease.tuple_guard_available_for_test());
+                    assert!(factory.outcomes.try_lock().is_ok());
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                |_| {
+                    assert!(
+                        coordinator.cache.inner.try_lock().is_ok(),
+                        "cache mutex held during invalidation callback"
+                    );
+                    assert!(coordinator.lease_budget.guard_available_for_test());
+                    assert!(lease.tuple_guard_available_for_test());
+                    assert!(factory.outcomes.try_lock().is_ok());
+                    let callback_lock =
+                        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir)
+                            .expect("kernel commit lock remained held during callback");
+                    drop(callback_lock);
+                    Ok(())
+                },
+                &mut probe,
+            )
+            .unwrap();
+
+        let kernel = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::KernelLock)
+            .unwrap();
+        let fence = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseFence)
+            .unwrap();
+        let publication = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::EncryptionAndPublication)
+            .unwrap();
+        let callback = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::InvalidationCallback)
+            .unwrap();
+        assert!(kernel < fence);
+        assert!(fence < publication);
+        assert!(publication < callback);
+        drop(lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_two_coordinators_cannot_hide_pointer_and_path_changes() {
+        let (root, coordinator, keys, prepared) = setup("two-coordinator-race");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+
+        let competing = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        competing
+            .commit(
+                &keys,
+                &[],
+                &[],
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+        std::fs::write(
+            coordinator
+                .objects_path()
+                .join(prepared.physical_name().as_str()),
+            [],
+        )
+        .unwrap();
+        factory.metadata_queries.store(0, Ordering::SeqCst);
+        let mut probe = CommitProbe::default();
+
+        let result = coordinator.commit_with_probe(
+            &keys,
+            &[],
+            &[],
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            |_| Ok(()),
+            &mut probe,
+        );
+
+        assert!(matches!(
+            result,
+            Err(CommitError::ReferencedObjectMissing { .. })
+        ));
+        assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 0);
+        assert!(probe.object_safe_opens >= 1);
+        drop(competing);
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }

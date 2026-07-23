@@ -114,7 +114,7 @@ impl LeaseMonitorResource for TestMonitorResource {
 }
 
 #[derive(Debug)]
-struct TestFactory {
+pub(super) struct TestFactory {
     platform_supported: bool,
     planned_monitor_resources: AtomicUsize,
     fail_anchor_at: Option<usize>,
@@ -128,7 +128,7 @@ struct TestFactory {
 }
 
 impl TestFactory {
-    fn successful() -> Self {
+    pub(super) fn successful() -> Self {
         Self {
             platform_supported: true,
             planned_monitor_resources: AtomicUsize::new(0),
@@ -653,8 +653,8 @@ fn completed_lease_destroys_monitor_before_cache_releases_permits() {
 }
 
 #[test]
-fn cache_discards_lease_resources_outside_its_mutex() {
-    for action in ["clear", "replace", "poison-recover"] {
+fn lease_failure_cache_poison_discards_lease_resources_outside_its_mutex() {
+    for action in ["clear", "replace", "poison-recover", "drop-lease-poison"] {
         let cache = Arc::new(CommitCache::default());
         let dropped_outside = Arc::new(AtomicUsize::new(0));
         let factory = TestFactory {
@@ -679,6 +679,18 @@ fn cache_discards_lease_resources_outside_its_mutex() {
                     panic!("poison cache for recovery test");
                 });
                 assert!(cache.current().is_none());
+            }
+            "drop-lease-poison" => {
+                let poisoned_cache = cache.clone();
+                let _ = std::panic::catch_unwind(move || {
+                    let _guard = poisoned_cache.inner.lock().unwrap();
+                    panic!("poison cache before lease-only drop");
+                });
+                cache.drop_object_lease();
+                assert!(
+                    cache.current().is_none(),
+                    "lease-only poison recovery retained unauthenticated cache state"
+                );
             }
             _ => unreachable!(),
         }
@@ -1149,7 +1161,7 @@ mod windows_object_lease_tests {
     }
 
     #[test]
-    fn windows_object_lease_worker_panic_is_immediately_terminal_and_bounded() {
+    fn lease_failure_windows_monitor_panic_is_immediately_terminal_and_bounded() {
         let (root, lease, budget, control) = monitored_lease_with_control("worker-panic");
         control.pause_next_read();
         fs::write(root.join("wake-current-read"), b"wake").unwrap();

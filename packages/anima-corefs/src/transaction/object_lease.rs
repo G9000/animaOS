@@ -224,6 +224,11 @@ impl LeaseBudget {
         self.usage().epoch
     }
 
+    #[cfg(test)]
+    pub(super) fn guard_available_for_test(&self) -> bool {
+        self.inner.try_lock().is_ok()
+    }
+
     pub(super) fn try_reserve_exact(
         &self,
         entries: usize,
@@ -442,7 +447,7 @@ pub(super) struct ObjectValidationLease {
     state: Arc<MonitorStateCell>,
     monitor: Box<dyn LeaseMonitorResource>,
     bindings: Vec<Arc<LeasedObjectBinding>>,
-    object_tuple: Box<[ValidatedObjectBinding]>,
+    object_tuple: Mutex<Box<[ValidatedObjectBinding]>>,
     directory_identity: DirectoryIdentity,
     monitor_generation: u64,
     _slot_permit: LeaseSlotPermit,
@@ -591,7 +596,7 @@ impl ObjectLeaseCandidate {
             state: self.state,
             monitor: self.monitor,
             bindings: self.bindings,
-            object_tuple: self.expected_bindings,
+            object_tuple: Mutex::new(self.expected_bindings),
             directory_identity: self.directory_identity,
             monitor_generation: self.monitor_generation,
             _slot_permit: self.slot_permit,
@@ -689,7 +694,7 @@ impl ObjectValidationLease {
             state,
             monitor: candidate.monitor,
             bindings: candidate.bindings,
-            object_tuple,
+            object_tuple: Mutex::new(object_tuple),
             directory_identity: DirectoryIdentity::default(),
             monitor_generation: next_monitor_generation(),
             _slot_permit: candidate.slot_permit,
@@ -710,7 +715,10 @@ impl ObjectValidationLease {
     }
 
     pub(super) fn matches_object_tuple(&self, expected: &[ValidatedObjectBinding]) -> bool {
-        self.object_tuple.as_ref() == expected
+        self.object_tuple
+            .lock()
+            .map(|tuple| tuple.as_ref() == expected)
+            .unwrap_or(false)
     }
 
     pub(super) fn try_carry_forward(
@@ -768,8 +776,17 @@ impl ObjectValidationLease {
         &self.bindings
     }
 
-    pub(super) fn object_tuple(&self) -> &[ValidatedObjectBinding] {
-        &self.object_tuple
+    #[cfg(test)]
+    pub(super) fn object_tuple_len(&self) -> usize {
+        self.object_tuple
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn tuple_guard_available_for_test(&self) -> bool {
+        self.object_tuple.try_lock().is_ok()
     }
 
     pub(super) fn directory_identity(&self) -> DirectoryIdentity {
@@ -783,6 +800,55 @@ impl ObjectValidationLease {
     pub(super) fn monitor(&self) -> &dyn LeaseMonitorResource {
         self.monitor.as_ref()
     }
+
+    pub(super) fn try_rebind_after_rotation(
+        self: &Arc<Self>,
+        expected_old: &[ValidatedObjectBinding],
+        expected_new: Vec<ValidatedObjectBinding>,
+        directory_identity: DirectoryIdentity,
+    ) -> Option<Arc<Self>> {
+        if self.state() != MonitorState::Clean
+            || !self.matches_object_tuple(expected_old)
+            || !rotation_bindings_preserve_physical_tuple(expected_old, &expected_new)
+        {
+            return None;
+        }
+        if self.directory_identity != directory_identity {
+            self.publish_unknown();
+            return None;
+        }
+        if self.fence() != MonitorState::Clean {
+            return None;
+        }
+        let mut tuple = match self.object_tuple.lock() {
+            Ok(tuple) => tuple,
+            Err(_) => {
+                self.publish_unknown();
+                return None;
+            }
+        };
+        if tuple.as_ref() != expected_old || self.state() != MonitorState::Clean {
+            return None;
+        }
+        *tuple = expected_new.into_boxed_slice();
+        drop(tuple);
+        Some(Arc::clone(self))
+    }
+}
+
+fn rotation_bindings_preserve_physical_tuple(
+    old: &[ValidatedObjectBinding],
+    new: &[ValidatedObjectBinding],
+) -> bool {
+    old.len() == new.len()
+        && old.iter().zip(new).all(|(old, new)| {
+            old.object_id == new.object_id
+                && old.revision == new.revision
+                && old.object_key_epoch == new.object_key_epoch
+                && old.physical_name == new.physical_name
+                && old.content_hash == new.content_hash
+                && old.kind == new.kind
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

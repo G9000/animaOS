@@ -319,6 +319,16 @@ impl AuthenticatedCommitSnapshot {
     fn matches(&self, key: &CacheLookupKey) -> bool {
         self.pointers == key.pointers && self.key_ids == key.key_ids
     }
+
+    fn without_object_lease(&self) -> Self {
+        Self {
+            pointers: self.pointers.clone(),
+            key_ids: self.key_ids.clone(),
+            catalog: Arc::clone(&self.catalog),
+            objects: self.objects.clone(),
+            object_lease: None,
+        }
+    }
 }
 
 /// Process-local optimization state; disk pointers and cryptographic verification remain authority.
@@ -429,6 +439,35 @@ impl CommitCache {
             };
             guard.take()
         };
+        drop(discarded);
+    }
+
+    pub(super) fn drop_object_lease(&self) {
+        let discarded = match self.inner.lock() {
+            Ok(mut guard) => {
+                let replacement = guard
+                    .as_ref()
+                    .filter(|snapshot| snapshot.object_lease.is_some())
+                    .map(|snapshot| Arc::new(snapshot.without_object_lease()));
+                replacement.and_then(|replacement| guard.replace(replacement))
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                let _ = self.recovered_poison.compare_exchange(
+                    false,
+                    true,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                guard.take()
+            }
+        };
+        if let Some(lease) = discarded
+            .as_ref()
+            .and_then(|snapshot| snapshot.object_lease.as_ref())
+        {
+            lease.publish_unknown();
+        }
         drop(discarded);
     }
 }

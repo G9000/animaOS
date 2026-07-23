@@ -808,6 +808,29 @@ struct CommitCallbacks<'a, I, H> {
     hook: &'a mut H,
 }
 
+struct LeaseFailureGuard<'a> {
+    cache: &'a CommitCache,
+    armed: bool,
+}
+
+impl<'a> LeaseFailureGuard<'a> {
+    fn new(cache: &'a CommitCache) -> Self {
+        Self { cache, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LeaseFailureGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.drop_object_lease();
+        }
+    }
+}
+
 #[cfg(test)]
 #[derive(Default)]
 struct CoordinatorPublicationProbe {
@@ -1839,6 +1862,9 @@ impl CoreCommitCoordinator {
                 | CommitError::AuthoritativeHeadMissingAfterCutover
                 | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
         ) {
+            if !matches!(&committed, Ok(Some(_))) {
+                self.cache.clear();
+            }
             return committed;
         }
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
@@ -2522,6 +2548,35 @@ impl CoreCommitCoordinator {
         expected_generation: u64,
         invalidate: I,
         hook: &mut H,
+        #[cfg(test)] probe: Option<&mut RotationProbe<'_>>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let mut lease_failure = LeaseFailureGuard::new(&self.cache);
+        let result = self.rotate_frk_with_hook_inner(
+            keyring,
+            pending_keys,
+            expected_generation,
+            invalidate,
+            hook,
+            #[cfg(test)]
+            probe,
+        );
+        if result.is_ok() {
+            lease_failure.disarm();
+        }
+        result
+    }
+
+    fn rotate_frk_with_hook_inner<I, H>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+        expected_generation: u64,
+        invalidate: I,
+        hook: &mut H,
         #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
     ) -> Result<CommitOutcome, CommitError>
     where
@@ -2626,6 +2681,10 @@ impl CoreCommitCoordinator {
                     return Err(error);
                 }
             };
+            let prior_snapshot = self.cache.current().filter(|snapshot| {
+                snapshot.pointers == initial_pointers
+                    && snapshot.catalog().as_ref() == committed.catalog.as_ref()
+            });
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
                 return Err(RotationError::GenerationMismatch {
@@ -2704,6 +2763,7 @@ impl CoreCommitCoordinator {
                 pending_keys,
                 &expected_final_pointers,
                 Arc::clone(&next_catalog),
+                prior_snapshot,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             );
@@ -2727,8 +2787,14 @@ impl CoreCommitCoordinator {
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(RotationStage::FailureHook);
         }
-        before_invalidation?;
+        if let Err(error) = before_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         let invalidation_delivered = invalidate(event.clone()).is_ok();
+        if !invalidation_delivered {
+            self.cache.drop_object_lease();
+        }
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(RotationStage::InvalidationCallback);
@@ -2738,7 +2804,10 @@ impl CoreCommitCoordinator {
         if let Some(probe) = probe {
             probe.stage(RotationStage::FailureHook);
         }
-        after_invalidation?;
+        if let Err(error) = after_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
@@ -2777,6 +2846,7 @@ impl CoreCommitCoordinator {
         pending_keys: &FrkSubkeys,
         expected_pointers: &PointerSet,
         catalog: Arc<CatalogGeneration>,
+        prior_snapshot: Option<Arc<AuthenticatedCommitSnapshot>>,
         #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
     ) {
         let final_pointers = match self.load_rotation_pointer_set(
@@ -2793,6 +2863,17 @@ impl CoreCommitCoordinator {
             self.cache.clear();
             return;
         }
+        if self
+            .reauthenticate_cached_catalog_bytes(
+                &final_pointers,
+                #[cfg(test)]
+                None,
+            )
+            .is_err()
+        {
+            self.cache.clear();
+            return;
+        }
         #[cfg(test)]
         if let Some(probe) = probe {
             probe.stage(RotationStage::KeyDerivation);
@@ -2802,10 +2883,41 @@ impl CoreCommitCoordinator {
             self.cache.clear();
             return;
         };
-        self.cache
-            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
-                &key, catalog, None,
-            )));
+        let next_bindings = match catalog_object_bindings(&catalog) {
+            Ok(bindings) => bindings,
+            Err(_) => {
+                self.cache.clear();
+                return;
+            }
+        };
+        let objects = match ValidatedObjectState::from_catalog_bindings(next_bindings.clone()) {
+            Ok(objects) => Arc::new(objects),
+            Err(_) => {
+                self.cache.clear();
+                return;
+            }
+        };
+        let object_lease = prior_snapshot.and_then(|snapshot| {
+            let lease = snapshot.object_lease.as_ref()?;
+            let old_bindings = catalog_object_bindings(snapshot.catalog()).ok()?;
+            let directory_identity = match self.object_directory_identity() {
+                Ok(identity) => identity,
+                Err(_) => {
+                    lease.publish_unknown();
+                    return None;
+                }
+            };
+            let carried =
+                lease.try_rebind_after_rotation(&old_bindings, next_bindings, directory_identity);
+            if carried.is_none() {
+                lease.publish_unknown();
+            }
+            carried
+        });
+        self.cache.replace(Arc::new(
+            AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
+                .with_object_lease(object_lease),
+        ));
     }
 
     fn rotation_cache_lookup_key(
@@ -3172,6 +3284,41 @@ impl CoreCommitCoordinator {
         mode: CommitMode,
         build_next: B,
         callbacks: CommitCallbacks<'_, I, H>,
+        #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let mut lease_failure = LeaseFailureGuard::new(&self.cache);
+        let result = self.commit_internal_with_keyring_and_hook_inner(
+            keyring,
+            active_keys,
+            prepared_revisions,
+            preconditions,
+            mode,
+            build_next,
+            callbacks,
+            #[cfg(test)]
+            probe,
+        );
+        if result.is_ok() {
+            lease_failure.disarm();
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_internal_with_keyring_and_hook_inner<B, I, H>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        mode: CommitMode,
+        build_next: B,
+        callbacks: CommitCallbacks<'_, I, H>,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) -> Result<CommitOutcome, CommitError>
     where
@@ -3327,6 +3474,10 @@ impl CoreCommitCoordinator {
                             return None;
                         }
                     };
+                    #[cfg(test)]
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(CommitStage::LeaseFence);
+                    }
                     lease
                         .try_carry_forward(&expected_bindings, directory_identity)
                         .map(|lease| (Arc::clone(objects), lease))
@@ -3455,19 +3606,28 @@ impl CoreCommitCoordinator {
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(CommitStage::FailureHook);
         }
-        before_invalidation?;
+        if let Err(error) = before_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         let invalidation_result = (callbacks.invalidate)(event.clone());
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(CommitStage::InvalidationCallback);
         }
         let invalidation_delivered = invalidation_result.is_ok();
+        if !invalidation_delivered {
+            self.cache.drop_object_lease();
+        }
         let after_invalidation = (callbacks.hook)(CommitFailurePoint::AfterInvalidation);
         #[cfg(test)]
         if let Some(probe) = probe {
             probe.stage(CommitStage::FailureHook);
         }
-        after_invalidation?;
+        if let Err(error) = after_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
