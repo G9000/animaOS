@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 14:14 MYT
+- Updated: 2026-07-23 14:19 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -204,6 +204,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 13:56 MYT - PCF-002's fourth macOS review approved commit `e0679249` with no Critical, Important, or Minor findings. The complete Apple-inclusive object validation lease is now independently clean; the revised written-spec user-approval gate is next. PCF-002 and this parent remain `in_progress`, implementation planning/code and downstream eligibility remain unchanged, and no external action was taken.
 - 2026-07-23 14:05 MYT - The user approved PCF-002's independently clean Windows/macOS object validation lease specification. The dated implementation plan now sequences native fence/performance characterization, fail-closed platform backends, bounded process resources, exact cache/recovery/rotation authority, unlock-session lifetime ownership, server teardown, native CI, and the unchanged final Windows reference gate. PCF-002 and this parent remain `in_progress`; implementation is unstarted, downstream tickets remain dependency-ineligible, and no external action was taken.
 - 2026-07-23 14:14 MYT - PCF-002's independent implementation-plan review found and closed one final-evidence reproducibility gap by requiring a permanent production-backend diagnostic binary with a closed schema and exact Windows/macOS commands. Re-review approved the complete 12-task/82-checkpoint plan with no remaining issues. PCF-002 and this parent remain `in_progress`; implementation is unstarted, downstream eligibility is unchanged, and no external action was taken.
+- 2026-07-23 14:19 MYT - Resumed PCF-002 implementation on branch `codex/pcf-002-object-validation-lease-impl` in `.worktrees/pcf-002-object-validation-lease` using the approved subagent-driven workflow. The clean Rust 1.75 CoreFS baseline passed (`265` tests, `3` ignored), and Task 1 begins with the mandatory Windows native fence/performance characterization gate. PCF-002 and this parent remain `in_progress`; downstream eligibility is unchanged and no external action was taken.
 
 ## Validation
 
