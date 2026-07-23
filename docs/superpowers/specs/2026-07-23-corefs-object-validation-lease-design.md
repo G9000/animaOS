@@ -13,8 +13,9 @@ written-spec reapproval pending
 rounds covering notification-name ambiguity, production link-count behavior,
 unlock-session ownership, operation draining, terminal close/release races, route
 authority, steady-state lease carry-forward, and process-wide resource bounds. The
-first macOS review found three Important stream-lifecycle issues; the revision below
-addresses them and requires re-review before planning.
+first macOS review found three Important stream-lifecycle issues. A second pass
+confirmed two resolved but retained the zero-ID `RootChanged` ambiguity. The
+root-continuity revision below requires re-review before planning.
 
 ## Context
 
@@ -214,20 +215,31 @@ Creation is an exact native contract:
 
 1. derive the watched absolute path from the already-open pinned `objects/` directory
    descriptor with `F_GETPATH`; do not accept a caller-supplied watch path;
-2. create a per-host stream with
+2. safely open the canonical directory-component chain from the containing volume root
+   through `objects/` with
+   `O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, prove the final descriptor is
+   the already pinned `objects/` identity, and reject more than
+   `MAX_MACOS_MONITORED_ANCESTORS = 64` components;
+3. create one nonblocking close-on-exec `kqueue` and register every retained component
+   descriptor with `EVFILT_VNODE`, `EV_ADD | EV_ENABLE | EV_CLEAR`, and
+   `NOTE_RENAME | NOTE_DELETE | NOTE_REVOKE`;
+4. create a per-host FSEvents stream with
    `sinceWhen = kFSEventStreamEventIdSinceNow`, latency `0.050` seconds, and exactly
    `kFSEventStreamCreateFlagWatchRoot |
    kFSEventStreamCreateFlagFileEvents |
    kFSEventStreamCreateFlagNoDefer`;
-3. omit `IgnoreSelf`, because CoreFS-originated changes must not disappear from the
+5. omit `IgnoreSelf`, because CoreFS-originated changes must not disappear from the
    conservative directory-wide state; omit `MarkSelf` and `UseCFTypes`, because neither
    self-attribution nor event paths are consumed;
-4. call `FSEventStreamSetDispatchQueue` before `FSEventStreamStart`;
-5. if creation returns null or `Start` returns false, mark the candidate `Unknown`,
-   release its native resources, and use the safe-open path; Apple likewise documents
+6. call `FSEventStreamSetDispatchQueue` before `FSEventStreamStart`;
+7. if any path-chain open, identity proof, kqueue registration, stream creation, queue
+   scheduling, or start step fails, mark the candidate `Unknown`, release only the
+   resources whose lifecycle state was reached, and use the safe-open path; Apple
+   likewise documents
    [failed start as requiring fallback scanning](https://developer.apple.com/documentation/coreservices/1448000-fseventstreamstart);
    and
-6. after successful start and before scanning any object, revalidate the pinned root,
+8. after successful start and before scanning any object, poll the kqueue, then
+   revalidate the pinned root,
    `fs/`, `catalogs/`, and `objects/` identities and prove the canonical watch path
    still names the pinned `objects/` descriptor.
 
@@ -241,7 +253,34 @@ depends on the explicit fence, not latency.
 The stream starts before the initial full object scan and remains alive for the
 complete lease generation. Replacement or rename of `objects/` or an ancestor between
 the first layout observation and stream start is therefore caught by the mandatory
-post-start identity check; activity after start is caught by the fence.
+post-start kqueue/identity check; activity after start is caught by the fence.
+
+#### macOS root-continuity monitor
+
+FSEvents `RootChanged` has event ID zero, so an asynchronous FSEvents event-ID
+acknowledgment cannot by itself distinguish “no queued event” from “zero-ID callback
+not delivered yet.” The retained ancestor descriptors plus `EVFILT_VNODE` form a
+separate root-continuity monitor for that exact gap.
+
+The kqueue is armed before the object scan. A nonblocking poll occurs after successful
+FSEvents start and at both sides of every FSEvents acknowledgment fence. Any
+`NOTE_RENAME`, `NOTE_DELETE`, `NOTE_REVOKE`, `EV_ERROR`, `EV_EOF`, registration loss,
+descriptor identity mismatch, or kqueue read failure makes the generation `Unknown`.
+Events are never cleared back to clean; polling drains the kernel queue only after
+publishing the terminal state.
+
+This uses Apple's documented
+[kernel-queue vnode model](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/KernelQueues/KernelQueues.html):
+one retained event-only descriptor per watched vnode, with `kevent` returning the
+requested rename/delete/revoke flags or an error. Polling uses a zero timeout; no
+second callback thread or unbounded wait is introduced.
+
+Watching the complete canonical component chain is mandatory: watching only
+`objects/` would miss rename-away/rename-back of an ancestor. The implementation spike
+must prove on each supported macOS/filesystem profile that a rename/delete/revoke of
+every watched component, including a rename-away/mutate/rename-back sequence, leaves a
+pollable vnode event before the path can be treated as clean. If that characterization
+fails, the macOS backend remains on safe-open fallback.
 
 #### macOS callback and asynchronous fence
 
@@ -268,24 +307,27 @@ The native macOS fence uses
 not `FlushSync`:
 
 1. reject invocation from the callback queue using a dispatch-queue-specific key;
-2. check cancellation and call `FSEventStreamFlushAsync` without the callback-state
-   mutex held;
-3. treat its returned event ID as the last event queued for this stream at the fence;
-4. when the ID is nonzero, wait on the condition variable until the callback has
+2. check cancellation and poll the root-continuity kqueue;
+3. call `FSEventStreamFlushAsync` without the callback-state mutex held;
+4. treat its returned event ID as the largest nonzero event ID queued for this stream
+   at the fence;
+5. when the ID is nonzero, wait on the condition variable until the callback has
    synchronously published that ID or a later one;
-5. when the ID is zero, there has been no nonzero stream event to acknowledge; proceed
-   directly to the identity check;
-6. cancel immediately or time out after `2` seconds as `Unknown`; and
-7. after acknowledgment, revalidate the pinned root, `fs/`, `catalogs/`, and `objects/`
-   identities and canonical watched-path binding before returning `Clean`.
+6. when the ID is zero, make no claim that a zero-ID callback was acknowledged;
+7. cancel immediately or time out after `2` seconds as `Unknown`;
+8. poll the root-continuity kqueue again; and
+9. revalidate the complete retained component chain, pinned root, `fs/`, `catalogs/`,
+   and `objects/` identities and canonical watched-path binding before returning
+   `Clean`.
 
 A clean lease generation has never processed an ordinary event: the first event makes
 that generation `DirtyAll`, and it is never reset to clean. This makes a nonzero async
 flush target an acknowledgment point, not persistent event-history authority.
-`RootChanged` has event ID zero; the callback maps it to `Unknown`, and the mandatory
-post-fence pinned-layout/path check independently closes the zero-ID rename/replacement
-case before `Clean` can return. Process-lifetime stream continuity is the only event
-evidence; event IDs are not serialized or replayed.
+`RootChanged` still maps to callback `Unknown`, but cleanliness never depends on that
+zero-ID callback arriving: the separately armed vnode queue records root/ancestor
+rename, delete, or revoke history even when the original path and identities are
+restored before inspection. Process-lifetime stream and kqueue continuity are the only
+event evidence; event IDs are not serialized or replayed.
 
 The macOS fast path never retains one file descriptor per object. After initial
 safe-open validation, each clean hit calls
@@ -315,12 +357,23 @@ thread:
    self-queue execution with the queue-specific key;
 5. release the FSEvents stream, allowing its context release hook to drop the
    stream-held `Arc`, and only then drop the monitor's owner `Arc`; and
-6. release the dispatch queue.
+6. release the dispatch queue, then close the kqueue and every retained ancestor
+   descriptor.
 
 The callback context is retained by the stream's native context retain/release hooks.
 The invalidation plus serial-queue barrier, not a fictitious worker join, proves no
 callback can touch the context after release. No panic, timeout, cancellation, or
 partial construction path may free the context or queue earlier.
+
+Partial construction cleanup is state-sensitive:
+
+- before an FSEvents stream exists, release locally owned CF values, queue, kqueue, and
+  ancestor descriptors only;
+- after stream creation but before scheduling, release the stream/context, queue,
+  kqueue, and descriptors without `Stop` or `Invalidate`;
+- after scheduling when `Start` returns false, call `Invalidate`, queue barrier, and
+  release in the documented order, but never call `Stop`; and
+- only a successfully started stream follows `Stop -> Invalidate -> barrier -> release`.
 
 The implementation plan must begin with focused platform characterizations of both
 native fences. If either backend cannot establish its stated ordered boundary, that
@@ -575,14 +628,19 @@ The crate also owns one process-wide `LeaseBudget` with:
 ```text
 MAX_PROCESS_OBJECT_LEASE_ENTRIES = 4_096
 MAX_PROCESS_OBJECT_LEASES = 4
+MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES = 260
 ```
 
-Before arming a monitor, a candidate atomically reserves both its exact object-entry
-count and one lease slot. Reservation returns one `LeaseSlotPermit` plus splittable
-`EntryPermit` units. The slot stays with the monitor lease; each Windows retained
-handle or macOS stamp owns one unit, so sharing an exact anchor by `Arc` does not
-double-count it. macOS stamps contain fixed metadata and do not retain per-object file
-descriptors; the entry budget still bounds their memory and validation work. Candidate
+Before arming a monitor, a candidate atomically reserves its exact object-entry count,
+exact platform monitor-resource count, and one lease slot. Reservation returns one
+`LeaseSlotPermit` plus splittable `EntryPermit` and `MonitorResourcePermit` units. The
+slot stays with the monitor lease; each Windows retained handle or macOS stamp owns one
+entry unit, so sharing an exact anchor by `Arc` does not double-count it. macOS stamps
+contain fixed metadata and do not retain per-object file descriptors; one macOS lease
+may retain at most 64 canonical ancestor descriptors plus one kqueue descriptor, and
+the separate process monitor-resource budget reserves that exact count before arming.
+Windows reserves its monitor handle through the same budget. The entry budget still
+bounds per-object memory and validation work. Candidate
 failure, lease clear/replacement, session close, or panic drops the corresponding
 permits and returns the counters. The process budget means many unlock tokens can
 remain functionally valid, but only candidates fitting the remaining shared budget use
@@ -626,8 +684,9 @@ and resource factory.
 
 Lease resources are also torn down on monitor failure, cache replacement/clear,
 explicit `release_object_lease()`, or native-session close. Windows closes all retained
-handles; macOS cancels and drains the FSEvents stream and drops every stamp. Linux and
-any monitor-unavailable path retain the current safe-open behavior.
+handles; macOS cancels and drains the FSEvents stream, closes its kqueue/ancestor
+descriptors, and drops every stamp. Linux and any monitor-unavailable path retain the
+current safe-open behavior.
 
 ## Error behavior
 
@@ -653,8 +712,9 @@ The macOS spike compares the current safe-open loop with:
 
 1. two `FSEventStreamFlushAsync` acknowledgment fences;
 2. 2,500 capability-relative `fstatat(..., AT_SYMLINK_NOFOLLOW)` calls and stamp
-   comparisons; and
-3. conservative directory-wide invalidation overhead.
+   comparisons;
+3. the before/after nonblocking kqueue root-continuity polls; and
+4. conservative directory-wide invalidation overhead.
 
 Each spike uses real fixture object files and the same capability-relative metadata
 rules as production. It changes no benchmark fixture, public timer, threshold, or
@@ -706,9 +766,13 @@ macOS-specific coverage runs on macOS and proves:
   publish a clean lease when a mutation raced the scan;
 - stream creation uses `SinceNow`, `WatchRoot`, `FileEvents`, `NoDefer`, a finite
   latency, queue-before-start ordering, and never `IgnoreSelf`;
-- null creation/start failure uses safe-open fallback, and replacement of `objects/` or
-  an ancestor between initial layout validation and start fails the post-start identity
-  check;
+- a bounded no-follow canonical ancestor chain and kqueue vnode filters are armed
+  before scanning; each ancestor rename/delete/revoke and `EV_ERROR`/`EV_EOF` becomes
+  `Unknown`;
+- null creation/start failure uses safe-open fallback, state-specific partial cleanup
+  never calls `Stop` before successful start, and replacement of `objects/` or an
+  ancestor between initial layout validation and start fails the post-start
+  kqueue/identity check;
 - ordinary callback batches, including coalesced or unreferenced-name events, produce
   `DirtyAll`;
 - injected `MustScanSubDirs`, `UserDropped`, `KernelDropped`, `EventIdsWrapped`,
@@ -719,7 +783,10 @@ macOS-specific coverage runs on macOS and proves:
   a mutation in either race seam forces retry/fallback;
 - callbacks synchronously publish state and event-ID progress without a callback-needed
   mutex held across native flush or queue operations;
-- a zero-ID `RootChanged` race fails the post-fence pinned-layout/path check;
+- an injected delayed zero-ID `RootChanged` callback cannot produce `Clean` when an
+  ancestor is renamed away, an object is mutated/rebound while detached, and the same
+  ancestor/path identities are restored before post-fence validation, because the
+  independently armed vnode queue remains terminally `Unknown`;
 - teardown rejects callback-queue self-drain, follows
   cancel/stop/invalidate/barrier/release ordering, keeps its context alive through the
   barrier, and permits no callback publication after close; and
@@ -769,18 +836,23 @@ macOS-specific coverage runs on macOS and proves:
 - release racing close atomically upgrades to terminal close and never reopens; two
   concurrent close callers both wait for `Closed`;
 - the blocking close/release path does not hold the GIL or Python session-store lock;
-- logout, revoke, replacement, expiry, clear, and shutdown reject new operations, join
-  the monitor, and release every native resource without holding the Python store lock;
+- logout, revoke, replacement, expiry, clear, and shutdown reject new operations, drain
+  the monitor backend, and release every native resource without holding the Python
+  store lock;
 - dev-session restore never restores a native CoreFS session or CoreFS keys;
 - `release_object_lease()` is idempotent and the next eligible commit can rebuild;
 - object counts `4_096` and `4_097` select lease and fallback respectively;
-- multiple unlock tokens atomically exhaust the shared 4,096-entry/four-lease budget,
-  denied sessions use safe-open without retrying until the budget epoch changes, and
-  permit release makes another session eligible;
+- multiple unlock tokens atomically exhaust the shared 4,096-entry, four-lease, and
+  260-monitor-resource budgets; denied sessions use safe-open without retrying until
+  the budget epoch changes, and permit release makes another session eligible;
 - repeated unchanged 2,500-object commits carry one lease forward and keep process
   usage fixed at 2,500 entries/one monitor/one permit bundle without denial;
 - macOS repeats that carry-forward test without growing its process file-descriptor
-  count per object;
+  count per object and never exceeds its reserved bounded ancestor/kqueue descriptor
+  count;
+- macOS ancestor counts `64` and `65` select lease and safe-open fallback respectively,
+  and partial chain/kqueue registration failure releases every descriptor and
+  monitor-resource permit;
 - changed authenticated object-set/object-count state may retry a prior budget denial
   even when the global epoch is unchanged, while a generation-only advance over the
   same object set remains suppressed;
@@ -850,6 +922,12 @@ macOS-specific coverage runs on macOS and proves:
   preserve the required checks without that pressure.
 - **Per-name FSEvents attribution:** FSEvents may coalesce activity, and its paths are not
   filesystem authority. Directory-wide invalidation is simpler and fail-closed.
+- **FSEvents async acknowledgment alone:** `RootChanged` uses event ID zero, making a
+  zero flush target ambiguous with no event. The bounded ancestor-vnode queue is
+  required to retain rename/delete/revoke history across path restoration.
+- **FSEvents synchronous flush:** proves callback delivery but exposes no error,
+  cancellation, or timeout result, so it cannot satisfy the approved bounded session
+  close contract.
 - **Persisted FSEvents replay:** unnecessary for a process-local optimization and creates
   event-ID wrap, volume-replacement, and replay-state authority that CoreFS does not
   need.
