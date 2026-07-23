@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::panic::{self, AssertUnwindSafe};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -262,6 +263,19 @@ impl Drop for PendingRead<'_> {
     }
 }
 
+struct WorkerTerminalGuard {
+    shared: Arc<WorkerShared>,
+    sender: mpsc::Sender<WorkerMessage>,
+}
+
+impl Drop for WorkerTerminalGuard {
+    fn drop(&mut self) {
+        complete_pending_read(self.shared.as_ref());
+        self.shared.state.publish(FenceOutcome::Unknown);
+        let _ = self.sender.send(WorkerMessage::Unknown);
+    }
+}
+
 struct WorkerShared {
     objects_dir: Arc<Dir>,
     notification_handle: Mutex<Option<File>>,
@@ -271,6 +285,8 @@ struct WorkerShared {
     state: Arc<MonitorStateCell>,
     #[cfg(test)]
     control: Option<WindowsLeaseTestControl>,
+    #[cfg(test)]
+    _resource_liveness: Arc<()>,
 }
 
 impl WorkerShared {
@@ -330,6 +346,12 @@ impl WindowsLeaseMonitor {
         #[cfg(test)] control: Option<WindowsLeaseTestControl>,
     ) -> io::Result<Self> {
         let notification_handle = open_notification_handle(objects_dir.as_ref())?;
+        #[cfg(test)]
+        let resource_liveness = Arc::new(());
+        #[cfg(test)]
+        if let Some(control) = &control {
+            control.record_resource_liveness(Arc::downgrade(&resource_liveness));
+        }
         let shared = Arc::new(WorkerShared {
             objects_dir,
             notification_handle: Mutex::new(Some(notification_handle)),
@@ -339,12 +361,14 @@ impl WindowsLeaseMonitor {
             state,
             #[cfg(test)]
             control,
+            #[cfg(test)]
+            _resource_liveness: resource_liveness,
         });
         let (sender, receiver) = mpsc::channel();
         let worker_shared = shared.clone();
         let worker = thread::Builder::new()
             .name("anima-corefs-object-lease".into())
-            .spawn(move || notification_worker(worker_shared, sender))?;
+            .spawn(move || notification_worker_entry(worker_shared, sender))?;
         let monitor = Self {
             shared,
             receiver: Mutex::new(receiver),
@@ -548,6 +572,14 @@ impl Drop for WindowsLeaseMonitor {
     }
 }
 
+fn notification_worker_entry(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMessage>) {
+    let _terminal = WorkerTerminalGuard {
+        shared: shared.clone(),
+        sender: sender.clone(),
+    };
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| notification_worker(shared, sender)));
+}
+
 fn notification_worker(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMessage>) {
     let mut buffer = vec![0_u8; NOTIFICATION_BUFFER_SIZE];
     let worker_thread = match duplicate_current_thread_handle() {
@@ -574,6 +606,10 @@ fn notification_worker(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMes
                 return;
             }
             lifecycle.read_pending = true;
+            #[cfg(test)]
+            if let Some(control) = &shared.control {
+                control.record_read_pending(true);
+            }
         }
         let pending_read = PendingRead {
             shared: shared.as_ref(),
@@ -644,6 +680,10 @@ fn complete_pending_read(shared: &WorkerShared) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     lifecycle.read_pending = false;
+    #[cfg(test)]
+    if let Some(control) = &shared.control {
+        control.record_read_pending(false);
+    }
     shared.lifecycle_changed.notify_all();
 }
 
@@ -656,6 +696,9 @@ fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Resul
                 WorkerFaultForTest::MalformedBatch => {
                     buffer[0] = 0xff;
                     Ok(1)
+                }
+                WorkerFaultForTest::Panic => {
+                    panic!("injected Windows object lease worker panic");
                 }
                 WorkerFaultForTest::LoseMonitorHandle => {
                     let file = shared
@@ -942,6 +985,7 @@ pub(in crate::transaction) enum ConstructionEventForTest {
 pub(in crate::transaction) enum WorkerFaultForTest {
     Overflow,
     MalformedBatch,
+    Panic,
     LoseMonitorHandle,
 }
 
@@ -972,9 +1016,11 @@ struct WindowsLeaseTestControlInner {
     worker_faults: Mutex<VecDeque<WorkerFaultForTest>>,
     read_pause: Mutex<ReadPauseState>,
     read_pause_changed: Condvar,
+    read_pending: AtomicBool,
     cancel_requested: AtomicBool,
     state: Mutex<Option<Arc<MonitorStateCell>>>,
     construction_events: Mutex<Vec<ConstructionEventForTest>>,
+    resource_liveness: Mutex<Option<std::sync::Weak<()>>>,
 }
 
 #[cfg(test)]
@@ -1156,6 +1202,44 @@ impl WindowsLeaseTestControl {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pause.released = true;
         self.inner.read_pause_changed.notify_all();
+    }
+
+    fn record_read_pending(&self, read_pending: bool) {
+        self.inner
+            .read_pending
+            .store(read_pending, Ordering::SeqCst);
+    }
+
+    pub(in crate::transaction) fn read_pending(&self) -> bool {
+        self.inner.read_pending.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::transaction) fn wait_until_read_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.read_pending() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::yield_now();
+        }
+        true
+    }
+
+    fn record_resource_liveness(&self, liveness: std::sync::Weak<()>) {
+        *self
+            .inner
+            .resource_liveness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(liveness);
+    }
+
+    pub(in crate::transaction) fn worker_resources_alive(&self) -> bool {
+        self.inner
+            .resource_liveness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|liveness| liveness.strong_count() != 0)
     }
 
     fn record_cancel_requested(&self) {

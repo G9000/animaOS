@@ -857,6 +857,46 @@ mod windows_object_lease_tests {
     }
 
     #[test]
+    fn windows_object_lease_worker_panic_is_immediately_terminal_and_bounded() {
+        let (root, lease, budget, control) = monitored_lease_with_control("worker-panic");
+        control.pause_next_read();
+        fs::write(root.join("wake-current-read"), b"wake").unwrap();
+        assert!(control.wait_until_read_paused(Duration::from_secs(2)));
+        assert!(
+            control.read_pending(),
+            "panic injection must run while the native-read handshake is armed"
+        );
+        control.inject_next_worker_fault(WorkerFaultForTest::Panic);
+        control.release_read_pause();
+
+        assert!(
+            control.wait_until_state(MonitorState::Unknown, Duration::from_secs(2)),
+            "worker panic must publish terminal Unknown before monitor teardown"
+        );
+        assert!(control.wait_until_read_idle(Duration::from_secs(2)));
+        assert_eq!(lease.state(), MonitorState::Unknown);
+
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let drop_thread = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            drop(lease);
+            let _ = done_sender.send(started.elapsed());
+        });
+        let elapsed = done_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("contained worker panic must permit bounded monitor teardown");
+        drop_thread.join().unwrap();
+        assert!(elapsed < Duration::from_secs(2));
+        assert_eq!(budget.usage().leases, 0);
+        assert!(
+            !control.worker_resources_alive(),
+            "worker and retained native handles must be released after teardown"
+        );
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn windows_object_lease_cancel_between_check_and_native_read_cannot_hang() {
         let (root, lease, budget, control) = monitored_lease_with_control("cancel-read-race");
         control.pause_next_read();
