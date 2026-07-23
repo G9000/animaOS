@@ -15,9 +15,9 @@ binary, closed output schema, and exact Windows/macOS commands.
 **Plan revision note:** The written safety-first teardown specification was
 user-approved and independently approved on 2026-07-23. The focused plan revision at
 `0a409ea7` passed independent plan re-review with no remaining substantive findings.
-Tasks 4 and 6 are implemented and independently review-clean through `2aab0275`; the
-overall plan remains in progress. Task 2's native macOS characterization remains
-pending, Task 5 is unstarted, and Task 7 is the next locally executable unit.
+Tasks 4, 6, and 7 are implemented and independently review-clean through `83fa43a1`;
+the overall plan remains in progress. Task 2's native macOS characterization remains
+pending, Task 5 is unstarted, and Task 8 is the next locally executable unit.
 
 ---
 
@@ -522,13 +522,13 @@ git commit -m "corefs: construct leases from full validation"
 - Test: `packages/anima-corefs/src/transaction/object_lease_tests.rs`
 - Test: `packages/anima-corefs/tests/transaction.rs`
 
-- [ ] **Step 1: Add failing exact-hit and carry-forward tests**
+- [x] **Step 1: Add failing exact-hit and carry-forward tests**
 
 Add tests proving zero repeated opens, exactly one fresh platform metadata query per clean object, pre/post fences, full fallback on any event, no trust in event names, exact pointer/key/catalog/object binding, and rejection after changes to wrapped DEK, key epoch, physical name, kind, hash, revision, key identity, or same-version key material.
 
 Add repeated unchanged 2,500-object commits that assert `Arc::ptr_eq` on the lease and fixed usage of 2,500 entries, one lease, one permit bundle, and the exact platform monitor-resource count.
 
-- [ ] **Step 2: Verify the RED phase**
+- [x] **Step 2: Verify the RED phase**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs clean_lease -- --nocapture
@@ -537,19 +537,19 @@ cargo +1.75.0 test --locked -p anima-corefs lease_carry_forward -- --nocapture
 
 Expected: FAIL because unchanged objects still call `open_regular_file_in`.
 
-- [ ] **Step 3: Implement the exact clean-hit path**
+- [x] **Step 3: Implement the exact clean-hit path**
 
 Clone the exact snapshot under the short cache mutex, release it, prove directory identity, run the first fence, query every exact anchor's fresh metadata, route each mismatch/error/non-unit link through `open_regular_file_in`, validate changed/prepared objects fully, run the final fence, and only then continue unchanged serialization/encryption/publication.
 
-- [ ] **Step 4: Implement terminal invalidation and full fallback**
+- [x] **Step 4: Implement terminal invalidation and full fallback**
 
 `DirtyAll` and `Unknown` must never return to `Clean`. Any monitor event, fence ambiguity, anchor mismatch, changed object set, or final-fence event must validate all referenced regular objects through the existing opened-versus-linked safe path. No per-name fast path is allowed.
 
-- [ ] **Step 5: Carry forward one shared lease**
+- [x] **Step 5: Carry forward one shared lease**
 
 When the complete object tuple is unchanged and both fences/metadata checks pass, bind the next snapshot to the same `Arc<ObjectValidationLease>` and permit bundle. For a changed set, remove the cache's old lease reference before full validation and attempt a new reservation only after released references return permits; a budget miss publishes a correct snapshot without a lease.
 
-- [ ] **Step 6: Run the equivalence and accounting matrix**
+- [x] **Step 6: Run the equivalence and accounting matrix**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs clean_lease -- --nocapture
@@ -560,7 +560,7 @@ cargo +1.75.0 test --release --locked -p anima-corefs production_link_count -- -
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/cache.rs packages/anima-corefs/src/transaction/object_lease.rs packages/anima-corefs/src/transaction/cache_tests.rs packages/anima-corefs/src/transaction/object_lease_tests.rs packages/anima-corefs/tests/transaction.rs
