@@ -149,7 +149,7 @@ struct LeaseBudgetState {
     epoch: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct LeaseBudget {
     inner: Arc<Mutex<LeaseBudgetState>>,
 }

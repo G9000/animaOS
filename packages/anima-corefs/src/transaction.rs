@@ -1211,12 +1211,12 @@ impl CoreCommitCoordinator {
         let fingerprint = object_set_fingerprint(&expected_bindings);
         let requested_count = expected_bindings.len();
         let budget = self.lease_budget();
-        let budget_epoch = budget.epoch();
+        let decision_budget_epoch = budget.epoch();
         let decision = self
             .lease_attempt_policy
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .decision(fingerprint, requested_count, budget_epoch);
+            .decision(fingerprint, requested_count, decision_budget_epoch);
         if decision != LeaseAttemptDecision::Eligible {
             let validated = validate_prepared_revisions_observed(
                 &self.objects_dir,
@@ -1254,6 +1254,7 @@ impl CoreCommitCoordinator {
             }
 
             let directory_identity = self.object_directory_identity()?;
+            let acquisition_budget_epoch = budget.epoch();
             let candidate = match ObjectLeaseCandidate::try_begin(
                 budget,
                 expected_bindings.clone(),
@@ -1266,7 +1267,7 @@ impl CoreCommitCoordinator {
                         miss,
                         fingerprint,
                         requested_count,
-                        budget_epoch,
+                        acquisition_budget_epoch,
                     );
                     let validated = validate_prepared_revisions_observed(
                         &self.objects_dir,
@@ -1323,7 +1324,7 @@ impl CoreCommitCoordinator {
                     OptimizationMiss::TransientAcquisition,
                     fingerprint,
                     requested_count,
-                    budget_epoch,
+                    acquisition_budget_epoch,
                 );
                 return Ok((validated, None));
             };
@@ -1347,7 +1348,7 @@ impl CoreCommitCoordinator {
                             OptimizationMiss::TransientAcquisition,
                             fingerprint,
                             requested_count,
-                            budget_epoch,
+                            acquisition_budget_epoch,
                         );
                         Ok((validated, None))
                     }
@@ -1359,7 +1360,7 @@ impl CoreCommitCoordinator {
                     OptimizationMiss::TransientAcquisition,
                     fingerprint,
                     requested_count,
-                    budget_epoch,
+                    acquisition_budget_epoch,
                 );
                 return Ok((validated, None));
             }
@@ -3465,6 +3466,17 @@ impl CoreCommitCoordinator {
             self.cache.clear();
             return;
         };
+        if self
+            .reauthenticate_cached_catalog_bytes(
+                &final_pointers,
+                #[cfg(test)]
+                None,
+            )
+            .is_err()
+        {
+            self.cache.clear();
+            return;
+        }
         self.cache.replace(Arc::new(
             AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
                 .with_object_lease(object_lease),

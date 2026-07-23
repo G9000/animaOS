@@ -1790,8 +1790,9 @@ mod lease_candidate_tests {
     use super::*;
     use crate::publication::PublicationPhase;
     use crate::transaction::object_lease::{
-        FenceOutcome, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan,
-        MonitorStateCell, ValidationAnchor,
+        FenceOutcome, LeaseAttemptDecision, LeaseBudget, LeaseMonitorResource, LeasePermitBundle,
+        LeaseResourceFactory, LeaseResourcePlan, MonitorStateCell, ValidationAnchor,
+        MAX_OBJECT_LEASE_ENTRIES,
     };
 
     #[derive(Debug)]
@@ -1822,10 +1823,13 @@ mod lease_candidate_tests {
         supported: bool,
         fail_anchor_at: Option<usize>,
         outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
+        plan_attempts: Arc<AtomicUsize>,
         monitor_attempts: Arc<AtomicUsize>,
         fence_attempts: Arc<AtomicUsize>,
         anchor_attempts: Arc<AtomicUsize>,
         monitor_drops: Arc<AtomicUsize>,
+        deny_retry_with_budget: Option<LeaseBudget>,
+        held_competitor: Arc<Mutex<Option<LeasePermitBundle>>>,
     }
 
     impl fmt::Debug for CandidateFactory {
@@ -1848,10 +1852,13 @@ mod lease_candidate_tests {
                 supported,
                 fail_anchor_at,
                 outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
+                plan_attempts: Arc::new(AtomicUsize::new(0)),
                 monitor_attempts: Arc::new(AtomicUsize::new(0)),
                 fence_attempts: Arc::new(AtomicUsize::new(0)),
                 anchor_attempts: Arc::new(AtomicUsize::new(0)),
                 monitor_drops: Arc::new(AtomicUsize::new(0)),
+                deny_retry_with_budget: None,
+                held_competitor: Arc::new(Mutex::new(None)),
             })
         }
 
@@ -1866,10 +1873,38 @@ mod lease_candidate_tests {
         fn failing_anchor(index: usize) -> Arc<Self> {
             Self::new(true, Some(index), [])
         }
+
+        fn denying_retry(budget: LeaseBudget) -> Arc<Self> {
+            let mut factory = Arc::try_unwrap(Self::supported([FenceOutcome::DirtyAll]))
+                .expect("new candidate factory has one owner");
+            factory.deny_retry_with_budget = Some(budget);
+            Arc::new(factory)
+        }
+
+        fn release_competitor(&self) {
+            let competitor = self
+                .held_competitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            drop(competitor);
+        }
     }
 
     impl LeaseResourceFactory for CandidateFactory {
         fn resource_plan(&self) -> LeaseResourcePlan {
+            let attempt = self.plan_attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 1 {
+                if let Some(budget) = &self.deny_retry_with_budget {
+                    let permits = budget
+                        .try_reserve_exact(MAX_OBJECT_LEASE_ENTRIES, 0)
+                        .expect("retry contention must fill the released entry budget");
+                    *self
+                        .held_competitor
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(permits);
+                }
+            }
             if self.supported {
                 LeaseResourcePlan::supported(1)
             } else {
@@ -2175,6 +2210,56 @@ mod lease_candidate_tests {
     }
 
     #[test]
+    fn candidate_retry_records_budget_denial_at_current_epoch() {
+        let (root, coordinator, keys, prepared) = setup("retry-budget-epoch");
+        let factory = CandidateFactory::denying_retry(coordinator.lease_budget.clone());
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut probe = CommitProbe::default();
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        assert_eq!(factory.plan_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 1);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        let requested = crate::transaction::catalog_object_bindings(&cached_object_catalog(
+            3,
+            &prepared,
+            prepared.wrapped_dek().clone(),
+        ))
+        .unwrap();
+        let fingerprint = crate::transaction::object_lease::object_set_fingerprint(&requested);
+        let denied_epoch = coordinator.lease_budget.epoch();
+        assert_eq!(
+            coordinator
+                .lease_attempt_policy
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .decision(fingerprint, requested.len(), denied_epoch),
+            LeaseAttemptDecision::BudgetDeniedSuppressed,
+            "retry denial was recorded against a stale pre-drop budget epoch"
+        );
+
+        let mut second_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut second_probe);
+        assert_eq!(
+            factory.plan_attempts.load(Ordering::SeqCst),
+            2,
+            "unchanged commit retried a denial at the current epoch"
+        );
+
+        factory.release_competitor();
+        let released_epoch = coordinator.lease_budget.epoch();
+        assert_ne!(released_epoch, denied_epoch);
+        let mut third_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut third_probe);
+        assert_eq!(factory.plan_attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 2);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_some());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn partial_anchor_failure_drops_monitor_anchors_and_permits() {
         let (root, coordinator, keys, first, second) = setup_two_objects("partial-anchor");
         let factory = CandidateFactory::failing_anchor(1);
@@ -2247,6 +2332,53 @@ mod lease_candidate_tests {
         assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 1);
         assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 1);
         assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_reauthenticates_final_catalog_before_attachment() {
+        let (root, coordinator, keys, prepared) = setup("final-catalog-reauth");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut hook = |point| {
+            if point
+                == (CommitFailurePoint::Publication {
+                    target: PublicationTarget::AuthoritativeHead,
+                    phase: PublicationPhase::DestinationSynced,
+                })
+            {
+                std::fs::remove_file(authoritative_catalog_path(&coordinator))?;
+            }
+            Ok(())
+        };
+
+        let outcome = coordinator
+            .commit_internal_with_hook(
+                &keys,
+                &[],
+                &[],
+                CommitMode::Normal,
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        &prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                CommitCallbacks {
+                    invalidate: |_| Ok(()),
+                    hook: &mut hook,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(outcome.generation(), 3);
+        assert!(
+            coordinator.cache.current().is_none(),
+            "missing final catalog bytes retained candidate cache authority"
+        );
+        assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 1);
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
