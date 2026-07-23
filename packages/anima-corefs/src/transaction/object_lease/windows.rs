@@ -227,6 +227,20 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
         }
         Ok(ValidationAnchor::Windows(Arc::new(anchor)))
     }
+
+    fn create_anchor_from_validated_file(
+        &self,
+        _index: usize,
+        _binding: &ValidatedObjectBinding,
+        file: File,
+    ) -> Result<ValidationAnchor, ()> {
+        let anchor = RetainedValidationAnchor::new(file).map_err(|_| ())?;
+        #[cfg(test)]
+        if let Some(control) = &self.control {
+            control.record_construction_event(ConstructionEventForTest::AnchorCreated);
+        }
+        Ok(ValidationAnchor::Windows(Arc::new(anchor)))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

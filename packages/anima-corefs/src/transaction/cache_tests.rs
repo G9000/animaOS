@@ -1780,3 +1780,498 @@ fn changed_object_key_epoch_never_reuses_binding() {
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+mod lease_candidate_tests {
+    use std::collections::VecDeque;
+    use std::fmt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::publication::PublicationPhase;
+    use crate::transaction::object_lease::{
+        FenceOutcome, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan,
+        MonitorStateCell, ValidationAnchor,
+    };
+
+    #[derive(Debug)]
+    struct CandidateMonitor {
+        outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
+        fence_attempts: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl LeaseMonitorResource for CandidateMonitor {
+        fn fence(&self) -> FenceOutcome {
+            self.fence_attempts.fetch_add(1, Ordering::SeqCst);
+            self.outcomes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+                .unwrap_or(FenceOutcome::Clean)
+        }
+    }
+
+    impl Drop for CandidateMonitor {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct CandidateFactory {
+        supported: bool,
+        fail_anchor_at: Option<usize>,
+        outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
+        monitor_attempts: Arc<AtomicUsize>,
+        fence_attempts: Arc<AtomicUsize>,
+        anchor_attempts: Arc<AtomicUsize>,
+        monitor_drops: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Debug for CandidateFactory {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("CandidateFactory")
+                .field("supported", &self.supported)
+                .field("fail_anchor_at", &self.fail_anchor_at)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl CandidateFactory {
+        fn new(
+            supported: bool,
+            fail_anchor_at: Option<usize>,
+            outcomes: impl IntoIterator<Item = FenceOutcome>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                supported,
+                fail_anchor_at,
+                outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
+                monitor_attempts: Arc::new(AtomicUsize::new(0)),
+                fence_attempts: Arc::new(AtomicUsize::new(0)),
+                anchor_attempts: Arc::new(AtomicUsize::new(0)),
+                monitor_drops: Arc::new(AtomicUsize::new(0)),
+            })
+        }
+
+        fn supported(outcomes: impl IntoIterator<Item = FenceOutcome>) -> Arc<Self> {
+            Self::new(true, None, outcomes)
+        }
+
+        fn unsupported() -> Arc<Self> {
+            Self::new(false, None, [])
+        }
+
+        fn failing_anchor(index: usize) -> Arc<Self> {
+            Self::new(true, Some(index), [])
+        }
+    }
+
+    impl LeaseResourceFactory for CandidateFactory {
+        fn resource_plan(&self) -> LeaseResourcePlan {
+            if self.supported {
+                LeaseResourcePlan::supported(1)
+            } else {
+                LeaseResourcePlan::unsupported()
+            }
+        }
+
+        fn create_monitor(
+            &self,
+            _plan: LeaseResourcePlan,
+            _state: Arc<MonitorStateCell>,
+        ) -> Result<Box<dyn LeaseMonitorResource>, ()> {
+            self.monitor_attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(CandidateMonitor {
+                outcomes: Arc::clone(&self.outcomes),
+                fence_attempts: Arc::clone(&self.fence_attempts),
+                drops: Arc::clone(&self.monitor_drops),
+            }))
+        }
+
+        fn create_anchor(
+            &self,
+            _index: usize,
+            _binding: &ValidatedObjectBinding,
+        ) -> Result<ValidationAnchor, ()> {
+            panic!("commit candidate attempted to construct an anchor without its validated file")
+        }
+
+        fn create_anchor_from_validated_file(
+            &self,
+            index: usize,
+            _binding: &ValidatedObjectBinding,
+            file: std::fs::File,
+        ) -> Result<ValidationAnchor, ()> {
+            assert!(file.metadata().unwrap().len() > 0);
+            self.anchor_attempts.fetch_add(1, Ordering::SeqCst);
+            if self.fail_anchor_at == Some(index) {
+                Err(())
+            } else {
+                Ok(ValidationAnchor::test(index as u64))
+            }
+        }
+    }
+
+    fn setup(
+        label: &str,
+    ) -> (
+        PathBuf,
+        CoreCommitCoordinator,
+        FrkSubkeys,
+        PreparedObjectRevision,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-lease-candidate-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        let keys = keys(0x51, 1);
+        let prepared = seed_committed_object(&coordinator, &keys);
+        (root, coordinator, keys, prepared)
+    }
+
+    fn prepare_second_object(
+        coordinator: &CoreCommitCoordinator,
+        keys: &FrkSubkeys,
+    ) -> PreparedObjectRevision {
+        let object_key = SecretBytes::new(vec![0x72; 32]).unwrap();
+        let aad = ObjectBaseAad::new(
+            CORE_ID,
+            SECOND_OBJECT_ID,
+            ObjectKind::Note,
+            ENVELOPE_VERSION,
+            1,
+            1,
+        )
+        .unwrap();
+        let body = b"second cached object body";
+        let metadata = EnvelopeMetadata::for_body(
+            ObjectKind::Note.as_str(),
+            SECOND_OBJECT_ID,
+            1,
+            "2026-07-23T00:00:00Z",
+            "2026-07-23T00:00:00Z",
+            "text/markdown",
+            BTreeMap::new(),
+            BodyEncoding::Utf8,
+            body,
+        )
+        .unwrap();
+        let encoded = encode_envelope(&object_key, &aad, &metadata, body).unwrap();
+        coordinator
+            .prepare_object_revision(keys, &object_key, &aad, &mut Cursor::new(encoded))
+            .unwrap()
+    }
+
+    fn two_object_catalog(
+        generation: u64,
+        first: &PreparedObjectRevision,
+        second: &PreparedObjectRevision,
+    ) -> CatalogGeneration {
+        let object_entry = |stable_id: &str, name: &str, prepared: &PreparedObjectRevision| {
+            CatalogGenerationEntry::object(
+                CatalogEntryCommon::new(
+                    OpaqueId::parse(stable_id).unwrap(),
+                    Some(OpaqueId::parse(ROOT_ID).unwrap()),
+                    PortableName::parse(name).unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                ),
+                CatalogObject::new(
+                    prepared.revision(),
+                    prepared.physical_name().clone(),
+                    prepared.content_hash().clone(),
+                    ObjectKind::Note,
+                    prepared.wrapped_dek().clone(),
+                    ObjectLifecycle::Live,
+                )
+                .unwrap(),
+            )
+        };
+        CatalogGeneration::new(
+            generation,
+            vec![
+                CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                    OpaqueId::parse(ROOT_ID).unwrap(),
+                    None,
+                    PortableName::parse("Core").unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                )),
+                object_entry(FIRST_OBJECT_ID, "First.md", first),
+                object_entry(SECOND_OBJECT_ID, "Second.md", second),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn setup_two_objects(
+        label: &str,
+    ) -> (
+        PathBuf,
+        CoreCommitCoordinator,
+        FrkSubkeys,
+        PreparedObjectRevision,
+        PreparedObjectRevision,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-lease-candidate-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        let keys = keys(0x52, 1);
+        let first = prepare_cached_object(&coordinator, &keys);
+        let second = prepare_second_object(&coordinator, &keys);
+        coordinator
+            .initialize_validation_snapshot(&keys, &[first.clone(), second.clone()], |generation| {
+                Ok(two_object_catalog(generation, &first, &second))
+            })
+            .unwrap();
+        coordinator
+            .commit_first_mutation(
+                &keys,
+                1,
+                &[],
+                &[],
+                |_, generation| Ok(two_object_catalog(generation, &first, &second)),
+                |_| Ok(()),
+            )
+            .unwrap();
+        (root, coordinator, keys, first, second)
+    }
+
+    fn commit_unchanged(
+        coordinator: &CoreCommitCoordinator,
+        keys: &FrkSubkeys,
+        prepared: &PreparedObjectRevision,
+        probe: &mut CommitProbe<'_>,
+    ) {
+        coordinator
+            .commit_with_probe(
+                keys,
+                &[],
+                &[],
+                |_, generation| {
+                    Ok(cached_object_catalog(
+                        generation,
+                        prepared,
+                        prepared.wrapped_dek().clone(),
+                    ))
+                },
+                |_| Ok(()),
+                probe,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn candidate_monitor_arms_before_initial_object_scan() {
+        let (root, coordinator, keys, prepared) = setup("monitor-before-scan");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory);
+        let mut stages = Vec::new();
+        let mut observer = |stage| stages.push(stage);
+        let mut probe = CommitProbe::observed(&mut observer);
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        let monitor = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseMonitorArmed)
+            .expect("candidate monitor was never armed");
+        let scan = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseObjectValidated)
+            .expect("candidate safe-open scan was never observed");
+        assert!(monitor < scan);
+        let lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .expect("durable snapshot omitted its clean candidate");
+        assert_eq!(lease.object_tuple().len(), 1);
+        assert_ne!(
+            lease.directory_identity(),
+            crate::transaction::object_lease::DirectoryIdentity::default()
+        );
+        assert!(lease.monitor_generation() > 0);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_revalidates_layout_after_monitor_start() {
+        let (root, coordinator, keys, prepared) = setup("layout-after-monitor");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut stages = Vec::new();
+        let mut observer = |stage| stages.push(stage);
+        let mut probe = CommitProbe::observed(&mut observer);
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        let monitor = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseMonitorArmed)
+            .expect("candidate monitor was never armed");
+        let layout = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseLayoutRevalidated)
+            .expect("layout was not revalidated after monitor start");
+        let scan = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseObjectValidated)
+            .expect("safe-open scan was not observed");
+        assert!(monitor < layout && layout < scan);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_fence_covers_the_complete_safe_open_scan() {
+        let (root, coordinator, keys, prepared) = setup("fence-after-scan");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut stages = Vec::new();
+        let mut observer = |stage| stages.push(stage);
+        let mut probe = CommitProbe::observed(&mut observer);
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        let scan = stages
+            .iter()
+            .rposition(|stage| *stage == CommitStage::LeaseObjectValidated)
+            .expect("safe-open scan was not observed");
+        let fence = stages
+            .iter()
+            .position(|stage| *stage == CommitStage::LeaseFence)
+            .expect("candidate fence was not observed");
+        assert!(scan < fence);
+        assert_eq!(factory.fence_attempts.load(Ordering::SeqCst), 1);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_during_scan_retries_once_then_falls_back_without_lease() {
+        let (root, coordinator, keys, prepared) = setup("scan-event-retry");
+        let factory = CandidateFactory::supported([FenceOutcome::DirtyAll, FenceOutcome::DirtyAll]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut probe = CommitProbe::default();
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.fence_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 2);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_anchor_failure_drops_monitor_anchors_and_permits() {
+        let (root, coordinator, keys, first, second) = setup_two_objects("partial-anchor");
+        let factory = CandidateFactory::failing_anchor(1);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut probe = CommitProbe::default();
+
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[],
+                &[],
+                |_, generation| Ok(two_object_catalog(generation, &first, &second)),
+                |_| Ok(()),
+                &mut probe,
+            )
+            .unwrap();
+
+        assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 1);
+        let usage = coordinator.lease_budget.usage();
+        assert_eq!(usage.entries, 0);
+        assert_eq!(usage.leases, 0);
+        assert_eq!(usage.monitor_resources, 0);
+        assert!(usage.epoch > 0);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pre_head_failure_never_publishes_candidate_lease() {
+        let (root, coordinator, keys, prepared) = setup("pre-head-failure");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut hook = |point| {
+            if point
+                == (CommitFailurePoint::Publication {
+                    target: PublicationTarget::AuthoritativeHead,
+                    phase: PublicationPhase::TemporaryCreated,
+                })
+            {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected pre-HEAD failure",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+
+        let result = coordinator.commit_internal_with_hook(
+            &keys,
+            &[],
+            &[],
+            CommitMode::Normal,
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut hook,
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 1);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unsupported_platform_commits_through_safe_open_without_lease() {
+        let (root, coordinator, keys, prepared) = setup("unsupported");
+        let factory = CandidateFactory::unsupported();
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut stages = Vec::new();
+        let mut observer = |stage| stages.push(stage);
+        let mut probe = CommitProbe::observed(&mut observer);
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        assert!(
+            stages
+                .iter()
+                .any(|stage| *stage == CommitStage::LeaseObjectValidated),
+            "unsupported platform skipped the complete safe-open scan"
+        );
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 0);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

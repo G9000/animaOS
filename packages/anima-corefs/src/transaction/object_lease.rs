@@ -1,7 +1,10 @@
 use std::fmt;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::fs::File;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use super::cache::ValidatedObjectBinding;
 
@@ -15,6 +18,29 @@ pub(super) const MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES: usize = 260;
 pub(super) const MAX_MACOS_MONITORED_ANCESTORS: usize = 64;
 
 pub(super) type ObjectSetFingerprint = [u8; 32];
+
+const OBJECT_SET_FINGERPRINT_DOMAIN: &[u8] =
+    b"anima-corefs-object-validation-lease-object-set-v1\0";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct DirectoryIdentity {
+    pub(super) device: u64,
+    pub(super) inode: u64,
+}
+
+pub(super) fn object_set_fingerprint(bindings: &[ValidatedObjectBinding]) -> ObjectSetFingerprint {
+    let mut ordered: Vec<_> = bindings.iter().collect();
+    ordered.sort_unstable_by(|left, right| left.object_id.cmp(&right.object_id));
+    let mut hasher = Sha256::new();
+    hasher.update(OBJECT_SET_FINGERPRINT_DOMAIN);
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for binding in ordered {
+        hasher.update((binding.object_id.as_str().len() as u64).to_be_bytes());
+        hasher.update(binding.object_id.as_str().as_bytes());
+        hasher.update(binding.binding_digest);
+    }
+    hasher.finalize().into()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -322,7 +348,7 @@ impl LeaseResourcePlan {
     }
 }
 
-pub(super) trait LeaseResourceFactory {
+pub(super) trait LeaseResourceFactory: Send + Sync {
     fn resource_plan(&self) -> LeaseResourcePlan;
 
     fn create_monitor(
@@ -336,6 +362,16 @@ pub(super) trait LeaseResourceFactory {
         index: usize,
         binding: &ValidatedObjectBinding,
     ) -> Result<ValidationAnchor, ()>;
+
+    fn create_anchor_from_validated_file(
+        &self,
+        index: usize,
+        binding: &ValidatedObjectBinding,
+        file: File,
+    ) -> Result<ValidationAnchor, ()> {
+        drop(file);
+        self.create_anchor(index, binding)
+    }
 }
 
 #[derive(Debug)]
@@ -365,6 +401,9 @@ pub(super) struct ObjectValidationLease {
     state: Arc<MonitorStateCell>,
     monitor: Box<dyn LeaseMonitorResource>,
     bindings: Vec<Arc<LeasedObjectBinding>>,
+    object_tuple: Box<[ValidatedObjectBinding]>,
+    directory_identity: DirectoryIdentity,
+    monitor_generation: u64,
     _slot_permit: LeaseSlotPermit,
     _monitor_resource_permits: Vec<MonitorResourcePermit>,
 }
@@ -375,7 +414,149 @@ impl fmt::Debug for ObjectValidationLease {
             .debug_struct("ObjectValidationLease")
             .field("state", &self.state())
             .field("binding_count", &self.bindings.len())
+            .field("directory_identity", &self.directory_identity)
+            .field("monitor_generation", &self.monitor_generation)
             .finish_non_exhaustive()
+    }
+}
+
+static NEXT_MONITOR_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_monitor_generation() -> u64 {
+    NEXT_MONITOR_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+// Field order is the failure-path teardown order. The monitor and every anchor are
+// destroyed before any process-budget permit can become available to another candidate.
+pub(super) struct ObjectLeaseCandidate {
+    state: Arc<MonitorStateCell>,
+    monitor: Box<dyn LeaseMonitorResource>,
+    bindings: Vec<Arc<LeasedObjectBinding>>,
+    expected_bindings: Box<[ValidatedObjectBinding]>,
+    directory_identity: DirectoryIdentity,
+    monitor_generation: u64,
+    slot_permit: LeaseSlotPermit,
+    monitor_resource_permits: Vec<MonitorResourcePermit>,
+    entry_permits: Vec<Arc<EntryPermit>>,
+}
+
+impl fmt::Debug for ObjectLeaseCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ObjectLeaseCandidate")
+            .field("state", &self.state.state())
+            .field("validated_count", &self.bindings.len())
+            .field("expected_count", &self.expected_bindings.len())
+            .field("directory_identity", &self.directory_identity)
+            .field("monitor_generation", &self.monitor_generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ObjectLeaseCandidate {
+    pub(super) fn try_begin(
+        budget: &LeaseBudget,
+        mut expected_bindings: Vec<ValidatedObjectBinding>,
+        directory_identity: DirectoryIdentity,
+        factory: &dyn LeaseResourceFactory,
+    ) -> Result<Self, OptimizationMiss> {
+        let resource_plan = factory.resource_plan();
+        if (!cfg!(any(windows, target_os = "macos")) && !cfg!(test))
+            || resource_plan.platform_support() == PlatformLeaseSupport::Unsupported
+        {
+            return Err(OptimizationMiss::UnsupportedPlatform);
+        }
+        if expected_bindings.len() > MAX_OBJECT_LEASE_ENTRIES {
+            return Err(OptimizationMiss::OverCeiling);
+        }
+        expected_bindings.sort_unstable_by(|left, right| left.object_id.cmp(&right.object_id));
+        if expected_bindings
+            .windows(2)
+            .any(|pair| pair[0].object_id == pair[1].object_id)
+        {
+            return Err(OptimizationMiss::TransientAcquisition);
+        }
+
+        let permits = budget
+            .try_reserve_exact(
+                expected_bindings.len(),
+                resource_plan.monitor_resource_count(),
+            )
+            .ok_or(OptimizationMiss::BudgetDenied)?;
+        let state = Arc::new(MonitorStateCell::default());
+        let monitor = factory
+            .create_monitor(resource_plan, state.clone())
+            .map_err(|_| OptimizationMiss::TransientAcquisition)?;
+        let LeasePermitBundle {
+            slot,
+            entry_permits,
+            monitor_resource_permits,
+        } = permits;
+        Ok(Self {
+            state,
+            monitor,
+            bindings: Vec::with_capacity(expected_bindings.len()),
+            expected_bindings: expected_bindings.into_boxed_slice(),
+            directory_identity,
+            monitor_generation: next_monitor_generation(),
+            slot_permit: slot,
+            monitor_resource_permits,
+            entry_permits,
+        })
+    }
+
+    pub(super) fn add_validated_file(
+        &mut self,
+        binding: ValidatedObjectBinding,
+        file: File,
+        factory: &dyn LeaseResourceFactory,
+    ) -> Result<(), OptimizationMiss> {
+        let index = self.bindings.len();
+        if self.expected_bindings.get(index) != Some(&binding) {
+            return Err(OptimizationMiss::TransientAcquisition);
+        }
+        let anchor = factory
+            .create_anchor_from_validated_file(index, &binding, file)
+            .map_err(|_| OptimizationMiss::TransientAcquisition)?;
+        let entry_permit = self
+            .entry_permits
+            .get(index)
+            .expect("exact lease reservation must provide one permit per binding")
+            .clone();
+        self.bindings.push(Arc::new(LeasedObjectBinding {
+            binding,
+            anchor,
+            _entry_permit: entry_permit,
+        }));
+        Ok(())
+    }
+
+    pub(super) fn fence(&self) -> FenceOutcome {
+        self.monitor.fence()
+    }
+
+    pub(super) fn finish(
+        mut self,
+        fence: FenceOutcome,
+    ) -> Result<Arc<ObjectValidationLease>, Box<Self>> {
+        if fence != FenceOutcome::Clean
+            || self.bindings.len() != self.expected_bindings.len()
+            || self.state.publish(fence) != MonitorState::Clean
+        {
+            return Err(Box::new(self));
+        }
+        self.entry_permits.clear();
+        let lease = ObjectValidationLease {
+            state: self.state,
+            monitor: self.monitor,
+            bindings: self.bindings,
+            object_tuple: self.expected_bindings,
+            directory_identity: self.directory_identity,
+            monitor_generation: self.monitor_generation,
+            _slot_permit: self.slot_permit,
+            _monitor_resource_permits: self.monitor_resource_permits,
+        };
+        Ok(Arc::new(lease))
     }
 }
 
@@ -457,10 +638,19 @@ impl ObjectValidationLease {
         }
         candidate.entry_permits.clear();
 
+        let object_tuple = candidate
+            .bindings
+            .iter()
+            .map(|binding| binding.binding.clone())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Ok(Arc::new(Self {
             state,
             monitor: candidate.monitor,
             bindings: candidate.bindings,
+            object_tuple,
+            directory_identity: DirectoryIdentity::default(),
+            monitor_generation: next_monitor_generation(),
             _slot_permit: candidate.slot_permit,
             _monitor_resource_permits: candidate.monitor_resource_permits,
         }))
@@ -516,6 +706,18 @@ impl ObjectValidationLease {
 
     pub(super) fn bindings(&self) -> &[Arc<LeasedObjectBinding>] {
         &self.bindings
+    }
+
+    pub(super) fn object_tuple(&self) -> &[ValidatedObjectBinding] {
+        &self.object_tuple
+    }
+
+    pub(super) fn directory_identity(&self) -> DirectoryIdentity {
+        self.directory_identity
+    }
+
+    pub(super) fn monitor_generation(&self) -> u64 {
+        self.monitor_generation
     }
 
     pub(super) fn monitor(&self) -> &dyn LeaseMonitorResource {
