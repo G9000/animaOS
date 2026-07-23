@@ -395,7 +395,7 @@ fn cache_hit_rejects_replaced_object() {
 }
 
 #[test]
-fn cache_hit_rejects_unexpected_hard_link() {
+fn cache_hit_rejects_production_link_count_for_unexpected_hard_link() {
     let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-hard-link-object");
     let object_path = coordinator
         .objects_path()
@@ -414,7 +414,7 @@ fn cache_hit_rejects_unexpected_hard_link() {
 
 #[cfg(windows)]
 #[test]
-fn cache_hit_rejects_unexpected_hard_link_named_like_unix_crash_stage_on_windows() {
+fn cache_hit_rejects_production_link_count_for_unix_crash_stage_alias_on_windows() {
     let (root, coordinator, keys, prepared) =
         seed_cached_object("cache-hit-unix-crash-alias-on-windows");
     let object_path = coordinator
