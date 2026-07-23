@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 12:11 MYT
+- Updated: 2026-07-23 12:25 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -192,6 +192,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 02:05 MYT - Addressed PR #117 current-head P1 durable-catalog feedback test-first in PCF-002. Exact cache hits now reopen and verify the HEAD-bound generation hash; deleting or changing catalog bytes fails and clears the cache before loads return or commit builders run, including post-rotation callbacks. The focused regressions, 25 cache tests, full 265-test Rust 1.75 CoreFS suite with 3 helpers ignored, strict all-target Clippy, scoped rustfmt, and diff hygiene passed, and the design/plan now match the corrected disk-authority boundary. The exact 30/200 rerun from corrective commit `dd9ef8d8` passed medium and serialized-limit at p95 `75.6318`/`246.7518` ms but kept maximum-live red at `298.6453` ms; independent provenance/tree validation plus all 121 benchmark-contract tests passed. PCF-002 and this parent remain `blocked`, and PCF-003 through PCF-010 remain ineligible.
 - 2026-07-23 02:42 MYT - Addressed PR #117 current-head P2 retained-cutover-catalog feedback in PCF-002 at `f16a2f6d`: exact cache hits now authenticate every distinct catalog named by HEAD, receipt, and completion before cached decoded state can return or build. The retained-generation RED/GREEN regression, full correctness gates, and source-current exact 30/200 evidence passed validation; only maximum-live p95 remains red at `361.1692` ms. The immediately prior complete target remains archived beside the canonical target. Disk-full partial runs and selected oldest audit archives were moved intact to `D:\animaOS-benchmark-archives\pr117-retained-reauth-20260723` without data deletion or moving the prior/current evidence binaries. PCF-002 and this parent remain `blocked`, and PCF-003 through PCF-010 remain ineligible.
 - 2026-07-23 12:11 MYT - Cleared PCF-002's architecture-decision blocker after user approval of a security-equivalent hybrid object validation lease. The approved design replaces repeated unchanged-object opens with retained-handle metadata plus ordered path monitoring, preserves the complete safe-open validator as the fail-closed fallback, and leaves catalog formats, durability, recovery, rotation, benchmark fixtures, timers, and gates unchanged. PCF-002's row and this parent return to `in_progress`; the maximum-live gate is still open and PCF-003 through PCF-010 remain dependency-ineligible.
+- 2026-07-23 12:25 MYT - PCF-002's first independent architecture review found four specification blockers covering Windows notification-name ambiguity, production link-count semantics, missing unlock-session ownership, and unbounded handle retention. The revised design now uses directory-wide invalidation for every non-probe event, exact one-link Windows behavior, an unlock-scoped native session with explicit teardown outside the Python session-store lock, and a 4,096-handle ceiling with atomic fallback/backoff. Re-review remains pending; PCF-002 and this parent stay `in_progress`, and downstream eligibility is unchanged.
 
 ## Validation
 

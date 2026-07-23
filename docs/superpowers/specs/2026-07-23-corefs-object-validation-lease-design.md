@@ -45,9 +45,9 @@ lease combines:
    require the existing full safe-open validation.
 
 An exact clean lease replaces 2,500 repeated open/path-resolution/close cycles with
-2,500 retained-handle metadata queries plus a bounded monitor fence. A dirty object
-name follows the current safe-open path. Any uncertainty disables the optimization and
-performs the current complete validation.
+2,500 retained-handle metadata queries plus a bounded monitor fence. Any non-fence
+directory event invalidates the whole lease and follows the current complete safe-open
+path. Any uncertainty also disables the optimization.
 
 The lease is an optimization, never disk or cryptographic authority. It is not
 serialized, transferred, or accepted after process restart.
@@ -86,8 +86,8 @@ For each unchanged catalog object, `validate_existing_object_file` currently:
 2. compares metadata from the opened file with non-following metadata from the linked
    directory entry;
 3. requires both observations to be the same regular, non-symlink file;
-4. requires one link, except for the one recognized crash-stale immutable staging
-   alias; and
+4. requires one link in production Windows; Unix additionally recognizes one exact
+   crash-stale immutable staging alias; and
 5. requires nonzero length.
 
 The validator does not rehash unchanged encrypted bytes, compare the file identity to
@@ -108,8 +108,8 @@ Therefore:
 
 - the monitor owns path-name invalidation;
 - retained-handle metadata owns per-commit nonzero-length and link-count checks; and
-- any non-unit link count enters the existing slow validator so the recognized
-  crash-stale staging exception remains exact.
+- production Windows requires exactly one link, while non-Windows fallback validation
+  retains its existing platform behavior.
 
 ## Architecture
 
@@ -121,7 +121,7 @@ Extend the authenticated commit snapshot with optional object lease state:
 ObjectValidationLease
   directory_identity
   monitor_generation
-  monitor_state: Clean | Dirty(names) | Unknown
+  monitor_state: Clean | DirtyAll | Unknown
   objects: stable-ID ordered LeasedObjectBinding[]
 
 LeasedObjectBinding
@@ -144,7 +144,7 @@ Introduce a crate-private `ObjectDirectoryMonitor` abstraction with three outcom
 
 ```text
 fence() -> CleanThrough(sequence)
-         | DirtyThrough(sequence, names)
+         | DirtyThrough(sequence)
          | Unknown(reason)
 ```
 
@@ -157,16 +157,29 @@ directory-change notifications. It must:
 - report buffer overflow, cancellation, handle loss, parse errors, or incomplete
   rename pairing as `Unknown`;
 - preserve events that arrive between fences;
+- classify every notification other than the exact active fence lifecycle as
+  `DirtyAll`; notification names are never used to select one catalog object;
 - return only after an implementation-specific directory-entry fence proves that
   earlier path events have been delivered; and
-- ignore a fence event only when its unpredictable name matches that monitor
-  instance's active fence operation.
+- ignore a fence lifecycle only when its unpredictable 8.3-compatible ASCII name and
+  expected create/delete action sequence match that monitor instance's active
+  operation under Windows case-insensitive comparison.
 
 The proposed Windows fence is an exclusive create/delete lifecycle for a reserved
-random probe entry inside `objects/`. Seeing its terminal notification establishes the
-queue boundary. Probe cleanup is mandatory on the healthy path. A stale probe, failed
-cleanup, unprovable notification ordering, or benchmark temp-file residue makes the
-monitor `Unknown` and disables the fast path.
+random 8.3-compatible probe entry inside `objects/`. Using an already-8.3-compatible
+name prevents long-name/short-name aliasing from making the probe indistinguishable.
+Seeing its exact terminal notification establishes the queue boundary. Any alternate
+name, action, collision, or unexpected event dirties or invalidates the lease rather
+than being attributed to one object. Probe cleanup is mandatory on the healthy path. A
+stale probe, failed cleanup, unprovable notification ordering, or benchmark temp-file
+residue makes the monitor `Unknown` and disables the fast path.
+
+The first revision deliberately has no per-name dirty fast path. Windows does not
+guarantee that directory notifications use the long name rather than an 8.3 short
+name, and ordinary Windows path lookup is case-insensitive. Treating every non-probe
+event as `DirtyAll` prevents alternate casing or short-name reporting from hiding a
+replacement. A future targeted invalidation path requires a separately reviewed
+lossless name-attribution design.
 
 The implementation plan must begin with a focused platform characterization of this
 fence. If native behavior cannot establish the stated boundary, this design does not
@@ -200,12 +213,14 @@ After the existing lock, layout, pointer, key-identity, and catalog-byte checks 
 1. clone the exact authenticated snapshot without holding the cache mutex over I/O;
 2. verify the current `objects/` directory identity equals the lease identity;
 3. fence and drain the monitor;
-4. merge dirty names with changed/new/deleted catalog object tuples;
-5. for every exact unchanged clean object, query metadata from its retained handle;
-6. require a regular file, the captured file identity, nonzero length, and exactly one
+4. if the monitor reports `DirtyAll`, drop the candidate fast path and validate every
+   referenced object through the current safe-open path;
+5. otherwise, for every exact unchanged clean object, query metadata from its retained
+   handle;
+6. on Windows, require a regular file, the captured file identity, nonzero length, and exactly one
    link;
-7. route a dirty name, metadata error, identity mismatch, or non-unit link count through
-   `open_regular_file_in` and the existing slow checks;
+7. route a metadata error, identity mismatch, or non-unit link count through
+   `open_regular_file_in` and the platform's existing slow checks;
 8. validate new and changed objects through the complete prepared-revision path;
 9. perform a final monitor fence before publication; retry or fall back if a referenced
    path changed during validation;
@@ -213,12 +228,13 @@ After the existing lock, layout, pointer, key-identity, and catalog-byte checks 
     durable HEAD-last advancement; and
 11. replace lease state only after durable authority is established.
 
-Unreferenced ordinary object-directory entries do not invalidate the catalog. A new
-unreferenced hard link is still detected because the referenced retained handle's link
-count changes. Rename pairs, directory events, reparse/security changes, or events that
-cannot be attributed to one physical object dirty the entire lease.
+Every non-probe object-directory event invalidates the lease even when the changed name
+is not referenced by the catalog. This conservative rule avoids trusting
+platform-dependent notification spelling. A new hard link outside `objects/` still
+produces no required directory event, so the referenced retained handle's fresh link
+count remains mandatory.
 
-### 5. Dirty-object slow path
+### 5. Invalidated-lease slow path
 
 The slow path remains the existing authority:
 
@@ -226,19 +242,21 @@ The slow path remains the existing authority:
 - zero length: `ReferencedObjectMissing`;
 - symlink/reparse or non-regular replacement: invalid layout;
 - opened-versus-linked identity mismatch: invalid layout;
-- link count other than one: existing crash-stale alias proof or invalid layout; and
+- link count other than one on Windows: invalid layout;
+- link count other than one on Unix: existing crash-stale alias proof or invalid
+  layout; and
 - new/changed prepared revision: exact size plus complete encrypted-byte SHA-256 and
   prepared-token/key-binding checks.
 
-A successful dirty-object validation refreshes that handle only in the candidate next
-lease. It does not mutate the currently authoritative lease in place.
+A successful complete validation constructs an entirely new candidate handle set. It
+does not mutate the currently authoritative lease in place.
 
 ### 6. Publication, failures, and recovery
 
 Lease publication follows the existing disk-authority boundary:
 
-- failure before HEAD leaves prior disk authority intact but retains any observed dirty
-  monitor state;
+- failure before HEAD leaves prior disk authority intact but retains `DirtyAll` or
+  `Unknown` monitor state;
 - durable HEAD success may publish the exact next lease;
 - post-HEAD marker, callback, or invalidation failure that returns recovery-pending
   clears lease authority;
@@ -287,28 +305,76 @@ I/O, crypto, failure hooks, invalidation callbacks, or user build callbacks.
 Each coordinator owns its own monitor and handles. A second coordinator's commit
 changes pointers and produces directory events; pointer mismatch already prevents an
 exact cache hit. External changes that race after one object's metadata check retain the
-same non-atomic boundary as the current sequential safe-open loop and remain dirty for
+same non-atomic boundary as the current sequential safe-open loop and leave the lease dirty for
 the next operation. The final monitor fence strengthens path-change detection during
 the loop without claiming atomic protection against arbitrary hostile open handles.
 
-### 9. Resource and lifecycle policy
+### 9. Unlock-scoped session ownership
+
+The benchmark already keeps one `CoreCommitCoordinator` alive across commits, but the
+current Python FFI constructs a new coordinator inside each CoreFS call. Product use
+would otherwise discard the lease immediately and make this optimization
+benchmark-only.
+
+Add a native `CorefsSession` PyO3 class that owns one
+`Arc<CoreCommitCoordinator>` for one canonical Core root/Core ID. The server
+`UnlockSession` owns that native session alongside its non-persisted CoreFS keys:
+
+```text
+UnlockSession
+  user_id
+  deks
+  corefs_keys
+  corefs_session -> native CorefsSession
+```
+
+Current CoreFS read/validation calls must accept and reuse the session coordinator.
+Future logical mutators then inherit the same coordinator instead of creating an
+ephemeral one. Neither native session nor keys are written to the dev-session snapshot;
+restored sessions that previously held CoreFS authority remain invalidated as today.
+
+`CorefsSession.close()` is idempotent and follows this order:
+
+1. atomically reject new session operations;
+2. signal monitor cancellation and wake any wait;
+3. join the monitor worker;
+4. clear the coordinator cache and drop every retained handle; and
+5. return only after no monitor callback can touch released state.
+
+Logout, token revocation, user-session replacement, expiry purge, store clear, and
+server shutdown must close removed native sessions. The Python session-store lock must
+not be held while cancellation waits, thread join, or native handle destruction runs:
+the store first makes removed sessions unreachable under its lock, then closes their
+native resources outside the lock.
+
+While an unlock session is active, its Core is in use. This revision requires
+logout/lock before external drive removal. It exposes an idempotent
+`release_object_lease()` operation for later transfer/export and PCF-008 eject
+coordination, but does not claim unimplemented desktop suspend/eject hooks.
+
+### 10. Resource and fallback policy
 
 The Windows fast path must reserve its handle and monitor resources before advertising
 a clean lease. Allocation or handle-open failure disables the lease without failing an
 otherwise valid CoreFS operation.
 
-Lease handles are closed on:
+`MAX_OBJECT_LEASE_HANDLES` is `4_096`. The coordinator checks the exact next catalog
+object count before arming a monitor or opening candidate handles:
 
-- Core lock/logout;
-- coordinator shutdown;
-- suspend;
-- transfer/export preparation;
-- removable-drive eject preparation;
-- monitor failure; and
-- cache replacement or clear.
+- `0..=4_096`: eligible for a lease;
+- above `4_096`: safe-open fallback, recorded as ineligible for that exact catalog
+  pointer/object-count state; and
+- any partial candidate acquisition failure: atomically drop the monitor and every
+  candidate handle before continuing through safe-open fallback.
 
-The implementation must bound retained handles to the current catalog object count and
-record a diagnostic reason when it falls back. Non-Windows builds use the current
+An over-ceiling catalog is not retried until its authenticated object count falls within
+the ceiling. Transient monitor/handle acquisition failures use process-local
+exponential retry backoff from 1 second through 60 seconds; commits during backoff use
+the existing safe-open path. Success resets the backoff. Tests use an injected clock
+and resource factory.
+
+Lease handles are also closed on monitor failure, cache replacement/clear, explicit
+`release_object_lease()`, or native-session close. Non-Windows builds use the current
 safe-open path until a platform backend can prove the same monitor fence and resource
 lifecycle.
 
@@ -328,7 +394,7 @@ Implementation begins with a disposable Windows release-mode spike that measures
 
 1. retained-handle metadata validation;
 2. the two monitor fences; and
-3. dirty-set merge overhead.
+3. conservative directory-wide invalidation overhead.
 
 The spike uses real fixture object files and the same capability-relative metadata
 helpers. It changes no benchmark fixture, public timer, threshold, or reference
@@ -352,8 +418,9 @@ clear PCF-002.
 - events between validation and the final fence force retry/fallback;
 - buffer overflow, cancellation, handle loss, malformed rename pairs, probe cleanup
   failure, and monitor panic become `Unknown`;
-- unexpected ordinary files remain irrelevant;
-- an inside-directory hard link dirties the path;
+- alternate-case, short-name/8.3, unexpected ordinary-file, and unrecognized
+  create/delete/rename notifications produce `DirtyAll`;
+- an inside-directory hard link dirties the whole lease;
 - an outside-directory hard link produces no required watcher event but is rejected by
   retained-handle link count; and
 - clean shutdown leaves no fence probe or other temporary file.
@@ -364,8 +431,11 @@ clear PCF-002.
 - clean objects still perform one fresh handle-metadata validation per commit;
 - missing, zero-length, symlinked, replaced-by-directory, and unexpectedly hard-linked
   objects fail on a warm hit;
-- the recognized crash-stale immutable staging alias retains existing behavior;
-- dirty regular objects use the current opened-versus-linked identity check;
+- production Windows requires exactly one link, proven by a release-configuration
+  integration test that does not inherit `cfg(test)` Unix compatibility;
+- Unix fallback retains the recognized crash-stale immutable staging behavior;
+- an invalidated lease validates all referenced regular objects with the current
+  opened-versus-linked identity check;
 - changed wrapped DEKs, object-key epochs, physical names, kinds, hashes, revisions, or
   key identities never reuse a leased binding; and
 - wrong same-version key material still reaches authentication and fails closed.
@@ -381,6 +451,20 @@ clear PCF-002.
   invalidation;
 - cache/monitor poison recovery has no lock inversion; and
 - callbacks observe no cache or monitor guard held.
+
+### Session ownership and resource bounds
+
+- two FFI calls in one unlock session reuse one coordinator;
+- different users, roots, Core IDs, or unlock tokens never share a coordinator;
+- logout, revoke, replacement, expiry, clear, and shutdown reject new operations, join
+  the monitor, and release every handle without holding the Python store lock;
+- dev-session restore never restores a native CoreFS session or CoreFS keys;
+- `release_object_lease()` is idempotent and the next eligible commit can rebuild;
+- object counts `4_096` and `4_097` select lease and fallback respectively;
+- partial acquisition drops every candidate handle and monitor;
+- injected failures obey bounded exponential backoff rather than retrying every commit;
+  and
+- non-Windows and monitor-unavailable paths retain current safe-open behavior.
 
 ### Performance and provenance
 
@@ -406,6 +490,13 @@ clear PCF-002.
 - `packages/anima-corefs/tests/rotation.rs`
 - `packages/anima-corefs/src/benchmark.rs`
 - `packages/anima-corefs/tests/catalog_benchmark.rs`
+- `packages/anima-core/src/ffi.rs`
+- `apps/server/src/anima_server/services/sessions.py`
+- `apps/server/src/anima_server/services/corefs/logical.py`
+- `apps/server/src/anima_server/api/routes/auth.py`
+- `apps/server/src/anima_server/main.py`
+- `apps/server/tests/test_sessions.py`
+- `apps/server/tests/test_corefs_logical.py`
 - `apps/server/tests/test_corefs_catalog_benchmark.py`
 - `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json` only after a valid
@@ -416,6 +507,9 @@ clear PCF-002.
 
 - **Watcher-only invalidation:** misses at least outside-directory hard-link creation and
   cannot preserve the current link-count contract.
+- **Per-name Windows notification attribution:** long-name versus 8.3 reporting and
+  case-insensitive lookup can hide replacement unless ambiguous events invalidate the
+  whole lease.
 - **NTFS USN journal:** can report link changes and survive process restarts, but it is
   NTFS-specific and requires privileged volume-journal access.
 - **Retained handles without monitoring:** preserves handle identity, length, and link
