@@ -15,7 +15,9 @@ unlock-session ownership, operation draining, terminal close/release races, rout
 authority, steady-state lease carry-forward, and process-wide resource bounds. The
 first macOS review found three Important stream-lifecycle issues. A second pass
 confirmed two resolved but retained the zero-ID `RootChanged` ambiguity. The
-root-continuity revision below requires re-review before planning.
+third pass confirmed the paired vnode protocol but required its chain to begin at the
+absolute namespace root rather than the mounted volume root. The corrected revision
+below requires re-review before planning.
 
 ## Context
 
@@ -215,8 +217,8 @@ Creation is an exact native contract:
 
 1. derive the watched absolute path from the already-open pinned `objects/` directory
    descriptor with `F_GETPATH`; do not accept a caller-supplied watch path;
-2. safely open the canonical directory-component chain from the containing volume root
-   through `objects/` with
+2. safely open the complete canonical absolute directory-component chain from namespace
+   `/` through `objects/` with
    `O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, prove the final descriptor is
    the already pinned `objects/` identity, and reject more than
    `MAX_MACOS_MONITORED_ANCESTORS = 64` components;
@@ -275,12 +277,14 @@ one retained event-only descriptor per watched vnode, with `kevent` returning th
 requested rename/delete/revoke flags or an error. Polling uses a zero timeout; no
 second callback thread or unbounded wait is introduced.
 
-Watching the complete canonical component chain is mandatory: watching only
-`objects/` would miss rename-away/rename-back of an ancestor. The implementation spike
-must prove on each supported macOS/filesystem profile that a rename/delete/revoke of
-every watched component, including a rename-away/mutate/rename-back sequence, leaves a
-pollable vnode event before the path can be treated as clean. If that characterization
-fails, the macOS backend remains on safe-open fallback.
+Watching the complete canonical absolute component chain from `/` is mandatory.
+Starting at the mounted volume root would miss rename-away/rename-back of a renameable
+mount-point ancestor above that root. The implementation spike must prove on each
+supported macOS/filesystem profile that a rename/delete/revoke of every watched
+component, including an ancestor above a mounted Core volume and a
+rename-away/mutate/rename-back sequence, leaves a pollable vnode event before the path
+can be treated as clean. If that characterization fails, the macOS backend remains on
+safe-open fallback.
 
 #### macOS callback and asynchronous fence
 
@@ -766,9 +770,9 @@ macOS-specific coverage runs on macOS and proves:
   publish a clean lease when a mutation raced the scan;
 - stream creation uses `SinceNow`, `WatchRoot`, `FileEvents`, `NoDefer`, a finite
   latency, queue-before-start ordering, and never `IgnoreSelf`;
-- a bounded no-follow canonical ancestor chain and kqueue vnode filters are armed
-  before scanning; each ancestor rename/delete/revoke and `EV_ERROR`/`EV_EOF` becomes
-  `Unknown`;
+- a bounded no-follow canonical absolute chain from `/` and kqueue vnode filters are
+  armed before scanning; each ancestor rename/delete/revoke and `EV_ERROR`/`EV_EOF`
+  becomes `Unknown`;
 - null creation/start failure uses safe-open fallback, state-specific partial cleanup
   never calls `Stop` before successful start, and replacement of `objects/` or an
   ancestor between initial layout validation and start fails the post-start
@@ -787,6 +791,9 @@ macOS-specific coverage runs on macOS and proves:
   ancestor is renamed away, an object is mutated/rebound while detached, and the same
   ancestor/path identities are restored before post-fence validation, because the
   independently armed vnode queue remains terminally `Unknown`;
+- the same restored-path regression passes when a Core volume is mounted below a
+  renameable parent above the volume root, proving the `/`-anchored chain covers the
+  mount namespace prefix;
 - teardown rejects callback-queue self-drain, follows
   cancel/stop/invalidate/barrier/release ordering, keeps its context alive through the
   barrier, and permits no callback publication after close; and

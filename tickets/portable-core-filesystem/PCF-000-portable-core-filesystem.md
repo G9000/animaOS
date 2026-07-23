@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 13:47 MYT
+- Updated: 2026-07-23 13:54 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -199,6 +199,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 13:22 MYT - At the user's request, PCF-002's object validation lease now includes a native macOS backend using FSEvents flush fences and capability-relative non-following metadata stamps without per-object descriptor retention. Any event or ambiguous/dropped stream state still forces complete safe-open validation. The official Windows gate is unchanged; macOS adds native correctness, lifecycle, CI, and APFS diagnostic gates. The material extension reopens independent review and written-spec approval before planning; PCF-002 and this parent remain `in_progress`, with downstream eligibility unchanged and no external action taken.
 - 2026-07-23 13:37 MYT - PCF-002's first independent macOS review found three Important stream-lifecycle gaps in creation/start identity ordering, uncancellable synchronous fencing, and callback/dispatch teardown. The revised design now pins exact FSEvents flags and post-start layout identity, uses bounded asynchronous event-ID acknowledgment with a post-fence identity proof, contains callback panics and publishes state synchronously, and drains teardown through stop/invalidate plus a serial-queue barrier before release. Re-review and written-spec approval remain open; PCF-002 and this parent stay `in_progress`, downstream eligibility is unchanged, and no external action was taken.
 - 2026-07-23 13:47 MYT - PCF-002's second macOS review closed two lifecycle blockers but retained the zero-ID `RootChanged` ambiguity for rename-away/mutate/rename-back. The design now pairs FSEvents with a bounded kqueue vnode monitor over the complete no-follow ancestor chain, so rename/delete/revoke history remains terminal even after path restoration; it also pins failed-start cleanup and shared monitor-resource accounting. Re-review and written-spec approval remain open; PCF-002 and this parent stay `in_progress`, downstream eligibility is unchanged, and no external action was taken.
+- 2026-07-23 13:54 MYT - PCF-002's third macOS review approved the paired FSEvents/kqueue history model but found that a volume-root-started vnode chain omitted renameable mount-namespace ancestors. The corrected bounded chain now runs from absolute `/` through `objects/`, with a restored-path regression above the mounted volume root; existing resource ceilings are unchanged. Re-review and written-spec approval remain open; PCF-002 and this parent stay `in_progress`, downstream eligibility is unchanged, and no external action was taken.
 
 ## Validation
 
