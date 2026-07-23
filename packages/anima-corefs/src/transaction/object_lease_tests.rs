@@ -615,8 +615,9 @@ mod windows_object_lease_tests {
 
     use super::*;
     use crate::transaction::object_lease::windows::{
-        notification_outcome_for_test, probe_name_for_test, RetainedValidationAnchor,
-        TestNotification, WindowsLeaseFactory,
+        notification_outcome_for_test, probe_name_for_test, ConstructionEventForTest,
+        RetainedValidationAnchor, TestNotification, WindowsLeaseFactory, WindowsLeaseTestControl,
+        WorkerFaultForTest,
     };
 
     fn monitored_lease(
@@ -625,6 +626,18 @@ mod windows_object_lease_tests {
         std::path::PathBuf,
         Arc<ObjectValidationLease>,
         Arc<LeaseBudget>,
+    ) {
+        let (root, lease, budget, _control) = monitored_lease_with_control(label);
+        (root, lease, budget)
+    }
+
+    fn monitored_lease_with_control(
+        label: &str,
+    ) -> (
+        std::path::PathBuf,
+        Arc<ObjectValidationLease>,
+        Arc<LeaseBudget>,
+        WindowsLeaseTestControl,
     ) {
         let root = std::env::temp_dir().join(format!(
             "anima-corefs-windows-object-lease-{label}-{}",
@@ -635,11 +648,12 @@ mod windows_object_lease_tests {
         let object = binding(0);
         fs::write(root.join(object.physical_name.as_str()), b"ciphertext").unwrap();
         let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
-        let factory = WindowsLeaseFactory::new(dir).unwrap();
+        let control = WindowsLeaseTestControl::new();
+        let factory = WindowsLeaseFactory::new_for_test(dir, control.clone()).unwrap();
         let budget = Arc::new(LeaseBudget::isolated());
         let lease = ObjectValidationLease::try_acquire_with_budget(&budget, vec![object], &factory)
             .unwrap();
-        (root, lease, budget)
+        (root, lease, budget, control)
     }
 
     fn assert_no_probe_residue(root: &std::path::Path) {
@@ -722,10 +736,6 @@ mod windows_object_lease_tests {
     fn windows_object_lease_ambiguity_and_failure_are_unknown() {
         let probe = "AL123456.TMP";
         for notifications in [
-            vec![TestNotification::Overflow],
-            vec![TestNotification::ParseError],
-            vec![TestNotification::HandleLoss],
-            vec![TestNotification::Cancelled],
             vec![TestNotification::RenamedOld(probe.into())],
             vec![TestNotification::RenamedNew(probe.into())],
             vec![
@@ -752,6 +762,184 @@ mod windows_object_lease_tests {
             FenceOutcome::Unknown,
             "probe cleanup failure must be terminal uncertainty"
         );
+    }
+
+    #[test]
+    fn windows_object_lease_startup_collision_and_cleanup_failure_are_terminal() {
+        for scenario in ["collision", "cleanup-once", "cleanup-persistent"] {
+            let root = std::env::temp_dir().join(format!(
+                "anima-corefs-windows-object-startup-{scenario}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            let object = binding(0);
+            fs::write(root.join(object.physical_name.as_str()), b"ciphertext").unwrap();
+            let probe = match scenario {
+                "collision" => "ALCOLL01.TMP",
+                "cleanup-once" => "ALFAIL01.TMP",
+                "cleanup-persistent" => "ALFAIL02.TMP",
+                _ => unreachable!(),
+            };
+            if scenario == "collision" {
+                fs::write(root.join(probe), b"collision").unwrap();
+            }
+            let control = WindowsLeaseTestControl::new();
+            control.queue_probe_name(probe);
+            match scenario {
+                "cleanup-once" => control.fail_next_probe_cleanup_once(),
+                "cleanup-persistent" => control.fail_probe_cleanup_persistently(),
+                _ => {}
+            }
+            let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+            let factory = WindowsLeaseFactory::new_for_test(dir, control.clone()).unwrap();
+
+            let acquisition = ObjectValidationLease::try_acquire_with_budget(
+                &LeaseBudget::isolated(),
+                vec![object],
+                &factory,
+            );
+            assert!(matches!(
+                acquisition,
+                Err(OptimizationMiss::TransientAcquisition)
+            ));
+            drop(factory);
+            assert_eq!(control.monitor_state(), Some(MonitorState::Unknown));
+            assert_eq!(
+                control.probe_attempt_count(),
+                1,
+                "terminal startup ambiguity must never retry with a new probe"
+            );
+
+            match scenario {
+                "collision" => {
+                    assert_eq!(fs::read(root.join(probe)).unwrap(), b"collision");
+                    fs::remove_file(root.join(probe)).unwrap();
+                }
+                "cleanup-once" => assert!(
+                    !root.join(probe).exists(),
+                    "drop must retry and remove a probe after a real first cleanup failure"
+                ),
+                "cleanup-persistent" => {
+                    assert!(
+                        root.join(probe).exists(),
+                        "an impossible cleanup must remain visible and fail closed"
+                    );
+                    control.release_probe_cleanup_blocker();
+                    fs::remove_file(root.join(probe)).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_no_probe_residue(&root);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn windows_object_lease_worker_faults_use_real_worker_and_parser_paths() {
+        for (label, fault) in [
+            ("overflow", WorkerFaultForTest::Overflow),
+            ("parse", WorkerFaultForTest::MalformedBatch),
+            ("handle-loss", WorkerFaultForTest::LoseMonitorHandle),
+        ] {
+            let (root, lease, _budget, control) = monitored_lease_with_control(label);
+            control.pause_next_read();
+            fs::write(root.join("wake-current-read"), b"wake").unwrap();
+            assert!(control.wait_until_read_paused(Duration::from_secs(2)));
+            control.inject_next_worker_fault(fault);
+            control.release_read_pause();
+            assert!(control.wait_until_state(MonitorState::Unknown, Duration::from_secs(2)));
+            assert_eq!(lease.state(), MonitorState::Unknown, "{label}");
+            drop(lease);
+            assert_no_probe_residue(&root);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn windows_object_lease_cancel_between_check_and_native_read_cannot_hang() {
+        let (root, lease, budget, control) = monitored_lease_with_control("cancel-read-race");
+        control.pause_next_read();
+        fs::write(root.join("wake-current-read"), b"wake").unwrap();
+        assert!(control.wait_until_read_paused(Duration::from_secs(2)));
+
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let drop_thread = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            drop(lease);
+            let _ = done_sender.send(started.elapsed());
+        });
+        assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+        control.release_read_pause();
+
+        let elapsed = match done_receiver.recv_timeout(Duration::from_secs(2)) {
+            Ok(elapsed) => elapsed,
+            Err(_) => {
+                fs::write(root.join("watchdog-unblock"), b"wake").unwrap();
+                let _ = done_receiver.recv_timeout(Duration::from_secs(1));
+                drop_thread.join().unwrap();
+                panic!("monitor teardown hung after cancellation won the pre-read race");
+            }
+        };
+        drop_thread.join().unwrap();
+        assert!(elapsed < Duration::from_secs(2));
+        assert_eq!(control.monitor_state(), Some(MonitorState::Unknown));
+        assert_eq!(budget.usage().leases, 0);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_object_lease_monitor_is_observably_armed_before_anchor_creation() {
+        let (root, lease, _budget, control) = monitored_lease_with_control("construction-order");
+        assert_eq!(
+            control.construction_events(),
+            vec![
+                ConstructionEventForTest::MonitorArmed,
+                ConstructionEventForTest::AnchorCreated,
+            ]
+        );
+        drop(lease);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_object_lease_real_directory_junction_activity_is_dirty_all() {
+        use std::os::windows::fs::MetadataExt;
+        use std::process::Command;
+
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        let (root, lease, _budget) = monitored_lease("junction");
+        let target = root.with_extension("junction-target");
+        let junction = root.join("junction-link");
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(&target).unwrap();
+        let output = Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "creating unprivileged directory junction failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_ne!(
+            fs::symlink_metadata(&junction).unwrap().file_attributes()
+                & FILE_ATTRIBUTE_REPARSE_POINT,
+            0,
+            "test fixture must be a genuine Windows reparse point"
+        );
+        assert_eq!(lease.fence(), MonitorState::DirtyAll);
+        drop(lease);
+        fs::remove_dir(&junction).unwrap();
+        fs::remove_dir_all(target).unwrap();
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
