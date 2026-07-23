@@ -11,7 +11,7 @@
 - Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 12:32 MYT
+- Updated: 2026-07-23 12:34 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -177,6 +177,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-23 12:25 MYT - The first independent architecture-revision review rejected four underspecified boundaries: Windows notification names cannot safely select one dirty object, production Windows has no crash-stale two-link exception, ephemeral per-call FFI coordinators would make the lease benchmark-only, and catalog object count was not a resource ceiling. Revised the design to invalidate the entire lease on every non-probe event, require exactly one link in production Windows with release-configuration coverage, add an unlock-scoped native CoreFS session with explicit close/join/drop ordering and server lifecycle wiring, and cap leases at 4,096 handles with atomic candidate teardown plus bounded retry backoff. Independent re-review is pending; no implementation or external action has started.
 - 2026-07-23 12:29 MYT - The second independent spec review accepted the Windows notification, release link-count, and per-lease ceiling corrections but rejected three remaining lifecycle/resource gaps. Revised the unlock-scoped native session with explicit operation-admission guards, `Open -> Closing -> Closed` draining, GIL-free close/release waits, and teardown ordering that prevents post-close lease publication. Added an atomic process-wide budget of 4,096 handles and four leases with RAII permits and epoch-gated retry, plus the missing CoreFS route/API wiring and authorization-bound coordinator-selection tests. A third independent review is pending; no implementation or external action has started.
 - 2026-07-23 12:32 MYT - The third independent spec review accepted operation draining, route threading, and the process budget but found an unsafe release-versus-close transition and double reservation on steady-state lease carry-forward. Revised the session state machine with explicit `Releasing`, monotonic terminal-close precedence, concurrent-close waiting, cancellation-aware bounded fences, and GIL-free drain semantics. Exact unchanged commits now carry one shared lease/monitor/permit forward at constant resource usage; changed object sets use per-handle RAII units, complete safe-open fallback, and retry suppression keyed by budget epoch plus authenticated object-set fingerprint/count. Fourth review is pending; no implementation or external action has started.
+- 2026-07-23 12:34 MYT - The fourth independent specification review approved the object validation lease with no remaining substantive correctness, security, lifecycle, resource, Rust 1.75, or implementability findings. All prior blockers are closed; the platform fence characterization and release-mode performance spike remain explicit fail-closed implementation gates. The written-spec user-review gate is next, so implementation planning and code remain unstarted and no external action was taken.
 
 ## Validation
 

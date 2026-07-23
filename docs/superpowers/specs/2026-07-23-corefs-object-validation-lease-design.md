@@ -1,12 +1,17 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** Approved for specification on 2026-07-23
+**Status:** User-approved and independently reviewed on 2026-07-23
 
 **Ticket:** PCF-002 catalog-performance architecture revision
 
 **Parent:** PCF-000 Portable Core Filesystem
 
 **Prior design:** `docs/superpowers/specs/2026-07-20-corefs-catalog-commit-performance-design.md`
+
+**Independent review:** Approved after four review/revision passes covering Windows
+notification-name ambiguity, production link-count behavior, unlock-session ownership,
+operation draining, terminal close/release races, route authority, steady-state lease
+carry-forward, and process-wide resource bounds.
 
 ## Context
 
