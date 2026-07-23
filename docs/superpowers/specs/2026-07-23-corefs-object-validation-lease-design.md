@@ -1,7 +1,7 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** User-approved and independently reviewed on 2026-07-23; implementation
-planning complete
+**Status:** User-approved; safety-first Windows teardown correction approved on
+2026-07-23; independent re-review of that correction pending
 
 **Ticket:** PCF-002 catalog-performance architecture revision
 
@@ -12,6 +12,12 @@ planning complete
 **Implementation plan:** `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 
 **Plan review:** Independently approved on 2026-07-23 with no remaining issues.
+
+**Revision note:** On 2026-07-23 the user approved a safety-first correction that
+separates bounded monitor-fence waits from completion-confirmed Windows teardown,
+requires bounded `O(1)` Windows event publication, and corrects the Windows monitor
+resource reservation to three. The correction is not yet independently re-reviewed
+and this document does not claim its implementation is complete.
 
 **Independent review:** The user-approved Windows baseline passed four review/revision
 rounds covering notification-name ambiguity, production link-count behavior,
@@ -72,6 +78,13 @@ the current complete safe-open path. Any uncertainty also disables the optimizat
 The lease is an optimization, never disk or cryptographic authority. It is not
 serialized, transferred, or accepted after process restart.
 
+Windows monitor safety takes precedence over close latency. Monitor fences have a
+bounded, cancellation-aware two-second wait, but monitor teardown retains every native
+I/O allocation, handle, thread resource, and budget permit until native completion is
+confirmed and the worker is joined. The two-second value is a supported-NTFS
+acceptance target for cancellation and join, not permission to detach work or destroy
+in-flight native state.
+
 ## Goals
 
 - Pass the unchanged maximum-live p95 <= 250 ms reference gate without changing its
@@ -85,6 +98,11 @@ serialized, transferred, or accepted after process restart.
 - Preserve cold-path, Linux, and monitor-unavailable correctness through the existing
   capability-relative safe-open validator.
 - Keep the complete public `commit` call inside the benchmark timer.
+- Keep Windows monitor publication bounded in constant space under sustained native
+  event traffic.
+- Preserve exact native ownership during Windows cancellation: no use-after-free,
+  detach, leak, or early permit release when completion exceeds the supported-NTFS
+  target.
 
 ## Non-goals
 
@@ -195,6 +213,34 @@ directory-change notifications. It must:
   expected create/delete action sequence match that monitor instance's active
   operation under Windows case-insensitive comparison.
 
+Windows event publication is bounded `O(1)`. There is no unbounded channel and no
+retained per-event `Vec` queue. The worker parses each fixed native notification buffer
+in record order and synchronously folds it into one small mutex/condition-variable
+state:
+
+```text
+WindowsMonitorState
+  terminal: Clean | DirtyAll | Unknown(reason)
+  active_probe: None | (generation, AwaitCreate | AwaitDelete)
+  acknowledged_fence_generation
+  boundary_progress
+  worker_state: Starting | Armed | Cancelling | NativeComplete | Joined
+  cancellation_requested
+  teardown_started
+  publication_open
+```
+
+The condition variable wakes fence and teardown waiters; it is not an event queue.
+Once non-probe traffic makes the generation `DirtyAll`, or ambiguity/failure makes it
+`Unknown`, later detail is discarded while the terminal state and required worker
+completion progress are retained. The worker must continue parsing record order across
+the exact probe create/delete sequence. If a fixed native buffer contains the terminal
+probe notification followed by more traffic, it acknowledges that fence generation at
+the probe boundary and folds the later records into the state visible to the next
+fence. Overflow, malformed records, unexpected probe phases, cancellation, and worker
+failure remain fail-closed. Notification names remain non-authoritative and are
+inspected only to recognize the active probe lifecycle.
+
 The proposed Windows fence is an exclusive create/delete lifecycle for a reserved
 random 8.3-compatible probe entry inside `objects/`. Using an already-8.3-compatible
 name prevents long-name/short-name aliasing from making the probe indistinguishable.
@@ -210,6 +256,44 @@ name, and ordinary Windows path lookup is case-insensitive. Treating every non-p
 event as `DirtyAll` prevents alternate casing or short-name reporting from hiding a
 replacement. A future targeted invalidation path requires a separately reviewed
 lossless name-attribution design.
+
+Every Windows fence wait is cancellation-aware and lasts at most two seconds. A
+timeout makes the monitor terminally `Unknown` and routes the operation through
+safe-open fallback. This bound applies only to waiting for an ordered fence result; it
+does not bound or weaken native teardown ownership.
+
+#### Windows teardown
+
+Release or close first makes the monitor terminally `Unknown`, prevents new monitor
+work and publication, requests native cancellation, and wakes fence waiters. Native
+cancellation is a request, not completion: the worker's `OVERLAPPED` storage, native
+notification buffer, directory handle, cancellation handle, joinable thread resource,
+and all associated budget permits remain owned until the native I/O reports completion
+and the worker is joined. This follows Microsoft's
+[`CancelIoEx` contract](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex):
+the request does not wait for completion, and in-flight `OVERLAPPED` state must remain
+valid until completion is observed.
+
+Cancellation and join run outside the commit cache, process budget, session-state,
+Python session-store, and other CoreFS internal locks and outside the GIL. On supported
+NTFS reference and native-CI profiles, cancellation plus join must empirically finish
+within two seconds with zero probe residue and zero handle delta. A target miss on
+those profiles disables the Windows backend and fails its platform gate.
+
+The two-second target is not a deadline for destroying native state. If cancellation
+exceeds it in production or under a pathological driver, teardown records an internal
+diagnostic target miss and continues waiting until native I/O completion is confirmed.
+Only then may it join the worker, destroy the monitor resources, and release the
+monitor and entry permits. It never detaches or defers a reaper and never frees or
+reuses the `OVERLAPPED` storage or notification buffer while native I/O may still
+reference them.
+
+`CorefsSession.close()` and `release_object_lease()` may therefore exceed the target
+only while waiting for confirmed Windows native completion. New operations remain
+rejected during that wait, and no cache, budget, session-store, internal CoreFS lock,
+or GIL is held. After either operation returns, the existing guarantee remains exact:
+no monitor worker or callback can publish, no native monitor resource remains, and no
+released state can be touched.
 
 #### macOS monitor creation
 
@@ -581,11 +665,12 @@ panic unwind. A terminal-close flag is monotonic: once any caller requests close
 `CorefsSession.close()` is idempotent and follows this order:
 
 1. transition `Open -> Closing` and reject new operation guards;
-2. set terminal close, signal monitor cancellation, and wake any admitted operation
-   blocked in a monitor fence;
+2. set terminal close, make the monitor terminally `Unknown`, prevent new monitor work
+   or publication, signal monitor cancellation, and wake any admitted operation blocked
+   in a monitor fence;
 3. wait until every already-admitted operation guard has drained;
-4. perform backend-specific monitor drain: join the Windows worker, or run the macOS
-   stop/invalidate/serial-queue-barrier sequence;
+4. perform backend-specific monitor drain: confirm native completion and join the
+   Windows worker, or run the macOS stop/invalidate/serial-queue-barrier sequence;
 5. clear the coordinator cache and drop every retained handle or macOS stamp and every
    budget permit;
 6. transition to `Closed`; and
@@ -596,8 +681,10 @@ The blocking drain/join portion of the PyO3 close method runs inside
 `Python::allow_threads` so an admitted operation that must reacquire the GIL can
 finish. Monitor fence waits are bounded and cancellation-aware; cancellation returns
 `Unknown` so an admitted operation can complete through safe-open fallback or return
-its existing typed failure rather than deadlocking close. No backend monitor worker or
-callback invokes Python.
+its existing typed failure rather than deadlocking close. The two-second Windows fence
+bound is separate from completion-confirmed teardown: close continues to wait safely
+when native cancellation misses that target. No backend monitor worker or callback
+invokes Python.
 
 Logout, token revocation, user-session replacement, expiry purge, store clear, and
 server shutdown must close removed native sessions. The Python session-store lock must
@@ -614,7 +701,9 @@ uses the explicit `Releasing` state: temporarily reject new operations, cancel/w
 monitor, drain admitted operations outside the GIL, and clear/drain the lease. It
 returns to `Open` only if no terminal close was requested; otherwise close owns
 teardown and all callers wait for `Closed`. A later admitted operation may rebuild a
-fresh lease.
+fresh lease. On Windows, release follows the same completion-confirmed native teardown
+contract as close and may exceed the supported-NTFS target only while native completion
+remains outstanding.
 
 ### 10. Resource and fallback policy
 
@@ -648,8 +737,13 @@ entry unit, so sharing an exact anchor by `Arc` does not double-count it. macOS 
 contain fixed metadata and do not retain per-object file descriptors; one macOS lease
 may retain at most 64 canonical ancestor descriptors plus one kqueue descriptor, and
 the separate process monitor-resource budget reserves that exact count before arming.
-Windows reserves its monitor handle through the same budget. The entry budget still
-bounds per-object memory and validation work. Candidate
+For the current Windows implementation shape, each lease reserves exactly three
+monitor resources before arming: the notification directory handle, the dedicated
+cancellation-capable worker-thread handle, and the joinable worker-thread
+handle/resource. If a later implementation proves that one real resource was removed,
+it may reserve that new exact count; it must never understate resources that remain
+owned. Each retained per-object Windows handle is separately accounted by its entry
+permit. The entry budget still bounds per-object memory and validation work. Candidate
 failure, lease clear/replacement, session close, or panic drops the corresponding
 permits and returns the counters. The process budget means many unlock tokens can
 remain functionally valid, but only candidates fitting the remaining shared budget use
@@ -693,7 +787,9 @@ and resource factory.
 
 Lease resources are also torn down on monitor failure, cache replacement/clear,
 explicit `release_object_lease()`, or native-session close. Windows closes all retained
-handles; macOS cancels and drains the FSEvents stream, closes its kqueue/ancestor
+handles and returns their entry permits only after completion-confirmed monitor
+teardown; it returns the three monitor-resource permits only after the worker is
+joined. macOS cancels and drains the FSEvents stream, closes its kqueue/ancestor
 descriptors, and drops every stamp. Linux and any monitor-unavailable path retain the
 current safe-open behavior.
 
@@ -704,7 +800,9 @@ fall back internally.
 
 Existing public errors remain exact for invalid disk state. Only failure to complete a
 required full validation may fail the operation. Diagnostic probes may expose
-crate-private counters/reasons for tests and benchmark attribution.
+crate-private counters/reasons for tests and benchmark attribution. A Windows
+cancellation target miss is an internal lifecycle diagnostic, not a new public CoreFS
+error; teardown remains in progress until native completion is confirmed.
 
 ## Performance decision gate
 
@@ -735,6 +833,13 @@ does not provide credible margin below that unchanged full-commit gate, implemen
 stops before building recovery/rotation integration and returns for an object-pack or
 broader storage-layout decision.
 
+The supported-NTFS Windows lifecycle gate is separate from commit latency: native
+cancellation plus worker join must complete in less than two seconds with zero probe
+residue, zero handle delta, and exact permit return. Failure on the reference or native
+CI profile disables the Windows lease backend and fails its platform gate. This
+empirical target does not authorize early destruction in production; a target miss
+there remains completion-confirmed and may extend close/release latency.
+
 macOS has no invented numeric acceptance threshold in this ticket. Its fast path may
 proceed only if the disposable native spike demonstrates a material and repeatable
 reduction versus the same safe-open loop on the tested APFS machine, with correctness,
@@ -763,11 +868,26 @@ clear PCF-002.
 
 Windows-specific coverage proves:
 
+- sustained native event flooding without fences keeps publication memory and monitor
+  state bounded `O(1)`, becomes `DirtyAll` or `Unknown`, and does not prevent worker
+  cancellation or join;
 - buffer overflow, handle loss, malformed rename pairs, probe cleanup failure, and
   incomplete ordering become `Unknown`;
 - alternate-case, short-name/8.3, unexpected ordinary-file, and unrecognized
-  create/delete/rename notifications produce `DirtyAll`; and
-- clean shutdown leaves no fence probe or other temporary file.
+  create/delete/rename notifications produce `DirtyAll`;
+- record-order regressions prove the exact probe create/delete sequence, fence
+  generation acknowledgment, and post-boundary traffic attribution to the next fence;
+- the production factory reserves exactly three monitor resources and native handle
+  delta evidence matches that accounting;
+- supported-NTFS native cancellation plus join remains under two seconds with zero
+  fence probe, temporary-file, handle, worker, buffer, or permit residue; and
+- a deterministic delayed/non-completing-cancellation seam proves close does not
+  return, detach, free or reuse the monitor buffer/`OVERLAPPED` storage, close the
+  monitor handles, or release monitor/entry permits at the target; after injected
+  native completion it joins and releases every resource exactly once with no
+  use-after-free or leak; and
+- existing startup, partial-cleanup, panic, cancellation, reparse, parser, link-count,
+  probe-order, and worker-failure regressions remain green.
 
 macOS-specific coverage runs on macOS and proves:
 
@@ -847,7 +967,11 @@ macOS-specific coverage runs on macOS and proves:
   returns;
 - release racing close atomically upgrades to terminal close and never reopens; two
   concurrent close callers both wait for `Closed`;
-- the blocking close/release path does not hold the GIL or Python session-store lock;
+- fence waits are cancellation-aware and bounded to two seconds while Windows teardown
+  remains completion-confirmed after a target miss;
+- an extended injected Windows completion wait proves the GIL, Python session-store
+  lock, commit-cache lock, process-budget lock, and internal CoreFS/session-state locks
+  are not held;
 - logout, revoke, replacement, expiry, clear, and shutdown reject new operations, drain
   the monitor backend, and release every native resource without holding the Python
   store lock;
@@ -857,6 +981,9 @@ macOS-specific coverage runs on macOS and proves:
 - multiple unlock tokens atomically exhaust the shared 4,096-entry, four-lease, and
   260-monitor-resource budgets; denied sessions use safe-open without retrying until
   the budget epoch changes, and permit release makes another session eligible;
+- Windows candidates reserve exactly three monitor-resource permits per live monitor,
+  retain all three plus every entry permit through native completion, and return them
+  exactly once after join;
 - repeated unchanged 2,500-object commits carry one lease forward and keep process
   usage fixed at 2,500 entries/one monitor/one permit bundle without denial;
 - macOS repeats that carry-forward test without growing its process file-descriptor
@@ -929,6 +1056,18 @@ macOS-specific coverage runs on macOS and proves:
   NTFS-specific and requires privileged volume-journal access.
 - **Retained handles without monitoring:** preserves handle identity, length, and link
   count but cannot prove that the catalog physical name still names that handle.
+- **Unbounded Windows event publication:** retaining every notification in a channel or
+  per-event vector permits unbounded memory growth under native event flood. The fixed
+  buffer is synchronously folded into constant-size terminal, probe-generation,
+  boundary, and worker state instead.
+- **Hard two-second Windows resource-destruction deadline:** native cancellation does
+  not prove completion and therefore cannot authorize freeing or reusing the
+  `OVERLAPPED` storage/buffer, closing handles, or returning permits. The two-second
+  value remains a supported-NTFS gate while teardown waits safely for completion.
+- **Deferred Windows reaper or quarantine:** returning close/release before confirmed
+  native completion retains hidden native resources and permits, complicates exact
+  ownership, and weakens the drive-ejection guarantee. Teardown remains synchronous and
+  completion-confirmed without detached workers.
 - **One retained descriptor per object on macOS:** can mirror the Windows model but
   consumes thousands of descriptors. FSEvents fences plus bounded `fstatat` stamps
   preserve the required checks without that pressure.
@@ -938,8 +1077,8 @@ macOS-specific coverage runs on macOS and proves:
   zero flush target ambiguous with no event. The bounded ancestor-vnode queue is
   required to retain rename/delete/revoke history across path restoration.
 - **FSEvents synchronous flush:** proves callback delivery but exposes no error,
-  cancellation, or timeout result, so it cannot satisfy the approved bounded session
-  close contract.
+  cancellation, or timeout result, so it cannot satisfy the bounded, cancellation-aware
+  fence contract.
 - **Persisted FSEvents replay:** unnecessary for a process-local optimization and creates
   event-ID wrap, volume-replacement, and replay-state authority that CoreFS does not
   need.
@@ -957,13 +1096,19 @@ This architecture revision is complete only when:
 
 1. each enabled platform backend's native fence characterization proves its required
    ordered boundary;
-2. every correctness, recovery, rotation, concurrency, and fail-closed regression
-   passes;
-3. full Rust 1.75 tests, strict Clippy, formatting, Python benchmark-contract tests, and
+2. Windows native publication remains bounded `O(1)`, its production factory reserves
+   the exact three monitor resources, and flood/order/fail-closed regressions pass;
+3. supported-NTFS cancellation plus join remains under two seconds with zero residue or
+   handle delta, while the delayed-completion seam proves no early return, destruction,
+   permit release, detach, or use-after-free beyond that target;
+4. every correctness, recovery, rotation, concurrency, and fail-closed regression
+   passes, including proof that extended Windows teardown holds no GIL, store, cache,
+   budget, or internal CoreFS/session lock;
+5. full Rust 1.75 tests, strict Clippy, formatting, Python benchmark-contract tests, and
    diff hygiene pass;
-4. the unchanged Windows exact 30/200 reference artifact passes all gates, including
+6. the unchanged Windows exact 30/200 reference artifact passes all gates, including
    maximum-live p95 <= 250 ms, and the macOS diagnostic records a material repeatable
    reduction before its backend is enabled;
-5. independent specification and quality reviews have no unresolved substantive
+7. independent specification and quality reviews have no unresolved substantive
    finding; and
-6. PCF-002 and PCF-000 record the artifact, validation, and legal state transition.
+8. PCF-002 and PCF-000 record the artifact, validation, and legal state transition.
