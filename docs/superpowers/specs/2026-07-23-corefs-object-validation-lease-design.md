@@ -328,18 +328,50 @@ UnlockSession
   corefs_session -> native CorefsSession
 ```
 
-Current CoreFS read/validation calls must accept and reuse the session coordinator.
-Future logical mutators then inherit the same coordinator instead of creating an
-ephemeral one. Neither native session nor keys are written to the dev-session snapshot;
-restored sessions that previously held CoreFS authority remain invalidated as today.
+Current CoreFS read/validation calls must accept and reuse the session coordinator. The
+CoreFS API route obtains it only from the already resolved `UnlockSession`; request
+payloads and route-local root/Core-ID/key tuples cannot select or substitute a native
+coordinator. Future logical mutators then inherit the same coordinator instead of
+creating an ephemeral one. Neither native session nor keys are written to the
+dev-session snapshot; restored sessions that previously held CoreFS authority remain
+invalidated as today.
+
+Every native operation first acquires an `OperationGuard` from this state machine:
+
+```text
+Open(active = N)
+  admit -> Open(active = N + 1)
+  close -> Closing(active = N)
+
+Closing(active = N)
+  admit -> reject
+  guard drop -> Closing(active = N - 1)
+  active = 0 -> teardown -> Closed
+
+Closed
+  admit -> reject
+  close -> no-op
+```
+
+The state uses a mutex plus condition variable; it is separate from the commit-cache
+and monitor locks. A guard is held through the complete Rust operation, including
+publication and lease replacement, and decrements the active count on every return or
+panic unwind.
 
 `CorefsSession.close()` is idempotent and follows this order:
 
-1. atomically reject new session operations;
-2. signal monitor cancellation and wake any wait;
-3. join the monitor worker;
-4. clear the coordinator cache and drop every retained handle; and
-5. return only after no monitor callback can touch released state.
+1. transition `Open -> Closing` and reject new operation guards;
+2. wait until every already-admitted operation guard has drained;
+3. signal monitor cancellation and wake any wait;
+4. join the monitor worker;
+5. clear the coordinator cache and drop every retained handle and budget permit;
+6. transition to `Closed`; and
+7. return only after no operation or monitor callback can publish or touch released
+   state.
+
+The blocking drain/join portion of the PyO3 close method runs inside
+`Python::allow_threads` so an admitted operation that must reacquire the GIL can
+finish. The monitor worker never invokes Python.
 
 Logout, token revocation, user-session replacement, expiry purge, store clear, and
 server shutdown must close removed native sessions. The Python session-store lock must
@@ -350,7 +382,10 @@ native resources outside the lock.
 While an unlock session is active, its Core is in use. This revision requires
 logout/lock before external drive removal. It exposes an idempotent
 `release_object_lease()` operation for later transfer/export and PCF-008 eject
-coordination, but does not claim unimplemented desktop suspend/eject hooks.
+coordination, but does not claim unimplemented desktop suspend/eject hooks. Release
+uses the same exclusive admission barrier: temporarily reject new operations, drain
+admitted operations outside the GIL, clear/join the lease, and then reopen the session
+for later safe-open or lease-rebuilding operations.
 
 ### 10. Resource and fallback policy
 
@@ -366,6 +401,26 @@ object count before arming a monitor or opening candidate handles:
   pointer/object-count state; and
 - any partial candidate acquisition failure: atomically drop the monitor and every
   candidate handle before continuing through safe-open fallback.
+
+The crate also owns one process-wide `LeaseBudget` with:
+
+```text
+MAX_PROCESS_OBJECT_LEASE_HANDLES = 4_096
+MAX_PROCESS_OBJECT_LEASES = 4
+```
+
+Before arming a monitor, a candidate atomically reserves both its exact handle count
+and one lease slot. The returned RAII permit stays attached to the candidate and then
+the published lease. Candidate failure, lease clear/replacement, session close, or
+panic drops the permit and returns both counters. The process budget means many unlock
+tokens can remain functionally valid, but only candidates fitting the remaining shared
+budget use the fast path; all others use safe-open fallback.
+
+Budget denial records the observed process-budget epoch and is not retried until a
+permit release increments that epoch. This prevents every commit from repeating a
+known-impossible acquisition while ensuring released resources make other sessions
+eligible. Reservation, publication, release, and epoch advance are atomic under the
+budget lock; no file or monitor I/O occurs while it is held.
 
 An over-ceiling catalog is not retried until its authenticated object count falls within
 the ceiling. Transient monitor/handle acquisition failures use process-local
@@ -456,11 +511,19 @@ clear PCF-002.
 
 - two FFI calls in one unlock session reuse one coordinator;
 - different users, roots, Core IDs, or unlock tokens never share a coordinator;
+- route-level tests prove the resolved unlock session, not caller-supplied root, Core
+  ID, or key arguments, selects the native coordinator;
+- an admitted operation racing logout drains before close continues, and no cache,
+  lease, handle, monitor, or process-budget permit can appear after close returns;
+- the blocking close/release path does not hold the GIL or Python session-store lock;
 - logout, revoke, replacement, expiry, clear, and shutdown reject new operations, join
   the monitor, and release every handle without holding the Python store lock;
 - dev-session restore never restores a native CoreFS session or CoreFS keys;
 - `release_object_lease()` is idempotent and the next eligible commit can rebuild;
 - object counts `4_096` and `4_097` select lease and fallback respectively;
+- multiple unlock tokens atomically exhaust the shared 4,096-handle/four-lease budget,
+  denied sessions use safe-open without retrying until the budget epoch changes, and
+  permit release makes another session eligible;
 - partial acquisition drops every candidate handle and monitor;
 - injected failures obey bounded exponential backoff rather than retrying every commit;
   and
@@ -493,9 +556,11 @@ clear PCF-002.
 - `packages/anima-core/src/ffi.rs`
 - `apps/server/src/anima_server/services/sessions.py`
 - `apps/server/src/anima_server/services/corefs/logical.py`
+- `apps/server/src/anima_server/api/routes/corefs.py`
 - `apps/server/src/anima_server/api/routes/auth.py`
 - `apps/server/src/anima_server/main.py`
 - `apps/server/tests/test_sessions.py`
+- `apps/server/tests/test_corefs_api.py`
 - `apps/server/tests/test_corefs_logical.py`
 - `apps/server/tests/test_corefs_catalog_benchmark.py`
 - `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
