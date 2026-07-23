@@ -184,7 +184,7 @@ git commit -m "docs: record macOS CoreFS lease characterization"
 - Modify: `packages/anima-corefs/src/transaction.rs:1-65,986-1045`
 - Modify: `packages/anima-corefs/src/transaction/cache.rs:182-333`
 
-- [ ] **Step 1: Add failing state and budget tests**
+- [x] **Step 1: Add failing state and budget tests**
 
 Add tests named:
 
@@ -208,11 +208,11 @@ cargo +1.75.0 test --locked -p anima-corefs object_lease -- --nocapture
 
 Expected: FAIL because the module and types do not exist.
 
-- [ ] **Step 2: Define the platform-neutral contract**
+- [x] **Step 2: Define the platform-neutral contract**
 
 Implement crate-private `MonitorState::{Clean, DirtyAll, Unknown}`, `FenceOutcome`, platform-tagged `ValidationAnchor`, ordered `LeasedObjectBinding`, and `ObjectValidationLease`. `Unknown` and `DirtyAll` must be terminal for a generation. Unsupported platforms must return an optimization miss and preserve safe-open behavior.
 
-- [ ] **Step 3: Implement exact process-wide RAII accounting**
+- [x] **Step 3: Implement exact process-wide RAII accounting**
 
 Use one `OnceLock<LeaseBudget>` with:
 
@@ -226,15 +226,15 @@ MAX_MACOS_MONITORED_ANCESTORS = 64;
 
 Reserve the exact entry count, monitor-resource count, and lease slot atomically before monitor I/O. Make slot, entry, and monitor-resource permits RAII-owned; increment the budget epoch on release; never perform file/native I/O under the budget lock.
 
-- [ ] **Step 4: Implement eligibility, denial, and backoff**
+- [x] **Step 4: Implement eligibility, denial, and backoff**
 
 Key budget denial by `(budget_epoch, authenticated_object_set_fingerprint, requested_count)`. Suppress an identical denial, permit retry after an object-set/count change or permit-release epoch, treat over-ceiling state separately, and inject the 1/2/4/.../60-second transient backoff clock.
 
-- [ ] **Step 5: Keep lease destruction outside the cache mutex**
+- [x] **Step 5: Keep lease destruction outside the cache mutex**
 
 Extend cache state only enough to hold an optional `Arc<ObjectValidationLease>`. Ensure `CommitCache::replace`, `clear`, and poison recovery move discarded snapshots out of the mutex before dropping them. Add a destructor probe test that fails if monitor/permit destruction occurs while `cache.inner` is held.
 
-- [ ] **Step 6: Run focused and regression tests**
+- [x] **Step 6: Run focused and regression tests**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::object_lease_tests -- --nocapture
@@ -243,7 +243,7 @@ cargo +1.75.0 test --locked -p anima-corefs transaction::cache_tests -- --nocapt
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/cache.rs packages/anima-corefs/src/transaction/object_lease.rs packages/anima-corefs/src/transaction/object_lease_tests.rs

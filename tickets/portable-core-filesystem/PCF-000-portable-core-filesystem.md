@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 14:58 MYT
+- Updated: 2026-07-23 16:01 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -210,6 +210,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 14:37 MYT - PCF-002 Task 1 completed its required RED/GREEN Windows native characterization. The exact pre-implementation command failed RED with exit `2` on the absent monitor/fence/metadata/matrix backend. Both final exact 2,500-object commands then completed GREEN; performance/race JSON SHA-256 values are `b90d1a2239d004e0ed3bbda4198020f32c131eec19dd62558b2e4dfa6deb29e3` and `4424b53293f16967dfe21fdf1cbca0c9466240819ff5d3d0753741af8bf016cd`. Ordered boundary, outside-link, cancellation, cleanup, and resource gates passed from repository baseline `2f805e2c563fcc16f8641c3a6cc298f07afdda5d`. The disposable source and spike-only manifest features were removed, `Cargo.lock` stayed unchanged, and the ignored, uncommitted executable under `target/` retained SHA-256 `851c6b55e3f0f5a26e380a21bc9821e531554e38304791c1840a76a823aeadb5`; only PCF-002/PCF-000 evidence remains for commit.
 - 2026-07-23 14:53 MYT - Corrected Task 1's performance evidence after quality review: `237.8811` ms is component-only lease-loop margin, while the directional p95-component projection is `172.9212` ms full-commit time and approximately `77.0788` ms headroom. Because cross-distribution percentile arithmetic is not definitive, Task 12's unchanged exact 30/200 full-commit run remains the sole acceptance proof. The Task 1 GO decision and initiative state are unchanged; no external action was taken.
 - 2026-07-23 14:58 MYT - PCF-002 Task 1 passed independent spec-compliance review and quality re-review with no Critical or Important findings. Corrected the sole Minor wording ambiguity by distinguishing deletion of the disposable source from the retained ignored executable, and marked exactly the seven Task 1 plan steps complete. The Task 1 GO decision stands; Task 2 macOS characterization is next but has not started. PCF-002 and this parent remain `in_progress`, downstream tickets remain dependency-ineligible, and no external action was taken.
+- 2026-07-23 16:01 MYT - PCF-002 Task 3 completed the platform-neutral lease and process budget on branch `codex/pcf-002-object-validation-lease-impl` in worktree `.worktrees/pcf-002-object-validation-lease` through commits `cb471beb`, `69db92d1`, and `cacebd6e`. Genuine missing-module and review REDs preceded GREEN; lease `13/13`, cache `26/26`, the full CoreFS suite (`133` passed, `1` ignored) plus integrations, `cargo check`, strict all-target Clippy, scoped rustfmt, and diff checks all passed, and independent spec/quality reviews were clean. Task 2's native macOS characterization remains pending, Task 4 is next locally, and PCF-002 plus this parent remain `in_progress` with downstream dependencies unchanged.
 
 ## Validation
 
