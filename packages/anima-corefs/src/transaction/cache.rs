@@ -14,6 +14,8 @@ use crate::head::HeadRecord;
 use crate::id::OpaqueId;
 use crate::rotation::{FrkKeyring, RotationError};
 
+use super::object_lease::ObjectValidationLease;
+
 const CACHE_ID_DOMAIN: &[u8] = b"anima-corefs-commit-cache-key-id-v1\0";
 const CATALOG_KEY_PURPOSE: &[u8] = b"catalog";
 const OBJECT_WRAP_KEY_PURPOSE: &[u8] = b"object-wrap";
@@ -284,6 +286,7 @@ pub(super) struct AuthenticatedCommitSnapshot {
     pub(super) key_ids: RequiredCacheKeyIds,
     catalog: Arc<CatalogGeneration>,
     pub(super) objects: Option<Arc<ValidatedObjectState>>,
+    pub(super) object_lease: Option<Arc<ObjectValidationLease>>,
 }
 
 impl AuthenticatedCommitSnapshot {
@@ -297,7 +300,16 @@ impl AuthenticatedCommitSnapshot {
             key_ids: key.key_ids.clone(),
             catalog,
             objects,
+            object_lease: None,
         }
+    }
+
+    pub(super) fn with_object_lease(
+        mut self,
+        object_lease: Option<Arc<ObjectValidationLease>>,
+    ) -> Self {
+        self.object_lease = object_lease;
+        self
     }
 
     pub(super) fn catalog(&self) -> &Arc<CatalogGeneration> {

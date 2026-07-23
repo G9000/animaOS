@@ -2,6 +2,9 @@
 
 #[cfg_attr(not(test), allow(dead_code))]
 mod cache;
+// The lease contract is integrated incrementally by the following implementation tasks.
+#[allow(dead_code)]
+mod object_lease;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -4719,3 +4722,5 @@ mod tests {
 mod cache_tests;
 #[cfg(test)]
 mod failure_tests;
+#[cfg(test)]
+mod object_lease_tests;
