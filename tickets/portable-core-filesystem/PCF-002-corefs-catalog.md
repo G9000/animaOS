@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: blocked
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 17:34 MYT
+- Updated: 2026-07-23 18:05 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -195,6 +195,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-23 14:58 MYT - Task 1 passed independent spec-compliance review and quality re-review with no Critical or Important findings. Corrected the sole Minor wording ambiguity by distinguishing deletion of the disposable source from the retained ignored executable, and marked exactly the seven Task 1 plan steps complete. The Task 1 GO decision stands; Task 2 macOS characterization is next but has not started. PCF-002 remains `in_progress`, PCF-003 remains dependency-ineligible, and no external action was taken.
 - 2026-07-23 16:01 MYT - Completed Task 3's platform-neutral lease and process budget on branch `codex/pcf-002-object-validation-lease-impl` in worktree `.worktrees/pcf-002-object-validation-lease` through commits `cb471beb`, `69db92d1`, and `cacebd6e`. The genuine missing-module RED (`E0583`) and review regressions preceded GREEN. Final validation passed lease `13/13`, cache `26/26`, the full CoreFS suite (`133` passed, `1` ignored) plus integrations, `cargo check`, strict all-target Clippy, scoped rustfmt, and diff checks; independent spec and quality reviews were clean. Task 2's native macOS characterization remains pending, Task 4 is the next locally executable unit, and PCF-002 remains `in_progress`.
 - 2026-07-23 17:34 MYT - Blocked Task 4 after implementation commits `00753c43`, `a83b530d`, and `81a4a50e` reached spec-clean Windows correctness with focused `14/14`, release `2/2`, fallback `11`, full CoreFS, and strict gates green, but quality review found an unbounded event channel, an unbounded cancellation/join worst case, and monitor-resource count `2` versus `3` actual resources. `CancelIoEx` only requests cancellation; the operation may continue, and its `OVERLAPPED` plus buffer must remain live until completion with no specified upper bound. A deterministic never-completing I/O cannot satisfy the currently approved combination of hard sub-two-second close, no use-after-free, no detached/reaped/leaked thread, handle, or buffer, and exact permit release. The bounded queue and resource count are individually fixable, but no partial code was committed and implementation head remains `81a4a50e`. Clearance requires a separately approved architecture revision choosing completion-confirmed unbounded or soft-bounded drain, or a bounded deferred reaper/quarantine policy with explicit resource and permit semantics.
+- 2026-07-23 18:05 MYT - Cleared the Task 4 architecture blocker and resumed PCF-002 on the same `codex/pcf-002-object-validation-lease-impl` branch and `.worktrees/pcf-002-object-validation-lease` worktree from implementation head `81a4a50e`, with no external action. The user approved Option 1's safety-first completion-confirmed teardown; the written correction was committed at `6a230eaf` and independently approved, and the revised plan was committed at `0a409ea7` and independently approved. This clearance replaces the impossible hard worst-case close bound with a supported-NTFS cancellation-plus-join target below two seconds plus a safe wait for confirmed completion, bounded `O(1)` event state, and exact accounting of three current Windows monitor resources. Task 4 is next/resuming; `Owner: Codex` and the original `Started:` timestamp are preserved.
 
 ## Validation
 

@@ -16,8 +16,9 @@ independently re-reviewed on 2026-07-23; correction implementation pending
 **Revision note:** On 2026-07-23 the user approved a safety-first correction that
 separates bounded monitor-fence waits from completion-confirmed Windows teardown,
 requires bounded `O(1)` Windows event publication, and corrects the Windows monitor
-resource reservation to three. The correction was independently re-reviewed and
-approved on 2026-07-23; this document does not claim its implementation is complete.
+resource reservation to three. The written correction was user-approved and passed
+independent specification review at commit `6a230eaf`; its review metadata was updated
+through `0a409ea7` alongside the revised plan. Implementation remains pending.
 
 **Independent review:** The user-approved Windows baseline passed four review/revision
 rounds covering notification-name ambiguity, production link-count behavior,

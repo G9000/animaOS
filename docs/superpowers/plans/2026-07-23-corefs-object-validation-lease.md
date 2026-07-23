@@ -13,9 +13,10 @@ the final-evidence tasks were bound to a permanent production-backend diagnostic
 binary, closed output schema, and exact Windows/macOS commands.
 
 **Plan revision note:** The written safety-first teardown specification was
-user-approved and independently approved on 2026-07-23. This focused plan revision
-awaits independent plan re-review and does not claim the corrected behavior is
-implemented.
+user-approved and independently approved on 2026-07-23. The focused plan revision at
+`0a409ea7` passed independent plan re-review with no remaining substantive findings.
+Task 4 is next and resumes from implementation head `81a4a50e`; this metadata does not
+claim the corrected behavior is implemented.
 
 ---
 
