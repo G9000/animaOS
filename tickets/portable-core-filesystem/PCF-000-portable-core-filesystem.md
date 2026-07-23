@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: in_progress
+- Status: blocked
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 16:01 MYT
+- Updated: 2026-07-23 17:34 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -23,7 +23,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | blocked | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -65,6 +65,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - Review evidence (2026-07-23 02:42 MYT): PR #117 current-head P2 feedback exposed that a warm exact hit reauthenticated HEAD but not a distinct retained cutover receipt/completion catalog. PCF-002 now reopens and SHA-256-verifies every distinct catalog named by the exact pointer tuple, deduplicates equal records, and fails closed on missing retained bytes while retaining zero decrypt/encode work on a hit. The RED/GREEN regression, 26 cache tests, complete 265-test Rust 1.75 CoreFS suite with 3 helpers ignored, strict Clippy, rustfmt, and diff hygiene passed. The source-current exact 30/200 rerun from `f16a2f6d` kept medium and serialized-limit green at p95 `78.9163`/`157.8677` ms and maximum-live red at `361.1692` ms; provenance/tree validation and all 121 benchmark-contract tests passed. PCF-002 and this parent remain blocked on that sole unchanged gate; downstream eligibility is unchanged.
 - Windows lease characterization evidence (2026-07-23 14:37 MYT): PCF-002's disposable release-mode Rust 1.75 harness ran on `ANIMAOS`, Microsoft Windows build `10.0.26200.8875`, `x86_64`, NTFS volume serial `4008503144` / `\\?\Volume{1548b2f2-1046-49ee-8898-aa49525413ed}\`, from repository baseline `2f805e2c563fcc16f8641c3a6cc298f07afdda5d`. The exact 30/200 2,500-object record measured safe-open p50/p95/p99 `144.4918/200.3669/210.6141` ms and combined two-fence plus fresh retained-handle metadata `9.5734/12.0017/13.5729` ms. The exact 200-race record measured combined lease `9.0839/12.1189/13.3084` ms and set `orderedBoundaryProven=true`: all 200 real mutations across both fence seams were `DirtyAll` with zero non-probe `Clean`, the watcher-clean outside hard link was rejected by fresh link count, all deterministically injected ambiguous/failure modes were `Unknown`, cancellation was bounded, residue was zero, and process handle count returned from `95` to `95` after a retained peak of `2600`. The disposable source and manifest feature edits were removed after the run, `Cargo.lock` remained unchanged, and the ignored, uncommitted compiled executable under `target/` has retained-record and current SHA-256 `851c6b55e3f0f5a26e380a21bc9821e531554e38304791c1840a76a823aeadb5`.
 - Windows performance stop-gate evidence (2026-07-23 14:53 MYT): the race-run lease-loop p95 `12.1189` ms is `237.8811` ms below the unchanged `250` ms full-commit ceiling, but that is component-only loop margin, not whole-commit headroom. A directional projection using the recorded p95 components is `361.1692 - 200.3669 + 12.1189 = 172.9212` ms projected full-commit p95, approximately `77.0788` ms projected headroom. Percentile subtraction and addition across separate distributions is directional, not definitive; Task 12's unchanged exact 30/200 full-commit reference is the only acceptance proof. Task 1 is GO without reducing the 2,500-file fixture or excluding either fence/metadata work. PCF-002 and this parent remain `in_progress`; downstream tickets remain dependency-ineligible until PCF-002 completes its production implementation and unchanged final reference.
+- Windows lease blocker evidence (2026-07-23 17:34 MYT): Task 4's spec-clean implementation head `81a4a50e` passed focused `14/14`, release `2/2`, fallback `11`, full CoreFS, and strict gates, but quality review found an unbounded event channel, unbounded cancellation/join worst case, and monitor-resource undercount. Because `CancelIoEx` only requests cancellation and requires the `OVERLAPPED` plus buffer to remain live until completion without an upper bound, deterministic never-completing I/O cannot satisfy hard sub-two-second close together with no use-after-free, no deferred/leaked resources, and exact permit release. PCF-002 and this parent are blocked; every remaining child depends directly or indirectly on PCF-002, so none is eligible. Clearance requires a separately approved architecture revision selecting completion-confirmed unbounded or soft-bounded drain, or bounded deferred reaper/quarantine semantics.
 
 ## Completed Tickets
 
@@ -211,6 +212,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 14:53 MYT - Corrected Task 1's performance evidence after quality review: `237.8811` ms is component-only lease-loop margin, while the directional p95-component projection is `172.9212` ms full-commit time and approximately `77.0788` ms headroom. Because cross-distribution percentile arithmetic is not definitive, Task 12's unchanged exact 30/200 full-commit run remains the sole acceptance proof. The Task 1 GO decision and initiative state are unchanged; no external action was taken.
 - 2026-07-23 14:58 MYT - PCF-002 Task 1 passed independent spec-compliance review and quality re-review with no Critical or Important findings. Corrected the sole Minor wording ambiguity by distinguishing deletion of the disposable source from the retained ignored executable, and marked exactly the seven Task 1 plan steps complete. The Task 1 GO decision stands; Task 2 macOS characterization is next but has not started. PCF-002 and this parent remain `in_progress`, downstream tickets remain dependency-ineligible, and no external action was taken.
 - 2026-07-23 16:01 MYT - PCF-002 Task 3 completed the platform-neutral lease and process budget on branch `codex/pcf-002-object-validation-lease-impl` in worktree `.worktrees/pcf-002-object-validation-lease` through commits `cb471beb`, `69db92d1`, and `cacebd6e`. Genuine missing-module and review REDs preceded GREEN; lease `13/13`, cache `26/26`, the full CoreFS suite (`133` passed, `1` ignored) plus integrations, `cargo check`, strict all-target Clippy, scoped rustfmt, and diff checks all passed, and independent spec/quality reviews were clean. Task 2's native macOS characterization remains pending, Task 4 is next locally, and PCF-002 plus this parent remain `in_progress` with downstream dependencies unchanged.
+- 2026-07-23 17:34 MYT - Blocked PCF-002 and this initiative after Task 4 commits `00753c43`, `a83b530d`, and `81a4a50e` reached spec-clean Windows correctness and all focused, release, fallback, full, and strict gates passed, but quality review exposed an unbounded event channel, unbounded cancellation/join worst case, and resource undercount. The official `CancelIoEx` lifetime contract makes deterministic never-completing I/O incompatible with the currently approved hard sub-two-second close, memory safety, zero deferred/leaked resources, and exact permit release. The bounded queue and resource count are individually fixable, but no partial code was committed and head remains `81a4a50e`. No remaining child is eligible because all depend directly or indirectly on PCF-002. Clearance requires a separately approved architecture revision choosing completion-confirmed unbounded or soft-bounded drain, or bounded deferred reaper/quarantine with explicit resource and permit semantics.
 
 ## Validation
 
