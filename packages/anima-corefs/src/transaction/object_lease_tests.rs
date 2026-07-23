@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, Weak};
 use std::time::Duration;
@@ -27,6 +28,7 @@ use super::object_lease::{
     OptimizationMiss, ValidationAnchor, MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES,
     MAX_PROCESS_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
 };
+use super::{CommitError, CoreCommitLock};
 
 const CORE_ID: &str = "object-lease-test-core";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -71,11 +73,50 @@ impl BudgetDropProbe {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct KernelLockDropProbe {
+    root: PathBuf,
+    drops_after_unlock: Arc<AtomicUsize>,
+    drops_while_locked: Arc<AtomicUsize>,
+}
+
+impl KernelLockDropProbe {
+    pub(super) fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            drops_after_unlock: Arc::new(AtomicUsize::new(0)),
+            drops_while_locked: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub(super) fn record(&self) {
+        match CoreCommitLock::acquire(&self.root) {
+            Ok(lock) => {
+                self.drops_after_unlock.fetch_add(1, Ordering::SeqCst);
+                drop(lock);
+            }
+            Err(CommitError::LockBusy | CommitError::RecordedOwnerAlive { .. }) => {
+                self.drops_while_locked.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(error) => panic!("monitor teardown could not probe CoreCommitLock: {error}"),
+        }
+    }
+
+    pub(super) fn drops_after_unlock(&self) -> usize {
+        self.drops_after_unlock.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn drops_while_locked(&self) -> usize {
+        self.drops_while_locked.load(Ordering::SeqCst)
+    }
+}
+
 struct TestMonitorResource {
     drops: Arc<AtomicUsize>,
     cache: Option<Weak<CommitCache>>,
     dropped_outside_cache_lock: Option<Arc<AtomicUsize>>,
     budget_at_drop: Option<BudgetDropProbe>,
+    kernel_lock_at_drop: Option<KernelLockDropProbe>,
 }
 
 impl fmt::Debug for TestMonitorResource {
@@ -104,6 +145,9 @@ impl Drop for TestMonitorResource {
         if let Some(probe) = &self.budget_at_drop {
             probe.record();
         }
+        if let Some(probe) = &self.kernel_lock_at_drop {
+            probe.record();
+        }
     }
 }
 
@@ -125,6 +169,7 @@ pub(super) struct TestFactory {
     cache: Option<Weak<CommitCache>>,
     dropped_outside_cache_lock: Option<Arc<AtomicUsize>>,
     budget_at_monitor_drop: Option<BudgetDropProbe>,
+    kernel_lock_at_monitor_drop: Option<KernelLockDropProbe>,
 }
 
 impl TestFactory {
@@ -140,6 +185,7 @@ impl TestFactory {
             cache: None,
             dropped_outside_cache_lock: None,
             budget_at_monitor_drop: None,
+            kernel_lock_at_monitor_drop: None,
         }
     }
 
@@ -152,6 +198,11 @@ impl TestFactory {
 
     fn with_monitor_resources(mut self, monitor_resources: usize) -> Self {
         *self.planned_monitor_resources.get_mut() = monitor_resources;
+        self
+    }
+
+    pub(super) fn with_kernel_lock_drop_probe(mut self, probe: KernelLockDropProbe) -> Self {
+        self.kernel_lock_at_monitor_drop = Some(probe);
         self
     }
 }
@@ -178,6 +229,7 @@ impl LeaseResourceFactory for TestFactory {
             cache: self.cache.clone(),
             dropped_outside_cache_lock: self.dropped_outside_cache_lock.clone(),
             budget_at_drop: self.budget_at_monitor_drop.clone(),
+            kernel_lock_at_drop: self.kernel_lock_at_monitor_drop.clone(),
         }))
     }
 

@@ -31,7 +31,7 @@ use super::{
     precondition_covers_source, validate_opened_regular_file, CatalogLoadProbe, CatalogLoadStage,
     CatalogPrecondition, CommitCallbacks, CommitConflict, CommitError, CommitFailurePoint,
     CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator, CoreCommitLock,
-    PreparedObjectRevision, PublicationTarget, RotationProbe, RotationStage,
+    DeferredLeaseTeardown, PreparedObjectRevision, PublicationTarget, RotationProbe, RotationStage,
 };
 use crate::publication::PublicationPhase;
 
@@ -1332,6 +1332,7 @@ fn recovery_holds_no_cache_guard_during_lock_io_crypto_or_hooks() {
     assert!(outcome.recovery_pending());
 
     let stages = std::cell::RefCell::new(Vec::new());
+    let mut deferred_teardown = DeferredLeaseTeardown::default();
     let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
         &coordinator.root_dir,
         &coordinator.fs_dir,
@@ -1360,11 +1361,13 @@ fn recovery_holds_no_cache_guard_during_lock_io_crypto_or_hooks() {
                 );
                 Ok(())
             },
+            &mut deferred_teardown,
             Some(&mut probe),
         )
         .unwrap()
         .unwrap();
     drop(commit_lock);
+    drop(deferred_teardown);
 
     assert_eq!(committed.head().generation(), 2);
     assert!(
@@ -1785,7 +1788,7 @@ mod lease_candidate_tests {
     use std::collections::VecDeque;
     use std::fmt;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Barrier, Mutex};
 
     use sha2::{Digest, Sha256};
 
@@ -1797,6 +1800,7 @@ mod lease_candidate_tests {
         LeaseResourceFactory, LeaseResourcePlan, MonitorStateCell, ValidationAnchor,
         MAX_OBJECT_LEASE_ENTRIES,
     };
+    use crate::transaction::object_lease_tests::KernelLockDropProbe;
     use crate::transaction::{catalog_object_bindings, object_key_binding};
 
     #[derive(Debug)]
@@ -1804,6 +1808,7 @@ mod lease_candidate_tests {
         outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
         fence_attempts: Arc<AtomicUsize>,
         drops: Arc<AtomicUsize>,
+        kernel_lock_at_drop: Option<KernelLockDropProbe>,
     }
 
     impl LeaseMonitorResource for CandidateMonitor {
@@ -1820,6 +1825,9 @@ mod lease_candidate_tests {
     impl Drop for CandidateMonitor {
         fn drop(&mut self) {
             self.drops.fetch_add(1, Ordering::SeqCst);
+            if let Some(probe) = &self.kernel_lock_at_drop {
+                probe.record();
+            }
         }
     }
 
@@ -1839,6 +1847,7 @@ mod lease_candidate_tests {
         held_competitor: Arc<Mutex<Option<LeasePermitBundle>>>,
         observed_budget: Option<LeaseBudget>,
         monitor_create_usages: Arc<Mutex<Vec<crate::transaction::object_lease::LeaseBudgetUsage>>>,
+        kernel_lock_at_monitor_drop: Option<KernelLockDropProbe>,
     }
 
     impl fmt::Debug for CandidateFactory {
@@ -1873,6 +1882,7 @@ mod lease_candidate_tests {
                 held_competitor: Arc::new(Mutex::new(None)),
                 observed_budget: None,
                 monitor_create_usages: Arc::new(Mutex::new(Vec::new())),
+                kernel_lock_at_monitor_drop: None,
             })
         }
 
@@ -1925,6 +1935,16 @@ mod lease_candidate_tests {
             Arc::new(factory)
         }
 
+        fn with_kernel_lock_drop_probe(
+            outcomes: impl IntoIterator<Item = FenceOutcome>,
+            probe: KernelLockDropProbe,
+        ) -> Arc<Self> {
+            let mut factory = Arc::try_unwrap(Self::supported(outcomes))
+                .expect("new candidate factory has one owner");
+            factory.kernel_lock_at_monitor_drop = Some(probe);
+            Arc::new(factory)
+        }
+
         fn release_competitor(&self) {
             let competitor = self
                 .held_competitor
@@ -1941,8 +1961,8 @@ mod lease_candidate_tests {
             if attempt == 1 {
                 if let Some(budget) = &self.deny_retry_with_budget {
                     let permits = budget
-                        .try_reserve_exact(MAX_OBJECT_LEASE_ENTRIES, 0)
-                        .expect("retry contention must fill the released entry budget");
+                        .try_reserve_exact(MAX_OBJECT_LEASE_ENTRIES - 1, 0)
+                        .expect("retry contention must fill the remaining entry budget");
                     *self
                         .held_competitor
                         .lock()
@@ -1972,6 +1992,7 @@ mod lease_candidate_tests {
                 outcomes: Arc::clone(&self.outcomes),
                 fence_attempts: Arc::clone(&self.fence_attempts),
                 drops: Arc::clone(&self.monitor_drops),
+                kernel_lock_at_drop: self.kernel_lock_at_monitor_drop.clone(),
             }))
         }
 
@@ -2387,7 +2408,7 @@ mod lease_candidate_tests {
     }
 
     #[test]
-    fn candidate_retry_records_budget_denial_at_current_epoch() {
+    fn candidate_retry_budget_denial_is_reopened_by_deferred_teardown_epoch() {
         let (root, coordinator, keys, prepared) = setup("retry-budget-epoch");
         let factory = CandidateFactory::denying_retry(coordinator.lease_budget.clone());
         coordinator.set_lease_factory_for_test(factory.clone());
@@ -2412,17 +2433,19 @@ mod lease_candidate_tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .decision(fingerprint, requested.len(), denied_epoch),
-            LeaseAttemptDecision::BudgetDeniedSuppressed,
-            "retry denial was recorded against a stale pre-drop budget epoch"
+            LeaseAttemptDecision::Eligible,
+            "deferred candidate teardown did not reopen a denial recorded at the locked epoch"
         );
 
         let mut second_probe = CommitProbe::default();
         commit_unchanged(&coordinator, &keys, &prepared, &mut second_probe);
         assert_eq!(
             factory.plan_attempts.load(Ordering::SeqCst),
-            2,
-            "unchanged commit retried a denial at the current epoch"
+            3,
+            "unchanged commit did not retry after deferred teardown advanced the budget epoch"
         );
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 2);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_some());
 
         factory.release_competitor();
         let released_epoch = coordinator.lease_budget.epoch();
@@ -2775,7 +2798,7 @@ mod lease_candidate_tests {
     }
 
     #[test]
-    fn lease_carry_forward_changed_set_releases_cache_lease_before_new_reservation() {
+    fn lease_carry_forward_changed_set_counts_old_lease_until_kernel_unlock() {
         let (root, coordinator, keys, first, second) = setup_two_objects("changed-set-release");
         let initial_factory =
             CandidateFactory::observing_budget([], coordinator.lease_budget.clone());
@@ -2848,9 +2871,10 @@ mod lease_candidate_tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         assert_eq!(usages.len(), 1);
-        assert_eq!(usages[0].entries, 3);
-        assert_eq!(usages[0].leases, 1);
+        assert_eq!(usages[0].entries, 5);
+        assert_eq!(usages[0].leases, 2);
         assert_eq!(coordinator.lease_budget.usage().entries, 3);
+        assert_eq!(coordinator.lease_budget.usage().leases, 1);
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3293,18 +3317,18 @@ mod lease_candidate_tests {
     }
 
     #[test]
-    fn lease_rotation_mixed_key_error_drops_prior_lease() {
-        let (root, coordinator, old_keys, prepared) = setup("rotation-mixed-key");
+    fn lease_rotation_wrong_same_version_retained_material_drops_seeded_lease() {
+        let (root, coordinator, old_keys, prepared) =
+            setup("rotation-wrong-same-version-retained-key");
         coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
         let mut seed_probe = CommitProbe::default();
         commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
-        let prior_lease = coordinator
-            .cache
-            .current()
-            .unwrap()
+        let seeded_snapshot = coordinator.cache.current().unwrap();
+        let prior_lease = seeded_snapshot
             .object_lease
             .clone()
-            .unwrap();
+            .expect("wrong-key rotation test did not seed a real lease");
+        drop(seeded_snapshot);
         let wrong_old_keys = keys(0x7f, old_keys.frk_version());
         let pending_keys = keys(0x52, 2);
         let mixed_keyring = FrkKeyring::new([&wrong_old_keys, &pending_keys]).unwrap();
@@ -3317,13 +3341,101 @@ mod lease_candidate_tests {
                 .cache
                 .current()
                 .map_or(true, |snapshot| snapshot.object_lease.is_none()),
-            "mixed-key rotation retained lease authority"
+            "wrong same-version retained material preserved lease authority"
+        );
+        assert_eq!(
+            Arc::strong_count(&prior_lease),
+            1,
+            "wrong-key rotation left the seeded lease attached to cache state"
         );
         assert_ne!(
             prior_lease.state(),
             crate::transaction::object_lease::MonitorState::Clean
         );
         drop(prior_lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_rotation_changed_retained_catalog_drops_seeded_lease() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-changed-retained-catalog");
+        coordinator.set_lease_factory_for_test(CandidateFactory::supported([]));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let prior_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .expect("retained-catalog test did not seed a real lease");
+        let retained_catalog =
+            pointer_catalog_path(&coordinator, crate::transaction::CUTOVER_RECEIPT_FILE);
+        let mut changed = std::fs::read(&retained_catalog).unwrap();
+        let last = changed.last_mut().expect("encrypted catalog is non-empty");
+        *last ^= 0x01;
+        std::fs::write(retained_catalog, changed).unwrap();
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+        assert!(coordinator
+            .rotate_frk(&keyring, &pending_keys, 3, |_| Ok(()))
+            .is_err());
+
+        assert!(coordinator
+            .cache
+            .current()
+            .map_or(true, |snapshot| snapshot.object_lease.is_none()));
+        assert_eq!(
+            Arc::strong_count(&prior_lease),
+            1,
+            "changed retained catalog left the seeded lease attached to cache state"
+        );
+        assert_ne!(
+            prior_lease.state(),
+            crate::transaction::object_lease::MonitorState::Clean
+        );
+        drop(prior_lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_rotation_recovery_pending_drops_seeded_lease_before_rotation() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-recovery-pending-lease-drop");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let prior_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .expect("recovery-pending test did not seed a real lease");
+        std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+        let outcome = coordinator
+            .rotate_frk(&keyring, &pending_keys, 3, |_| Ok(()))
+            .unwrap();
+
+        assert_eq!(outcome.generation(), 4);
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        assert_eq!(
+            Arc::strong_count(&prior_lease),
+            1,
+            "rotation recovery left the pre-recovery lease attached to cache state"
+        );
+        drop(prior_lease);
+        assert_eq!(
+            factory.monitor_drops.load(Ordering::SeqCst),
+            1,
+            "rotation recovery did not destroy the displaced monitor resource"
+        );
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3343,6 +3455,126 @@ mod lease_candidate_tests {
             .unwrap();
 
         assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_rotation_non_carry_defers_lease_teardown_until_kernel_unlock() {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-drop-after-unlock");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        let factory = CandidateFactory::with_kernel_lock_drop_probe(
+            [FenceOutcome::Clean, FenceOutcome::Unknown],
+            drop_probe.clone(),
+        );
+        coordinator.set_lease_factory_for_test(factory);
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+        coordinator
+            .rotate_frk(&keyring, &pending_keys, 3, |_| Ok(()))
+            .unwrap();
+
+        assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "rotation non-carry destroyed lease resources while CoreCommitLock was held"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            1,
+            "rotation non-carry did not tear down the displaced lease after kernel unlock"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_normal_fallback_defers_lease_teardown_until_kernel_unlock() {
+        let (root, coordinator, keys, prepared) = setup("fallback-drop-after-unlock");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        let factory = CandidateFactory::with_kernel_lock_drop_probe([], drop_probe.clone());
+        coordinator.set_lease_factory_for_test(factory);
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let second = prepare_second_object(&coordinator, &keys);
+        let current = Arc::clone(coordinator.cache.current().unwrap().catalog());
+        let preconditions = [destination_precondition(&current, ROOT_ID, "Second.md")];
+        let mut probe = CommitProbe::default();
+
+        coordinator
+            .commit_with_probe(
+                &keys,
+                std::slice::from_ref(&second),
+                &preconditions,
+                |_, generation| Ok(two_object_catalog(generation, &prepared, &second)),
+                |_| Ok(()),
+                &mut probe,
+            )
+            .unwrap();
+
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "normal fallback destroyed lease resources while CoreCommitLock was held"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            1,
+            "normal fallback did not tear down the displaced lease after kernel unlock"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_publication_error_defers_candidate_teardown_until_kernel_unlock() {
+        let (root, coordinator, keys, prepared) = setup("publication-error-drop-after-unlock");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        let factory = CandidateFactory::with_kernel_lock_drop_probe([], drop_probe.clone());
+        coordinator.set_lease_factory_for_test(factory);
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let second = prepare_second_object(&coordinator, &keys);
+        let current = Arc::clone(coordinator.cache.current().unwrap().catalog());
+        let preconditions = [destination_precondition(&current, ROOT_ID, "Second.md")];
+        let failure_point = CommitFailurePoint::Publication {
+            target: PublicationTarget::AuthoritativeHead,
+            phase: PublicationPhase::TemporaryCreated,
+        };
+
+        let result = coordinator.commit_internal_with_hook(
+            &keys,
+            std::slice::from_ref(&second),
+            &preconditions,
+            CommitMode::Normal,
+            |_, generation| Ok(two_object_catalog(generation, &prepared, &second)),
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |point| {
+                    if point == failure_point {
+                        Err(std::io::Error::other("injected publication failure"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "publication error destroyed lease or candidate resources while CoreCommitLock was held"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            2,
+            "publication error did not tear down both displaced and candidate leases after unlock"
+        );
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3446,52 +3678,83 @@ mod lease_candidate_tests {
         commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
 
         let competing = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
-        competing
-            .commit(
-                &keys,
-                &[],
-                &[],
-                |_, generation| {
-                    Ok(cached_object_catalog(
-                        generation,
-                        &prepared,
-                        prepared.wrapped_dek().clone(),
-                    ))
-                },
-                |_| Ok(()),
+        factory.metadata_queries.store(0, Ordering::SeqCst);
+        let candidate_selected = Arc::new(Barrier::new(2));
+        let release_cached_reader = Arc::new(Barrier::new(2));
+
+        let (result, object_safe_opens) = thread::scope(|scope| {
+            let selected = Arc::clone(&candidate_selected);
+            let release = Arc::clone(&release_cached_reader);
+            let cached_coordinator = &coordinator;
+            let cached_keys = &keys;
+            let cached_prepared = &prepared;
+            let cached_reader = scope.spawn(move || {
+                let loaded = cached_coordinator
+                    .load_committed_with_keyring_observation_hook(
+                        &FrkKeyring::single(cached_keys),
+                        || {
+                            selected.wait();
+                            release.wait();
+                        },
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    loaded.head().generation(),
+                    4,
+                    "raced cached reader did not retry the coordinator-advanced HEAD"
+                );
+                let mut probe = CommitProbe::default();
+                let result = cached_coordinator.commit_with_probe(
+                    cached_keys,
+                    &[],
+                    &[],
+                    |_, generation| {
+                        Ok(cached_object_catalog(
+                            generation,
+                            cached_prepared,
+                            cached_prepared.wrapped_dek().clone(),
+                        ))
+                    },
+                    |_| Ok(()),
+                    &mut probe,
+                );
+                (result, probe.object_safe_opens)
+            });
+
+            candidate_selected.wait();
+            competing
+                .commit(
+                    &keys,
+                    &[],
+                    &[],
+                    |_, generation| {
+                        Ok(cached_object_catalog(
+                            generation,
+                            &prepared,
+                            prepared.wrapped_dek().clone(),
+                        ))
+                    },
+                    |_| Ok(()),
+                )
+                .unwrap();
+            std::fs::write(
+                coordinator
+                    .objects_path()
+                    .join(prepared.physical_name().as_str()),
+                [],
             )
             .unwrap();
-        std::fs::write(
-            coordinator
-                .objects_path()
-                .join(prepared.physical_name().as_str()),
-            [],
-        )
-        .unwrap();
-        factory.metadata_queries.store(0, Ordering::SeqCst);
-        let mut probe = CommitProbe::default();
-
-        let result = coordinator.commit_with_probe(
-            &keys,
-            &[],
-            &[],
-            |_, generation| {
-                Ok(cached_object_catalog(
-                    generation,
-                    &prepared,
-                    prepared.wrapped_dek().clone(),
-                ))
-            },
-            |_| Ok(()),
-            &mut probe,
-        );
+            release_cached_reader.wait();
+            cached_reader.join().unwrap()
+        });
 
         assert!(matches!(
             result,
             Err(CommitError::ReferencedObjectMissing { .. })
         ));
         assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 0);
-        assert!(probe.object_safe_opens >= 1);
+        assert!(object_safe_opens >= 1);
         drop(competing);
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();

@@ -21,10 +21,10 @@ use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet};
 use super::{
     CatalogLoadProbe, CatalogLoadStage, CatalogPrecondition, CommitCallbacks, CommitError,
     CommitFailurePoint, CommitMode, CommitProbe, CommitStage, CoreCommitCoordinator,
-    CoreCommitLock, PreparedObjectRevision, PublicationTarget,
+    CoreCommitLock, DeferredLeaseTeardown, PreparedObjectRevision, PublicationTarget,
 };
 use crate::publication::PublicationPhase;
-use crate::transaction::object_lease_tests::TestFactory;
+use crate::transaction::object_lease_tests::{KernelLockDropProbe, TestFactory};
 
 const CORE_ID: &str = "core-failure-injection";
 const ROOT_ID: &str = "01J00000000000000000000000";
@@ -982,14 +982,16 @@ fn mixed_frk_recovery_derives_every_required_catalog_key_identity() {
     let old_keys = keys();
     let active_keys = pending_keys();
     let keyring = FrkKeyring::new([&old_keys, &active_keys]).unwrap();
+    let mut deferred_teardown = DeferredLeaseTeardown::default();
     let commit_lock =
         CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
 
     let committed = coordinator
-        .load_committed_recovering_with_keyring(&commit_lock, &keyring)
+        .load_committed_recovering_with_keyring(&commit_lock, &keyring, &mut deferred_teardown)
         .unwrap()
         .unwrap();
     drop(commit_lock);
+    drop(deferred_teardown);
 
     assert_eq!(committed.head().generation(), 3);
     assert_eq!(committed.head().required_frk_version(), 2);
@@ -1019,6 +1021,7 @@ fn cutover_recovery_replaces_cache_only_after_verified_completion() {
         .unwrap();
     let prior = coordinator.cache.current().unwrap();
     std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+    let mut deferred_teardown = DeferredLeaseTeardown::default();
     let commit_lock =
         CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
     let mut saw_durable_completion = false;
@@ -1040,11 +1043,13 @@ fn cutover_recovery_replaces_cache_only_after_verified_completion() {
                 }
                 Ok(())
             },
+            &mut deferred_teardown,
             None,
         )
         .unwrap()
         .unwrap();
     drop(commit_lock);
+    drop(deferred_teardown);
 
     assert!(saw_durable_completion);
     assert_eq!(committed.head().generation(), 3);
@@ -1053,6 +1058,57 @@ fn cutover_recovery_replaces_cache_only_after_verified_completion() {
     assert_eq!(replacement.catalog().generation(), 3);
     assert_eq!(replacement.pointers.head.as_ref(), Some(committed.head()));
     assert_eq!(replacement.pointers.receipt, replacement.pointers.complete);
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lease_lock_order_recovery_replacement_defers_lease_teardown_until_kernel_unlock() {
+    let root = reset_root("recovery-lease-drop-after-unlock");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let drop_probe = KernelLockDropProbe::new(root.clone());
+    coordinator.set_lease_factory_for_test(Arc::new(
+        TestFactory::successful().with_kernel_lock_drop_probe(drop_probe.clone()),
+    ));
+    let keys = keys();
+    let initial = prepare(&coordinator, &keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(&keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(&coordinator, &keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            &keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(coordinator.cache.current().unwrap().object_lease.is_some());
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+
+    coordinator.load_committed(&keys).unwrap().unwrap();
+
+    assert_eq!(
+        drop_probe.drops_while_locked(),
+        0,
+        "recovery replacement destroyed lease resources while CoreCommitLock was held"
+    );
+    assert_eq!(
+        drop_probe.drops_after_unlock(),
+        1,
+        "recovery replacement did not tear down the displaced lease after kernel unlock"
+    );
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1102,6 +1158,7 @@ fn recovery_rejects_replaced_pointer_tuple_before_cache_publication() {
     seed_single_version_completion_gap(&root);
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let active_keys = keys();
+    let mut deferred_teardown = DeferredLeaseTeardown::default();
     let commit_lock =
         CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
     let completion_synced = std::cell::Cell::new(false);
@@ -1146,6 +1203,7 @@ fn recovery_rejects_replaced_pointer_tuple_before_cache_publication() {
             &commit_lock,
             &FrkKeyring::single(&active_keys),
             &mut observe_completion,
+            &mut deferred_teardown,
             Some(&mut probe),
         )
     };
@@ -1166,6 +1224,7 @@ fn recovery_rejects_replaced_pointer_tuple_before_cache_publication() {
         "recovery cached authority that was not authenticated against the replacement tuple"
     );
     drop(commit_lock);
+    drop(deferred_teardown);
     assert!(matches!(
         coordinator.load_committed(&active_keys),
         Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt)

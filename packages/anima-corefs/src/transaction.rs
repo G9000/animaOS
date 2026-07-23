@@ -808,6 +808,73 @@ struct CommitCallbacks<'a, I, H> {
     hook: &'a mut H,
 }
 
+#[derive(Default)]
+struct DeferredLeaseTeardown {
+    cache_snapshots: Vec<Arc<AuthenticatedCommitSnapshot>>,
+    candidates: Vec<ObjectLeaseCandidate>,
+    leases: Vec<Arc<ObjectValidationLease>>,
+}
+
+impl DeferredLeaseTeardown {
+    fn cache_snapshots(&mut self) -> &mut Vec<Arc<AuthenticatedCommitSnapshot>> {
+        &mut self.cache_snapshots
+    }
+
+    fn retain_candidate(&mut self, candidate: ObjectLeaseCandidate) {
+        self.candidates.push(candidate);
+    }
+
+    fn retain_lease(&mut self, lease: &Arc<ObjectValidationLease>) {
+        self.leases.push(Arc::clone(lease));
+    }
+}
+
+struct RotationCacheKeyMaterial<'a, 'keys> {
+    keyring: &'a FrkKeyring<'keys>,
+    pending: &'a FrkSubkeys,
+}
+
+struct DeferredCandidateGuard<'a> {
+    candidate: Option<ObjectLeaseCandidate>,
+    deferred_teardown: &'a mut DeferredLeaseTeardown,
+}
+
+impl<'a> DeferredCandidateGuard<'a> {
+    fn new(
+        candidate: ObjectLeaseCandidate,
+        deferred_teardown: &'a mut DeferredLeaseTeardown,
+    ) -> Self {
+        Self {
+            candidate: Some(candidate),
+            deferred_teardown,
+        }
+    }
+
+    fn candidate(&self) -> Option<&ObjectLeaseCandidate> {
+        self.candidate.as_ref()
+    }
+
+    fn candidate_mut(&mut self) -> Option<&mut ObjectLeaseCandidate> {
+        self.candidate.as_mut()
+    }
+
+    fn take(&mut self) -> Option<ObjectLeaseCandidate> {
+        self.candidate.take()
+    }
+
+    fn defer_now(&mut self) {
+        if let Some(candidate) = self.candidate.take() {
+            self.deferred_teardown.retain_candidate(candidate);
+        }
+    }
+}
+
+impl Drop for DeferredCandidateGuard<'_> {
+    fn drop(&mut self) {
+        self.defer_now();
+    }
+}
+
 struct LeaseFailureGuard<'a> {
     cache: &'a CommitCache,
     armed: bool,
@@ -1233,6 +1300,7 @@ impl CoreCommitCoordinator {
         prepared: &[PreparedObjectRevision],
         cached: Option<&ValidatedObjectState>,
         expected_pointers: &PointerSet,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) -> Result<(ValidatedObjectState, Option<Arc<ObjectValidationLease>>), CommitError> {
         let expected_bindings = catalog_object_bindings(next)?;
@@ -1316,8 +1384,10 @@ impl CoreCommitCoordinator {
                 probe.stage(CommitStage::LeaseMonitorArmed);
             }
 
+            let mut candidate = DeferredCandidateGuard::new(candidate, deferred_teardown);
             self.validate_pinned_layout()?;
-            if self.object_directory_identity()? != directory_identity {
+            let current_directory_identity = self.object_directory_identity()?;
+            if current_directory_identity != directory_identity {
                 return Err(CommitError::InvalidCoreLayout);
             }
             #[cfg(test)]
@@ -1325,7 +1395,6 @@ impl CoreCommitCoordinator {
                 probe.stage(CommitStage::LeaseLayoutRevalidated);
             }
 
-            let mut candidate = Some(candidate);
             let validated = validate_prepared_revisions_observed(
                 &self.objects_dir,
                 keys,
@@ -1334,20 +1403,19 @@ impl CoreCommitCoordinator {
                 prepared,
                 cached,
                 |binding, file| {
-                    let Some(mut active) = candidate.take() else {
-                        return;
-                    };
-                    if active
-                        .add_validated_file(binding, file, factory.as_ref())
-                        .is_ok()
-                    {
-                        candidate = Some(active);
+                    let acquisition_failed = candidate.candidate_mut().is_some_and(|active| {
+                        active
+                            .add_validated_file(binding, file, factory.as_ref())
+                            .is_err()
+                    });
+                    if acquisition_failed {
+                        candidate.defer_now();
                     }
                 },
                 #[cfg(test)]
                 probe.as_deref_mut(),
             )?;
-            let Some(candidate) = candidate else {
+            let Some(active) = candidate.candidate() else {
                 self.record_lease_optimization_miss(
                     OptimizationMiss::TransientAcquisition,
                     fingerprint,
@@ -1356,13 +1424,17 @@ impl CoreCommitCoordinator {
                 );
                 return Ok((validated, None));
             };
-            let fence = candidate.fence();
+            let fence = active.fence();
             #[cfg(test)]
             if let Some(probe) = probe.as_deref_mut() {
                 probe.stage(CommitStage::LeaseFence);
             }
             if fence == FenceOutcome::Clean {
-                return match candidate.finish(fence) {
+                let active_candidate = candidate
+                    .take()
+                    .expect("clean fence retains the active lease candidate");
+                drop(candidate);
+                return match active_candidate.finish(fence) {
                     Ok(lease) => {
                         self.lease_attempt_policy
                             .lock()
@@ -1371,7 +1443,7 @@ impl CoreCommitCoordinator {
                         Ok((validated, Some(lease)))
                     }
                     Err(candidate) => {
-                        drop(candidate);
+                        deferred_teardown.retain_candidate(*candidate);
                         self.record_lease_optimization_miss(
                             OptimizationMiss::TransientAcquisition,
                             fingerprint,
@@ -1382,6 +1454,7 @@ impl CoreCommitCoordinator {
                     }
                 };
             }
+            candidate.defer_now();
             drop(candidate);
             if fence != FenceOutcome::DirtyAll || attempt == 1 {
                 self.record_lease_optimization_miss(
@@ -1731,17 +1804,22 @@ impl CoreCommitCoordinator {
         keyring: &FrkKeyring<'_>,
         probe: &mut CatalogLoadProbe<'_>,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
             &self.root_dir,
             &self.fs_dir,
             || probe.stage(CatalogLoadStage::KernelLock),
         )?;
-        self.load_committed_recovering_with_keyring_and_hook_inner(
+        let result = self.load_committed_recovering_with_keyring_and_hook_inner(
             &commit_lock,
             keyring,
             &mut |_| Ok(()),
+            &mut deferred_teardown,
             Some(probe),
-        )
+        );
+        drop(commit_lock);
+        drop(deferred_teardown);
+        result
     }
 
     /// Reads the version declared by the current HEAD so the session can select
@@ -1820,9 +1898,17 @@ impl CoreCommitCoordinator {
             probe.as_deref_mut(),
         )? != pointers.head
         {
+            let mut deferred_teardown = DeferredLeaseTeardown::default();
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
-            return self.load_committed_recovering_with_keyring(&commit_lock, keyring);
+            let result = self.load_committed_recovering_with_keyring(
+                &commit_lock,
+                keyring,
+                &mut deferred_teardown,
+            );
+            drop(commit_lock);
+            drop(deferred_teardown);
+            return result;
         }
 
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
@@ -1867,9 +1953,17 @@ impl CoreCommitCoordinator {
             }
             return committed;
         }
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_recovering_with_keyring(&commit_lock, keyring)
+        let result = self.load_committed_recovering_with_keyring(
+            &commit_lock,
+            keyring,
+            &mut deferred_teardown,
+        );
+        drop(commit_lock);
+        drop(deferred_teardown);
+        result
     }
 
     fn cache_lookup_key(
@@ -1997,9 +2091,18 @@ impl CoreCommitCoordinator {
             return committed;
         }
 
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_recovering_with_hook(&commit_lock, keys, hook)
+        let result = self.load_committed_recovering_with_hook(
+            &commit_lock,
+            keys,
+            hook,
+            &mut deferred_teardown,
+        );
+        drop(commit_lock);
+        drop(deferred_teardown);
+        result
     }
 
     #[cfg(test)]
@@ -2062,19 +2165,26 @@ impl CoreCommitCoordinator {
         &self,
         commit_lock: &CoreCommitLock,
         keys: &FrkSubkeys,
+        deferred_teardown: &mut DeferredLeaseTeardown,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
-        self.load_committed_recovering_with_keyring(commit_lock, &FrkKeyring::single(keys))
+        self.load_committed_recovering_with_keyring(
+            commit_lock,
+            &FrkKeyring::single(keys),
+            deferred_teardown,
+        )
     }
 
     fn load_committed_recovering_with_keyring(
         &self,
         commit_lock: &CoreCommitLock,
         keyring: &FrkKeyring<'_>,
+        deferred_teardown: &mut DeferredLeaseTeardown,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
         self.load_committed_recovering_with_keyring_and_hook_inner(
             commit_lock,
             keyring,
             &mut |_| Ok(()),
+            deferred_teardown,
             #[cfg(test)]
             None,
         )
@@ -2085,6 +2195,7 @@ impl CoreCommitCoordinator {
         commit_lock: &CoreCommitLock,
         keyring: &FrkKeyring<'_>,
         hook: &mut H,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Result<Option<CommittedCatalog>, CommitError>
     where
@@ -2101,7 +2212,10 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe.as_deref_mut(),
         );
-        let cached = lookup_key.as_ref().and_then(|key| self.cache.get(key));
+        let cached = lookup_key.as_ref().and_then(|key| {
+            self.cache
+                .get_deferred(key, deferred_teardown.cache_snapshots())
+        });
         #[cfg(test)]
         if lookup_key.is_some() {
             if let Some(probe) = probe.as_deref_mut() {
@@ -2114,7 +2228,11 @@ impl CoreCommitCoordinator {
                 #[cfg(test)]
                 probe.as_deref_mut(),
             ) {
-                self.cache.clear();
+                if let Some(lease) = snapshot.object_lease.as_ref() {
+                    lease.publish_unknown();
+                }
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return Err(error);
             }
             return Ok(Some(CommittedCatalog {
@@ -2160,7 +2278,8 @@ impl CoreCommitCoordinator {
             ) {
                 Ok(pointers) => pointers,
                 Err(error) => {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                     return Err(error);
                 }
             };
@@ -2173,7 +2292,8 @@ impl CoreCommitCoordinator {
                 probe.as_deref_mut(),
             );
             let Ok(Some(verified_catalog)) = verified.as_ref() else {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return verified;
             };
             let replacement_key = self.cache_lookup_key(
@@ -2183,27 +2303,33 @@ impl CoreCommitCoordinator {
                 probe,
             );
             if let Some(key) = replacement_key.as_ref() {
-                self.cache
-                    .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                self.cache.replace_deferred(
+                    Arc::new(AuthenticatedCommitSnapshot::new(
                         key,
                         Arc::clone(&verified_catalog.catalog),
                         None,
-                    )));
+                    )),
+                    deferred_teardown.cache_snapshots(),
+                );
             } else {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
             }
             return verified;
         }
         if let (Some(key), Ok(Some(committed_catalog))) = (lookup_key.as_ref(), committed.as_ref())
         {
-            self.cache
-                .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+            self.cache.replace_deferred(
+                Arc::new(AuthenticatedCommitSnapshot::new(
                     key,
                     Arc::clone(&committed_catalog.catalog),
                     None,
-                )));
+                )),
+                deferred_teardown.cache_snapshots(),
+            );
         } else if recovery_required || matches!(&committed, Ok(None)) {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
         }
         committed
     }
@@ -2214,6 +2340,7 @@ impl CoreCommitCoordinator {
         commit_lock: &CoreCommitLock,
         keys: &FrkSubkeys,
         hook: &mut H,
+        deferred_teardown: &mut DeferredLeaseTeardown,
     ) -> Result<Option<CommittedCatalog>, CommitError>
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
@@ -2222,6 +2349,7 @@ impl CoreCommitCoordinator {
             commit_lock,
             &FrkKeyring::single(keys),
             hook,
+            deferred_teardown,
             #[cfg(test)]
             None,
         )
@@ -2583,6 +2711,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let (event, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             #[cfg(test)]
             let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
@@ -2620,12 +2749,17 @@ impl CoreCommitCoordinator {
                     &commit_lock,
                     keyring,
                     &mut |_| Ok(()),
+                    &mut deferred_teardown,
                     Some(&mut load_probe),
                 )?
             };
             #[cfg(not(test))]
             let committed = self
-                .load_committed_recovering_with_keyring(&commit_lock, keyring)?
+                .load_committed_recovering_with_keyring(
+                    &commit_lock,
+                    keyring,
+                    &mut deferred_teardown,
+                )?
                 .ok_or(CommitError::CoreNotInitialized)?;
             #[cfg(test)]
             let committed = committed.ok_or(CommitError::CoreNotInitialized)?;
@@ -2634,7 +2768,8 @@ impl CoreCommitCoordinator {
                 probe.as_deref_mut(),
             )?;
             if initial_pointers.head.as_ref() != Some(committed.head()) {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
             }
             #[cfg(test)]
@@ -2673,18 +2808,23 @@ impl CoreCommitCoordinator {
             let committed = match reauthenticated {
                 Ok(Some(committed)) => committed,
                 Ok(None) => {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                     return Err(CommitError::CoreNotInitialized);
                 }
                 Err(error) => {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                     return Err(error);
                 }
             };
-            let prior_snapshot = self.cache.current().filter(|snapshot| {
-                snapshot.pointers == initial_pointers
-                    && snapshot.catalog().as_ref() == committed.catalog.as_ref()
-            });
+            let prior_snapshot = self
+                .cache
+                .current_deferred(deferred_teardown.cache_snapshots())
+                .filter(|snapshot| {
+                    snapshot.pointers == initial_pointers
+                        && snapshot.catalog().as_ref() == committed.catalog.as_ref()
+                });
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
                 return Err(RotationError::GenerationMismatch {
@@ -2759,11 +2899,14 @@ impl CoreCommitCoordinator {
                 complete: initial_pointers.complete,
             };
             self.publish_rotation_cache_authority(
-                keyring,
-                pending_keys,
+                RotationCacheKeyMaterial {
+                    keyring,
+                    pending: pending_keys,
+                },
                 &expected_final_pointers,
                 Arc::clone(&next_catalog),
                 prior_snapshot,
+                &mut deferred_teardown,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             );
@@ -2781,6 +2924,7 @@ impl CoreCommitCoordinator {
                 catalog_plaintext_bytes,
             )
         };
+        drop(deferred_teardown);
 
         let before_invalidation = hook(CommitFailurePoint::BeforeInvalidation);
         #[cfg(test)]
@@ -2842,11 +2986,11 @@ impl CoreCommitCoordinator {
 
     fn publish_rotation_cache_authority(
         &self,
-        keyring: &FrkKeyring<'_>,
-        pending_keys: &FrkSubkeys,
+        key_material: RotationCacheKeyMaterial<'_, '_>,
         expected_pointers: &PointerSet,
         catalog: Arc<CatalogGeneration>,
         prior_snapshot: Option<Arc<AuthenticatedCommitSnapshot>>,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
     ) {
         let final_pointers = match self.load_rotation_pointer_set(
@@ -2855,12 +2999,14 @@ impl CoreCommitCoordinator {
         ) {
             Ok(pointers) => pointers,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
         if &final_pointers != expected_pointers {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         if self
@@ -2871,29 +3017,36 @@ impl CoreCommitCoordinator {
             )
             .is_err()
         {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         #[cfg(test)]
         if let Some(probe) = probe {
             probe.stage(RotationStage::KeyDerivation);
         }
-        let Some(key) = self.rotation_cache_lookup_key(&final_pointers, keyring, pending_keys)
-        else {
-            self.cache.clear();
+        let Some(key) = self.rotation_cache_lookup_key(
+            &final_pointers,
+            key_material.keyring,
+            key_material.pending,
+        ) else {
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
         let next_bindings = match catalog_object_bindings(&catalog) {
             Ok(bindings) => bindings,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
         let objects = match ValidatedObjectState::from_catalog_bindings(next_bindings.clone()) {
             Ok(objects) => Arc::new(objects),
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
@@ -2914,10 +3067,13 @@ impl CoreCommitCoordinator {
             }
             carried
         });
-        self.cache.replace(Arc::new(
-            AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
-                .with_object_lease(object_lease),
-        ));
+        self.cache.replace_deferred(
+            Arc::new(
+                AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
+                    .with_object_lease(object_lease),
+            ),
+            deferred_teardown.cache_snapshots(),
+        );
     }
 
     fn rotation_cache_lookup_key(
@@ -2980,10 +3136,11 @@ impl CoreCommitCoordinator {
         B: FnOnce(u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
         if self
-            .load_committed_recovering(&commit_lock, keys)?
+            .load_committed_recovering(&commit_lock, keys, &mut deferred_teardown)?
             .is_some()
             || self.load_validation_snapshot(keys)?.is_some()
         {
@@ -3053,10 +3210,11 @@ impl CoreCommitCoordinator {
         B: FnOnce(&CatalogGeneration, u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
         if self
-            .load_committed_recovering(&commit_lock, keys)?
+            .load_committed_recovering(&commit_lock, keys, &mut deferred_teardown)?
             .is_some()
         {
             return Err(CommitError::CutoverAlreadyCommitted);
@@ -3326,6 +3484,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let (event, recovery_pending, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             #[cfg(test)]
             let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
@@ -3364,6 +3523,7 @@ impl CoreCommitCoordinator {
                         &commit_lock,
                         keyring,
                         &mut |_| Ok(()),
+                        &mut deferred_teardown,
                         Some(&mut load_probe),
                     );
                     let counts = (
@@ -3380,9 +3540,14 @@ impl CoreCommitCoordinator {
                 result?
             };
             #[cfg(not(test))]
-            let authoritative =
-                self.load_committed_recovering_with_keyring(&commit_lock, keyring)?;
-            let initial_snapshot = self.cache.current();
+            let authoritative = self.load_committed_recovering_with_keyring(
+                &commit_lock,
+                keyring,
+                &mut deferred_teardown,
+            )?;
+            let initial_snapshot = self
+                .cache
+                .current_deferred(deferred_teardown.cache_snapshots());
             let initial_pointers = initial_snapshot
                 .as_ref()
                 .map_or_else(PointerSet::default, |snapshot| snapshot.pointers.clone());
@@ -3398,7 +3563,10 @@ impl CoreCommitCoordinator {
                         active_keys,
                     )
                     .ok()
-                    .and_then(|key| self.cache.get(&key))
+                    .and_then(|key| {
+                        self.cache
+                            .get_deferred(&key, deferred_teardown.cache_snapshots())
+                    })
                     .filter(|matched| Arc::ptr_eq(matched, snapshot))
                 }
                 _ => None,
@@ -3495,7 +3663,8 @@ impl CoreCommitCoordinator {
                 (objects, Some(lease))
             } else {
                 if had_cached_lease {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                 }
                 drop(matched_snapshot);
                 drop(initial_snapshot);
@@ -3506,11 +3675,15 @@ impl CoreCommitCoordinator {
                     prepared_revisions,
                     cached_objects.as_deref(),
                     &initial_pointers,
+                    &mut deferred_teardown,
                     #[cfg(test)]
                     probe.as_deref_mut(),
                 )?;
                 (Arc::new(objects), candidate)
             };
+            if let Some(lease) = candidate_lease.as_ref() {
+                deferred_teardown.retain_lease(lease);
+            }
             let next_catalog = Arc::new(next_catalog);
             #[cfg(test)]
             if let Some(probe) = probe.as_deref_mut() {
@@ -3553,6 +3726,7 @@ impl CoreCommitCoordinator {
                                 &initial_pointers,
                                 keyring,
                                 mode,
+                                &mut deferred_teardown,
                                 #[cfg(test)]
                                 probe.as_deref_mut(),
                             );
@@ -3582,6 +3756,7 @@ impl CoreCommitCoordinator {
                 validated_objects,
                 candidate_lease,
                 recovery_pending,
+                &mut deferred_teardown,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             );
@@ -3600,6 +3775,7 @@ impl CoreCommitCoordinator {
                 catalog_plaintext_bytes,
             )
         };
+        drop(deferred_teardown);
 
         let before_invalidation = (callbacks.hook)(CommitFailurePoint::BeforeInvalidation);
         #[cfg(test)]
@@ -3647,10 +3823,12 @@ impl CoreCommitCoordinator {
         objects: Arc<ValidatedObjectState>,
         object_lease: Option<Arc<ObjectValidationLease>>,
         recovery_pending: bool,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) {
         if recovery_pending {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         let final_pointers = match self.load_commit_pointer_set(
@@ -3659,12 +3837,14 @@ impl CoreCommitCoordinator {
         ) {
             Ok(pointers) => pointers,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
         if &final_pointers != expected_pointers {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         let Some(key) = self.commit_cache_lookup_key(
@@ -3673,7 +3853,8 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe,
         ) else {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
         if self
@@ -3684,13 +3865,17 @@ impl CoreCommitCoordinator {
             )
             .is_err()
         {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
-        self.cache.replace(Arc::new(
-            AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
-                .with_object_lease(object_lease),
-        ));
+        self.cache.replace_deferred(
+            Arc::new(
+                AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
+                    .with_object_lease(object_lease),
+            ),
+            deferred_teardown.cache_snapshots(),
+        );
     }
 
     fn reconcile_cache_after_commit_publication_error(
@@ -3698,6 +3883,7 @@ impl CoreCommitCoordinator {
         initial_pointers: &PointerSet,
         keyring: &FrkKeyring<'_>,
         mode: CommitMode,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) {
         let final_pointers = match self.load_commit_pointer_set(
@@ -3706,7 +3892,8 @@ impl CoreCommitCoordinator {
         ) {
             Ok(pointers) => pointers,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
@@ -3716,7 +3903,8 @@ impl CoreCommitCoordinator {
         if matches!(mode, CommitMode::FirstMutation { .. })
             || self.validate_pinned_layout().is_err()
         {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         let authenticated = self.load_committed_once_with_keyring_heads_inner(
@@ -3728,7 +3916,8 @@ impl CoreCommitCoordinator {
             None,
         );
         let Ok(Some(committed)) = authenticated else {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
         let Some(key) = self.commit_cache_lookup_key(
@@ -3737,15 +3926,18 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe,
         ) else {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
-        self.cache
-            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+        self.cache.replace_deferred(
+            Arc::new(AuthenticatedCommitSnapshot::new(
                 &key,
                 Arc::clone(&committed.catalog),
                 None,
-            )));
+            )),
+            deferred_teardown.cache_snapshots(),
+        );
     }
 
     fn commit_cache_lookup_key(

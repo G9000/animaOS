@@ -344,6 +344,26 @@ pub(super) struct CommitCache {
 
 impl CommitCache {
     pub(super) fn current(&self) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (current, discarded) = self.current_with_discarded();
+        drop(discarded);
+        current
+    }
+
+    pub(super) fn current_deferred(
+        &self,
+        deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>,
+    ) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (current, discarded) = self.current_with_discarded();
+        deferred.extend(discarded);
+        current
+    }
+
+    fn current_with_discarded(
+        &self,
+    ) -> (
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+    ) {
         let mut discarded = None;
         let current = {
             let mut recovered_now = false;
@@ -367,11 +387,32 @@ impl CommitCache {
                 guard.as_ref().cloned()
             }
         };
-        drop(discarded);
-        current
+        (current, discarded)
     }
 
     pub(super) fn get(&self, key: &CacheLookupKey) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (hit, discarded) = self.get_with_discarded(key);
+        drop(discarded);
+        hit
+    }
+
+    pub(super) fn get_deferred(
+        &self,
+        key: &CacheLookupKey,
+        deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>,
+    ) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (hit, discarded) = self.get_with_discarded(key);
+        deferred.extend(discarded);
+        hit
+    }
+
+    fn get_with_discarded(
+        &self,
+        key: &CacheLookupKey,
+    ) -> (
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+    ) {
         let mut discarded = None;
         let hit = {
             let mut recovered_now = false;
@@ -398,12 +439,27 @@ impl CommitCache {
                     .cloned()
             }
         };
-        drop(discarded);
-        hit
+        (hit, discarded)
     }
 
     pub(super) fn replace(&self, value: Arc<AuthenticatedCommitSnapshot>) {
-        let discarded = {
+        let discarded = self.replace_with_discarded(value);
+        drop(discarded);
+    }
+
+    pub(super) fn replace_deferred(
+        &self,
+        value: Arc<AuthenticatedCommitSnapshot>,
+        deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>,
+    ) {
+        deferred.extend(self.replace_with_discarded(value));
+    }
+
+    fn replace_with_discarded(
+        &self,
+        value: Arc<AuthenticatedCommitSnapshot>,
+    ) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        {
             let mut guard = match self.inner.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -418,12 +474,20 @@ impl CommitCache {
                 }
             };
             guard.replace(value)
-        };
-        drop(discarded);
+        }
     }
 
     pub(super) fn clear(&self) {
-        let discarded = {
+        let discarded = self.clear_with_discarded();
+        drop(discarded);
+    }
+
+    pub(super) fn clear_deferred(&self, deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>) {
+        deferred.extend(self.clear_with_discarded());
+    }
+
+    fn clear_with_discarded(&self) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        {
             let mut guard = match self.inner.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -438,8 +502,7 @@ impl CommitCache {
                 }
             };
             guard.take()
-        };
-        drop(discarded);
+        }
     }
 
     pub(super) fn drop_object_lease(&self) {
