@@ -75,13 +75,13 @@ Keep native unsafe code inside the two platform modules. Keep callbacks free of 
 - Modify: `tickets/portable-core-filesystem/PCF-002-corefs-catalog.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Write a failing native characterization harness**
+- [x] **Step 1: Write a failing native characterization harness**
 
 Add a Windows-only release binary that creates 2,500 real immutable object files and has explicit modes for safe-open validation, retained-handle metadata, monitor arm, pre/post probe fences, create/delete/rename/reparse/truncate/replace races, outside-directory hard links, buffer overflow, cancellation, malformed rename pairing, and probe cleanup failure.
 
 The binary must emit a closed JSON record containing OS/build/filesystem/storage identity, object count, warm-up/sample counts, safe-open and lease p50/p95/p99, notification outcomes, probe residue count, handle deltas, and an `orderedBoundaryProven` boolean. It must fail if any non-probe event returns `Clean`, an outside hard link survives fresh link-count metadata, or a probe file remains.
 
-- [ ] **Step 2: Run the harness before the native implementation**
+- [x] **Step 2: Run the harness before the native implementation**
 
 Run:
 
@@ -91,11 +91,11 @@ cargo +1.75.0 run --release --locked -p anima-corefs --bin object_lease_windows_
 
 Expected: FAIL because the Windows monitor/fence backend is not implemented.
 
-- [ ] **Step 3: Implement only the disposable Windows probe**
+- [x] **Step 3: Implement only the disposable Windows probe**
 
 Use the pinned `objects/` handle, one cancellation-aware notification worker, retained safe-open handles, fresh `GetFileInformationByHandle`-equivalent identity/type/length/link-count observations, and an exclusive unpredictable 8.3-compatible ASCII create/delete probe. Classify all non-probe events as `DirtyAll`; classify overflow, cancellation, handle loss, parse error, alternate probe spelling/action, incomplete rename pairing, collision, cleanup failure, and unprovable ordering as `Unknown`.
 
-- [ ] **Step 4: Prove the ordered boundary under mutation**
+- [x] **Step 4: Prove the ordered boundary under mutation**
 
 Run the spike's race modes repeatedly:
 
@@ -105,15 +105,15 @@ cargo +1.75.0 run --release --locked -p anima-corefs --bin object_lease_windows_
 
 Expected: PASS; every mutation before either completed fence is `DirtyAll` or `Unknown`, outside-directory hard links are rejected by fresh handle link count, cancellation terminates within two seconds, and residue/handle leaks are zero.
 
-- [ ] **Step 5: Apply the Windows stop gate**
+- [x] **Step 5: Apply the Windows stop gate**
 
 Inspect both JSON records. Continue only if the boundary is proven and the combined two-fence plus 2,500-metadata-query p95 has credible margin below the unchanged 250 ms full-commit limit. Do not substitute a smaller fixture or subtract work from the measured loop.
 
-- [ ] **Step 6: Remove the disposable binary and restore dependency scope**
+- [x] **Step 6: Remove the disposable binary and restore dependency scope**
 
 Delete `object_lease_windows_spike.rs`. Remove spike-only dependencies/features, run `cargo metadata --locked --no-deps --format-version 1`, and verify `git status --short` contains only ticket evidence.
 
-- [ ] **Step 7: Record the decision and commit**
+- [x] **Step 7: Record the decision and commit**
 
 Add the exact commands, environment, distributions, boundary result, and go/stop decision to PCF-002 and the parent. If stopped, set the legal blocker/state and end the plan.
 
