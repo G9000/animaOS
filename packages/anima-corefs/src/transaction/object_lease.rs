@@ -107,15 +107,21 @@ struct LeaseBudgetState {
     epoch: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct LeaseBudget {
     inner: Arc<Mutex<LeaseBudgetState>>,
 }
 
 impl LeaseBudget {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(LeaseBudgetState::default())),
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn isolated() -> Self {
-        Self::default()
+        Self::new()
     }
 
     pub(super) fn usage(&self) -> LeaseBudgetUsage {
@@ -189,7 +195,7 @@ impl LeaseBudget {
 static LEASE_BUDGET: OnceLock<LeaseBudget> = OnceLock::new();
 
 pub(super) fn global_lease_budget() -> &'static LeaseBudget {
-    LEASE_BUDGET.get_or_init(LeaseBudget::default)
+    LEASE_BUDGET.get_or_init(LeaseBudget::new)
 }
 
 #[derive(Debug)]
@@ -270,11 +276,42 @@ pub(super) enum PlatformLeaseSupport {
     Unsupported,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct LeaseResourcePlan {
+    platform_support: PlatformLeaseSupport,
+    monitor_resource_count: usize,
+}
+
+impl LeaseResourcePlan {
+    pub(super) fn supported(monitor_resource_count: usize) -> Self {
+        Self {
+            platform_support: PlatformLeaseSupport::Supported,
+            monitor_resource_count,
+        }
+    }
+
+    pub(super) fn unsupported() -> Self {
+        Self {
+            platform_support: PlatformLeaseSupport::Unsupported,
+            monitor_resource_count: 0,
+        }
+    }
+
+    fn platform_support(&self) -> PlatformLeaseSupport {
+        self.platform_support
+    }
+
+    pub(super) fn monitor_resource_count(&self) -> usize {
+        self.monitor_resource_count
+    }
+}
+
 pub(super) trait LeaseResourceFactory {
-    fn platform_support(&self) -> PlatformLeaseSupport;
+    fn resource_plan(&self) -> LeaseResourcePlan;
 
     fn create_monitor(
         &self,
+        plan: LeaseResourcePlan,
         state: Arc<MonitorStateCell>,
     ) -> Result<Box<dyn LeaseMonitorResource>, ()>;
 
@@ -328,13 +365,29 @@ impl fmt::Debug for ObjectValidationLease {
 
 impl ObjectValidationLease {
     pub(super) fn try_acquire(
-        budget: &LeaseBudget,
-        mut bindings: Vec<ValidatedObjectBinding>,
-        monitor_resource_count: usize,
+        bindings: Vec<ValidatedObjectBinding>,
         factory: &dyn LeaseResourceFactory,
     ) -> Result<Arc<Self>, OptimizationMiss> {
+        Self::try_acquire_from_budget(global_lease_budget(), bindings, factory)
+    }
+
+    #[cfg(test)]
+    pub(super) fn try_acquire_with_budget(
+        budget: &LeaseBudget,
+        bindings: Vec<ValidatedObjectBinding>,
+        factory: &dyn LeaseResourceFactory,
+    ) -> Result<Arc<Self>, OptimizationMiss> {
+        Self::try_acquire_from_budget(budget, bindings, factory)
+    }
+
+    fn try_acquire_from_budget(
+        budget: &LeaseBudget,
+        mut bindings: Vec<ValidatedObjectBinding>,
+        factory: &dyn LeaseResourceFactory,
+    ) -> Result<Arc<Self>, OptimizationMiss> {
+        let resource_plan = factory.resource_plan();
         if (!cfg!(any(windows, target_os = "macos")) && !cfg!(test))
-            || factory.platform_support() == PlatformLeaseSupport::Unsupported
+            || resource_plan.platform_support() == PlatformLeaseSupport::Unsupported
         {
             return Err(OptimizationMiss::UnsupportedPlatform);
         }
@@ -352,11 +405,11 @@ impl ObjectValidationLease {
 
         let leased_bindings = Vec::with_capacity(bindings.len());
         let permits = budget
-            .try_reserve_exact(bindings.len(), monitor_resource_count)
+            .try_reserve_exact(bindings.len(), resource_plan.monitor_resource_count())
             .ok_or(OptimizationMiss::BudgetDenied)?;
         let state = Arc::new(MonitorStateCell::default());
         let monitor = factory
-            .create_monitor(state.clone())
+            .create_monitor(resource_plan, state.clone())
             .map_err(|_| OptimizationMiss::TransientAcquisition)?;
 
         let LeasePermitBundle {
