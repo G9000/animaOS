@@ -1,13 +1,17 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** Revised with a macOS backend and independently approved on 2026-07-23;
-written-spec reapproval pending
+**Status:** User-approved and independently reviewed on 2026-07-23; implementation
+planning complete
 
 **Ticket:** PCF-002 catalog-performance architecture revision
 
 **Parent:** PCF-000 Portable Core Filesystem
 
 **Prior design:** `docs/superpowers/specs/2026-07-20-corefs-catalog-commit-performance-design.md`
+
+**Implementation plan:** `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
+
+**Plan review:** Independently approved on 2026-07-23 with no remaining issues.
 
 **Independent review:** The user-approved Windows baseline passed four review/revision
 rounds covering notification-name ambiguity, production link-count behavior,

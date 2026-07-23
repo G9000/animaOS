@@ -10,8 +10,9 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
+- Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 13:56 MYT
+- Updated: 2026-07-23 14:14 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -183,6 +184,8 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-23 13:47 MYT - The second independent macOS review confirmed the creation/start, bounded async acknowledgment, callback, and teardown repairs but retained one Important zero-ID gap: an undelivered `RootChanged` callback is indistinguishable from no event when `FlushAsync` returns zero, and identity checks miss rename-away/mutate/rename-back. Revised the backend with a separately armed, bounded `EVFILT_VNODE` kqueue over the complete no-follow canonical ancestor chain; rename/delete/revoke history is terminal even when the original path and identities are restored. Added exact partial-start cleanup, process-wide monitor-resource accounting, native characterization requirements, and the delayed zero-ID restored-path regression. Re-review is required; implementation remains unstarted and no external action was taken.
 - 2026-07-23 13:54 MYT - The third independent macOS review approved the paired FSEvents/kqueue history model and failed-start cleanup but found one remaining chain-scope omission: starting at the mounted volume root misses a renameable mount-point ancestor above it. Corrected the bounded no-follow vnode chain to cover the complete absolute namespace from `/` through `objects/` and added a mounted-volume-under-renameable-parent restored-path regression. The existing 64-component/260-process-resource bounds still cover the corrected chain. Re-review is required; implementation remains unstarted and no external action was taken.
 - 2026-07-23 13:56 MYT - The fourth independent macOS review approved commit `e0679249` with no Critical, Important, or Minor findings. The `/`-anchored vnode chain, 64-descriptor-per-lease plus one-kqueue arithmetic, 260-process-resource ceiling, mounted-volume restored-path regression, paired FSEvents/kqueue fence, partial/start cleanup, teardown, correctness coverage, and platform-specific performance gates are internally consistent. The revised written-spec user-approval gate is next; implementation planning and code remain unstarted and no external action was taken.
+- 2026-07-23 14:05 MYT - The user approved the independently clean Windows/macOS object validation lease specification. Added the dated test-first implementation plan with separate native characterization stop gates, platform-neutral lease/resource accounting, Windows and macOS backends, exact-hit/recovery/rotation integration, unlock-scoped native session ownership, server teardown wiring, native CI, and the unchanged final 30/200 Windows reference. PCF-002 remains `in_progress`; implementation is not yet started, PCF-003 remains dependency-ineligible, and no external action was taken.
+- 2026-07-23 14:14 MYT - The independent implementation-plan review found one reproducibility gap: the first draft deleted its native spike binaries but did not define the final diagnostic command. Added a permanent cross-platform production-backend diagnostic binary, closed output schema, CLI contract, and exact Windows/macOS commands; re-review then approved the complete 12-task/82-checkpoint plan with no remaining issues. PCF-002 remains `in_progress`, implementation is unstarted, and no external action was taken.
 
 ## Validation
 

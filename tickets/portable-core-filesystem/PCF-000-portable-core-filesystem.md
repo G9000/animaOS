@@ -8,8 +8,9 @@
 - Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
+- PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 13:56 MYT
+- Updated: 2026-07-23 14:14 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -201,6 +202,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 13:47 MYT - PCF-002's second macOS review closed two lifecycle blockers but retained the zero-ID `RootChanged` ambiguity for rename-away/mutate/rename-back. The design now pairs FSEvents with a bounded kqueue vnode monitor over the complete no-follow ancestor chain, so rename/delete/revoke history remains terminal even after path restoration; it also pins failed-start cleanup and shared monitor-resource accounting. Re-review and written-spec approval remain open; PCF-002 and this parent stay `in_progress`, downstream eligibility is unchanged, and no external action was taken.
 - 2026-07-23 13:54 MYT - PCF-002's third macOS review approved the paired FSEvents/kqueue history model but found that a volume-root-started vnode chain omitted renameable mount-namespace ancestors. The corrected bounded chain now runs from absolute `/` through `objects/`, with a restored-path regression above the mounted volume root; existing resource ceilings are unchanged. Re-review and written-spec approval remain open; PCF-002 and this parent stay `in_progress`, downstream eligibility is unchanged, and no external action was taken.
 - 2026-07-23 13:56 MYT - PCF-002's fourth macOS review approved commit `e0679249` with no Critical, Important, or Minor findings. The complete Apple-inclusive object validation lease is now independently clean; the revised written-spec user-approval gate is next. PCF-002 and this parent remain `in_progress`, implementation planning/code and downstream eligibility remain unchanged, and no external action was taken.
+- 2026-07-23 14:05 MYT - The user approved PCF-002's independently clean Windows/macOS object validation lease specification. The dated implementation plan now sequences native fence/performance characterization, fail-closed platform backends, bounded process resources, exact cache/recovery/rotation authority, unlock-session lifetime ownership, server teardown, native CI, and the unchanged final Windows reference gate. PCF-002 and this parent remain `in_progress`; implementation is unstarted, downstream tickets remain dependency-ineligible, and no external action was taken.
+- 2026-07-23 14:14 MYT - PCF-002's independent implementation-plan review found and closed one final-evidence reproducibility gap by requiring a permanent production-backend diagnostic binary with a closed schema and exact Windows/macOS commands. Re-review approved the complete 12-task/82-checkpoint plan with no remaining issues. PCF-002 and this parent remain `in_progress`; implementation is unstarted, downstream eligibility is unchanged, and no external action was taken.
 
 ## Validation
 
