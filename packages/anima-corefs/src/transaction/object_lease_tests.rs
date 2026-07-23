@@ -21,9 +21,9 @@ use super::cache::{
     ValidatedObjectState,
 };
 use super::object_lease::{
-    global_lease_budget, FenceOutcome, LeaseAttemptDecision, LeaseAttemptPolicy, LeaseBudget,
-    LeaseBudgetUsage, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan, MonitorState,
-    MonitorStateCell, MonotonicClock, ObjectSetFingerprint, ObjectValidationLease,
+    global_lease_budget, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision, LeaseAttemptPolicy,
+    LeaseBudget, LeaseBudgetUsage, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan,
+    MonitorState, MonitorStateCell, MonotonicClock, ObjectSetFingerprint, ObjectValidationLease,
     OptimizationMiss, ValidationAnchor, MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES,
     MAX_PROCESS_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
 };
@@ -287,6 +287,92 @@ fn lease_state_is_terminal_after_dirty_or_unknown() {
     unknown.publish_unknown();
     unknown.publish_dirty();
     assert_eq!(unknown.state(), MonitorState::Unknown);
+}
+
+#[test]
+fn clean_lease_rejects_every_catalog_object_tuple_change() {
+    let budget = LeaseBudget::isolated();
+    let expected = bindings(1);
+    let lease = acquire(&budget, 1, 1, &TestFactory::successful()).unwrap();
+    assert!(lease.matches_object_tuple(&expected));
+
+    let mut cases = Vec::new();
+    let mut changed = expected[0].clone();
+    changed.revision += 1;
+    cases.push(changed);
+    let mut changed = expected[0].clone();
+    changed.object_key_epoch += 1;
+    cases.push(changed);
+    let mut changed = expected[0].clone();
+    changed.physical_name =
+        ObjectPhysicalName::parse("object-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.acore").unwrap();
+    cases.push(changed);
+    let mut changed = expected[0].clone();
+    changed.content_hash = ContentHash::parse(&"aa".repeat(32)).unwrap();
+    cases.push(changed);
+    let mut changed = expected[0].clone();
+    changed.kind = ObjectKind::Task;
+    cases.push(changed);
+    let mut changed = expected[0].clone();
+    changed.wrapped_dek = WrappedObjectDekRecord::from_parts(
+        2,
+        changed.object_key_epoch,
+        OBJECT_WRAP_ALGORITHM,
+        OBJECT_KEY_ENVELOPE_VERSION,
+        &[0xa5; 12],
+        vec![0xa5; 48],
+    )
+    .unwrap();
+    cases.push(changed);
+    let mut changed = expected[0].clone();
+    changed.binding_digest = [0xa6; 32];
+    cases.push(changed);
+
+    for changed in cases {
+        assert!(!lease.matches_object_tuple(&[changed]));
+    }
+}
+
+#[test]
+fn clean_lease_directory_identity_mismatch_is_terminal_unknown() {
+    let budget = LeaseBudget::isolated();
+    let expected = bindings(1);
+    let lease = acquire(&budget, 1, 1, &TestFactory::successful()).unwrap();
+
+    assert!(lease
+        .try_carry_forward(
+            &expected,
+            DirectoryIdentity {
+                device: 1,
+                inode: 1,
+            },
+        )
+        .is_none());
+    assert_eq!(lease.state(), MonitorState::Unknown);
+}
+
+#[test]
+fn lease_carry_forward_2500_bindings_keeps_same_arc_and_exact_permits() {
+    let budget = LeaseBudget::isolated();
+    let expected = bindings(2_500);
+    let mut lease = acquire(&budget, 2_500, 3, &TestFactory::successful()).unwrap();
+
+    for _ in 0..4 {
+        let next = lease
+            .try_carry_forward(&expected, DirectoryIdentity::default())
+            .expect("unchanged exact lease must carry forward");
+        assert!(Arc::ptr_eq(&lease, &next));
+        lease = next;
+        assert_eq!(
+            budget.usage(),
+            LeaseBudgetUsage {
+                entries: 2_500,
+                leases: 1,
+                monitor_resources: 3,
+                epoch: 0,
+            }
+        );
+    }
 }
 
 #[test]

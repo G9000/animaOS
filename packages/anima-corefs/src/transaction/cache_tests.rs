@@ -1787,8 +1787,12 @@ mod lease_candidate_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use sha2::{Digest, Sha256};
+
     use super::*;
+    use crate::crypto::{wrap_object_dek, ObjectKeyAad};
     use crate::publication::PublicationPhase;
+    use crate::transaction::object_key_binding;
     use crate::transaction::object_lease::{
         FenceOutcome, LeaseAttemptDecision, LeaseBudget, LeaseMonitorResource, LeasePermitBundle,
         LeaseResourceFactory, LeaseResourcePlan, MonitorStateCell, ValidationAnchor,
@@ -1823,13 +1827,18 @@ mod lease_candidate_tests {
         supported: bool,
         fail_anchor_at: Option<usize>,
         outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
+        anchor_outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
         plan_attempts: Arc<AtomicUsize>,
         monitor_attempts: Arc<AtomicUsize>,
         fence_attempts: Arc<AtomicUsize>,
         anchor_attempts: Arc<AtomicUsize>,
+        metadata_queries: Arc<AtomicUsize>,
         monitor_drops: Arc<AtomicUsize>,
+        monitor_resource_count: usize,
         deny_retry_with_budget: Option<LeaseBudget>,
         held_competitor: Arc<Mutex<Option<LeasePermitBundle>>>,
+        observed_budget: Option<LeaseBudget>,
+        monitor_create_usages: Arc<Mutex<Vec<crate::transaction::object_lease::LeaseBudgetUsage>>>,
     }
 
     impl fmt::Debug for CandidateFactory {
@@ -1852,13 +1861,18 @@ mod lease_candidate_tests {
                 supported,
                 fail_anchor_at,
                 outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
+                anchor_outcomes: Arc::new(Mutex::new(VecDeque::new())),
                 plan_attempts: Arc::new(AtomicUsize::new(0)),
                 monitor_attempts: Arc::new(AtomicUsize::new(0)),
                 fence_attempts: Arc::new(AtomicUsize::new(0)),
                 anchor_attempts: Arc::new(AtomicUsize::new(0)),
+                metadata_queries: Arc::new(AtomicUsize::new(0)),
                 monitor_drops: Arc::new(AtomicUsize::new(0)),
+                monitor_resource_count: 1,
                 deny_retry_with_budget: None,
                 held_competitor: Arc::new(Mutex::new(None)),
+                observed_budget: None,
+                monitor_create_usages: Arc::new(Mutex::new(Vec::new())),
             })
         }
 
@@ -1878,6 +1892,36 @@ mod lease_candidate_tests {
             let mut factory = Arc::try_unwrap(Self::supported([FenceOutcome::DirtyAll]))
                 .expect("new candidate factory has one owner");
             factory.deny_retry_with_budget = Some(budget);
+            Arc::new(factory)
+        }
+
+        fn with_anchor_outcomes(
+            monitor_outcomes: impl IntoIterator<Item = FenceOutcome>,
+            anchor_outcomes: impl IntoIterator<Item = FenceOutcome>,
+        ) -> Arc<Self> {
+            let mut factory = Arc::try_unwrap(Self::supported(monitor_outcomes))
+                .expect("new candidate factory has one owner");
+            factory.anchor_outcomes = Arc::new(Mutex::new(anchor_outcomes.into_iter().collect()));
+            Arc::new(factory)
+        }
+
+        fn observing_budget(
+            outcomes: impl IntoIterator<Item = FenceOutcome>,
+            budget: LeaseBudget,
+        ) -> Arc<Self> {
+            let mut factory = Arc::try_unwrap(Self::supported(outcomes))
+                .expect("new candidate factory has one owner");
+            factory.observed_budget = Some(budget);
+            Arc::new(factory)
+        }
+
+        fn with_monitor_resources(
+            outcomes: impl IntoIterator<Item = FenceOutcome>,
+            monitor_resource_count: usize,
+        ) -> Arc<Self> {
+            let mut factory = Arc::try_unwrap(Self::supported(outcomes))
+                .expect("new candidate factory has one owner");
+            factory.monitor_resource_count = monitor_resource_count;
             Arc::new(factory)
         }
 
@@ -1906,7 +1950,7 @@ mod lease_candidate_tests {
                 }
             }
             if self.supported {
-                LeaseResourcePlan::supported(1)
+                LeaseResourcePlan::supported(self.monitor_resource_count)
             } else {
                 LeaseResourcePlan::unsupported()
             }
@@ -1918,6 +1962,12 @@ mod lease_candidate_tests {
             _state: Arc<MonitorStateCell>,
         ) -> Result<Box<dyn LeaseMonitorResource>, ()> {
             self.monitor_attempts.fetch_add(1, Ordering::SeqCst);
+            if let Some(budget) = &self.observed_budget {
+                self.monitor_create_usages
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(budget.usage());
+            }
             Ok(Box::new(CandidateMonitor {
                 outcomes: Arc::clone(&self.outcomes),
                 fence_attempts: Arc::clone(&self.fence_attempts),
@@ -1944,7 +1994,11 @@ mod lease_candidate_tests {
             if self.fail_anchor_at == Some(index) {
                 Err(())
             } else {
-                Ok(ValidationAnchor::test(index as u64))
+                Ok(ValidationAnchor::test_observed(
+                    index as u64,
+                    Arc::clone(&self.metadata_queries),
+                    Arc::clone(&self.anchor_outcomes),
+                ))
             }
         }
     }
@@ -2001,6 +2055,39 @@ mod lease_candidate_tests {
             .unwrap()
     }
 
+    fn prepare_third_object(
+        coordinator: &CoreCommitCoordinator,
+        keys: &FrkSubkeys,
+    ) -> PreparedObjectRevision {
+        let object_key = SecretBytes::new(vec![0x73; 32]).unwrap();
+        let aad = ObjectBaseAad::new(
+            CORE_ID,
+            THIRD_OBJECT_ID,
+            ObjectKind::Note,
+            ENVELOPE_VERSION,
+            1,
+            1,
+        )
+        .unwrap();
+        let body = b"third cached object body";
+        let metadata = EnvelopeMetadata::for_body(
+            ObjectKind::Note.as_str(),
+            THIRD_OBJECT_ID,
+            1,
+            "2026-07-23T00:00:00Z",
+            "2026-07-23T00:00:00Z",
+            "text/markdown",
+            BTreeMap::new(),
+            BodyEncoding::Utf8,
+            body,
+        )
+        .unwrap();
+        let encoded = encode_envelope(&object_key, &aad, &metadata, body).unwrap();
+        coordinator
+            .prepare_object_revision(keys, &object_key, &aad, &mut Cursor::new(encoded))
+            .unwrap()
+    }
+
     fn two_object_catalog(
         generation: u64,
         first: &PreparedObjectRevision,
@@ -2036,11 +2123,101 @@ mod lease_candidate_tests {
                     FolderOwner::User,
                     AnimaAccess::Write,
                 )),
-                object_entry(FIRST_OBJECT_ID, "First.md", first),
+                object_entry(FIRST_OBJECT_ID, "Note.md", first),
                 object_entry(SECOND_OBJECT_ID, "Second.md", second),
             ],
         )
         .unwrap()
+    }
+
+    fn prepare_large_object_set(
+        coordinator: &CoreCommitCoordinator,
+        keys: &FrkSubkeys,
+        count: usize,
+    ) -> Vec<PreparedObjectRevision> {
+        (0..count)
+            .map(|index| {
+                let stable_id = OpaqueId::parse(&format!("01J{:023}", index + 100)).unwrap();
+                let physical_name =
+                    ObjectPhysicalName::parse(&format!("object-{:032x}.acore", index + 1)).unwrap();
+                let body = [u8::try_from(index % 251 + 1).unwrap()];
+                std::fs::write(
+                    coordinator.objects_path().join(physical_name.as_str()),
+                    body,
+                )
+                .unwrap();
+                let object_key =
+                    SecretBytes::new(vec![u8::try_from(index % 251 + 1).unwrap(); 32]).unwrap();
+                let aad = ObjectBaseAad::new(
+                    CORE_ID,
+                    stable_id.as_str(),
+                    ObjectKind::Note,
+                    ENVELOPE_VERSION,
+                    1,
+                    1,
+                )
+                .unwrap();
+                let key_aad = ObjectKeyAad::from_base(aad, keys.frk_version()).unwrap();
+                let wrapped = wrap_object_dek(&object_key, keys, &key_aad).unwrap();
+                let wrapped_dek = WrappedObjectDekRecord::from_parts(
+                    keys.frk_version(),
+                    1,
+                    wrapped.algorithm(),
+                    wrapped.envelope_version(),
+                    wrapped.nonce(),
+                    wrapped.ciphertext().to_vec(),
+                )
+                .unwrap();
+                PreparedObjectRevision {
+                    object_id: stable_id,
+                    revision: 1,
+                    kind: ObjectKind::Note,
+                    object_key_epoch: 1,
+                    physical_name,
+                    content_hash: ContentHash::parse(&format!("{:02x}", body[0]).repeat(32))
+                        .unwrap(),
+                    encoded_size: 1,
+                    encrypted_hash: Sha256::digest(body).into(),
+                    object_key_binding: object_key_binding(&object_key),
+                    wrapped_dek,
+                }
+            })
+            .collect()
+    }
+
+    fn large_object_catalog(
+        generation: u64,
+        prepared: &[PreparedObjectRevision],
+    ) -> CatalogGeneration {
+        let mut entries = Vec::with_capacity(prepared.len() + 1);
+        entries.push(CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+            OpaqueId::parse(ROOT_ID).unwrap(),
+            None,
+            PortableName::parse("Core").unwrap(),
+            FolderOwner::User,
+            AnimaAccess::Write,
+        )));
+        entries.extend(prepared.iter().enumerate().map(|(index, prepared)| {
+            CatalogGenerationEntry::object(
+                CatalogEntryCommon::new(
+                    prepared.object_id().clone(),
+                    Some(OpaqueId::parse(ROOT_ID).unwrap()),
+                    PortableName::parse(&format!("Item-{index:04}.md")).unwrap(),
+                    FolderOwner::User,
+                    AnimaAccess::Write,
+                ),
+                CatalogObject::new(
+                    prepared.revision(),
+                    prepared.physical_name().clone(),
+                    prepared.content_hash().clone(),
+                    ObjectKind::Note,
+                    prepared.wrapped_dek().clone(),
+                    ObjectLifecycle::Live,
+                )
+                .unwrap(),
+            )
+        }));
+        CatalogGeneration::new(generation, entries).unwrap()
     }
 
     fn setup_two_objects(
@@ -2403,6 +2580,404 @@ mod lease_candidate_tests {
         assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 0);
         assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 0);
         assert!(coordinator.cache.current().unwrap().object_lease.is_none());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_lease_uses_two_fences_and_one_metadata_query_without_reopening() {
+        let (root, coordinator, keys, prepared) = setup("clean-fast-path");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let first_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        factory.fence_attempts.store(0, Ordering::SeqCst);
+        factory.metadata_queries.store(0, Ordering::SeqCst);
+        let mut probe = CommitProbe::default();
+
+        commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+        let next_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first_lease, &next_lease));
+        assert_eq!(probe.object_safe_opens, 0);
+        assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.fence_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 1);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_lease_event_anchor_mismatch_and_final_event_each_force_full_fallback() {
+        let cases = [
+            (
+                "pre-fence-dirty",
+                vec![
+                    FenceOutcome::Clean,
+                    FenceOutcome::DirtyAll,
+                    FenceOutcome::Clean,
+                ],
+                vec![],
+            ),
+            (
+                "anchor-mismatch",
+                vec![
+                    FenceOutcome::Clean,
+                    FenceOutcome::Clean,
+                    FenceOutcome::Clean,
+                ],
+                vec![FenceOutcome::DirtyAll],
+            ),
+            (
+                "final-fence-unknown",
+                vec![
+                    FenceOutcome::Clean,
+                    FenceOutcome::Clean,
+                    FenceOutcome::Unknown,
+                    FenceOutcome::Clean,
+                ],
+                vec![FenceOutcome::Clean],
+            ),
+        ];
+        for (label, monitor_outcomes, anchor_outcomes) in cases {
+            let (root, coordinator, keys, prepared) = setup(label);
+            let factory = CandidateFactory::with_anchor_outcomes(monitor_outcomes, anchor_outcomes);
+            coordinator.set_lease_factory_for_test(factory.clone());
+            let mut seed_probe = CommitProbe::default();
+            commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+            let old_lease = coordinator
+                .cache
+                .current()
+                .unwrap()
+                .object_lease
+                .clone()
+                .unwrap();
+            let mut probe = CommitProbe::default();
+
+            commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
+
+            assert!(
+                probe.object_safe_opens >= 1,
+                "{label} did not validate every object through the safe-open path"
+            );
+            assert_ne!(
+                old_lease.state(),
+                crate::transaction::object_lease::MonitorState::Clean
+            );
+            assert!(
+                !coordinator
+                    .cache
+                    .current()
+                    .unwrap()
+                    .object_lease
+                    .as_ref()
+                    .is_some_and(|lease| Arc::ptr_eq(lease, &old_lease)),
+                "{label} carried terminal lease authority forward"
+            );
+            drop(old_lease);
+            drop(coordinator);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn clean_lease_anchor_mismatch_safe_opens_the_complete_object_set() {
+        let (root, coordinator, keys, first, second) = setup_two_objects("full-anchor-fallback");
+        let factory = CandidateFactory::with_anchor_outcomes(
+            [
+                FenceOutcome::Clean,
+                FenceOutcome::Clean,
+                FenceOutcome::Clean,
+            ],
+            [FenceOutcome::DirtyAll],
+        );
+        coordinator.set_lease_factory_for_test(factory);
+        let mut seed_probe = CommitProbe::default();
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[],
+                &[],
+                |_, generation| Ok(two_object_catalog(generation, &first, &second)),
+                |_| Ok(()),
+                &mut seed_probe,
+            )
+            .unwrap();
+        let mut probe = CommitProbe::default();
+
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[],
+                &[],
+                |_, generation| Ok(two_object_catalog(generation, &first, &second)),
+                |_| Ok(()),
+                &mut probe,
+            )
+            .unwrap();
+
+        assert_eq!(
+            probe.object_safe_opens, 2,
+            "anchor mismatch selected a per-name fallback instead of validating all objects"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_lease_wrong_same_version_key_material_never_reuses_anchor() {
+        let (root, coordinator, active_keys, prepared) = setup("wrong-same-version-key");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &active_keys, &prepared, &mut seed_probe);
+        factory.metadata_queries.store(0, Ordering::SeqCst);
+        let wrong_keys = keys(0x7f, active_keys.frk_version());
+        let mut probe = CommitProbe::default();
+
+        let result = coordinator.commit_with_probe(
+            &wrong_keys,
+            &[],
+            &[],
+            |_, generation| {
+                Ok(cached_object_catalog(
+                    generation,
+                    &prepared,
+                    prepared.wrapped_dek().clone(),
+                ))
+            },
+            |_| Ok(()),
+            &mut probe,
+        );
+
+        assert!(matches!(
+            result,
+            Err(CommitError::Head(HeadError::Catalog(
+                crate::catalog::CatalogError::Crypto(_)
+            )))
+        ));
+        assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 0);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_carry_forward_changed_set_releases_cache_lease_before_new_reservation() {
+        let (root, coordinator, keys, first, second) = setup_two_objects("changed-set-release");
+        let initial_factory =
+            CandidateFactory::observing_budget([], coordinator.lease_budget.clone());
+        coordinator.set_lease_factory_for_test(initial_factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[],
+                &[],
+                |_, generation| Ok(two_object_catalog(generation, &first, &second)),
+                |_| Ok(()),
+                &mut seed_probe,
+            )
+            .unwrap();
+        let old_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        drop(old_lease);
+
+        let third = prepare_third_object(&coordinator, &keys);
+        let changed_factory =
+            CandidateFactory::observing_budget([], coordinator.lease_budget.clone());
+        coordinator.set_lease_factory_for_test(changed_factory.clone());
+        let mut probe = CommitProbe::default();
+        let current = Arc::clone(coordinator.cache.current().unwrap().catalog());
+        let preconditions = [destination_precondition(&current, ROOT_ID, "Third.md")];
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[third.clone()],
+                &preconditions,
+                |_, generation| {
+                    let mut catalog = two_object_catalog(generation, &first, &second);
+                    let mut entries = catalog.entries().to_vec();
+                    let third_entry = CatalogGenerationEntry::object(
+                        CatalogEntryCommon::new(
+                            OpaqueId::parse(THIRD_OBJECT_ID).unwrap(),
+                            Some(OpaqueId::parse(ROOT_ID).unwrap()),
+                            PortableName::parse("Third.md").unwrap(),
+                            FolderOwner::User,
+                            AnimaAccess::Write,
+                        ),
+                        CatalogObject::new(
+                            third.revision(),
+                            third.physical_name().clone(),
+                            third.content_hash().clone(),
+                            ObjectKind::Note,
+                            third.wrapped_dek().clone(),
+                            ObjectLifecycle::Live,
+                        )
+                        .unwrap(),
+                    );
+                    entries.push(third_entry);
+                    catalog = CatalogGeneration::new(generation, entries).unwrap();
+                    Ok(catalog)
+                },
+                |_| Ok(()),
+                &mut probe,
+            )
+            .unwrap();
+
+        let usages = changed_factory
+            .monitor_create_usages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].entries, 3);
+        assert_eq!(usages[0].leases, 1);
+        assert_eq!(coordinator.lease_budget.usage().entries, 3);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_carry_forward_budget_miss_still_publishes_correct_no_lease_snapshot() {
+        let (root, coordinator, keys, prepared) = setup("budget-miss-publication");
+        let factory = CandidateFactory::supported([]);
+        coordinator.set_lease_factory_for_test(factory);
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+        let retained_old_lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        let competitor = coordinator
+            .lease_budget
+            .try_reserve_exact(MAX_OBJECT_LEASE_ENTRIES - 1, 0)
+            .unwrap();
+        let second = prepare_second_object(&coordinator, &keys);
+        let mut probe = CommitProbe::default();
+        let current = Arc::clone(coordinator.cache.current().unwrap().catalog());
+        let preconditions = [destination_precondition(&current, ROOT_ID, "Second.md")];
+
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &[second.clone()],
+                &preconditions,
+                |_, generation| Ok(two_object_catalog(generation, &prepared, &second)),
+                |_| Ok(()),
+                &mut probe,
+            )
+            .unwrap();
+
+        let snapshot = coordinator.cache.current().unwrap();
+        assert_eq!(snapshot.catalog().generation(), 4);
+        assert!(snapshot
+            .objects
+            .as_ref()
+            .unwrap()
+            .get(&OpaqueId::parse(SECOND_OBJECT_ID).unwrap())
+            .is_some());
+        assert!(snapshot.object_lease.is_none());
+        drop(snapshot);
+        drop(competitor);
+        drop(retained_old_lease);
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_carry_forward_repeated_2500_object_commits_keep_one_exact_lease() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-lease-carry-2500-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        let keys = keys(0x54, 1);
+        seed_committed(&coordinator, &keys);
+        let prepared = prepare_large_object_set(&coordinator, &keys, 2_500);
+        let current = Arc::clone(coordinator.cache.current().unwrap().catalog());
+        let preconditions = prepared
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                destination_precondition(&current, ROOT_ID, &format!("Item-{index:04}.md"))
+            })
+            .collect::<Vec<_>>();
+        let factory = CandidateFactory::with_monitor_resources([], 3);
+        coordinator.set_lease_factory_for_test(factory.clone());
+        let mut seed_probe = CommitProbe::default();
+        coordinator
+            .commit_with_probe(
+                &keys,
+                &prepared,
+                &preconditions,
+                |_, generation| Ok(large_object_catalog(generation, &prepared)),
+                |_| Ok(()),
+                &mut seed_probe,
+            )
+            .unwrap();
+        let lease = coordinator
+            .cache
+            .current()
+            .unwrap()
+            .object_lease
+            .clone()
+            .unwrap();
+        factory.fence_attempts.store(0, Ordering::SeqCst);
+        factory.metadata_queries.store(0, Ordering::SeqCst);
+
+        for _ in 0..3 {
+            let mut probe = CommitProbe::default();
+            coordinator
+                .commit_with_probe(
+                    &keys,
+                    &[],
+                    &[],
+                    |_, generation| Ok(large_object_catalog(generation, &prepared)),
+                    |_| Ok(()),
+                    &mut probe,
+                )
+                .unwrap();
+            assert_eq!(probe.object_safe_opens, 0);
+            let carried = coordinator
+                .cache
+                .current()
+                .unwrap()
+                .object_lease
+                .clone()
+                .unwrap();
+            assert!(Arc::ptr_eq(&lease, &carried));
+        }
+
+        assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.fence_attempts.load(Ordering::SeqCst), 6);
+        assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 7_500);
+        let usage = coordinator.lease_budget.usage();
+        assert_eq!(usage.entries, 2_500);
+        assert_eq!(usage.leases, 1);
+        assert_eq!(usage.monitor_resources, 3);
+        drop(lease);
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }

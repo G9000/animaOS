@@ -945,6 +945,7 @@ struct CommitProbe<'a> {
     catalog_decrypts: usize,
     catalog_encodes: usize,
     object_dek_unwraps: usize,
+    object_safe_opens: usize,
     observe_stage: Option<&'a mut dyn FnMut(CommitStage)>,
 }
 
@@ -978,6 +979,10 @@ impl<'a> CommitProbe<'a> {
 
     fn object_dek_unwrap(&mut self) {
         self.object_dek_unwraps += 1;
+    }
+
+    fn object_safe_open(&mut self) {
+        self.object_safe_opens += 1;
     }
 }
 
@@ -3234,7 +3239,7 @@ impl CoreCommitCoordinator {
             let initial_pointers = initial_snapshot
                 .as_ref()
                 .map_or_else(PointerSet::default, |snapshot| snapshot.pointers.clone());
-            let cached_objects = match (mode, authoritative.as_ref(), initial_snapshot.as_ref()) {
+            let matched_snapshot = match (mode, authoritative.as_ref(), initial_snapshot.as_ref()) {
                 (CommitMode::Normal, Some(authoritative), Some(snapshot))
                     if snapshot.pointers.head.as_ref() == Some(&authoritative.head)
                         && Arc::ptr_eq(snapshot.catalog(), &authoritative.catalog) =>
@@ -3248,10 +3253,12 @@ impl CoreCommitCoordinator {
                     .ok()
                     .and_then(|key| self.cache.get(&key))
                     .filter(|matched| Arc::ptr_eq(matched, snapshot))
-                    .and_then(|matched| matched.objects.clone())
                 }
                 _ => None,
             };
+            let cached_objects = matched_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.objects.clone());
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
@@ -3298,8 +3305,50 @@ impl CoreCommitCoordinator {
             }
             let next_catalog = mode.apply_cutover_marker(&current, next_catalog)?;
             validate_precondition_coverage(current.catalog(), &next_catalog, preconditions)?;
-            let (validated_objects, candidate_lease) = self
-                .validate_prepared_revisions_with_candidate(
+            let expected_bindings = catalog_object_bindings(&next_catalog)?;
+            let had_cached_lease = matched_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.object_lease.is_some());
+            let carried = if prepared_revisions.is_empty() {
+                matched_snapshot.as_ref().and_then(|snapshot| {
+                    let lease = snapshot.object_lease.as_ref()?;
+                    let Some(objects) = snapshot.objects.as_ref() else {
+                        lease.publish_unknown();
+                        return None;
+                    };
+                    if !lease.matches_object_tuple(&expected_bindings) {
+                        lease.publish_dirty();
+                        return None;
+                    }
+                    let directory_identity = match self.object_directory_identity() {
+                        Ok(identity) => identity,
+                        Err(_) => {
+                            lease.publish_unknown();
+                            return None;
+                        }
+                    };
+                    lease
+                        .try_carry_forward(&expected_bindings, directory_identity)
+                        .map(|lease| (Arc::clone(objects), lease))
+                })
+            } else {
+                if let Some(lease) = matched_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.object_lease.as_ref())
+                {
+                    lease.publish_dirty();
+                }
+                None
+            };
+            let (validated_objects, candidate_lease) = if let Some((objects, lease)) = carried {
+                (objects, Some(lease))
+            } else {
+                if had_cached_lease {
+                    self.cache.clear();
+                }
+                drop(matched_snapshot);
+                drop(initial_snapshot);
+                let (objects, candidate) = self.validate_prepared_revisions_with_candidate(
                     active_keys,
                     current.catalog(),
                     &next_catalog,
@@ -3309,7 +3358,8 @@ impl CoreCommitCoordinator {
                     #[cfg(test)]
                     probe.as_deref_mut(),
                 )?;
-            let validated_objects = Arc::new(validated_objects);
+                (Arc::new(objects), candidate)
+            };
             let next_catalog = Arc::new(next_catalog);
             #[cfg(test)]
             if let Some(probe) = probe.as_deref_mut() {
@@ -4200,7 +4250,12 @@ where
             .get(entry.stable_id().as_str())
             .is_some_and(|current| same_object_body(current, object));
         if unchanged {
-            let file = validate_existing_object_file(objects_dir, object.physical_name())?;
+            let file = validate_existing_object_file(
+                objects_dir,
+                object.physical_name(),
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
             if cached
                 .and_then(|state| state.get(entry.stable_id()))
                 .is_some_and(|binding| binding == &candidate)
@@ -4258,7 +4313,12 @@ where
                 physical_name: object.physical_name().as_str().to_owned(),
             });
         }
-        let file = validate_prepared_file(objects_dir, token)?;
+        let file = validate_prepared_file(
+            objects_dir,
+            token,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
         consumed.insert(token.physical_name.as_str());
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
@@ -4324,7 +4384,12 @@ fn object_key_binding(object_key: &SecretBytes) -> [u8; 32] {
 fn validate_existing_object_file(
     objects_dir: &Dir,
     physical_name: &ObjectPhysicalName,
+    #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<File, CommitError> {
+    #[cfg(test)]
+    if let Some(probe) = probe {
+        probe.object_safe_open();
+    }
     let file = open_regular_file_in(objects_dir, OsStr::new(physical_name.as_str()))?;
     if file.metadata()?.len() == 0 {
         return Err(CommitError::ReferencedObjectMissing {
@@ -4337,7 +4402,12 @@ fn validate_existing_object_file(
 fn validate_prepared_file(
     objects_dir: &Dir,
     prepared: &PreparedObjectRevision,
+    #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<File, CommitError> {
+    #[cfg(test)]
+    if let Some(probe) = probe {
+        probe.object_safe_open();
+    }
     let mut file = open_regular_file_in(objects_dir, OsStr::new(prepared.physical_name.as_str()))
         .map_err(|_| CommitError::PreparedRevisionCorrupt {
         physical_name: prepared.physical_name.as_str().to_owned(),

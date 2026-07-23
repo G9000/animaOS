@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+#[cfg(test)]
+use std::collections::VecDeque;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+
 use sha2::{Digest, Sha256};
 
 use super::cache::ValidatedObjectBinding;
@@ -112,13 +117,34 @@ pub(super) enum ValidationAnchor {
     #[cfg(target_os = "macos")]
     Macos(Arc<dyn PlatformValidationAnchor>),
     #[cfg(test)]
-    Test(u64),
+    Test {
+        identity: u64,
+        queries: Option<Arc<AtomicUsize>>,
+        outcomes: Option<Arc<Mutex<VecDeque<FenceOutcome>>>>,
+    },
 }
 
 impl ValidationAnchor {
     #[cfg(test)]
     pub(super) fn test(identity: u64) -> Self {
-        Self::Test(identity)
+        Self::Test {
+            identity,
+            queries: None,
+            outcomes: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_observed(
+        identity: u64,
+        queries: Arc<AtomicUsize>,
+        outcomes: Arc<Mutex<VecDeque<FenceOutcome>>>,
+    ) -> Self {
+        Self::Test {
+            identity,
+            queries: Some(queries),
+            outcomes: Some(outcomes),
+        }
     }
 
     fn validate(&self) -> FenceOutcome {
@@ -128,7 +154,22 @@ impl ValidationAnchor {
             #[cfg(target_os = "macos")]
             Self::Macos(anchor) => anchor.validate(),
             #[cfg(test)]
-            Self::Test(_) => FenceOutcome::Clean,
+            Self::Test {
+                queries, outcomes, ..
+            } => {
+                if let Some(queries) = queries {
+                    queries.fetch_add(1, Ordering::SeqCst);
+                }
+                outcomes
+                    .as_ref()
+                    .and_then(|outcomes| {
+                        outcomes
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .pop_front()
+                    })
+                    .unwrap_or(FenceOutcome::Clean)
+            }
         }
     }
 }
@@ -666,6 +707,25 @@ impl ObjectValidationLease {
 
     pub(super) fn fence(&self) -> MonitorState {
         self.fence_with_validation_hook(|| {})
+    }
+
+    pub(super) fn matches_object_tuple(&self, expected: &[ValidatedObjectBinding]) -> bool {
+        self.object_tuple.as_ref() == expected
+    }
+
+    pub(super) fn try_carry_forward(
+        self: &Arc<Self>,
+        expected: &[ValidatedObjectBinding],
+        directory_identity: DirectoryIdentity,
+    ) -> Option<Arc<Self>> {
+        if self.state() != MonitorState::Clean || !self.matches_object_tuple(expected) {
+            return None;
+        }
+        if self.directory_identity != directory_identity {
+            self.publish_unknown();
+            return None;
+        }
+        (self.fence() == MonitorState::Clean).then(|| Arc::clone(self))
     }
 
     fn fence_with_validation_hook(&self, between_fences: impl FnOnce()) -> MonitorState {
