@@ -1,6 +1,6 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** Revised with a macOS backend on 2026-07-23; independent review and
+**Status:** Revised with a macOS backend and independently approved on 2026-07-23;
 written-spec reapproval pending
 
 **Ticket:** PCF-002 catalog-performance architecture revision
@@ -17,7 +17,8 @@ first macOS review found three Important stream-lifecycle issues. A second pass
 confirmed two resolved but retained the zero-ID `RootChanged` ambiguity. The
 third pass confirmed the paired vnode protocol but required its chain to begin at the
 absolute namespace root rather than the mounted volume root. The corrected revision
-below requires re-review before planning.
+passed a fourth independent macOS review at commit `e0679249` with no Critical,
+Important, or Minor findings.
 
 ## Context
 

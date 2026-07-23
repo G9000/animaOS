@@ -11,7 +11,7 @@
 - Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 13:54 MYT
+- Updated: 2026-07-23 13:56 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -182,6 +182,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-23 13:37 MYT - The first independent macOS review rejected the synchronous-fence draft with three Important lifecycle findings: the stream did not pin `WatchRoot` plus queue/start/post-start identity ordering, `FlushSync` could not satisfy the claimed observable failure and bounded-cancellation behavior, and callback/dispatch teardown lacked panic containment and a real queue-drain proof. Revised the design to exact `SinceNow`/`WatchRoot`/`FileEvents`/`NoDefer` creation, a mandatory post-start layout/path check, bounded `FlushAsync` event-ID acknowledgment plus a post-fence identity check, synchronous `catch_unwind` callback publication, and cancel/stop/invalidate/serial-barrier/release teardown. Re-review is required; implementation remains unstarted and no external action was taken.
 - 2026-07-23 13:47 MYT - The second independent macOS review confirmed the creation/start, bounded async acknowledgment, callback, and teardown repairs but retained one Important zero-ID gap: an undelivered `RootChanged` callback is indistinguishable from no event when `FlushAsync` returns zero, and identity checks miss rename-away/mutate/rename-back. Revised the backend with a separately armed, bounded `EVFILT_VNODE` kqueue over the complete no-follow canonical ancestor chain; rename/delete/revoke history is terminal even when the original path and identities are restored. Added exact partial-start cleanup, process-wide monitor-resource accounting, native characterization requirements, and the delayed zero-ID restored-path regression. Re-review is required; implementation remains unstarted and no external action was taken.
 - 2026-07-23 13:54 MYT - The third independent macOS review approved the paired FSEvents/kqueue history model and failed-start cleanup but found one remaining chain-scope omission: starting at the mounted volume root misses a renameable mount-point ancestor above it. Corrected the bounded no-follow vnode chain to cover the complete absolute namespace from `/` through `objects/` and added a mounted-volume-under-renameable-parent restored-path regression. The existing 64-component/260-process-resource bounds still cover the corrected chain. Re-review is required; implementation remains unstarted and no external action was taken.
+- 2026-07-23 13:56 MYT - The fourth independent macOS review approved commit `e0679249` with no Critical, Important, or Minor findings. The `/`-anchored vnode chain, 64-descriptor-per-lease plus one-kqueue arithmetic, 260-process-resource ceiling, mounted-volume restored-path regression, paired FSEvents/kqueue fence, partial/start cleanup, teardown, correctness coverage, and platform-specific performance gates are internally consistent. The revised written-spec user-approval gate is next; implementation planning and code remain unstarted and no external action was taken.
 
 ## Validation
 
