@@ -341,10 +341,20 @@ Every native operation first acquires an `OperationGuard` from this state machin
 ```text
 Open(active = N)
   admit -> Open(active = N + 1)
+  release -> Releasing(active = N, terminal_close = false)
   close -> Closing(active = N)
+
+Releasing(active = N, terminal_close = false)
+  admit -> reject
+  release -> wait for Open or Closed
+  close -> Closing(active = N)
+  guard drop -> Releasing(active = N - 1)
+  active = 0 -> lease teardown -> Open
 
 Closing(active = N)
   admit -> reject
+  release -> reject
+  close -> wait for Closed
   guard drop -> Closing(active = N - 1)
   active = 0 -> teardown -> Closed
 
@@ -356,13 +366,16 @@ Closed
 The state uses a mutex plus condition variable; it is separate from the commit-cache
 and monitor locks. A guard is held through the complete Rust operation, including
 publication and lease replacement, and decrements the active count on every return or
-panic unwind.
+panic unwind. A terminal-close flag is monotonic: once any caller requests close,
+`Releasing` atomically upgrades to `Closing`, release may never return the state to
+`Open`, and every concurrent close caller waits until `Closed`.
 
 `CorefsSession.close()` is idempotent and follows this order:
 
 1. transition `Open -> Closing` and reject new operation guards;
-2. wait until every already-admitted operation guard has drained;
-3. signal monitor cancellation and wake any wait;
+2. set terminal close, signal monitor cancellation, and wake any admitted operation
+   blocked in a monitor fence;
+3. wait until every already-admitted operation guard has drained;
 4. join the monitor worker;
 5. clear the coordinator cache and drop every retained handle and budget permit;
 6. transition to `Closed`; and
@@ -371,7 +384,10 @@ panic unwind.
 
 The blocking drain/join portion of the PyO3 close method runs inside
 `Python::allow_threads` so an admitted operation that must reacquire the GIL can
-finish. The monitor worker never invokes Python.
+finish. Monitor fence waits are bounded and cancellation-aware; cancellation returns
+`Unknown` so an admitted operation can complete through safe-open fallback or return
+its existing typed failure rather than deadlocking close. The monitor worker never
+invokes Python.
 
 Logout, token revocation, user-session replacement, expiry purge, store clear, and
 server shutdown must close removed native sessions. The Python session-store lock must
@@ -383,9 +399,10 @@ While an unlock session is active, its Core is in use. This revision requires
 logout/lock before external drive removal. It exposes an idempotent
 `release_object_lease()` operation for later transfer/export and PCF-008 eject
 coordination, but does not claim unimplemented desktop suspend/eject hooks. Release
-uses the same exclusive admission barrier: temporarily reject new operations, drain
-admitted operations outside the GIL, clear/join the lease, and then reopen the session
-for later safe-open or lease-rebuilding operations.
+uses the explicit `Releasing` state: temporarily reject new operations, cancel/wake the
+monitor, drain admitted operations outside the GIL, and clear/join the lease. It returns
+to `Open` only if no terminal close was requested; otherwise close owns teardown and
+all callers wait for `Closed`. A later admitted operation may rebuild a fresh lease.
 
 ### 10. Resource and fallback policy
 
@@ -410,17 +427,42 @@ MAX_PROCESS_OBJECT_LEASES = 4
 ```
 
 Before arming a monitor, a candidate atomically reserves both its exact handle count
-and one lease slot. The returned RAII permit stays attached to the candidate and then
-the published lease. Candidate failure, lease clear/replacement, session close, or
-panic drops the permit and returns both counters. The process budget means many unlock
-tokens can remain functionally valid, but only candidates fitting the remaining shared
-budget use the fast path; all others use safe-open fallback.
+and one lease slot. Reservation returns one `LeaseSlotPermit` plus splittable
+`HandlePermit` units. The slot stays with the monitor lease; each retained handle owns
+one unit, so sharing an exact handle by `Arc` does not double-count it. Candidate
+failure, lease clear/replacement, session close, or panic drops the corresponding
+permits and returns the counters. The process budget means many unlock tokens can
+remain functionally valid, but only candidates fitting the remaining shared budget use
+the fast path; all others use safe-open fallback.
 
-Budget denial records the observed process-budget epoch and is not retried until a
-permit release increments that epoch. This prevents every commit from repeating a
-known-impossible acquisition while ensuring released resources make other sessions
-eligible. Reservation, publication, release, and epoch advance are atomic under the
-budget lock; no file or monitor I/O occurs while it is held.
+An exact clean normal commit does not construct or reserve a second lease. After both
+monitor fences and every handle-metadata check pass, the next authenticated snapshot
+shares the existing `Arc<ObjectValidationLease>`, including its handles, monitor, and
+single RAII budget permit. Rebinding the snapshot to the new exact pointer/key authority
+does not mutate the lease's object set. Repeated unchanged 2,500-object commits
+therefore keep process usage at exactly 2,500 handles and one lease.
+
+If the catalog object set changes, the first revision does not mutate the published
+lease in place. It invalidates and removes the cache's lease reference before complete
+safe-open validation, then attempts a new candidate after released references return
+their permits. Unchanged per-object handles may be shared by `Arc` only when their
+complete catalog tuple and monitor continuity remain exact; every newly opened handle
+owns its own budget unit. If other readers retain the old snapshot or the complete
+candidate cannot fit the remaining process budget, the commit remains correct through
+safe-open validation but publishes no new lease. A later operation may retry once the
+budget epoch changes.
+
+Budget denial is keyed by the tuple of observed process-budget epoch, authenticated
+object-set fingerprint, and requested object count. The fingerprint is derived from the
+exact pointer-authenticated stable-ID/physical-object tuples, so a generation-only
+pointer advance with the same object set does not cause repeated acquisition attempts.
+Denial is not retried while all three fields remain equal. A permit release increments
+the epoch, while a different authenticated object set or smaller object count also
+permits a new attempt even if no unrelated lease was released. This prevents every
+commit from repeating a known-impossible acquisition without leaving a session
+permanently denied after its own catalog changes.
+Reservation, publication, release, and epoch advance are atomic under the budget lock;
+no file or monitor I/O occurs while it is held.
 
 An over-ceiling catalog is not retried until its authenticated object count falls within
 the ceiling. Transient monitor/handle acquisition failures use process-local
@@ -515,6 +557,8 @@ clear PCF-002.
   ID, or key arguments, selects the native coordinator;
 - an admitted operation racing logout drains before close continues, and no cache,
   lease, handle, monitor, or process-budget permit can appear after close returns;
+- release racing close atomically upgrades to terminal close and never reopens; two
+  concurrent close callers both wait for `Closed`;
 - the blocking close/release path does not hold the GIL or Python session-store lock;
 - logout, revoke, replacement, expiry, clear, and shutdown reject new operations, join
   the monitor, and release every handle without holding the Python store lock;
@@ -524,6 +568,11 @@ clear PCF-002.
 - multiple unlock tokens atomically exhaust the shared 4,096-handle/four-lease budget,
   denied sessions use safe-open without retrying until the budget epoch changes, and
   permit release makes another session eligible;
+- repeated unchanged 2,500-object commits carry one lease forward and keep process
+  usage fixed at 2,500 handles/one monitor/one permit without denial;
+- changed authenticated object-set/object-count state may retry a prior budget denial
+  even when the global epoch is unchanged, while a generation-only advance over the
+  same object set remains suppressed;
 - partial acquisition drops every candidate handle and monitor;
 - injected failures obey bounded exponential backoff rather than retrying every commit;
   and

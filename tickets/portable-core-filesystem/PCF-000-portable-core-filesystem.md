@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 12:29 MYT
+- Updated: 2026-07-23 12:32 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -194,6 +194,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 12:11 MYT - Cleared PCF-002's architecture-decision blocker after user approval of a security-equivalent hybrid object validation lease. The approved design replaces repeated unchanged-object opens with retained-handle metadata plus ordered path monitoring, preserves the complete safe-open validator as the fail-closed fallback, and leaves catalog formats, durability, recovery, rotation, benchmark fixtures, timers, and gates unchanged. PCF-002's row and this parent return to `in_progress`; the maximum-live gate is still open and PCF-003 through PCF-010 remain dependency-ineligible.
 - 2026-07-23 12:25 MYT - PCF-002's first independent architecture review found four specification blockers covering Windows notification-name ambiguity, production link-count semantics, missing unlock-session ownership, and unbounded handle retention. The revised design now uses directory-wide invalidation for every non-probe event, exact one-link Windows behavior, an unlock-scoped native session with explicit teardown outside the Python session-store lock, and a 4,096-handle ceiling with atomic fallback/backoff. Re-review remains pending; PCF-002 and this parent stay `in_progress`, and downstream eligibility is unchanged.
 - 2026-07-23 12:29 MYT - PCF-002's second architecture review accepted the Windows security corrections but found that admitted operations could outlive session close, multiple tokens could multiply the per-lease resource ceiling, and the CoreFS route/API surface was missing. The design now drains admitted native operations outside the GIL before monitor/handle teardown, uses one atomic process budget of 4,096 handles and four leases with RAII/epoch retry, and requires route-level unlock-session coordinator selection. Third review is pending; initiative and downstream state are unchanged.
+- 2026-07-23 12:32 MYT - PCF-002's third architecture review accepted the prior lifecycle and budget corrections but found release could reopen after terminal close and unchanged commits could double-reserve the 4,096-handle process budget. The revised state machine gives terminal close monotonic precedence over `Releasing`, makes all close callers wait for `Closed`, and carries exact clean handles/monitor/permit across generations at constant resource use. Changed-set fallback and retry are now bound to RAII handle units plus budget epoch and authenticated object-set identity/count. Fourth review is pending; initiative and downstream state are unchanged.
 
 ## Validation
 
