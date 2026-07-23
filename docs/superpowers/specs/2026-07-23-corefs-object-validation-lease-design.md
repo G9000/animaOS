@@ -13,7 +13,8 @@ written-spec reapproval pending
 rounds covering notification-name ambiguity, production link-count behavior,
 unlock-session ownership, operation draining, terminal close/release races, route
 authority, steady-state lease carry-forward, and process-wide resource bounds. The
-macOS extension below must pass a fresh independent review before planning.
+first macOS review found three Important stream-lifecycle issues; the revision below
+addresses them and requires re-review before planning.
 
 ## Context
 
@@ -202,35 +203,89 @@ event as `DirtyAll` prevents alternate casing or short-name reporting from hidin
 replacement. A future targeted invalidation path requires a separately reviewed
 lossless name-attribution design.
 
-#### macOS monitor and fence
+#### macOS monitor creation
 
 The macOS backend uses a process-local FSEvents stream for the canonical physical
 `objects/` directory, scheduled on a dedicated serial dispatch queue. It treats the
 stream as a directory-wide invalidation signal and never trusts an event path or
-filename. Apple's documented contract for
-[`FSEventStreamFlushSync`](https://developer.apple.com/documentation/coreservices/1445629-fseventstreamflushsync)
-is the native fence: the call does not return until the callback has received every
-event that occurred before the call. The commit thread invokes the fence; it is never
-called from the callback queue.
+filename.
 
-The macOS backend must:
+Creation is an exact native contract:
 
-- start the stream before the initial full object scan and retain it for the complete
-  lease lifetime;
-- classify every ordinary filesystem event as `DirtyAll`, including an event for an
+1. derive the watched absolute path from the already-open pinned `objects/` directory
+   descriptor with `F_GETPATH`; do not accept a caller-supplied watch path;
+2. create a per-host stream with
+   `sinceWhen = kFSEventStreamEventIdSinceNow`, latency `0.050` seconds, and exactly
+   `kFSEventStreamCreateFlagWatchRoot |
+   kFSEventStreamCreateFlagFileEvents |
+   kFSEventStreamCreateFlagNoDefer`;
+3. omit `IgnoreSelf`, because CoreFS-originated changes must not disappear from the
+   conservative directory-wide state; omit `MarkSelf` and `UseCFTypes`, because neither
+   self-attribution nor event paths are consumed;
+4. call `FSEventStreamSetDispatchQueue` before `FSEventStreamStart`;
+5. if creation returns null or `Start` returns false, mark the candidate `Unknown`,
+   release its native resources, and use the safe-open path; Apple likewise documents
+   [failed start as requiring fallback scanning](https://developer.apple.com/documentation/coreservices/1448000-fseventstreamstart);
+   and
+6. after successful start and before scanning any object, revalidate the pinned root,
+   `fs/`, `catalogs/`, and `objects/` identities and prove the canonical watch path
+   still names the pinned `objects/` descriptor.
+
+`WatchRoot` is mandatory because Apple emits
+[`RootChanged`](https://developer.apple.com/documentation/coreservices/kfseventstreamcreateflagwatchroot)
+only for streams created with that flag. `FileEvents` ensures direct object data,
+metadata, link, and entry changes request file-level delivery, while names remain
+non-authoritative. `NoDefer` reduces idle notification latency; correctness still
+depends on the explicit fence, not latency.
+
+The stream starts before the initial full object scan and remains alive for the
+complete lease generation. Replacement or rename of `objects/` or an ancestor between
+the first layout observation and stream start is therefore caught by the mandatory
+post-start identity check; activity after start is caught by the fence.
+
+#### macOS callback and asynchronous fence
+
+The C callback performs no deferred work. It wraps all Rust logic in
+`catch_unwind`; a panic is converted to `Unknown` and never crosses the C ABI. Before
+returning, it synchronously publishes into a small callback-state mutex:
+
+- `Unknown` for `MustScanSubDirs`, `UserDropped`, `KernelDropped`,
+  `EventIdsWrapped`, `RootChanged`, `Mount`, or `Unmount`;
+- `DirtyAll` for every ordinary filesystem event, including an event for an
   unreferenced name;
-- preserve callback state across fences and wait for the serial callback queue to
-  publish its result before returning;
-- map stream creation/start/flush failure, cancellation, callback panic, root identity
-  change, and the `MustScanSubDirs`, `UserDropped`, `KernelDropped`,
-  `EventIdsWrapped`, `RootChanged`, `Mount`, or `Unmount` flags to `Unknown`; Apple's
-  FSEvents guidance requires a full rescan after
-  [`MustScanSubDirs`](https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags/kfseventstreameventflagmustscansubdirs/)
-  or [dropped events](https://developer.apple.com/documentation/coreservices/kfseventstreameventflaguserdropped);
-- use only process-lifetime stream continuity, not persisted event IDs or replayed
-  FSEvents history, as lease evidence; and
-- cancel, flush/drain, invalidate, release, and join the dispatch worker during lease
-  teardown without a callback touching released state.
+- the maximum nonzero event ID processed by that callback; and
+- a condition-variable wakeup for fence waiters.
+
+The callback never acquires the commit cache, session-state, Core lock, or operation
+guard. A fence caller never holds the callback-state mutex while invoking a native
+FSEvents function, performing filesystem I/O, or waiting on the dispatch queue.
+Apple's FSEvents guidance requires a full rescan after
+[`MustScanSubDirs`](https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags/kfseventstreameventflagmustscansubdirs/)
+or [dropped events](https://developer.apple.com/documentation/coreservices/kfseventstreameventflaguserdropped).
+
+The native macOS fence uses
+[`FSEventStreamFlushAsync`](https://developer.apple.com/documentation/coreservices/1441727-fseventstreamflushasync?language=occ),
+not `FlushSync`:
+
+1. reject invocation from the callback queue using a dispatch-queue-specific key;
+2. check cancellation and call `FSEventStreamFlushAsync` without the callback-state
+   mutex held;
+3. treat its returned event ID as the last event queued for this stream at the fence;
+4. when the ID is nonzero, wait on the condition variable until the callback has
+   synchronously published that ID or a later one;
+5. when the ID is zero, there has been no nonzero stream event to acknowledge; proceed
+   directly to the identity check;
+6. cancel immediately or time out after `2` seconds as `Unknown`; and
+7. after acknowledgment, revalidate the pinned root, `fs/`, `catalogs/`, and `objects/`
+   identities and canonical watched-path binding before returning `Clean`.
+
+A clean lease generation has never processed an ordinary event: the first event makes
+that generation `DirtyAll`, and it is never reset to clean. This makes a nonzero async
+flush target an acknowledgment point, not persistent event-history authority.
+`RootChanged` has event ID zero; the callback maps it to `Unknown`, and the mandatory
+post-fence pinned-layout/path check independently closes the zero-ID rename/replacement
+case before `Clean` can return. Process-lifetime stream continuity is the only event
+evidence; event IDs are not serialized or replayed.
 
 The macOS fast path never retains one file descriptor per object. After initial
 safe-open validation, each clean hit calls
@@ -246,6 +301,27 @@ FSEvents may coalesce directory activity, which is acceptable because any callba
 dirties the whole lease. The stream's file-event/name detail is diagnostic only. The
 backend does not require or claim one event per mutation.
 
+#### macOS teardown
+
+macOS has no monitor thread to join. After session cancellation has woken fence waiters
+and all admitted operation guards have drained, teardown runs from a non-callback
+thread:
+
+1. set the monitor cancellation flag and notify all fence waiters;
+2. call `FSEventStreamStop`;
+3. call `FSEventStreamInvalidate` while the stream is still scheduled; Apple documents
+   that [invalidation unschedules the dispatch queue](https://developer.apple.com/documentation/coreservices/1446990-fseventstreaminvalidate);
+4. issue an empty `dispatch_sync_f` barrier to the serial callback queue, after rejecting
+   self-queue execution with the queue-specific key;
+5. release the FSEvents stream, allowing its context release hook to drop the
+   stream-held `Arc`, and only then drop the monitor's owner `Arc`; and
+6. release the dispatch queue.
+
+The callback context is retained by the stream's native context retain/release hooks.
+The invalidation plus serial-queue barrier, not a fictitious worker join, proves no
+callback can touch the context after release. No panic, timeout, cancellation, or
+partial construction path may free the context or queue earlier.
+
 The implementation plan must begin with focused platform characterizations of both
 native fences. If either backend cannot establish its stated ordered boundary, that
 backend must stay on the current safe-open path and return for a new architecture
@@ -258,15 +334,16 @@ Lease construction follows this order:
 1. acquire the existing Core-wide kernel lock;
 2. revalidate the pinned root, `fs/`, `catalogs/`, and `objects/` identities;
 3. read and authenticate the exact pointer/catalog state through the existing path;
-4. arm the object-directory monitor;
-5. validate every referenced object through the existing safe-open rules;
-6. construct the platform anchor from the validated opened-versus-linked observation:
+4. arm the object-directory monitor through its platform creation contract;
+5. revalidate the pinned layout identities after successful monitor start;
+6. validate every referenced object through the existing safe-open rules;
+7. construct the platform anchor from the validated opened-versus-linked observation:
    retain the opened handle and identity on Windows, or capture the linked
    device/inode/type/length/link-count stamp on macOS;
-7. validate new/prepared objects through the current length and encrypted-hash path,
+8. validate new/prepared objects through the current length and encrypted-hash path,
    returning the already validated platform anchor;
-8. fence the monitor; and
-9. publish `Clean` lease state only when no relevant unaccounted event occurred.
+9. fence the monitor; and
+10. publish `Clean` lease state only when no relevant unaccounted event occurred.
 
 If a relevant event occurs during the scan, the implementation retries once from a
 fresh pointer/layout observation under the same lock. A second event, any ambiguity, or
@@ -445,7 +522,8 @@ panic unwind. A terminal-close flag is monotonic: once any caller requests close
 2. set terminal close, signal monitor cancellation, and wake any admitted operation
    blocked in a monitor fence;
 3. wait until every already-admitted operation guard has drained;
-4. join the monitor worker;
+4. perform backend-specific monitor drain: join the Windows worker, or run the macOS
+   stop/invalidate/serial-queue-barrier sequence;
 5. clear the coordinator cache and drop every retained handle or macOS stamp and every
    budget permit;
 6. transition to `Closed`; and
@@ -456,12 +534,13 @@ The blocking drain/join portion of the PyO3 close method runs inside
 `Python::allow_threads` so an admitted operation that must reacquire the GIL can
 finish. Monitor fence waits are bounded and cancellation-aware; cancellation returns
 `Unknown` so an admitted operation can complete through safe-open fallback or return
-its existing typed failure rather than deadlocking close. The monitor worker never
-invokes Python.
+its existing typed failure rather than deadlocking close. No backend monitor worker or
+callback invokes Python.
 
 Logout, token revocation, user-session replacement, expiry purge, store clear, and
 server shutdown must close removed native sessions. The Python session-store lock must
-not be held while cancellation waits, thread join, or native handle destruction runs:
+not be held while cancellation waits, backend drain, or native resource destruction
+runs:
 the store first makes removed sessions unreachable under its lock, then closes their
 native resources outside the lock.
 
@@ -470,9 +549,10 @@ logout/lock before external drive removal. It exposes an idempotent
 `release_object_lease()` operation for later transfer/export and PCF-008 eject
 coordination, but does not claim unimplemented desktop suspend/eject hooks. Release
 uses the explicit `Releasing` state: temporarily reject new operations, cancel/wake the
-monitor, drain admitted operations outside the GIL, and clear/join the lease. It returns
-to `Open` only if no terminal close was requested; otherwise close owns teardown and
-all callers wait for `Closed`. A later admitted operation may rebuild a fresh lease.
+monitor, drain admitted operations outside the GIL, and clear/drain the lease. It
+returns to `Open` only if no terminal close was requested; otherwise close owns
+teardown and all callers wait for `Closed`. A later admitted operation may rebuild a
+fresh lease.
 
 ### 10. Resource and fallback policy
 
@@ -571,7 +651,7 @@ The Windows spike compares the current safe-open loop with:
 
 The macOS spike compares the current safe-open loop with:
 
-1. two `FSEventStreamFlushSync` fences;
+1. two `FSEventStreamFlushAsync` acknowledgment fences;
 2. 2,500 capability-relative `fstatat(..., AT_SYMLINK_NOFOLLOW)` calls and stamp
    comparisons; and
 3. conservative directory-wide invalidation overhead.
@@ -622,17 +702,27 @@ Windows-specific coverage proves:
 
 macOS-specific coverage runs on macOS and proves:
 
-- a stream armed before the initial scan followed by `FSEventStreamFlushSync` cannot
+- a stream armed before the initial scan followed by an async acknowledgment fence cannot
   publish a clean lease when a mutation raced the scan;
+- stream creation uses `SinceNow`, `WatchRoot`, `FileEvents`, `NoDefer`, a finite
+  latency, queue-before-start ordering, and never `IgnoreSelf`;
+- null creation/start failure uses safe-open fallback, and replacement of `objects/` or
+  an ancestor between initial layout validation and start fails the post-start identity
+  check;
 - ordinary callback batches, including coalesced or unreferenced-name events, produce
   `DirtyAll`;
 - injected `MustScanSubDirs`, `UserDropped`, `KernelDropped`, `EventIdsWrapped`,
   `RootChanged`, `Mount`, and `Unmount` flags become `Unknown`;
-- stream create/start/flush failure, callback panic, cancellation, and root-directory
-  identity change become `Unknown`;
+- callback panic is contained within the C ABI, while creation/start failure, fence
+  timeout, cancellation, and root-directory identity change become `Unknown`;
 - a pre-validation flush and post-validation flush close the intended event window, and
   a mutation in either race seam forces retry/fallback;
-- teardown drains the callback queue and no callback publishes after close; and
+- callbacks synchronously publish state and event-ID progress without a callback-needed
+  mutex held across native flush or queue operations;
+- a zero-ID `RootChanged` race fails the post-fence pinned-layout/path check;
+- teardown rejects callback-queue self-drain, follows
+  cancel/stop/invalidate/barrier/release ordering, keeps its context alive through the
+  barrier, and permits no callback publication after close; and
 - no per-object descriptor growth occurs across repeated 2,500-object clean commits.
 
 ### Lease equivalence

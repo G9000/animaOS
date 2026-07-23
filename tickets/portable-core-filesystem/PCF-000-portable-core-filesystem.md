@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 13:22 MYT
+- Updated: 2026-07-23 13:37 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -197,6 +197,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 12:32 MYT - PCF-002's third architecture review accepted the prior lifecycle and budget corrections but found release could reopen after terminal close and unchanged commits could double-reserve the 4,096-handle process budget. The revised state machine gives terminal close monotonic precedence over `Releasing`, makes all close callers wait for `Closed`, and carries exact clean handles/monitor/permit across generations at constant resource use. Changed-set fallback and retry are now bound to RAII handle units plus budget epoch and authenticated object-set identity/count. Fourth review is pending; initiative and downstream state are unchanged.
 - 2026-07-23 12:34 MYT - PCF-002's fourth independent architecture review approved the final object validation lease with every prior Windows, lifecycle, authority, carry-forward, and resource-budget finding resolved. The platform fence proof and release-mode performance spike remain mandatory implementation gates. The written-spec user-review gate is next; PCF-002 and this parent remain `in_progress`, and downstream eligibility is unchanged.
 - 2026-07-23 13:22 MYT - At the user's request, PCF-002's object validation lease now includes a native macOS backend using FSEvents flush fences and capability-relative non-following metadata stamps without per-object descriptor retention. Any event or ambiguous/dropped stream state still forces complete safe-open validation. The official Windows gate is unchanged; macOS adds native correctness, lifecycle, CI, and APFS diagnostic gates. The material extension reopens independent review and written-spec approval before planning; PCF-002 and this parent remain `in_progress`, with downstream eligibility unchanged and no external action taken.
+- 2026-07-23 13:37 MYT - PCF-002's first independent macOS review found three Important stream-lifecycle gaps in creation/start identity ordering, uncancellable synchronous fencing, and callback/dispatch teardown. The revised design now pins exact FSEvents flags and post-start layout identity, uses bounded asynchronous event-ID acknowledgment with a post-fence identity proof, contains callback panics and publishes state synchronously, and drains teardown through stop/invalidate plus a serial-queue barrier before release. Re-review and written-spec approval remain open; PCF-002 and this parent stay `in_progress`, downstream eligibility is unchanged, and no external action was taken.
 
 ## Validation
 
