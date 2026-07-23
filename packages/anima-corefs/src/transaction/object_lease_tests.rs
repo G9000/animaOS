@@ -604,3 +604,304 @@ fn cache_discards_lease_resources_outside_its_mutex() {
         );
     }
 }
+
+#[cfg(windows)]
+mod windows_object_lease_tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use cap_std::ambient_authority;
+    use cap_std::fs::Dir;
+
+    use super::*;
+    use crate::transaction::object_lease::windows::{
+        notification_outcome_for_test, probe_name_for_test, RetainedValidationAnchor,
+        TestNotification, WindowsLeaseFactory,
+    };
+
+    fn monitored_lease(
+        label: &str,
+    ) -> (
+        std::path::PathBuf,
+        Arc<ObjectValidationLease>,
+        Arc<LeaseBudget>,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-windows-object-lease-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let object = binding(0);
+        fs::write(root.join(object.physical_name.as_str()), b"ciphertext").unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let factory = WindowsLeaseFactory::new(dir).unwrap();
+        let budget = Arc::new(LeaseBudget::isolated());
+        let lease = ObjectValidationLease::try_acquire_with_budget(&budget, vec![object], &factory)
+            .unwrap();
+        (root, lease, budget)
+    }
+
+    fn assert_no_probe_residue(root: &std::path::Path) {
+        let residue: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("AL") && name.ends_with(".TMP"))
+            .collect();
+        assert!(residue.is_empty(), "probe residue: {residue:?}");
+    }
+
+    #[test]
+    fn windows_object_lease_probe_is_unpredictable_8_3_compatible_ascii() {
+        let left = probe_name_for_test().unwrap();
+        let right = probe_name_for_test().unwrap();
+        assert_ne!(left, right);
+        for name in [left, right] {
+            let (stem, extension) = name.split_once('.').unwrap();
+            assert_eq!(stem.len(), 8);
+            assert_eq!(extension, "TMP");
+            assert!(name.is_ascii());
+            assert!(stem.starts_with("AL"));
+            assert!(stem.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        }
+    }
+
+    #[test]
+    fn windows_object_lease_only_exact_active_probe_lifecycle_is_clean() {
+        let probe = "AL123456.TMP";
+        assert_eq!(
+            notification_outcome_for_test(
+                probe,
+                &[
+                    TestNotification::Added(probe.into()),
+                    TestNotification::Removed(probe.into()),
+                ],
+                true,
+            ),
+            FenceOutcome::Clean
+        );
+        assert_eq!(
+            notification_outcome_for_test(
+                probe,
+                &[
+                    TestNotification::Added("al123456.tmp".into()),
+                    TestNotification::Removed("al123456.tmp".into()),
+                ],
+                true,
+            ),
+            FenceOutcome::Unknown,
+            "alternate case must not masquerade as exact fence traffic"
+        );
+        assert_eq!(
+            notification_outcome_for_test(
+                probe,
+                &[
+                    TestNotification::Modified(probe.into()),
+                    TestNotification::Removed(probe.into()),
+                ],
+                true,
+            ),
+            FenceOutcome::Unknown
+        );
+        assert_eq!(
+            notification_outcome_for_test(
+                probe,
+                &[
+                    TestNotification::Added("UNREF.TMP".into()),
+                    TestNotification::Removed("UNREF.TMP".into()),
+                    TestNotification::Added(probe.into()),
+                    TestNotification::Removed(probe.into()),
+                ],
+                true,
+            ),
+            FenceOutcome::DirtyAll
+        );
+    }
+
+    #[test]
+    fn windows_object_lease_ambiguity_and_failure_are_unknown() {
+        let probe = "AL123456.TMP";
+        for notifications in [
+            vec![TestNotification::Overflow],
+            vec![TestNotification::ParseError],
+            vec![TestNotification::HandleLoss],
+            vec![TestNotification::Cancelled],
+            vec![TestNotification::RenamedOld(probe.into())],
+            vec![TestNotification::RenamedNew(probe.into())],
+            vec![
+                TestNotification::RenamedOld("OLD.TMP".into()),
+                TestNotification::Added(probe.into()),
+                TestNotification::RenamedNew("NEW.TMP".into()),
+                TestNotification::Removed(probe.into()),
+            ],
+        ] {
+            assert_eq!(
+                notification_outcome_for_test(probe, &notifications, true),
+                FenceOutcome::Unknown
+            );
+        }
+        assert_eq!(
+            notification_outcome_for_test(
+                probe,
+                &[
+                    TestNotification::Added(probe.into()),
+                    TestNotification::Removed(probe.into()),
+                ],
+                false,
+            ),
+            FenceOutcome::Unknown,
+            "probe cleanup failure must be terminal uncertainty"
+        );
+    }
+
+    #[test]
+    fn windows_object_lease_every_non_probe_mutation_is_dirty_all() {
+        let probe = "AL123456.TMP";
+        for notification in [
+            TestNotification::Added("CREATE.ACORE".into()),
+            TestNotification::Removed("DELETE.ACORE".into()),
+            TestNotification::Modified("TRUNCATE.ACORE".into()),
+            TestNotification::Modified("REPARSE.ACORE".into()),
+            TestNotification::Added("REPLACE.ACORE".into()),
+        ] {
+            assert_eq!(
+                notification_outcome_for_test(
+                    probe,
+                    &[
+                        notification,
+                        TestNotification::Added(probe.into()),
+                        TestNotification::Removed(probe.into()),
+                    ],
+                    true,
+                ),
+                FenceOutcome::DirtyAll
+            );
+        }
+        assert_eq!(
+            notification_outcome_for_test(
+                probe,
+                &[
+                    TestNotification::RenamedOld("OLD.ACORE".into()),
+                    TestNotification::RenamedNew("NEW.ACORE".into()),
+                    TestNotification::Added(probe.into()),
+                    TestNotification::Removed(probe.into()),
+                ],
+                true,
+            ),
+            FenceOutcome::DirtyAll
+        );
+    }
+
+    #[test]
+    fn windows_object_lease_arms_before_anchor_scan_and_fences_both_seams() {
+        let (root, lease, budget) = monitored_lease("ordered-seams");
+        assert_eq!(lease.fence(), MonitorState::Clean);
+
+        fs::write(root.join("before-first-fence"), b"mutation").unwrap();
+        assert_eq!(lease.fence(), MonitorState::DirtyAll);
+        drop(lease);
+        assert_eq!(budget.usage().leases, 0);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+
+        let (root, lease, budget) = monitored_lease("between-fences");
+        assert_eq!(
+            lease.fence_with_validation_hook_for_test(|| {
+                fs::write(root.join("between-fences"), b"mutation").unwrap();
+            }),
+            MonitorState::DirtyAll
+        );
+        drop(lease);
+        assert_eq!(budget.usage().leases, 0);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_object_lease_real_create_delete_rename_truncate_and_replace_are_dirty() {
+        for mutation in ["create", "delete", "rename", "truncate", "replace"] {
+            let (root, lease, _budget) = monitored_lease(mutation);
+            let target = root.join("mutation-target");
+            let object = root.join(binding(0).physical_name.as_str());
+            match mutation {
+                "create" => fs::write(&target, b"payload").unwrap(),
+                "delete" => fs::remove_file(&object).unwrap(),
+                "rename" => fs::rename(&object, &target).unwrap(),
+                "truncate" => fs::write(&object, []).unwrap(),
+                "replace" => {
+                    fs::rename(&object, &target).unwrap();
+                    fs::write(&object, b"replacement").unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(lease.fence(), MonitorState::DirtyAll, "{mutation}");
+            drop(lease);
+            let _ = fs::remove_file(&target);
+            assert_no_probe_residue(&root);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn windows_object_lease_retained_anchor_rejects_handle_loss_and_outside_hard_link() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-windows-object-anchor-{}",
+            std::process::id()
+        ));
+        let outside = root.with_extension("outside");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let path = root.join("object.acore");
+        fs::write(&path, b"ciphertext").unwrap();
+
+        let anchor = RetainedValidationAnchor::new(fs::File::open(&path).unwrap()).unwrap();
+        let lost = RetainedValidationAnchor::new(fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(anchor.validate(), FenceOutcome::Clean);
+        fs::hard_link(&path, outside.join("outside-link")).unwrap();
+        assert_eq!(anchor.validate(), FenceOutcome::Unknown);
+
+        lost.invalidate_for_test();
+        assert_eq!(lost.validate(), FenceOutcome::Unknown);
+
+        drop(anchor);
+        drop(lost);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+
+        let (root, lease, _budget) = monitored_lease("outside-hard-link");
+        let outside = root.with_extension("outside");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::hard_link(
+            root.join(binding(0).physical_name.as_str()),
+            outside.join("outside-link"),
+        )
+        .unwrap();
+        assert_eq!(
+            lease.fence(),
+            MonitorState::Unknown,
+            "a link created outside the watched directory must be rejected by fresh handle metadata"
+        );
+        drop(lease);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn windows_object_lease_cancellation_is_unknown_and_leaves_zero_residue() {
+        let (root, lease, budget) = monitored_lease("cancel");
+        let state = lease.state_cell_for_test();
+        let started = std::time::Instant::now();
+        drop(lease);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "monitor cancellation exceeded two seconds"
+        );
+        assert_eq!(state.state(), MonitorState::Unknown);
+        assert_eq!(budget.usage().leases, 0);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

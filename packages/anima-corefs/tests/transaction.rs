@@ -412,6 +412,26 @@ fn cache_hit_rejects_unexpected_hard_link() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn cache_hit_rejects_unexpected_hard_link_named_like_unix_crash_stage_on_windows() {
+    let (root, coordinator, keys, prepared) =
+        seed_cached_object("cache-hit-unix-crash-alias-on-windows");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    fs::hard_link(
+        object_path,
+        coordinator.objects_path().join(".object.17.tmp"),
+    )
+    .unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
     let root = reset_root("cross-coordinator-unlocked-cache-miss");

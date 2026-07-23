@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use super::cache::ValidatedObjectBinding;
 
+#[cfg(windows)]
+pub(super) mod windows;
+
 pub(super) const MAX_OBJECT_LEASE_ENTRIES: usize = 4_096;
 pub(super) const MAX_PROCESS_OBJECT_LEASE_ENTRIES: usize = 4_096;
 pub(super) const MAX_PROCESS_OBJECT_LEASES: usize = 4;
@@ -72,7 +75,9 @@ impl MonitorStateCell {
     }
 }
 
-pub(super) trait PlatformValidationAnchor: fmt::Debug + Send + Sync {}
+pub(super) trait PlatformValidationAnchor: fmt::Debug + Send + Sync {
+    fn validate(&self) -> FenceOutcome;
+}
 
 #[derive(Debug)]
 pub(super) enum ValidationAnchor {
@@ -88,6 +93,17 @@ impl ValidationAnchor {
     #[cfg(test)]
     pub(super) fn test(identity: u64) -> Self {
         Self::Test(identity)
+    }
+
+    fn validate(&self) -> FenceOutcome {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(anchor) => anchor.validate(),
+            #[cfg(target_os = "macos")]
+            Self::Macos(anchor) => anchor.validate(),
+            #[cfg(test)]
+            Self::Test(_) => FenceOutcome::Clean,
+        }
     }
 }
 
@@ -459,7 +475,35 @@ impl ObjectValidationLease {
     }
 
     pub(super) fn fence(&self) -> MonitorState {
+        self.fence_with_validation_hook(|| {})
+    }
+
+    fn fence_with_validation_hook(&self, between_fences: impl FnOnce()) -> MonitorState {
+        if self.publish_fence(self.monitor.fence()) != MonitorState::Clean {
+            return self.state();
+        }
+
+        between_fences();
+        for binding in &self.bindings {
+            if self.publish_fence(binding.anchor.validate()) != MonitorState::Clean {
+                return self.state();
+            }
+        }
+
         self.publish_fence(self.monitor.fence())
+    }
+
+    #[cfg(test)]
+    pub(super) fn fence_with_validation_hook_for_test(
+        &self,
+        between_fences: impl FnOnce(),
+    ) -> MonitorState {
+        self.fence_with_validation_hook(between_fences)
+    }
+
+    #[cfg(test)]
+    pub(super) fn state_cell_for_test(&self) -> Arc<MonitorStateCell> {
+        self.state.clone()
     }
 
     pub(super) fn publish_dirty(&self) {
