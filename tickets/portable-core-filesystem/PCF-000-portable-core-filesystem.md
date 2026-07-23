@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: blocked
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 02:42 MYT
+- Updated: 2026-07-23 12:11 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -22,7 +22,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | blocked | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -191,6 +191,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-22 15:08 MYT - Task 10 quality review validated the artifact, target/archive trees, red-state transition, and all dependency state, then found the design's blocker table still mislabeled the pre-optimization all-red baseline as current. Updated the canonical diagnosis to the actual result: medium and serialized-limit pass, while the 2,500-object maximum-live workload alone fails at p95 `299.6261` ms with material tail variability. Documented post-evidence audit mode and the intentional machine-identifying storage/path evidence that requires explicit acceptance before any separately authorized publication. No benchmark evidence changed, no 30/200 rerun is required, PCF-002 and this parent remain `blocked`, and no child is eligible.
 - 2026-07-23 02:05 MYT - Addressed PR #117 current-head P1 durable-catalog feedback test-first in PCF-002. Exact cache hits now reopen and verify the HEAD-bound generation hash; deleting or changing catalog bytes fails and clears the cache before loads return or commit builders run, including post-rotation callbacks. The focused regressions, 25 cache tests, full 265-test Rust 1.75 CoreFS suite with 3 helpers ignored, strict all-target Clippy, scoped rustfmt, and diff hygiene passed, and the design/plan now match the corrected disk-authority boundary. The exact 30/200 rerun from corrective commit `dd9ef8d8` passed medium and serialized-limit at p95 `75.6318`/`246.7518` ms but kept maximum-live red at `298.6453` ms; independent provenance/tree validation plus all 121 benchmark-contract tests passed. PCF-002 and this parent remain `blocked`, and PCF-003 through PCF-010 remain ineligible.
 - 2026-07-23 02:42 MYT - Addressed PR #117 current-head P2 retained-cutover-catalog feedback in PCF-002 at `f16a2f6d`: exact cache hits now authenticate every distinct catalog named by HEAD, receipt, and completion before cached decoded state can return or build. The retained-generation RED/GREEN regression, full correctness gates, and source-current exact 30/200 evidence passed validation; only maximum-live p95 remains red at `361.1692` ms. The immediately prior complete target remains archived beside the canonical target. Disk-full partial runs and selected oldest audit archives were moved intact to `D:\animaOS-benchmark-archives\pr117-retained-reauth-20260723` without data deletion or moving the prior/current evidence binaries. PCF-002 and this parent remain `blocked`, and PCF-003 through PCF-010 remain ineligible.
+- 2026-07-23 12:11 MYT - Cleared PCF-002's architecture-decision blocker after user approval of a security-equivalent hybrid object validation lease. The approved design replaces repeated unchanged-object opens with retained-handle metadata plus ordered path monitoring, preserves the complete safe-open validator as the fail-closed fallback, and leaves catalog formats, durability, recovery, rotation, benchmark fixtures, timers, and gates unchanged. PCF-002's row and this parent return to `in_progress`; the maximum-live gate is still open and PCF-003 through PCF-010 remain dependency-ineligible.
 
 ## Validation
 

@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: blocked
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -9,8 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-2-shared-file-tools-immutable-object-store-catalog-and-corefs-contract`
 - Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
+- Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 02:42 MYT
+- Updated: 2026-07-23 12:11 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -172,6 +173,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-22 15:08 MYT - Task 10 quality review validated the artifact, target/archive trees, red-state transition, and downstream dependency state, then found the design's blocker table still presented the pre-optimization all-red baseline as current. Updated the canonical diagnosis to the actual result: medium and serialized-limit pass, while the 2,500-object maximum-live workload alone fails at p95 `299.6261` ms with material tail variability. Documented post-evidence audit mode and the intentional machine-identifying storage/path evidence that requires explicit acceptance before any separately authorized publication. No benchmark evidence changed, no 30/200 rerun is required, PCF-002 remains `blocked` with its original `Started:` preserved, and no child is eligible.
 - 2026-07-23 02:05 MYT - Addressed PR #117 current-head P1 thread `PRRT_kwDORPzHkM6TAkBo` test-first. Missing-generation, changed-generation, and commit-before-build regressions all failed against the stale in-memory authority path. Exact unlocked, locked, recovery, commit, and rotation cache hits now re-read the bounded HEAD-named generation and verify its SHA-256 before reusing decoded state; failure clears the snapshot. The expensive decrypt/decode/validation/re-encode path remains skipped. Focused regressions, all 25 cache tests, the corrected rotation callback contract, the full 265-test Rust 1.75 CoreFS suite with 3 helpers ignored, strict all-target Clippy, scoped rustfmt, and diff hygiene passed. The approved design and implementation plan now record disk reauthentication as part of an exact hit. After archiving only the prior create-only target as `corefs-catalog-reference-v1.pre-pr117-reauth-20260723-0158`, the exact source-bound 30/200 rerun from commit `dd9ef8d8` preserved the blocker shape: medium and serialized-limit pass at p95 `75.6318`/`246.7518` ms, while maximum-live remains red at `298.6453` ms. Independent provenance/tree validation and all 121 benchmark-contract tests passed. PCF-002 remains `blocked`, its original `Started:` is preserved, and no child is eligible.
 - 2026-07-23 02:42 MYT - Addressed PR #117 current-head P2 retained-cutover-catalog feedback test-first at `f16a2f6d`. Every distinct catalog in the exact HEAD/receipt/completion tuple is now reopened and hash-verified before cached state can return or build; equal records are authenticated once, and missing retained bytes fail closed without reintroducing decrypt/decode/validation/re-encode work. The regression proves two bounded catalog reads and zero decrypts/encodes, and all correctness gates passed. Preserved the immediately prior complete target as `corefs-catalog-reference-v1.pre-pr117-retained-reauth-20260723-022937`; when C: filled during two failed partial attempts, moved those partials and selected oldest audit archives intact to `D:\animaOS-benchmark-archives\pr117-retained-reauth-20260723` without deleting data or moving the prior/current evidence binaries. The successful exact 30/200 artifact is source-bound to `f16a2f6d`, independently validated, and remains red only for maximum-live p95 `361.1692` ms. PCF-002 remains `blocked`, its original `Started:` is preserved, and no child is eligible.
+- 2026-07-23 12:11 MYT - Cleared the separately approved architecture-revision blocker after the user selected and approved a security-equivalent object validation lease. The new design retains full snapshots, catalog-byte reauthentication, HEAD-last durability, recovery, rotation, unchanged benchmarks, and every current filesystem-layout check. A local NTFS characterization proved watcher-only invalidation misses a hard link created outside `objects/`, so the approved hybrid uses fresh retained-handle metadata for identity/length/link-count checks plus ordered path monitoring and complete safe-open fallback on any uncertainty. PCF-002 and the parent return to `in_progress`; the maximum-live acceptance gate remains open, PCF-003 remains dependency-ineligible, and no external action was taken.
 
 ## Validation
 
