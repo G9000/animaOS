@@ -567,7 +567,7 @@ impl WindowsLeaseMonitor {
             if monitor.cancellation_requested || !monitor.publication_open {
                 return FenceOutcome::Unknown;
             }
-            if monitor.terminal != FenceOutcome::Clean {
+            if monitor.terminal == FenceOutcome::Unknown {
                 if monitor
                     .active_probe
                     .as_ref()
@@ -584,7 +584,7 @@ impl WindowsLeaseMonitor {
             if let Some(outcome) = completed {
                 monitor.acknowledged_fence_generation = generation;
                 monitor.active_probe = None;
-                return outcome;
+                return merge_outcome(outcome, monitor.terminal);
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -973,6 +973,21 @@ fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Resul
             "Windows object lease notification handle is unavailable",
         )
     })?;
+    #[cfg(test)]
+    {
+        let result = read_directory_changes_from_handle(file.as_raw_handle(), buffer);
+        if result.is_ok() {
+            if let Some(notifications) = shared
+                .control
+                .as_ref()
+                .and_then(WindowsLeaseTestControl::take_injected_notification_batch)
+            {
+                return encode_notifications_for_test(buffer, &notifications);
+            }
+        }
+        result
+    }
+    #[cfg(not(test))]
     read_directory_changes_from_handle(file.as_raw_handle(), buffer)
 }
 
@@ -1056,6 +1071,94 @@ fn publish_terminal(
     shared.changed.notify_all();
 }
 
+#[cfg(test)]
+fn encode_notifications_for_test(
+    buffer: &mut [u8],
+    notifications: &[Notification],
+) -> io::Result<u32> {
+    let mut offset = 0_usize;
+    for (index, notification) in notifications.iter().enumerate() {
+        let (action, name) = match notification {
+            Notification::Added(name) => (FILE_ACTION_ADDED, name),
+            Notification::Removed(name) => (FILE_ACTION_REMOVED, name),
+            Notification::Modified(name) => (FILE_ACTION_MODIFIED, name),
+            Notification::RenamedOld(name) => (FILE_ACTION_RENAMED_OLD_NAME, name),
+            Notification::RenamedNew(name) => (FILE_ACTION_RENAMED_NEW_NAME, name),
+        };
+        let encoded_name: Vec<u16> = name.encode_utf16().collect();
+        let name_length = encoded_name.len().checked_mul(2).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "notification name is too large",
+            )
+        })?;
+        let raw_length = 12_usize.checked_add(name_length).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "notification record is too large",
+            )
+        })?;
+        let is_last = index + 1 == notifications.len();
+        let record_length = if is_last {
+            raw_length
+        } else {
+            raw_length
+                .checked_add(3)
+                .map(|length| length & !3)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "notification record is too large",
+                    )
+                })?
+        };
+        let record = buffer
+            .get_mut(offset..offset + record_length)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "notification batch exceeds fixed buffer",
+                )
+            })?;
+        record.fill(0);
+        let next = if is_last {
+            0
+        } else {
+            u32::try_from(record_length).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "notification record is too large",
+                )
+            })?
+        };
+        record[0..4].copy_from_slice(&next.to_le_bytes());
+        record[4..8].copy_from_slice(&action.to_le_bytes());
+        record[8..12].copy_from_slice(
+            &u32::try_from(name_length)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "notification name is too large",
+                    )
+                })?
+                .to_le_bytes(),
+        );
+        for (encoded, destination) in encoded_name
+            .iter()
+            .zip(record[12..12 + name_length].chunks_exact_mut(2))
+        {
+            destination.copy_from_slice(&encoded.to_le_bytes());
+        }
+        offset += record_length;
+    }
+    u32::try_from(offset).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "notification batch is too large",
+        )
+    })
+}
+
 fn apply_observed_outcome(
     shared: &WorkerShared,
     monitor: &mut WindowsMonitorState,
@@ -1128,6 +1231,10 @@ fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), 
                 monitor.pending_rename = false;
                 apply_observed_outcome(shared, &mut monitor, FenceOutcome::Unknown);
             }
+            #[cfg(test)]
+            if let Some(control) = &shared.control {
+                control.record_boundary_snapshot(&monitor);
+            }
             shared.changed.notify_all();
             return Ok(());
         }
@@ -1146,7 +1253,7 @@ fn fold_notification(
     monitor: &mut WindowsMonitorState,
     notification: Notification,
 ) {
-    if !monitor.publication_open || monitor.terminal != FenceOutcome::Clean {
+    if !monitor.publication_open || monitor.terminal == FenceOutcome::Unknown {
         return;
     }
 
@@ -1306,6 +1413,15 @@ pub(in crate::transaction) enum WorkerFaultForTest {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::transaction) struct BoundarySnapshotForTest {
+    pub(in crate::transaction) acknowledged_fence_generation: u64,
+    pub(in crate::transaction) boundary_progress: u64,
+    pub(in crate::transaction) deferred_outcome: FenceOutcome,
+    pub(in crate::transaction) active_probe_complete: bool,
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum CleanupFailureMode {
     #[default]
@@ -1338,6 +1454,7 @@ struct WindowsLeaseTestControlInner {
     cleanup_failure: Mutex<CleanupFailureMode>,
     cleanup_blocker: Mutex<Option<File>>,
     worker_faults: Mutex<VecDeque<WorkerFaultForTest>>,
+    injected_notification_batches: Mutex<VecDeque<Vec<Notification>>>,
     read_pause: Mutex<ReadPauseState>,
     read_pause_changed: Condvar,
     read_pause_wake_active: AtomicBool,
@@ -1355,6 +1472,9 @@ struct WindowsLeaseTestControlInner {
     construction_events: Mutex<Vec<ConstructionEventForTest>>,
     resource_liveness: Mutex<Vec<std::sync::Weak<()>>>,
     buffer_liveness: Mutex<Option<std::sync::Weak<()>>>,
+    boundary_snapshot: Mutex<Option<BoundarySnapshotForTest>>,
+    capture_next_boundary_snapshot: AtomicBool,
+    freeze_boundary_snapshot: AtomicBool,
 }
 
 #[cfg(test)]
@@ -1475,6 +1595,69 @@ impl WindowsLeaseTestControl {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .pop_front()
+    }
+
+    pub(in crate::transaction) fn inject_dirty_fence_batch(&self, probe: &str) {
+        self.inner
+            .capture_next_boundary_snapshot
+            .store(true, Ordering::SeqCst);
+        self.inner
+            .freeze_boundary_snapshot
+            .store(false, Ordering::SeqCst);
+        self.inner
+            .injected_notification_batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(vec![
+                Notification::Added("ORDINARY.ACORE".into()),
+                Notification::Added(probe.into()),
+                Notification::Removed(probe.into()),
+                Notification::Added("AFTER.ACORE".into()),
+            ]);
+    }
+
+    fn take_injected_notification_batch(&self) -> Option<Vec<Notification>> {
+        self.inner
+            .injected_notification_batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front()
+    }
+
+    fn record_boundary_snapshot(&self, monitor: &WindowsMonitorState) {
+        let mut snapshot = self
+            .inner
+            .boundary_snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let captured = self
+            .inner
+            .capture_next_boundary_snapshot
+            .swap(false, Ordering::SeqCst);
+        if captured {
+            self.inner
+                .freeze_boundary_snapshot
+                .store(true, Ordering::SeqCst);
+        }
+        if captured || !self.inner.freeze_boundary_snapshot.load(Ordering::SeqCst) {
+            *snapshot = Some(BoundarySnapshotForTest {
+                acknowledged_fence_generation: monitor.acknowledged_fence_generation,
+                boundary_progress: monitor.boundary_progress,
+                deferred_outcome: monitor.deferred_outcome,
+                active_probe_complete: monitor
+                    .active_probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.phase == ProbePhase::Complete),
+            });
+        }
+    }
+
+    pub(in crate::transaction) fn boundary_snapshot(&self) -> Option<BoundarySnapshotForTest> {
+        *self
+            .inner
+            .boundary_snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(in crate::transaction) fn pause_next_read(&self) {

@@ -616,9 +616,9 @@ mod windows_object_lease_tests {
 
     use super::*;
     use crate::transaction::object_lease::windows::{
-        notification_outcome_for_test, probe_name_for_test, ConstructionEventForTest,
-        RetainedValidationAnchor, TestNotification, WindowsLeaseFactory, WindowsLeaseTestControl,
-        WorkerFaultForTest,
+        notification_outcome_for_test, probe_name_for_test, BoundarySnapshotForTest,
+        ConstructionEventForTest, RetainedValidationAnchor, TestNotification, WindowsLeaseFactory,
+        WindowsLeaseTestControl, WorkerFaultForTest,
     };
 
     fn monitored_lease(
@@ -702,6 +702,34 @@ mod windows_object_lease_tests {
         assert_eq!(control.join_count(), 1);
         assert_eq!(budget.usage().leases, 0);
         assert!(!control.worker_resources_alive());
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_dirty_fence_tracks_probe_boundary_after_same_buffer_mutation() {
+        let (root, lease, _budget, control) =
+            monitored_lease_with_control("same-buffer-dirty-boundary");
+        let before = control.boundary_snapshot().unwrap();
+        let probe = "ALBNDRY1.TMP";
+        control.queue_probe_name(probe);
+        control.inject_dirty_fence_batch(probe);
+
+        assert_eq!(lease.fence(), MonitorState::DirtyAll);
+        assert_eq!(lease.state(), MonitorState::DirtyAll);
+        let after = control.boundary_snapshot().unwrap();
+        assert_eq!(
+            after,
+            BoundarySnapshotForTest {
+                acknowledged_fence_generation: before.acknowledged_fence_generation + 1,
+                boundary_progress: before.boundary_progress + 1,
+                deferred_outcome: FenceOutcome::DirtyAll,
+                active_probe_complete: true,
+            },
+            "DirtyAll must remain terminal while exact probe records still prove the requested boundary"
+        );
+
+        drop(lease);
         assert_no_probe_residue(&root);
         fs::remove_dir_all(root).unwrap();
     }
