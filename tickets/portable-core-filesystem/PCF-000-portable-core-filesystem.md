@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 19:07 MYT
+- Updated: 2026-07-23 20:01 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -216,6 +216,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-23 17:34 MYT - Blocked PCF-002 and this initiative after Task 4 commits `00753c43`, `a83b530d`, and `81a4a50e` reached spec-clean Windows correctness and all focused, release, fallback, full, and strict gates passed, but quality review exposed an unbounded event channel, unbounded cancellation/join worst case, and resource undercount. The official `CancelIoEx` lifetime contract makes deterministic never-completing I/O incompatible with the currently approved hard sub-two-second close, memory safety, zero deferred/leaked resources, and exact permit release. The bounded queue and resource count are individually fixable, but no partial code was committed and head remains `81a4a50e`. No remaining child is eligible because all depend directly or indirectly on PCF-002. Clearance requires a separately approved architecture revision choosing completion-confirmed unbounded or soft-bounded drain, or bounded deferred reaper/quarantine with explicit resource and permit semantics.
 - 2026-07-23 18:05 MYT - Cleared PCF-002's Task 4 architecture blocker and returned PCF-002 plus this initiative to `in_progress`; PCF-003 remains `backlog` and dependency-ineligible. The user approved Option 1's safety-first completion-confirmed teardown, the written correction at `6a230eaf` passed independent specification review, and the revised plan at `0a409ea7` passed independent plan review. The approved correction replaces the impossible hard worst-case close bound with a supported-NTFS cancellation-plus-join target below two seconds plus safe completion-confirmed waiting, bounded `O(1)` Windows event state, and exact accounting of three current monitor resources. Task 4 resumes on the existing `codex/pcf-002-object-validation-lease-impl` branch and `.worktrees/pcf-002-object-validation-lease` worktree from implementation head `81a4a50e`; parent ownership/start metadata is preserved and no external action was taken.
 - 2026-07-23 19:07 MYT - PCF-002 object-validation-lease Task 4 completed through `1ce9436a` with genuine RED/GREEN evidence and clean final specification/quality review. PCF-002's row and this parent remain `in_progress`, ownership and original `Started:` values are preserved, Task 2 macOS characterization remains pending, Task 5 is unstarted, Task 6 is next locally executable, and PCF-003 remains `backlog` and dependency-ineligible.
+- 2026-07-23 20:01 MYT - PCF-002 object-validation-lease Task 6 completed through `2aab0275` with genuine RED/GREEN construction coverage and clean final specification/quality review. Candidate construction now spans the complete safe-open scan, consumes the already-validated Windows handles, retries one dirty scan, falls back without lease authority on uncertainty, and reauthenticates durable final catalog bytes before attachment; review-driven tests also prove retry denial uses the current budget epoch. PCF-002's row and this parent remain `in_progress`, ownership and original `Started:` values are preserved, Task 2 macOS characterization and Task 5 remain pending, Task 7 is next locally executable, and PCF-003 remains `backlog` and dependency-ineligible. No external action was taken.
 
 ## Validation
 
@@ -293,6 +294,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `cargo metadata --locked --no-deps --format-version 1` after disposable cleanup (passed; no dependency or `Cargo.lock` diff)
   - `bun run check:repo` (no PCF-002/PCF-000 finding; exits `1` only for the pre-existing untouched `IL-007` parent-row status mismatch and missing `IL-008` row in `IL-000`)
   - PCF-002 object-validation-lease Task 4: genuine fixed-state/resource/teardown/boundary REDs; debug/release Windows `20/20`, release two-link `2/2`, fallback `11`, full CoreFS library `153` passed with `1` ignored plus all integration/doc suites, strict all-target/all-feature Clippy, rustfmt, diff hygiene, and clean final specification/quality review. `bun run check:repo` found no PCF-002/PCF-000 issue and exited `1` only for the two unrelated pre-existing Inner Life violations: the `IL-007` parent-row status mismatch and missing `IL-008` row in `IL-000`.
+  - PCF-002 object-validation-lease Task 6: construction `9/9`, cache rejection `11/11`, failure coverage `26` passed with `1` helper ignored, full Rust 1.75 CoreFS library `162` passed with `1` ignored plus all integration/doc suites, strict all-target Clippy, scoped rustfmt, diff hygiene, and clean final independent specification/quality review.
 - Changed paths:
   - `packages/anima-corefs/src/{envelope.rs,catalog/,crypto.rs,lib.rs,id.rs,bounded.rs}`
   - `packages/anima-corefs/tests/{envelope.rs,catalog.rs,opaque_id.rs}`
@@ -338,8 +340,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `packages/anima-corefs/src/transaction/object_lease/windows.rs`
   - `packages/anima-corefs/src/transaction/object_lease_tests.rs`
   - `packages/anima-corefs/tests/transaction.rs` (existing Task 4 production release-link regression)
+  - `packages/anima-corefs/src/transaction.rs`, `packages/anima-corefs/src/transaction/cache_tests.rs`, and `packages/anima-corefs/src/transaction/object_lease.rs` (PCF-002 Task 6 candidate construction)
 - Notes:
   - PCF-001 is complete; PCF-002 is the next implementation slice.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - PCF-002 Task 1 cleared the approved Windows boundary/performance decision gate. Production object-lease integration and the unchanged final exact reference remain outstanding; downstream tickets are still dependency-ineligible, and publication/current-head review remain separate and unauthorized.
-  - PCF-002 Task 4 is complete and review-clean. Task 2's native macOS characterization remains pending, Task 5 has not started, and Task 6 is the next locally executable unit. PCF-003 remains dependency-ineligible.
+  - PCF-002 Tasks 4 and 6 are complete and review-clean. Task 2's native macOS characterization remains pending, Task 5 has not started, and Task 7 is the next locally executable unit. PCF-003 remains dependency-ineligible.

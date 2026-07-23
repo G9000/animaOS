@@ -15,9 +15,9 @@ binary, closed output schema, and exact Windows/macOS commands.
 **Plan revision note:** The written safety-first teardown specification was
 user-approved and independently approved on 2026-07-23. The focused plan revision at
 `0a409ea7` passed independent plan re-review with no remaining substantive findings.
-Task 4 is implemented and independently review-clean through `1ce9436a`; the overall
-plan remains in progress. Task 2's native macOS characterization remains pending,
-Task 5 is unstarted, and Task 6 is the next locally executable unit.
+Tasks 4 and 6 are implemented and independently review-clean through `2aab0275`; the
+overall plan remains in progress. Task 2's native macOS characterization remains
+pending, Task 5 is unstarted, and Task 7 is the next locally executable unit.
 
 ---
 
@@ -461,7 +461,7 @@ git commit -m "corefs: add macOS object lease monitor"
 - Test: `packages/anima-corefs/src/transaction/cache_tests.rs`
 - Test: `packages/anima-corefs/tests/transaction.rs`
 
-- [ ] **Step 1: Add failing construction-order tests**
+- [x] **Step 1: Add failing construction-order tests**
 
 Add tests proving:
 
@@ -483,19 +483,19 @@ cargo +1.75.0 test --locked -p anima-corefs lease_candidate -- --nocapture
 
 Expected: FAIL because commit validation does not construct candidates.
 
-- [ ] **Step 2: Return validated anchors from the existing validator**
+- [x] **Step 2: Return validated anchors from the existing validator**
 
 Refactor `validate_existing_object_file` and `validate_prepared_file` so the same safe-open observation can produce a platform anchor after all existing opened-versus-linked, type, symlink/reparse, link-count, nonzero-length, prepared-size, encrypted-hash, token, and key-binding checks pass. Do not open an object a second time solely to construct its anchor.
 
-- [ ] **Step 3: Add candidate construction around the full scan**
+- [x] **Step 3: Add candidate construction around the full scan**
 
 After lock/layout/pointer/catalog authentication and next-catalog construction, check exact object count and denial/backoff state, reserve budget, arm the monitor, revalidate layout, scan every object, and fence. Publish `Clean` only when all checks and the fence are clean. Retry a scan-race once from a fresh pointer/layout observation; a second event or any uncertainty completes only through safe-open validation with no lease.
 
-- [ ] **Step 4: Bind the candidate to exact authenticated authority**
+- [x] **Step 4: Bind the candidate to exact authenticated authority**
 
 Store the ordered full catalog object tuple, directory identity, monitor generation, validated bindings, and permit bundle in `ObjectValidationLease`. Attach it to `AuthenticatedCommitSnapshot` only after durable HEAD authority and final pointer/key derivation are reauthenticated. Recovery-pending and pre-HEAD failures must hold no candidate authority.
 
-- [ ] **Step 5: Run construction and legacy-equivalence tests**
+- [x] **Step 5: Run construction and legacy-equivalence tests**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs lease_candidate -- --nocapture
@@ -505,7 +505,7 @@ cargo +1.75.0 test --locked -p anima-corefs transaction::failure_tests -- --noca
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/cache.rs packages/anima-corefs/src/transaction/object_lease.rs packages/anima-corefs/src/transaction/cache_tests.rs packages/anima-corefs/tests/transaction.rs
