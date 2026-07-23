@@ -11,7 +11,7 @@
 - Performance plan: `docs/superpowers/plans/2026-07-20-corefs-catalog-commit-performance.md`
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-23 12:34 MYT
+- Updated: 2026-07-23 13:22 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -178,6 +178,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-23 12:29 MYT - The second independent spec review accepted the Windows notification, release link-count, and per-lease ceiling corrections but rejected three remaining lifecycle/resource gaps. Revised the unlock-scoped native session with explicit operation-admission guards, `Open -> Closing -> Closed` draining, GIL-free close/release waits, and teardown ordering that prevents post-close lease publication. Added an atomic process-wide budget of 4,096 handles and four leases with RAII permits and epoch-gated retry, plus the missing CoreFS route/API wiring and authorization-bound coordinator-selection tests. A third independent review is pending; no implementation or external action has started.
 - 2026-07-23 12:32 MYT - The third independent spec review accepted operation draining, route threading, and the process budget but found an unsafe release-versus-close transition and double reservation on steady-state lease carry-forward. Revised the session state machine with explicit `Releasing`, monotonic terminal-close precedence, concurrent-close waiting, cancellation-aware bounded fences, and GIL-free drain semantics. Exact unchanged commits now carry one shared lease/monitor/permit forward at constant resource usage; changed object sets use per-handle RAII units, complete safe-open fallback, and retry suppression keyed by budget epoch plus authenticated object-set fingerprint/count. Fourth review is pending; no implementation or external action has started.
 - 2026-07-23 12:34 MYT - The fourth independent specification review approved the object validation lease with no remaining substantive correctness, security, lifecycle, resource, Rust 1.75, or implementability findings. All prior blockers are closed; the platform fence characterization and release-mode performance spike remain explicit fail-closed implementation gates. The written-spec user-review gate is next, so implementation planning and code remain unstarted and no external action was taken.
+- 2026-07-23 13:22 MYT - Expanded the architecture revision at the user's request with a native macOS fast path. The platform backend uses a process-local FSEvents stream plus synchronous flush fences and capability-relative non-following `fstatat` stamps, invalidates the entire lease on any event, maps dropped/ambiguous stream state to `Unknown`, preserves the exact Unix crash-stale-alias decision in the safe-open fallback, and avoids retaining one descriptor per object. Resource accounting is now platform-neutral, macOS correctness/lifecycle/CI coverage and a hardware-recorded APFS diagnostic are explicit gates, and the unchanged official 250 ms reference gate remains tied to its approved Windows profile. This material design addition reopens independent review and written-spec approval before planning; implementation remains unstarted and no external action was taken.
 
 ## Validation
 
