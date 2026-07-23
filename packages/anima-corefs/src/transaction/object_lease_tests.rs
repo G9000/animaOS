@@ -608,6 +608,7 @@ fn cache_discards_lease_resources_outside_its_mutex() {
 #[cfg(windows)]
 mod windows_object_lease_tests {
     use std::fs;
+    use std::io::Write;
     use std::sync::Arc;
 
     use cap_std::ambient_authority;
@@ -663,6 +664,136 @@ mod windows_object_lease_tests {
             .filter(|name| name.starts_with("AL") && name.ends_with(".TMP"))
             .collect();
         assert!(residue.is_empty(), "probe residue: {residue:?}");
+    }
+
+    #[test]
+    fn windows_event_flood_is_constant_space_and_terminal() {
+        let (root, lease, budget, control) = monitored_lease_with_control("event-flood");
+        let mut observed_batches = control.native_batch_count();
+        for index in 0..64 {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(root.join(format!("event-flood-{index:04}")))
+                .unwrap();
+            file.write_all(b"native traffic").unwrap();
+            drop(file);
+            assert!(
+                control.wait_until_native_batch_count(observed_batches + 1, Duration::from_secs(2)),
+                "native monitor did not observe flood event {index}"
+            );
+            observed_batches = control.native_batch_count();
+        }
+
+        let terminal_without_fence = control
+            .wait_until_state(MonitorState::DirtyAll, Duration::from_millis(250))
+            || control.wait_until_state(MonitorState::Unknown, Duration::from_millis(250));
+        let retained_high_water = control.retained_notification_batch_high_water();
+        drop(lease);
+
+        assert!(
+            terminal_without_fence,
+            "native traffic must synchronously publish terminal monitor state"
+        );
+        assert!(
+            retained_high_water <= 1,
+            "event publication retained {retained_high_water} batches instead of fixed folded state"
+        );
+        assert_eq!(control.join_count(), 1);
+        assert_eq!(budget.usage().leases, 0);
+        assert!(!control.worker_resources_alive());
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_resource_plan_matches_three_live_monitor_resources() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-windows-resource-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let object = binding(0);
+        fs::write(root.join(object.physical_name.as_str()), b"ciphertext").unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let control = WindowsLeaseTestControl::new();
+        let factory = WindowsLeaseFactory::new_for_test(dir, control.clone()).unwrap();
+        assert_eq!(
+            factory.resource_plan().monitor_resource_count(),
+            3,
+            "production factory must reserve notification, cancellation, and join resources"
+        );
+        let budget = Arc::new(LeaseBudget::isolated());
+        let lease = ObjectValidationLease::try_acquire_with_budget(&budget, vec![object], &factory)
+            .unwrap();
+
+        let usage = budget.usage();
+        assert_eq!(
+            usage.entries, 1,
+            "retained object handle is an entry permit"
+        );
+        assert_eq!(usage.leases, 1);
+        assert_eq!(usage.monitor_resources, 3);
+        assert_eq!(control.live_monitor_resource_count(), 3);
+
+        drop(lease);
+        drop(factory);
+        assert_eq!(control.live_monitor_resource_count(), 0);
+        assert_eq!(budget.usage().entries, 0);
+        assert_eq!(budget.usage().monitor_resources, 0);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_teardown_target_miss_retains_ownership_until_completion() {
+        let (root, lease, budget, control) =
+            monitored_lease_with_control("delayed-native-completion");
+        control.pause_next_native_completion();
+
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let drop_thread = std::thread::spawn(move || {
+            drop(lease);
+            let _ = done_sender.send(());
+        });
+        assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+        assert!(
+            control.wait_until_native_completion_paused(Duration::from_secs(2)),
+            "worker did not reach the finite native-completion latch"
+        );
+
+        std::thread::sleep(Duration::from_millis(2_100));
+        assert!(
+            done_receiver.try_recv().is_err(),
+            "teardown returned before native completion was confirmed"
+        );
+        assert_eq!(control.teardown_target_miss_count(), 1);
+        assert_eq!(control.native_completion_count(), 0);
+        assert_eq!(control.join_count(), 0);
+        assert!(control.native_buffer_alive());
+        assert_eq!(control.live_monitor_resource_count(), 3);
+        let live_usage = budget.usage();
+        assert_eq!(live_usage.entries, 1);
+        assert_eq!(live_usage.leases, 1);
+        assert_eq!(live_usage.monitor_resources, 3);
+
+        control.release_native_completion();
+        done_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("teardown did not finish after finite completion release");
+        drop_thread.join().unwrap();
+
+        assert_eq!(control.native_completion_count(), 1);
+        assert_eq!(control.join_count(), 1);
+        assert!(!control.native_buffer_alive());
+        assert_eq!(control.live_monitor_resource_count(), 0);
+        let released_usage = budget.usage();
+        assert_eq!(released_usage.entries, 0);
+        assert_eq!(released_usage.leases, 0);
+        assert_eq!(released_usage.monitor_resources, 0);
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -8,7 +8,6 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::panic::{self, AssertUnwindSafe};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -37,7 +36,7 @@ use super::{
 };
 use crate::transaction::cache::ValidatedObjectBinding;
 
-const MONITOR_RESOURCE_COUNT: usize = 2;
+const MONITOR_RESOURCE_COUNT: usize = 3;
 const NOTIFICATION_BUFFER_SIZE: usize = 64 * 1024;
 const FENCE_TIMEOUT: Duration = Duration::from_secs(2);
 const CANCELLATION_RETRY_INTERVAL: Duration = Duration::from_millis(1);
@@ -239,18 +238,65 @@ enum Notification {
     RenamedNew(String),
 }
 
-#[derive(Debug)]
-enum WorkerMessage {
-    Armed,
-    Notifications(Vec<Notification>),
-    Unknown,
-    Cancelled,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbePhase {
+    AwaitCreate,
+    AwaitDelete,
+    Complete,
 }
 
-#[derive(Default)]
-struct ReadLifecycle {
-    cancel_requested: bool,
-    read_pending: bool,
+#[derive(Debug)]
+struct ActiveProbe {
+    generation: u64,
+    name: String,
+    phase: ProbePhase,
+    outcome: FenceOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerState {
+    Starting,
+    Armed,
+    Cancelling,
+    NativeComplete,
+    Joined,
+}
+
+#[derive(Debug)]
+struct WindowsMonitorState {
+    terminal: FenceOutcome,
+    active_probe: Option<ActiveProbe>,
+    next_fence_generation: u64,
+    acknowledged_fence_generation: u64,
+    boundary_progress: u64,
+    deferred_outcome: FenceOutcome,
+    pending_rename: bool,
+    worker_state: WorkerState,
+    cancellation_requested: bool,
+    native_read_pending: bool,
+    teardown_started: bool,
+    publication_open: bool,
+    teardown_target_missed: bool,
+}
+
+impl Default for WindowsMonitorState {
+    fn default() -> Self {
+        Self {
+            terminal: FenceOutcome::Clean,
+            active_probe: None,
+            next_fence_generation: 0,
+            acknowledged_fence_generation: 0,
+            boundary_progress: 0,
+            deferred_outcome: FenceOutcome::Clean,
+            pending_rename: false,
+            worker_state: WorkerState::Starting,
+            cancellation_requested: false,
+            native_read_pending: false,
+            teardown_started: false,
+            publication_open: true,
+            teardown_target_missed: false,
+        }
+    }
 }
 
 struct PendingRead<'a> {
@@ -265,14 +311,19 @@ impl Drop for PendingRead<'_> {
 
 struct WorkerTerminalGuard {
     shared: Arc<WorkerShared>,
-    sender: mpsc::Sender<WorkerMessage>,
 }
 
 impl Drop for WorkerTerminalGuard {
     fn drop(&mut self) {
         complete_pending_read(self.shared.as_ref());
-        self.shared.state.publish(FenceOutcome::Unknown);
-        let _ = self.sender.send(WorkerMessage::Unknown);
+        let mut monitor = self
+            .shared
+            .monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        publish_terminal(self.shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
+        monitor.worker_state = WorkerState::NativeComplete;
+        self.shared.changed.notify_all();
     }
 }
 
@@ -280,13 +331,15 @@ struct WorkerShared {
     objects_dir: Arc<Dir>,
     notification_handle: Mutex<Option<File>>,
     worker_thread: Mutex<Option<OwnedHandle>>,
-    lifecycle: Mutex<ReadLifecycle>,
-    lifecycle_changed: Condvar,
+    monitor: Mutex<WindowsMonitorState>,
+    changed: Condvar,
     state: Arc<MonitorStateCell>,
     #[cfg(test)]
     control: Option<WindowsLeaseTestControl>,
     #[cfg(test)]
-    _resource_liveness: Arc<()>,
+    _notification_resource_liveness: Arc<()>,
+    #[cfg(test)]
+    cancellation_resource_liveness: Mutex<Option<Arc<()>>>,
 }
 
 impl WorkerShared {
@@ -315,19 +368,19 @@ impl WorkerShared {
     }
 
     fn cancel_requested(&self) -> bool {
-        self.lifecycle
+        self.monitor
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .cancel_requested
+            .cancellation_requested
     }
 }
 
 pub(super) struct WindowsLeaseMonitor {
     shared: Arc<WorkerShared>,
-    receiver: Mutex<Receiver<WorkerMessage>>,
     fence_lock: Mutex<()>,
-    active_probe: Mutex<Option<String>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(test)]
+    _join_resource_liveness: Arc<()>,
 }
 
 impl fmt::Debug for WindowsLeaseMonitor {
@@ -347,42 +400,47 @@ impl WindowsLeaseMonitor {
     ) -> io::Result<Self> {
         let notification_handle = open_notification_handle(objects_dir.as_ref())?;
         #[cfg(test)]
-        let resource_liveness = Arc::new(());
+        let notification_resource_liveness = Arc::new(());
         #[cfg(test)]
         if let Some(control) = &control {
-            control.record_resource_liveness(Arc::downgrade(&resource_liveness));
+            control.record_resource_liveness(Arc::downgrade(&notification_resource_liveness));
         }
         let shared = Arc::new(WorkerShared {
             objects_dir,
             notification_handle: Mutex::new(Some(notification_handle)),
             worker_thread: Mutex::new(None),
-            lifecycle: Mutex::new(ReadLifecycle::default()),
-            lifecycle_changed: Condvar::new(),
+            monitor: Mutex::new(WindowsMonitorState::default()),
+            changed: Condvar::new(),
             state,
             #[cfg(test)]
             control,
             #[cfg(test)]
-            _resource_liveness: resource_liveness,
+            _notification_resource_liveness: notification_resource_liveness,
+            #[cfg(test)]
+            cancellation_resource_liveness: Mutex::new(None),
         });
-        let (sender, receiver) = mpsc::channel();
         let worker_shared = shared.clone();
         let worker = thread::Builder::new()
             .name("anima-corefs-object-lease".into())
-            .spawn(move || notification_worker_entry(worker_shared, sender))?;
+            .spawn(move || notification_worker_entry(worker_shared))?;
+        #[cfg(test)]
+        let join_resource_liveness = {
+            let liveness = Arc::new(());
+            if let Some(control) = &shared.control {
+                control.record_resource_liveness(Arc::downgrade(&liveness));
+            }
+            liveness
+        };
         let monitor = Self {
             shared,
-            receiver: Mutex::new(receiver),
             fence_lock: Mutex::new(()),
-            active_probe: Mutex::new(None),
             worker: Mutex::new(Some(worker)),
+            #[cfg(test)]
+            _join_resource_liveness: join_resource_liveness,
         };
 
-        let armed = monitor
-            .receiver
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .recv_timeout(FENCE_TIMEOUT);
-        if !matches!(armed, Ok(WorkerMessage::Armed)) {
+        let worker_state = monitor.wait_for_worker_arm(FENCE_TIMEOUT);
+        if worker_state != WorkerState::Armed {
             monitor.shared.state.publish(FenceOutcome::Unknown);
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -402,6 +460,22 @@ impl WindowsLeaseMonitor {
         Ok(monitor)
     }
 
+    fn wait_for_worker_arm(&self, timeout: Duration) -> WorkerState {
+        let monitor = self
+            .shared
+            .monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (monitor, _) = self
+            .shared
+            .changed
+            .wait_timeout_while(monitor, timeout, |monitor| {
+                monitor.worker_state == WorkerState::Starting
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        monitor.worker_state
+    }
+
     fn run_fence(&self, timeout: Duration) -> FenceOutcome {
         let outcome = self.run_fence_unpublished(timeout);
         match self.shared.state.publish(outcome) {
@@ -416,75 +490,118 @@ impl WindowsLeaseMonitor {
             .fence_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self
-            .shared
-            .lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .cancel_requested
-        {
-            return FenceOutcome::Unknown;
-        }
         let probe = match self.shared.next_probe_name() {
             Ok(probe) => probe,
             Err(_) => return FenceOutcome::Unknown,
         };
-        {
-            let active_probe = self
-                .active_probe
+        let generation = {
+            let mut monitor = self
+                .shared
+                .monitor
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if active_probe.is_some() {
+            if monitor.cancellation_requested
+                || !monitor.publication_open
+                || monitor.worker_state != WorkerState::Armed
+            {
                 return FenceOutcome::Unknown;
             }
-        }
+            if monitor.terminal != FenceOutcome::Clean {
+                return monitor.terminal;
+            }
+            if monitor.deferred_outcome != FenceOutcome::Clean {
+                let outcome = monitor.deferred_outcome;
+                monitor.deferred_outcome = FenceOutcome::Clean;
+                publish_terminal(self.shared.as_ref(), &mut monitor, outcome);
+                return outcome;
+            }
+            if monitor.active_probe.is_some() {
+                publish_terminal(self.shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
+                return FenceOutcome::Unknown;
+            }
+            monitor.next_fence_generation = monitor.next_fence_generation.wrapping_add(1);
+            let generation = monitor.next_fence_generation;
+            monitor.active_probe = Some(ActiveProbe {
+                generation,
+                name: probe.clone(),
+                phase: ProbePhase::AwaitCreate,
+                outcome: FenceOutcome::Clean,
+            });
+            generation
+        };
+
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         let probe_file = match self.shared.objects_dir.open_with(&probe, &options) {
             Ok(file) => file,
-            Err(_) => return FenceOutcome::Unknown,
+            Err(_) => {
+                let mut monitor = self
+                    .shared
+                    .monitor
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                monitor.active_probe = None;
+                publish_terminal(self.shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
+                return FenceOutcome::Unknown;
+            }
         };
-        *self
-            .active_probe
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(probe.clone());
         drop(probe_file);
         let cleanup_ok = self.shared.remove_probe(&probe).is_ok();
         if !cleanup_ok {
+            let mut monitor = self
+                .shared
+                .monitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            publish_terminal(self.shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
             return FenceOutcome::Unknown;
         }
-        self.active_probe
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
 
         let deadline = Instant::now() + timeout;
-        let mut notifications = Vec::new();
+        let mut monitor = self
+            .shared
+            .monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if monitor.cancellation_requested || !monitor.publication_open {
                 return FenceOutcome::Unknown;
             }
-            let message = self
-                .receiver
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .recv_timeout(remaining);
-            match message {
-                Ok(WorkerMessage::Notifications(batch)) => {
-                    notifications.extend(batch);
-                    if !notification_prefix_is_possible(&probe, &notifications) {
-                        return FenceOutcome::Unknown;
-                    }
-                    if probe_lifecycle_complete(&probe, &notifications) {
-                        return notification_outcome(&probe, &notifications, true);
-                    }
+            if monitor.terminal != FenceOutcome::Clean {
+                if monitor
+                    .active_probe
+                    .as_ref()
+                    .is_some_and(|active| active.generation == generation)
+                {
+                    monitor.active_probe = None;
                 }
-                Ok(WorkerMessage::Armed) => continue,
-                Ok(WorkerMessage::Unknown)
-                | Ok(WorkerMessage::Cancelled)
-                | Err(RecvTimeoutError::Disconnected)
-                | Err(RecvTimeoutError::Timeout) => return FenceOutcome::Unknown,
+                return monitor.terminal;
+            }
+            let completed = monitor.active_probe.as_ref().and_then(|active| {
+                (active.generation == generation && active.phase == ProbePhase::Complete)
+                    .then_some(active.outcome)
+            });
+            if let Some(outcome) = completed {
+                monitor.acknowledged_fence_generation = generation;
+                monitor.active_probe = None;
+                return outcome;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                monitor.active_probe = None;
+                publish_terminal(self.shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
+                return FenceOutcome::Unknown;
+            }
+            let (next, wait) = self
+                .shared
+                .changed
+                .wait_timeout(monitor, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            monitor = next;
+            if wait.timed_out() {
+                monitor.active_probe = None;
+                publish_terminal(self.shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
+                return FenceOutcome::Unknown;
             }
         }
     }
@@ -500,33 +617,39 @@ impl Drop for WindowsLeaseMonitor {
     fn drop(&mut self) {
         self.shared.state.publish(FenceOutcome::Unknown);
         {
-            let mut lifecycle = self
+            let mut monitor = self
                 .shared
-                .lifecycle
+                .monitor
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            lifecycle.cancel_requested = true;
+            monitor.terminal = merge_outcome(monitor.terminal, FenceOutcome::Unknown);
+            monitor.cancellation_requested = true;
+            monitor.teardown_started = true;
+            monitor.publication_open = false;
+            if matches!(
+                monitor.worker_state,
+                WorkerState::Starting | WorkerState::Armed
+            ) {
+                monitor.worker_state = WorkerState::Cancelling;
+            }
+            self.shared.changed.notify_all();
         }
         #[cfg(test)]
         if let Some(control) = &self.shared.control {
             control.record_cancel_requested();
         }
-        if let Some(probe) = self
-            .active_probe
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            let _ = self.shared.remove_probe(&probe);
-        }
 
-        let mut lifecycle = self
+        let teardown_started = Instant::now();
+        let mut target_miss_recorded = false;
+        let mut monitor = self
             .shared
-            .lifecycle
+            .monitor
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while lifecycle.read_pending {
-            drop(lifecycle);
+        while monitor.worker_state != WorkerState::NativeComplete
+            && monitor.worker_state != WorkerState::Joined
+        {
+            drop(monitor);
             let worker_thread = self
                 .shared
                 .worker_thread
@@ -545,67 +668,163 @@ impl Drop for WindowsLeaseMonitor {
                     self.shared.state.publish(FenceOutcome::Unknown);
                 }
             }
-            lifecycle = self
+            monitor = self
                 .shared
-                .lifecycle
+                .monitor
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if lifecycle.read_pending {
+            if !target_miss_recorded && teardown_started.elapsed() >= FENCE_TIMEOUT {
+                target_miss_recorded = true;
+                monitor.teardown_target_missed = true;
+                #[cfg(test)]
+                if let Some(control) = &self.shared.control {
+                    control.record_teardown_target_miss();
+                }
+            }
+            if monitor.worker_state != WorkerState::NativeComplete
+                && monitor.worker_state != WorkerState::Joined
+            {
+                let until_target = FENCE_TIMEOUT.saturating_sub(teardown_started.elapsed());
+                let wait = if until_target.is_zero() {
+                    CANCELLATION_RETRY_INTERVAL
+                } else {
+                    CANCELLATION_RETRY_INTERVAL.min(until_target)
+                };
                 let (next, _) = self
                     .shared
-                    .lifecycle_changed
-                    .wait_timeout(lifecycle, CANCELLATION_RETRY_INTERVAL)
+                    .changed
+                    .wait_timeout(monitor, wait)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                lifecycle = next;
+                monitor = next;
             }
         }
-        drop(lifecycle);
-        if self
+        drop(monitor);
+
+        let join_failed = self
             .worker
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
-            .is_some_and(|worker| worker.join().is_err())
+            .is_some_and(|worker| worker.join().is_err());
         {
+            let mut monitor = self
+                .shared
+                .monitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            monitor.worker_state = WorkerState::Joined;
+            self.shared.changed.notify_all();
+        }
+        #[cfg(test)]
+        if let Some(control) = &self.shared.control {
+            control.record_join();
+        }
+        if join_failed {
             self.shared.state.publish(FenceOutcome::Unknown);
         }
+
+        let active_probe = self
+            .shared
+            .monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_probe
+            .take()
+            .map(|probe| probe.name);
+        if let Some(probe) = active_probe {
+            let _ = self.shared.remove_probe(&probe);
+        }
+
+        self.shared
+            .notification_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.shared
+            .worker_thread
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        #[cfg(test)]
+        self.shared
+            .cancellation_resource_liveness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
     }
 }
 
-fn notification_worker_entry(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMessage>) {
+fn notification_worker_entry(shared: Arc<WorkerShared>) {
     let _terminal = WorkerTerminalGuard {
         shared: shared.clone(),
-        sender: sender.clone(),
     };
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| notification_worker(shared, sender)));
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| notification_worker(shared)));
 }
 
-fn notification_worker(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMessage>) {
-    let mut buffer = vec![0_u8; NOTIFICATION_BUFFER_SIZE];
+fn notification_worker(shared: Arc<WorkerShared>) {
+    let mut buffer = Box::new([0_u8; NOTIFICATION_BUFFER_SIZE]);
+    #[cfg(test)]
+    let _buffer_liveness = {
+        let liveness = Arc::new(());
+        if let Some(control) = &shared.control {
+            control.record_buffer_liveness(Arc::downgrade(&liveness));
+        }
+        liveness
+    };
     let worker_thread = match duplicate_current_thread_handle() {
         Ok(worker_thread) => worker_thread,
         Err(_) => {
-            shared.state.publish(FenceOutcome::Unknown);
-            let _ = sender.send(WorkerMessage::Unknown);
+            let mut monitor = shared
+                .monitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            publish_terminal(shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
             return;
         }
+    };
+    #[cfg(test)]
+    let cancellation_resource_liveness = {
+        let liveness = Arc::new(());
+        if let Some(control) = &shared.control {
+            control.record_resource_liveness(Arc::downgrade(&liveness));
+        }
+        liveness
     };
     *shared
         .worker_thread
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(worker_thread);
-    let mut first_read = true;
+    #[cfg(test)]
+    {
+        *shared
+            .cancellation_resource_liveness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(cancellation_resource_liveness);
+    }
+
+    {
+        let mut monitor = shared
+            .monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if monitor.cancellation_requested {
+            return;
+        }
+        monitor.worker_state = WorkerState::Armed;
+        shared.changed.notify_all();
+    }
+
     loop {
         {
-            let mut lifecycle = shared
-                .lifecycle
+            let mut monitor = shared
+                .monitor
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if lifecycle.cancel_requested {
-                let _ = sender.send(WorkerMessage::Cancelled);
+            if monitor.cancellation_requested {
                 return;
             }
-            lifecycle.read_pending = true;
+            monitor.native_read_pending = true;
             #[cfg(test)]
             if let Some(control) = &shared.control {
                 control.record_read_pending(true);
@@ -614,22 +833,15 @@ fn notification_worker(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMes
         let pending_read = PendingRead {
             shared: shared.as_ref(),
         };
-        if first_read {
-            first_read = false;
-            if sender.send(WorkerMessage::Armed).is_err() {
-                return;
-            }
-        }
         #[cfg(test)]
         if let Some(control) = &shared.control {
             control.before_native_read();
         }
         if shared.cancel_requested() {
-            let _ = sender.send(WorkerMessage::Cancelled);
             return;
         }
 
-        let read_result = read_directory_changes(shared.as_ref(), &mut buffer);
+        let read_result = read_directory_changes(shared.as_ref(), buffer.as_mut_slice());
         drop(pending_read);
 
         let bytes_returned = match read_result {
@@ -638,53 +850,84 @@ fn notification_worker(shared: Arc<WorkerShared>, sender: mpsc::Sender<WorkerMes
                 if shared.cancel_requested()
                     && error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) =>
             {
-                let _ = sender.send(WorkerMessage::Cancelled);
                 return;
             }
             Err(_) => {
-                shared.state.publish(FenceOutcome::Unknown);
-                let _ = sender.send(WorkerMessage::Unknown);
+                let mut monitor = shared
+                    .monitor
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                publish_terminal(shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
                 return;
             }
         };
         if shared.cancel_requested() {
-            let _ = sender.send(WorkerMessage::Cancelled);
             return;
         }
         if bytes_returned == 0 {
-            shared.state.publish(FenceOutcome::Unknown);
-            let _ = sender.send(WorkerMessage::Unknown);
+            let mut monitor = shared
+                .monitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            publish_terminal(shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
             return;
         }
         let used = usize::try_from(bytes_returned).unwrap_or(usize::MAX);
-        let notifications = match parse_notifications(buffer.get(..used).unwrap_or_default()) {
-            Ok(notifications) => notifications,
-            Err(()) => {
-                shared.state.publish(FenceOutcome::Unknown);
-                let _ = sender.send(WorkerMessage::Unknown);
-                return;
-            }
-        };
-        if sender
-            .send(WorkerMessage::Notifications(notifications))
-            .is_err()
-        {
+        #[cfg(test)]
+        if let Some(control) = &shared.control {
+            control.record_notification_batch_enqueued();
+        }
+        let fold_result =
+            fold_notification_buffer(shared.as_ref(), buffer.get(..used).unwrap_or_default());
+        #[cfg(test)]
+        if let Some(control) = &shared.control {
+            control.record_notification_batch_dequeued();
+        }
+        if fold_result.is_err() {
+            let mut monitor = shared
+                .monitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            publish_terminal(shared.as_ref(), &mut monitor, FenceOutcome::Unknown);
             return;
         }
     }
 }
 
 fn complete_pending_read(shared: &WorkerShared) {
-    let mut lifecycle = shared
-        .lifecycle
+    let read_was_pending = shared
+        .monitor
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .native_read_pending;
+    if !read_was_pending {
+        return;
+    }
+    #[cfg(test)]
+    let teardown_completion = shared
+        .monitor
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .teardown_started;
+    #[cfg(test)]
+    if teardown_completion {
+        if let Some(control) = &shared.control {
+            control.before_native_completion();
+        }
+    }
+    let mut monitor = shared
+        .monitor
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    lifecycle.read_pending = false;
+    monitor.native_read_pending = false;
     #[cfg(test)]
     if let Some(control) = &shared.control {
         control.record_read_pending(false);
+        if teardown_completion {
+            control.record_native_completion();
+        }
     }
-    shared.lifecycle_changed.notify_all();
+    shared.changed.notify_all();
 }
 
 fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Result<u32> {
@@ -795,10 +1038,51 @@ fn duplicate_current_thread_handle() -> io::Result<OwnedHandle> {
     }
 }
 
-fn parse_notifications(buffer: &[u8]) -> Result<Vec<Notification>, ()> {
+fn merge_outcome(current: FenceOutcome, next: FenceOutcome) -> FenceOutcome {
+    match (current, next) {
+        (FenceOutcome::Unknown, _) | (_, FenceOutcome::Unknown) => FenceOutcome::Unknown,
+        (FenceOutcome::DirtyAll, _) | (_, FenceOutcome::DirtyAll) => FenceOutcome::DirtyAll,
+        (FenceOutcome::Clean, FenceOutcome::Clean) => FenceOutcome::Clean,
+    }
+}
+
+fn publish_terminal(
+    shared: &WorkerShared,
+    monitor: &mut WindowsMonitorState,
+    outcome: FenceOutcome,
+) {
+    monitor.terminal = merge_outcome(monitor.terminal, outcome);
+    shared.state.publish(monitor.terminal);
+    shared.changed.notify_all();
+}
+
+fn apply_observed_outcome(
+    shared: &WorkerShared,
+    monitor: &mut WindowsMonitorState,
+    outcome: FenceOutcome,
+) {
+    if outcome == FenceOutcome::Clean {
+        return;
+    }
+    match monitor.active_probe.as_mut() {
+        Some(active) if active.phase == ProbePhase::Complete => {
+            monitor.deferred_outcome = merge_outcome(monitor.deferred_outcome, outcome);
+        }
+        Some(active) => {
+            active.outcome = merge_outcome(active.outcome, outcome);
+            publish_terminal(shared, monitor, outcome);
+        }
+        None => publish_terminal(shared, monitor, outcome),
+    }
+}
+
+fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), ()> {
     const HEADER_SIZE: usize = 12;
     let mut offset = 0_usize;
-    let mut notifications = Vec::new();
+    let mut monitor = shared
+        .monitor
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     loop {
         let header = buffer.get(offset..offset + HEADER_SIZE).ok_or(())?;
         let next = read_u32(&header[0..4])? as usize;
@@ -818,19 +1102,34 @@ fn parse_notifications(buffer: &[u8]) -> Result<Vec<Notification>, ()> {
         if name.is_empty() || name.contains(['/', '\\', '\0']) {
             return Err(());
         }
-        notifications.push(match action {
+        let notification = match action {
             FILE_ACTION_ADDED => Notification::Added(name),
             FILE_ACTION_REMOVED => Notification::Removed(name),
             FILE_ACTION_MODIFIED => Notification::Modified(name),
             FILE_ACTION_RENAMED_OLD_NAME => Notification::RenamedOld(name),
             FILE_ACTION_RENAMED_NEW_NAME => Notification::RenamedNew(name),
             _ => return Err(()),
-        });
+        };
+        #[cfg(test)]
+        let is_read_pause_wake = shared
+            .control
+            .as_ref()
+            .is_some_and(|control| control.is_read_pause_wake_notification(&notification));
+        #[cfg(not(test))]
+        let is_read_pause_wake = false;
+        if !is_read_pause_wake {
+            fold_notification(shared, &mut monitor, notification);
+        }
         if next == 0 {
             if offset + HEADER_SIZE + name_length != buffer.len() {
                 return Err(());
             }
-            return Ok(notifications);
+            if monitor.pending_rename {
+                monitor.pending_rename = false;
+                apply_observed_outcome(shared, &mut monitor, FenceOutcome::Unknown);
+            }
+            shared.changed.notify_all();
+            return Ok(());
         }
         if next % 4 != 0 || next < HEADER_SIZE + name_length {
             return Err(());
@@ -840,6 +1139,76 @@ fn parse_notifications(buffer: &[u8]) -> Result<Vec<Notification>, ()> {
             return Err(());
         }
     }
+}
+
+fn fold_notification(
+    shared: &WorkerShared,
+    monitor: &mut WindowsMonitorState,
+    notification: Notification,
+) {
+    if !monitor.publication_open || monitor.terminal != FenceOutcome::Clean {
+        return;
+    }
+
+    let (name, action) = match notification {
+        Notification::Added(name) => (name, FILE_ACTION_ADDED),
+        Notification::Removed(name) => (name, FILE_ACTION_REMOVED),
+        Notification::Modified(name) => (name, FILE_ACTION_MODIFIED),
+        Notification::RenamedOld(name) => (name, FILE_ACTION_RENAMED_OLD_NAME),
+        Notification::RenamedNew(name) => (name, FILE_ACTION_RENAMED_NEW_NAME),
+    };
+
+    let rename_outcome = if action == FILE_ACTION_RENAMED_OLD_NAME {
+        if monitor.pending_rename {
+            Some(FenceOutcome::Unknown)
+        } else {
+            monitor.pending_rename = true;
+            None
+        }
+    } else if action == FILE_ACTION_RENAMED_NEW_NAME {
+        if monitor.pending_rename {
+            monitor.pending_rename = false;
+            None
+        } else {
+            Some(FenceOutcome::Unknown)
+        }
+    } else if monitor.pending_rename {
+        monitor.pending_rename = false;
+        Some(FenceOutcome::Unknown)
+    } else {
+        None
+    };
+    if let Some(outcome) = rename_outcome {
+        apply_observed_outcome(shared, monitor, outcome);
+        return;
+    }
+
+    let Some(active) = monitor.active_probe.as_mut() else {
+        apply_observed_outcome(shared, monitor, FenceOutcome::DirtyAll);
+        return;
+    };
+    if name != active.name {
+        let outcome = if name.eq_ignore_ascii_case(&active.name) {
+            FenceOutcome::Unknown
+        } else {
+            FenceOutcome::DirtyAll
+        };
+        apply_observed_outcome(shared, monitor, outcome);
+        return;
+    }
+
+    match (active.phase, action) {
+        (ProbePhase::AwaitCreate, FILE_ACTION_ADDED) => {
+            active.phase = ProbePhase::AwaitDelete;
+        }
+        (ProbePhase::AwaitDelete, FILE_ACTION_REMOVED) => {
+            active.phase = ProbePhase::Complete;
+            monitor.acknowledged_fence_generation = active.generation;
+            monitor.boundary_progress = monitor.boundary_progress.wrapping_add(1);
+        }
+        _ => apply_observed_outcome(shared, monitor, FenceOutcome::Unknown),
+    }
+    shared.changed.notify_all();
 }
 
 fn read_u32(bytes: &[u8]) -> Result<u32, ()> {
@@ -854,59 +1223,6 @@ fn random_probe_name() -> io::Result<String> {
         "AL{:02X}{:02X}{:02X}.TMP",
         random[0], random[1], random[2]
     ))
-}
-
-fn probe_lifecycle_complete(probe: &str, notifications: &[Notification]) -> bool {
-    let mut added = false;
-    for notification in notifications {
-        match notification {
-            Notification::Added(name) if name == probe => added = true,
-            Notification::Removed(name) if name == probe && added => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-fn notification_prefix_is_possible(probe: &str, notifications: &[Notification]) -> bool {
-    let mut saw_probe_add = false;
-    let mut saw_probe_remove = false;
-    let mut pending_rename = false;
-    for notification in notifications {
-        let (name, action_is_add, action_is_remove, action_is_rename_old, action_is_rename_new) =
-            match notification {
-                Notification::Added(name) => (name, true, false, false, false),
-                Notification::Removed(name) => (name, false, true, false, false),
-                Notification::Modified(name) => (name, false, false, false, false),
-                Notification::RenamedOld(name) => (name, false, false, true, false),
-                Notification::RenamedNew(name) => (name, false, false, false, true),
-            };
-        if action_is_rename_old {
-            if pending_rename {
-                return false;
-            }
-            pending_rename = true;
-        } else if action_is_rename_new {
-            if !pending_rename {
-                return false;
-            }
-            pending_rename = false;
-        } else if pending_rename {
-            return false;
-        }
-        if name == probe {
-            if action_is_add && !saw_probe_add && !saw_probe_remove {
-                saw_probe_add = true;
-            } else if action_is_remove && saw_probe_add && !saw_probe_remove {
-                saw_probe_remove = true;
-            } else {
-                return false;
-            }
-        } else if name.eq_ignore_ascii_case(probe) {
-            return false;
-        }
-    }
-    true
 }
 
 fn notification_outcome(
@@ -1008,6 +1324,14 @@ struct ReadPauseState {
 
 #[cfg(test)]
 #[derive(Debug, Default)]
+struct CompletionPauseState {
+    requested: bool,
+    paused: bool,
+    released: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
 struct WindowsLeaseTestControlInner {
     probe_names: Mutex<VecDeque<String>>,
     probe_attempts: AtomicUsize,
@@ -1016,11 +1340,21 @@ struct WindowsLeaseTestControlInner {
     worker_faults: Mutex<VecDeque<WorkerFaultForTest>>,
     read_pause: Mutex<ReadPauseState>,
     read_pause_changed: Condvar,
+    read_pause_wake_active: AtomicBool,
+    completion_pause: Mutex<CompletionPauseState>,
+    completion_pause_changed: Condvar,
     read_pending: AtomicBool,
     cancel_requested: AtomicBool,
+    native_batch_count: AtomicUsize,
+    retained_notification_batches: AtomicUsize,
+    retained_notification_batch_high_water: AtomicUsize,
+    native_completion_count: AtomicUsize,
+    teardown_target_miss_count: AtomicUsize,
+    join_count: AtomicUsize,
     state: Mutex<Option<Arc<MonitorStateCell>>>,
     construction_events: Mutex<Vec<ConstructionEventForTest>>,
-    resource_liveness: Mutex<Option<std::sync::Weak<()>>>,
+    resource_liveness: Mutex<Vec<std::sync::Weak<()>>>,
+    buffer_liveness: Mutex<Option<std::sync::Weak<()>>>,
 }
 
 #[cfg(test)]
@@ -1151,6 +1485,27 @@ impl WindowsLeaseTestControl {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pause.requested = true;
         pause.released = false;
+        self.inner
+            .read_pause_wake_active
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn is_read_pause_wake_notification(&self, notification: &Notification) -> bool {
+        if !self.inner.read_pause_wake_active.load(Ordering::SeqCst) {
+            return false;
+        }
+        // The existing fault/cancellation regressions use this one test-only file solely
+        // to release the current blocking native read before pausing the next one. Excluding
+        // that fixture event keeps those tests focused on the injected worker terminal path;
+        // production notification folding never filters by name.
+        let name = match notification {
+            Notification::Added(name)
+            | Notification::Removed(name)
+            | Notification::Modified(name)
+            | Notification::RenamedOld(name)
+            | Notification::RenamedNew(name) => name,
+        };
+        name == "wake-current-read"
     }
 
     fn before_native_read(&self) {
@@ -1201,6 +1556,9 @@ impl WindowsLeaseTestControl {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pause.released = true;
+        self.inner
+            .read_pause_wake_active
+            .store(false, Ordering::SeqCst);
         self.inner.read_pause_changed.notify_all();
     }
 
@@ -1226,16 +1584,38 @@ impl WindowsLeaseTestControl {
     }
 
     fn record_resource_liveness(&self, liveness: std::sync::Weak<()>) {
+        self.inner
+            .resource_liveness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(liveness);
+    }
+
+    pub(in crate::transaction) fn worker_resources_alive(&self) -> bool {
+        self.live_monitor_resource_count() != 0
+    }
+
+    pub(in crate::transaction) fn live_monitor_resource_count(&self) -> usize {
+        self.inner
+            .resource_liveness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|liveness| liveness.strong_count() != 0)
+            .count()
+    }
+
+    fn record_buffer_liveness(&self, liveness: std::sync::Weak<()>) {
         *self
             .inner
-            .resource_liveness
+            .buffer_liveness
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(liveness);
     }
 
-    pub(in crate::transaction) fn worker_resources_alive(&self) -> bool {
+    pub(in crate::transaction) fn native_buffer_alive(&self) -> bool {
         self.inner
-            .resource_liveness
+            .buffer_liveness
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
@@ -1256,6 +1636,143 @@ impl WindowsLeaseTestControl {
             thread::yield_now();
         }
         true
+    }
+
+    fn record_notification_batch_enqueued(&self) {
+        self.inner.native_batch_count.fetch_add(1, Ordering::SeqCst);
+        let retained = self
+            .inner
+            .retained_notification_batches
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        self.inner
+            .retained_notification_batch_high_water
+            .fetch_max(retained, Ordering::SeqCst);
+    }
+
+    fn record_notification_batch_dequeued(&self) {
+        let _ = self.inner.retained_notification_batches.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |retained| retained.checked_sub(1),
+        );
+    }
+
+    pub(in crate::transaction) fn native_batch_count(&self) -> usize {
+        self.inner.native_batch_count.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::transaction) fn wait_until_native_batch_count(
+        &self,
+        expected: usize,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.native_batch_count() < expected {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::yield_now();
+        }
+        true
+    }
+
+    pub(in crate::transaction) fn retained_notification_batch_high_water(&self) -> usize {
+        self.inner
+            .retained_notification_batch_high_water
+            .load(Ordering::SeqCst)
+    }
+
+    pub(in crate::transaction) fn pause_next_native_completion(&self) {
+        let mut pause = self
+            .inner
+            .completion_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.requested = true;
+        pause.released = false;
+    }
+
+    fn before_native_completion(&self) {
+        let mut pause = self
+            .inner
+            .completion_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !pause.requested {
+            return;
+        }
+        pause.requested = false;
+        pause.paused = true;
+        self.inner.completion_pause_changed.notify_all();
+        while !pause.released {
+            pause = self
+                .inner
+                .completion_pause_changed
+                .wait(pause)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        pause.paused = false;
+        pause.released = false;
+        self.inner.completion_pause_changed.notify_all();
+    }
+
+    pub(in crate::transaction) fn wait_until_native_completion_paused(
+        &self,
+        timeout: Duration,
+    ) -> bool {
+        let pause = self
+            .inner
+            .completion_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pause.paused {
+            return true;
+        }
+        let (pause, _) = self
+            .inner
+            .completion_pause_changed
+            .wait_timeout_while(pause, timeout, |pause| !pause.paused)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.paused
+    }
+
+    pub(in crate::transaction) fn release_native_completion(&self) {
+        let mut pause = self
+            .inner
+            .completion_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pause.released = true;
+        self.inner.completion_pause_changed.notify_all();
+    }
+
+    fn record_native_completion(&self) {
+        self.inner
+            .native_completion_count
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(in crate::transaction) fn native_completion_count(&self) -> usize {
+        self.inner.native_completion_count.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::transaction) fn teardown_target_miss_count(&self) -> usize {
+        self.inner.teardown_target_miss_count.load(Ordering::SeqCst)
+    }
+
+    fn record_teardown_target_miss(&self) {
+        self.inner
+            .teardown_target_miss_count
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn record_join(&self) {
+        self.inner.join_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(in crate::transaction) fn join_count(&self) -> usize {
+        self.inner.join_count.load(Ordering::SeqCst)
     }
 
     fn record_state(&self, state: Arc<MonitorStateCell>) {
