@@ -15,8 +15,9 @@ binary, closed output schema, and exact Windows/macOS commands.
 **Plan revision note:** The written safety-first teardown specification was
 user-approved and independently approved on 2026-07-23. The focused plan revision at
 `0a409ea7` passed independent plan re-review with no remaining substantive findings.
-Task 4 is next and resumes from implementation head `81a4a50e`; this metadata does not
-claim the corrected behavior is implemented.
+Task 4 is implemented and independently review-clean through `1ce9436a`; the overall
+plan remains in progress. Task 2's native macOS characterization remains pending,
+Task 5 is unstarted, and Task 6 is the next locally executable unit.
 
 ---
 
@@ -272,7 +273,7 @@ git commit -m "corefs: add bounded object lease state"
 - Test: `packages/anima-corefs/src/transaction/object_lease_tests.rs`
 - Test: `packages/anima-corefs/tests/transaction.rs:250-415`
 
-- [ ] **Step 1: Add the three genuine RED regressions and preserve the prior matrix**
+- [x] **Step 1: Add the three genuine RED regressions and preserve the prior matrix**
 
 Add these exact new test names:
 
@@ -320,7 +321,7 @@ windows_object_lease_cancellation_is_unknown_and_leaves_zero_residue()
 Retain the non-`cfg(test)` release integration case proving production Windows rejects
 a two-link object and never inherits the Unix crash-stale-alias exception.
 
-- [ ] **Step 2: Run the focused tests and verify a real RED phase**
+- [x] **Step 2: Run the focused tests and verify a real RED phase**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::object_lease_tests::windows_object_lease_tests::windows_event_flood_is_constant_space_and_terminal -- --exact --nocapture
@@ -332,7 +333,7 @@ Expected: all three fail against the current implementation: publication still u
 an unbounded queue, the factory understates the three live resources, and teardown has
 no completion-confirmed delayed-I/O ownership seam.
 
-- [ ] **Step 3: Implement retained anchors and bounded notification state**
+- [x] **Step 3: Implement retained anchors and bounded notification state**
 
 Convert each already safe-open-validated object into an owned retained handle plus
 captured stable identity. On every clean hit, query fresh handle metadata and require
@@ -349,7 +350,7 @@ probe create/delete ordering and attribute records after its terminal boundary t
 next fence. Names remain non-authoritative. Fence waits remain cancellation-aware and
 bounded to two seconds; timeout publishes `Unknown` and uses safe-open fallback.
 
-- [ ] **Step 4: Reserve exactly three resources and implement completion-confirmed teardown**
+- [x] **Step 4: Reserve exactly three resources and implement completion-confirmed teardown**
 
 Make the production factory reserve exactly three current monitor resources before
 arming: the notification directory handle, dedicated cancellation-capable
@@ -365,7 +366,7 @@ outside the GIL. Only confirmed native completion permits one join, probe cleanu
 resource destruction, and permit return. Never detach, leak, defer a reaper, or use a
 timeout to free/reuse in-flight state.
 
-- [ ] **Step 5: Run focused, release, full, Clippy, and format gates**
+- [x] **Step 5: Run focused, release, full, Clippy, and format gates**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::object_lease_tests::windows_object_lease_tests::windows_event_flood_is_constant_space_and_terminal -- --exact --nocapture
@@ -383,7 +384,7 @@ Expected: PASS. The supported Windows/NTFS profile reports cancellation plus joi
 less than two seconds with zero residue and zero handle/resource delta; the finite
 delayed-completion seam proves safety and exact ownership beyond the target.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add packages/anima-corefs/Cargo.toml Cargo.lock packages/anima-corefs/src/transaction/object_lease.rs packages/anima-corefs/src/transaction/object_lease/windows.rs packages/anima-corefs/src/transaction/object_lease_tests.rs packages/anima-corefs/tests/transaction.rs
