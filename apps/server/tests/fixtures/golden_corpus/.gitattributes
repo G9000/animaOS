@@ -1,0 +1,5 @@
+# Fixture bytes are compared verbatim against generate_fixtures.py output in
+# test_generate_fixtures_is_deterministic. Disable text EOL conversion so a
+# core.autocrlf=true checkout (Windows) does not mangle them to CRLF.
+*.pdf -text
+gold.json -text

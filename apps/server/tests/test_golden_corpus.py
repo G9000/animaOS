@@ -43,12 +43,14 @@ import importlib
 import importlib.util
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
+from anima_server.config import settings as config_settings
 from anima_server.models.runtime import RuntimeKnowledgeConcept
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import fastembed_backend as fastembed_backend_module
@@ -343,17 +345,48 @@ def test_scanned_pdf_ocr_recovers_phrase(golden_extractions: dict[str, Any]) -> 
 
 def _load_pristine_module(module: ModuleType) -> ModuleType:
     """Load a fresh, independent copy of *module* straight from its source
-    file — never touching ``sys.modules`` — so its (real, un-monkeypatched)
-    ``_create_model`` can be lifted out without disturbing the live module
-    object conftest.py already stubbed.
+    file so its (real, un-monkeypatched) ``_create_model`` can be lifted out
+    without disturbing the live module object conftest.py already stubbed.
+
+    The copy must be present in ``sys.modules`` *while it executes*:
+    ``dataclasses`` resolves string annotations (e.g. ``model: Any`` under
+    ``from __future__ import annotations``) through
+    ``sys.modules[cls.__module__].__dict__`` at class-creation time, so a
+    module executed outside ``sys.modules`` crashes with
+    ``AttributeError: 'NoneType' object has no attribute '__dict__'`` on
+    CPython 3.12. The entry is removed again as soon as execution finishes,
+    so the live module registry is left untouched.
     """
     spec = importlib.util.spec_from_file_location(
         f"{module.__name__}__pristine_copy", module.__file__
     )
     assert spec is not None and spec.loader is not None
     pristine = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pristine)
+    sys.modules[spec.name] = pristine
+    try:
+        spec.loader.exec_module(pristine)
+    finally:
+        del sys.modules[spec.name]
     return pristine
+
+
+@pytest.fixture(autouse=True)
+def _pin_fastembed_embedding_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the embedding provider to the bundled fastembed backend.
+
+    This eval must exercise the real shipped-default stack regardless of the
+    developer's own ANIMA_AGENT_EMBEDDING_PROVIDER / _MODEL env (e.g. an
+    ollama config in .env.local), which pydantic-settings would otherwise
+    pick up — silently downgrading the eval to "provider down, zero
+    embeddings", and worse: resolving the Vector column dimension from the
+    env's model (768 for nomic-embed-text) so the real bge-small vectors
+    (384) fail to insert. Function-scoped autouse so the pin is already in
+    place when ``runtime_engine`` calls ``create_all`` and
+    ``resolve_embedding_dim()`` runs. Empty model -> the resolver applies the
+    fastembed default.
+    """
+    monkeypatch.setattr(config_settings, "agent_embedding_provider", "fastembed")
+    monkeypatch.setattr(config_settings, "agent_embedding_model", "")
 
 
 @pytest.fixture()

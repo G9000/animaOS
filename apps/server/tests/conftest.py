@@ -1,6 +1,23 @@
 from __future__ import annotations
 
 import os
+
+# Disable encryption requirement for tests (must be set before settings import).
+os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
+
+# Keep the suite hermetic to the developer's local embedding provider: a
+# machine-specific ANIMA_AGENT_EMBEDDING_PROVIDER / _MODEL (e.g. an ollama
+# config in .env.local) otherwise leaks through pydantic-settings into every
+# test — and, because models/runtime_embedding.py resolves the Vector column
+# dimension from the configured model AT IMPORT TIME, even changes the
+# embeddings table shape the suite runs against (768 for nomic-embed-text vs
+# 384 for the bundled bge-small default). Real environment variables beat
+# .env file values in pydantic-settings; tests that need a different provider
+# set it explicitly (monkeypatch), which still wins. Must be set before the
+# anima_server imports below instantiate settings.
+os.environ["ANIMA_AGENT_EMBEDDING_PROVIDER"] = "fastembed"
+os.environ["ANIMA_AGENT_EMBEDDING_MODEL"] = ""
+
 import shutil
 import sys
 import tempfile
@@ -26,9 +43,6 @@ from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-# Disable encryption requirement for tests (must be set before settings import).
-os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
 
 # Tests exercise the deterministic knowledge compiler by default; LLM-path
 # tests opt in explicitly with a scripted client.
