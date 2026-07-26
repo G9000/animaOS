@@ -15,8 +15,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use cap_fs_ext::MetadataExt as _;
@@ -35,7 +34,6 @@ use self::cache::{
     AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet, ValidatedObjectBinding,
     ValidatedObjectState,
 };
-#[cfg(not(any(test, feature = "session-test-seams")))]
 use self::object_lease::global_lease_budget;
 use self::object_lease::{
     object_set_fingerprint, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision,
@@ -1173,13 +1171,131 @@ pub struct CoreCommitCoordinator {
     fs_dir: Dir,
     catalogs_dir: Dir,
     objects_dir: Dir,
-    lease_publication_open: AtomicBool,
-    lease_publication_generation: AtomicU64,
+    lease_publication: LeasePublicationAuthority,
     lease_attempt_policy: Mutex<LeaseAttemptPolicy>,
     #[cfg(test)]
     lease_factory_override: Mutex<Option<Arc<dyn object_lease::LeaseResourceFactory>>>,
-    #[cfg(any(test, feature = "session-test-seams"))]
-    lease_budget: object_lease::LeaseBudget,
+    lease_budget_override: Option<LeaseBudget>,
+}
+
+#[derive(Debug)]
+struct LeasePublicationAuthority {
+    state: Mutex<LeasePublicationState>,
+    changed: Condvar,
+}
+
+#[derive(Debug)]
+struct LeasePublicationState {
+    open: bool,
+    generation: u64,
+    active_operations: usize,
+    release_depth: usize,
+}
+
+impl Default for LeasePublicationAuthority {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(LeasePublicationState {
+                open: true,
+                generation: 0,
+                active_operations: 0,
+                release_depth: 0,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+}
+
+impl LeasePublicationAuthority {
+    fn admit(&self) -> Result<LeasePublicationOperation<'_>, CommitError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.open {
+            return Err(CommitError::ObjectLeaseReleaseInProgress);
+        }
+        state.active_operations = state
+            .active_operations
+            .checked_add(1)
+            .ok_or(CommitError::ObjectLeaseOperationOverflow)?;
+        Ok(LeasePublicationOperation { authority: self })
+    }
+
+    fn begin_release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.release_depth = state.release_depth.saturating_add(1);
+        if state.open {
+            state.open = false;
+            state.generation = state.generation.wrapping_add(1);
+        }
+    }
+
+    fn wait_for_drain(&self) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        drop(
+            self.changed
+                .wait_while(state, |state| state.active_operations != 0)
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
+
+    fn resume(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.release_depth = state.release_depth.saturating_sub(1);
+        if state.release_depth == 0 {
+            state.open = true;
+            self.changed.notify_all();
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .open
+    }
+
+    fn generation(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .generation
+    }
+
+    fn can_publish(&self, generation: u64) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.open && state.generation == generation
+    }
+}
+
+struct LeasePublicationOperation<'a> {
+    authority: &'a LeasePublicationAuthority,
+}
+
+impl Drop for LeasePublicationOperation<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .authority
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(state.active_operations > 0);
+        state.active_operations = state.active_operations.saturating_sub(1);
+        self.authority.changed.notify_all();
+    }
 }
 
 impl fmt::Debug for CoreCommitCoordinator {
@@ -1196,6 +1312,22 @@ impl CoreCommitCoordinator {
     pub fn new(
         core_root: impl AsRef<Path>,
         core_id: impl Into<String>,
+    ) -> Result<Self, CommitError> {
+        Self::new_with_lease_budget(core_root, core_id, None)
+    }
+
+    #[cfg(any(test, feature = "session-test-seams"))]
+    fn new_with_isolated_lease_budget(
+        core_root: impl AsRef<Path>,
+        core_id: impl Into<String>,
+    ) -> Result<Self, CommitError> {
+        Self::new_with_lease_budget(core_root, core_id, Some(LeaseBudget::isolated()))
+    }
+
+    fn new_with_lease_budget(
+        core_root: impl AsRef<Path>,
+        core_id: impl Into<String>,
+        lease_budget_override: Option<LeaseBudget>,
     ) -> Result<Self, CommitError> {
         let core_root = core_root.as_ref();
         ensure_ambient_directory(core_root)?;
@@ -1227,15 +1359,13 @@ impl CoreCommitCoordinator {
             fs_dir,
             catalogs_dir,
             objects_dir,
-            lease_publication_open: AtomicBool::new(true),
-            lease_publication_generation: AtomicU64::new(0),
+            lease_publication: LeasePublicationAuthority::default(),
             lease_attempt_policy: Mutex::new(LeaseAttemptPolicy::new(Arc::new(
                 CoordinatorMonotonicClock::new(),
             ))),
             #[cfg(test)]
             lease_factory_override: Mutex::new(None),
-            #[cfg(any(test, feature = "session-test-seams"))]
-            lease_budget: object_lease::LeaseBudget::isolated(),
+            lease_budget_override,
         })
     }
 
@@ -1248,14 +1378,9 @@ impl CoreCommitCoordinator {
     }
 
     fn lease_budget(&self) -> &LeaseBudget {
-        #[cfg(any(test, feature = "session-test-seams"))]
-        {
-            &self.lease_budget
-        }
-        #[cfg(not(any(test, feature = "session-test-seams")))]
-        {
-            global_lease_budget()
-        }
+        self.lease_budget_override
+            .as_ref()
+            .unwrap_or_else(|| global_lease_budget())
     }
 
     fn lease_factory(&self) -> Arc<dyn LeaseResourceFactory> {
@@ -1551,13 +1676,20 @@ impl CoreCommitCoordinator {
         &self.lock_path
     }
 
+    pub fn core_root(&self) -> &Path {
+        &self.core_root
+    }
+
+    fn admit_lease_publication_operation(
+        &self,
+    ) -> Result<LeasePublicationOperation<'_>, CommitError> {
+        self.lease_publication.admit()
+    }
+
     /// Marks the current object-validation lease terminally unknown and wakes any
     /// cancellation-aware monitor fence without waiting for backend destruction.
     pub fn begin_object_lease_release(&self) {
-        self.lease_publication_open
-            .store(false, AtomicOrdering::SeqCst);
-        self.lease_publication_generation
-            .fetch_add(1, AtomicOrdering::SeqCst);
+        self.lease_publication.begin_release();
         self.cache.begin_object_lease_release();
     }
 
@@ -1566,6 +1698,7 @@ impl CoreCommitCoordinator {
     /// The cache mutex is released before monitor destruction, native completion,
     /// worker join, anchor destruction, or process-budget permit return.
     pub fn finish_object_lease_release(&self) {
+        self.lease_publication.wait_for_drain();
         self.cache.drop_object_lease();
     }
 
@@ -1578,8 +1711,7 @@ impl CoreCommitCoordinator {
 
     /// Reopens lease construction after a non-terminal, completion-confirmed release.
     pub fn resume_object_lease_publication(&self) {
-        self.lease_publication_open
-            .store(true, AtomicOrdering::SeqCst);
+        self.lease_publication.resume();
     }
 
     /// Clears all process-local authenticated cache state after lease cancellation.
@@ -1591,17 +1723,16 @@ impl CoreCommitCoordinator {
     }
 
     fn lease_publication_is_open(&self) -> bool {
-        self.lease_publication_open.load(AtomicOrdering::SeqCst)
+        self.lease_publication.is_open()
     }
 
     fn lease_publication_generation(&self) -> u64 {
-        self.lease_publication_generation
-            .load(AtomicOrdering::SeqCst)
+        self.lease_publication.generation()
     }
 
     fn object_lease_can_publish(&self, lease: &ObjectValidationLease) -> bool {
-        self.lease_publication_is_open()
-            && lease.publication_generation() == self.lease_publication_generation()
+        self.lease_publication
+            .can_publish(lease.publication_generation())
     }
 
     pub fn prepare_object_revision<R: Read>(
@@ -1968,6 +2099,7 @@ impl CoreCommitCoordinator {
     where
         R: FnOnce(),
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
         self.validate_pinned_layout()?;
         let pointers = self.load_pointer_set(
             #[cfg(test)]
@@ -2782,6 +2914,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
         let mut lease_failure = LeaseFailureGuard::new(&self.cache);
         let result = self.rotate_frk_with_hook_inner(
             keyring,
@@ -3246,6 +3379,7 @@ impl CoreCommitCoordinator {
         B: FnOnce(u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
         let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
@@ -3320,6 +3454,7 @@ impl CoreCommitCoordinator {
         B: FnOnce(&CatalogGeneration, u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
         let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
@@ -3559,6 +3694,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
         let mut lease_failure = LeaseFailureGuard::new(&self.cache);
         let result = self.commit_internal_with_keyring_and_hook_inner(
             keyring,
@@ -5222,6 +5358,10 @@ pub enum CommitConflict {
 pub enum CommitError {
     #[error("CoreFS commit lock is already held")]
     LockBusy,
+    #[error("CoreFS object-lease release is in progress")]
+    ObjectLeaseReleaseInProgress,
+    #[error("CoreFS object-lease operation count overflow")]
+    ObjectLeaseOperationOverflow,
     #[error("recorded CoreFS lock owner is still alive: pid={pid}, start={process_start_time}")]
     RecordedOwnerAlive { pid: u32, process_start_time: u64 },
     #[error("invalid CoreFS lock metadata")]

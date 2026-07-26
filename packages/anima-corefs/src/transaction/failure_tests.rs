@@ -259,7 +259,7 @@ fn seed_committed(root: &Path) {
 
 fn seed_leased_coordinator(root: &Path) -> (CoreCommitCoordinator, FrkSubkeys) {
     seed_committed(root);
-    let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let coordinator = CoreCommitCoordinator::new_with_isolated_lease_budget(root, CORE_ID).unwrap();
     let keys = keys();
     coordinator.set_lease_factory_for_test(Arc::new(TestFactory::successful()));
     coordinator
@@ -724,7 +724,8 @@ fn post_head_failure_reconciles_cache_to_durable_authority() {
 #[test]
 fn lease_failure_post_head_recovery_pending_clears_candidate_lease() {
     let root = reset_root("post-head-recovery-pending-clears-cache");
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let coordinator =
+        CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
     coordinator.set_lease_factory_for_test(Arc::new(TestFactory::successful()));
     let keys = keys();
     let initial = prepare(&coordinator, &keys, 1, b"initial");
@@ -1065,7 +1066,8 @@ fn cutover_recovery_replaces_cache_only_after_verified_completion() {
 #[test]
 fn lease_lock_order_recovery_replacement_defers_lease_teardown_until_kernel_unlock() {
     let root = reset_root("recovery-lease-drop-after-unlock");
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let coordinator =
+        CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
     let drop_probe = KernelLockDropProbe::new(root.clone());
     coordinator.set_lease_factory_for_test(Arc::new(
         TestFactory::successful().with_kernel_lock_drop_probe(drop_probe.clone()),
@@ -1163,7 +1165,8 @@ fn evict_recovery_cache_with_wrong_same_version_key(
 #[test]
 fn lease_lock_order_recovery_hook_error_after_reentrant_eviction_defers_snapshot_until_unlock() {
     let root = reset_root("recovery-hook-error-reentrant-eviction");
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let coordinator =
+        CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
     let drop_probe = KernelLockDropProbe::new(root.clone());
     coordinator.set_lease_factory_for_test(Arc::new(
         TestFactory::successful().with_kernel_lock_drop_probe(drop_probe.clone()),
@@ -1214,7 +1217,8 @@ fn lease_lock_order_recovery_hook_error_after_reentrant_eviction_defers_snapshot
 #[test]
 fn lease_lock_order_recovery_hook_panic_after_reentrant_eviction_defers_snapshot_until_unlock() {
     let root = reset_root("recovery-hook-panic-reentrant-eviction");
-    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let coordinator =
+        CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
     let drop_probe = KernelLockDropProbe::new(root.clone());
     coordinator.set_lease_factory_for_test(Arc::new(
         TestFactory::successful().with_kernel_lock_drop_probe(drop_probe.clone()),

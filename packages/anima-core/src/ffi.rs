@@ -640,8 +640,7 @@ mod python {
             let coordinator =
                 anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
                     .map_err(corefs_commit_error)?;
-            let canonical_root = std::fs::canonicalize(core_root)
-                .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))?;
+            let canonical_root = coordinator.core_root().to_path_buf();
             Ok(Self {
                 canonical_root,
                 core_id: core_id.to_owned(),
@@ -3722,6 +3721,8 @@ mod python {
         use std::io::Cursor;
         use std::panic::{catch_unwind, AssertUnwindSafe};
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        #[cfg(windows)]
+        use std::sync::Mutex;
         use std::sync::{Arc, Barrier, Once};
         use std::thread;
         use std::time::{Duration, Instant};
@@ -3739,12 +3740,12 @@ mod python {
         use anima_corefs::folders::{FolderOwner, PortableName};
         use anima_corefs::id::OpaqueId;
         use anima_corefs::policy::AnimaAccess;
-        use anima_corefs::transaction::{
-            CoreCommitCoordinator, PreparedObjectRevision, ValidationSnapshot,
-        };
         #[cfg(windows)]
         use anima_corefs::transaction::session_test_support::{
-            SessionLeaseUsage, WindowsSessionLeaseControl,
+            SessionLeaseUsage, SessionPublicationPause, WindowsSessionLeaseControl,
+        };
+        use anima_corefs::transaction::{
+            CoreCommitCoordinator, PreparedObjectRevision, ValidationSnapshot,
         };
 
         use crate::capsule::{CapsuleWriter, SectionKind};
@@ -3782,6 +3783,94 @@ mod python {
         mod corefs_session {
             use super::*;
 
+            #[cfg(windows)]
+            static PROCESS_HANDLE_PROOF_LOCK: Mutex<()> = Mutex::new(());
+
+            #[cfg(windows)]
+            fn process_handle_count() -> u32 {
+                use windows_sys::Win32::System::Threading::{
+                    GetCurrentProcess, GetProcessHandleCount,
+                };
+
+                let mut count = 0;
+                // SAFETY: GetCurrentProcess returns a process-local pseudo-handle, and
+                // `count` is a valid writable u32 for the duration of the call.
+                let succeeded = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+                assert_ne!(succeeded, 0, "GetProcessHandleCount failed");
+                count
+            }
+
+            #[cfg(windows)]
+            fn settled_process_handle_count(timeout: Duration) -> u32 {
+                let deadline = Instant::now() + timeout;
+                let mut last = process_handle_count();
+                let mut stable_samples = 0;
+                loop {
+                    thread::sleep(Duration::from_millis(10));
+                    let current = process_handle_count();
+                    if current == last {
+                        stable_samples += 1;
+                        if stable_samples == 5 {
+                            return current;
+                        }
+                    } else {
+                        last = current;
+                        stable_samples = 0;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "process handle count did not settle before resource proof"
+                    );
+                }
+            }
+
+            #[cfg(windows)]
+            fn wait_for_process_handle_baseline(expected: u32, timeout: Duration) -> u32 {
+                let deadline = Instant::now() + timeout;
+                loop {
+                    let current = process_handle_count();
+                    if current == expected {
+                        return current;
+                    }
+                    if Instant::now() >= deadline {
+                        return current;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+
+            fn isolated_session_for_test(
+                core_root: &std::path::Path,
+                core_id: &str,
+            ) -> PyCorefsSession {
+                let coordinator =
+                    CoreCommitCoordinator::session_test_new_isolated(core_root, core_id).unwrap();
+                PyCorefsSession {
+                    canonical_root: coordinator.core_root().to_path_buf(),
+                    core_id: core_id.to_owned(),
+                    coordinator: Arc::new(coordinator),
+                    lifecycle: Arc::new(CorefsSessionLifecycle::default()),
+                }
+            }
+
+            #[cfg(unix)]
+            fn session_with_post_coordinator_hook(
+                core_root: &std::path::Path,
+                core_id: &str,
+                after_coordinator: impl FnOnce(),
+            ) -> Result<PyCorefsSession, String> {
+                let coordinator = CoreCommitCoordinator::new(core_root, core_id)
+                    .map_err(|error| error.to_string())?;
+                after_coordinator();
+                let canonical_root = coordinator.core_root().to_path_buf();
+                Ok(PyCorefsSession {
+                    canonical_root,
+                    core_id: core_id.to_owned(),
+                    coordinator: Arc::new(coordinator),
+                    lifecycle: Arc::new(CorefsSessionLifecycle::default()),
+                })
+            }
+
             fn native_session(
                 name: &str,
                 core_id: &str,
@@ -3789,7 +3878,7 @@ mod python {
                 let root = tempfile::tempdir().unwrap();
                 let core_root = root.path().join(name);
                 fs::create_dir_all(&core_root).unwrap();
-                let session = PyCorefsSession::new(core_root.to_str().unwrap(), core_id).unwrap();
+                let session = isolated_session_for_test(&core_root, core_id);
                 (root, Arc::new(session))
             }
 
@@ -3802,8 +3891,10 @@ mod python {
                 WindowsSessionLeaseControl,
             ) {
                 let fixture = Arc::new(logical_fixture(name));
-                let session =
-                    Arc::new(PyCorefsSession::new(fixture.root_path(), LOGICAL_CORE_ID).unwrap());
+                let session = Arc::new(isolated_session_for_test(
+                    std::path::Path::new(fixture.root_path()),
+                    LOGICAL_CORE_ID,
+                ));
                 with_python(|py| {
                     session.validation_snapshot(py, &fixture.keys).unwrap();
                 });
@@ -3988,6 +4079,135 @@ mod python {
             }
 
             #[test]
+            #[cfg(windows)]
+            fn direct_coordinator_release_drains_eligible_late_publisher() {
+                let (_fixture, session, _cached_control) =
+                    cached_windows_session("direct-release-overlap");
+                let coordinator = session.coordinator_for_test();
+                let mut late_candidate = coordinator
+                    .session_test_prepare_windows_candidate()
+                    .unwrap();
+                let late_control = late_candidate.control().clone();
+                let pause = SessionPublicationPause::default();
+                let publisher_coordinator = Arc::clone(&coordinator);
+                let publisher_pause = pause.clone();
+                let publisher = thread::spawn(move || {
+                    publisher_coordinator.session_test_attempt_candidate_publication_paused(
+                        &mut late_candidate,
+                        &publisher_pause,
+                    )
+                });
+                assert!(pause.wait_until_paused(Duration::from_secs(2)));
+
+                let (release_done_sender, release_done_receiver) = std::sync::mpsc::channel();
+                let release_coordinator = Arc::clone(&coordinator);
+                let releaser = thread::spawn(move || {
+                    release_coordinator.release_object_lease();
+                    release_done_sender.send(()).unwrap();
+                });
+                assert!(
+                    release_done_receiver
+                        .recv_timeout(Duration::from_millis(250))
+                        .is_err(),
+                    "direct coordinator release returned while an admitted publisher still owned a real candidate"
+                );
+
+                pause.release();
+                assert!(publisher.join().unwrap());
+                releaser.join().unwrap();
+                release_done_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("direct coordinator release did not finish after publisher drain");
+                assert!(!coordinator.session_test_cache_has_object_lease());
+                assert_eq!(late_control.live_monitor_resource_count(), 0);
+                assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+            }
+
+            #[test]
+            fn all_features_normal_coordinators_share_process_lease_budget() {
+                let first_root = tempfile::tempdir().unwrap();
+                let second_root = tempfile::tempdir().unwrap();
+                let isolated_root = tempfile::tempdir().unwrap();
+                let first = CoreCommitCoordinator::new(first_root.path(), "budget-first").unwrap();
+                let second =
+                    CoreCommitCoordinator::new(second_root.path(), "budget-second").unwrap();
+                let isolated = CoreCommitCoordinator::session_test_new_isolated(
+                    isolated_root.path(),
+                    "budget-isolated",
+                )
+                .unwrap();
+
+                let entry_limit = first
+                    .session_test_try_reserve_budget(4_096, 0)
+                    .expect("normal coordinator should reserve the process entry ceiling");
+                assert!(
+                    second.session_test_try_reserve_budget(1, 0).is_none(),
+                    "normal coordinators must share the 4096-entry process ceiling"
+                );
+                assert!(isolated.session_test_try_reserve_budget(1, 0).is_some());
+                drop(entry_limit);
+
+                let lease_limit = (0..4)
+                    .map(|_| {
+                        first
+                            .session_test_try_reserve_budget(0, 0)
+                            .expect("normal coordinator should reserve four process lease slots")
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    second.session_test_try_reserve_budget(0, 0).is_none(),
+                    "normal coordinators must share the four-lease process ceiling"
+                );
+                drop(lease_limit);
+
+                let resource_limit = first
+                    .session_test_try_reserve_budget(0, 260)
+                    .expect("normal coordinator should reserve the process monitor ceiling");
+                assert!(
+                    second.session_test_try_reserve_budget(0, 1).is_none(),
+                    "normal coordinators must share the 260-resource process ceiling"
+                );
+                drop(resource_limit);
+            }
+
+            #[test]
+            #[cfg(unix)]
+            fn session_root_identity_stays_bound_to_pinned_coordinator_tree() {
+                let parent = tempfile::tempdir().unwrap();
+                let requested = parent.path().join("requested");
+                let pinned = parent.path().join("pinned-tree");
+                let replacement = parent.path().join("replacement-tree");
+                fs::create_dir_all(&pinned).unwrap();
+                fs::create_dir_all(&replacement).unwrap();
+                std::os::unix::fs::symlink(&pinned, &requested).unwrap();
+                let session = session_with_post_coordinator_hook(&requested, "root-race", || {
+                    fs::remove_dir(&requested).unwrap();
+                    std::os::unix::fs::symlink(&replacement, &requested).unwrap();
+                })
+                .unwrap();
+                assert_eq!(
+                    session.canonical_root,
+                    session
+                        .coordinator_for_test()
+                        .session_test_core_root()
+                        .to_path_buf(),
+                    "session identity must name the same tree pinned by its coordinator"
+                );
+            }
+
+            #[test]
+            fn session_root_identity_uses_coordinator_canonical_root() {
+                let (_root, session) = native_session("root-identity", "root-identity");
+                assert_eq!(
+                    session.canonical_root,
+                    session
+                        .coordinator_for_test()
+                        .session_test_core_root()
+                        .to_path_buf()
+                );
+            }
+
+            #[test]
             fn two_close_callers_wait_for_closed() {
                 let (_root, session) = native_session("two-close", LOGICAL_CORE_ID);
                 let guard = session.acquire_operation_for_test().unwrap();
@@ -4093,18 +4313,62 @@ mod python {
             fn windows_supported_profile_teardown_meets_target() {
                 #[cfg(windows)]
                 {
-                    let (_fixture, session, control) =
-                        cached_windows_session("windows-target-real");
-                    let started = Instant::now();
-                    session.release_native().unwrap();
-                    assert!(started.elapsed() < Duration::from_secs(2));
-                    assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
-                    assert_eq!(control.native_completion_count(), 1);
-                    assert_eq!(control.join_count(), 1);
-                    assert!(!control.native_buffer_alive());
-                    assert_eq!(control.live_monitor_resource_count(), 0);
-                    assert_eq!(control.usage(), SessionLeaseUsage::default());
-                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                    const HANDLE_PROOF_HELPER: &str =
+                        "ANIMA_CORE_NATIVE_SESSION_HANDLE_PROOF_HELPER";
+                    if std::env::var_os(HANDLE_PROOF_HELPER).is_none() {
+                        let status = std::process::Command::new(std::env::current_exe().unwrap())
+                            .arg("--exact")
+                            .arg(
+                                "ffi::python::tests::corefs_session::windows_supported_profile_teardown_meets_target",
+                            )
+                            .arg("--nocapture")
+                            .env(HANDLE_PROOF_HELPER, "1")
+                            .status()
+                            .unwrap();
+                        assert!(
+                            status.success(),
+                            "isolated Windows process-handle proof failed"
+                        );
+                        return;
+                    }
+                    let _handle_proof = PROCESS_HANDLE_PROOF_LOCK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    with_python(|_| ());
+                    {
+                        let (fixture, session, control) =
+                            cached_windows_session("windows-target-handle-warmup");
+                        session.release_native().unwrap();
+                        session.close_native().unwrap();
+                        drop(control);
+                        drop(session);
+                        drop(fixture);
+                    }
+                    let baseline = settled_process_handle_count(Duration::from_secs(2));
+                    {
+                        let (fixture, session, control) =
+                            cached_windows_session("windows-target-real");
+                        let started = Instant::now();
+                        session.release_native().unwrap();
+                        assert!(started.elapsed() < Duration::from_secs(2));
+                        assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+                        assert_eq!(control.native_completion_count(), 1);
+                        assert_eq!(control.join_count(), 1);
+                        assert!(!control.native_buffer_alive());
+                        assert_eq!(control.live_monitor_resource_count(), 0);
+                        assert_eq!(control.usage(), SessionLeaseUsage::default());
+                        assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                        session.close_native().unwrap();
+                        assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                        drop(control);
+                        drop(session);
+                        drop(fixture);
+                    }
+                    assert_eq!(
+                        wait_for_process_handle_baseline(baseline, Duration::from_secs(2)),
+                        baseline,
+                        "real Windows session create/release/close leaked a process handle"
+                    );
                 }
                 #[cfg(not(windows))]
                 {

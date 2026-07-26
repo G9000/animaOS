@@ -2037,7 +2037,8 @@ mod lease_candidate_tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        let coordinator =
+            CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
         let keys = keys(0x51, 1);
         let prepared = seed_committed_object(&coordinator, &keys);
         (root, coordinator, keys, prepared)
@@ -2255,7 +2256,8 @@ mod lease_candidate_tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        let coordinator =
+            CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
         let keys = keys(0x52, 1);
         let first = prepare_cached_object(&coordinator, &keys);
         let second = prepare_second_object(&coordinator, &keys);
@@ -2425,7 +2427,7 @@ mod lease_candidate_tests {
     #[test]
     fn candidate_retry_budget_denial_is_reopened_by_deferred_teardown_epoch() {
         let (root, coordinator, keys, prepared) = setup("retry-budget-epoch");
-        let factory = CandidateFactory::denying_retry(coordinator.lease_budget.clone());
+        let factory = CandidateFactory::denying_retry(coordinator.lease_budget().clone());
         coordinator.set_lease_factory_for_test(factory.clone());
         let mut probe = CommitProbe::default();
 
@@ -2441,7 +2443,7 @@ mod lease_candidate_tests {
         ))
         .unwrap();
         let fingerprint = crate::transaction::object_lease::object_set_fingerprint(&requested);
-        let denied_epoch = coordinator.lease_budget.epoch();
+        let denied_epoch = coordinator.lease_budget().epoch();
         assert_eq!(
             coordinator
                 .lease_attempt_policy
@@ -2463,7 +2465,7 @@ mod lease_candidate_tests {
         assert!(coordinator.cache.current().unwrap().object_lease.is_some());
 
         factory.release_competitor();
-        let released_epoch = coordinator.lease_budget.epoch();
+        let released_epoch = coordinator.lease_budget().epoch();
         assert_ne!(released_epoch, denied_epoch);
         let mut third_probe = CommitProbe::default();
         commit_unchanged(&coordinator, &keys, &prepared, &mut third_probe);
@@ -2494,7 +2496,7 @@ mod lease_candidate_tests {
 
         assert_eq!(factory.anchor_attempts.load(Ordering::SeqCst), 2);
         assert_eq!(factory.monitor_drops.load(Ordering::SeqCst), 1);
-        let usage = coordinator.lease_budget.usage();
+        let usage = coordinator.lease_budget().usage();
         assert_eq!(usage.entries, 0);
         assert_eq!(usage.leases, 0);
         assert_eq!(usage.monitor_resources, 0);
@@ -2816,7 +2818,7 @@ mod lease_candidate_tests {
     fn lease_carry_forward_changed_set_counts_old_lease_until_kernel_unlock() {
         let (root, coordinator, keys, first, second) = setup_two_objects("changed-set-release");
         let initial_factory =
-            CandidateFactory::observing_budget([], coordinator.lease_budget.clone());
+            CandidateFactory::observing_budget([], coordinator.lease_budget().clone());
         coordinator.set_lease_factory_for_test(initial_factory.clone());
         let mut seed_probe = CommitProbe::default();
         coordinator
@@ -2840,7 +2842,7 @@ mod lease_candidate_tests {
 
         let third = prepare_third_object(&coordinator, &keys);
         let changed_factory =
-            CandidateFactory::observing_budget([], coordinator.lease_budget.clone());
+            CandidateFactory::observing_budget([], coordinator.lease_budget().clone());
         coordinator.set_lease_factory_for_test(changed_factory.clone());
         let mut probe = CommitProbe::default();
         let current = Arc::clone(coordinator.cache.current().unwrap().catalog());
@@ -2888,8 +2890,8 @@ mod lease_candidate_tests {
         assert_eq!(usages.len(), 1);
         assert_eq!(usages[0].entries, 5);
         assert_eq!(usages[0].leases, 2);
-        assert_eq!(coordinator.lease_budget.usage().entries, 3);
-        assert_eq!(coordinator.lease_budget.usage().leases, 1);
+        assert_eq!(coordinator.lease_budget().usage().entries, 3);
+        assert_eq!(coordinator.lease_budget().usage().leases, 1);
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2909,7 +2911,7 @@ mod lease_candidate_tests {
             .clone()
             .unwrap();
         let competitor = coordinator
-            .lease_budget
+            .lease_budget()
             .try_reserve_exact(MAX_OBJECT_LEASE_ENTRIES - 1, 0)
             .unwrap();
         let second = prepare_second_object(&coordinator, &keys);
@@ -2951,7 +2953,8 @@ mod lease_candidate_tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+        let coordinator =
+            CoreCommitCoordinator::new_with_isolated_lease_budget(&root, CORE_ID).unwrap();
         let keys = keys(0x54, 1);
         seed_committed(&coordinator, &keys);
         let prepared = prepare_large_object_set(&coordinator, &keys, 2_500);
@@ -3012,7 +3015,7 @@ mod lease_candidate_tests {
         assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 1);
         assert_eq!(factory.fence_attempts.load(Ordering::SeqCst), 6);
         assert_eq!(factory.metadata_queries.load(Ordering::SeqCst), 7_500);
-        let usage = coordinator.lease_budget.usage();
+        let usage = coordinator.lease_budget().usage();
         assert_eq!(usage.entries, 2_500);
         assert_eq!(usage.leases, 1);
         assert_eq!(usage.monitor_resources, 3);
@@ -3051,7 +3054,7 @@ mod lease_candidate_tests {
             coordinator.cache.current().unwrap().object_lease.is_none(),
             "callback failure retained object-lease authority"
         );
-        let usage = coordinator.lease_budget.usage();
+        let usage = coordinator.lease_budget().usage();
         assert_eq!(usage.entries, 0);
         assert_eq!(usage.leases, 0);
         assert_eq!(usage.monitor_resources, 0);
@@ -3108,7 +3111,7 @@ mod lease_candidate_tests {
 
         assert!(coordinator.load_committed(&keys).unwrap().is_none());
         assert!(coordinator.cache.current().is_none());
-        let usage = coordinator.lease_budget.usage();
+        let usage = coordinator.lease_budget().usage();
         assert_eq!(usage.entries, 0);
         assert_eq!(usage.leases, 0);
         assert_eq!(usage.monitor_resources, 0);
@@ -3789,7 +3792,7 @@ mod lease_candidate_tests {
         let mut stages = Vec::new();
         let mut observe_stage = |stage| {
             assert!(
-                coordinator.lease_budget.guard_available_for_test(),
+                coordinator.lease_budget().guard_available_for_test(),
                 "budget mutex held during {stage:?}"
             );
             assert!(
@@ -3811,7 +3814,7 @@ mod lease_candidate_tests {
                 &[],
                 |_, generation| {
                     assert!(coordinator.cache.inner.try_lock().is_ok());
-                    assert!(coordinator.lease_budget.guard_available_for_test());
+                    assert!(coordinator.lease_budget().guard_available_for_test());
                     assert!(lease.tuple_guard_available_for_test());
                     assert!(factory.outcomes.try_lock().is_ok());
                     Ok(cached_object_catalog(
@@ -3825,7 +3828,7 @@ mod lease_candidate_tests {
                         coordinator.cache.inner.try_lock().is_ok(),
                         "cache mutex held during invalidation callback"
                     );
-                    assert!(coordinator.lease_budget.guard_available_for_test());
+                    assert!(coordinator.lease_budget().guard_available_for_test());
                     assert!(lease.tuple_guard_available_for_test());
                     assert!(factory.outcomes.try_lock().is_ok());
                     let callback_lock =

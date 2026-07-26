@@ -5,7 +5,7 @@
 //! production construction and teardown semantics unchanged.
 
 #[cfg(windows)]
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 #[cfg(windows)]
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ use super::cache::{AuthenticatedCommitSnapshot, CacheLookupKey, PointerSet, Vali
 use super::object_lease::MonitorState;
 #[cfg(windows)]
 use super::object_lease::{FenceOutcome, ObjectLeaseCandidate};
+use super::object_lease::{LeasePermitBundle, MAX_PROCESS_OBJECT_LEASE_ENTRIES};
 use super::CoreCommitCoordinator;
 #[cfg(windows)]
 use super::{catalog_object_bindings, validate_existing_object_file};
@@ -30,6 +31,60 @@ pub struct SessionLeaseUsage {
     pub entries: usize,
     pub leases: usize,
     pub monitor_resources: usize,
+}
+
+pub struct SessionLeaseBudgetReservation {
+    _permits: LeasePermitBundle,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Default)]
+pub struct SessionPublicationPause {
+    inner: Arc<(Mutex<SessionPublicationPauseState>, Condvar)>,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default)]
+struct SessionPublicationPauseState {
+    paused: bool,
+    released: bool,
+}
+
+#[cfg(windows)]
+impl SessionPublicationPause {
+    pub fn wait_until_paused(&self, timeout: Duration) -> bool {
+        let (state, changed) = &*self.inner;
+        let state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (state, _) = changed
+            .wait_timeout_while(state, timeout, |state| !state.paused)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.paused
+    }
+
+    pub fn release(&self) {
+        let (state, changed) = &*self.inner;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.released = true;
+        changed.notify_all();
+    }
+
+    fn pause(&self) {
+        let (state, changed) = &*self.inner;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.paused = true;
+        changed.notify_all();
+        drop(
+            changed
+                .wait_while(state, |state| !state.released)
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
 }
 
 #[cfg(windows)]
@@ -138,6 +193,9 @@ impl WindowsSessionLeaseCandidate {
 #[cfg(windows)]
 impl CoreCommitCoordinator {
     pub fn session_test_seed_validation_cache(&self, keys: &FrkSubkeys) -> Result<(), String> {
+        let _lease_operation = self
+            .admit_lease_publication_operation()
+            .map_err(|error| error.to_string())?;
         let selected = self
             .load_validation_snapshot(keys)
             .map_err(|error| error.to_string())?
@@ -216,6 +274,9 @@ impl CoreCommitCoordinator {
     pub fn session_test_install_windows_lease(
         self: &Arc<Self>,
     ) -> Result<WindowsSessionLeaseControl, String> {
+        let _lease_operation = self
+            .admit_lease_publication_operation()
+            .map_err(|error| error.to_string())?;
         let mut prepared = self.build_windows_session_candidate()?;
         let candidate = prepared
             .candidate
@@ -244,6 +305,26 @@ impl CoreCommitCoordinator {
         &self,
         candidate: &mut WindowsSessionLeaseCandidate,
     ) -> bool {
+        self.session_test_attempt_candidate_publication_inner(candidate, None)
+    }
+
+    pub fn session_test_attempt_candidate_publication_paused(
+        &self,
+        candidate: &mut WindowsSessionLeaseCandidate,
+        pause: &SessionPublicationPause,
+    ) -> bool {
+        self.session_test_attempt_candidate_publication_inner(candidate, Some(pause))
+    }
+
+    fn session_test_attempt_candidate_publication_inner(
+        &self,
+        candidate: &mut WindowsSessionLeaseCandidate,
+        pause: Option<&SessionPublicationPause>,
+    ) -> bool {
+        let Ok(_lease_operation) = self.admit_lease_publication_operation() else {
+            drop(candidate.candidate.take());
+            return false;
+        };
         let Some(candidate) = candidate.candidate.take() else {
             return false;
         };
@@ -260,6 +341,9 @@ impl CoreCommitCoordinator {
             lease.begin_release();
             drop(lease);
             return false;
+        }
+        if let Some(pause) = pause {
+            pause.pause();
         }
         let Some(current) = self.cache.current() else {
             lease.begin_release();
@@ -325,5 +409,32 @@ impl CoreCommitCoordinator {
 
     pub fn session_test_budget_lock_available(&self) -> bool {
         self.lease_budget().guard_available_for_test()
+    }
+}
+
+impl CoreCommitCoordinator {
+    pub fn session_test_new_isolated(
+        core_root: impl AsRef<std::path::Path>,
+        core_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::new_with_isolated_lease_budget(core_root, core_id).map_err(|error| error.to_string())
+    }
+
+    pub fn session_test_core_root(&self) -> &std::path::Path {
+        self.core_root()
+    }
+
+    pub fn session_test_try_reserve_budget(
+        &self,
+        entries: usize,
+        monitor_resources: usize,
+    ) -> Option<SessionLeaseBudgetReservation> {
+        self.lease_budget()
+            .try_reserve_exact(entries, monitor_resources)
+            .map(|permits| SessionLeaseBudgetReservation { _permits: permits })
+    }
+
+    pub fn session_test_reserve_full_entry_budget(&self) -> Option<SessionLeaseBudgetReservation> {
+        self.session_test_try_reserve_budget(MAX_PROCESS_OBJECT_LEASE_ENTRIES, 0)
     }
 }
