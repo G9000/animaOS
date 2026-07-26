@@ -2301,6 +2301,21 @@ mod lease_candidate_tests {
             .unwrap();
     }
 
+    fn evict_cache_with_wrong_same_version_key(
+        coordinator: &CoreCommitCoordinator,
+        active_keys: &FrkSubkeys,
+    ) {
+        let wrong_keys = keys(0x7f, active_keys.frk_version());
+        assert!(
+            coordinator.load_committed(&wrong_keys).is_err(),
+            "wrong same-version material unexpectedly authenticated the committed catalog"
+        );
+        assert!(
+            coordinator.cache.current().is_none(),
+            "wrong same-version material did not evict the authenticated cache snapshot"
+        );
+    }
+
     #[test]
     fn candidate_monitor_arms_before_initial_object_scan() {
         let (root, coordinator, keys, prepared) = setup("monitor-before-scan");
@@ -3487,6 +3502,184 @@ mod lease_candidate_tests {
             drop_probe.drops_after_unlock(),
             1,
             "rotation non-carry did not tear down the displaced lease after kernel unlock"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_build_error_after_reentrant_eviction_defers_snapshot_until_unlock() {
+        let (root, coordinator, keys, prepared) = setup("build-error-reentrant-eviction");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        coordinator.set_lease_factory_for_test(CandidateFactory::with_kernel_lock_drop_probe(
+            [],
+            drop_probe.clone(),
+        ));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+
+        let result = coordinator.commit_internal_with_hook(
+            &keys,
+            &[],
+            &[],
+            CommitMode::Normal,
+            |_, _| {
+                evict_cache_with_wrong_same_version_key(&coordinator, &keys);
+                Err(crate::catalog::CatalogError::InvalidFormat(
+                    "injected build failure after reentrant cache eviction",
+                ))
+            },
+            CommitCallbacks {
+                invalidate: |_| Ok(()),
+                hook: &mut |_| Ok(()),
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "build error destroyed the reentrantly evicted lease owner under CoreCommitLock"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            1,
+            "build error did not defer the reentrantly evicted lease owner until unlock"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_build_panic_after_reentrant_eviction_defers_snapshot_until_unlock() {
+        let (root, coordinator, keys, prepared) = setup("build-panic-reentrant-eviction");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        coordinator.set_lease_factory_for_test(CandidateFactory::with_kernel_lock_drop_probe(
+            [],
+            drop_probe.clone(),
+        ));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &keys, &prepared, &mut seed_probe);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = coordinator.commit_internal_with_hook(
+                &keys,
+                &[],
+                &[],
+                CommitMode::Normal,
+                |_, _| {
+                    evict_cache_with_wrong_same_version_key(&coordinator, &keys);
+                    panic!("injected build panic after reentrant cache eviction");
+                },
+                CommitCallbacks {
+                    invalidate: |_| Ok(()),
+                    hook: &mut |_| Ok(()),
+                },
+            );
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "build panic destroyed the reentrantly evicted lease owner under CoreCommitLock"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            1,
+            "build panic did not defer the reentrantly evicted lease owner until unlock"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_rotation_hook_error_after_reentrant_eviction_defers_snapshot_until_unlock()
+    {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-error-reentrant-eviction");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        coordinator.set_lease_factory_for_test(CandidateFactory::with_kernel_lock_drop_probe(
+            [],
+            drop_probe.clone(),
+        ));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+        let mut first_hook = true;
+
+        let result = coordinator.rotate_frk_with_hook(
+            &keyring,
+            &pending_keys,
+            3,
+            |_| Ok(()),
+            &mut |_| {
+                if first_hook {
+                    first_hook = false;
+                    evict_cache_with_wrong_same_version_key(&coordinator, &old_keys);
+                    Err(std::io::Error::other(
+                        "injected rotation hook failure after reentrant cache eviction",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "rotation hook error destroyed the reentrantly evicted lease owner under CoreCommitLock"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            1,
+            "rotation hook error did not defer the reentrantly evicted lease owner until unlock"
+        );
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_lock_order_rotation_hook_panic_after_reentrant_eviction_defers_snapshot_until_unlock()
+    {
+        let (root, coordinator, old_keys, prepared) = setup("rotation-panic-reentrant-eviction");
+        let drop_probe = KernelLockDropProbe::new(root.clone());
+        coordinator.set_lease_factory_for_test(CandidateFactory::with_kernel_lock_drop_probe(
+            [],
+            drop_probe.clone(),
+        ));
+        let mut seed_probe = CommitProbe::default();
+        commit_unchanged(&coordinator, &old_keys, &prepared, &mut seed_probe);
+        let pending_keys = keys(0x52, 2);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = coordinator.rotate_frk_with_hook(
+                &keyring,
+                &pending_keys,
+                3,
+                |_| Ok(()),
+                &mut |_| {
+                    evict_cache_with_wrong_same_version_key(&coordinator, &old_keys);
+                    panic!("injected rotation hook panic after reentrant cache eviction");
+                },
+                None,
+            );
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(
+            drop_probe.drops_while_locked(),
+            0,
+            "rotation hook panic destroyed the reentrantly evicted lease owner under CoreCommitLock"
+        );
+        assert_eq!(
+            drop_probe.drops_after_unlock(),
+            1,
+            "rotation hook panic did not defer the reentrantly evicted lease owner until unlock"
         );
         drop(coordinator);
         std::fs::remove_dir_all(root).unwrap();

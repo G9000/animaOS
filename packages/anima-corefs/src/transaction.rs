@@ -820,6 +820,25 @@ impl DeferredLeaseTeardown {
         &mut self.cache_snapshots
     }
 
+    fn retain_snapshot_lease_owner(&mut self, snapshot: Option<&Arc<AuthenticatedCommitSnapshot>>) {
+        let Some(snapshot) = snapshot.filter(|snapshot| snapshot.object_lease.is_some()) else {
+            return;
+        };
+        if self
+            .cache_snapshots
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, snapshot))
+        {
+            return;
+        }
+        self.cache_snapshots.push(Arc::clone(snapshot));
+    }
+
+    fn retain_current_cache_lease_owner(&mut self, cache: &CommitCache) {
+        let snapshot = cache.current_deferred(&mut self.cache_snapshots);
+        self.retain_snapshot_lease_owner(snapshot.as_ref());
+    }
+
     fn retain_candidate(&mut self, candidate: ObjectLeaseCandidate) {
         self.candidates.push(candidate);
     }
@@ -2201,6 +2220,7 @@ impl CoreCommitCoordinator {
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        deferred_teardown.retain_current_cache_lease_owner(&self.cache);
         self.validate_pinned_layout()?;
         let pointers = self.load_pointer_set(
             #[cfg(test)]
@@ -2825,6 +2845,7 @@ impl CoreCommitCoordinator {
                     snapshot.pointers == initial_pointers
                         && snapshot.catalog().as_ref() == committed.catalog.as_ref()
                 });
+            deferred_teardown.retain_snapshot_lease_owner(prior_snapshot.as_ref());
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
                 return Err(RotationError::GenerationMismatch {
@@ -3571,6 +3592,8 @@ impl CoreCommitCoordinator {
                 }
                 _ => None,
             };
+            deferred_teardown.retain_snapshot_lease_owner(initial_snapshot.as_ref());
+            deferred_teardown.retain_snapshot_lease_owner(matched_snapshot.as_ref());
             let cached_objects = matched_snapshot
                 .as_ref()
                 .and_then(|snapshot| snapshot.objects.clone());

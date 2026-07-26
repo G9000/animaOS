@@ -1113,6 +1113,153 @@ fn lease_lock_order_recovery_replacement_defers_lease_teardown_until_kernel_unlo
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn seed_recovery_pending_lease(coordinator: &CoreCommitCoordinator, active_keys: &FrkSubkeys) {
+    let initial = prepare(coordinator, active_keys, 1, b"initial");
+    coordinator
+        .initialize_validation_snapshot(active_keys, std::slice::from_ref(&initial), |generation| {
+            Ok(catalog(generation, &initial))
+        })
+        .unwrap();
+    let initial_precondition = CatalogPrecondition::object(
+        &catalog(1, &initial),
+        &OpaqueId::parse(OBJECT_ID).unwrap(),
+        1,
+    )
+    .unwrap();
+    let committed = prepare(coordinator, active_keys, 2, b"committed");
+    coordinator
+        .commit_first_mutation(
+            active_keys,
+            1,
+            std::slice::from_ref(&committed),
+            &[initial_precondition],
+            |_, generation| Ok(catalog(generation, &committed)),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(coordinator.cache.current().unwrap().object_lease.is_some());
+    std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
+}
+
+fn evict_recovery_cache_with_wrong_same_version_key(
+    coordinator: &CoreCommitCoordinator,
+    active_keys: &FrkSubkeys,
+) {
+    let wrong_keys = derive_corefs_subkeys(
+        &SecretBytes::new(vec![0x44; 32]).unwrap(),
+        active_keys.frk_version(),
+    )
+    .unwrap();
+    assert!(
+        coordinator.load_committed(&wrong_keys).is_err(),
+        "wrong same-version material unexpectedly authenticated recovery authority"
+    );
+    assert!(
+        coordinator.cache.current().is_none(),
+        "wrong same-version material did not evict the recovery cache snapshot"
+    );
+}
+
+#[test]
+fn lease_lock_order_recovery_hook_error_after_reentrant_eviction_defers_snapshot_until_unlock() {
+    let root = reset_root("recovery-hook-error-reentrant-eviction");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let drop_probe = KernelLockDropProbe::new(root.clone());
+    coordinator.set_lease_factory_for_test(Arc::new(
+        TestFactory::successful().with_kernel_lock_drop_probe(drop_probe.clone()),
+    ));
+    let active_keys = keys();
+    seed_recovery_pending_lease(&coordinator, &active_keys);
+    let mut deferred_teardown = DeferredLeaseTeardown::default();
+    let commit_lock =
+        CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+
+    let result = coordinator.load_committed_recovering_with_hook(
+        &commit_lock,
+        &active_keys,
+        &mut |point| {
+            if point
+                == (CommitFailurePoint::Publication {
+                    target: PublicationTarget::CutoverComplete,
+                    phase: PublicationPhase::DestinationSynced,
+                })
+            {
+                evict_recovery_cache_with_wrong_same_version_key(&coordinator, &active_keys);
+                return Err(std::io::Error::other(
+                    "injected recovery hook failure after reentrant cache eviction",
+                ));
+            }
+            Ok(())
+        },
+        &mut deferred_teardown,
+    );
+
+    assert!(result.is_err());
+    drop(commit_lock);
+    drop(deferred_teardown);
+    assert_eq!(
+        drop_probe.drops_while_locked(),
+        0,
+        "recovery hook error destroyed the reentrantly evicted lease owner under CoreCommitLock"
+    );
+    assert_eq!(
+        drop_probe.drops_after_unlock(),
+        1,
+        "recovery hook error did not defer the reentrantly evicted lease owner until unlock"
+    );
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lease_lock_order_recovery_hook_panic_after_reentrant_eviction_defers_snapshot_until_unlock() {
+    let root = reset_root("recovery-hook-panic-reentrant-eviction");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let drop_probe = KernelLockDropProbe::new(root.clone());
+    coordinator.set_lease_factory_for_test(Arc::new(
+        TestFactory::successful().with_kernel_lock_drop_probe(drop_probe.clone()),
+    ));
+    let active_keys = keys();
+    seed_recovery_pending_lease(&coordinator, &active_keys);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
+        let commit_lock =
+            CoreCommitLock::acquire_in(&coordinator.root_dir, &coordinator.fs_dir).unwrap();
+        let _ = coordinator.load_committed_recovering_with_hook(
+            &commit_lock,
+            &active_keys,
+            &mut |point| {
+                if point
+                    == (CommitFailurePoint::Publication {
+                        target: PublicationTarget::CutoverComplete,
+                        phase: PublicationPhase::DestinationSynced,
+                    })
+                {
+                    evict_recovery_cache_with_wrong_same_version_key(&coordinator, &active_keys);
+                    panic!("injected recovery hook panic after reentrant cache eviction");
+                }
+                Ok(())
+            },
+            &mut deferred_teardown,
+        );
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(
+        drop_probe.drops_while_locked(),
+        0,
+        "recovery hook panic destroyed the reentrantly evicted lease owner under CoreCommitLock"
+    );
+    assert_eq!(
+        drop_probe.drops_after_unlock(),
+        1,
+        "recovery hook panic did not defer the reentrantly evicted lease owner until unlock"
+    );
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn seed_single_version_completion_gap(root: &Path) {
     seed_validation(root);
     let coordinator = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
