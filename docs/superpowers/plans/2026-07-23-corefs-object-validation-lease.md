@@ -15,9 +15,10 @@ binary, closed output schema, and exact Windows/macOS commands.
 **Plan revision note:** The written safety-first teardown specification was
 user-approved and independently approved on 2026-07-23. The focused plan revision at
 `0a409ea7` passed independent plan re-review with no remaining substantive findings.
-Tasks 4, 6, and 7 are implemented and independently review-clean through `83fa43a1`;
-the overall plan remains in progress. Task 2's native macOS characterization remains
-pending, Task 5 is unstarted, and Task 8 is the next locally executable unit.
+Tasks 4, 6, 7, and 8 are implemented and independently review-clean through
+`4b86e0ed`; the overall plan remains in progress. Task 2's native macOS
+characterization remains pending, Task 5 is unstarted, and Task 9 is the next locally
+executable unit.
 
 ---
 
@@ -576,11 +577,11 @@ git commit -m "corefs: validate unchanged objects through leases"
 - Modify: `packages/anima-corefs/tests/rotation.rs`
 - Modify: `packages/anima-corefs/tests/transaction.rs`
 
-- [ ] **Step 1: Add failing failure-boundary tests**
+- [x] **Step 1: Add failing failure-boundary tests**
 
 Cover all-missing pointers, first mutation, pre-HEAD failure, post-HEAD recovery-pending, receipt-only, completion-only, missing HEAD, divergent pointers, missing/changed retained catalog bytes, monitor panic/poison, callbacks, and final pointer replacement. Assert no stale lease hit and no candidate publication before durable authority.
 
-- [ ] **Step 2: Add failing rotation and concurrency tests**
+- [x] **Step 2: Add failing rotation and concurrency tests**
 
 Prove rotation carries anchors only after authenticated old/new tuples, unchanged object bindings, fresh metadata, monitor continuity, and verified cutover completion. Mixed-key, callback failure, monitor uncertainty, recovery-pending, and wrong same-version material must drop the lease.
 
@@ -591,7 +592,7 @@ CoreCommitLock -> short cache clone -> monitor fence -> metadata/safe-open I/O
 -> publication -> kernel unlock -> callbacks
 ```
 
-- [ ] **Step 3: Verify the RED phase**
+- [x] **Step 3: Verify the RED phase**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs lease_failure -- --nocapture
@@ -601,15 +602,15 @@ cargo +1.75.0 test --locked -p anima-corefs lease_lock_order -- --nocapture
 
 Expected: at least one failure in each new group.
 
-- [ ] **Step 4: Integrate fail-closed cache clearing and rotation publication**
+- [x] **Step 4: Integrate fail-closed cache clearing and rotation publication**
 
 Clear/drop lease authority on every ambiguous recovery path, monitor poison/panic, post-HEAD recovery-pending result, and callback/publication reconciliation that cannot authenticate exact durable state. Preserve all PR #117 HEAD/receipt/completion catalog-byte reauthentication.
 
-- [ ] **Step 5: Keep every callback outside internal guards**
+- [x] **Step 5: Keep every callback outside internal guards**
 
 Add `try_lock`/probe assertions showing no cache, monitor-state, budget, or lease guard is held during kernel-lock acquisition, filesystem I/O, crypto, failure hooks, invalidation callbacks, or build callbacks. Ensure dropped leases are destructed after guards are released.
 
-- [ ] **Step 6: Run focused and full transaction/rotation suites**
+- [x] **Step 6: Run focused and full transaction/rotation suites**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs transaction::failure_tests -- --nocapture
@@ -619,7 +620,7 @@ cargo +1.75.0 test --locked -p anima-corefs --test transaction -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/failure_tests.rs packages/anima-corefs/src/transaction/cache_tests.rs packages/anima-corefs/tests/rotation.rs packages/anima-corefs/tests/transaction.rs
