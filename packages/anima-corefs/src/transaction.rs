@@ -16,6 +16,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use cap_fs_ext::MetadataExt as _;
@@ -1189,6 +1190,7 @@ struct LeasePublicationState {
     open: bool,
     generation: u64,
     active_operations: usize,
+    active_operations_by_thread: HashMap<ThreadId, usize>,
     release_depth: usize,
 }
 
@@ -1199,6 +1201,7 @@ impl Default for LeasePublicationAuthority {
                 open: true,
                 generation: 0,
                 active_operations: 0,
+                active_operations_by_thread: HashMap::new(),
                 release_depth: 0,
             }),
             changed: Condvar::new(),
@@ -1208,6 +1211,7 @@ impl Default for LeasePublicationAuthority {
 
 impl LeasePublicationAuthority {
     fn admit(&self) -> Result<LeasePublicationOperation<'_>, CommitError> {
+        let owner_thread = thread::current().id();
         let mut state = self
             .state
             .lock()
@@ -1215,35 +1219,89 @@ impl LeasePublicationAuthority {
         if !state.open {
             return Err(CommitError::ObjectLeaseReleaseInProgress);
         }
-        state.active_operations = state
+        let active_operations = state
             .active_operations
             .checked_add(1)
             .ok_or(CommitError::ObjectLeaseOperationOverflow)?;
-        Ok(LeasePublicationOperation { authority: self })
+        let active_on_thread = state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(CommitError::ObjectLeaseOperationOverflow)?;
+        state.active_operations = active_operations;
+        state
+            .active_operations_by_thread
+            .insert(owner_thread, active_on_thread);
+        Ok(LeasePublicationOperation {
+            authority: self,
+            owner_thread,
+        })
     }
 
-    fn begin_release(&self) {
+    fn ensure_release_not_reentrant(&self) -> Result<(), CommitError> {
+        let owner_thread = thread::current().id();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            != 0
+        {
+            return Err(CommitError::ObjectLeaseReleaseReentrant);
+        }
+        Ok(())
+    }
+
+    fn begin_release(&self) -> Result<(), CommitError> {
+        let owner_thread = thread::current().id();
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            != 0
+        {
+            return Err(CommitError::ObjectLeaseReleaseReentrant);
+        }
         state.release_depth = state.release_depth.saturating_add(1);
         if state.open {
             state.open = false;
             state.generation = state.generation.wrapping_add(1);
         }
+        Ok(())
     }
 
-    fn wait_for_drain(&self) {
+    fn wait_for_drain(&self) -> Result<(), CommitError> {
+        let owner_thread = thread::current().id();
         let state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            != 0
+        {
+            return Err(CommitError::ObjectLeaseReleaseReentrant);
+        }
         drop(
             self.changed
                 .wait_while(state, |state| state.active_operations != 0)
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
+        Ok(())
     }
 
     fn resume(&self) {
@@ -1283,6 +1341,7 @@ impl LeasePublicationAuthority {
 
 struct LeasePublicationOperation<'a> {
     authority: &'a LeasePublicationAuthority,
+    owner_thread: ThreadId,
 }
 
 impl Drop for LeasePublicationOperation<'_> {
@@ -1294,6 +1353,15 @@ impl Drop for LeasePublicationOperation<'_> {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         debug_assert!(state.active_operations > 0);
         state.active_operations = state.active_operations.saturating_sub(1);
+        let active_on_thread = state
+            .active_operations_by_thread
+            .get_mut(&self.owner_thread)
+            .expect("admitted lease operation retains its thread owner");
+        debug_assert!(*active_on_thread > 0);
+        *active_on_thread = active_on_thread.saturating_sub(1);
+        if *active_on_thread == 0 {
+            state.active_operations_by_thread.remove(&self.owner_thread);
+        }
         self.authority.changed.notify_all();
     }
 }
@@ -1688,25 +1756,32 @@ impl CoreCommitCoordinator {
 
     /// Marks the current object-validation lease terminally unknown and wakes any
     /// cancellation-aware monitor fence without waiting for backend destruction.
-    pub fn begin_object_lease_release(&self) {
-        self.lease_publication.begin_release();
+    pub fn ensure_object_lease_release_not_reentrant(&self) -> Result<(), CommitError> {
+        self.lease_publication.ensure_release_not_reentrant()
+    }
+
+    pub fn begin_object_lease_release(&self) -> Result<(), CommitError> {
+        self.lease_publication.begin_release()?;
         self.cache.begin_object_lease_release();
+        Ok(())
     }
 
     /// Clears and completion-drains the current object-validation lease.
     ///
     /// The cache mutex is released before monitor destruction, native completion,
     /// worker join, anchor destruction, or process-budget permit return.
-    pub fn finish_object_lease_release(&self) {
-        self.lease_publication.wait_for_drain();
+    pub fn finish_object_lease_release(&self) -> Result<(), CommitError> {
+        self.lease_publication.wait_for_drain()?;
         self.cache.drop_object_lease();
+        Ok(())
     }
 
     /// Idempotently cancels, drains, and clears the current object-validation lease.
-    pub fn release_object_lease(&self) {
-        self.begin_object_lease_release();
-        self.finish_object_lease_release();
+    pub fn release_object_lease(&self) -> Result<(), CommitError> {
+        self.begin_object_lease_release()?;
+        let result = self.finish_object_lease_release();
         self.resume_object_lease_publication();
+        result
     }
 
     /// Reopens lease construction after a non-terminal, completion-confirmed release.
@@ -5360,6 +5435,10 @@ pub enum CommitError {
     LockBusy,
     #[error("CoreFS object-lease release is in progress")]
     ObjectLeaseReleaseInProgress,
+    #[error(
+        "CoreFS object-lease release cannot wait on an operation active on the current thread"
+    )]
+    ObjectLeaseReleaseReentrant,
     #[error("CoreFS object-lease operation count overflow")]
     ObjectLeaseOperationOverflow,
     #[error("recorded CoreFS lock owner is still alive: pid={pid}, start={process_start_time}")]

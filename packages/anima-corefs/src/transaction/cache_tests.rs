@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
+use std::time::Duration;
 
 use cap_std::{ambient_authority, fs::Dir};
 
@@ -99,6 +100,32 @@ fn seed_committed(coordinator: &CoreCommitCoordinator, keys: &FrkSubkeys) {
             |_| Ok(()),
         )
         .unwrap();
+}
+
+fn seeded_reentrant_release_coordinator(
+    label: &str,
+) -> (PathBuf, Arc<CoreCommitCoordinator>, FrkSubkeys) {
+    let root = std::env::temp_dir().join(format!(
+        "anima-corefs-reentrant-release-{label}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let coordinator = Arc::new(CoreCommitCoordinator::new(&root, CORE_ID).unwrap());
+    let keys = keys(0x61, 1);
+    seed_committed(&coordinator, &keys);
+    (root, coordinator, keys)
+}
+
+fn assert_reentrant_release_returned(
+    entered: mpsc::Receiver<()>,
+    returned: mpsc::Receiver<Result<(), CommitError>>,
+) -> Result<(), CommitError> {
+    entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("callback did not reach the reentrant release seam");
+    returned
+        .recv_timeout(Duration::from_millis(250))
+        .expect("same-thread lease release blocked on its own admitted operation")
 }
 
 fn authoritative_catalog_path(coordinator: &CoreCommitCoordinator) -> PathBuf {
@@ -1290,6 +1317,230 @@ fn commit_holds_no_cache_guard_during_kernel_lock_io_crypto_build_hooks_or_inval
             "missing commit stage {expected:?}"
         );
     }
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reentrant_release_from_commit_build_callback_returns_typed_error_without_deadlock() {
+    let (root, coordinator, keys) = seeded_reentrant_release_coordinator("commit-build");
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (returned_sender, returned_receiver) = mpsc::channel();
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker_coordinator = Arc::clone(&coordinator);
+    let worker = thread::spawn(move || {
+        let callback_coordinator = Arc::clone(&worker_coordinator);
+        let outcome = worker_coordinator.commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| {
+                entered_sender.send(()).unwrap();
+                let release = callback_coordinator.release_object_lease();
+                returned_sender.send(release).unwrap();
+                Ok((*catalog(generation)).clone())
+            },
+            |_| Ok(()),
+        );
+        let report = outcome
+            .map(|outcome| outcome.generation())
+            .map_err(|error| error.to_string());
+        let later_release = worker_coordinator.release_object_lease();
+        completed_sender.send((report, later_release)).unwrap();
+    });
+
+    assert!(matches!(
+        assert_reentrant_release_returned(entered_receiver, returned_receiver),
+        Err(CommitError::ObjectLeaseReleaseReentrant)
+    ));
+    let (outcome, later_release) = completed_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("outer commit did not complete after rejecting reentrant release");
+    assert_eq!(outcome.unwrap(), 3);
+    assert!(later_release.is_ok());
+    worker.join().unwrap();
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reentrant_release_from_commit_invalidation_returns_typed_error_without_deadlock() {
+    let (root, coordinator, keys) = seeded_reentrant_release_coordinator("commit-invalidation");
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (returned_sender, returned_receiver) = mpsc::channel();
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker_coordinator = Arc::clone(&coordinator);
+    let worker = thread::spawn(move || {
+        let callback_coordinator = Arc::clone(&worker_coordinator);
+        let outcome = worker_coordinator.commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| Ok((*catalog(generation)).clone()),
+            |_| {
+                entered_sender.send(()).unwrap();
+                let release = callback_coordinator.release_object_lease();
+                returned_sender.send(release).unwrap();
+                Ok(())
+            },
+        );
+        let report = outcome
+            .map(|outcome| (outcome.generation(), outcome.invalidation_delivered()))
+            .map_err(|error| error.to_string());
+        let later_release = worker_coordinator.release_object_lease();
+        completed_sender.send((report, later_release)).unwrap();
+    });
+
+    assert!(matches!(
+        assert_reentrant_release_returned(entered_receiver, returned_receiver),
+        Err(CommitError::ObjectLeaseReleaseReentrant)
+    ));
+    let (outcome, later_release) = completed_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("outer commit did not complete after rejecting reentrant release");
+    assert_eq!(outcome.unwrap(), (3, true));
+    assert!(later_release.is_ok());
+    worker.join().unwrap();
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reentrant_release_from_rotation_invalidation_returns_typed_error_without_deadlock() {
+    let (root, coordinator, old_keys) =
+        seeded_reentrant_release_coordinator("rotation-invalidation");
+    let pending_keys = keys(0x62, 2);
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (returned_sender, returned_receiver) = mpsc::channel();
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker_coordinator = Arc::clone(&coordinator);
+    let worker = thread::spawn(move || {
+        let callback_coordinator = Arc::clone(&worker_coordinator);
+        let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+        let outcome = worker_coordinator.rotate_frk(&keyring, &pending_keys, 2, |_| {
+            entered_sender.send(()).unwrap();
+            let release = callback_coordinator.release_object_lease();
+            returned_sender.send(release).unwrap();
+            Ok(())
+        });
+        let report = outcome
+            .map(|outcome| (outcome.generation(), outcome.invalidation_delivered()))
+            .map_err(|error| error.to_string());
+        let later_release = worker_coordinator.release_object_lease();
+        completed_sender.send((report, later_release)).unwrap();
+    });
+
+    assert!(matches!(
+        assert_reentrant_release_returned(entered_receiver, returned_receiver),
+        Err(CommitError::ObjectLeaseReleaseReentrant)
+    ));
+    let (outcome, later_release) = completed_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("outer rotation did not complete after rejecting reentrant release");
+    assert_eq!(outcome.unwrap(), (3, true));
+    assert!(later_release.is_ok());
+    worker.join().unwrap();
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reentrant_split_begin_rejects_without_closing_publication_authority() {
+    let (root, coordinator, keys) = seeded_reentrant_release_coordinator("split-begin");
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (returned_sender, returned_receiver) = mpsc::channel();
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker_coordinator = Arc::clone(&coordinator);
+    let worker = thread::spawn(move || {
+        let callback_coordinator = Arc::clone(&worker_coordinator);
+        let outcome = worker_coordinator.commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| {
+                entered_sender.send(()).unwrap();
+                let begin = callback_coordinator.begin_object_lease_release();
+                returned_sender.send(begin).unwrap();
+                Ok((*catalog(generation)).clone())
+            },
+            |_| Ok(()),
+        );
+        let report = outcome
+            .map(|outcome| outcome.generation())
+            .map_err(|error| error.to_string());
+        let later_release = worker_coordinator.release_object_lease();
+        completed_sender.send((report, later_release)).unwrap();
+    });
+
+    assert!(matches!(
+        assert_reentrant_release_returned(entered_receiver, returned_receiver),
+        Err(CommitError::ObjectLeaseReleaseReentrant)
+    ));
+    let (outcome, later_release) = completed_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("outer commit did not complete after rejecting split begin");
+    assert_eq!(outcome.unwrap(), 3);
+    assert!(later_release.is_ok());
+    worker.join().unwrap();
+    drop(coordinator);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reentrant_split_finish_rejects_current_thread_before_waiting() {
+    let (root, coordinator, keys) = seeded_reentrant_release_coordinator("split-finish");
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (proceed_sender, proceed_receiver) = mpsc::channel();
+    let (returned_sender, returned_receiver) = mpsc::channel();
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker_coordinator = Arc::clone(&coordinator);
+    let worker = thread::spawn(move || {
+        let callback_coordinator = Arc::clone(&worker_coordinator);
+        let outcome = worker_coordinator.commit(
+            &keys,
+            &[],
+            &[],
+            |_, generation| {
+                entered_sender.send(()).unwrap();
+                proceed_receiver.recv().unwrap();
+                let finish = callback_coordinator.finish_object_lease_release();
+                returned_sender.send(finish).unwrap();
+                Ok((*catalog(generation)).clone())
+            },
+            |_| Ok(()),
+        );
+        completed_sender
+            .send(
+                outcome
+                    .map(|outcome| outcome.generation())
+                    .map_err(|error| error.to_string()),
+            )
+            .unwrap();
+    });
+
+    entered_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("build callback did not reach the split-finish seam");
+    let begin = coordinator.begin_object_lease_release();
+    proceed_sender.send(()).unwrap();
+    assert!(matches!(
+        returned_receiver
+            .recv_timeout(Duration::from_millis(250))
+            .expect("split finish blocked on the current thread's admitted operation"),
+        Err(CommitError::ObjectLeaseReleaseReentrant)
+    ));
+    assert!(begin.is_ok());
+    assert_eq!(
+        completed_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("outer commit did not complete after rejecting split finish")
+            .unwrap(),
+        3
+    );
+    assert!(coordinator.finish_object_lease_release().is_ok());
+    coordinator.resume_object_lease_publication();
+    assert!(coordinator.release_object_lease().is_ok());
+    worker.join().unwrap();
     drop(coordinator);
     std::fs::remove_dir_all(root).unwrap();
 }

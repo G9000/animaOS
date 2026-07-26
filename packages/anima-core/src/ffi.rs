@@ -394,15 +394,20 @@ mod python {
             })
         }
 
-        fn begin_lease_release(&self) {
-            self.coordinator.begin_object_lease_release();
+        fn begin_lease_release(&self) -> PyResult<()> {
+            self.coordinator
+                .begin_object_lease_release()
+                .map_err(corefs_commit_error)
         }
 
-        fn finish_lease_release(&self, clear_cached_state: bool) {
-            self.coordinator.finish_object_lease_release();
+        fn finish_lease_release(&self, clear_cached_state: bool) -> PyResult<()> {
+            self.coordinator
+                .finish_object_lease_release()
+                .map_err(corefs_commit_error)?;
             if clear_cached_state {
                 self.coordinator.clear_cached_state();
             }
+            Ok(())
         }
 
         fn wait_for_active_operations(&self) {
@@ -420,6 +425,9 @@ mod python {
         }
 
         fn release_native(&self) -> PyResult<()> {
+            self.coordinator
+                .ensure_object_lease_release_not_reentrant()
+                .map_err(corefs_commit_error)?;
             {
                 let mut state = self
                     .lifecycle
@@ -460,9 +468,9 @@ mod python {
                 }
             }
 
-            self.begin_lease_release();
+            self.begin_lease_release()?;
             self.wait_for_active_operations();
-            self.finish_lease_release(false);
+            self.finish_lease_release(false)?;
 
             let terminal_close = {
                 let mut state = self
@@ -497,6 +505,9 @@ mod python {
         }
 
         fn close_native(&self) -> PyResult<()> {
+            self.coordinator
+                .ensure_object_lease_release_not_reentrant()
+                .map_err(corefs_commit_error)?;
             let owns_teardown = {
                 let mut state = self
                     .lifecycle
@@ -542,9 +553,9 @@ mod python {
                 return Ok(());
             }
 
-            self.begin_lease_release();
+            self.begin_lease_release()?;
             self.wait_for_active_operations();
-            self.finish_lease_release(true);
+            self.finish_lease_release(true)?;
 
             let mut state = self
                 .lifecycle
@@ -4102,7 +4113,7 @@ mod python {
                 let (release_done_sender, release_done_receiver) = std::sync::mpsc::channel();
                 let release_coordinator = Arc::clone(&coordinator);
                 let releaser = thread::spawn(move || {
-                    release_coordinator.release_object_lease();
+                    release_coordinator.release_object_lease().unwrap();
                     release_done_sender.send(()).unwrap();
                 });
                 assert!(
@@ -4121,6 +4132,71 @@ mod python {
                 assert!(!coordinator.session_test_cache_has_object_lease());
                 assert_eq!(late_control.live_monitor_resource_count(), 0);
                 assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+            }
+
+            #[test]
+            fn python_session_maps_reentrant_release_without_mutating_lifecycle() {
+                let fixture = logical_fixture("python-reentrant-release");
+                let session = Arc::new(isolated_session_for_test(
+                    std::path::Path::new(fixture.root_path()),
+                    LOGICAL_CORE_ID,
+                ));
+                let coordinator = session.coordinator_for_test();
+                let entries = fixture.selected.catalog().entries().to_vec();
+                let (entered_sender, entered_receiver) = std::sync::mpsc::channel();
+                let (returned_sender, returned_receiver) = std::sync::mpsc::channel();
+                let (completed_sender, completed_receiver) = std::sync::mpsc::channel();
+                let worker_session = Arc::clone(&session);
+                let worker = thread::spawn(move || {
+                    let callback_session = Arc::clone(&worker_session);
+                    let outcome = coordinator.commit_first_mutation(
+                        &fixture.keys.inner,
+                        1,
+                        &[],
+                        &[],
+                        |_, generation| CatalogGeneration::new(generation, entries),
+                        |_| {
+                            entered_sender.send(()).unwrap();
+                            let release = callback_session.release_native().map_err(|error| {
+                                let is_value_error = with_python(|py| {
+                                    error.is_instance_of::<pyo3::exceptions::PyValueError>(py)
+                                });
+                                (is_value_error, error.to_string())
+                            });
+                            returned_sender.send(release).unwrap();
+                            Ok(())
+                        },
+                    );
+                    completed_sender
+                        .send(
+                            outcome
+                                .map(|outcome| outcome.generation())
+                                .map_err(|error| error.to_string()),
+                        )
+                        .unwrap();
+                });
+
+                entered_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("Python release mapping callback was not reached");
+                let release = returned_receiver
+                    .recv_timeout(Duration::from_millis(250))
+                    .expect("Python session release blocked reentrantly");
+                let (is_value_error, message) =
+                    release.expect_err("reentrant Python session release unexpectedly succeeded");
+                assert!(is_value_error);
+                assert!(message.contains("current thread"));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                assert_eq!(
+                    completed_receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("outer commit did not complete after Python release rejection")
+                        .unwrap(),
+                    2
+                );
+                worker.join().unwrap();
+                session.release_native().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
             }
 
             #[test]
