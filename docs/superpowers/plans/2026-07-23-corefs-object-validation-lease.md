@@ -634,7 +634,7 @@ git commit -m "corefs: bind leases to recovery and rotation"
 - Modify: `packages/anima-corefs/src/transaction.rs:1015-1090`
 - Test: `packages/anima-core/src/ffi.rs`
 
-- [ ] **Step 1: Add failing native-session state-machine tests**
+- [x] **Step 1: Add failing native-session state-machine tests**
 
 Add tests named:
 
@@ -669,7 +669,7 @@ cargo +1.75.0 test --locked -p anima-core --features python corefs_session -- --
 
 Expected: FAIL because `CorefsSession` does not exist.
 
-- [ ] **Step 2: Add explicit coordinator release**
+- [x] **Step 2: Add explicit coordinator release**
 
 Expose an idempotent coordinator `release_object_lease()` that makes the monitor
 terminally `Unknown`, rejects new monitor work/publication, cancels/drains the backend,
@@ -678,7 +678,7 @@ budget, or session-state mutex while waiting or destroying resources. On Windows
 returns to `Open` only after confirmed native completion, join, resource destruction,
 and exact permit return, even when that exceeds the supported-profile target.
 
-- [ ] **Step 3: Implement the native session state machine**
+- [x] **Step 3: Implement the native session state machine**
 
 Add PyO3 class `CorefsSession` owning one canonical root/Core-ID
 `Arc<CoreCommitCoordinator>`. Implement mutex/condition-variable states `Open`,
@@ -688,11 +688,11 @@ publication/lease replacement. Release and close reject new operations before
 cancellation and return only after no operation, monitor worker, native resource,
 permit, cache mutation, or callback publication can remain.
 
-- [ ] **Step 4: Move logical operations onto the session coordinator**
+- [x] **Step 4: Move logical operations onto the session coordinator**
 
 Add session-backed methods for validation snapshot, stat, list, walk, glob, grep, read, and search readiness. Preserve existing exported free functions as compatibility/cold-path wrappers, but make server code use the session methods. The session identity, not per-call root/Core-ID arguments, selects the coordinator.
 
-- [ ] **Step 5: Release the GIL during blocking drain**
+- [x] **Step 5: Release the GIL during blocking drain**
 
 Implement PyO3 `release_object_lease()` and `close()` so
 cancellation/wait/completion confirmation/join/queue-barrier/resource destruction
@@ -702,7 +702,7 @@ a native monitor worker/callback. Keep the two-second fence wait bounded indepen
 a teardown target miss records an internal diagnostic and waits safely rather than
 returning early.
 
-- [ ] **Step 6: Run native-session and existing FFI tests**
+- [x] **Step 6: Run native-session and existing FFI tests**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-core --features python blocked_fence_cancellation_is_bounded_and_falls_back_unknown -- --nocapture
@@ -717,7 +717,7 @@ Expected: PASS. Fence cancellation stays bounded; supported Windows/NTFS teardow
 the target; delayed native completion safely extends close/release while keeping
 ownership live and locks/GIL free; return implies exact drain.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add packages/anima-core/src/ffi.rs packages/anima-corefs/src/transaction.rs
