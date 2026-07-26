@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Canonical cryptographic and filesystem primitives for ANIMA CORE."
 
+[features]
+session-test-seams = []
+
 [dependencies]
 aes-gcm = "0.10"
 anima-file-tools = { path = "../anima-file-tools" }

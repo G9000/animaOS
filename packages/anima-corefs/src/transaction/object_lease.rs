@@ -202,7 +202,7 @@ impl LeaseBudget {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     pub(super) fn isolated() -> Self {
         Self::new()
     }
@@ -224,7 +224,7 @@ impl LeaseBudget {
         self.usage().epoch
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     pub(super) fn guard_available_for_test(&self) -> bool {
         self.inner.try_lock().is_ok()
     }
@@ -585,6 +585,11 @@ impl ObjectLeaseCandidate {
 
     pub(super) fn fence(&self) -> FenceOutcome {
         self.monitor.fence()
+    }
+
+    #[cfg(feature = "session-test-seams")]
+    pub(super) fn publication_generation(&self) -> u64 {
+        self.publication_generation
     }
 
     pub(super) fn finish(

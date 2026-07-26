@@ -360,21 +360,12 @@ mod python {
         }
     }
 
-    #[cfg(test)]
-    #[derive(Clone)]
-    struct CorefsSessionReleaseHooks {
-        begin: Arc<dyn Fn() + Send + Sync>,
-        finish: Arc<dyn Fn() + Send + Sync>,
-    }
-
     #[pyclass(name = "CorefsSession")]
     struct PyCorefsSession {
         canonical_root: PathBuf,
         core_id: String,
         coordinator: Arc<anima_corefs::transaction::CoreCommitCoordinator>,
         lifecycle: Arc<CorefsSessionLifecycle>,
-        #[cfg(test)]
-        release_hooks: Mutex<Option<CorefsSessionReleaseHooks>>,
     }
 
     impl PyCorefsSession {
@@ -405,29 +396,9 @@ mod python {
 
         fn begin_lease_release(&self) {
             self.coordinator.begin_object_lease_release();
-            #[cfg(test)]
-            let hooks = self
-                .release_hooks
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            #[cfg(test)]
-            if let Some(hooks) = hooks {
-                (hooks.begin)();
-            }
         }
 
         fn finish_lease_release(&self, clear_cached_state: bool) {
-            #[cfg(test)]
-            let hooks = self
-                .release_hooks
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            #[cfg(test)]
-            if let Some(hooks) = hooks {
-                (hooks.finish)();
-            }
             self.coordinator.finish_object_lease_release();
             if clear_cached_state {
                 self.coordinator.clear_cached_state();
@@ -493,20 +464,35 @@ mod python {
             self.wait_for_active_operations();
             self.finish_lease_release(false);
 
-            let mut state = self
-                .lifecycle
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            debug_assert!(state.teardown_owned);
-            state.teardown_owned = false;
-            state.phase = if state.terminal_close {
-                CorefsSessionPhase::Closed
-            } else {
-                self.coordinator.resume_object_lease_publication();
-                CorefsSessionPhase::Open
+            let terminal_close = {
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                debug_assert!(state.teardown_owned);
+                if state.terminal_close {
+                    true
+                } else {
+                    state.teardown_owned = false;
+                    state.phase = CorefsSessionPhase::Open;
+                    self.coordinator.resume_object_lease_publication();
+                    self.lifecycle.changed.notify_all();
+                    false
+                }
             };
-            self.lifecycle.changed.notify_all();
+            if terminal_close {
+                self.coordinator.clear_cached_state();
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                debug_assert!(state.teardown_owned);
+                state.teardown_owned = false;
+                state.phase = CorefsSessionPhase::Closed;
+                self.lifecycle.changed.notify_all();
+            }
             Ok(())
         }
 
@@ -628,22 +614,6 @@ mod python {
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
         }
-
-        #[cfg(test)]
-        fn set_release_hooks_for_test(
-            &self,
-            begin: impl Fn() + Send + Sync + 'static,
-            finish: impl Fn() + Send + Sync + 'static,
-        ) {
-            *self
-                .release_hooks
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some(CorefsSessionReleaseHooks {
-                    begin: Arc::new(begin),
-                    finish: Arc::new(finish),
-                });
-        }
     }
 
     impl Drop for PyCorefsSession {
@@ -677,8 +647,6 @@ mod python {
                 core_id: core_id.to_owned(),
                 coordinator: Arc::new(coordinator),
                 lifecycle: Arc::new(CorefsSessionLifecycle::default()),
-                #[cfg(test)]
-                release_hooks: Mutex::new(None),
             })
         }
 
@@ -3754,7 +3722,7 @@ mod python {
         use std::io::Cursor;
         use std::panic::{catch_unwind, AssertUnwindSafe};
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use std::sync::{Arc, Barrier, Condvar, Mutex, Once};
+        use std::sync::{Arc, Barrier, Once};
         use std::thread;
         use std::time::{Duration, Instant};
 
@@ -3773,6 +3741,10 @@ mod python {
         use anima_corefs::policy::AnimaAccess;
         use anima_corefs::transaction::{
             CoreCommitCoordinator, PreparedObjectRevision, ValidationSnapshot,
+        };
+        #[cfg(windows)]
+        use anima_corefs::transaction::session_test_support::{
+            SessionLeaseUsage, WindowsSessionLeaseControl,
         };
 
         use crate::capsule::{CapsuleWriter, SectionKind};
@@ -3819,6 +3791,63 @@ mod python {
                 fs::create_dir_all(&core_root).unwrap();
                 let session = PyCorefsSession::new(core_root.to_str().unwrap(), core_id).unwrap();
                 (root, Arc::new(session))
+            }
+
+            #[cfg(windows)]
+            fn cached_windows_session(
+                name: &str,
+            ) -> (
+                Arc<LogicalFixture>,
+                Arc<PyCorefsSession>,
+                WindowsSessionLeaseControl,
+            ) {
+                let fixture = Arc::new(logical_fixture(name));
+                let session =
+                    Arc::new(PyCorefsSession::new(fixture.root_path(), LOGICAL_CORE_ID).unwrap());
+                with_python(|py| {
+                    session.validation_snapshot(py, &fixture.keys).unwrap();
+                });
+                let coordinator = session.coordinator_for_test();
+                coordinator
+                    .session_test_seed_validation_cache(&fixture.keys.inner)
+                    .unwrap();
+                let control = coordinator.session_test_install_windows_lease().unwrap();
+                assert!(session
+                    .coordinator_for_test()
+                    .session_test_cache_has_object_lease());
+                assert_eq!(
+                    control.usage(),
+                    SessionLeaseUsage {
+                        entries: 1,
+                        leases: 1,
+                        monitor_resources: 3,
+                    }
+                );
+                (fixture, session, control)
+            }
+
+            #[cfg(windows)]
+            fn fence_then_safe_open_stat(
+                session: &PyCorefsSession,
+                fixture: &LogicalFixture,
+            ) -> PyResult<()> {
+                let _operation = session.acquire_operation()?;
+                assert_eq!(
+                    session
+                        .coordinator_for_test()
+                        .session_test_fence_cached_lease_is_unknown(),
+                    Some(true),
+                    "release cancellation must make the blocked real monitor fence Unknown"
+                );
+                let snapshot = session.open_read_snapshot(
+                    &fixture.keys,
+                    fixture.selected.head().generation(),
+                    fixture.selected.head().catalog_hash(),
+                )?;
+                snapshot
+                    .stat("Notes/Alpha.md")
+                    .map_err(corefs_logical_error)?;
+                Ok(())
             }
 
             #[test]
@@ -3893,19 +3922,69 @@ mod python {
 
             #[test]
             fn close_racing_release_is_terminal_and_never_reopens() {
-                let (_root, session) = native_session("release-close", LOGICAL_CORE_ID);
-                let guard = session.acquire_operation_for_test().unwrap();
-                let release_session = Arc::clone(&session);
-                let releaser = thread::spawn(move || release_session.release_native());
-                session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
-                let close_session = Arc::clone(&session);
-                let closer = thread::spawn(move || close_session.close_native());
-                session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
-                drop(guard);
-                assert!(releaser.join().unwrap().is_ok());
-                assert!(closer.join().unwrap().is_ok());
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
-                assert!(session.acquire_operation_for_test().is_err());
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) = cached_windows_session("release-close-real");
+                    let coordinator = session.coordinator_for_test();
+                    let mut late_candidate = coordinator
+                        .session_test_prepare_windows_candidate()
+                        .unwrap();
+                    let late_control = late_candidate.control().clone();
+                    control.pause_next_native_completion();
+                    let release_session = Arc::clone(&session);
+                    let releaser = thread::spawn(move || release_session.release_native());
+                    assert!(control.wait_until_native_completion_paused(Duration::from_secs(2)));
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    control.release_native_completion();
+
+                    assert!(releaser.join().unwrap().is_ok());
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(
+                        coordinator.session_test_cache_is_empty(),
+                        "a close racing the release owner must clear all authenticated cache state"
+                    );
+                    assert_eq!(control.join_count(), 1);
+                    assert_eq!(control.native_completion_count(), 1);
+                    assert_eq!(
+                        control.usage(),
+                        SessionLeaseUsage {
+                            entries: 1,
+                            leases: 1,
+                            monitor_resources: 3,
+                        }
+                    );
+                    assert!(
+                        !coordinator
+                            .session_test_attempt_candidate_publication(&mut late_candidate),
+                        "a candidate prepared before terminal close must never publish afterward"
+                    );
+                    assert!(coordinator.session_test_cache_is_empty());
+                    assert_eq!(late_control.join_count(), 1);
+                    assert_eq!(late_control.native_completion_count(), 1);
+                    assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("release-close", LOGICAL_CORE_ID);
+                    let guard = session.acquire_operation_for_test().unwrap();
+                    let release_session = Arc::clone(&session);
+                    let releaser = thread::spawn(move || release_session.release_native());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                    drop(guard);
+                    assert!(releaser.join().unwrap().is_ok());
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(session.acquire_operation_for_test().is_err());
+                }
             }
 
             #[test]
@@ -3954,144 +4033,237 @@ mod python {
 
             #[test]
             fn blocked_fence_cancellation_is_bounded_and_falls_back_unknown() {
-                let (_root, session) = native_session("blocked-fence", LOGICAL_CORE_ID);
-                let cancelled = Arc::new(AtomicBool::new(false));
-                let cancelled_for_hook = Arc::clone(&cancelled);
-                session.set_release_hooks_for_test(
-                    move || {
-                        cancelled_for_hook.store(true, Ordering::SeqCst);
-                    },
-                    || {},
-                );
-                let guard = session.acquire_operation_for_test().unwrap();
-                let started = Instant::now();
-                let close_session = Arc::clone(&session);
-                let closer = thread::spawn(move || close_session.close_native().unwrap());
-                while !cancelled.load(Ordering::SeqCst) {
+                #[cfg(windows)]
+                {
+                    let (fixture, session, control) = cached_windows_session("blocked-fence-real");
+                    let initial_probe_attempts = control.probe_attempt_count();
+                    control.pause_next_read();
+                    fs::write(
+                        session
+                            .coordinator_for_test()
+                            .objects_path()
+                            .join("wake-current-read"),
+                        b"wake",
+                    )
+                    .unwrap();
+                    assert!(control.wait_until_read_paused(Duration::from_secs(2)));
+
+                    let operation_session = Arc::clone(&session);
+                    let operation_fixture = Arc::clone(&fixture);
+                    let operation = thread::spawn(move || {
+                        with_python(|_| {
+                            fence_then_safe_open_stat(&operation_session, &operation_fixture)
+                        })
+                    });
+                    assert!(control.wait_until_probe_attempt_count(
+                        initial_probe_attempts + 1,
+                        Duration::from_secs(2)
+                    ));
+
+                    let started = Instant::now();
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native());
+                    assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+                    control.release_read_pause();
+                    assert!(operation.join().unwrap().is_ok());
+                    assert!(closer.join().unwrap().is_ok());
+
                     assert!(started.elapsed() < Duration::from_secs(2));
-                    thread::yield_now();
+                    assert!(control.monitor_is_unknown());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
+                    assert!(session.coordinator_for_test().session_test_cache_is_empty());
                 }
-                drop(guard);
-                closer.join().unwrap();
-                assert!(started.elapsed() < Duration::from_secs(2));
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("blocked-fence", LOGICAL_CORE_ID);
+                    let guard = session.acquire_operation_for_test().unwrap();
+                    let started = Instant::now();
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native().unwrap());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                    drop(guard);
+                    closer.join().unwrap();
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                }
             }
 
             #[test]
             fn windows_supported_profile_teardown_meets_target() {
-                let (_root, session) = native_session("windows-target", LOGICAL_CORE_ID);
-                let begin_count = Arc::new(AtomicUsize::new(0));
-                let finish_count = Arc::new(AtomicUsize::new(0));
-                let begin_for_hook = Arc::clone(&begin_count);
-                let finish_for_hook = Arc::clone(&finish_count);
-                session.set_release_hooks_for_test(
-                    move || {
-                        begin_for_hook.fetch_add(1, Ordering::SeqCst);
-                    },
-                    move || {
-                        finish_for_hook.fetch_add(1, Ordering::SeqCst);
-                    },
-                );
-                let started = Instant::now();
-                session.release_native().unwrap();
-                assert!(started.elapsed() < Duration::from_secs(2));
-                assert_eq!(begin_count.load(Ordering::SeqCst), 1);
-                assert_eq!(finish_count.load(Ordering::SeqCst), 1);
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) =
+                        cached_windows_session("windows-target-real");
+                    let started = Instant::now();
+                    session.release_native().unwrap();
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+                    assert_eq!(control.native_completion_count(), 1);
+                    assert_eq!(control.join_count(), 1);
+                    assert!(!control.native_buffer_alive());
+                    assert_eq!(control.live_monitor_resource_count(), 0);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("windows-target", LOGICAL_CORE_ID);
+                    let started = Instant::now();
+                    session.release_native().unwrap();
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                }
             }
 
             #[test]
             fn windows_delayed_native_completion_keeps_session_closing_and_ownership_live() {
-                let (_root, session) = native_session("delayed-completion", LOGICAL_CORE_ID);
-                let completion = Arc::new((Mutex::new(false), Condvar::new()));
-                let finish_started = Arc::new(AtomicBool::new(false));
-                let completion_for_hook = Arc::clone(&completion);
-                let finish_started_for_hook = Arc::clone(&finish_started);
-                session.set_release_hooks_for_test(
-                    || {},
-                    move || {
-                        finish_started_for_hook.store(true, Ordering::SeqCst);
-                        let (lock, changed) = completion_for_hook.as_ref();
-                        let mut complete = lock.lock().unwrap();
-                        while !*complete {
-                            complete = changed.wait(complete).unwrap();
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) =
+                        cached_windows_session("delayed-completion-real");
+                    control.pause_next_native_completion();
+                    let close_session = Arc::clone(&session);
+                    let (done_sender, done_receiver) = std::sync::mpsc::channel();
+                    let closer = thread::spawn(move || {
+                        let result = close_session.close_native();
+                        let _ = done_sender.send(());
+                        result
+                    });
+                    assert!(control.wait_until_native_completion_paused(Duration::from_secs(2)));
+
+                    thread::sleep(Duration::from_millis(2_100));
+                    assert!(done_receiver.try_recv().is_err());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    assert_eq!(control.teardown_target_miss_count(), 1);
+                    assert_eq!(control.native_completion_count(), 0);
+                    assert_eq!(control.join_count(), 0);
+                    assert!(control.native_buffer_alive());
+                    assert_eq!(control.live_monitor_resource_count(), 3);
+                    assert_eq!(
+                        control.usage(),
+                        SessionLeaseUsage {
+                            entries: 1,
+                            leases: 1,
+                            monitor_resources: 3,
                         }
-                    },
-                );
-                let coordinator = session.coordinator_for_test();
-                let close_session = Arc::clone(&session);
-                let closer = thread::spawn(move || close_session.close_native().unwrap());
-                while !finish_started.load(Ordering::SeqCst) {
-                    thread::yield_now();
+                    );
+
+                    control.release_native_completion();
+                    done_receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("session close did not finish after native completion release");
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert_eq!(control.native_completion_count(), 1);
+                    assert_eq!(control.join_count(), 1);
+                    assert!(!control.native_buffer_alive());
+                    assert_eq!(control.live_monitor_resource_count(), 0);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
                 }
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
-                assert!(Arc::strong_count(&coordinator) >= 2);
-                assert!(session.acquire_operation_for_test().is_err());
-                thread::sleep(Duration::from_millis(25));
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
-                let (lock, changed) = completion.as_ref();
-                *lock.lock().unwrap() = true;
-                changed.notify_all();
-                closer.join().unwrap();
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("delayed-completion", LOGICAL_CORE_ID);
+                    session.close_native().unwrap();
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                }
             }
 
             #[test]
             fn extended_close_wait_holds_no_gil_or_internal_lock() {
-                let (_root, session) = native_session("gil-free-close", LOGICAL_CORE_ID);
-                let completion = Arc::new((Mutex::new(false), Condvar::new()));
-                let finish_started = Arc::new(AtomicBool::new(false));
-                let completion_for_hook = Arc::clone(&completion);
-                let finish_started_for_hook = Arc::clone(&finish_started);
-                session.set_release_hooks_for_test(
-                    || {},
-                    move || {
-                        finish_started_for_hook.store(true, Ordering::SeqCst);
-                        let (lock, changed) = completion_for_hook.as_ref();
-                        let mut complete = lock.lock().unwrap();
-                        while !*complete {
-                            complete = changed.wait(complete).unwrap();
-                        }
-                    },
-                );
-                let close_session = Arc::clone(&session);
-                let closer = thread::spawn(move || {
-                    with_python(|py| close_session.close(py).unwrap());
-                });
-                while !finish_started.load(Ordering::SeqCst) {
-                    thread::yield_now();
-                }
-                with_python(|_| {
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) =
+                        cached_windows_session("gil-free-close-real");
+                    control.pause_next_native_completion();
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || with_python(|py| close_session.close(py)));
+                    assert!(control.wait_until_native_completion_paused(Duration::from_secs(2)));
+
+                    let gil_probe_started = Instant::now();
+                    with_python(|_| ());
+                    assert!(gil_probe_started.elapsed() < Duration::from_secs(1));
                     assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
-                });
-                let (lock, changed) = completion.as_ref();
-                *lock.lock().unwrap() = true;
-                changed.notify_all();
-                closer.join().unwrap();
+                    let coordinator = session.coordinator_for_test();
+                    assert!(coordinator.session_test_cache_lock_available());
+                    assert!(coordinator.session_test_budget_lock_available());
+                    let lock_probe_deadline = Instant::now() + Duration::from_secs(1);
+                    while !control.internal_locks_available() {
+                        assert!(
+                            Instant::now() < lock_probe_deadline,
+                            "native completion wait retained a Windows monitor internal lock"
+                        );
+                        thread::yield_now();
+                    }
+
+                    control.release_native_completion();
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("gil-free-close", LOGICAL_CORE_ID);
+                    with_python(|py| session.close(py).unwrap());
+                }
             }
 
             #[test]
             fn no_resource_or_cache_publication_occurs_after_close_returns() {
-                let (_root, session) = native_session("closed-publication", LOGICAL_CORE_ID);
-                let begin_count = Arc::new(AtomicUsize::new(0));
-                let finish_count = Arc::new(AtomicUsize::new(0));
-                let begin_for_hook = Arc::clone(&begin_count);
-                let finish_for_hook = Arc::clone(&finish_count);
-                session.set_release_hooks_for_test(
-                    move || {
-                        begin_for_hook.fetch_add(1, Ordering::SeqCst);
-                    },
-                    move || {
-                        finish_for_hook.fetch_add(1, Ordering::SeqCst);
-                    },
-                );
-                session.close_native().unwrap();
-                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
-                assert!(session.acquire_operation_for_test().is_err());
-                assert!(session.release_native().is_err());
-                session.close_native().unwrap();
-                assert_eq!(begin_count.load(Ordering::SeqCst), 1);
-                assert_eq!(finish_count.load(Ordering::SeqCst), 1);
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, cached_control) =
+                        cached_windows_session("closed-publication-real");
+                    let coordinator = session.coordinator_for_test();
+                    let mut late_candidate = coordinator
+                        .session_test_prepare_windows_candidate()
+                        .unwrap();
+                    let late_control = late_candidate.control().clone();
+                    assert_eq!(
+                        late_control.usage(),
+                        SessionLeaseUsage {
+                            entries: 2,
+                            leases: 2,
+                            monitor_resources: 6,
+                        }
+                    );
+
+                    session.close_native().unwrap();
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    assert!(session.release_native().is_err());
+                    assert!(coordinator.session_test_cache_is_empty());
+                    assert_eq!(cached_control.live_monitor_resource_count(), 0);
+                    assert_eq!(
+                        late_control.usage(),
+                        SessionLeaseUsage {
+                            entries: 1,
+                            leases: 1,
+                            monitor_resources: 3,
+                        }
+                    );
+
+                    assert!(!coordinator
+                        .session_test_attempt_candidate_publication(&mut late_candidate));
+                    assert!(!coordinator
+                        .session_test_attempt_candidate_publication(&mut late_candidate));
+                    assert!(coordinator.session_test_cache_is_empty());
+                    assert_eq!(late_control.live_monitor_resource_count(), 0);
+                    assert_eq!(late_control.native_completion_count(), 1);
+                    assert_eq!(late_control.join_count(), 1);
+                    assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+                    session.close_native().unwrap();
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("closed-publication", LOGICAL_CORE_ID);
+                    session.close_native().unwrap();
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    assert!(session.release_native().is_err());
+                    session.close_native().unwrap();
+                }
             }
         }
 

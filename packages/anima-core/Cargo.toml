@@ -86,6 +86,7 @@ encryption = ["dep:aes-gcm", "dep:argon2", "dep:rand", "dep:zeroize"]
 python = ["dep:pyo3", "dep:hex", "temporal", "replay", "encryption"]
 
 [dev-dependencies]
+anima-corefs = { path = "../anima-corefs", features = ["session-test-seams"] }
 tempfile = "3.10"
 
 [package.metadata.maturin]

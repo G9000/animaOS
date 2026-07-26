@@ -329,6 +329,20 @@ impl AuthenticatedCommitSnapshot {
             object_lease: None,
         }
     }
+
+    #[cfg(feature = "session-test-seams")]
+    pub(super) fn with_session_test_object_lease(
+        &self,
+        object_lease: Option<Arc<ObjectValidationLease>>,
+    ) -> Self {
+        Self {
+            pointers: self.pointers.clone(),
+            key_ids: self.key_ids.clone(),
+            catalog: Arc::clone(&self.catalog),
+            objects: self.objects.clone(),
+            object_lease,
+        }
+    }
 }
 
 /// Process-local optimization state; disk pointers and cryptographic verification remain authority.

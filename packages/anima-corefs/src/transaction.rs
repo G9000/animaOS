@@ -35,7 +35,7 @@ use self::cache::{
     AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet, ValidatedObjectBinding,
     ValidatedObjectState,
 };
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "session-test-seams")))]
 use self::object_lease::global_lease_budget;
 use self::object_lease::{
     object_set_fingerprint, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision,
@@ -1178,7 +1178,7 @@ pub struct CoreCommitCoordinator {
     lease_attempt_policy: Mutex<LeaseAttemptPolicy>,
     #[cfg(test)]
     lease_factory_override: Mutex<Option<Arc<dyn object_lease::LeaseResourceFactory>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     lease_budget: object_lease::LeaseBudget,
 }
 
@@ -1234,7 +1234,7 @@ impl CoreCommitCoordinator {
             ))),
             #[cfg(test)]
             lease_factory_override: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             lease_budget: object_lease::LeaseBudget::isolated(),
         })
     }
@@ -1248,11 +1248,11 @@ impl CoreCommitCoordinator {
     }
 
     fn lease_budget(&self) -> &LeaseBudget {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         {
             &self.lease_budget
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "session-test-seams")))]
         {
             global_lease_budget()
         }
@@ -5654,3 +5654,5 @@ mod cache_tests;
 mod failure_tests;
 #[cfg(test)]
 mod object_lease_tests;
+#[cfg(feature = "session-test-seams")]
+pub mod session_test_support;

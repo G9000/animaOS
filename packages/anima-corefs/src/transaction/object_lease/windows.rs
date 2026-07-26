@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs::File;
@@ -6,7 +6,7 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::panic::{self, AssertUnwindSafe};
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -102,7 +102,7 @@ impl RetainedValidationAnchor {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     pub(in crate::transaction) fn invalidate_for_test(&self) {
         let _ = self
             .file
@@ -111,7 +111,7 @@ impl RetainedValidationAnchor {
             .take();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     pub(in crate::transaction) fn validate(&self) -> FenceOutcome {
         self.validate_fresh()
     }
@@ -158,7 +158,7 @@ fn valid_retained_object(information: &BY_HANDLE_FILE_INFORMATION) -> bool {
 #[derive(Debug)]
 pub(in crate::transaction) struct WindowsLeaseFactory {
     objects_dir: Arc<Dir>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     control: Option<WindowsLeaseTestControl>,
 }
 
@@ -166,12 +166,12 @@ impl WindowsLeaseFactory {
     pub(in crate::transaction) fn new(objects_dir: Dir) -> io::Result<Self> {
         Ok(Self {
             objects_dir: Arc::new(objects_dir),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             control: None,
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     pub(in crate::transaction) fn new_for_test(
         objects_dir: Dir,
         control: WindowsLeaseTestControl,
@@ -196,14 +196,14 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
         if plan.monitor_resource_count() != MONITOR_RESOURCE_COUNT {
             return Err(());
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.control {
             control.record_state(state.clone());
         }
         WindowsLeaseMonitor::start(
             self.objects_dir.clone(),
             state,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             self.control.clone(),
         )
         .map(|monitor| Box::new(monitor) as Box<dyn LeaseMonitorResource>)
@@ -221,7 +221,7 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
         )
         .map_err(|_| ())?;
         let anchor = RetainedValidationAnchor::new(file).map_err(|_| ())?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.control {
             control.record_construction_event(ConstructionEventForTest::AnchorCreated);
         }
@@ -235,7 +235,7 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
         file: File,
     ) -> Result<ValidationAnchor, ()> {
         let anchor = RetainedValidationAnchor::new(file).map_err(|_| ())?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.control {
             control.record_construction_event(ConstructionEventForTest::AnchorCreated);
         }
@@ -348,17 +348,17 @@ struct WorkerShared {
     monitor: Mutex<WindowsMonitorState>,
     changed: Condvar,
     state: Arc<MonitorStateCell>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     control: Option<WindowsLeaseTestControl>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     _notification_resource_liveness: Arc<()>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     cancellation_resource_liveness: Mutex<Option<Arc<()>>>,
 }
 
 impl WorkerShared {
     fn next_probe_name(&self) -> io::Result<String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.control {
             return control.next_probe_name();
         }
@@ -366,7 +366,7 @@ impl WorkerShared {
     }
 
     fn remove_probe(&self, probe: &str) -> io::Result<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         {
             if let Some(control) = &self.control {
                 control.before_probe_cleanup(self.objects_dir.as_ref(), probe)?;
@@ -377,7 +377,7 @@ impl WorkerShared {
             }
             result
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "session-test-seams")))]
         self.objects_dir.remove_file(probe)
     }
 
@@ -393,7 +393,7 @@ pub(super) struct WindowsLeaseMonitor {
     shared: Arc<WorkerShared>,
     fence_lock: Mutex<()>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     _join_resource_liveness: Arc<()>,
 }
 
@@ -410,12 +410,12 @@ impl WindowsLeaseMonitor {
     fn start(
         objects_dir: Arc<Dir>,
         state: Arc<MonitorStateCell>,
-        #[cfg(test)] control: Option<WindowsLeaseTestControl>,
+        #[cfg(any(test, feature = "session-test-seams"))] control: Option<WindowsLeaseTestControl>,
     ) -> io::Result<Self> {
         let notification_handle = open_notification_handle(objects_dir.as_ref())?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         let notification_resource_liveness = Arc::new(());
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &control {
             control.record_resource_liveness(Arc::downgrade(&notification_resource_liveness));
         }
@@ -426,18 +426,22 @@ impl WindowsLeaseMonitor {
             monitor: Mutex::new(WindowsMonitorState::default()),
             changed: Condvar::new(),
             state,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             control,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             _notification_resource_liveness: notification_resource_liveness,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             cancellation_resource_liveness: Mutex::new(None),
         });
+        #[cfg(any(test, feature = "session-test-seams"))]
+        if let Some(control) = &shared.control {
+            control.record_worker_shared(Arc::downgrade(&shared));
+        }
         let worker_shared = shared.clone();
         let worker = thread::Builder::new()
             .name("anima-corefs-object-lease".into())
             .spawn(move || notification_worker_entry(worker_shared))?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         let join_resource_liveness = {
             let liveness = Arc::new(());
             if let Some(control) = &shared.control {
@@ -449,7 +453,7 @@ impl WindowsLeaseMonitor {
             shared,
             fence_lock: Mutex::new(()),
             worker: Mutex::new(Some(worker)),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             _join_resource_liveness: join_resource_liveness,
         };
 
@@ -467,7 +471,7 @@ impl WindowsLeaseMonitor {
                 "could not prove Windows directory monitor arm boundary",
             ));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &monitor.shared.control {
             control.record_construction_event(ConstructionEventForTest::MonitorArmed);
         }
@@ -640,7 +644,7 @@ impl WindowsLeaseMonitor {
             }
             self.shared.changed.notify_all();
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.shared.control {
             control.record_cancel_requested();
         }
@@ -698,7 +702,7 @@ impl Drop for WindowsLeaseMonitor {
             if !target_miss_recorded && teardown_started.elapsed() >= FENCE_TIMEOUT {
                 target_miss_recorded = true;
                 monitor.teardown_target_missed = true;
-                #[cfg(test)]
+                #[cfg(any(test, feature = "session-test-seams"))]
                 if let Some(control) = &self.shared.control {
                     control.record_teardown_target_miss();
                 }
@@ -737,7 +741,7 @@ impl Drop for WindowsLeaseMonitor {
             monitor.worker_state = WorkerState::Joined;
             self.shared.changed.notify_all();
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.shared.control {
             control.record_join();
         }
@@ -767,7 +771,7 @@ impl Drop for WindowsLeaseMonitor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         self.shared
             .cancellation_resource_liveness
             .lock()
@@ -785,7 +789,7 @@ fn notification_worker_entry(shared: Arc<WorkerShared>) {
 
 fn notification_worker(shared: Arc<WorkerShared>) {
     let mut buffer = Box::new([0_u8; NOTIFICATION_BUFFER_SIZE]);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     let _buffer_liveness = {
         let liveness = Arc::new(());
         if let Some(control) = &shared.control {
@@ -804,7 +808,7 @@ fn notification_worker(shared: Arc<WorkerShared>) {
             return;
         }
     };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     let cancellation_resource_liveness = {
         let liveness = Arc::new(());
         if let Some(control) = &shared.control {
@@ -816,7 +820,7 @@ fn notification_worker(shared: Arc<WorkerShared>) {
         .worker_thread
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(worker_thread);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     {
         *shared
             .cancellation_resource_liveness
@@ -847,7 +851,7 @@ fn notification_worker(shared: Arc<WorkerShared>) {
                 return;
             }
             monitor.native_read_pending = true;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "session-test-seams"))]
             if let Some(control) = &shared.control {
                 control.record_read_pending(true);
             }
@@ -855,7 +859,7 @@ fn notification_worker(shared: Arc<WorkerShared>) {
         let pending_read = PendingRead {
             shared: shared.as_ref(),
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &shared.control {
             control.before_native_read();
         }
@@ -895,13 +899,13 @@ fn notification_worker(shared: Arc<WorkerShared>) {
             return;
         }
         let used = usize::try_from(bytes_returned).unwrap_or(usize::MAX);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &shared.control {
             control.record_notification_batch_enqueued();
         }
         let fold_result =
             fold_notification_buffer(shared.as_ref(), buffer.get(..used).unwrap_or_default());
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &shared.control {
             control.record_notification_batch_dequeued();
             if fold_result.is_ok() {
@@ -930,13 +934,13 @@ fn complete_pending_read(shared: &WorkerShared) {
     if !read_was_pending {
         return;
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     let teardown_completion = shared
         .monitor
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .teardown_started;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     if teardown_completion {
         if let Some(control) = &shared.control {
             control.before_native_completion();
@@ -947,7 +951,7 @@ fn complete_pending_read(shared: &WorkerShared) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     monitor.native_read_pending = false;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     if let Some(control) = &shared.control {
         control.record_read_pending(false);
         if teardown_completion {
@@ -958,7 +962,7 @@ fn complete_pending_read(shared: &WorkerShared) {
 }
 
 fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Result<u32> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     if let Some(control) = &shared.control {
         if let Some(fault) = control.take_next_worker_fault() {
             return match fault {
@@ -1000,7 +1004,7 @@ fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Resul
             "Windows object lease notification handle is unavailable",
         )
     })?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     {
         let result = read_directory_changes_from_handle(file.as_raw_handle(), buffer);
         if result.is_ok() {
@@ -1021,7 +1025,7 @@ fn read_directory_changes(shared: &WorkerShared, buffer: &mut [u8]) -> io::Resul
         }
         result
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "session-test-seams")))]
     read_directory_changes_from_handle(file.as_raw_handle(), buffer)
 }
 
@@ -1105,7 +1109,7 @@ fn publish_terminal(
     shared.changed.notify_all();
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 fn encode_notifications_for_test(
     buffer: &mut [u8],
     notifications: &[Notification],
@@ -1193,7 +1197,7 @@ fn encode_notifications_for_test(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 fn encode_malformed_tail_for_test(
     buffer: &mut [u8],
     notifications: &[Notification],
@@ -1281,12 +1285,12 @@ fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), 
             FILE_ACTION_RENAMED_NEW_NAME => Notification::RenamedNew(name),
             _ => return Err(()),
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "session-test-seams"))]
         let is_read_pause_wake = shared
             .control
             .as_ref()
             .is_some_and(|control| control.is_read_pause_wake_notification(&notification));
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "session-test-seams")))]
         let is_read_pause_wake = false;
         if !is_read_pause_wake {
             fold_notification(shared, &mut monitor, notification);
@@ -1313,7 +1317,7 @@ fn fold_notification_buffer(shared: &WorkerShared, buffer: &[u8]) -> Result<(), 
         monitor.pending_rename = false;
         apply_observed_outcome(shared, &mut monitor, FenceOutcome::Unknown);
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "session-test-seams"))]
     if let Some(control) = &shared.control {
         control.record_boundary_snapshot(&monitor);
     }
@@ -1468,14 +1472,14 @@ fn raw_handle(handle: std::os::windows::io::RawHandle) -> HANDLE {
     handle as HANDLE
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::transaction) enum ConstructionEventForTest {
     MonitorArmed,
     AnchorCreated,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::transaction) enum WorkerFaultForTest {
     Overflow,
@@ -1484,7 +1488,7 @@ pub(in crate::transaction) enum WorkerFaultForTest {
     LoseMonitorHandle,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::transaction) struct BoundarySnapshotForTest {
     pub(in crate::transaction) terminal: FenceOutcome,
@@ -1494,14 +1498,14 @@ pub(in crate::transaction) struct BoundarySnapshotForTest {
     pub(in crate::transaction) active_probe_complete: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Debug)]
 enum InjectedNotificationBatchForTest {
     Semantic(Vec<Notification>),
     MalformedTail(Vec<Notification>),
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum CleanupFailureMode {
     #[default]
@@ -1510,7 +1514,7 @@ enum CleanupFailureMode {
     Persistent,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Debug, Default)]
 struct ReadPauseState {
     requested: bool,
@@ -1518,7 +1522,7 @@ struct ReadPauseState {
     released: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Debug, Default)]
 struct CompletionPauseState {
     requested: bool,
@@ -1526,7 +1530,7 @@ struct CompletionPauseState {
     released: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Debug, Default)]
 struct WindowsLeaseTestControlInner {
     probe_names: Mutex<VecDeque<String>>,
@@ -1560,18 +1564,52 @@ struct WindowsLeaseTestControlInner {
     boundary_snapshot: Mutex<Option<BoundarySnapshotForTest>>,
     capture_next_boundary_snapshot: AtomicBool,
     freeze_boundary_snapshot: AtomicBool,
+    worker_shared: Mutex<Option<std::sync::Weak<WorkerShared>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Clone, Debug, Default)]
 pub(in crate::transaction) struct WindowsLeaseTestControl {
     inner: Arc<WindowsLeaseTestControlInner>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 impl WindowsLeaseTestControl {
     pub(in crate::transaction) fn new() -> Self {
         Self::default()
+    }
+
+    fn record_worker_shared(&self, shared: std::sync::Weak<WorkerShared>) {
+        *self
+            .inner
+            .worker_shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(shared);
+    }
+
+    pub(in crate::transaction) fn internal_locks_available_for_session_test(&self) -> bool {
+        let shared = self
+            .inner
+            .worker_shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        let Some(shared) = shared else {
+            return false;
+        };
+        let monitor_available = shared.monitor.try_lock().is_ok();
+        let notification_available = shared.notification_handle.try_lock().is_ok();
+        let worker_thread_available = shared.worker_thread.try_lock().is_ok();
+        let completion_latch_available = self.inner.completion_pause.try_lock().is_ok();
+        let resources_available = self.inner.resource_liveness.try_lock().is_ok();
+        let buffer_available = self.inner.buffer_liveness.try_lock().is_ok();
+        monitor_available
+            && notification_available
+            && worker_thread_available
+            && completion_latch_available
+            && resources_available
+            && buffer_available
     }
 
     pub(in crate::transaction) fn queue_probe_name(&self, name: &str) {
@@ -2265,7 +2303,7 @@ impl WindowsLeaseTestControl {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::transaction) enum TestNotification {
     Added(String),
@@ -2275,7 +2313,7 @@ pub(in crate::transaction) enum TestNotification {
     RenamedNew(String),
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 pub(in crate::transaction) fn notification_outcome_for_test(
     probe: &str,
     notifications: &[TestNotification],
@@ -2294,7 +2332,7 @@ pub(in crate::transaction) fn notification_outcome_for_test(
     notification_outcome(probe, &native, cleanup_ok)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "session-test-seams"))]
 pub(in crate::transaction) fn probe_name_for_test() -> io::Result<String> {
     random_probe_name()
 }
