@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import contextlib
 import ctypes
 import logging
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from threading import RLock
+from threading import Event, RLock
 from typing import Any
 
+import anima_core
+
+from anima_server.services.core import get_core_dir, get_core_id
 from anima_server.services.dev_session_snapshot import DevSessionSnapshot
 
 SESSION_TTL = timedelta(hours=24)
@@ -20,22 +25,54 @@ DEFAULT_DOMAIN = "memories"
 logger = logging.getLogger(__name__)
 
 
+def _create_native_corefs_session() -> object:
+    return anima_core.CorefsSession(str(get_core_dir()), get_core_id())
+
+
 @dataclass(frozen=True, slots=True)
 class UnlockSession:
     user_id: int
     deks: dict[str, bytes]
     expires_at: datetime
     corefs_keys: object | None = field(default=None, repr=False, compare=False)
+    corefs_session: object | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(slots=True)
+class _SessionCloseRecord:
+    session: UnlockSession
+    done: Event = field(default_factory=Event)
+    error: Exception | None = None
+
+
+@dataclass(slots=True)
+class _CleanupBatch:
+    records: list[_SessionCloseRecord] = field(default_factory=list)
+    sqlcipher_keys: list[bytes] = field(default_factory=list)
+
+    def extend(self, other: _CleanupBatch) -> None:
+        self.records.extend(other.records)
+        self.sqlcipher_keys.extend(other.sqlcipher_keys)
 
 
 class UnlockSessionStore:
-    def __init__(self, *, snapshot: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        snapshot: Any | None = None,
+        corefs_session_factory: Callable[[], object] | None = None,
+    ) -> None:
         self._lock = RLock()
         self._snapshot = snapshot
+        self._corefs_session_factory = (
+            corefs_session_factory or _create_native_corefs_session
+        )
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
         self._db_viewer_verified_at: dict[str, float] = {}
         self._sqlcipher_key: bytes | None = None
+        self._closing_sessions: dict[int, _SessionCloseRecord] = {}
+        self._shut_down = False
         self._restore_snapshot()
 
     def create(
@@ -45,19 +82,40 @@ class UnlockSessionStore:
         *,
         corefs_keys: object | None = None,
     ) -> str:
+        with self._lock:
+            self._ensure_running_locked()
         token = secrets.token_urlsafe(32)
-        session = UnlockSession(
-            user_id=user_id,
-            deks={domain: _copy_key(dek) for domain, dek in deks.items()},
-            expires_at=self._now() + SESSION_TTL,
+        session = self._new_session(user_id, deks, corefs_keys)
+        cleanup = _CleanupBatch()
+        try:
+            with self._lock:
+                self._ensure_running_locked()
+                cleanup.extend(self._purge_expired_locked())
+                next_sessions = dict(self._sessions)
+                next_sessions[token] = session
+                cleanup.extend(
+                    self._commit_locked(next_sessions, self._sqlcipher_key)
+                )
+        except Exception:
+            self._run_cleanup(cleanup)
+            self._destroy_unpublished_session(session)
+            raise
+        self._run_cleanup(cleanup)
+        return token
+
+    async def create_async(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
+        return await self._to_thread(
+            self.create,
+            user_id,
+            deks,
             corefs_keys=corefs_keys,
         )
-        with self._lock:
-            self._purge_expired_locked()
-            next_sessions = dict(self._sessions)
-            next_sessions[token] = session
-            self._commit_locked(next_sessions, self._sqlcipher_key)
-        return token
 
     def replace_user(
         self,
@@ -66,47 +124,79 @@ class UnlockSessionStore:
         *,
         corefs_keys: object | None = None,
     ) -> str:
+        with self._lock:
+            self._ensure_running_locked()
         token = secrets.token_urlsafe(32)
-        replacement = UnlockSession(
-            user_id=user_id,
-            deks={domain: _copy_key(dek) for domain, dek in deks.items()},
-            expires_at=self._now() + SESSION_TTL,
+        replacement = self._new_session(user_id, deks, corefs_keys)
+        cleanup = _CleanupBatch()
+        try:
+            with self._lock:
+                self._ensure_running_locked()
+                cleanup.extend(self._purge_expired_locked())
+                next_sessions = {
+                    current_token: session
+                    for current_token, session in self._sessions.items()
+                    if session.user_id != user_id
+                }
+                next_sessions[token] = replacement
+                cleanup.extend(
+                    self._commit_locked(next_sessions, self._sqlcipher_key)
+                )
+        except Exception:
+            self._run_cleanup(cleanup)
+            self._destroy_unpublished_session(replacement)
+            raise
+        self._run_cleanup(cleanup)
+        return token
+
+    async def replace_user_async(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
+        return await self._to_thread(
+            self.replace_user,
+            user_id,
+            deks,
             corefs_keys=corefs_keys,
         )
-        with self._lock:
-            self._purge_expired_locked()
-            next_sessions = {
-                current_token: session
-                for current_token, session in self._sessions.items()
-                if session.user_id != user_id
-            }
-            next_sessions[token] = replacement
-            self._commit_locked(next_sessions, self._sqlcipher_key)
-        return token
 
     def resolve(self, token: str | None) -> UnlockSession | None:
         if token is None:
             return None
 
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._purge_expired_locked()
+            cleanup.extend(self._purge_expired_locked())
             session = self._sessions.get(token)
             if session is None or session.expires_at <= self._now():
-                return None
-            return session
+                session = None
+        self._run_cleanup(cleanup)
+        return session
+
+    async def resolve_async(self, token: str | None) -> UnlockSession | None:
+        return await self._to_thread(self.resolve, token)
 
     def revoke(self, token: str | None) -> None:
         if token is None:
             return
+        cleanup = _CleanupBatch()
         with self._lock:
             if token not in self._sessions:
                 self._db_viewer_verified_at.pop(token, None)
                 return
             next_sessions = dict(self._sessions)
             next_sessions.pop(token, None)
-            self._commit_locked(next_sessions, self._sqlcipher_key)
+            cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
+        self._run_cleanup(cleanup)
+
+    async def revoke_async(self, token: str | None) -> None:
+        await self._to_thread(self.revoke, token)
 
     def revoke_user(self, user_id: int) -> None:
+        cleanup = _CleanupBatch()
         with self._lock:
             next_sessions = {
                 token: session
@@ -116,24 +206,45 @@ class UnlockSessionStore:
             if len(next_sessions) == len(self._sessions):
                 self._latest_deks_by_user.pop(user_id, None)
                 return
-            self._commit_locked(next_sessions, self._sqlcipher_key)
+            cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
+        self._run_cleanup(cleanup)
+
+    async def revoke_user_async(self, user_id: int) -> None:
+        await self._to_thread(self.revoke_user, user_id)
 
     def clear(self) -> None:
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._commit_locked({}, None)
+            cleanup.extend(self._commit_locked({}, None))
+        self._run_cleanup(cleanup)
+
+    async def clear_async(self) -> None:
+        await self._to_thread(self.clear)
+
+    def start(self) -> None:
+        with self._lock:
+            if self._closing_sessions:
+                raise RuntimeError(
+                    "Unlock session store cannot start while teardown is active"
+                )
+            self._shut_down = False
 
     def get_active_dek(self, user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._purge_expired_locked()
+            cleanup.extend(self._purge_expired_locked())
             deks = self._latest_deks_by_user.get(user_id)
-            if deks is None:
-                return None
-            return deks.get(domain)
+            dek = None if deks is None else deks.get(domain)
+        self._run_cleanup(cleanup)
+        return dek
 
     def get_active_deks(self, user_id: int) -> dict[str, bytes] | None:
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._purge_expired_locked()
-            return self._latest_deks_by_user.get(user_id)
+            cleanup.extend(self._purge_expired_locked())
+            deks = self._latest_deks_by_user.get(user_id)
+        self._run_cleanup(cleanup)
+        return deks
 
     def set_db_viewer_verified_at(
         self,
@@ -142,36 +253,45 @@ class UnlockSessionStore:
     ) -> None:
         if token is None:
             return
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._purge_expired_locked()
+            cleanup.extend(self._purge_expired_locked())
             if token not in self._sessions or verified_at is None:
                 self._db_viewer_verified_at.pop(token, None)
-                return
-            self._db_viewer_verified_at[token] = verified_at
+            else:
+                self._db_viewer_verified_at[token] = verified_at
+        self._run_cleanup(cleanup)
 
     def get_db_viewer_verified_at(self, token: str | None) -> float | None:
         if token is None:
             return None
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._purge_expired_locked()
-            return self._db_viewer_verified_at.get(token)
+            cleanup.extend(self._purge_expired_locked())
+            verified_at = self._db_viewer_verified_at.get(token)
+        self._run_cleanup(cleanup)
+        return verified_at
 
     def set_sqlcipher_key(self, key: bytes) -> None:
         copied_key = _copy_key(key)
+        cleanup = _CleanupBatch()
         with self._lock:
-            self._commit_locked(dict(self._sessions), copied_key)
+            cleanup.extend(self._commit_locked(dict(self._sessions), copied_key))
+        self._run_cleanup(cleanup)
 
     def get_sqlcipher_key(self) -> bytes | None:
         with self._lock:
             return self._sqlcipher_key
 
     def clear_sqlcipher_key(self) -> None:
+        cleanup = _CleanupBatch()
         with self._lock:
             if self._sqlcipher_key is None:
                 return
-            self._commit_locked(dict(self._sessions), None)
+            cleanup.extend(self._commit_locked(dict(self._sessions), None))
+        self._run_cleanup(cleanup)
 
-    def _purge_expired_locked(self) -> None:
+    def _purge_expired_locked(self) -> _CleanupBatch:
         now = self._now()
         next_sessions = {
             token: session
@@ -179,9 +299,9 @@ class UnlockSessionStore:
             if session.expires_at > now
         }
         if len(next_sessions) == len(self._sessions):
-            return
+            return _CleanupBatch()
         try:
-            self._commit_locked(next_sessions, self._sqlcipher_key)
+            return self._commit_locked(next_sessions, self._sqlcipher_key)
         except Exception as exc:
             # Expiry is checked independently during every resolve and restore,
             # so committing the in-memory purge remains fail-closed even if the
@@ -190,30 +310,39 @@ class UnlockSessionStore:
                 "Failed to persist expired dev sessions; keeping them invalid: %s",
                 type(exc).__name__,
             )
-            self._apply_state_locked(next_sessions, self._sqlcipher_key)
+            return self._apply_state_locked(next_sessions, self._sqlcipher_key)
 
     def _commit_locked(
         self,
         next_sessions: dict[str, UnlockSession],
         next_sqlcipher_key: bytes | None,
-    ) -> None:
+    ) -> _CleanupBatch:
         if self._snapshot is not None:
             self._snapshot.write(
                 self._snapshot_payload(next_sessions, next_sqlcipher_key)
             )
-        self._apply_state_locked(next_sessions, next_sqlcipher_key)
+        return self._apply_state_locked(next_sessions, next_sqlcipher_key)
 
     def _apply_state_locked(
         self,
         next_sessions: dict[str, UnlockSession],
         next_sqlcipher_key: bytes | None,
-    ) -> None:
+    ) -> _CleanupBatch:
         removed_sessions = [
             session
             for token, session in self._sessions.items()
-            if token not in next_sessions
+            if next_sessions.get(token) is not session
         ]
         previous_sqlcipher_key = self._sqlcipher_key
+        cleanup = _CleanupBatch()
+
+        for session in removed_sessions:
+            session_id = id(session)
+            if session_id in self._closing_sessions:
+                continue
+            record = _SessionCloseRecord(session=session)
+            self._closing_sessions[session_id] = record
+            cleanup.records.append(record)
 
         self._sessions = next_sessions
         self._sqlcipher_key = next_sqlcipher_key
@@ -224,13 +353,129 @@ class UnlockSessionStore:
         }
         self._rebuild_latest_deks_locked()
 
-        for session in removed_sessions:
-            _zero_deks(session.deks)
         if (
             previous_sqlcipher_key is not None
             and previous_sqlcipher_key is not next_sqlcipher_key
         ):
-            _zero_dek(previous_sqlcipher_key)
+            cleanup.sqlcipher_keys.append(previous_sqlcipher_key)
+        return cleanup
+
+    def _new_session(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        corefs_keys: object | None,
+    ) -> UnlockSession:
+        copied_deks = {
+            domain: _copy_key(dek)
+            for domain, dek in deks.items()
+        }
+        try:
+            corefs_session = (
+                None
+                if corefs_keys is None
+                else self._corefs_session_factory()
+            )
+        except Exception:
+            _zero_deks(copied_deks)
+            raise
+        return UnlockSession(
+            user_id=user_id,
+            deks=copied_deks,
+            expires_at=self._now() + SESSION_TTL,
+            corefs_keys=corefs_keys,
+            corefs_session=corefs_session,
+        )
+
+    def _ensure_running_locked(self) -> None:
+        if self._shut_down:
+            raise RuntimeError("Unlock session store is shut down")
+
+    def _destroy_unpublished_session(self, session: UnlockSession) -> None:
+        try:
+            if session.corefs_session is not None:
+                session.corefs_session.close()
+        except Exception:
+            logger.error(
+                "Failed to close unpublished CoreFS session",
+                exc_info=True,
+            )
+        finally:
+            _zero_deks(session.deks)
+
+    def _finish_close_record(self, record: _SessionCloseRecord) -> None:
+        try:
+            if record.session.corefs_session is not None:
+                record.session.corefs_session.close()
+        except Exception as exc:
+            record.error = exc
+            logger.error("Failed to close CoreFS session: %s", exc, exc_info=True)
+        finally:
+            _zero_deks(record.session.deks)
+            with self._lock:
+                if self._closing_sessions.get(id(record.session)) is record:
+                    self._closing_sessions.pop(id(record.session), None)
+            record.done.set()
+
+    def _run_cleanup(self, cleanup: _CleanupBatch) -> None:
+        for record in cleanup.records:
+            self._finish_close_record(record)
+        for key in cleanup.sqlcipher_keys:
+            _zero_dek(key)
+
+    @staticmethod
+    def _wait_for_records(records: list[_SessionCloseRecord]) -> None:
+        for record in records:
+            record.done.wait()
+
+    @staticmethod
+    async def _to_thread(
+        function: Callable[..., Any],
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            worker.add_done_callback(_consume_worker_result)
+            raise
+
+    async def shutdown(self) -> None:
+        cleanup = _CleanupBatch()
+        with self._lock:
+            already_closing = list(self._closing_sessions.values())
+            if not self._shut_down:
+                self._shut_down = True
+                try:
+                    cleanup.extend(self._commit_locked({}, None))
+                except Exception:
+                    logger.error(
+                        "Failed to persist unlock-session shutdown; "
+                        "continuing fail-closed teardown",
+                        exc_info=True,
+                    )
+                    cleanup.extend(self._apply_state_locked({}, None))
+
+        workers: list[asyncio.Task[Any]] = []
+        if cleanup.records or cleanup.sqlcipher_keys:
+            workers.append(
+                asyncio.create_task(asyncio.to_thread(self._run_cleanup, cleanup))
+            )
+        if already_closing:
+            workers.append(
+                asyncio.create_task(
+                    asyncio.to_thread(self._wait_for_records, already_closing)
+                )
+            )
+        if not workers:
+            return
+        drain = asyncio.gather(*workers)
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            drain.add_done_callback(_consume_worker_result)
+            raise
 
     def _restore_snapshot(self) -> None:
         if self._snapshot is None:
@@ -319,7 +564,10 @@ class UnlockSessionStore:
                         domain: base64.b64encode(dek).decode("ascii")
                         for domain, dek in sorted(session.deks.items())
                     },
-                    "hadCorefsKeys": session.corefs_keys is not None,
+                    "hadCorefsKeys": (
+                        session.corefs_keys is not None
+                        or session.corefs_session is not None
+                    ),
                 }
                 for token, session in sessions.items()
             ],
@@ -338,6 +586,11 @@ class UnlockSessionStore:
     @staticmethod
     def _now() -> datetime:
         return datetime.now(UTC)
+
+
+def _consume_worker_result(future: asyncio.Future[Any]) -> None:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        future.result()
 
 
 def _format_expiry(value: datetime) -> str:

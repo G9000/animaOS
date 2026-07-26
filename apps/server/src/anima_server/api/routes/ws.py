@@ -48,7 +48,7 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
 
     # Try token-based auth first
     if unlock_token:
-        session = unlock_session_store.resolve(unlock_token)
+        session = await unlock_session_store.resolve_async(unlock_token)
         if session is None:
             await ws.send_json(
                 {
@@ -76,7 +76,11 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
         try:
             response, deks, corefs_keys = authenticate_account(username, password)
             user_id = int(response["id"])
-            unlock_session_store.create(user_id, deks, corefs_keys=corefs_keys)
+            await unlock_session_store.create_async(
+                user_id,
+                deks,
+                corefs_keys=corefs_keys,
+            )
             return ClientConnection(
                 websocket=ws,
                 user_id=user_id,

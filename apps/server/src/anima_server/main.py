@@ -99,6 +99,9 @@ def _start_embedded_pg() -> EmbeddedPG | None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    from .services.sessions import unlock_session_store
+
+    unlock_session_store.start()
     embedded_pg = _start_embedded_pg()
     runtime_url = embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
     sweep_tasks: list[asyncio.Task[None]] = []
@@ -221,7 +224,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
         from .services.agent.reflection import cancel_pending_reflection
-
         try:
             # Flush pending Soul Writer candidates for all active users unless
             # background memory work was explicitly disabled for this process.
@@ -252,6 +254,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 task.cancel()
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
+            await unlock_session_store.shutdown()
         finally:
             if health_handler is not None:
                 logging.getLogger("anima_server").removeHandler(health_handler)
