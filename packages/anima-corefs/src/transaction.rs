@@ -15,6 +15,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1172,6 +1173,8 @@ pub struct CoreCommitCoordinator {
     fs_dir: Dir,
     catalogs_dir: Dir,
     objects_dir: Dir,
+    lease_publication_open: AtomicBool,
+    lease_publication_generation: AtomicU64,
     lease_attempt_policy: Mutex<LeaseAttemptPolicy>,
     #[cfg(test)]
     lease_factory_override: Mutex<Option<Arc<dyn object_lease::LeaseResourceFactory>>>,
@@ -1224,6 +1227,8 @@ impl CoreCommitCoordinator {
             fs_dir,
             catalogs_dir,
             objects_dir,
+            lease_publication_open: AtomicBool::new(true),
+            lease_publication_generation: AtomicU64::new(0),
             lease_attempt_policy: Mutex::new(LeaseAttemptPolicy::new(Arc::new(
                 CoordinatorMonotonicClock::new(),
             ))),
@@ -1323,6 +1328,21 @@ impl CoreCommitCoordinator {
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) -> Result<(ValidatedObjectState, Option<Arc<ObjectValidationLease>>), CommitError> {
         let expected_bindings = catalog_object_bindings(next)?;
+        let candidate_publication_generation = self.lease_publication_generation();
+        if !self.lease_publication_is_open() {
+            let validated = validate_prepared_revisions_observed(
+                &self.objects_dir,
+                keys,
+                &self.core_id,
+                (Some(current), next),
+                prepared,
+                cached,
+                |_, _| {},
+                #[cfg(test)]
+                probe,
+            )?;
+            return Ok((validated, None));
+        }
         let fingerprint = object_set_fingerprint(&expected_bindings);
         let requested_count = expected_bindings.len();
         let budget = self.lease_budget();
@@ -1374,6 +1394,7 @@ impl CoreCommitCoordinator {
                 budget,
                 expected_bindings.clone(),
                 directory_identity,
+                candidate_publication_generation,
                 factory.as_ref(),
             ) {
                 Ok(candidate) => candidate,
@@ -1449,6 +1470,12 @@ impl CoreCommitCoordinator {
                 probe.stage(CommitStage::LeaseFence);
             }
             if fence == FenceOutcome::Clean {
+                if !self.lease_publication_is_open()
+                    || self.lease_publication_generation() != candidate_publication_generation
+                {
+                    candidate.defer_now();
+                    return Ok((validated, None));
+                }
                 let active_candidate = candidate
                     .take()
                     .expect("clean fence retains the active lease candidate");
@@ -1522,6 +1549,59 @@ impl CoreCommitCoordinator {
 
     pub fn lock_path(&self) -> &Path {
         &self.lock_path
+    }
+
+    /// Marks the current object-validation lease terminally unknown and wakes any
+    /// cancellation-aware monitor fence without waiting for backend destruction.
+    pub fn begin_object_lease_release(&self) {
+        self.lease_publication_open
+            .store(false, AtomicOrdering::SeqCst);
+        self.lease_publication_generation
+            .fetch_add(1, AtomicOrdering::SeqCst);
+        self.cache.begin_object_lease_release();
+    }
+
+    /// Clears and completion-drains the current object-validation lease.
+    ///
+    /// The cache mutex is released before monitor destruction, native completion,
+    /// worker join, anchor destruction, or process-budget permit return.
+    pub fn finish_object_lease_release(&self) {
+        self.cache.drop_object_lease();
+    }
+
+    /// Idempotently cancels, drains, and clears the current object-validation lease.
+    pub fn release_object_lease(&self) {
+        self.begin_object_lease_release();
+        self.finish_object_lease_release();
+        self.resume_object_lease_publication();
+    }
+
+    /// Reopens lease construction after a non-terminal, completion-confirmed release.
+    pub fn resume_object_lease_publication(&self) {
+        self.lease_publication_open
+            .store(true, AtomicOrdering::SeqCst);
+    }
+
+    /// Clears all process-local authenticated cache state after lease cancellation.
+    ///
+    /// Disk pointers and authenticated catalog bytes remain authoritative; a later
+    /// operation on an open coordinator rebuilds the cache from disk.
+    pub fn clear_cached_state(&self) {
+        self.cache.clear();
+    }
+
+    fn lease_publication_is_open(&self) -> bool {
+        self.lease_publication_open.load(AtomicOrdering::SeqCst)
+    }
+
+    fn lease_publication_generation(&self) -> u64 {
+        self.lease_publication_generation
+            .load(AtomicOrdering::SeqCst)
+    }
+
+    fn object_lease_can_publish(&self, lease: &ObjectValidationLease) -> bool {
+        self.lease_publication_is_open()
+            && lease.publication_generation() == self.lease_publication_generation()
     }
 
     pub fn prepare_object_revision<R: Read>(
@@ -3071,7 +3151,7 @@ impl CoreCommitCoordinator {
                 return;
             }
         };
-        let object_lease = prior_snapshot.and_then(|snapshot| {
+        let mut object_lease = prior_snapshot.and_then(|snapshot| {
             let lease = snapshot.object_lease.as_ref()?;
             let old_bindings = catalog_object_bindings(snapshot.catalog()).ok()?;
             let directory_identity = match self.object_directory_identity() {
@@ -3088,6 +3168,15 @@ impl CoreCommitCoordinator {
             }
             carried
         });
+        if object_lease
+            .as_ref()
+            .is_some_and(|lease| !self.object_lease_can_publish(lease))
+        {
+            if let Some(lease) = object_lease.take() {
+                lease.begin_release();
+                deferred_teardown.retain_lease(&lease);
+            }
+        }
         self.cache.replace_deferred(
             Arc::new(
                 AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
@@ -3891,6 +3980,16 @@ impl CoreCommitCoordinator {
             self.cache
                 .clear_deferred(deferred_teardown.cache_snapshots());
             return;
+        }
+        let mut object_lease = object_lease;
+        if object_lease
+            .as_ref()
+            .is_some_and(|lease| !self.object_lease_can_publish(lease))
+        {
+            if let Some(lease) = object_lease.take() {
+                lease.begin_release();
+                deferred_teardown.retain_lease(&lease);
+            }
         }
         self.cache.replace_deferred(
             Arc::new(

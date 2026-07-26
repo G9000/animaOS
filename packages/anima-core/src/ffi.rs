@@ -14,7 +14,8 @@ mod python {
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::io::{self, Read, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex};
 
     use crate::cards::{
         CardStore, Cardinality, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation,
@@ -255,15 +256,12 @@ mod python {
         .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
-    fn corefs_open_read_snapshot(
-        core_root: &str,
-        core_id: &str,
+    fn corefs_open_read_snapshot_with_coordinator(
+        coordinator: &anima_corefs::transaction::CoreCommitCoordinator,
         keys: &PyCorefsSubkeys,
         selected_generation: u64,
         selected_catalog_hash: &str,
     ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
-        let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
-            .map_err(corefs_commit_error)?;
         let selected = coordinator
             .load_validation_snapshot(&keys.inner)
             .map_err(corefs_commit_error)?
@@ -280,8 +278,25 @@ mod python {
         }
         let keyring = anima_corefs::rotation::FrkKeyring::new([&keys.inner])
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
-        anima_corefs::logical::CoreFsReadSnapshot::open(&coordinator, &selected, &keyring)
+        anima_corefs::logical::CoreFsReadSnapshot::open(coordinator, &selected, &keyring)
             .map_err(corefs_logical_error)
+    }
+
+    fn corefs_open_read_snapshot(
+        core_root: &str,
+        core_id: &str,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+    ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+        let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
+            .map_err(corefs_commit_error)?;
+        corefs_open_read_snapshot_with_coordinator(
+            &coordinator,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )
     }
 
     fn corefs_wire_to_py(
@@ -292,6 +307,720 @@ mod python {
             .to_model_wire_v1()
             .map_err(corefs_logical_error)?;
         Ok(PyBytes::new_bound(py, &wire).into_py(py))
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CorefsSessionPhase {
+        Open,
+        Releasing,
+        Closing,
+        Closed,
+    }
+
+    #[derive(Debug)]
+    struct CorefsSessionState {
+        phase: CorefsSessionPhase,
+        active_operations: usize,
+        terminal_close: bool,
+        teardown_owned: bool,
+    }
+
+    impl Default for CorefsSessionState {
+        fn default() -> Self {
+            Self {
+                phase: CorefsSessionPhase::Open,
+                active_operations: 0,
+                terminal_close: false,
+                teardown_owned: false,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct CorefsSessionLifecycle {
+        state: Mutex<CorefsSessionState>,
+        changed: Condvar,
+    }
+
+    #[derive(Debug)]
+    struct CorefsOperationGuard {
+        lifecycle: Arc<CorefsSessionLifecycle>,
+    }
+
+    impl Drop for CorefsOperationGuard {
+        fn drop(&mut self) {
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            debug_assert!(state.active_operations > 0);
+            state.active_operations = state.active_operations.saturating_sub(1);
+            self.lifecycle.changed.notify_all();
+        }
+    }
+
+    #[cfg(test)]
+    #[derive(Clone)]
+    struct CorefsSessionReleaseHooks {
+        begin: Arc<dyn Fn() + Send + Sync>,
+        finish: Arc<dyn Fn() + Send + Sync>,
+    }
+
+    #[pyclass(name = "CorefsSession")]
+    struct PyCorefsSession {
+        canonical_root: PathBuf,
+        core_id: String,
+        coordinator: Arc<anima_corefs::transaction::CoreCommitCoordinator>,
+        lifecycle: Arc<CorefsSessionLifecycle>,
+        #[cfg(test)]
+        release_hooks: Mutex<Option<CorefsSessionReleaseHooks>>,
+    }
+
+    impl PyCorefsSession {
+        fn acquire_operation(&self) -> PyResult<CorefsOperationGuard> {
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.phase != CorefsSessionPhase::Open || state.terminal_close {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "CoreFS session is {}",
+                    match state.phase {
+                        CorefsSessionPhase::Open => "not accepting operations",
+                        CorefsSessionPhase::Releasing => "releasing its object lease",
+                        CorefsSessionPhase::Closing => "closing",
+                        CorefsSessionPhase::Closed => "closed",
+                    }
+                )));
+            }
+            state.active_operations = state.active_operations.checked_add(1).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("CoreFS session operation count overflow")
+            })?;
+            Ok(CorefsOperationGuard {
+                lifecycle: Arc::clone(&self.lifecycle),
+            })
+        }
+
+        fn begin_lease_release(&self) {
+            self.coordinator.begin_object_lease_release();
+            #[cfg(test)]
+            let hooks = self
+                .release_hooks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            #[cfg(test)]
+            if let Some(hooks) = hooks {
+                (hooks.begin)();
+            }
+        }
+
+        fn finish_lease_release(&self, clear_cached_state: bool) {
+            #[cfg(test)]
+            let hooks = self
+                .release_hooks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            #[cfg(test)]
+            if let Some(hooks) = hooks {
+                (hooks.finish)();
+            }
+            self.coordinator.finish_object_lease_release();
+            if clear_cached_state {
+                self.coordinator.clear_cached_state();
+            }
+        }
+
+        fn wait_for_active_operations(&self) {
+            let state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(
+                self.lifecycle
+                    .changed
+                    .wait_while(state, |state| state.active_operations != 0)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }
+
+        fn release_native(&self) -> PyResult<()> {
+            {
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match state.phase {
+                    CorefsSessionPhase::Open if !state.terminal_close => {
+                        state.phase = CorefsSessionPhase::Releasing;
+                        state.teardown_owned = true;
+                        self.lifecycle.changed.notify_all();
+                    }
+                    CorefsSessionPhase::Releasing => {
+                        drop(
+                            self.lifecycle
+                                .changed
+                                .wait_while(state, |state| {
+                                    matches!(
+                                        state.phase,
+                                        CorefsSessionPhase::Releasing | CorefsSessionPhase::Closing
+                                    )
+                                })
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                        return Ok(());
+                    }
+                    CorefsSessionPhase::Closing => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "CoreFS session is closing",
+                        ));
+                    }
+                    CorefsSessionPhase::Closed => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "CoreFS session is closed",
+                        ));
+                    }
+                    CorefsSessionPhase::Open => unreachable!("terminal Open is never published"),
+                }
+            }
+
+            self.begin_lease_release();
+            self.wait_for_active_operations();
+            self.finish_lease_release(false);
+
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            debug_assert!(state.teardown_owned);
+            state.teardown_owned = false;
+            state.phase = if state.terminal_close {
+                CorefsSessionPhase::Closed
+            } else {
+                self.coordinator.resume_object_lease_publication();
+                CorefsSessionPhase::Open
+            };
+            self.lifecycle.changed.notify_all();
+            Ok(())
+        }
+
+        fn close_native(&self) -> PyResult<()> {
+            let owns_teardown = {
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.terminal_close = true;
+                match state.phase {
+                    CorefsSessionPhase::Open => {
+                        state.phase = CorefsSessionPhase::Closing;
+                        state.teardown_owned = true;
+                        self.lifecycle.changed.notify_all();
+                        true
+                    }
+                    CorefsSessionPhase::Releasing => {
+                        state.phase = CorefsSessionPhase::Closing;
+                        self.lifecycle.changed.notify_all();
+                        drop(
+                            self.lifecycle
+                                .changed
+                                .wait_while(state, |state| {
+                                    state.phase != CorefsSessionPhase::Closed
+                                })
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                        false
+                    }
+                    CorefsSessionPhase::Closing => {
+                        drop(
+                            self.lifecycle
+                                .changed
+                                .wait_while(state, |state| {
+                                    state.phase != CorefsSessionPhase::Closed
+                                })
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                        false
+                    }
+                    CorefsSessionPhase::Closed => false,
+                }
+            };
+            if !owns_teardown {
+                return Ok(());
+            }
+
+            self.begin_lease_release();
+            self.wait_for_active_operations();
+            self.finish_lease_release(true);
+
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            debug_assert!(state.teardown_owned);
+            state.teardown_owned = false;
+            state.phase = CorefsSessionPhase::Closed;
+            self.lifecycle.changed.notify_all();
+            Ok(())
+        }
+
+        fn open_read_snapshot(
+            &self,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+        ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+            corefs_open_read_snapshot_with_coordinator(
+                self.coordinator.as_ref(),
+                keys,
+                selected_generation,
+                selected_catalog_hash,
+            )
+        }
+
+        #[cfg(test)]
+        fn coordinator_for_test(&self) -> Arc<anima_corefs::transaction::CoreCommitCoordinator> {
+            Arc::clone(&self.coordinator)
+        }
+
+        #[cfg(test)]
+        fn acquire_operation_for_test(&self) -> PyResult<CorefsOperationGuard> {
+            self.acquire_operation()
+        }
+
+        #[cfg(test)]
+        fn phase_for_test(&self) -> CorefsSessionPhase {
+            self.lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .phase
+        }
+
+        #[cfg(test)]
+        fn active_operations_for_test(&self) -> usize {
+            self.lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active_operations
+        }
+
+        #[cfg(test)]
+        fn wait_for_phase_for_test(&self, expected: CorefsSessionPhase) {
+            let state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(
+                self.lifecycle
+                    .changed
+                    .wait_while(state, |state| state.phase != expected)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }
+
+        #[cfg(test)]
+        fn set_release_hooks_for_test(
+            &self,
+            begin: impl Fn() + Send + Sync + 'static,
+            finish: impl Fn() + Send + Sync + 'static,
+        ) {
+            *self
+                .release_hooks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(CorefsSessionReleaseHooks {
+                    begin: Arc::new(begin),
+                    finish: Arc::new(finish),
+                });
+        }
+    }
+
+    impl Drop for PyCorefsSession {
+        fn drop(&mut self) {
+            // SAFETY: `Py_IsInitialized` has no preconditions and does not require
+            // the GIL. A Python-owned instance takes the allow-threads path; pure
+            // Rust tests and interpreter shutdown can drain natively without trying
+            // to initialize or re-enter Python.
+            if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
+                Python::with_gil(|py| {
+                    let _ = py.allow_threads(|| self.close_native());
+                });
+            } else {
+                let _ = self.close_native();
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pymethods]
+    impl PyCorefsSession {
+        #[new]
+        fn new(core_root: &str, core_id: &str) -> PyResult<Self> {
+            let coordinator =
+                anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
+                    .map_err(corefs_commit_error)?;
+            let canonical_root = std::fs::canonicalize(core_root)
+                .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))?;
+            Ok(Self {
+                canonical_root,
+                core_id: core_id.to_owned(),
+                coordinator: Arc::new(coordinator),
+                lifecycle: Arc::new(CorefsSessionLifecycle::default()),
+                #[cfg(test)]
+                release_hooks: Mutex::new(None),
+            })
+        }
+
+        #[getter]
+        fn core_root(&self) -> String {
+            self.canonical_root.to_string_lossy().into_owned()
+        }
+
+        #[getter]
+        fn core_id(&self) -> &str {
+            &self.core_id
+        }
+
+        fn release_object_lease(&self, py: Python<'_>) -> PyResult<()> {
+            py.allow_threads(|| self.release_native())
+        }
+
+        fn close(&self, py: Python<'_>) -> PyResult<()> {
+            py.allow_threads(|| self.close_native())
+        }
+
+        fn validation_snapshot(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let selected = self
+                .coordinator
+                .load_validation_snapshot(&keys.inner)
+                .map_err(corefs_commit_error)?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+                })?;
+            let head = selected.head();
+            json_value_to_py(
+                py,
+                json!({
+                    "generation": head.generation(),
+                    "catalogHash": head.catalog_hash(),
+                }),
+            )
+        }
+
+        fn stat_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            path: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            corefs_wire_to_py(py, snapshot.stat(path).map_err(corefs_logical_error)?)
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, path, cursor_after = None, limit = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn list_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            path: &str,
+            cursor_after: Option<String>,
+            limit: usize,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let cursor = cursor_after
+                .map(|after| anima_corefs::logical::ListCursor::new(selected_generation, after));
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .list(
+                        path,
+                        cursor,
+                        limit,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, root, cursor_after = None, page_size = 100, include_directories = true, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn walk_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            root: &str,
+            cursor_after: Option<String>,
+            page_size: usize,
+            include_directories: bool,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let options = anima_corefs::logical::LogicalWalkOptions {
+                page_size,
+                cursor: cursor_after.map(|after| {
+                    anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)
+                }),
+                include_directories,
+            };
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .walk(
+                        root,
+                        options,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, cursor_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn glob_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            root: &str,
+            pattern: &str,
+            max_results: usize,
+            cursor_after: Option<String>,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let cursor = cursor_after.map(|after| {
+                anima_corefs::logical::LogicalGlobCursor::new(selected_generation, after)
+            });
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .glob(
+                        root,
+                        pattern,
+                        cursor,
+                        max_results,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, cursor_path = None, cursor_byte_offset = None, cursor_walk_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn grep_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            root: &str,
+            query: &str,
+            regex: bool,
+            max_files: usize,
+            max_matches: usize,
+            max_line_bytes: usize,
+            cursor_path: Option<String>,
+            cursor_byte_offset: Option<u64>,
+            cursor_walk_after: Option<String>,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let request = anima_corefs::logical::LogicalGrepRequest {
+                root: root.to_owned(),
+                query: query.to_owned(),
+                mode: if regex {
+                    anima_file_tools::GrepMode::Regex
+                } else {
+                    anima_file_tools::GrepMode::Literal
+                },
+                cursor: cursor_path.map(|path| {
+                    anima_corefs::logical::LogicalGrepCursor::new(
+                        selected_generation,
+                        path,
+                        cursor_byte_offset,
+                        cursor_walk_after,
+                    )
+                }),
+                max_files,
+                max_matches,
+                max_line_bytes,
+            };
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .grep(
+                        request,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, path, offset = 0, max_bytes = 65536, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn read_chunk_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            path: &str,
+            offset: u64,
+            max_bytes: usize,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<Option<PyObject>> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let mut stream = snapshot
+                .read(
+                    path,
+                    anima_file_tools::ReadOptions { offset, max_bytes },
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
+                .map_err(corefs_logical_error)?;
+            stream
+                .next()
+                .transpose()
+                .map_err(corefs_logical_error)?
+                .map(|chunk| corefs_wire_to_py(py, chunk))
+                .transpose()
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, state, index_generation = None))]
+        fn search_readiness_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            state: &str,
+            index_generation: Option<u64>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let state = match state {
+                "missing" => anima_corefs::logical::RuntimeSearchState::Missing,
+                "building" => anima_corefs::logical::RuntimeSearchState::Building {
+                    generation: index_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS search state building requires index_generation",
+                        )
+                    })?,
+                },
+                "ready" => anima_corefs::logical::RuntimeSearchState::Ready {
+                    generation: index_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS search state ready requires index_generation",
+                        )
+                    })?,
+                },
+                "degraded" => anima_corefs::logical::RuntimeSearchState::Degraded {
+                    generation: index_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS search state degraded requires index_generation",
+                        )
+                    })?,
+                },
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS search state must be missing, building, ready, or degraded",
+                    ))
+                }
+            };
+            corefs_wire_to_py(py, snapshot.search_readiness(state))
+        }
     }
 
     #[pyclass(name = "CorefsSubkeys")]
@@ -2902,6 +3631,7 @@ mod python {
         m.add_class::<PyCorefsObjectDek>()?;
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
+        m.add_class::<PyCorefsSession>()?;
         m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_manifest_keyslot_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_soul_keyslot_aad, m)?)?;
@@ -3022,7 +3752,11 @@ mod python {
         use super::*;
         use std::fs;
         use std::io::Cursor;
-        use std::sync::Once;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier, Condvar, Mutex, Once};
+        use std::thread;
+        use std::time::{Duration, Instant};
 
         use anima_corefs::catalog::{
             CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
@@ -3071,6 +3805,294 @@ mod python {
             static INIT: Once = Once::new();
             INIT.call_once(|| pyo3::prepare_freethreaded_python());
             Python::with_gil(f)
+        }
+
+        mod corefs_session {
+            use super::*;
+
+            fn native_session(
+                name: &str,
+                core_id: &str,
+            ) -> (tempfile::TempDir, Arc<PyCorefsSession>) {
+                let root = tempfile::tempdir().unwrap();
+                let core_root = root.path().join(name);
+                fs::create_dir_all(&core_root).unwrap();
+                let session = PyCorefsSession::new(core_root.to_str().unwrap(), core_id).unwrap();
+                (root, Arc::new(session))
+            }
+
+            #[test]
+            fn two_calls_in_one_native_session_reuse_one_coordinator() {
+                let fixture = logical_fixture("same-session");
+                let session =
+                    Arc::new(PyCorefsSession::new(fixture.root_path(), LOGICAL_CORE_ID).unwrap());
+                let first = session.coordinator_for_test();
+                with_python(|py| {
+                    session.validation_snapshot(py, &fixture.keys).unwrap();
+                    session
+                        .stat_v1(
+                            py,
+                            &fixture.keys,
+                            fixture.selected.head().generation(),
+                            fixture.selected.head().catalog_hash(),
+                            "Notes/Alpha.md",
+                        )
+                        .unwrap();
+                });
+                let second = session.coordinator_for_test();
+                assert!(Arc::ptr_eq(&first, &second));
+            }
+
+            #[test]
+            fn different_roots_or_core_ids_never_share_a_coordinator() {
+                let (_left_root, left) = native_session("left", "core-left");
+                let (_right_root, right) = native_session("right", "core-left");
+                let (_other_id_root, other_id) = native_session("left", "core-right");
+                assert!(!Arc::ptr_eq(
+                    &left.coordinator_for_test(),
+                    &right.coordinator_for_test()
+                ));
+                assert!(!Arc::ptr_eq(
+                    &left.coordinator_for_test(),
+                    &other_id.coordinator_for_test()
+                ));
+            }
+
+            #[test]
+            fn operation_guard_drains_before_close_releases_lease() {
+                let (_root, session) = native_session("drain-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let close_session = Arc::clone(&session);
+                let close_done = Arc::new(AtomicBool::new(false));
+                let close_done_thread = Arc::clone(&close_done);
+                let closer = thread::spawn(move || {
+                    close_session.close_native().unwrap();
+                    close_done_thread.store(true, Ordering::SeqCst);
+                });
+                session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                assert!(!close_done.load(Ordering::SeqCst));
+                drop(guard);
+                closer.join().unwrap();
+                assert!(close_done.load(Ordering::SeqCst));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn release_rejects_new_operations_then_returns_to_open() {
+                let (_root, session) = native_session("release-reopen", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let release_session = Arc::clone(&session);
+                let releaser = thread::spawn(move || release_session.release_native().unwrap());
+                session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+                assert!(session.acquire_operation_for_test().is_err());
+                drop(guard);
+                releaser.join().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                drop(session.acquire_operation_for_test().unwrap());
+            }
+
+            #[test]
+            fn close_racing_release_is_terminal_and_never_reopens() {
+                let (_root, session) = native_session("release-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let release_session = Arc::clone(&session);
+                let releaser = thread::spawn(move || release_session.release_native());
+                session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+                let close_session = Arc::clone(&session);
+                let closer = thread::spawn(move || close_session.close_native());
+                session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                drop(guard);
+                assert!(releaser.join().unwrap().is_ok());
+                assert!(closer.join().unwrap().is_ok());
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                assert!(session.acquire_operation_for_test().is_err());
+            }
+
+            #[test]
+            fn two_close_callers_wait_for_closed() {
+                let (_root, session) = native_session("two-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let rendezvous = Arc::new(Barrier::new(3));
+                let completed = Arc::new(AtomicUsize::new(0));
+                let callers = (0..2)
+                    .map(|_| {
+                        let session = Arc::clone(&session);
+                        let rendezvous = Arc::clone(&rendezvous);
+                        let completed = Arc::clone(&completed);
+                        thread::spawn(move || {
+                            rendezvous.wait();
+                            session.close_native().unwrap();
+                            completed.fetch_add(1, Ordering::SeqCst);
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                rendezvous.wait();
+                session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                assert_eq!(completed.load(Ordering::SeqCst), 0);
+                drop(guard);
+                for caller in callers {
+                    caller.join().unwrap();
+                }
+                assert_eq!(completed.load(Ordering::SeqCst), 2);
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn guard_drop_on_panic_decrements_active_count() {
+                let (_root, session) = native_session("panic-guard", LOGICAL_CORE_ID);
+                let result = catch_unwind(AssertUnwindSafe({
+                    let session = Arc::clone(&session);
+                    move || {
+                        let _guard = session.acquire_operation_for_test().unwrap();
+                        panic!("injected operation panic");
+                    }
+                }));
+                assert!(result.is_err());
+                assert_eq!(session.active_operations_for_test(), 0);
+                session.close_native().unwrap();
+            }
+
+            #[test]
+            fn blocked_fence_cancellation_is_bounded_and_falls_back_unknown() {
+                let (_root, session) = native_session("blocked-fence", LOGICAL_CORE_ID);
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let cancelled_for_hook = Arc::clone(&cancelled);
+                session.set_release_hooks_for_test(
+                    move || {
+                        cancelled_for_hook.store(true, Ordering::SeqCst);
+                    },
+                    || {},
+                );
+                let guard = session.acquire_operation_for_test().unwrap();
+                let started = Instant::now();
+                let close_session = Arc::clone(&session);
+                let closer = thread::spawn(move || close_session.close_native().unwrap());
+                while !cancelled.load(Ordering::SeqCst) {
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    thread::yield_now();
+                }
+                drop(guard);
+                closer.join().unwrap();
+                assert!(started.elapsed() < Duration::from_secs(2));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn windows_supported_profile_teardown_meets_target() {
+                let (_root, session) = native_session("windows-target", LOGICAL_CORE_ID);
+                let begin_count = Arc::new(AtomicUsize::new(0));
+                let finish_count = Arc::new(AtomicUsize::new(0));
+                let begin_for_hook = Arc::clone(&begin_count);
+                let finish_for_hook = Arc::clone(&finish_count);
+                session.set_release_hooks_for_test(
+                    move || {
+                        begin_for_hook.fetch_add(1, Ordering::SeqCst);
+                    },
+                    move || {
+                        finish_for_hook.fetch_add(1, Ordering::SeqCst);
+                    },
+                );
+                let started = Instant::now();
+                session.release_native().unwrap();
+                assert!(started.elapsed() < Duration::from_secs(2));
+                assert_eq!(begin_count.load(Ordering::SeqCst), 1);
+                assert_eq!(finish_count.load(Ordering::SeqCst), 1);
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+            }
+
+            #[test]
+            fn windows_delayed_native_completion_keeps_session_closing_and_ownership_live() {
+                let (_root, session) = native_session("delayed-completion", LOGICAL_CORE_ID);
+                let completion = Arc::new((Mutex::new(false), Condvar::new()));
+                let finish_started = Arc::new(AtomicBool::new(false));
+                let completion_for_hook = Arc::clone(&completion);
+                let finish_started_for_hook = Arc::clone(&finish_started);
+                session.set_release_hooks_for_test(
+                    || {},
+                    move || {
+                        finish_started_for_hook.store(true, Ordering::SeqCst);
+                        let (lock, changed) = completion_for_hook.as_ref();
+                        let mut complete = lock.lock().unwrap();
+                        while !*complete {
+                            complete = changed.wait(complete).unwrap();
+                        }
+                    },
+                );
+                let coordinator = session.coordinator_for_test();
+                let close_session = Arc::clone(&session);
+                let closer = thread::spawn(move || close_session.close_native().unwrap());
+                while !finish_started.load(Ordering::SeqCst) {
+                    thread::yield_now();
+                }
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
+                assert!(Arc::strong_count(&coordinator) >= 2);
+                assert!(session.acquire_operation_for_test().is_err());
+                thread::sleep(Duration::from_millis(25));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
+                let (lock, changed) = completion.as_ref();
+                *lock.lock().unwrap() = true;
+                changed.notify_all();
+                closer.join().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn extended_close_wait_holds_no_gil_or_internal_lock() {
+                let (_root, session) = native_session("gil-free-close", LOGICAL_CORE_ID);
+                let completion = Arc::new((Mutex::new(false), Condvar::new()));
+                let finish_started = Arc::new(AtomicBool::new(false));
+                let completion_for_hook = Arc::clone(&completion);
+                let finish_started_for_hook = Arc::clone(&finish_started);
+                session.set_release_hooks_for_test(
+                    || {},
+                    move || {
+                        finish_started_for_hook.store(true, Ordering::SeqCst);
+                        let (lock, changed) = completion_for_hook.as_ref();
+                        let mut complete = lock.lock().unwrap();
+                        while !*complete {
+                            complete = changed.wait(complete).unwrap();
+                        }
+                    },
+                );
+                let close_session = Arc::clone(&session);
+                let closer = thread::spawn(move || {
+                    with_python(|py| close_session.close(py).unwrap());
+                });
+                while !finish_started.load(Ordering::SeqCst) {
+                    thread::yield_now();
+                }
+                with_python(|_| {
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
+                });
+                let (lock, changed) = completion.as_ref();
+                *lock.lock().unwrap() = true;
+                changed.notify_all();
+                closer.join().unwrap();
+            }
+
+            #[test]
+            fn no_resource_or_cache_publication_occurs_after_close_returns() {
+                let (_root, session) = native_session("closed-publication", LOGICAL_CORE_ID);
+                let begin_count = Arc::new(AtomicUsize::new(0));
+                let finish_count = Arc::new(AtomicUsize::new(0));
+                let begin_for_hook = Arc::clone(&begin_count);
+                let finish_for_hook = Arc::clone(&finish_count);
+                session.set_release_hooks_for_test(
+                    move || {
+                        begin_for_hook.fetch_add(1, Ordering::SeqCst);
+                    },
+                    move || {
+                        finish_for_hook.fetch_add(1, Ordering::SeqCst);
+                    },
+                );
+                session.close_native().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                assert!(session.acquire_operation_for_test().is_err());
+                assert!(session.release_native().is_err());
+                session.close_native().unwrap();
+                assert_eq!(begin_count.load(Ordering::SeqCst), 1);
+                assert_eq!(finish_count.load(Ordering::SeqCst), 1);
+            }
         }
 
         #[test]

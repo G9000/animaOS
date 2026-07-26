@@ -356,6 +356,8 @@ pub(super) struct LeasePermitBundle {
 
 pub(super) trait LeaseMonitorResource: fmt::Debug + Send + Sync {
     fn fence(&self) -> FenceOutcome;
+
+    fn begin_release(&self) {}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -450,6 +452,7 @@ pub(super) struct ObjectValidationLease {
     object_tuple: Mutex<Box<[ValidatedObjectBinding]>>,
     directory_identity: DirectoryIdentity,
     monitor_generation: u64,
+    publication_generation: u64,
     _slot_permit: LeaseSlotPermit,
     _monitor_resource_permits: Vec<MonitorResourcePermit>,
 }
@@ -481,6 +484,7 @@ pub(super) struct ObjectLeaseCandidate {
     expected_bindings: Box<[ValidatedObjectBinding]>,
     directory_identity: DirectoryIdentity,
     monitor_generation: u64,
+    publication_generation: u64,
     slot_permit: LeaseSlotPermit,
     monitor_resource_permits: Vec<MonitorResourcePermit>,
     entry_permits: Vec<Arc<EntryPermit>>,
@@ -504,6 +508,7 @@ impl ObjectLeaseCandidate {
         budget: &LeaseBudget,
         mut expected_bindings: Vec<ValidatedObjectBinding>,
         directory_identity: DirectoryIdentity,
+        publication_generation: u64,
         factory: &dyn LeaseResourceFactory,
     ) -> Result<Self, OptimizationMiss> {
         let resource_plan = factory.resource_plan();
@@ -545,6 +550,7 @@ impl ObjectLeaseCandidate {
             expected_bindings: expected_bindings.into_boxed_slice(),
             directory_identity,
             monitor_generation: next_monitor_generation(),
+            publication_generation,
             slot_permit: slot,
             monitor_resource_permits,
             entry_permits,
@@ -599,6 +605,7 @@ impl ObjectLeaseCandidate {
             object_tuple: Mutex::new(self.expected_bindings),
             directory_identity: self.directory_identity,
             monitor_generation: self.monitor_generation,
+            publication_generation: self.publication_generation,
             _slot_permit: self.slot_permit,
             _monitor_resource_permits: self.monitor_resource_permits,
         };
@@ -697,6 +704,7 @@ impl ObjectValidationLease {
             object_tuple: Mutex::new(object_tuple),
             directory_identity: DirectoryIdentity::default(),
             monitor_generation: next_monitor_generation(),
+            publication_generation: 0,
             _slot_permit: candidate.slot_permit,
             _monitor_resource_permits: candidate.monitor_resource_permits,
         }))
@@ -772,6 +780,11 @@ impl ObjectValidationLease {
         self.publish_fence(FenceOutcome::Unknown);
     }
 
+    pub(super) fn begin_release(&self) {
+        self.publish_unknown();
+        self.monitor.begin_release();
+    }
+
     pub(super) fn bindings(&self) -> &[Arc<LeasedObjectBinding>] {
         &self.bindings
     }
@@ -795,6 +808,10 @@ impl ObjectValidationLease {
 
     pub(super) fn monitor_generation(&self) -> u64 {
         self.monitor_generation
+    }
+
+    pub(super) fn publication_generation(&self) -> u64 {
+        self.publication_generation
     }
 
     pub(super) fn monitor(&self) -> &dyn LeaseMonitorResource {

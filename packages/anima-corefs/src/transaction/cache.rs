@@ -529,9 +529,19 @@ impl CommitCache {
             .as_ref()
             .and_then(|snapshot| snapshot.object_lease.as_ref())
         {
-            lease.publish_unknown();
+            lease.begin_release();
         }
         drop(discarded);
+    }
+
+    pub(super) fn begin_object_lease_release(&self) {
+        let current = self.current();
+        if let Some(lease) = current
+            .as_ref()
+            .and_then(|snapshot| snapshot.object_lease.as_ref())
+        {
+            lease.begin_release();
+        }
     }
 }
 

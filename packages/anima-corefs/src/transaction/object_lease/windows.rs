@@ -619,16 +619,8 @@ impl WindowsLeaseMonitor {
             }
         }
     }
-}
 
-impl LeaseMonitorResource for WindowsLeaseMonitor {
-    fn fence(&self) -> FenceOutcome {
-        self.run_fence(FENCE_TIMEOUT)
-    }
-}
-
-impl Drop for WindowsLeaseMonitor {
-    fn drop(&mut self) {
+    fn request_release(&self) {
         self.shared.state.publish(FenceOutcome::Unknown);
         {
             let mut monitor = self
@@ -652,6 +644,22 @@ impl Drop for WindowsLeaseMonitor {
         if let Some(control) = &self.shared.control {
             control.record_cancel_requested();
         }
+    }
+}
+
+impl LeaseMonitorResource for WindowsLeaseMonitor {
+    fn fence(&self) -> FenceOutcome {
+        self.run_fence(FENCE_TIMEOUT)
+    }
+
+    fn begin_release(&self) {
+        self.request_release();
+    }
+}
+
+impl Drop for WindowsLeaseMonitor {
+    fn drop(&mut self) {
+        self.request_release();
 
         let teardown_started = Instant::now();
         let mut target_miss_recorded = false;
