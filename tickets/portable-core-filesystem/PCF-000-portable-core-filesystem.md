@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-27 15:56 MYT
+- Updated: 2026-07-27 16:16 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -225,6 +225,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-27 11:43 MYT - PCF-002 object-validation-lease Task 10 completed through `a6693b26` and corrective hardening `2efa33dc` after genuine server ownership/teardown REDs and clean final independent quality review. The unlock store now exclusively owns and resolves native CoreFS sessions, fences construction/publication during shutdown, begins terminal close before sequential drain, reclaims canceled creates, revokes password-owned WebSocket tokens, and drains the store before database disposal. PCF-002 and this parent remain `in_progress` with ownership and original `Started:` values preserved; Tasks 2 and 5 remain pending on native macOS/APFS evidence, Task 11 is next locally executable, and PCF-003 remains `backlog` and dependency-ineligible. No external action was taken.
 - 2026-07-27 13:56 MYT - PCF-002 object-validation-lease Task 11 completed at `6725938b` after genuine RED/GREEN platform, schema, provenance, lifecycle, and resource regressions plus clean independent specification and quality review. The permanent diagnostic now uses the production backend, fails closed on dirty/mismatched provenance or an omitted mutation matrix, isolates process-global descriptor accounting, preserves production terminal-state short-circuit, and records literal ordered argv with canonical identities. Windows is enabled on the supported NTFS profile; Linux remains safe-open fallback; macOS remains disabled pending native Tasks 2 and 5. PCF-002 and this parent remain `in_progress`; Task 12 is next locally executable, PCF-003 remains `backlog` and dependency-ineligible, and no external action was taken.
 - 2026-07-27 15:56 MYT - PCF-002 completed and independently validated Task 12's Windows diagnostic/reference steps from source `370ba5cc` after relative-argv validation commit `e4c8a170` and single-SHA provenance correction `370ba5cc`; the earlier `0bbdb659` evidence is superseded. A disk-full clean attempt was preserved intact with the two prior complete references, failure probe, and failed private build under `D:\animaOS-benchmark-archives\pcf-002-task12-20260727-1600`; no evidence was deleted. The successful production diagnostic, exact 30/200 reference, and closed provenance/tree/test gates are green. PCF-002's row and this parent remain `in_progress`, ownership and original `Started:` values are preserved, native macOS/APFS Tasks 2 and 5 remain pending, and PCF-003 remains `backlog` and dependency-ineligible. No external action was taken.
+- 2026-07-27 16:16 MYT - Published PCF-002 branch `codex/pcf-002-object-validation-lease-impl` and opened draft PR #119 against `main` from evidence head `1cc7df07`. PCF-002's row and this parent remain `in_progress`; Apple-native work remains pending and PCF-003 remains `backlog` and dependency-ineligible. Codex review, monitoring, and merge were not requested or performed.
 
 ## Validation
 
