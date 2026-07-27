@@ -736,11 +736,11 @@ git commit -m "core: add unlock-scoped CoreFS sessions"
 - Modify: `apps/server/tests/test_corefs_api.py`
 - Modify: `apps/server/tests/test_corefs_logical.py`
 
-- [ ] **Step 1: Add failing ownership and route-authority tests**
+- [x] **Step 1: Add failing ownership and route-authority tests**
 
 Test that login/register/recovery creates one native session, two route calls reuse it, different unlock tokens/users/roots/Core IDs do not share it, and caller-supplied headers/payload/root/Core-ID/key values cannot select or substitute a coordinator. A resolved session missing either keys or native session must return the existing locked response.
 
-- [ ] **Step 2: Add failing teardown tests**
+- [x] **Step 2: Add failing teardown tests**
 
 Add exact server tests named:
 
@@ -769,11 +769,11 @@ $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run --locked --project apps/serve
 
 Expected: FAIL because `UnlockSession` has no native session and removal zeroes data under the store lock.
 
-- [ ] **Step 3: Add native session ownership without persistence**
+- [x] **Step 3: Add native session ownership without persistence**
 
 Add `corefs_session` beside `corefs_keys` on `UnlockSession`. Create it from server-owned canonical `get_core_dir()` and `get_core_id()` when CoreFS keys are established. Never serialize the native session or keys. Preserve the current rule that any dev snapshot marked `hadCorefsKeys` is discarded instead of restored.
 
-- [ ] **Step 4: Refactor the store to two-phase detach and destroy**
+- [x] **Step 4: Refactor the store to two-phase detach and destroy**
 
 For create replacement, revoke, revoke-user, expiry purge, clear, and shutdown: under
 `_lock`, persist/apply the new reachable session map and collect removed sessions;
@@ -783,11 +783,11 @@ wait is valid after detach. Do not run native cancellation, wait, join, queue ba
 resource destruction, or Python secret cleanup under `_lock`, and do not treat a
 two-second target miss as close completion.
 
-- [ ] **Step 5: Route all logical calls through the resolved native session**
+- [x] **Step 5: Route all logical calls through the resolved native session**
 
 Change `CoreFsRequestContext` to carry the resolved native session plus keys; remove route-local coordinator selection by root/Core-ID. Update `logical.py` wrappers to call session-backed native methods. Keep request/response schemas unchanged.
 
-- [ ] **Step 6: Drain sessions during application shutdown**
+- [x] **Step 6: Drain sessions during application shutdown**
 
 In the lifespan `finally` path, make the global store unreachable/empty and close
 removed sessions with `asyncio.to_thread` before process resources disappear. Await
@@ -796,7 +796,7 @@ the monitor's two-second target as an abandonment timeout. Continue shutdown aft
 individual returned error by logging it and draining the remaining sessions. Ensure no
 session becomes reachable again.
 
-- [ ] **Step 7: Run server lifecycle and auth regressions**
+- [x] **Step 7: Run server lifecycle and auth regressions**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run --locked --project apps/server pytest apps/server/tests/test_dev_session_continuity.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py -q
@@ -806,7 +806,7 @@ uv run --locked --project apps/server ruff check apps/server/src/anima_server/se
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/services/corefs/logical.py apps/server/src/anima_server/api/routes/corefs.py apps/server/src/anima_server/api/routes/auth.py apps/server/src/anima_server/main.py apps/server/tests/test_dev_session_continuity.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py
