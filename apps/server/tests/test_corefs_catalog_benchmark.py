@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -264,6 +264,17 @@ def assert_object_lease_diagnostic_semantics(report: dict[str, object]) -> None:
             character in "0123456789abcdefABCDEF" for character in value
         )
 
+    def resolved_argv_path(value: str) -> str:
+        if report["platform"] == "windows":
+            path = PureWindowsPath(value)
+            if not path.is_absolute():
+                path = PureWindowsPath(source["repositoryRoot"]) / path
+        else:
+            path = PurePosixPath(value)
+            if not path.is_absolute():
+                path = PurePosixPath(source["repositoryRoot"]) / path
+        return normalized_path(str(path))
+
     assert source["clean"] is True
     assert is_hex(source["commit"], 40)
     assert source["commit"] == build["nativeTestContract"]["sourceCommit"]
@@ -275,7 +286,9 @@ def assert_object_lease_diagnostic_semantics(report: dict[str, object]) -> None:
         str(Path(source["repositoryRoot"]) / "Cargo.lock")
     )
     assert len(argv) == 12
-    assert normalized_path(argv[0]) == normalized_path(executable["canonicalPath"])
+    assert resolved_argv_path(argv[0]) == normalized_path(
+        executable["canonicalPath"]
+    )
     assert argv[1] == "--target"
     assert normalized_path(argv[2]) == normalized_path(target["canonicalPath"])
     assert argv[3:10] == [
@@ -316,7 +329,7 @@ def test_object_lease_diagnostic_source_locks_the_closed_cli_contract() -> None:
         "build": {
             "architecture": "x86_64",
             "argv": [
-                r"C:\repo\target\release\object_lease_diagnostic.exe",
+                r"target\release\object_lease_diagnostic.exe",
                 "--target",
                 r"C:\diagnostic-target",
                 "--objects",
