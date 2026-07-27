@@ -824,7 +824,7 @@ git commit -m "server: own CoreFS leases in unlock sessions"
 - Modify: `tickets/portable-core-filesystem/PCF-002-corefs-catalog.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Add failing diagnostic-counter tests**
+- [x] **Step 1: Add failing diagnostic-counter tests**
 
 Extend crate-private/test diagnostic observations to prove:
 
@@ -877,7 +877,7 @@ On macOS, `targetMs`, `elapsedMs`, and `targetMet` are `null`;
 contract with zero post-teardown permits, descriptor delta, and residue, without
 inventing a numeric teardown target.
 
-- [ ] **Step 2: Verify the RED phase**
+- [x] **Step 2: Verify the RED phase**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark lease -- --nocapture
@@ -886,7 +886,7 @@ $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run --locked --project apps/serve
 
 Expected: the new lease-counter case fails before probe wiring; all pre-existing contract tests remain green.
 
-- [ ] **Step 3: Wire lifecycle diagnostic observations and the permanent CLI**
+- [x] **Step 3: Wire lifecycle diagnostic observations and the permanent CLI**
 
 Add only crate-private/test or diagnostic-binary observations. Preserve the source/binary/Cargo.lock/target/argv closed-schema report contract and the complete public `commit` measured interval.
 
@@ -911,7 +911,7 @@ implementation into the binary. On Windows, record the target metric separately 
 completion-confirmed ownership; a supported-profile target miss exits nonzero,
 disables the backend for acceptance, and retains safe-open fallback.
 
-- [ ] **Step 4: Expand native CI without weakening Linux**
+- [x] **Step 4: Expand native CI without weakening Linux**
 
 Update workflow path filters for `packages/anima-core`, the touched server CoreFS/session files, and tests. Keep the standalone Ubuntu Rust 1.75 safe-open job. Add:
 
@@ -924,7 +924,7 @@ Update workflow path filters for `packages/anima-core`, the touched server CoreF
 
 Use the exact native tests from Tasks 4 and 5. Do not mark them `continue-on-error`.
 
-- [ ] **Step 5: Run local quality gates**
+- [x] **Step 5: Run local quality gates**
 
 ```powershell
 cargo +1.75.0 test --locked -p anima-corefs
@@ -939,7 +939,7 @@ git diff --check
 
 Expected: all scoped code/test/format/lint gates pass. If `check:repo` reports unrelated pre-existing drift, record the exact findings without altering unrelated initiatives.
 
-- [ ] **Step 6: Record cross-platform evidence and commit**
+- [x] **Step 6: Record cross-platform evidence and commit**
 
 Record Windows/macOS/Linux results, enabled/fallback backend decisions, exact resource
 counts, the Windows cancellation-plus-join target metric, separate
