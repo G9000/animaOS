@@ -215,12 +215,18 @@ async def ws_agent(websocket: WebSocket) -> None:
         logger.info("WebSocket client disconnected: user_id=%d", conn.user_id)
     finally:
         try:
-            if turn_task is not None and not turn_task.done():
-                turn_task.cancel()
-            if approval_task is not None and not approval_task.done():
-                approval_task.cancel()
-            if registered:
-                registry.remove(conn)
+            connection_tasks = [
+                task for task in (turn_task, approval_task) if task is not None
+            ]
+            for task in connection_tasks:
+                if not task.done():
+                    task.cancel()
+            try:
+                if registered:
+                    registry.remove(conn)
+            finally:
+                if connection_tasks:
+                    await asyncio.gather(*connection_tasks, return_exceptions=True)
         finally:
             if owned_unlock_token is not None:
                 await unlock_session_store.revoke_async(owned_unlock_token)

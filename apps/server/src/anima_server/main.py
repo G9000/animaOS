@@ -102,11 +102,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     from .services.sessions import unlock_session_store
 
     unlock_session_store.start()
-    embedded_pg = _start_embedded_pg()
-    runtime_url = embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
+    embedded_pg: EmbeddedPG | None = None
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
+        embedded_pg = _start_embedded_pg()
+        runtime_url = (
+            embedded_pg.database_url
+            if embedded_pg is not None
+            else settings.runtime_database_url
+        )
         if runtime_url:
             init_runtime_engine(
                 runtime_url,
@@ -130,9 +135,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                     )
             except Exception:
                 logger.warning("Offline presence catch-up failed", exc_info=True)
-    except Exception:
-        if embedded_pg is not None:
-            embedded_pg.stop()
+    except BaseException:
+        try:
+            await unlock_session_store.shutdown()
+        finally:
+            try:
+                dispose_runtime_engine()
+            finally:
+                if embedded_pg is not None:
+                    embedded_pg.stop()
         raise
 
     from .services.health.event_logger import (

@@ -339,6 +339,76 @@ class TestWebSocketRunHandlers:
         assert store.revoked == expected_revocations
 
     @pytest.mark.asyncio
+    async def test_ws_agent_drains_connection_tasks_before_revoking_unlock_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_ws = _QueueWebSocket()
+        connection = ActionToolConnection(
+            websocket=fake_ws,
+            user_id=5,
+            username="alice",
+        )
+        turn_started = asyncio.Event()
+        approval_started = asyncio.Event()
+        never_complete = asyncio.Event()
+        teardown_events: list[str] = []
+
+        async def fake_authenticate(
+            websocket: Any,
+        ) -> tuple[ActionToolConnection, str]:
+            assert websocket is fake_ws
+            return connection, "password-owned-token"
+
+        async def wait_until_cancelled(
+            started: asyncio.Event,
+            name: str,
+        ) -> None:
+            started.set()
+            try:
+                await never_complete.wait()
+            finally:
+                await asyncio.sleep(0)
+                teardown_events.append(name)
+
+        async def fake_turn_handler(
+            _connection: ActionToolConnection,
+            _data: dict[str, Any],
+        ) -> None:
+            await wait_until_cancelled(turn_started, "turn-drained")
+
+        async def fake_approval_handler(
+            _connection: ActionToolConnection,
+            _data: dict[str, Any],
+        ) -> None:
+            await wait_until_cancelled(approval_started, "approval-drained")
+
+        class OrderedUnlockStore:
+            async def revoke_async(self, token: str | None) -> None:
+                assert token == "password-owned-token"
+                teardown_events.append("unlock-revoked")
+
+        monkeypatch.setattr(ws_route, "_authenticate", fake_authenticate)
+        monkeypatch.setattr(ws_route, "_handle_user_message", fake_turn_handler)
+        monkeypatch.setattr(ws_route, "_handle_approval_response", fake_approval_handler)
+        monkeypatch.setattr(ws_route, "_has_awaiting_approval_run", lambda _user_id: False)
+        monkeypatch.setattr(ws_route, "unlock_session_store", OrderedUnlockStore())
+        monkeypatch.setattr(ws_route, "_pending_approval_frames", lambda _user_id: [])
+
+        ws_task = asyncio.create_task(ws_route.ws_agent(fake_ws))  # type: ignore[arg-type]
+        await fake_ws.incoming.put({"type": "user_message", "message": "hello"})
+        await turn_started.wait()
+        await fake_ws.incoming.put(
+            {"type": "approval_response", "run_id": 42, "approved": True}
+        )
+        await approval_started.wait()
+        await fake_ws.incoming.put(None)
+        await ws_task
+
+        assert teardown_events[-1] == "unlock-revoked"
+        assert set(teardown_events[:-1]) == {"turn-drained", "approval-drained"}
+
+    @pytest.mark.asyncio
     async def test_user_message_disconnect_closes_service_stream(
         self,
         monkeypatch: pytest.MonkeyPatch,
