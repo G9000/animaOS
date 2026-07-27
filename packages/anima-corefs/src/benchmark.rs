@@ -746,6 +746,10 @@ fn encode_fixture(entries: &[CatalogGenerationEntry]) -> Result<Vec<u8>, Benchma
 
 fn hex_sha256(value: &[u8]) -> String {
     let digest: [u8; 32] = Sha256::digest(value).into();
+    hex_sha256_digest(digest)
+}
+
+fn hex_sha256_digest(digest: [u8; 32]) -> String {
     let mut output = String::with_capacity(64);
     for byte in digest {
         use std::fmt::Write as _;
@@ -843,6 +847,23 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnostic_file_hash_is_single_sha256() {
+        let path = std::env::temp_dir().join(format!(
+            "anima-corefs-diagnostic-hash-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"abc").unwrap();
+
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(windows)]
@@ -2525,7 +2546,7 @@ fn sha256_file(path: &Path) -> Result<String, BenchmarkError> {
         }
         hasher.update(&buffer[..count]);
     }
-    Ok(hex_sha256(&hasher.finalize()))
+    Ok(hex_sha256_digest(hasher.finalize().into()))
 }
 
 #[cfg(windows)]
