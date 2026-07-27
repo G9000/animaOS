@@ -251,6 +251,7 @@ impl CoreCommitCoordinator {
             let file = validate_existing_object_file(
                 &self.objects_dir,
                 &binding.physical_name,
+                None,
                 #[cfg(test)]
                 None,
             )

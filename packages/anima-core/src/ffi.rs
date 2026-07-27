@@ -110,12 +110,10 @@ mod python {
         }
 
         fn rollback(&mut self) -> PyResult<()> {
-            self.inner
-                .call_method1("seek", (self.start_position, 0))?;
+            self.inner.call_method1("seek", (self.start_position, 0))?;
             self.inner
                 .call_method1("truncate", (self.start_position,))?;
-            self.inner
-                .call_method1("seek", (self.start_position, 0))?;
+            self.inner.call_method1("seek", (self.start_position, 0))?;
             Ok(())
         }
     }
@@ -269,8 +267,7 @@ mod python {
                 pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
             })?;
         let head = selected.head();
-        if head.generation() != selected_generation
-            || head.catalog_hash() != selected_catalog_hash
+        if head.generation() != selected_generation || head.catalog_hash() != selected_catalog_hash
         {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "CoreFS validation snapshot no longer matches selected generation/catalog hash",
@@ -303,9 +300,7 @@ mod python {
         py: Python<'_>,
         result: impl anima_corefs::logical::ModelWireV1,
     ) -> PyResult<PyObject> {
-        let wire = result
-            .to_model_wire_v1()
-            .map_err(corefs_logical_error)?;
+        let wire = result.to_model_wire_v1().map_err(corefs_logical_error)?;
         Ok(PyBytes::new_bound(py, &wire).into_py(py))
     }
 
@@ -1806,10 +1801,13 @@ mod python {
                 pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
             })?;
         let head = selected.head();
-        json_value_to_py(py, json!({
-            "generation": head.generation(),
-            "catalogHash": head.catalog_hash(),
-        }))
+        json_value_to_py(
+            py,
+            json!({
+                "generation": head.generation(),
+                "catalogHash": head.catalog_hash(),
+            }),
+        )
     }
 
     #[pyfunction]
@@ -1834,6 +1832,7 @@ mod python {
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, path, cursor_after = None, limit = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_list_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1869,13 +1868,20 @@ mod python {
         corefs_wire_to_py(
             py,
             snapshot
-                .list(path, cursor, limit, limits, anima_file_tools::OperationControl::default())
+                .list(
+                    path,
+                    cursor,
+                    limit,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, cursor_after = None, page_size = 100, include_directories = true, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_walk_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1909,20 +1915,27 @@ mod python {
         )?;
         let options = anima_corefs::logical::LogicalWalkOptions {
             page_size,
-            cursor: cursor_after
-                .map(|after| anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)),
+            cursor: cursor_after.map(|after| {
+                anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)
+            }),
             include_directories,
         };
         corefs_wire_to_py(
             py,
             snapshot
-                .walk(root, options, limits, anima_file_tools::OperationControl::default())
+                .walk(
+                    root,
+                    options,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, cursor_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_glob_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1959,13 +1972,21 @@ mod python {
         corefs_wire_to_py(
             py,
             snapshot
-                .glob(root, pattern, cursor, max_results, limits, anima_file_tools::OperationControl::default())
+                .glob(
+                    root,
+                    pattern,
+                    cursor,
+                    max_results,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, cursor_path = None, cursor_byte_offset = None, cursor_walk_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each bounded grep option.
     fn corefs_grep_v1(
         py: Python<'_>,
         core_root: &str,
@@ -2025,13 +2046,18 @@ mod python {
         corefs_wire_to_py(
             py,
             snapshot
-                .grep(request, limits, anima_file_tools::OperationControl::default())
+                .grep(
+                    request,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, path, offset = 0, max_bytes = 65536, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_read_chunk_v1(
         py: Python<'_>,
         core_root: &str,
@@ -2080,6 +2106,7 @@ mod python {
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, state, index_generation = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI carries authenticated snapshot identity.
     fn corefs_search_readiness_v1(
         py: Python<'_>,
         core_root: &str,
@@ -2130,11 +2157,14 @@ mod python {
     }
 
     fn corefs_frozen_result(py: Python<'_>, operation: &str) -> PyResult<PyObject> {
-        json_value_to_py(py, json!({
-            "ok": false,
-            "operation": operation,
-            "code": anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN,
-        }))
+        json_value_to_py(
+            py,
+            json!({
+                "ok": false,
+                "operation": operation,
+                "code": anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN,
+            }),
+        )
     }
 
     #[pyfunction]
@@ -2657,6 +2687,7 @@ mod python {
 
     #[pyfunction]
     #[pyo3(signature = (scores, strategy = "combined", min_results = 1, max_results = 100, normalize = true, absolute_min = 0.3, relative_threshold = 0.5, max_drop_ratio = 0.4, sensitivity = 1.0))]
+    #[allow(clippy::too_many_arguments)] // Python API intentionally exposes the cutoff policy.
     fn find_adaptive_cutoff(
         scores: Vec<f32>,
         strategy: &str,
@@ -2766,6 +2797,7 @@ mod python {
         }
 
         #[pyo3(signature = (entity, slot, value, kind = "fact", version = "sets", confidence = 1.0, frame_id = 0))]
+        #[allow(clippy::too_many_arguments)] // Python card API mirrors the portable card schema.
         fn put(
             &mut self,
             entity: &str,
@@ -2912,7 +2944,7 @@ mod python {
             &graph.inner,
             entity,
         );
-        let value = serde_json::to_value(&state)
+        let value = serde_json::to_value(state)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         json_value_to_py(py, value)
     }
@@ -2925,7 +2957,7 @@ mod python {
         slot: &str,
     ) -> PyResult<PyObject> {
         let history = crate::projection::slot_history(&cards.inner, entity, slot);
-        let value = serde_json::to_value(&history)
+        let value = serde_json::to_value(history)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         json_value_to_py(py, value)
     }
@@ -3208,10 +3240,10 @@ mod python {
         crate::text::fix_pdf_spacing(text)
     }
 
+    type ExtractedTriplet = (String, String, String, String, String, f32, usize, usize);
+
     #[pyfunction]
-    fn extract_triplets(
-        text: &str,
-    ) -> Vec<(String, String, String, String, String, f32, usize, usize)> {
+    fn extract_triplets(text: &str) -> Vec<ExtractedTriplet> {
         crate::triplet::extract_triplets(text)
             .into_iter()
             .map(|triplet| {
@@ -3234,7 +3266,7 @@ mod python {
     #[pyclass(name = "ChunkOptions")]
     #[derive(Clone)]
     struct PyChunkOptions {
-        inner: crate::chunker::ChunkOptions,
+        _inner: crate::chunker::ChunkOptions,
     }
 
     #[pymethods]
@@ -3250,7 +3282,7 @@ mod python {
             preserve_lists: bool,
         ) -> Self {
             Self {
-                inner: crate::chunker::ChunkOptions {
+                _inner: crate::chunker::ChunkOptions {
                     max_chars,
                     overlap_chars,
                     preserve_code_blocks,
@@ -3332,10 +3364,7 @@ mod python {
         }
 
         /// Returns list of (rule_name, entity, slot, value, kind, confidence, char_start, char_end)
-        fn extract(
-            &self,
-            text: &str,
-        ) -> Vec<(String, String, String, String, String, f32, usize, usize)> {
+        fn extract(&self, text: &str) -> Vec<ExtractedTriplet> {
             self.inner
                 .extract(text)
                 .into_iter()
@@ -3354,11 +3383,7 @@ mod python {
                 .collect()
         }
 
-        fn extract_above(
-            &self,
-            text: &str,
-            min_confidence: f32,
-        ) -> Vec<(String, String, String, String, String, f32, usize, usize)> {
+        fn extract_above(&self, text: &str, min_confidence: f32) -> Vec<ExtractedTriplet> {
             self.inner
                 .extract_above(text, min_confidence)
                 .into_iter()
@@ -3408,11 +3433,7 @@ mod python {
             last_accessed_at: Some(now - age_seconds),
             is_superseded: superseded,
         };
-        crate::search::compute_heat(
-            &meta,
-            &HeatParams::default(),
-            now,
-        )
+        crate::search::compute_heat(&meta, &HeatParams::default(), now)
     }
 
     // ── Module Registration ──────────────────────────────────────────
@@ -3465,6 +3486,8 @@ mod python {
     }
 
     #[pyfunction]
+    #[pyo3(signature = (root, record_id, user_id, text, source_type, category, importance, created_at, embedding=None))]
+    #[allow(clippy::too_many_arguments)] // Python API mirrors the durable memory record schema.
     fn memory_index_upsert(
         root: &str,
         record_id: u64,
@@ -3518,13 +3541,9 @@ mod python {
         query: &str,
         limit: usize,
     ) -> PyResult<PyObject> {
-        let hits = crate::retrieval_index::search_memory_documents(
-            Path::new(root),
-            user_id,
-            query,
-            limit,
-        )
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let hits =
+            crate::retrieval_index::search_memory_documents(Path::new(root), user_id, query, limit)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let value = serde_json::to_value(hits)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         json_value_to_py(py, value)
@@ -3551,6 +3570,7 @@ mod python {
     }
 
     #[pyfunction]
+    #[allow(clippy::too_many_arguments)] // Python API mirrors the durable transcript schema.
     fn transcript_index_upsert(
         root: &str,
         thread_id: u64,
@@ -3648,7 +3668,10 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_encrypt_object_envelope_stream, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decrypt_object_envelope_stream, m)?)?;
-        m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range_stream, m)?)?;
+        m.add_function(wrap_pyfunction!(
+            corefs_read_object_envelope_range_stream,
+            m
+        )?)?;
         m.add_function(wrap_pyfunction!(corefs_encode_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decode_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
@@ -3805,7 +3828,7 @@ mod python {
 
         fn with_python<T>(f: impl FnOnce(Python<'_>) -> T) -> T {
             static INIT: Once = Once::new();
-            INIT.call_once(|| pyo3::prepare_freethreaded_python());
+            INIT.call_once(pyo3::prepare_freethreaded_python);
             Python::with_gil(f)
         }
 
@@ -4770,8 +4793,7 @@ mod python {
             let root = tempfile::tempdir().unwrap();
             let core_root = root.path().join(name);
             fs::create_dir_all(&core_root).unwrap();
-            let coordinator =
-                CoreCommitCoordinator::new(&core_root, LOGICAL_CORE_ID).unwrap();
+            let coordinator = CoreCommitCoordinator::new(&core_root, LOGICAL_CORE_ID).unwrap();
             let root_key = SecretBytes::new(vec![0x83; 32]).unwrap();
             let keys = derive_corefs_subkeys(&root_key, 1).unwrap();
             let prepared = prepare_logical_object(
@@ -4782,43 +4804,50 @@ mod python {
             );
             let physical_name = prepared.physical_name().as_str().to_owned();
             let selected = coordinator
-                .initialize_validation_snapshot(&keys, std::slice::from_ref(&prepared), |generation| {
-                    CatalogGeneration::new(
-                        generation,
-                        vec![
-                            CatalogGenerationEntry::folder(logical_common(
-                                LOGICAL_ROOT_ID,
-                                None,
-                                "Core",
-                            )),
-                            CatalogGenerationEntry::folder(logical_common(
-                                LOGICAL_NOTES_ID,
-                                Some(LOGICAL_ROOT_ID),
-                                "Notes",
-                            )),
-                            CatalogGenerationEntry::object(
-                                logical_common(
-                                    LOGICAL_OBJECT_ID,
-                                    Some(LOGICAL_NOTES_ID),
-                                    "Alpha.md",
+                .initialize_validation_snapshot(
+                    &keys,
+                    std::slice::from_ref(&prepared),
+                    |generation| {
+                        CatalogGeneration::new(
+                            generation,
+                            vec![
+                                CatalogGenerationEntry::folder(logical_common(
+                                    LOGICAL_ROOT_ID,
+                                    None,
+                                    "Core",
+                                )),
+                                CatalogGenerationEntry::folder(logical_common(
+                                    LOGICAL_NOTES_ID,
+                                    Some(LOGICAL_ROOT_ID),
+                                    "Notes",
+                                )),
+                                CatalogGenerationEntry::object(
+                                    logical_common(
+                                        LOGICAL_OBJECT_ID,
+                                        Some(LOGICAL_NOTES_ID),
+                                        "Alpha.md",
+                                    ),
+                                    CatalogObject::new(
+                                        prepared.revision(),
+                                        prepared.physical_name().clone(),
+                                        prepared.content_hash().clone(),
+                                        ObjectKind::Note,
+                                        prepared.wrapped_dek().clone(),
+                                        ObjectLifecycle::Live,
+                                    )
+                                    .unwrap(),
                                 ),
-                                CatalogObject::new(
-                                    prepared.revision(),
-                                    prepared.physical_name().clone(),
-                                    prepared.content_hash().clone(),
-                                    ObjectKind::Note,
-                                    prepared.wrapped_dek().clone(),
-                                    ObjectLifecycle::Live,
-                                )
-                                .unwrap(),
-                            ),
-                        ],
-                    )
-                })
+                            ],
+                        )
+                    },
+                )
                 .unwrap();
             LogicalFixture {
                 _root: root,
-                core_root: core_root.to_str().expect("tempdir path is utf-8").to_owned(),
+                core_root: core_root
+                    .to_str()
+                    .expect("tempdir path is utf-8")
+                    .to_owned(),
                 keys: PyCorefsSubkeys { inner: keys },
                 selected,
                 physical_name,
@@ -4987,9 +5016,7 @@ mod python {
                 .unwrap();
                 let metadata_json = serde_json::to_vec(&metadata).unwrap();
                 let bytes_io = py.import_bound("io").unwrap().getattr("BytesIO").unwrap();
-                let body_reader = bytes_io
-                    .call1((PyBytes::new_bound(py, body),))
-                    .unwrap();
+                let body_reader = bytes_io.call1((PyBytes::new_bound(py, body),)).unwrap();
                 let envelope_writer = bytes_io.call0().unwrap();
                 corefs_encrypt_object_envelope_stream(
                     py,
@@ -5088,9 +5115,7 @@ mod python {
                 assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
                 assert!(error.to_string().contains("use a streaming CoreFS binding"));
 
-                let closed_reader = bytes_io
-                    .call1((PyBytes::new_bound(py, body),))
-                    .unwrap();
+                let closed_reader = bytes_io.call1((PyBytes::new_bound(py, body),)).unwrap();
                 closed_reader.call_method0("close").unwrap();
                 let unused_writer = bytes_io.call0().unwrap();
                 let error = corefs_encrypt_object_envelope_stream(
@@ -5179,10 +5204,7 @@ mod python {
                     .unwrap()
                     .as_bytes()
                     .to_vec();
-                oversized_envelope.resize(
-                    anima_corefs::catalog::MAX_CATALOG_ENVELOPE_SIZE + 1,
-                    0,
-                );
+                oversized_envelope.resize(anima_corefs::catalog::MAX_CATALOG_ENVELOPE_SIZE + 1, 0);
                 let error = corefs_catalog_physical_name(1, &oversized_envelope).unwrap_err();
                 assert!(error.to_string().contains("catalog envelope"));
             });
@@ -5224,9 +5246,7 @@ mod python {
                 let body_reader = bytes_io
                     .call1((PyBytes::new_bound(py, &too_long),))
                     .unwrap();
-                let envelope_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let envelope_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 envelope_writer.call_method1("seek", (0, 2)).unwrap();
                 assert!(corefs_encrypt_object_envelope_stream(
                     py,
@@ -5257,9 +5277,7 @@ mod python {
                 let envelope_reader = bytes_io
                     .call1((PyBytes::new_bound(py, &trailing),))
                     .unwrap();
-                let body_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let body_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 body_writer.call_method1("seek", (0, 2)).unwrap();
                 assert!(corefs_decrypt_object_envelope_stream(
                     py,
@@ -5287,9 +5305,7 @@ mod python {
                 let envelope_reader = bytes_io
                     .call1((PyBytes::new_bound(py, &trailing),))
                     .unwrap();
-                let range_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let range_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 range_writer.call_method1("seek", (0, 2)).unwrap();
                 assert!(corefs_read_object_envelope_range_stream(
                     py,
@@ -5352,12 +5368,8 @@ mod python {
                     .as_bytes()
                     .is_empty());
 
-                let envelope_reader = bytes_io
-                    .call1((PyBytes::new_bound(py, &encoded),))
-                    .unwrap();
-                let non_append_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let envelope_reader = bytes_io.call1((PyBytes::new_bound(py, &encoded),)).unwrap();
+                let non_append_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 let error = corefs_decrypt_object_envelope_stream(
                     py,
                     &object_dek,
@@ -5401,14 +5413,16 @@ mod python {
                 let obj = integrity_report_to_py_dict(py, &report).unwrap();
                 let dict = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(dict.get_item("ok").unwrap().unwrap().extract::<bool>().unwrap(), false);
+                assert!(!dict
+                    .get_item("ok")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
                 assert!(dict.get_item("issues").unwrap().is_some());
                 assert!(dict.get_item("stats").unwrap().is_some());
 
-                let issues_obj = dict
-                    .get_item("issues")
-                    .unwrap()
-                    .unwrap();
+                let issues_obj = dict.get_item("issues").unwrap().unwrap();
                 let issues = issues_obj.downcast::<PyList>().unwrap();
                 let first_issue_obj = issues.get_item(0).unwrap();
                 let first_issue = first_issue_obj.downcast::<PyDict>().unwrap();
@@ -5437,14 +5451,16 @@ mod python {
                 let obj = capsule_report_to_py_dict(py, &report).unwrap();
                 let dict = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(dict.get_item("ok").unwrap().unwrap().extract::<bool>().unwrap(), false);
+                assert!(!dict
+                    .get_item("ok")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
                 assert!(dict.get_item("stats").unwrap().is_some());
                 assert!(dict.get_item("capsule").unwrap().is_some());
 
-                let issues_obj = dict
-                    .get_item("issues")
-                    .unwrap()
-                    .unwrap();
+                let issues_obj = dict.get_item("issues").unwrap().unwrap();
                 let issues = issues_obj.downcast::<PyList>().unwrap();
                 let first_issue_obj = issues.get_item(0).unwrap();
                 let first_issue = first_issue_obj.downcast::<PyDict>().unwrap();
@@ -5498,10 +5514,7 @@ mod python {
 
                 let capsule_obj = verify_capsule_bytes(py, capsule, None).unwrap();
                 let capsule_dict = capsule_obj.bind(py).downcast::<PyDict>().unwrap();
-                let capsule_meta_obj = capsule_dict
-                    .get_item("capsule")
-                    .unwrap()
-                    .unwrap();
+                let capsule_meta_obj = capsule_dict.get_item("capsule").unwrap().unwrap();
                 let capsule_meta = capsule_meta_obj.downcast::<PyDict>().unwrap();
                 assert!(capsule_meta.get_item("sections").unwrap().is_some());
             });
@@ -5526,7 +5539,8 @@ mod python {
                 }
 
                 let results = store.temporal_range(Some(1100), Some(1300), None);
-                let timestamps: Vec<i64> = results.into_iter().map(|frame| frame.timestamp()).collect();
+                let timestamps: Vec<i64> =
+                    results.into_iter().map(|frame| frame.timestamp()).collect();
                 assert_eq!(timestamps, vec![1300, 1200, 1100]);
             });
         }
@@ -5550,7 +5564,8 @@ mod python {
                 }
 
                 let results = store.temporal_as_of(1250, Some(2));
-                let timestamps: Vec<i64> = results.into_iter().map(|frame| frame.timestamp()).collect();
+                let timestamps: Vec<i64> =
+                    results.into_iter().map(|frame| frame.timestamp()).collect();
                 assert_eq!(timestamps, vec![1200, 1100]);
             });
         }
@@ -5574,7 +5589,10 @@ mod python {
                 };
 
                 let bytes = serde_json::to_vec(&session).unwrap();
-                assert_eq!(replay_session_time_bounds(bytes).unwrap(), Some((1_700_000_000, 1_700_000_002)));
+                assert_eq!(
+                    replay_session_time_bounds(bytes).unwrap(),
+                    Some((1_700_000_000, 1_700_000_002))
+                );
             });
         }
 
@@ -5582,7 +5600,10 @@ mod python {
         fn exported_temporal_session_window_queries_frames_around_serialized_session() {
             with_python(|_py| {
                 let mut store = PyFrameStore::new();
-                for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104].into_iter().enumerate() {
+                for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104]
+                    .into_iter()
+                    .enumerate()
+                {
                     let frame = PyFrame {
                         inner: Frame::new(
                             idx as u64,
@@ -5613,7 +5634,8 @@ mod python {
 
                 let bytes = serde_json::to_vec(&session).unwrap();
                 let results = store.temporal_session_window(bytes, 1, 1, None).unwrap();
-                let timestamps: Vec<i64> = results.into_iter().map(|frame| frame.timestamp()).collect();
+                let timestamps: Vec<i64> =
+                    results.into_iter().map(|frame| frame.timestamp()).collect();
                 assert_eq!(timestamps, vec![1103, 1102, 1101, 1100, 1099]);
             });
         }
@@ -5652,8 +5674,10 @@ mod python {
                 store.insert(&fresh);
 
                 let cached_range = index.range(Some(1000), Some(1300), None);
-                let cached_timestamps: Vec<i64> =
-                    cached_range.into_iter().map(|frame| frame.timestamp()).collect();
+                let cached_timestamps: Vec<i64> = cached_range
+                    .into_iter()
+                    .map(|frame| frame.timestamp())
+                    .collect();
                 assert_eq!(cached_timestamps, vec![1200, 1100, 1000]);
 
                 let rebuilt_timestamps: Vec<i64> = store
@@ -5701,11 +5725,21 @@ mod python {
                 let first_obj = checkpoints.get_item(0).unwrap();
                 let first = first_obj.downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    first.get_item("label").unwrap().unwrap().extract::<String>().unwrap(),
+                    first
+                        .get_item("label")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "before reflection"
                 );
                 assert_eq!(
-                    first.get_item("timestamp").unwrap().unwrap().extract::<i64>().unwrap(),
+                    first
+                        .get_item("timestamp")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
                     1_700_000_000
                 );
             });
@@ -5780,7 +5814,12 @@ mod python {
                 let comparison = obj.bind(py).downcast::<PyDict>().unwrap();
 
                 assert_eq!(
-                    comparison.get_item("action_count_delta").unwrap().unwrap().extract::<i64>().unwrap(),
+                    comparison
+                        .get_item("action_count_delta")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
                     1
                 );
                 let shared_obj = comparison
@@ -5788,15 +5827,31 @@ mod python {
                     .unwrap()
                     .unwrap();
                 let shared = shared_obj.downcast::<PyList>().unwrap();
-                assert_eq!(shared.get_item(0).unwrap().extract::<String>().unwrap(), "before reflection");
+                assert_eq!(
+                    shared.get_item(0).unwrap().extract::<String>().unwrap(),
+                    "before reflection"
+                );
 
-                let kind_deltas_obj = comparison
-                    .get_item("kind_count_delta")
-                    .unwrap()
-                    .unwrap();
+                let kind_deltas_obj = comparison.get_item("kind_count_delta").unwrap().unwrap();
                 let kind_deltas = kind_deltas_obj.downcast::<PyDict>().unwrap();
-                assert_eq!(kind_deltas.get_item("decision").unwrap().unwrap().extract::<i64>().unwrap(), 1);
-                assert_eq!(kind_deltas.get_item("reflection").unwrap().unwrap().extract::<i64>().unwrap(), -1);
+                assert_eq!(
+                    kind_deltas
+                        .get_item("decision")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    kind_deltas
+                        .get_item("reflection")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    -1
+                );
             });
         }
 
@@ -5851,21 +5906,83 @@ mod python {
                 let obj = replay_session_summary(py, bytes).unwrap();
                 let summary = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(summary.get_item("action_count").unwrap().unwrap().extract::<usize>().unwrap(), 4);
-                assert_eq!(summary.get_item("checkpoint_count").unwrap().unwrap().extract::<usize>().unwrap(), 2);
-                assert_eq!(summary.get_item("referenced_frame_count").unwrap().unwrap().extract::<usize>().unwrap(), 3);
-                assert_eq!(summary.get_item("ended_at").unwrap().unwrap().extract::<i64>().unwrap(), 1_700_000_002);
+                assert_eq!(
+                    summary
+                        .get_item("action_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    4
+                );
+                assert_eq!(
+                    summary
+                        .get_item("checkpoint_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    summary
+                        .get_item("referenced_frame_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    3
+                );
+                assert_eq!(
+                    summary
+                        .get_item("ended_at")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    1_700_000_002
+                );
 
                 let labels_obj = summary.get_item("checkpoint_labels").unwrap().unwrap();
                 let labels = labels_obj.downcast::<PyList>().unwrap();
-                assert_eq!(labels.get_item(0).unwrap().extract::<String>().unwrap(), "before reflection");
-                assert_eq!(labels.get_item(1).unwrap().extract::<String>().unwrap(), "after decision");
+                assert_eq!(
+                    labels.get_item(0).unwrap().extract::<String>().unwrap(),
+                    "before reflection"
+                );
+                assert_eq!(
+                    labels.get_item(1).unwrap().extract::<String>().unwrap(),
+                    "after decision"
+                );
 
                 let kind_counts_obj = summary.get_item("kind_counts").unwrap().unwrap();
                 let kind_counts = kind_counts_obj.downcast::<PyDict>().unwrap();
-                assert_eq!(kind_counts.get_item("checkpoint").unwrap().unwrap().extract::<usize>().unwrap(), 2);
-                assert_eq!(kind_counts.get_item("memory_retrieve").unwrap().unwrap().extract::<usize>().unwrap(), 1);
-                assert_eq!(kind_counts.get_item("decision").unwrap().unwrap().extract::<usize>().unwrap(), 1);
+                assert_eq!(
+                    kind_counts
+                        .get_item("checkpoint")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    kind_counts
+                        .get_item("memory_retrieve")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    kind_counts
+                        .get_item("decision")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    1
+                );
             });
         }
 
@@ -5913,17 +6030,37 @@ mod python {
                     .unwrap();
                 let checkpoint = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(checkpoint.get_item("seq").unwrap().unwrap().extract::<u32>().unwrap(), 2);
                 assert_eq!(
-                    checkpoint.get_item("label").unwrap().unwrap().extract::<String>().unwrap(),
+                    checkpoint
+                        .get_item("seq")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u32>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    checkpoint
+                        .get_item("label")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "after reflection"
                 );
                 assert_eq!(
-                    checkpoint.get_item("timestamp").unwrap().unwrap().extract::<i64>().unwrap(),
+                    checkpoint
+                        .get_item("timestamp")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
                     1_700_000_001
                 );
 
-                assert!(replay_session_checkpoint_by_seq(py, bytes, 99).unwrap().is_none());
+                assert!(replay_session_checkpoint_by_seq(py, bytes, 99)
+                    .unwrap()
+                    .is_none());
             });
         }
 
@@ -5957,13 +6094,30 @@ mod python {
                 };
 
                 let bytes = serde_json::to_vec(&session).unwrap();
-                let obj = replay_session_checkpoint_by_label(py, bytes.clone(), "before reflection")
-                    .unwrap()
-                    .unwrap();
+                let obj =
+                    replay_session_checkpoint_by_label(py, bytes.clone(), "before reflection")
+                        .unwrap()
+                        .unwrap();
                 let checkpoint = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(checkpoint.get_item("seq").unwrap().unwrap().extract::<u32>().unwrap(), 0);
-                assert_eq!(checkpoint.get_item("offset_us").unwrap().unwrap().extract::<u64>().unwrap(), 250_000);
+                assert_eq!(
+                    checkpoint
+                        .get_item("seq")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u32>()
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    checkpoint
+                        .get_item("offset_us")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    250_000
+                );
 
                 assert!(replay_session_checkpoint_by_label(py, bytes, "missing")
                     .unwrap()
@@ -6019,10 +6173,9 @@ mod python {
                 .map(|session| serde_json::to_vec(&session).unwrap())
                 .collect();
 
-                let summary_obj =
-                    replay_registry_session_summary(py, sessions.clone(), "turn-12")
-                        .unwrap()
-                        .unwrap();
+                let summary_obj = replay_registry_session_summary(py, sessions.clone(), "turn-12")
+                    .unwrap()
+                    .unwrap();
                 let summary = summary_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
                     summary
@@ -6044,7 +6197,12 @@ mod python {
                 .unwrap();
                 let checkpoint = checkpoint_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    checkpoint.get_item("seq").unwrap().unwrap().extract::<u32>().unwrap(),
+                    checkpoint
+                        .get_item("seq")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u32>()
+                        .unwrap(),
                     0
                 );
                 assert_eq!(
@@ -6057,12 +6215,16 @@ mod python {
                     1_700_000_101
                 );
 
-                assert!(replay_registry_session_summary(py, sessions.clone(), "missing")
-                    .unwrap()
-                    .is_none());
-                assert!(replay_registry_checkpoint_by_label(py, sessions, "turn-12", "missing")
-                    .unwrap()
-                    .is_none());
+                assert!(
+                    replay_registry_session_summary(py, sessions.clone(), "missing")
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    replay_registry_checkpoint_by_label(py, sessions, "turn-12", "missing")
+                        .unwrap()
+                        .is_none()
+                );
             });
         }
 
@@ -6087,10 +6249,12 @@ mod python {
                 .map(|session| serde_json::to_vec(&session).unwrap())
                 .collect();
 
-                let err = replay_registry_session_summary(py, duplicate_sessions, "turn-14")
-                    .unwrap_err();
+                let err =
+                    replay_registry_session_summary(py, duplicate_sessions, "turn-14").unwrap_err();
                 assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
-                assert!(err.to_string().contains("duplicate replay session id: turn-14"));
+                assert!(err
+                    .to_string()
+                    .contains("duplicate replay session id: turn-14"));
             });
         }
 
@@ -6152,15 +6316,26 @@ mod python {
                 .map(|session| serde_json::to_vec(&session).unwrap())
                 .collect();
 
-                let checkpoint = replay_registry_checkpoint_by_seq(py, sessions.clone(), "turn-16", 0)
-                    .unwrap()
-                    .unwrap();
+                let checkpoint =
+                    replay_registry_checkpoint_by_seq(py, sessions.clone(), "turn-16", 0)
+                        .unwrap()
+                        .unwrap();
                 let checkpoint = checkpoint.bind(py).downcast::<PyDict>().unwrap();
-                assert_eq!(checkpoint.get_item("label").unwrap().unwrap().extract::<String>().unwrap(), "before reflection");
+                assert_eq!(
+                    checkpoint
+                        .get_item("label")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "before reflection"
+                );
 
-                assert!(replay_registry_checkpoint_by_seq(py, sessions, "turn-16", 99)
-                    .unwrap()
-                    .is_none());
+                assert!(
+                    replay_registry_checkpoint_by_seq(py, sessions, "turn-16", 99)
+                        .unwrap()
+                        .is_none()
+                );
             });
         }
 
@@ -6175,10 +6350,7 @@ mod python {
 
                 let capsule_obj = verify_capsule_bytes(py, capsule, None).unwrap();
                 let capsule_dict = capsule_obj.bind(py).downcast::<PyDict>().unwrap();
-                let issues_obj = capsule_dict
-                    .get_item("issues")
-                    .unwrap()
-                    .unwrap();
+                let issues_obj = capsule_dict.get_item("issues").unwrap().unwrap();
                 let issues = issues_obj.downcast::<PyList>().unwrap();
                 let first_issue_obj = issues.get_item(0).unwrap();
                 let first_issue = first_issue_obj.downcast::<PyDict>().unwrap();
@@ -6262,7 +6434,11 @@ mod python {
                 let dict = obj.bind(py).downcast::<PyDict>().unwrap();
 
                 assert_eq!(
-                    dict.get_item("entity").unwrap().unwrap().extract::<String>().unwrap(),
+                    dict.get_item("entity")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "user"
                 );
                 assert!(dict.get_item("slots").unwrap().is_some());
@@ -6274,7 +6450,14 @@ mod python {
                 assert_eq!(slots.len(), 1);
                 let slot_value = slots.get_item(0).unwrap();
                 let slot = slot_value.downcast::<PyDict>().unwrap();
-                assert_eq!(slot.get_item("slot").unwrap().unwrap().extract::<String>().unwrap(), "likes");
+                assert_eq!(
+                    slot.get_item("slot")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "likes"
+                );
                 let values_binding = slot.get_item("values").unwrap().unwrap();
                 let values = values_binding.downcast::<PyList>().unwrap();
                 assert_eq!(
@@ -6284,10 +6467,8 @@ mod python {
                         .collect::<Vec<_>>(),
                     vec!["alpha".to_string(), "coffee".to_string()]
                 );
-                let slot_supporting_binding = slot
-                    .get_item("supporting_frame_ids")
-                    .unwrap()
-                    .unwrap();
+                let slot_supporting_binding =
+                    slot.get_item("supporting_frame_ids").unwrap().unwrap();
                 let slot_supporting = slot_supporting_binding.downcast::<PyList>().unwrap();
                 assert_eq!(
                     slot_supporting
@@ -6342,10 +6523,7 @@ mod python {
                     vec![99]
                 );
 
-                let supporting_binding = dict
-                    .get_item("supporting_frame_ids")
-                    .unwrap()
-                    .unwrap();
+                let supporting_binding = dict.get_item("supporting_frame_ids").unwrap().unwrap();
                 let supporting = supporting_binding.downcast::<PyList>().unwrap();
                 assert_eq!(
                     supporting
@@ -6397,19 +6575,58 @@ mod python {
                 let second = second_value.downcast::<PyDict>().unwrap();
                 let third = third_value.downcast::<PyDict>().unwrap();
 
-                assert_eq!(first.get_item("value").unwrap().unwrap().extract::<String>().unwrap(), "Google");
                 assert_eq!(
-                    first.get_item("version").unwrap().unwrap().extract::<String>().unwrap(),
+                    first
+                        .get_item("value")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Google"
+                );
+                assert_eq!(
+                    first
+                        .get_item("version")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "sets"
                 );
-                assert_eq!(second.get_item("value").unwrap().unwrap().extract::<String>().unwrap(), "Meta");
                 assert_eq!(
-                    second.get_item("version").unwrap().unwrap().extract::<String>().unwrap(),
+                    second
+                        .get_item("value")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Meta"
+                );
+                assert_eq!(
+                    second
+                        .get_item("version")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "updates"
                 );
-                assert_eq!(third.get_item("value").unwrap().unwrap().extract::<String>().unwrap(), "Meta");
                 assert_eq!(
-                    third.get_item("version").unwrap().unwrap().extract::<String>().unwrap(),
+                    third
+                        .get_item("value")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Meta"
+                );
+                assert_eq!(
+                    third
+                        .get_item("version")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "retracts"
                 );
             });
@@ -6460,13 +6677,17 @@ mod python {
                     200,
                 ));
 
-                graph.upsert_node("user", EntityKind::Person, 1.0, newer_frame_id).unwrap();
+                graph
+                    .upsert_node("user", EntityKind::Person, 1.0, newer_frame_id)
+                    .unwrap();
                 graph
                     .upsert_node("OpenAI", EntityKind::Organization, 1.0, newer_frame_id)
                     .unwrap();
                 let from = graph.get_by_name("user").unwrap().id;
                 let to = graph.get_by_name("OpenAI").unwrap().id;
-                graph.upsert_edge(from, to, "employer", 1.0, newer_frame_id).unwrap();
+                graph
+                    .upsert_edge(from, to, "employer", 1.0, newer_frame_id)
+                    .unwrap();
 
                 let engine = PyAnimaEngine {
                     inner: crate::engine::AnimaEngine::from_parts(frames, cards, graph),
@@ -6474,35 +6695,56 @@ mod python {
 
                 let verify_obj = engine.verify(py).unwrap();
                 let verify = verify_obj.bind(py).downcast::<PyDict>().unwrap();
-                assert!(!verify.get_item("ok").unwrap().unwrap().extract::<bool>().unwrap());
+                assert!(!verify
+                    .get_item("ok")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
 
                 let stats_obj = engine.stats(py).unwrap();
                 let stats = stats_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    stats.get_item("frame_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("frame_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     2
                 );
                 assert_eq!(
-                    stats.get_item("graph_edge_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("graph_edge_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     1
                 );
 
                 let state_obj = engine.project_entity_state(py, "user").unwrap();
                 let state = state_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    state.get_item("entity").unwrap().unwrap().extract::<String>().unwrap(),
+                    state
+                        .get_item("entity")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "user"
                 );
-                let slots_value = state
-                    .get_item("slots")
-                    .unwrap()
-                    .unwrap();
+                let slots_value = state.get_item("slots").unwrap().unwrap();
                 let slots = slots_value.downcast::<PyList>().unwrap();
                 assert_eq!(slots.len(), 1);
                 let slot_value = slots.get_item(0).unwrap();
                 let slot = slot_value.downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    slot.get_item("slot").unwrap().unwrap().extract::<String>().unwrap(),
+                    slot.get_item("slot")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "employer"
                 );
 
@@ -6597,13 +6839,17 @@ mod python {
                     200,
                 ));
 
-                graph.upsert_node("user", EntityKind::Person, 1.0, frame_id).unwrap();
+                graph
+                    .upsert_node("user", EntityKind::Person, 1.0, frame_id)
+                    .unwrap();
                 graph
                     .upsert_node("OpenAI", EntityKind::Organization, 1.0, frame_id)
                     .unwrap();
                 let from = graph.get_by_name("user").unwrap().id;
                 let to = graph.get_by_name("OpenAI").unwrap().id;
-                graph.upsert_edge(from, to, "employer", 1.0, frame_id).unwrap();
+                graph
+                    .upsert_edge(from, to, "employer", 1.0, frame_id)
+                    .unwrap();
 
                 let engine = PyAnimaEngine {
                     inner: crate::engine::AnimaEngine::from_parts(frames, cards, graph),
@@ -6614,28 +6860,32 @@ mod python {
                 let stats_obj = restored.stats(py).unwrap();
                 let stats = stats_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    stats.get_item("frame_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("frame_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     1
                 );
                 assert_eq!(
-                    stats.get_item("card_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("card_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     1
                 );
 
                 let state_obj = restored.project_entity_state(py, "user").unwrap();
                 let state = state_obj.bind(py).downcast::<PyDict>().unwrap();
-                let slots_value = state
-                    .get_item("slots")
-                    .unwrap()
-                    .unwrap();
+                let slots_value = state.get_item("slots").unwrap().unwrap();
                 let slots = slots_value.downcast::<PyList>().unwrap();
                 assert_eq!(slots.len(), 1);
                 let slot_item = slots.get_item(0).unwrap();
                 let slot_value = slot_item.downcast::<PyDict>().unwrap();
-                let values_value = slot_value
-                    .get_item("values")
-                    .unwrap()
-                    .unwrap();
+                let values_value = slot_value.get_item("values").unwrap().unwrap();
                 let values = values_value.downcast::<PyList>().unwrap();
                 assert_eq!(
                     values

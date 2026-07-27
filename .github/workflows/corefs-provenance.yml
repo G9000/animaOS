@@ -5,7 +5,21 @@ on:
     paths:
       - "packages/anima-file-tools/**"
       - "packages/anima-corefs/**"
+      - "packages/anima-core/**"
       - "apps/animus/**"
+      - "apps/server/src/anima_server/services/sessions.py"
+      - "apps/server/src/anima_server/services/corefs/**"
+      - "apps/server/src/anima_server/services/agent/**"
+      - "apps/server/src/anima_server/api/deps/unlock.py"
+      - "apps/server/src/anima_server/api/routes/**"
+      - "apps/server/src/anima_server/api/ws/**"
+      - "apps/server/src/anima_server/main.py"
+      - "apps/server/tests/test_dev_session_continuity.py"
+      - "apps/server/tests/test_corefs_api.py"
+      - "apps/server/tests/test_corefs_logical.py"
+      - "apps/server/tests/test_corefs_catalog_benchmark.py"
+      - "apps/server/tests/test_ws.py"
+      - "apps/server/tests/test_runtime_db.py"
       - "THIRD_PARTY_NOTICES.md"
       - "third_party/**"
       - "scripts/check_codex_attribution.py"
@@ -65,3 +79,94 @@ jobs:
         run: >-
           python3 scripts/check_corefs_release_notices.py
           --release-root apps/desktop/src-tauri/resources/.anima
+
+  windows-native-lease:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout animaOS
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.75
+        run: rustup toolchain install 1.75.0 --profile minimal --component clippy
+
+      - name: Prove constant-space terminal event flood
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          transaction::object_lease_tests::windows_object_lease_tests::windows_event_flood_is_constant_space_and_terminal
+          -- --exact --nocapture
+
+      - name: Prove exact three-resource monitor plan
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          transaction::object_lease_tests::windows_object_lease_tests::windows_resource_plan_matches_three_live_monitor_resources
+          -- --exact --nocapture
+
+      - name: Prove target miss retains ownership until completion
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          transaction::object_lease_tests::windows_object_lease_tests::windows_teardown_target_miss_retains_ownership_until_completion
+          -- --exact --nocapture
+
+      - name: Prove supported NTFS cancellation and join target
+        run: >-
+          cargo +1.75.0 test --locked -p anima-core --features python
+          windows_supported_profile_teardown_meets_target -- --nocapture
+
+      - name: Prove production counters, zero resource delta, and residue
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          --test catalog_benchmark lease -- --nocapture
+
+      - name: Prove Windows production link-count rejection
+        run: >-
+          cargo +1.75.0 test --release --locked -p anima-corefs
+          --test transaction production_link_count -- --nocapture
+
+      - name: Test all CoreFS paths on Windows
+        run: cargo +1.75.0 test --locked -p anima-corefs
+
+      - name: Enforce strict native Clippy
+        run: >-
+          cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core
+          --all-targets --all-features -- -D warnings
+
+  macos-native-lease:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout animaOS
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.75
+        run: rustup toolchain install 1.75.0 --profile minimal --component clippy
+
+      - name: Detect enabled macOS native backend
+        id: macos-backend
+        shell: bash
+        run: |
+          if test -f packages/anima-corefs/src/transaction/object_lease/macos.rs; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run exact macOS FSEvents and kqueue integration
+        if: steps.macos-backend.outputs.enabled == 'true'
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          --test object_lease_macos -- --nocapture
+
+      - name: Run macOS lease unit contract
+        if: steps.macos-backend.outputs.enabled == 'true'
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          macos_object_lease -- --nocapture
+
+      - name: Test all CoreFS paths on macOS
+        if: steps.macos-backend.outputs.enabled == 'true'
+        run: cargo +1.75.0 test --locked -p anima-corefs
+
+      - name: Enforce strict native Clippy
+        if: steps.macos-backend.outputs.enabled == 'true'
+        run: >-
+          cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core
+          --all-targets --all-features -- -D warnings

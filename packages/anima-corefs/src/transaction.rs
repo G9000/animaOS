@@ -36,10 +36,15 @@ use self::cache::{
     ValidatedObjectState,
 };
 use self::object_lease::global_lease_budget;
+pub(crate) use self::object_lease::ObjectLeaseDiagnosticBoundaryEvent;
 use self::object_lease::{
     object_set_fingerprint, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision,
     LeaseAttemptPolicy, LeaseBudget, LeaseResourceFactory, MonotonicClock, ObjectLeaseCandidate,
-    ObjectValidationLease, OptimizationMiss,
+    ObjectLeaseDiagnosticObserver, ObjectValidationLease, OptimizationMiss,
+};
+#[cfg(windows)]
+pub(crate) use self::object_lease::{
+    ObjectLeaseDiagnosticCounterSnapshot, ObjectLeaseTeardownObservation,
 };
 
 #[cfg(test)]
@@ -1151,7 +1156,7 @@ impl LeaseResourceFactory for UnsupportedLeaseFactory {
         _index: usize,
         _binding: &ValidatedObjectBinding,
     ) -> Result<object_lease::ValidationAnchor, ()> {
-        Err(())
+        Ok(object_lease::ValidationAnchor::Unsupported)
     }
 }
 
@@ -1177,6 +1182,7 @@ pub struct CoreCommitCoordinator {
     #[cfg(test)]
     lease_factory_override: Mutex<Option<Arc<dyn object_lease::LeaseResourceFactory>>>,
     lease_budget_override: Option<LeaseBudget>,
+    object_lease_diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
 }
 
 #[derive(Debug)]
@@ -1381,7 +1387,7 @@ impl CoreCommitCoordinator {
         core_root: impl AsRef<Path>,
         core_id: impl Into<String>,
     ) -> Result<Self, CommitError> {
-        Self::new_with_lease_budget(core_root, core_id, None)
+        Self::new_with_lease_budget(core_root, core_id, None, None)
     }
 
     #[cfg(any(test, feature = "session-test-seams"))]
@@ -1389,13 +1395,28 @@ impl CoreCommitCoordinator {
         core_root: impl AsRef<Path>,
         core_id: impl Into<String>,
     ) -> Result<Self, CommitError> {
-        Self::new_with_lease_budget(core_root, core_id, Some(LeaseBudget::isolated()))
+        Self::new_with_lease_budget(core_root, core_id, Some(LeaseBudget::isolated()), None)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn new_with_object_lease_diagnostics(
+        core_root: impl AsRef<Path>,
+        core_id: impl Into<String>,
+    ) -> Result<Self, CommitError> {
+        let diagnostics = Arc::new(ObjectLeaseDiagnosticObserver::default());
+        Self::new_with_lease_budget(
+            core_root,
+            core_id,
+            Some(LeaseBudget::isolated()),
+            Some(diagnostics),
+        )
     }
 
     fn new_with_lease_budget(
         core_root: impl AsRef<Path>,
         core_id: impl Into<String>,
         lease_budget_override: Option<LeaseBudget>,
+        object_lease_diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
     ) -> Result<Self, CommitError> {
         let core_root = core_root.as_ref();
         ensure_ambient_directory(core_root)?;
@@ -1434,6 +1455,7 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             lease_factory_override: Mutex::new(None),
             lease_budget_override,
+            object_lease_diagnostics,
         })
     }
 
@@ -1464,11 +1486,19 @@ impl CoreCommitCoordinator {
 
         #[cfg(all(windows, not(test)))]
         {
-            object_lease::windows::WindowsLeaseFactory::new(match self.objects_dir.try_clone() {
+            let objects_dir = match self.objects_dir.try_clone() {
                 Ok(objects_dir) => objects_dir,
                 Err(_) => return Arc::new(UnsupportedLeaseFactory),
-            })
-            .map_or_else(
+            };
+            let factory = if let Some(diagnostics) = &self.object_lease_diagnostics {
+                object_lease::windows::WindowsLeaseFactory::new_observed(
+                    objects_dir,
+                    Arc::clone(diagnostics),
+                )
+            } else {
+                object_lease::windows::WindowsLeaseFactory::new(objects_dir)
+            };
+            factory.map_or_else(
                 |_| Arc::new(UnsupportedLeaseFactory) as Arc<dyn LeaseResourceFactory>,
                 |factory| Arc::new(factory) as Arc<dyn LeaseResourceFactory>,
             )
@@ -1476,6 +1506,83 @@ impl CoreCommitCoordinator {
 
         #[cfg(any(test, not(windows)))]
         Arc::new(UnsupportedLeaseFactory)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_counters(
+        &self,
+    ) -> Option<ObjectLeaseDiagnosticCounterSnapshot> {
+        self.object_lease_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.counters())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_boundary_events(
+        &self,
+    ) -> Option<Vec<ObjectLeaseDiagnosticBoundaryEvent>> {
+        self.object_lease_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.boundary_events())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn reset_object_lease_diagnostic_counters(&self) {
+        if let Some(diagnostics) = &self.object_lease_diagnostics {
+            diagnostics.reset_counters();
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_resources(&self) -> (usize, usize, usize) {
+        let usage = self.lease_budget().usage();
+        (usage.entries, usage.leases, usage.monitor_resources)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_target_identity(
+        &self,
+    ) -> Result<(u64, u64), CommitError> {
+        let metadata = Metadata::from_file(&self.root_dir.try_clone()?.into_std_file())?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_teardown_observation(
+        &self,
+    ) -> Option<ObjectLeaseTeardownObservation> {
+        self.object_lease_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.teardown())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn publish_object_lease_unknown_for_diagnostic(&self) -> bool {
+        self.cache
+            .current()
+            .and_then(|snapshot| snapshot.object_lease.clone())
+            .is_some_and(|lease| {
+                lease.publish_unknown();
+                true
+            })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn prove_between_fence_mutation_for_diagnostic(&self, path: &Path) -> bool {
+        let Some(diagnostics) = &self.object_lease_diagnostics else {
+            return false;
+        };
+        let Some(lease) = self
+            .cache
+            .current()
+            .and_then(|snapshot| snapshot.object_lease.clone())
+        else {
+            return false;
+        };
+        diagnostics.arm_between_fence_mutation(path.to_path_buf());
+        let outcome = lease.fence();
+        diagnostics.between_fence_mutation_succeeded()
+            && outcome == object_lease::MonitorState::DirtyAll
     }
 
     fn object_directory_identity(&self) -> Result<DirectoryIdentity, CommitError> {
@@ -1530,6 +1637,7 @@ impl CoreCommitCoordinator {
                 (Some(current), next),
                 prepared,
                 cached,
+                self.object_lease_diagnostics.as_deref(),
                 |_, _| {},
                 #[cfg(test)]
                 probe,
@@ -1553,6 +1661,7 @@ impl CoreCommitCoordinator {
                 (Some(current), next),
                 prepared,
                 cached,
+                self.object_lease_diagnostics.as_deref(),
                 |_, _| {},
                 #[cfg(test)]
                 probe,
@@ -1574,6 +1683,7 @@ impl CoreCommitCoordinator {
                     (Some(current), next),
                     prepared,
                     cached,
+                    self.object_lease_diagnostics.as_deref(),
                     |_, _| {},
                     #[cfg(test)]
                     probe,
@@ -1605,6 +1715,7 @@ impl CoreCommitCoordinator {
                         (Some(current), next),
                         prepared,
                         cached,
+                        self.object_lease_diagnostics.as_deref(),
                         |_, _| {},
                         #[cfg(test)]
                         probe,
@@ -1635,6 +1746,7 @@ impl CoreCommitCoordinator {
                 (Some(current), next),
                 prepared,
                 cached,
+                self.object_lease_diagnostics.as_deref(),
                 |binding, file| {
                     let acquisition_failed = candidate.candidate_mut().is_some_and(|active| {
                         active
@@ -4866,6 +4978,7 @@ fn validate_prepared_revisions(
         catalogs,
         prepared,
         cached,
+        None,
         |_, _| {},
         #[cfg(test)]
         probe,
@@ -4895,6 +5008,7 @@ fn validate_prepared_revisions_observed<F>(
     catalogs: (Option<&CatalogGeneration>, &CatalogGeneration),
     prepared: &[PreparedObjectRevision],
     cached: Option<&ValidatedObjectState>,
+    diagnostics: Option<&ObjectLeaseDiagnosticObserver>,
     mut observe_validated: F,
     #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<ValidatedObjectState, CommitError>
@@ -4938,6 +5052,7 @@ where
             let file = validate_existing_object_file(
                 objects_dir,
                 object.physical_name(),
+                diagnostics,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             )?;
@@ -5001,6 +5116,7 @@ where
         let file = validate_prepared_file(
             objects_dir,
             token,
+            diagnostics,
             #[cfg(test)]
             probe.as_deref_mut(),
         )?;
@@ -5069,8 +5185,12 @@ fn object_key_binding(object_key: &SecretBytes) -> [u8; 32] {
 fn validate_existing_object_file(
     objects_dir: &Dir,
     physical_name: &ObjectPhysicalName,
+    diagnostics: Option<&ObjectLeaseDiagnosticObserver>,
     #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<File, CommitError> {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.record_safe_open();
+    }
     #[cfg(test)]
     if let Some(probe) = probe {
         probe.object_safe_open();
@@ -5087,8 +5207,12 @@ fn validate_existing_object_file(
 fn validate_prepared_file(
     objects_dir: &Dir,
     prepared: &PreparedObjectRevision,
+    diagnostics: Option<&ObjectLeaseDiagnosticObserver>,
     #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<File, CommitError> {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.record_safe_open();
+    }
     #[cfg(test)]
     if let Some(probe) = probe {
         probe.object_safe_open();

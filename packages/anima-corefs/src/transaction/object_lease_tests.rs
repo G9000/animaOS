@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -24,9 +25,10 @@ use super::cache::{
 use super::object_lease::{
     global_lease_budget, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision, LeaseAttemptPolicy,
     LeaseBudget, LeaseBudgetUsage, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan,
-    MonitorState, MonitorStateCell, MonotonicClock, ObjectSetFingerprint, ObjectValidationLease,
-    OptimizationMiss, ValidationAnchor, MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES,
-    MAX_PROCESS_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
+    MonitorState, MonitorStateCell, MonotonicClock, ObjectLeaseDiagnosticObserver,
+    ObjectSetFingerprint, ObjectValidationLease, OptimizationMiss, ValidationAnchor,
+    MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES, MAX_PROCESS_OBJECT_LEASE_ENTRIES,
+    MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
 };
 use super::{CommitError, CoreCommitLock};
 
@@ -165,6 +167,7 @@ pub(super) struct TestFactory {
     monitor_attempts: AtomicUsize,
     monitor_plan_resources: AtomicUsize,
     anchor_attempts: AtomicUsize,
+    anchor_queries: Option<Arc<AtomicUsize>>,
     monitor_drops: Arc<AtomicUsize>,
     cache: Option<Weak<CommitCache>>,
     dropped_outside_cache_lock: Option<Arc<AtomicUsize>>,
@@ -181,6 +184,7 @@ impl TestFactory {
             monitor_attempts: AtomicUsize::new(0),
             monitor_plan_resources: AtomicUsize::new(usize::MAX),
             anchor_attempts: AtomicUsize::new(0),
+            anchor_queries: None,
             monitor_drops: Arc::new(AtomicUsize::new(0)),
             cache: None,
             dropped_outside_cache_lock: None,
@@ -198,6 +202,11 @@ impl TestFactory {
 
     fn with_monitor_resources(mut self, monitor_resources: usize) -> Self {
         *self.planned_monitor_resources.get_mut() = monitor_resources;
+        self
+    }
+
+    fn with_anchor_queries(mut self, queries: Arc<AtomicUsize>) -> Self {
+        self.anchor_queries = Some(queries);
         self
     }
 
@@ -241,6 +250,12 @@ impl LeaseResourceFactory for TestFactory {
         self.anchor_attempts.fetch_add(1, Ordering::SeqCst);
         if self.fail_anchor_at == Some(index) {
             Err(())
+        } else if let Some(queries) = &self.anchor_queries {
+            Ok(ValidationAnchor::test_observed(
+                index as u64,
+                queries.clone(),
+                Arc::new(Mutex::new(VecDeque::new())),
+            ))
         } else {
             Ok(ValidationAnchor::test(index as u64))
         }
@@ -646,6 +661,32 @@ fn unsupported_platform_returns_fallback_without_acquiring_resources() {
 }
 
 #[test]
+fn unsupported_validation_anchor_is_fail_closed() {
+    assert_eq!(
+        ValidationAnchor::Unsupported.validate(),
+        FenceOutcome::Unknown
+    );
+}
+
+#[test]
+fn terminal_state_between_fences_skips_all_remaining_metadata_queries() {
+    let budget = LeaseBudget::isolated();
+    let queries = Arc::new(AtomicUsize::new(0));
+    let factory = TestFactory::successful().with_anchor_queries(queries.clone());
+    let lease = acquire(&budget, MAX_OBJECT_LEASE_ENTRIES, 1, &factory).unwrap();
+
+    assert_eq!(
+        lease.fence_with_validation_hook_for_test(|| lease.publish_dirty()),
+        MonitorState::DirtyAll
+    );
+    assert_eq!(
+        queries.load(Ordering::SeqCst),
+        0,
+        "terminal monitor state must fall back before any remaining metadata query"
+    );
+}
+
+#[test]
 fn production_acquisition_uses_singleton_budget_and_factory_resource_plan() {
     let budget = global_lease_budget();
     let before = budget.usage();
@@ -1018,6 +1059,48 @@ mod windows_object_lease_tests {
         assert_eq!(released_usage.leases, 0);
         assert_eq!(released_usage.monitor_resources, 0);
         assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_teardown_observation_starts_at_first_cancellation_request() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-windows-teardown-observation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let object = binding(0);
+        fs::write(root.join(object.physical_name.as_str()), b"ciphertext").unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let diagnostics = Arc::new(ObjectLeaseDiagnosticObserver::default());
+        let factory = WindowsLeaseFactory::new_observed(dir, Arc::clone(&diagnostics)).unwrap();
+        let budget = Arc::new(LeaseBudget::isolated());
+        let lease = ObjectValidationLease::try_acquire_with_budget(&budget, vec![object], &factory)
+            .unwrap();
+
+        lease.begin_release();
+        std::thread::sleep(Duration::from_millis(2_100));
+        drop(lease);
+
+        let teardown = diagnostics
+            .teardown()
+            .expect("observed production monitor must record confirmed teardown");
+        assert!(
+            teardown.elapsed >= Duration::from_millis(2_000),
+            "teardown elapsed time omitted the interval after first cancellation: {:?}",
+            teardown.elapsed
+        );
+        assert!(
+            !teardown.target_met,
+            "targetMet must use the full interval from first cancellation through join"
+        );
+        assert!(teardown.completion_confirmed);
+        assert_eq!(budget.usage().entries, 0);
+        assert_eq!(budget.usage().leases, 0);
+        assert_eq!(budget.usage().monitor_resources, 0);
+
+        drop(factory);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -219,7 +219,7 @@ fn replace_metadata_file(source: &Path, destination: &Path) -> crate::Result<()>
     {
         use std::os::windows::ffi::OsStrExt;
 
-        unsafe extern "system" {
+        extern "system" {
             fn MoveFileExW(
                 lpExistingFileName: *const u16,
                 lpNewFileName: *const u16,
@@ -576,7 +576,7 @@ fn load_committed_snapshot(root: &Path) -> crate::Result<(PathBuf, CommittedSnap
         "canonicalize metadata.json",
     )?;
     let metadata_bytes =
-        fs::read(&metadata_path).map_err(|error| io_error("read metadata.json", error))?;
+        fs::read(metadata_path).map_err(|error| io_error("read metadata.json", error))?;
     let snapshot: CommittedSnapshot =
         serde_json::from_slice(&metadata_bytes).map_err(serialization_error)?;
     validate_committed_generation(&snapshot)?;
@@ -927,7 +927,7 @@ mod tests {
                 .create(true)
                 .read(true)
                 .write(true)
-                .open(&lock_path)
+                .open(lock_path)
                 .unwrap();
             lock_file.try_lock_exclusive().unwrap();
 
@@ -1092,7 +1092,7 @@ mod tests {
                 .create(true)
                 .read(true)
                 .write(true)
-                .open(&lock_path)
+                .open(lock_path)
                 .unwrap();
             lock_file.try_lock_exclusive().unwrap();
 
@@ -1108,7 +1108,7 @@ mod tests {
             let tempdir = tempdir().unwrap();
             let missing_root = tempdir.path().join("missing");
 
-            let err = open_path(&missing_root, EngineOpenMode::ReadWrite).unwrap_err();
+            let err = open_path(missing_root, EngineOpenMode::ReadWrite).unwrap_err();
 
             assert!(matches!(err, crate::Error::Storage(message) if message.contains("missing")));
         }
@@ -1278,7 +1278,7 @@ mod tests {
         let tempdir = tempdir().unwrap();
         let missing_root = tempdir.path().join("missing");
 
-        let err = open_path(&missing_root, EngineOpenMode::ReadOnly).unwrap_err();
+        let err = open_path(missing_root, EngineOpenMode::ReadOnly).unwrap_err();
 
         assert!(matches!(err, crate::Error::Storage(message) if message.contains("missing")));
     }
@@ -1370,7 +1370,7 @@ mod tests {
             graph_file: None,
         };
         fs::write(
-            engine_dir.join(&snapshot.frames_file),
+            engine_dir.join(snapshot.frames_file),
             FrameStore::new().serialize().unwrap(),
         )
         .unwrap();
@@ -1502,7 +1502,7 @@ mod tests {
             let outcome = write_snapshot_metadata_with_replace_and_post_publish(
                 &engine_dir,
                 &next,
-                |temp_path, metadata_path| replace_metadata_file(temp_path, metadata_path),
+                replace_metadata_file,
                 |_root| Err(crate::Error::Io("post-publish sync failed".into())),
             )
             .unwrap();

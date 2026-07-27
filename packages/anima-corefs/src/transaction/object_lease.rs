@@ -1,15 +1,13 @@
 use std::fmt;
-use std::fs::File;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::fs::{self, File};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
-
-#[cfg(test)]
-use std::collections::VecDeque;
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::collections::VecDeque;
 
 use super::cache::ValidatedObjectBinding;
 
@@ -26,6 +24,158 @@ pub(super) type ObjectSetFingerprint = [u8; 32];
 
 const OBJECT_SET_FINGERPRINT_DOMAIN: &[u8] =
     b"anima-corefs-object-validation-lease-object-set-v1\0";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ObjectLeaseDiagnosticCounterSnapshot {
+    pub(crate) safe_opens: usize,
+    pub(crate) metadata_queries: usize,
+    pub(crate) fences: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObjectLeaseDiagnosticBoundaryEvent {
+    FenceClean,
+    FenceDirtyAll,
+    FenceUnknown,
+    BetweenFenceMutation,
+    MetadataQuery,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ObjectLeaseTeardownObservation {
+    pub(crate) elapsed: Duration,
+    pub(crate) completion_confirmed: bool,
+    pub(crate) target_met: bool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ObjectLeaseDiagnosticObserver {
+    safe_opens: AtomicUsize,
+    metadata_queries: AtomicUsize,
+    fences: AtomicUsize,
+    boundary_events: Mutex<Vec<ObjectLeaseDiagnosticBoundaryEvent>>,
+    between_fence_mutation: Mutex<Option<PathBuf>>,
+    between_fence_mutation_succeeded: AtomicBool,
+    teardown_elapsed_nanos: AtomicU64,
+    teardown_completion_confirmed: AtomicBool,
+    teardown_target_met: AtomicBool,
+    teardown_recorded: AtomicBool,
+}
+
+impl ObjectLeaseDiagnosticObserver {
+    pub(crate) fn reset_counters(&self) {
+        self.safe_opens.store(0, Ordering::Release);
+        self.metadata_queries.store(0, Ordering::Release);
+        self.fences.store(0, Ordering::Release);
+        self.boundary_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    pub(crate) fn record_safe_open(&self) {
+        self.safe_opens.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_metadata_query(&self) {
+        self.metadata_queries.fetch_add(1, Ordering::Relaxed);
+        self.boundary_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(ObjectLeaseDiagnosticBoundaryEvent::MetadataQuery);
+    }
+
+    pub(crate) fn record_fence(&self, outcome: FenceOutcome) {
+        self.fences.fetch_add(1, Ordering::Relaxed);
+        let event = match outcome {
+            FenceOutcome::Clean => ObjectLeaseDiagnosticBoundaryEvent::FenceClean,
+            FenceOutcome::DirtyAll => ObjectLeaseDiagnosticBoundaryEvent::FenceDirtyAll,
+            FenceOutcome::Unknown => ObjectLeaseDiagnosticBoundaryEvent::FenceUnknown,
+        };
+        self.boundary_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(event);
+    }
+
+    pub(crate) fn counters(&self) -> ObjectLeaseDiagnosticCounterSnapshot {
+        ObjectLeaseDiagnosticCounterSnapshot {
+            safe_opens: self.safe_opens.load(Ordering::Acquire),
+            metadata_queries: self.metadata_queries.load(Ordering::Acquire),
+            fences: self.fences.load(Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn boundary_events(&self) -> Vec<ObjectLeaseDiagnosticBoundaryEvent> {
+        self.boundary_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn arm_between_fence_mutation(&self, path: PathBuf) {
+        self.between_fence_mutation_succeeded
+            .store(false, Ordering::Release);
+        *self
+            .between_fence_mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
+    }
+
+    pub(crate) fn perform_between_fence_mutation(&self) -> bool {
+        let Some(path) = self
+            .between_fence_mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        else {
+            return false;
+        };
+        let succeeded = !path.exists()
+            && fs::write(&path, b"between-first-and-final-fence").is_ok()
+            && fs::remove_file(&path).is_ok();
+        self.boundary_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(ObjectLeaseDiagnosticBoundaryEvent::BetweenFenceMutation);
+        self.between_fence_mutation_succeeded
+            .store(succeeded, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn between_fence_mutation_succeeded(&self) -> bool {
+        self.between_fence_mutation_succeeded
+            .load(Ordering::Acquire)
+    }
+
+    pub(crate) fn record_teardown(
+        &self,
+        started: Instant,
+        completion_confirmed: bool,
+        target_met: bool,
+    ) {
+        let elapsed = started.elapsed();
+        self.teardown_elapsed_nanos.store(
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
+        self.teardown_completion_confirmed
+            .store(completion_confirmed, Ordering::Release);
+        self.teardown_target_met
+            .store(target_met, Ordering::Release);
+        self.teardown_recorded.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn teardown(&self) -> Option<ObjectLeaseTeardownObservation> {
+        self.teardown_recorded
+            .load(Ordering::Acquire)
+            .then(|| ObjectLeaseTeardownObservation {
+                elapsed: Duration::from_nanos(self.teardown_elapsed_nanos.load(Ordering::Acquire)),
+                completion_confirmed: self.teardown_completion_confirmed.load(Ordering::Acquire),
+                target_met: self.teardown_target_met.load(Ordering::Acquire),
+            })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct DirectoryIdentity {
@@ -116,6 +266,7 @@ pub(super) enum ValidationAnchor {
     Windows(Arc<dyn PlatformValidationAnchor>),
     #[cfg(target_os = "macos")]
     Macos(Arc<dyn PlatformValidationAnchor>),
+    Unsupported,
     #[cfg(test)]
     Test {
         identity: u64,
@@ -147,12 +298,13 @@ impl ValidationAnchor {
         }
     }
 
-    fn validate(&self) -> FenceOutcome {
+    pub(super) fn validate(&self) -> FenceOutcome {
         match self {
             #[cfg(windows)]
             Self::Windows(anchor) => anchor.validate(),
             #[cfg(target_os = "macos")]
             Self::Macos(anchor) => anchor.validate(),
+            Self::Unsupported => FenceOutcome::Unknown,
             #[cfg(test)]
             Self::Test {
                 queries, outcomes, ..
@@ -202,7 +354,6 @@ impl LeaseBudget {
         }
     }
 
-    #[cfg(any(test, feature = "session-test-seams"))]
     pub(super) fn isolated() -> Self {
         Self::new()
     }
@@ -356,6 +507,8 @@ pub(super) struct LeasePermitBundle {
 
 pub(super) trait LeaseMonitorResource: fmt::Debug + Send + Sync {
     fn fence(&self) -> FenceOutcome;
+
+    fn perform_between_fence_diagnostic(&self) {}
 
     fn begin_release(&self) {}
 }
@@ -755,9 +908,15 @@ impl ObjectValidationLease {
         }
 
         between_fences();
+        self.monitor.perform_between_fence_diagnostic();
+        if self.state() != MonitorState::Clean {
+            return self.state();
+        }
         for binding in &self.bindings {
-            if self.publish_fence(binding.anchor.validate()) != MonitorState::Clean {
-                return self.state();
+            let anchor_outcome = binding.anchor.validate();
+            let state = self.publish_fence(anchor_outcome);
+            if state != MonitorState::Clean {
+                return state;
             }
         }
 

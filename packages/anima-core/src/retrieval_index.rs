@@ -21,34 +21,16 @@ pub enum IndexFamily {
     Transcript,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RetrievalFamilyState {
     pub generation: u64,
     pub dirty: bool,
 }
 
-impl Default for RetrievalFamilyState {
-    fn default() -> Self {
-        Self {
-            generation: 0,
-            dirty: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RetrievalFamilies {
     pub memory: RetrievalFamilyState,
     pub transcript: RetrievalFamilyState,
-}
-
-impl Default for RetrievalFamilies {
-    fn default() -> Self {
-        Self {
-            memory: RetrievalFamilyState::default(),
-            transcript: RetrievalFamilyState::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -471,8 +453,10 @@ fn build_memory_lexical_store(
         grouped.entry(document.user_id).or_default().push(document);
     }
 
-    let mut store = MemoryLexicalIndexStore::default();
-    store.documents_state = current_memory_documents_state(root)?;
+    let mut store = MemoryLexicalIndexStore {
+        documents_state: current_memory_documents_state(root)?,
+        ..Default::default()
+    };
     for (user_id, user_documents) in grouped {
         if let Some(user_index) = build_memory_user_lexical_index(user_documents) {
             store.users.insert(user_id, user_index);
@@ -609,8 +593,10 @@ fn build_transcript_lexical_store(
         grouped.entry(document.user_id).or_default().push(document);
     }
 
-    let mut store = TranscriptLexicalIndexStore::default();
-    store.documents_state = current_transcript_documents_state(root)?;
+    let mut store = TranscriptLexicalIndexStore {
+        documents_state: current_transcript_documents_state(root)?,
+        ..Default::default()
+    };
     for (user_id, user_documents) in grouped {
         if let Some(user_index) = build_transcript_user_lexical_index(user_documents) {
             store.users.insert(user_id, user_index);
@@ -869,7 +855,7 @@ fn replace_file(source: &Path, destination: &Path, label: &str) -> crate::Result
     {
         use std::os::windows::ffi::OsStrExt;
 
-        unsafe extern "system" {
+        extern "system" {
             fn MoveFileExW(
                 lp_existing_file_name: *const u16,
                 lp_new_file_name: *const u16,

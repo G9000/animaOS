@@ -24,7 +24,7 @@ fn memory_contract_default_score_breakdown_and_salience_shape() {
         graph: 0.25,
         ..Default::default()
     };
-    let value = serde_json::to_value(&breakdown).unwrap();
+    let value = serde_json::to_value(breakdown).unwrap();
 
     assert_eq!(value["lexical"], 0.25);
     assert_eq!(value["vector"], 0.5);
@@ -39,7 +39,7 @@ fn memory_contract_default_score_breakdown_and_salience_shape() {
         evidence_strength: 0.8,
         heat_floor: Some(0.4),
     };
-    let salience_value = serde_json::to_value(&salience).unwrap();
+    let salience_value = serde_json::to_value(salience).unwrap();
 
     assert_eq!(salience_value["memory_class"], "active_project");
     assert_eq!(salience_value["stability_class"], "evolving");
@@ -109,8 +109,8 @@ fn memory_contract_temporal_records_keep_status_and_provenance_fields() {
         score: RecallScoreBreakdown::default(),
     };
 
-    let fact_value = serde_json::to_value(&fact).unwrap();
-    let relationship_value = serde_json::to_value(&relationship).unwrap();
+    let fact_value = serde_json::to_value(fact).unwrap();
+    let relationship_value = serde_json::to_value(relationship).unwrap();
 
     assert_eq!(fact_value["status"], "active");
     assert_eq!(fact_value["evidence_ids"][0], "memory:7");

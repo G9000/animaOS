@@ -12,12 +12,12 @@ use crate::integrity::{
     core_stats, scan_card_store, scan_frame_store, CoreStats, IntegrityIssue, IntegrityIssueKind,
     IntegrityReport, IntegritySeverity,
 };
+use crate::path_engine::{EngineOpenMode, EnginePathHandle, ReadWritePathEngineHandle};
 use crate::projection::{entity_state_from_cards_and_graph, slot_history, EntityState};
 #[cfg(feature = "replay")]
 use crate::replay::{ReplayCheckpoint, ReplayRegistry, ReplaySummary};
 #[cfg(feature = "temporal")]
 use crate::temporal::TemporalIndex;
-use crate::path_engine::{EngineOpenMode, EnginePathHandle, ReadWritePathEngineHandle};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct EngineCapsuleMetadata {
@@ -31,6 +31,12 @@ pub struct AnimaEngine {
     graph: KnowledgeGraph,
     #[cfg(feature = "replay")]
     replay_registry: ReplayRegistry,
+}
+
+impl Default for AnimaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AnimaEngine {
@@ -73,6 +79,7 @@ impl AnimaEngine {
         &self.frames
     }
 
+    #[cfg(test)]
     pub(crate) fn frames_mut(&mut self) -> &mut FrameStore {
         &mut self.frames
     }
@@ -81,6 +88,7 @@ impl AnimaEngine {
         &self.cards
     }
 
+    #[cfg(test)]
     pub(crate) fn cards_mut(&mut self) -> &mut CardStore {
         &mut self.cards
     }
@@ -89,6 +97,7 @@ impl AnimaEngine {
         &self.graph
     }
 
+    #[cfg(test)]
     pub(crate) fn graph_mut(&mut self) -> &mut KnowledgeGraph {
         &mut self.graph
     }
@@ -200,7 +209,10 @@ impl AnimaEngine {
 
         let frames = FrameStore::deserialize(&reader.read_section(SectionKind::Frames)?)?;
         let cards = if sections.contains(&SectionKind::Cards) {
-            CardStore::deserialize(&reader.read_section(SectionKind::Cards)?, SchemaRegistry::new())?
+            CardStore::deserialize(
+                &reader.read_section(SectionKind::Cards)?,
+                SchemaRegistry::new(),
+            )?
         } else {
             CardStore::new(SchemaRegistry::new())
         };
@@ -280,10 +292,10 @@ impl AnimaEngine {
 #[cfg(test)]
 mod tests {
     use super::AnimaEngine;
-    use crate::capsule::{
-        CapsuleReader, SectionKind, SectionManifestEntry, SectionStorageClass,
+    use crate::capsule::{CapsuleReader, SectionKind, SectionManifestEntry, SectionStorageClass};
+    use crate::cards::{
+        CardStore, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation,
     };
-    use crate::cards::{CardStore, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation};
     use crate::frame::{Frame, FrameKind, FrameSource, FrameStore};
     use crate::graph::{EntityKind, KnowledgeGraph};
     use crate::path_engine::{EngineOpenMode, EnginePathHandle};
@@ -359,8 +371,12 @@ mod tests {
             frame_id,
         ));
 
-        graph.upsert_node("user", EntityKind::Person, 1.0, frame_id).unwrap();
-        graph.upsert_node("OpenAI", EntityKind::Organization, 1.0, frame_id).unwrap();
+        graph
+            .upsert_node("user", EntityKind::Person, 1.0, frame_id)
+            .unwrap();
+        graph
+            .upsert_node("OpenAI", EntityKind::Organization, 1.0, frame_id)
+            .unwrap();
         let from = graph.get_by_name("user").unwrap().id;
         let to = graph.get_by_name("OpenAI").unwrap().id;
         graph
@@ -435,7 +451,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let engine_dir = tempdir.path().join("engine");
 
-        let handle = AnimaEngine::create_path(&engine_dir).unwrap();
+        let handle = AnimaEngine::create_path(engine_dir).unwrap();
 
         assert!(handle.engine().frames().is_empty());
         assert!(handle.engine().cards().is_empty());
@@ -547,13 +563,22 @@ mod tests {
         assert_eq!(index.len(), 3);
 
         let range = engine.temporal_range(None, None, None);
-        assert_eq!(range.iter().map(|frame| frame.id).collect::<Vec<_>>(), vec![late, middle, early]);
+        assert_eq!(
+            range.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+            vec![late, middle, early]
+        );
 
         let bounded = engine.temporal_range(Some(1_500), Some(3_000), Some(2));
-        assert_eq!(bounded.iter().map(|frame| frame.id).collect::<Vec<_>>(), vec![late, middle]);
+        assert_eq!(
+            bounded.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+            vec![late, middle]
+        );
 
         let as_of = engine.temporal_as_of(2_000, Some(2));
-        assert_eq!(as_of.iter().map(|frame| frame.id).collect::<Vec<_>>(), vec![middle, early]);
+        assert_eq!(
+            as_of.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+            vec![middle, early]
+        );
     }
 
     #[cfg(feature = "replay")]
@@ -597,7 +622,10 @@ mod tests {
         assert_eq!(summary.user_id, "user-9");
         assert_eq!(summary.action_count, 2);
         assert_eq!(summary.checkpoint_count, 1);
-        assert_eq!(summary.checkpoint_labels, vec!["before response".to_string()]);
+        assert_eq!(
+            summary.checkpoint_labels,
+            vec!["before response".to_string()]
+        );
 
         let checkpoint = engine
             .replay_checkpoint_by_label("turn-42", "before response")
@@ -606,7 +634,10 @@ mod tests {
         assert_eq!(checkpoint.label, "before response");
         assert_eq!(checkpoint.timestamp, Some(1_700_000_000));
         assert_eq!(engine.replay_session_summary("missing"), None);
-        assert_eq!(engine.replay_checkpoint_by_label("turn-42", "missing"), None);
+        assert_eq!(
+            engine.replay_checkpoint_by_label("turn-42", "missing"),
+            None
+        );
     }
 
     #[test]
@@ -634,8 +665,12 @@ mod tests {
             frame_id,
         ));
 
-        graph.upsert_node("user", EntityKind::Person, 1.0, frame_id).unwrap();
-        graph.upsert_node("OpenAI", EntityKind::Organization, 1.0, frame_id).unwrap();
+        graph
+            .upsert_node("user", EntityKind::Person, 1.0, frame_id)
+            .unwrap();
+        graph
+            .upsert_node("OpenAI", EntityKind::Organization, 1.0, frame_id)
+            .unwrap();
         let from = graph.get_by_name("user").unwrap().id;
         let to = graph.get_by_name("OpenAI").unwrap().id;
         graph
@@ -680,7 +715,10 @@ mod tests {
 
         let restored = AnimaEngine::read_capsule(capsule, None).unwrap();
         assert_eq!(restored.frames().len(), 1);
-        assert_eq!(restored.frames().iter().next().unwrap().content, "user works at OpenAI");
+        assert_eq!(
+            restored.frames().iter().next().unwrap().content,
+            "user works at OpenAI"
+        );
         assert_eq!(restored.cards().len(), 1);
         assert_eq!(restored.graph().stats().edge_count, 1);
         assert_eq!(restored.capsule_manifest(), engine.capsule_manifest());
@@ -721,7 +759,10 @@ mod tests {
 
         let restored = AnimaEngine::read_capsule(writer.write().unwrap(), None).unwrap();
         assert_eq!(restored.frames().len(), 1);
-        assert_eq!(restored.frames().get(frame_id).unwrap().content, "frame only");
+        assert_eq!(
+            restored.frames().get(frame_id).unwrap().content,
+            "frame only"
+        );
         assert!(restored.cards().is_empty());
         assert!(restored.graph().is_empty());
     }

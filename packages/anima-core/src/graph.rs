@@ -52,6 +52,7 @@ impl EntityKind {
     }
 
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // Public lossy parser preserves its fallback variant.
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "person" | "per" => Self::Person,
@@ -710,7 +711,7 @@ mod tests {
 
         // "John" alone — Jaccard("john" vs "john smith") = 1/2 = 0.5 < 0.7
         // But substring containment boosts to 0.8
-        let id = graph
+        let _id = graph
             .upsert_node("John Smith Jr", EntityKind::Person, 0.8, 2)
             .unwrap();
         // Should dedup via substring containment

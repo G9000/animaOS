@@ -92,15 +92,15 @@ impl EntityStateBuilder {
             entity_name.to_lowercase(),
             entity_kind as u8,
         );
-        let accumulator = self
-            .connected_entities
-            .entry(key)
-            .or_insert_with(|| ConnectedEntityAccumulator {
-                relation_type,
-                entity_name,
-                entity_kind,
-                supporting_frame_ids: BTreeSet::new(),
-            });
+        let accumulator =
+            self.connected_entities
+                .entry(key)
+                .or_insert_with(|| ConnectedEntityAccumulator {
+                    relation_type,
+                    entity_name,
+                    entity_kind,
+                    supporting_frame_ids: BTreeSet::new(),
+                });
 
         accumulator.supporting_frame_ids.insert(supporting_frame_id);
         self.supporting_frame_ids.insert(supporting_frame_id);
@@ -118,8 +118,8 @@ impl EntityStateBuilder {
             .collect();
         let connected_entities = self
             .connected_entities
-            .into_iter()
-            .map(|(_, accumulator)| ConnectedEntityState {
+            .into_values()
+            .map(|accumulator| ConnectedEntityState {
                 relation_type: accumulator.relation_type,
                 entity_name: accumulator.entity_name,
                 entity_kind: accumulator.entity_kind,
@@ -172,12 +172,18 @@ fn entity_state_from_cards_inner(cards: &CardStore, entity: &str) -> EntityState
 }
 
 pub fn slot_history(cards: &CardStore, entity: &str, slot: &str) -> Vec<MemoryCard> {
-    cards.get_history(entity, slot).into_iter().cloned().collect()
+    cards
+        .get_history(entity, slot)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::cards::{CardStore, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation};
+    use crate::cards::{
+        CardStore, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation,
+    };
     use crate::graph::{EntityKind, KnowledgeGraph};
 
     fn make_card(
@@ -249,23 +255,11 @@ mod tests {
         set.created_at = 300;
         cards.put(set);
 
-        let mut update = make_card(
-            "user",
-            "employer",
-            "Meta",
-            VersionRelation::Updates,
-            2,
-        );
+        let mut update = make_card("user", "employer", "Meta", VersionRelation::Updates, 2);
         update.created_at = 100;
         cards.put(update);
 
-        let mut retract = make_card(
-            "user",
-            "employer",
-            "Meta",
-            VersionRelation::Retracts,
-            3,
-        );
+        let mut retract = make_card("user", "employer", "Meta", VersionRelation::Retracts, 3);
         retract.created_at = 200;
         cards.put(retract);
 
@@ -284,9 +278,27 @@ mod tests {
     fn entity_state_from_cards_collapses_multiple_active_cards_for_one_slot() {
         let mut cards = CardStore::new(SchemaRegistry::new());
 
-        cards.put(make_card("user", "likes", "zebra", VersionRelation::Sets, 30));
-        cards.put(make_card("user", "likes", "coffee", VersionRelation::Extends, 10));
-        cards.put(make_card("user", "likes", "alpha", VersionRelation::Extends, 20));
+        cards.put(make_card(
+            "user",
+            "likes",
+            "zebra",
+            VersionRelation::Sets,
+            30,
+        ));
+        cards.put(make_card(
+            "user",
+            "likes",
+            "coffee",
+            VersionRelation::Extends,
+            10,
+        ));
+        cards.put(make_card(
+            "user",
+            "likes",
+            "alpha",
+            VersionRelation::Extends,
+            20,
+        ));
 
         let state = super::entity_state_from_cards(&cards, "user");
 
@@ -302,7 +314,13 @@ mod tests {
     #[test]
     fn entity_state_includes_connected_entities_from_graph_edges() {
         let mut cards = CardStore::new(SchemaRegistry::new());
-        cards.put(make_card("user", "likes", "coffee", VersionRelation::Sets, 5));
+        cards.put(make_card(
+            "user",
+            "likes",
+            "coffee",
+            VersionRelation::Sets,
+            5,
+        ));
 
         let mut graph = KnowledgeGraph::new();
         let user = graph
@@ -315,8 +333,12 @@ mod tests {
             .upsert_node("Alice", EntityKind::Person, 0.9, 3)
             .unwrap();
 
-        graph.upsert_edge(user, openai, "employer", 0.9, 20).unwrap();
-        graph.upsert_edge(user, alice, "colleague", 0.8, 10).unwrap();
+        graph
+            .upsert_edge(user, openai, "employer", 0.9, 20)
+            .unwrap();
+        graph
+            .upsert_edge(user, alice, "colleague", 0.8, 10)
+            .unwrap();
 
         let state = super::entity_state_from_cards_and_graph(&cards, &graph, "user");
 
@@ -331,7 +353,10 @@ mod tests {
         assert_eq!(state.connected_entities[0].supporting_frame_ids, vec![10]);
         assert_eq!(state.connected_entities[1].relation_type, "employer");
         assert_eq!(state.connected_entities[1].entity_name, "OpenAI");
-        assert_eq!(state.connected_entities[1].entity_kind, EntityKind::Organization);
+        assert_eq!(
+            state.connected_entities[1].entity_kind,
+            EntityKind::Organization
+        );
         assert_eq!(state.connected_entities[1].supporting_frame_ids, vec![20]);
         assert_eq!(state.supporting_frame_ids, vec![5, 10, 20]);
     }
@@ -339,7 +364,13 @@ mod tests {
     #[test]
     fn entity_state_handles_missing_graph_node_gracefully() {
         let mut cards = CardStore::new(SchemaRegistry::new());
-        cards.put(make_card("user", "likes", "coffee", VersionRelation::Sets, 5));
+        cards.put(make_card(
+            "user",
+            "likes",
+            "coffee",
+            VersionRelation::Sets,
+            5,
+        ));
 
         let graph = KnowledgeGraph::new();
 
@@ -373,8 +404,12 @@ mod tests {
             .unwrap();
 
         graph.upsert_edge(user, zed, "colleague", 0.9, 30).unwrap();
-        graph.upsert_edge(user, alice, "colleague", 0.9, 10).unwrap();
-        graph.upsert_edge(user, openai, "employer", 0.9, 20).unwrap();
+        graph
+            .upsert_edge(user, alice, "colleague", 0.9, 10)
+            .unwrap();
+        graph
+            .upsert_edge(user, openai, "employer", 0.9, 20)
+            .unwrap();
 
         let state = super::entity_state_from_cards_and_graph(&cards, &graph, "user");
 

@@ -32,7 +32,7 @@ use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
 use super::{
     FenceOutcome, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan, MonitorStateCell,
-    PlatformValidationAnchor, ValidationAnchor,
+    ObjectLeaseDiagnosticObserver, PlatformValidationAnchor, ValidationAnchor,
 };
 use crate::transaction::cache::ValidatedObjectBinding;
 
@@ -57,6 +57,7 @@ struct FileIdentity {
 pub(in crate::transaction) struct RetainedValidationAnchor {
     file: Mutex<Option<File>>,
     identity: FileIdentity,
+    diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
 }
 
 impl fmt::Debug for RetainedValidationAnchor {
@@ -70,6 +71,13 @@ impl fmt::Debug for RetainedValidationAnchor {
 
 impl RetainedValidationAnchor {
     pub(in crate::transaction) fn new(file: File) -> io::Result<Self> {
+        Self::new_observed(file, None)
+    }
+
+    fn new_observed(
+        file: File,
+        diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
+    ) -> io::Result<Self> {
         let information = query_file_information(&file)?;
         if !valid_retained_object(&information) {
             return Err(io::Error::new(
@@ -80,6 +88,7 @@ impl RetainedValidationAnchor {
         Ok(Self {
             file: Mutex::new(Some(file)),
             identity: file_identity(&information),
+            diagnostics,
         })
     }
 
@@ -91,6 +100,9 @@ impl RetainedValidationAnchor {
         let Some(file) = guard.as_ref() else {
             return FenceOutcome::Unknown;
         };
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.record_metadata_query();
+        }
         match query_file_information(file) {
             Ok(information)
                 if file_identity(&information) == self.identity
@@ -158,6 +170,7 @@ fn valid_retained_object(information: &BY_HANDLE_FILE_INFORMATION) -> bool {
 #[derive(Debug)]
 pub(in crate::transaction) struct WindowsLeaseFactory {
     objects_dir: Arc<Dir>,
+    diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
     #[cfg(any(test, feature = "session-test-seams"))]
     control: Option<WindowsLeaseTestControl>,
 }
@@ -166,6 +179,19 @@ impl WindowsLeaseFactory {
     pub(in crate::transaction) fn new(objects_dir: Dir) -> io::Result<Self> {
         Ok(Self {
             objects_dir: Arc::new(objects_dir),
+            diagnostics: None,
+            #[cfg(any(test, feature = "session-test-seams"))]
+            control: None,
+        })
+    }
+
+    pub(in crate::transaction) fn new_observed(
+        objects_dir: Dir,
+        diagnostics: Arc<ObjectLeaseDiagnosticObserver>,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            objects_dir: Arc::new(objects_dir),
+            diagnostics: Some(diagnostics),
             #[cfg(any(test, feature = "session-test-seams"))]
             control: None,
         })
@@ -178,6 +204,7 @@ impl WindowsLeaseFactory {
     ) -> io::Result<Self> {
         Ok(Self {
             objects_dir: Arc::new(objects_dir),
+            diagnostics: None,
             control: Some(control),
         })
     }
@@ -203,6 +230,7 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
         WindowsLeaseMonitor::start(
             self.objects_dir.clone(),
             state,
+            self.diagnostics.clone(),
             #[cfg(any(test, feature = "session-test-seams"))]
             self.control.clone(),
         )
@@ -220,7 +248,8 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
             binding.physical_name.as_str().as_ref(),
         )
         .map_err(|_| ())?;
-        let anchor = RetainedValidationAnchor::new(file).map_err(|_| ())?;
+        let anchor = RetainedValidationAnchor::new_observed(file, self.diagnostics.clone())
+            .map_err(|_| ())?;
         #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.control {
             control.record_construction_event(ConstructionEventForTest::AnchorCreated);
@@ -234,7 +263,8 @@ impl LeaseResourceFactory for WindowsLeaseFactory {
         _binding: &ValidatedObjectBinding,
         file: File,
     ) -> Result<ValidationAnchor, ()> {
-        let anchor = RetainedValidationAnchor::new(file).map_err(|_| ())?;
+        let anchor = RetainedValidationAnchor::new_observed(file, self.diagnostics.clone())
+            .map_err(|_| ())?;
         #[cfg(any(test, feature = "session-test-seams"))]
         if let Some(control) = &self.control {
             control.record_construction_event(ConstructionEventForTest::AnchorCreated);
@@ -289,6 +319,7 @@ struct WindowsMonitorState {
     cancellation_requested: bool,
     native_read_pending: bool,
     teardown_started: bool,
+    teardown_started_at: Option<Instant>,
     publication_open: bool,
     teardown_target_missed: bool,
 }
@@ -307,6 +338,7 @@ impl Default for WindowsMonitorState {
             cancellation_requested: false,
             native_read_pending: false,
             teardown_started: false,
+            teardown_started_at: None,
             publication_open: true,
             teardown_target_missed: false,
         }
@@ -393,6 +425,7 @@ pub(super) struct WindowsLeaseMonitor {
     shared: Arc<WorkerShared>,
     fence_lock: Mutex<()>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
     #[cfg(any(test, feature = "session-test-seams"))]
     _join_resource_liveness: Arc<()>,
 }
@@ -410,6 +443,7 @@ impl WindowsLeaseMonitor {
     fn start(
         objects_dir: Arc<Dir>,
         state: Arc<MonitorStateCell>,
+        diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
         #[cfg(any(test, feature = "session-test-seams"))] control: Option<WindowsLeaseTestControl>,
     ) -> io::Result<Self> {
         let notification_handle = open_notification_handle(objects_dir.as_ref())?;
@@ -453,6 +487,7 @@ impl WindowsLeaseMonitor {
             shared,
             fence_lock: Mutex::new(()),
             worker: Mutex::new(Some(worker)),
+            diagnostics,
             #[cfg(any(test, feature = "session-test-seams"))]
             _join_resource_liveness: join_resource_liveness,
         };
@@ -635,6 +670,7 @@ impl WindowsLeaseMonitor {
             monitor.terminal = merge_outcome(monitor.terminal, FenceOutcome::Unknown);
             monitor.cancellation_requested = true;
             monitor.teardown_started = true;
+            monitor.teardown_started_at.get_or_insert_with(Instant::now);
             monitor.publication_open = false;
             if matches!(
                 monitor.worker_state,
@@ -653,7 +689,20 @@ impl WindowsLeaseMonitor {
 
 impl LeaseMonitorResource for WindowsLeaseMonitor {
     fn fence(&self) -> FenceOutcome {
-        self.run_fence(FENCE_TIMEOUT)
+        let outcome = self.run_fence(FENCE_TIMEOUT);
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.record_fence(outcome);
+        }
+        outcome
+    }
+
+    fn perform_between_fence_diagnostic(&self) {
+        if let Some(diagnostics) = &self.diagnostics {
+            if diagnostics.perform_between_fence_mutation() {
+                let outcome = self.run_fence(FENCE_TIMEOUT);
+                diagnostics.record_fence(outcome);
+            }
+        }
     }
 
     fn begin_release(&self) {
@@ -665,13 +714,22 @@ impl Drop for WindowsLeaseMonitor {
     fn drop(&mut self) {
         self.request_release();
 
-        let teardown_started = Instant::now();
-        let mut target_miss_recorded = false;
         let mut monitor = self
             .shared
             .monitor
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let teardown_started = monitor
+            .teardown_started_at
+            .expect("release request records the first cancellation instant");
+        let mut target_miss_recorded = teardown_started.elapsed() >= FENCE_TIMEOUT;
+        if target_miss_recorded {
+            monitor.teardown_target_missed = true;
+            #[cfg(any(test, feature = "session-test-seams"))]
+            if let Some(control) = &self.shared.control {
+                control.record_teardown_target_miss();
+            }
+        }
         while monitor.worker_state != WorkerState::NativeComplete
             && monitor.worker_state != WorkerState::Joined
         {
@@ -777,6 +835,13 @@ impl Drop for WindowsLeaseMonitor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.record_teardown(
+                teardown_started,
+                !join_failed,
+                !target_miss_recorded && teardown_started.elapsed() < FENCE_TIMEOUT,
+            );
+        }
     }
 }
 
