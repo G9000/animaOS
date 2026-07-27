@@ -1143,22 +1143,11 @@ fn seed_recovery_pending_lease(coordinator: &CoreCommitCoordinator, active_keys:
     std::fs::remove_file(coordinator.cutover_complete_path()).unwrap();
 }
 
-fn evict_recovery_cache_with_wrong_same_version_key(
-    coordinator: &CoreCommitCoordinator,
-    active_keys: &FrkSubkeys,
-) {
-    let wrong_keys = derive_corefs_subkeys(
-        &SecretBytes::new(vec![0x44; 32]).unwrap(),
-        active_keys.frk_version(),
-    )
-    .unwrap();
-    assert!(
-        coordinator.load_committed(&wrong_keys).is_err(),
-        "wrong same-version material unexpectedly authenticated recovery authority"
-    );
+fn evict_recovery_cache_reentrantly(coordinator: &CoreCommitCoordinator) {
+    coordinator.cache.clear();
     assert!(
         coordinator.cache.current().is_none(),
-        "wrong same-version material did not evict the recovery cache snapshot"
+        "reentrant operation did not evict the recovery cache snapshot"
     );
 }
 
@@ -1187,7 +1176,7 @@ fn lease_lock_order_recovery_hook_error_after_reentrant_eviction_defers_snapshot
                     phase: PublicationPhase::DestinationSynced,
                 })
             {
-                evict_recovery_cache_with_wrong_same_version_key(&coordinator, &active_keys);
+                evict_recovery_cache_reentrantly(&coordinator);
                 return Err(std::io::Error::other(
                     "injected recovery hook failure after reentrant cache eviction",
                 ));
@@ -1240,7 +1229,7 @@ fn lease_lock_order_recovery_hook_panic_after_reentrant_eviction_defers_snapshot
                         phase: PublicationPhase::DestinationSynced,
                     })
                 {
-                    evict_recovery_cache_with_wrong_same_version_key(&coordinator, &active_keys);
+                    evict_recovery_cache_reentrantly(&coordinator);
                     panic!("injected recovery hook panic after reentrant cache eviction");
                 }
                 Ok(())

@@ -132,6 +132,23 @@ fn authoritative_catalog_path(coordinator: &CoreCommitCoordinator) -> PathBuf {
     pointer_catalog_path(coordinator, super::HEAD_FILE)
 }
 
+fn catalog_path_for_generation(
+    coordinator: &CoreCommitCoordinator,
+    generation: u64,
+) -> std::io::Result<PathBuf> {
+    let prefix = format!("catalog-{generation:020}-");
+    for entry in std::fs::read_dir(coordinator.catalogs_path())? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            return Ok(entry.path());
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "catalog generation is missing",
+    ))
+}
+
 fn pointer_catalog_path(coordinator: &CoreCommitCoordinator, pointer_name: &str) -> PathBuf {
     let head = coordinator
         .load_pointer_head(pointer_name)
@@ -2816,7 +2833,7 @@ mod lease_candidate_tests {
                     phase: PublicationPhase::DestinationSynced,
                 })
             {
-                std::fs::remove_file(authoritative_catalog_path(&coordinator))?;
+                std::fs::remove_file(catalog_path_for_generation(&coordinator, 3)?)?;
             }
             Ok(())
         };

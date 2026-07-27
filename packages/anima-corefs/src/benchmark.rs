@@ -1375,7 +1375,7 @@ pub enum ObjectLeaseDiagnosticMutationCase {
     CreateDelete,
     DeleteRestore,
     RenameRoundTrip,
-    TruncateRestore,
+    InPlaceWriteBlocked,
     ReplaceRestore,
     DirectoryJunction,
     InsideDirectoryHardLink,
@@ -2260,12 +2260,20 @@ fn run_diagnostic_mutation_matrix(
     }
     passed_cases.push(ObjectLeaseDiagnosticMutationCase::RenameRoundTrip);
 
-    fs::write(&object, [])?;
-    fs::write(&object, &original)?;
-    if !prove_full_fallback()? {
+    ensure_diagnostic_lease(coordinator, keys, fixture, entries, root_id, object_count)?;
+    let in_place_write = fs::write(&object, []);
+    let in_place_write_blocked = in_place_write.is_err() && fs::read(&object)? == original;
+    if in_place_write.is_ok() {
+        fs::write(&object, &original)?;
+        let _ = prove_full_fallback()?;
         return Ok(passed_cases);
     }
-    passed_cases.push(ObjectLeaseDiagnosticMutationCase::TruncateRestore);
+    coordinator.reset_object_lease_diagnostic_counters();
+    diagnostic_commit(coordinator, keys, fixture, entries, root_id)?;
+    if !in_place_write_blocked || diagnostic_counters(coordinator)?.safe_opens != 0 {
+        return Ok(passed_cases);
+    }
+    passed_cases.push(ObjectLeaseDiagnosticMutationCase::InPlaceWriteBlocked);
 
     fs::rename(&object, &first)?;
     fs::write(&object, &original)?;
@@ -2499,7 +2507,10 @@ fn diagnostic_build_facts(
                 "windows_teardown_target_miss_retains_ownership_until_completion",
                 "windows_object_lease_ambiguity_and_failure_are_unknown",
                 "windows_object_lease_real_directory_junction_activity_is_dirty_all",
-                "windows_object_lease_real_create_delete_rename_truncate_and_replace_are_dirty",
+                "windows_object_lease_real_create_delete_rename_and_replace_are_dirty",
+                "windows_object_lease_blocks_in_place_truncate_and_stays_clean",
+                "windows_validation_open_rejects_existing_writer",
+                "windows_retained_validation_anchor_rejects_later_writer",
                 "windows_object_lease_retained_anchor_rejects_handle_loss_and_outside_hard_link",
                 "cache_hit_rejects_unexpected_hard_link_production_link_count",
             ],

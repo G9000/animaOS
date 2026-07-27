@@ -800,10 +800,14 @@ fn lease_failure_cache_poison_discards_lease_resources_outside_its_mutex() {
 mod windows_object_lease_tests {
     use std::fs;
     use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt as _;
     use std::sync::Arc;
 
     use cap_std::ambient_authority;
     use cap_std::fs::Dir;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
 
     use super::*;
     use crate::transaction::object_lease::windows::{
@@ -855,6 +859,70 @@ mod windows_object_lease_tests {
             .filter(|name| name.starts_with("AL") && name.ends_with(".TMP"))
             .collect();
         assert!(residue.is_empty(), "probe residue: {residue:?}");
+    }
+
+    #[test]
+    fn windows_validation_open_rejects_existing_writer() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-windows-existing-object-writer-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("object.acore");
+        fs::write(&path, b"ciphertext").unwrap();
+        let writer = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+
+        let opened = crate::transaction::open_regular_file_in(&dir, path.file_name().unwrap());
+
+        assert!(
+            opened.is_err(),
+            "validation must not start while a writer can remain open across its fences"
+        );
+        drop(writer);
+        drop(dir);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_retained_validation_anchor_rejects_later_writer() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-windows-retained-anchor-writer-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("object.acore");
+        fs::write(&path, b"ciphertext").unwrap();
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let file =
+            crate::transaction::open_regular_file_in(&dir, path.file_name().unwrap()).unwrap();
+        let anchor = RetainedValidationAnchor::new(file).unwrap();
+
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path);
+
+        assert!(
+            writer.is_err(),
+            "a retained validation anchor must exclude writers for its entire lifetime"
+        );
+        drop(anchor);
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+        drop(writer);
+        drop(dir);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1485,8 +1553,8 @@ mod windows_object_lease_tests {
     }
 
     #[test]
-    fn windows_object_lease_real_create_delete_rename_truncate_and_replace_are_dirty() {
-        for mutation in ["create", "delete", "rename", "truncate", "replace"] {
+    fn windows_object_lease_real_create_delete_rename_and_replace_are_dirty() {
+        for mutation in ["create", "delete", "rename", "replace"] {
             let (root, lease, _budget) = monitored_lease(mutation);
             let target = root.join("mutation-target");
             let object = root.join(binding(0).physical_name.as_str());
@@ -1494,7 +1562,6 @@ mod windows_object_lease_tests {
                 "create" => fs::write(&target, b"payload").unwrap(),
                 "delete" => fs::remove_file(&object).unwrap(),
                 "rename" => fs::rename(&object, &target).unwrap(),
-                "truncate" => fs::write(&object, []).unwrap(),
                 "replace" => {
                     fs::rename(&object, &target).unwrap();
                     fs::write(&object, b"replacement").unwrap();
@@ -1507,6 +1574,26 @@ mod windows_object_lease_tests {
             assert_no_probe_residue(&root);
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn windows_object_lease_blocks_in_place_truncate_and_stays_clean() {
+        let (root, lease, _budget) = monitored_lease("blocked-truncate");
+        let object = root.join(binding(0).physical_name.as_str());
+
+        let truncate = fs::write(&object, []);
+
+        assert!(
+            truncate.is_err(),
+            "the retained anchor must deny an in-place truncate"
+        );
+        assert_eq!(fs::read(&object).unwrap(), b"ciphertext");
+        assert_eq!(lease.fence(), MonitorState::Clean);
+        drop(lease);
+        fs::write(&object, []).unwrap();
+        assert!(fs::read(&object).unwrap().is_empty());
+        assert_no_probe_residue(&root);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

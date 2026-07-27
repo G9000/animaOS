@@ -407,6 +407,9 @@ fn object_lease_diagnostic_records_ordered_boundaries_and_required_mutations() {
     assert!(observations
         .mutation_cases()
         .contains(&ObjectLeaseDiagnosticMutationCase::InsideDirectoryHardLink));
+    assert!(observations
+        .mutation_cases()
+        .contains(&ObjectLeaseDiagnosticMutationCase::InPlaceWriteBlocked));
     assert_eq!(observations.clean_safe_open_count(), 0);
     assert_eq!(observations.clean_metadata_query_count(), 8);
     assert_eq!(observations.clean_fence_count(), 2);

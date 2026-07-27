@@ -30,6 +30,8 @@ use fs4::FileExt;
 use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
 
 use self::cache::{
     AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet, ValidatedObjectBinding,
@@ -5377,6 +5379,15 @@ fn reject_symlink_in(dir: &Dir, name: &OsStr) -> Result<(), CommitError> {
 }
 
 pub(crate) fn open_regular_file_in(dir: &Dir, name: &OsStr) -> io::Result<File> {
+    #[cfg(windows)]
+    let file = {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+        dir.open_with(name, &options)?.into_std()
+    };
+    #[cfg(not(windows))]
     let file = dir.open(name)?.into_std();
     validate_opened_regular_file(dir, name, &file).map_err(|error| match error {
         CommitError::Io(error) => error,
