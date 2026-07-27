@@ -123,7 +123,9 @@ jobs:
           --test transaction production_link_count -- --nocapture
 
       - name: Test all CoreFS paths on Windows
-        run: cargo +1.75.0 test --locked -p anima-corefs
+        run: >-
+          cargo +1.75.0 test --locked -p anima-corefs
+          -- --test-threads=1
 
       - name: Enforce strict native Clippy
         run: >-

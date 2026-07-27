@@ -23,6 +23,30 @@ fn test_root(name: &str) -> std::path::PathBuf {
     ))
 }
 
+fn read_child_json(
+    path: &std::path::Path,
+    completed: &std::process::Output,
+    context: &str,
+) -> serde_json::Value {
+    let bytes = fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "{context} did not publish {} after child status {}: {error}; stdout={}; stderr={}",
+            path.display(),
+            completed.status,
+            String::from_utf8_lossy(&completed.stdout),
+            String::from_utf8_lossy(&completed.stderr),
+        )
+    });
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        panic!(
+            "{context} published invalid JSON after child status {}: {error}; stdout={}; stderr={}",
+            completed.status,
+            String::from_utf8_lossy(&completed.stdout),
+            String::from_utf8_lossy(&completed.stderr),
+        )
+    })
+}
+
 fn temporary_residue(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     fn visit(root: &std::path::Path, residue: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = fs::read_dir(root) else {
@@ -262,7 +286,7 @@ fn production_lease_diagnostic_validates_2500_descriptors_in_an_isolated_child()
         ])
         .output()
         .unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+    let value = read_child_json(&output, &completed, "production lease diagnostic");
     assert_closed_object_lease_diagnostic_schema(&value);
     let strict_provenance_matches = value["build"]["source"]["clean"] == true
         && value["build"]["source"]["commit"]
@@ -422,7 +446,7 @@ fn object_lease_diagnostic_cli_has_a_closed_create_only_contract() {
         .unwrap();
 
     if cfg!(windows) {
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        let value = read_child_json(&output, &completed, "lease diagnostic CLI");
         assert_closed_object_lease_diagnostic_schema(&value);
         assert_eq!(value["platform"], "windows");
         assert_eq!(value["objectCount"], 8);

@@ -497,6 +497,16 @@ def test_object_lease_diagnostic_cfg_and_disabled_macos_ci_are_explicit() -> Non
     assert "cargo +1.75.0 test --locked -p anima-corefs" in standalone
 
 
+def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
+    workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
+    windows = workflow.split("  windows-native-lease:", 1)[1].split("  macos-native-lease:", 1)[0]
+    full_suite = windows.split("      - name: Test all CoreFS paths on Windows", 1)[1]
+    full_suite = full_suite.split("      - name:", 1)[0]
+
+    assert "cargo +1.75.0 test --locked -p anima-corefs" in full_suite
+    assert "-- --test-threads=1" in full_suite
+
+
 def load_benchmark_module():
     assert SCRIPT_PATH.is_file(), "catalog benchmark feature is missing"
     spec = importlib.util.spec_from_file_location("benchmark_corefs_catalog", SCRIPT_PATH)
