@@ -288,6 +288,7 @@ fn targeted_object_rotation_rejects_authenticated_content_outside_the_catalog_ha
         forged_body,
     )
     .unwrap();
+    coordinator.release_object_lease().unwrap();
     fs::write(
         coordinator
             .objects_path()

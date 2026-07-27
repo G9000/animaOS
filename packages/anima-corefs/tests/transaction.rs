@@ -345,6 +345,7 @@ fn cache_hit_rejects_missing_object() {
 #[test]
 fn cache_hit_rejects_empty_object() {
     let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-empty-object");
+    coordinator.release_object_lease().unwrap();
     fs::write(
         coordinator
             .objects_path()
