@@ -1082,6 +1082,66 @@ def test_explicit_runtime_url_skips_embedded_pg(
         sys.modules.pop("anima_server.main", None)
 
 
+def test_lifespan_shutdown_closes_unlock_store_before_runtime_disposal_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    shutdown_order: list[str] = []
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_background_memory_enabled = settings.agent_background_memory_enabled
+
+    async def cancelled_reflection_drain() -> None:
+        shutdown_order.append("reflection")
+        raise asyncio.CancelledError
+
+    async def shutdown_unlock_store() -> None:
+        shutdown_order.append("unlock-store")
+
+    try:
+        settings.data_dir = managed_tmp_path / "anima-data"
+        settings.runtime_database_url = ""
+        settings.agent_background_memory_enabled = False
+        main_module = _reload_main_module()
+
+        import anima_server.services.sessions as sessions_module
+
+        monkeypatch.setattr(main_module, "_start_embedded_pg", lambda: None)
+        monkeypatch.setattr(
+            main_module,
+            "dispose_runtime_engine",
+            lambda: shutdown_order.append("runtime"),
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.reflection.cancel_pending_reflection",
+            cancelled_reflection_drain,
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.fastembed_backend.warm_up_retrieval_models",
+            lambda: None,
+        )
+        monkeypatch.setattr(sessions_module.unlock_session_store, "start", lambda: None)
+        monkeypatch.setattr(
+            sessions_module.unlock_session_store,
+            "shutdown",
+            shutdown_unlock_store,
+        )
+        _stub_create_app_bootstrap(monkeypatch, main_module)
+
+        app = main_module.create_app()
+
+        with pytest.raises(asyncio.CancelledError):
+            _run_app_lifespan(app)
+
+        assert shutdown_order == ["reflection", "unlock-store", "runtime"]
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.agent_background_memory_enabled = original_background_memory_enabled
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
 def test_runtime_startup_enables_pgvector_before_runtime_migrations(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,

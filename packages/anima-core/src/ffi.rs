@@ -424,6 +424,16 @@ mod python {
             );
         }
 
+        fn begin_close_native(&self) {
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.terminal_close = true;
+            self.lifecycle.changed.notify_all();
+        }
+
         fn release_native(&self) -> PyResult<()> {
             self.coordinator
                 .ensure_object_lease_release_not_reentrant()
@@ -464,7 +474,11 @@ mod python {
                             "CoreFS session is closed",
                         ));
                     }
-                    CorefsSessionPhase::Open => unreachable!("terminal Open is never published"),
+                    CorefsSessionPhase::Open => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "CoreFS session is closing",
+                        ));
+                    }
                 }
             }
 
@@ -676,6 +690,10 @@ mod python {
 
         fn close(&self, py: Python<'_>) -> PyResult<()> {
             py.allow_threads(|| self.close_native())
+        }
+
+        fn begin_close(&self) {
+            self.begin_close_native();
         }
 
         fn validation_snapshot(
@@ -4005,6 +4023,20 @@ mod python {
                 drop(guard);
                 closer.join().unwrap();
                 assert!(close_done.load(Ordering::SeqCst));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn begin_close_terminalizes_before_active_operations_drain() {
+                let (_root, session) = native_session("begin-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+
+                session.begin_close_native();
+
+                assert!(session.acquire_operation_for_test().is_err());
+                assert!(session.release_native().is_err());
+                drop(guard);
+                session.close_native().unwrap();
                 assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
             }
 

@@ -16,7 +16,7 @@ from fastapi import (
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.unlock import require_unlocked_session_async
 from anima_server.db import get_db
 from anima_server.schemas.diary import (
     DiaryAttachmentResponse,
@@ -57,7 +57,7 @@ async def list_entries(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[DiaryEntryResponse]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     if session.user_id != userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
 
@@ -71,7 +71,7 @@ async def create_entry(
     request: Request,
     db: Session = Depends(get_db),
 ) -> DiaryEntryResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     if session.user_id != payload.userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
 
@@ -96,7 +96,7 @@ async def list_folders(
     userId: int = Query(ge=0),
     db: Session = Depends(get_db),
 ) -> list[DiaryFolderResponse]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     if session.user_id != userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
 
@@ -112,7 +112,7 @@ async def create_folder(
     request: Request,
     db: Session = Depends(get_db),
 ) -> DiaryFolderResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     if session.user_id != payload.userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
 
@@ -127,7 +127,7 @@ async def update_folder(
     request: Request,
     db: Session = Depends(get_db),
 ) -> DiaryFolderResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     folder = load_folder_for_user(db, user_id=session.user_id, folder_id=folder_id)
     if folder is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found.")
@@ -144,7 +144,7 @@ async def delete_folder(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     folder = load_folder_for_user(db, user_id=session.user_id, folder_id=folder_id)
     if folder is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found.")
@@ -159,7 +159,7 @@ async def update_entry(
     request: Request,
     db: Session = Depends(get_db),
 ) -> DiaryEntryResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     entry = load_entry_for_user(db, user_id=session.user_id, entry_id=entry_id)
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diary entry not found.")
@@ -196,7 +196,7 @@ async def upload_attachment(
     caption: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ) -> DiaryAttachmentResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     entry = load_entry_for_user(db, user_id=session.user_id, entry_id=entry_id)
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diary entry not found.")
@@ -221,7 +221,7 @@ async def download_attachment(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     attachment = load_attachment_for_user(
         db,
         user_id=session.user_id,
@@ -252,7 +252,7 @@ async def delete_entry(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     entry = load_entry_for_user(db, user_id=session.user_id, entry_id=entry_id)
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diary entry not found.")

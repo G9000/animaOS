@@ -254,15 +254,17 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 task.cancel()
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
-            await unlock_session_store.shutdown()
         finally:
-            if health_handler is not None:
-                logging.getLogger("anima_server").removeHandler(health_handler)
-            if health_logger is not None:
-                health_logger.flush()
-            dispose_runtime_engine()
-            if embedded_pg is not None:
-                embedded_pg.stop()
+            try:
+                await unlock_session_store.shutdown()
+            finally:
+                if health_handler is not None:
+                    logging.getLogger("anima_server").removeHandler(health_handler)
+                if health_logger is not None:
+                    health_logger.flush()
+                dispose_runtime_engine()
+                if embedded_pg is not None:
+                    embedded_pg.stop()
 
 
 class SidecarNonceMiddleware(BaseHTTPMiddleware):

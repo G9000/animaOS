@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import inspect
@@ -22,6 +23,7 @@ from anima_server.services.dev_session_snapshot import (
     DevSessionSnapshotError,
 )
 from anima_server.services.sessions import UnlockSessionStore
+from fastapi import HTTPException
 
 
 def _payload(*, token: str = "token-one") -> dict[str, object]:
@@ -389,6 +391,9 @@ def test_corefs_keys_create_one_server_owned_native_session(
         def __init__(self, core_root: str, core_id: str) -> None:
             calls.append((core_root, core_id))
 
+        def begin_close(self) -> None:
+            pass
+
         def close(self) -> None:
             pass
 
@@ -426,6 +431,25 @@ def test_corefs_keys_create_one_server_owned_native_session(
     ]
 
 
+def test_native_session_without_begin_close_is_rejected_before_publication() -> None:
+    class LegacyNativeSession:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    native_session = LegacyNativeSession()
+    store = UnlockSessionStore(corefs_session_factory=lambda: native_session)
+
+    with pytest.raises(RuntimeError, match="begin_close"):
+        store.create(32, {"memories": b"a" * 32}, corefs_keys=object())
+
+    assert native_session.close_calls == 1
+    with store._lock:
+        assert store._sessions == {}
+
+
 def test_unpublished_native_session_is_closed_when_snapshot_commit_fails() -> None:
     snapshot = _FailingSnapshot()
     snapshot.fail_writes = True
@@ -446,12 +470,18 @@ def test_unpublished_native_session_is_closed_when_snapshot_commit_fails() -> No
 
 class _BlockingNativeSession:
     def __init__(self, *, close_error: Exception | None = None) -> None:
+        self.begin_calls = 0
+        self.began = Event()
         self.entered = Event()
         self.release = Event()
         self.returned = Event()
         self.close_calls = 0
         self.close_thread_id: int | None = None
         self.close_error = close_error
+
+    def begin_close(self) -> None:
+        self.begin_calls += 1
+        self.began.set()
 
     def close(self) -> None:
         self.close_calls += 1
@@ -615,11 +645,13 @@ async def test_shutdown_waits_for_each_native_close_result() -> None:
     second_native = _BlockingNativeSession()
     first_session = _attach_native_session(store, first_token, first_native)
     second_session = _attach_native_session(store, second_token, second_native)
-    second_native.release.set()
 
     shutdown_task = asyncio.create_task(store.shutdown())
     try:
+        assert await asyncio.to_thread(first_native.began.wait, 1)
+        assert await asyncio.to_thread(second_native.began.wait, 1)
         assert await asyncio.to_thread(first_native.entered.wait, 1)
+        assert not second_native.entered.is_set()
         assert store.resolve(first_token) is None
         assert store.resolve(second_token) is None
         await asyncio.sleep(2.1)
@@ -628,6 +660,7 @@ async def test_shutdown_waits_for_each_native_close_result() -> None:
         assert second_session.deks["memories"] == b"b" * 32
     finally:
         first_native.release.set()
+        second_native.release.set()
         await asyncio.wait_for(shutdown_task, timeout=3)
 
     assert first_native.close_calls == 1
@@ -725,3 +758,203 @@ async def test_cancelled_logout_still_finishes_native_close_and_zeroes_deks(
     assert await asyncio.to_thread(native_session.returned.wait, 3)
     assert attached.deks["memories"] == b"\x00" * 32
     assert native_session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_async_unlock_dependency_offloads_extended_expiry_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.api.deps import unlock as unlock_deps
+
+    store = UnlockSessionStore()
+    token = store.create(74, {"memories": b"a" * 32})
+    native_session = _BlockingNativeSession()
+    _attach_native_session(
+        store,
+        token,
+        native_session,
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    monkeypatch.setattr(unlock_deps, "unlock_session_store", store)
+    request = SimpleNamespace(headers={"x-anima-unlock": token})
+
+    resolution = asyncio.create_task(
+        unlock_deps.require_unlocked_session_async(request)  # type: ignore[arg-type]
+    )
+    try:
+        assert await asyncio.to_thread(native_session.entered.wait, 1)
+        heartbeat = 0
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+            heartbeat += 1
+        assert heartbeat == 10
+        assert not resolution.done()
+        with store._lock:
+            assert token not in store._sessions
+    finally:
+        native_session.release.set()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await asyncio.wait_for(resolution, timeout=3)
+    assert exc_info.value.status_code == 401
+    assert native_session.close_calls == 1
+
+
+def test_async_code_does_not_call_sync_unlock_accessors() -> None:
+    source_dir = Path(__file__).parents[1] / "src" / "anima_server"
+    forbidden_calls: list[str] = []
+
+    class DirectAsyncCallVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.calls: list[ast.Call] = []
+
+        def visit_Call(self, node: ast.Call) -> None:
+            self.calls.append(node)
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            del node
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            del node
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            del node
+
+    for path in sorted(source_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.AsyncFunctionDef):
+                continue
+            visitor = DirectAsyncCallVisitor()
+            for statement in function.body:
+                visitor.visit(statement)
+            for node in visitor.calls:
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id
+                    in {
+                        "get_active_dek",
+                        "get_active_deks",
+                        "require_unlocked_session",
+                        "require_unlocked_user",
+                    }
+                ):
+                    forbidden_calls.append(
+                        f"{path.relative_to(source_dir)}:"
+                        f"{node.lineno}:{function.name}:{node.func.id}"
+                    )
+
+    assert forbidden_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_inflight_native_construction_before_return() -> None:
+    factory_entered = Event()
+    factory_release = Event()
+    native_session = _BlockingNativeSession()
+    native_session.release.set()
+
+    def factory() -> _BlockingNativeSession:
+        factory_entered.set()
+        if not factory_release.wait(timeout=8):
+            raise AssertionError("finite construction latch was not released")
+        return native_session
+
+    store = UnlockSessionStore(corefs_session_factory=factory)
+    create_task = asyncio.create_task(
+        asyncio.to_thread(
+            store.create,
+            75,
+            {"memories": b"a" * 32},
+            corefs_keys=object(),
+        )
+    )
+    assert await asyncio.to_thread(factory_entered.wait, 1)
+    shutdown_task = asyncio.create_task(store.shutdown())
+    try:
+        await asyncio.sleep(0.1)
+        assert not shutdown_task.done()
+        with pytest.raises(RuntimeError, match="teardown is active"):
+            store.start()
+    finally:
+        factory_release.set()
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        await asyncio.wait_for(create_task, timeout=3)
+    await asyncio.wait_for(shutdown_task, timeout=3)
+    assert native_session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_async_creation_revokes_unclaimed_session() -> None:
+    factory_entered = Event()
+    factory_release = Event()
+    factory_completed = Event()
+    native_session = _BlockingNativeSession()
+    native_session.release.set()
+
+    def factory() -> _BlockingNativeSession:
+        factory_entered.set()
+        if not factory_release.wait(timeout=8):
+            raise AssertionError("finite construction latch was not released")
+        factory_completed.set()
+        return native_session
+
+    store = UnlockSessionStore(corefs_session_factory=factory)
+    create_task = asyncio.create_task(
+        store.create_async(
+            77,
+            {"memories": b"a" * 32},
+            corefs_keys=object(),
+        )
+    )
+    assert await asyncio.to_thread(factory_entered.wait, 1)
+
+    try:
+        create_task.cancel()
+        await asyncio.sleep(0.1)
+        assert not create_task.done()
+    finally:
+        factory_release.set()
+        assert await asyncio.to_thread(factory_completed.wait, 1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(create_task, timeout=3)
+    with store._lock:
+        assert store._sessions == {}
+    assert native_session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_shutdown_defers_cancellation_until_native_close_finishes() -> None:
+    store = UnlockSessionStore()
+    token = store.create(76, {"memories": b"a" * 32})
+    native_session = _BlockingNativeSession()
+    attached = _attach_native_session(store, token, native_session)
+
+    shutdown_task = asyncio.create_task(store.shutdown())
+    assert await asyncio.to_thread(native_session.entered.wait, 1)
+    shutdown_task.cancel()
+    try:
+        await asyncio.sleep(0.1)
+        assert not shutdown_task.done()
+        assert attached.deks["memories"] == b"a" * 32
+    finally:
+        native_session.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(shutdown_task, timeout=3)
+    assert attached.deks["memories"] == b"\x00" * 32
+    assert native_session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_rejects_sqlcipher_key_resurrection() -> None:
+    store = UnlockSessionStore()
+
+    await store.shutdown()
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        store.set_sqlcipher_key(b"q" * 32)
+    assert store.get_sqlcipher_key() is None

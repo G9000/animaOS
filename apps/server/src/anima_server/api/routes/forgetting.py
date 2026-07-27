@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models import MemoryItem
@@ -26,7 +26,7 @@ async def forget_single_memory(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Hard-delete a single memory with full cleanup."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     item = db.get(MemoryItem, memory_id)
     if item is None or item.user_id != user_id:
@@ -73,7 +73,7 @@ async def forget_by_topic_endpoint(
     so ``forget_by_topic``'s content search can never surface them). Both are
     PRD topic-scoped right-to-forget.
     """
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     candidates = forget_by_topic(db, topic=topic, user_id=user_id)
 

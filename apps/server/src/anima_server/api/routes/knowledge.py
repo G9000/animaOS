@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.config import settings
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
@@ -112,7 +112,7 @@ async def list_sources(
     limit: int = 50,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     safe_limit = min(max(limit, 1), 200)
     sources = list(
         runtime_db.scalars(
@@ -131,7 +131,7 @@ async def ingest_text_source(
     payload: TextSourceRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     try:
         source, artifacts, spans = ingest_text_content(
             runtime_db,
@@ -159,7 +159,7 @@ async def ingest_markdown_source(
     payload: TextSourceRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     try:
         source, artifacts, spans = ingest_markdown_content(
             runtime_db,
@@ -187,7 +187,7 @@ async def ingest_web_capture_source(
     payload: WebCaptureRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     url = payload.url
     html = payload.html
     if payload.fetch:
@@ -256,7 +256,7 @@ async def ingest_html_source(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     filename = file.filename or "page.html"
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     has_html_extension = filename.lower().endswith((".html", ".htm"))
@@ -311,7 +311,7 @@ async def reextract_source(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     # Checked before re-extraction: replacing spans cascades citation rows,
     # so an already-compiled source must be recompiled afterwards or its
     # concepts would go stale/orphaned until a manual compile.
@@ -373,7 +373,7 @@ async def get_source(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
     return _source_response(
         source,
@@ -389,7 +389,7 @@ async def list_concepts(
     limit: int = 50,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     safe_limit = min(max(limit, 1), 200)
     concepts = list(
         runtime_db.scalars(
@@ -412,7 +412,7 @@ async def get_concept(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     concept = runtime_db.scalar(
         select(RuntimeKnowledgeConcept).where(
             RuntimeKnowledgeConcept.id == concept_id,
@@ -447,7 +447,7 @@ async def compile_source(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
     run = await _compile_source_now(
         runtime_db,
@@ -466,7 +466,7 @@ async def search_knowledge(
     limit: int = 20,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     query = q.strip()
     if not query:
         raise HTTPException(
@@ -525,7 +525,7 @@ async def export_knowledge(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> Response:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     with tempfile.TemporaryDirectory(prefix="anima-okf-export-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
         export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
@@ -554,7 +554,7 @@ async def import_knowledge(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     content = await file.read()
     with tempfile.TemporaryDirectory(prefix="anima-okf-import-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
@@ -586,7 +586,7 @@ async def lint_knowledge(
     payload: KnowledgeLintRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     findings = lint_knowledge_bundle(
         runtime_db,
         user_id=payload.userId,

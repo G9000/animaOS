@@ -131,6 +131,25 @@ class _QueueWebSocket(_FakeWebSocket):
         return message
 
 
+class _TrackingUnlockStore:
+    def __init__(self) -> None:
+        self.created: list[tuple[int, dict[str, bytes], object | None]] = []
+        self.revoked: list[str | None] = []
+
+    async def create_async(
+        self,
+        user_id: int,
+        deks: dict[str, bytes],
+        *,
+        corefs_keys: object | None = None,
+    ) -> str:
+        self.created.append((user_id, deks, corefs_keys))
+        return "password-owned-token"
+
+    async def revoke_async(self, token: str | None) -> None:
+        self.revoked.append(token)
+
+
 class _FakeScalarResult:
     def __init__(self, values: list[Any]) -> None:
         self._values = values
@@ -250,6 +269,76 @@ class TestWebSocketFrameTranslation:
 
 class TestWebSocketRunHandlers:
     @pytest.mark.asyncio
+    async def test_password_auth_returns_owned_unlock_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_ws = _QueueWebSocket()
+        store = _TrackingUnlockStore()
+        deks = {"memories": b"a" * 32}
+        corefs_keys = object()
+        await fake_ws.incoming.put(
+            {"type": "auth", "username": "alice", "password": "pw123456"}
+        )
+
+        monkeypatch.setattr(ws_route, "unlock_session_store", store)
+        monkeypatch.setattr(
+            ws_route,
+            "authenticate_account",
+            lambda username, password: (
+                {"id": 5, "username": username},
+                deks,
+                corefs_keys,
+            ),
+        )
+
+        authenticated = await ws_route._authenticate(fake_ws)  # type: ignore[arg-type]
+
+        assert authenticated is not None
+        connection, owned_token = authenticated
+        assert connection.user_id == 5
+        assert connection.username == "alice"
+        assert owned_token == "password-owned-token"
+        assert store.created == [(5, deks, corefs_keys)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("owned_token", "expected_revocations"),
+        [
+            ("password-owned-token", ["password-owned-token"]),
+            (None, []),
+        ],
+    )
+    async def test_ws_agent_only_revokes_connection_owned_unlock_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        owned_token: str | None,
+        expected_revocations: list[str],
+    ) -> None:
+        fake_ws = _QueueWebSocket()
+        store = _TrackingUnlockStore()
+        connection = ActionToolConnection(
+            websocket=fake_ws,
+            user_id=5,
+            username="alice",
+        )
+
+        async def fake_authenticate(
+            websocket: Any,
+        ) -> tuple[ActionToolConnection, str | None]:
+            assert websocket is fake_ws
+            return connection, owned_token
+
+        monkeypatch.setattr(ws_route, "_authenticate", fake_authenticate)
+        monkeypatch.setattr(ws_route, "unlock_session_store", store)
+        monkeypatch.setattr(ws_route, "_pending_approval_frames", lambda _user_id: [])
+
+        await fake_ws.incoming.put(None)
+        await ws_route.ws_agent(fake_ws)  # type: ignore[arg-type]
+
+        assert store.revoked == expected_revocations
+
+    @pytest.mark.asyncio
     async def test_user_message_disconnect_closes_service_stream(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -352,8 +441,17 @@ class TestWebSocketRunHandlers:
             "args": {"command": "git status"},
         }
 
-        async def fake_authenticate(websocket: Any) -> ActionToolConnection:
-            return ActionToolConnection(websocket=websocket, user_id=5, username="alice")
+        async def fake_authenticate(
+            websocket: Any,
+        ) -> tuple[ActionToolConnection, None]:
+            return (
+                ActionToolConnection(
+                    websocket=websocket,
+                    user_id=5,
+                    username="alice",
+                ),
+                None,
+            )
 
         monkeypatch.setattr(ws_route, "_authenticate", fake_authenticate)
         monkeypatch.setattr(
@@ -393,8 +491,17 @@ class TestWebSocketRunHandlers:
         release_approval = asyncio.Event()
         cancel_called = asyncio.Event()
 
-        async def fake_authenticate(websocket: Any) -> ActionToolConnection:
-            return ActionToolConnection(websocket=websocket, user_id=5, username="alice")
+        async def fake_authenticate(
+            websocket: Any,
+        ) -> tuple[ActionToolConnection, None]:
+            return (
+                ActionToolConnection(
+                    websocket=websocket,
+                    user_id=5,
+                    username="alice",
+                ),
+                None,
+            )
 
         async def fake_approval_response(
             conn: ActionToolConnection,
@@ -440,8 +547,17 @@ class TestWebSocketRunHandlers:
         first_handled = asyncio.Event()
         second_handled = asyncio.Event()
 
-        async def fake_authenticate(websocket: Any) -> ActionToolConnection:
-            return ActionToolConnection(websocket=websocket, user_id=5, username="alice")
+        async def fake_authenticate(
+            websocket: Any,
+        ) -> tuple[ActionToolConnection, None]:
+            return (
+                ActionToolConnection(
+                    websocket=websocket,
+                    user_id=5,
+                    username="alice",
+                ),
+                None,
+            )
 
         async def fake_user_message(
             conn: ActionToolConnection,

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.services.data_crypto import df
 
@@ -314,7 +314,7 @@ async def get_full_self_model(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> dict[str, object]:
     """Get the complete self-model for this user across soul and runtime stores."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.self_model import (
         ensure_self_model_exists,
@@ -413,7 +413,7 @@ async def get_pending_memory_ops(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> PendingMemoryOpsResponse:
     """Get unconsolidated core-memory writes waiting for Soul Writer."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     return PendingMemoryOpsResponse(
         userId=user_id,
@@ -431,7 +431,7 @@ async def consolidate_pending_memory_ops(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> PendingMemoryConsolidationResponse:
     """Run Soul Writer immediately for this user's pending memory ops."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     if runtime_db is None:
         raise HTTPException(
@@ -464,7 +464,7 @@ async def get_user_profile(
     db: Session = Depends(get_db),
 ) -> UserProfileResponse:
     """List structured user profile fields and their evidence."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.user_profile import list_profile_fields
 
@@ -502,7 +502,7 @@ async def correct_user_profile_field(
     db: Session = Depends(get_db),
 ) -> UserProfileFieldResponse:
     """Correct a structured user profile field while preserving history."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.user_profile import correct_profile_field
 
@@ -542,7 +542,7 @@ async def retract_user_profile_field(
     db: Session = Depends(get_db),
 ) -> UserProfileFieldResponse:
     """Retract an active structured user profile field."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.user_profile import retract_profile_field
 
@@ -568,7 +568,7 @@ async def get_self_model_section(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """Get a single self-model section."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.self_model import (
         ALL_SECTIONS,
@@ -681,7 +681,7 @@ async def update_self_model_section(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """User edits a self-model section. Treated as highest-confidence evidence."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.self_model import (
         ALL_SECTIONS,
@@ -790,7 +790,7 @@ async def get_agent_profile(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Get the agent profile for this user."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.agent.thinking_monologue import (
@@ -831,7 +831,7 @@ async def get_agent_biography_preview(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> AgentBiographyPreviewResponse:
     """Get a compiled preview of the backend context shaping this agent."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.biography_preview import build_agent_biography_preview
 
@@ -859,7 +859,7 @@ async def update_agent_profile(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Update the agent's profile - name, relationship, persona template."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.agent.profile_memory import (
@@ -1021,7 +1021,7 @@ async def generate_agent_thinking_monologue(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Generate a draft Thinking Monologue without persisting it."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.thinking_monologue import generate_thinking_monologue
 
@@ -1043,7 +1043,7 @@ async def upload_agent_avatar(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Upload a custom avatar image for the agent."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     if file.content_type not in ALLOWED_AVATAR_TYPES:
         raise HTTPException(
@@ -1101,7 +1101,7 @@ async def get_agent_avatar(
     db: Session = Depends(get_db),
 ) -> FileResponse:
     """Serve the agent's avatar image."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.storage import get_user_data_dir
 
@@ -1132,7 +1132,7 @@ async def delete_agent_avatar(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Delete the agent's custom avatar, reverting to default."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.storage import get_user_data_dir
@@ -1162,7 +1162,7 @@ async def get_agent_state(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> AgentStateResponse:
     """Get a compact, backend-grounded companion state line for ambient UI."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.proactive import build_agent_state
 
@@ -1190,7 +1190,7 @@ async def get_emotional_state(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> EmotionalContextResponse:
     """Get the AI's current emotional read of the user."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.emotional_intelligence import (
         dominant_valence_arousal,
@@ -1255,7 +1255,7 @@ async def get_intentions(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> dict[str, str]:
     """Get the AI's current intentions and behavioral rules."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.intentions import get_intentions_text
 

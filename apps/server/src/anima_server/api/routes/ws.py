@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _authenticate(ws: WebSocket) -> ClientConnection | None:
+async def _authenticate(
+    ws: WebSocket,
+) -> tuple[ClientConnection, str | None] | None:
     """Wait for auth message, validate, return connection or None."""
     try:
         raw = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
@@ -65,10 +67,13 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
             resolved_username = user.username if user else (username or "")
         finally:
             db.close()
-        return ClientConnection(
-            websocket=ws,
-            user_id=session.user_id,
-            username=resolved_username,
+        return (
+            ClientConnection(
+                websocket=ws,
+                user_id=session.user_id,
+                username=resolved_username,
+            ),
+            None,
         )
 
     # Try username/password auth
@@ -76,15 +81,18 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
         try:
             response, deks, corefs_keys = authenticate_account(username, password)
             user_id = int(response["id"])
-            await unlock_session_store.create_async(
+            owned_unlock_token = await unlock_session_store.create_async(
                 user_id,
                 deks,
                 corefs_keys=corefs_keys,
             )
-            return ClientConnection(
-                websocket=ws,
-                user_id=user_id,
-                username=str(response.get("username", username)),
+            return (
+                ClientConnection(
+                    websocket=ws,
+                    user_id=user_id,
+                    username=str(response.get("username", username)),
+                ),
+                owned_unlock_token,
             )
         except ValueError:
             await ws.send_json(
@@ -119,27 +127,30 @@ async def _authenticate(ws: WebSocket) -> ClientConnection | None:
 @router.websocket("/ws/agent")
 async def ws_agent(websocket: WebSocket) -> None:
     await websocket.accept()
-    conn = await _authenticate(websocket)
-    if conn is None:
+    authenticated = await _authenticate(websocket)
+    if authenticated is None:
         await websocket.close(code=4001, reason="Authentication failed")
         return
-
-    registry.add(conn)
-    await websocket.send_json(
-        {
-            "type": "auth_ok",
-            "user": {"id": conn.user_id, "username": conn.username},
-        }
-    )
-    for frame in _pending_approval_frames(conn.user_id):
-        await websocket.send_json(frame)
-
-    logger.info("WebSocket client connected: user_id=%d", conn.user_id)
+    conn, owned_unlock_token = authenticated
 
     turn_task: asyncio.Task[None] | None = None
     approval_task: asyncio.Task[None] | None = None
+    registered = False
 
     try:
+        registry.add(conn)
+        registered = True
+        await websocket.send_json(
+            {
+                "type": "auth_ok",
+                "user": {"id": conn.user_id, "username": conn.username},
+            }
+        )
+        for frame in _pending_approval_frames(conn.user_id):
+            await websocket.send_json(frame)
+
+        logger.info("WebSocket client connected: user_id=%d", conn.user_id)
+
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
@@ -203,11 +214,16 @@ async def ws_agent(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected: user_id=%d", conn.user_id)
     finally:
-        if turn_task is not None and not turn_task.done():
-            turn_task.cancel()
-        if approval_task is not None and not approval_task.done():
-            approval_task.cancel()
-        registry.remove(conn)
+        try:
+            if turn_task is not None and not turn_task.done():
+                turn_task.cancel()
+            if approval_task is not None and not approval_task.done():
+                approval_task.cancel()
+            if registered:
+                registry.remove(conn)
+        finally:
+            if owned_unlock_token is not None:
+                await unlock_session_store.revoke_async(owned_unlock_token)
 
 
 def _has_awaiting_approval_run(user_id: int) -> bool:

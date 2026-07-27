@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.types import Receive, Scope, Send
 
-from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_session_async, require_unlocked_user_async
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
 from anima_server.models import MemoryItem, Task
@@ -120,7 +120,7 @@ async def send_message(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     message = normalize_document_only_user_message(payload.message, payload.documentIds)
 
     if not payload.stream:
@@ -217,7 +217,7 @@ async def get_chat_history(
     limit: int = Query(default=50, ge=1, le=200),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> list[ChatHistoryMessage]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     rows = list_agent_history(userId, runtime_db, limit=limit)
     return [
         ChatHistoryMessage(
@@ -247,7 +247,7 @@ async def get_message_attachment(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> FileResponse:
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     message = runtime_db.get(RuntimeMessage, message_id)
     if (
         message is None
@@ -278,7 +278,7 @@ async def clear_chat_history(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatHistoryClearResponse:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatHistoryClearResponse(status="cleared")
 
@@ -290,7 +290,7 @@ async def reset_chat_thread(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResetResponse:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatResetResponse(status="reset")
 
@@ -303,7 +303,7 @@ async def get_brief(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Quick context brief (static, no LLM). Use /greeting for personalized greetings."""
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
 
     from anima_server.services.agent.proactive import (
         build_static_greeting,
@@ -332,7 +332,7 @@ async def get_greeting(
 
     Uses LLM when available, falls back to static greeting otherwise.
     """
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
 
     from anima_server.services.agent.proactive import generate_greeting
 
@@ -359,7 +359,7 @@ async def get_reflection(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Generate a personalised daily reflection question."""
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
 
     from anima_server.services.agent.proactive import generate_reflection
 
@@ -379,7 +379,7 @@ async def get_nudges(
     userId: int = Query(ge=0),
     db: Session = Depends(get_db),
 ) -> dict[str, list[dict[str, object]]]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
 
     nudges: list[dict[str, object]] = []
 
@@ -414,7 +414,7 @@ async def get_proactive_notice(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
 
     from anima_server.services.agent.proactive import generate_proactive_notice
 
@@ -461,7 +461,7 @@ async def get_home(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
 
     focus = get_current_focus(db, user_id=userId)
 
@@ -558,7 +558,7 @@ async def consolidate(
     Writer will batch-promote them into the soul store when enough
     candidates accumulate.
     """
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     from anima_server.services.agent.consolidation import run_background_extraction
 
@@ -624,7 +624,7 @@ async def trigger_sleep_tasks(
     automatic per-turn path.  The count-shaped response the Consciousness UI
     expects is rebuilt from the issued task runs' stored results.
     """
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.models.runtime import RuntimeBackgroundTaskRun
@@ -699,7 +699,7 @@ async def trigger_deep_monologue(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Manually trigger a deep inner monologue (full self-model reflection)."""
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     from anima_server.services.agent.inner_monologue import run_deep_monologue
 
@@ -743,7 +743,7 @@ async def cancel_run(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> CancelRunResponse:
     """Request cancellation of a running agent turn."""
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     run = runtime_db.get(RuntimeRun, run_id)
     if run is None:
@@ -766,7 +766,7 @@ async def dry_run(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> DryRunResponse:
     """Assemble the full prompt without calling the LLM."""
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     try:
         result = await dry_run_agent(payload.message, payload.userId, db, runtime_db)
@@ -795,7 +795,7 @@ async def handle_approval(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ApprovalResponse | StreamingResponse:
     """Approve or deny a pending tool call for an awaiting-approval run."""
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     run = runtime_db.get(RuntimeRun, run_id)
     if run is None:
