@@ -1,7 +1,7 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** User-approved; safety-first Windows teardown correction approved and
-independently re-reviewed on 2026-07-23; correction implementation pending
+**Status:** User-approved; Windows implementation and the exact reference gate are
+accepted; native macOS/APFS characterization and implementation remain pending
 
 **Ticket:** PCF-002 catalog-performance architecture revision
 
@@ -13,12 +13,14 @@ independently re-reviewed on 2026-07-23; correction implementation pending
 
 **Plan review:** Independently approved on 2026-07-23 with no remaining issues.
 
-**Revision note:** On 2026-07-23 the user approved a safety-first correction that
-separates bounded monitor-fence waits from completion-confirmed Windows teardown,
+**Implementation note:** On 2026-07-23 the user approved a safety-first correction
+that separates bounded monitor-fence waits from completion-confirmed Windows teardown,
 requires bounded `O(1)` Windows event publication, and corrects the Windows monitor
-resource reservation to three. The written correction was user-approved and passed
-independent specification review at commit `6a230eaf`; its review metadata was updated
-through `0a409ea7` alongside the revised plan. Implementation remains pending.
+resource reservation to three. The written correction passed independent review at
+`6a230eaf` and its plan revision passed at `0a409ea7`. The Windows implementation,
+production diagnostic, and unchanged exact 30/200 reference are accepted from source
+`370ba5cc` on 2026-07-27. The Apple-inclusive design is still in progress because
+native macOS/APFS Tasks 2 and 5 have not run.
 
 **Independent review:** The user-approved Windows baseline passed four review/revision
 rounds covering notification-name ambiguity, production link-count behavior,

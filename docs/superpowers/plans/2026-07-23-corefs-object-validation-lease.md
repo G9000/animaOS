@@ -15,10 +15,11 @@ binary, closed output schema, and exact Windows/macOS commands.
 **Plan revision note:** The written safety-first teardown specification was
 user-approved and independently approved on 2026-07-23. The focused plan revision at
 `0a409ea7` passed independent plan re-review with no remaining substantive findings.
-Tasks 4, 6, 7, and 8 are implemented and independently review-clean through
-`4b86e0ed`; the overall plan remains in progress. Task 2's native macOS
-characterization remains pending, Task 5 is unstarted, and Task 9 is the next locally
-executable unit.
+Tasks 4, 6, 7, 8, 9, 10, and 11 are implemented and independently review-clean. The
+Windows portion of Task 12 passed its permanent production diagnostic and unchanged
+exact reference from source `370ba5cc` on 2026-07-27. The overall plan remains in
+progress: Task 2's native macOS/APFS characterization, Task 5's backend, and Task 12's
+macOS/final-state steps remain pending.
 
 ---
 
@@ -961,7 +962,7 @@ git commit -m "test: verify CoreFS lease platform contracts"
 - Modify: `tickets/portable-core-filesystem/PCF-002-corefs-catalog.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Require a clean source commit before performance evidence**
+- [x] **Step 1: Require a clean source commit before performance evidence**
 
 Run:
 
@@ -973,7 +974,7 @@ git diff --check
 
 Expected: clean working tree and a committed implementation SHA. Do not generate the official artifact from uncommitted source.
 
-- [ ] **Step 2: Run the permanent Windows production-backend diagnostic**
+- [x] **Step 2: Run the permanent Windows production-backend diagnostic**
 
 Use the committed production-backend diagnostic over 2,500 real files:
 
@@ -1006,7 +1007,7 @@ ancestor/kqueue resources, no per-object descriptor growth, and zero residue.
 If correctness/resource/lifecycle or material improvement regresses, disable
 the macOS backend and retain safe-open fallback before proceeding.
 
-- [ ] **Step 4: Run the exact unchanged Windows 30/200 reference**
+- [x] **Step 4: Run the exact unchanged Windows 30/200 reference**
 
 Use the same create-only target handling and exact command preserved by the historical plan:
 
@@ -1016,7 +1017,7 @@ $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run --locked --project apps/serve
 
 Expected: exit `0`, `allPassed=true`, medium p95 <= 100 ms, maximum-live p95 <= 250 ms, serialized-limit p95 <= 250 ms, durable-write p95 <= 5 ms, maximum-live size <= 16 MiB, object counts `500/2500/0`, HEAD/catalog counts intact, and zero temporary files.
 
-- [ ] **Step 5: Independently validate provenance and the artifact**
+- [x] **Step 5: Independently validate provenance and the artifact**
 
 Run:
 
@@ -1033,6 +1034,23 @@ completion-confirmed exact ownership with zero handle/resource delta. A metric-o
 pass without completion confirmation, or completion confirmation after a
 supported-profile target miss, does not enable the backend.
 
+Windows evidence recorded on 2026-07-27 is green from clean source `370ba5cc`. The
+permanent 2,500-object diagnostic has SHA-256
+`7f7bc3178a74ca89c036b6a6dc8eed48c29f656967d06058489a7fb2041d1eeb`;
+it records safe-open/lease p95 `228.7909/47.7613` ms, exact `0/2500/2`
+safe-open/metadata/fence counts, live resources `2500/1/3`, zero post-teardown
+resources and descriptor delta, completion-confirmed cancellation plus join in
+`0.1181` ms against the `2000` ms target, the complete mutation matrix, and zero
+residue. The unchanged exact reference exited `0` with `allPassed=true`: medium,
+maximum-live, and serialized-limit commit p95 are `33.9442`, `133.9877`, and
+`159.7123` ms; durable-write p95 is `0.6594` ms; maximum-live serialized size is
+`8,255,077` bytes. The artifact SHA-256 is
+`bda68bf31ba6bf30eb48d38693cbc61bdfc4737f2f512979a25844f6b592fbbc`, and
+the preserved binary SHA-256 is
+`ca44aaecc2b50ef11d7b8bb5c3b41761b4b9f0d4c940c202f24ab3b3459d421f`.
+Historical read-only source/build/binary/Cargo.lock/target/argv/schema/tree validation,
+all `124` benchmark contracts, and the `50` named provenance regressions passed.
+
 - [ ] **Step 6: Apply the final ticket state**
 
 If the Windows native lifecycle target/resource gate or official performance gate is
@@ -1048,7 +1066,12 @@ history, and make PCF-003 eligible without claiming it. Mark this plan complete 
 approved spec implemented. Do not push, open a PR, request review, merge, deploy, or
 start PCF-003 without separate authority.
 
-- [ ] **Step 7: Commit final evidence**
+Current state: the Windows branch of this decision is green, but the Apple-inclusive
+plan has not satisfied the native macOS/APFS gates. Keep PCF-002 `in_progress`, leave
+`Completed:` blank, and keep PCF-003 dependency-ineligible until Tasks 2 and 5 plus
+Task 12 Step 3 are complete and Step 6 can be applied to the whole design.
+
+- [x] **Step 7: Commit final Windows evidence**
 
 ```powershell
 git add docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md tickets/portable-core-filesystem/PCF-002-corefs-catalog.md tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md
