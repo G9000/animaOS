@@ -19,6 +19,7 @@ from anima_server.services.agent.streaming import (
     build_run_started_event,
     build_tool_return_event,
 )
+from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -99,6 +100,17 @@ class TestWebSocketAuth:
                 # sending another message and confirming the connection is still alive.
                 ws.send_json({"type": "ping"})
                 # Connection should still be open (no error response expected).
+
+
+def test_managed_test_client_restores_unlock_store_for_later_bare_apps() -> None:
+    with managed_test_client("anima-ws-test-"):
+        pass
+
+    token = unlock_session_store.create(42, {"memories": b"m" * 32})
+    try:
+        assert unlock_session_store.resolve(token) is not None
+    finally:
+        unlock_session_store.revoke(token)
 
 
 class _FakeWebSocket:
