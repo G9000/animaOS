@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-27 18:20 MYT
+- Updated: 2026-07-27 20:11 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -231,6 +231,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-27 17:20 MYT - Repaired PR #119's Windows aggregate CI after the user approved the focused fix. The already-green native steps were preserved; the aggregate suite now runs serially, and diagnostic child failures retain status/stdout/stderr evidence. Local serialized CoreFS, Python contracts, strict Clippy, format/lint, YAML, and diff gates passed. PCF-002's row and this parent remain `in_progress`; native macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains `backlog` and dependency-ineligible.
 - 2026-07-27 17:44 MYT - Addressed both actionable P2 findings from PR #119's review of `7fa8077d` after user approval. WebSocket task teardown is now ordered before owned-token revocation, and post-start lifespan failures close unlock/runtime/PostgreSQL resources before propagation. RED/GREEN regressions plus the full affected suites, CoreFS/session band, lint, and compile gates passed. PCF-002's row and this parent remain `in_progress`; native macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains `backlog` and dependency-ineligible.
 - 2026-07-27 18:20 MYT - Addressed PR #119's current-head P1 test-order finding with a genuine RED/GREEN regression. The shared managed client now restores the process-global unlock-session store across real lifespan shutdown, preventing later bare CoreFS test apps from inheriting terminal state. The focused lifecycle regression, WebSocket-then-CoreFS reproduction, and full ordered WebSocket/session/CoreFS API band passed `1`, `2`, and `100` tests. PCF-002's row and this parent remain `in_progress`; native macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains `backlog` and dependency-ineligible.
+- 2026-07-27 20:11 MYT - Addressed PR #119's current-head P2 development-reload continuity finding test-first. Graceful server shutdown now closes process-local/native unlock state without overwriting the encrypted parent-scoped snapshot, preserving eligible soul-only sessions and the active SQLCipher key for a replacement `bun dev` child. The bare CoreFS API fixture now starts its owned singleton as well. Both focused regressions passed RED/GREEN; the combined affected band passed `149/149`, launcher continuity passed `12/12`, and lint, compile, build, and diff gates passed. PCF-002's row and this parent remain `in_progress`; native macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains `backlog` and dependency-ineligible.
 
 ## Validation
 
@@ -315,6 +316,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 object-validation-lease Task 11: focused diagnostic `6/6`; diagnostic integration `12/12` including isolated real 2,500-object accounting; full Rust 1.75 CoreFS `209` passed with `1` ignored plus all integrations/docs; full Rust 1.75 Python-enabled `anima-core` `271 + 5 + 21`; Python contracts `124/124`; release link-count `2/2`; Linux cross-target all-target compilation; strict combined all-target/all-feature Clippy; scoped rustfmt; Ruff; YAML parse; and diff hygiene all passed. `actionlint` was unavailable locally. `bun run check:repo` found no PCF issue and retained only the unrelated pre-existing `IL-007`/`IL-008` findings.
   - PCF-002 object-validation-lease Task 12 Windows evidence: the production diagnostic and unchanged exact 30/200 reference passed from clean source `370ba5cc`; the historical source/build/binary/Cargo.lock/target/argv/schema/count/generation/tree validator passed; the benchmark contract passed `124/124`; the named provenance filter passed `50/50`; and diff hygiene passed.
   - PR #119 unlock-store lifecycle follow-up: the new managed-client regression failed RED with `RuntimeError: Unlock session store is shut down`, then passed GREEN; the ordered WebSocket-client-then-bare-CoreFS reproduction passed `2/2`, and the full ordered WebSocket/session/CoreFS API band passed `100/100`.
+  - PR #119 development-reload continuity follow-up: the encrypted-snapshot and real-lifespan/bare-CoreFS order regressions both failed RED and passed GREEN; the full continuity/auth/WebSocket/runtime/CoreFS band passed `149/149`; launcher continuity passed `12/12`; server Ruff, Python compileall, root build, and diff hygiene passed. The repository check retained only the unrelated pre-existing `IL-007`/`IL-008` findings.
 - Changed paths:
   - `packages/anima-corefs/src/{envelope.rs,catalog/,crypto.rs,lib.rs,id.rs,bounded.rs}`
   - `packages/anima-corefs/tests/{envelope.rs,catalog.rs,opaque_id.rs}`
@@ -369,6 +371,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 Task 10 caveat: the exact Rust `1.75.0` locked run is blocked before compilation by the existing edition-2024 `getrandom 0.4.3` lock entry, and strict crate-wide Clippy remains blocked by pre-existing warnings
   - `packages/anima-core/src/ffi.rs`; `apps/server/src/anima_server/{main.py,services/sessions.py,services/corefs/logical.py,api/deps/unlock.py,api/routes,api/ws,services/agent}`; and `apps/server/tests/{test_dev_session_continuity.py,test_corefs_api.py,test_corefs_logical.py,test_ws.py,test_runtime_db.py}` (PCF-002 Task 10)
   - `apps/server/tests/{conftest.py,test_ws.py}` (PR #119 unlock-store lifecycle follow-up)
+  - `apps/server/src/anima_server/services/sessions.py` and `apps/server/tests/{test_dev_session_continuity.py,test_corefs_api.py}` (PR #119 development-reload continuity follow-up)
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:

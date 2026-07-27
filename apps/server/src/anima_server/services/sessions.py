@@ -550,15 +550,9 @@ class UnlockSessionStore:
             with self._lock:
                 already_closing = list(self._closing_sessions.values())
                 if self._sessions or self._sqlcipher_key is not None:
-                    try:
-                        cleanup.extend(self._commit_locked({}, None))
-                    except Exception:
-                        logger.error(
-                            "Failed to persist unlock-session shutdown; "
-                            "continuing fail-closed teardown",
-                            exc_info=True,
-                        )
-                        cleanup.extend(self._apply_state_locked({}, None))
+                    # Process shutdown is not an explicit revocation. Preserve
+                    # the parent-scoped dev snapshot for a replacement child.
+                    cleanup.extend(self._apply_state_locked({}, None))
 
             self._run_cleanup(cleanup)
             self._wait_for_records(already_closing)

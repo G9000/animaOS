@@ -271,6 +271,23 @@ def test_session_store_persists_revocation_and_clear(tmp_path: Path) -> None:
     assert after_clear.get_sqlcipher_key() is None
 
 
+@pytest.mark.asyncio
+async def test_shutdown_preserves_dev_snapshot_for_child_reload(tmp_path: Path) -> None:
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    store = UnlockSessionStore(snapshot=snapshot)
+    store.set_sqlcipher_key(b"q" * 32)
+    token = store.create(3, {"memories": b"m" * 32})
+    ciphertext_before_shutdown = snapshot.path.read_bytes()
+
+    await store.shutdown()
+
+    assert snapshot.path.read_bytes() == ciphertext_before_shutdown
+    assert store.resolve(token) is None
+    restored = UnlockSessionStore(snapshot=snapshot)
+    assert restored.resolve(token) is not None
+    assert restored.get_sqlcipher_key() == b"q" * 32
+
+
 class _FailingSnapshot:
     def __init__(self) -> None:
         self.payload: dict[str, object] | None = None

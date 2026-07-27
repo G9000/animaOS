@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def corefs_client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    unlock_session_store.start()
     app = FastAPI()
     app.include_router(corefs_route.router)
     calls: list[tuple[str, object]] = []
