@@ -32,8 +32,7 @@ struct CharacterizationReport {
     filesystem: FilesystemReport,
     build: BuildReport,
     object_count: usize,
-    warmups: usize,
-    samples: usize,
+    sampling: SamplingReport,
     safe_open: DistributionReport,
     lease: DistributionReport,
     resources: ResourceReport,
@@ -41,6 +40,37 @@ struct CharacterizationReport {
     restored_path: RestoredPathReport,
     outcomes: OutcomeReport,
     ordered_boundary_proven: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(tag = "mode")]
+enum SamplingReport {
+    #[serde(rename = "performance")]
+    Performance { warmups: usize, samples: usize },
+    #[serde(rename = "restoredPathRace")]
+    RestoredPathRace {
+        #[serde(rename = "raceSamples")]
+        race_samples: usize,
+    },
+}
+
+impl Arguments {
+    fn sampling_report(&self) -> SamplingReport {
+        match (
+            self.warmups,
+            self.samples,
+            self.race_samples,
+            self.mount_restored_path,
+        ) {
+            (Some(warmups), Some(samples), None, false) => {
+                SamplingReport::Performance { warmups, samples }
+            }
+            (None, None, Some(race_samples), true) => {
+                SamplingReport::RestoredPathRace { race_samples }
+            }
+            _ => unreachable!("arguments are validated before report construction"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -116,7 +146,7 @@ struct OutcomeReport {
 
 impl CharacterizationReport {
     #[cfg(test)]
-    fn contract_example() -> Self {
+    fn contract_example(sampling: SamplingReport) -> Self {
         Self {
             schema_version: 1,
             platform: "macos",
@@ -138,8 +168,7 @@ impl CharacterizationReport {
                 source_commit: "contract-example".to_owned(),
             },
             object_count: 2_500,
-            warmups: 30,
-            samples: 200,
+            sampling,
             safe_open: DistributionReport {
                 p50_ms: 1.0,
                 p95_ms: 1.0,
@@ -209,13 +238,7 @@ fn run() -> Result<(), (&'static str, String)> {
 
 #[cfg(target_os = "macos")]
 fn run_native_characterization(arguments: &Arguments) -> Result<(), (&'static str, String)> {
-    let _ = (
-        arguments.object_count,
-        arguments.warmups,
-        arguments.samples,
-        arguments.race_samples,
-        arguments.mount_restored_path,
-    );
+    let _ = (arguments.object_count, arguments.sampling_report());
     Err((
         "backendUnavailable",
         "the native macOS FSEvents/kqueue characterization backend is not implemented".to_owned(),
@@ -224,13 +247,7 @@ fn run_native_characterization(arguments: &Arguments) -> Result<(), (&'static st
 
 #[cfg(not(target_os = "macos"))]
 fn run_native_characterization(arguments: &Arguments) -> Result<(), (&'static str, String)> {
-    let _ = (
-        arguments.object_count,
-        arguments.warmups,
-        arguments.samples,
-        arguments.race_samples,
-        arguments.mount_restored_path,
-    );
+    let _ = (arguments.object_count, arguments.sampling_report());
     Err((
         "backendUnavailable",
         "the macOS characterization must run on a native macOS host".to_owned(),
@@ -360,6 +377,14 @@ mod tests {
         assert_eq!(parsed.samples, Some(200));
         assert_eq!(parsed.race_samples, None);
         assert!(!parsed.mount_restored_path);
+        assert_eq!(
+            serde_json::to_value(parsed.sampling_report()).unwrap(),
+            json!({
+                "mode": "performance",
+                "warmups": 30,
+                "samples": 200
+            })
+        );
     }
 
     #[test]
@@ -379,6 +404,13 @@ mod tests {
         assert!(parsed.mount_restored_path);
         assert_eq!(parsed.warmups, None);
         assert_eq!(parsed.samples, None);
+        assert_eq!(
+            serde_json::to_value(parsed.sampling_report()).unwrap(),
+            json!({
+                "mode": "restoredPathRace",
+                "raceSamples": 200
+            })
+        );
     }
 
     #[test]
@@ -413,7 +445,10 @@ mod tests {
 
     #[test]
     fn characterization_report_schema_is_closed() {
-        let report = CharacterizationReport::contract_example();
+        let report = CharacterizationReport::contract_example(SamplingReport::Performance {
+            warmups: 30,
+            samples: 200,
+        });
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(
             value,
@@ -438,8 +473,11 @@ mod tests {
                     "sourceCommit": "contract-example"
                 },
                 "objectCount": 2500,
-                "warmups": 30,
-                "samples": 200,
+                "sampling": {
+                    "mode": "performance",
+                    "warmups": 30,
+                    "samples": 200
+                },
                 "safeOpen": {
                     "p50Ms": 1.0,
                     "p95Ms": 1.0,
@@ -475,5 +513,24 @@ mod tests {
                 "orderedBoundaryProven": true
             })
         );
+    }
+
+    #[test]
+    fn race_characterization_report_schema_records_invocation() {
+        let report = CharacterizationReport::contract_example(SamplingReport::RestoredPathRace {
+            race_samples: 200,
+        });
+        let value = serde_json::to_value(report).unwrap();
+
+        assert_eq!(
+            value["sampling"],
+            json!({
+                "mode": "restoredPathRace",
+                "raceSamples": 200
+            })
+        );
+        assert!(value.get("warmups").is_none());
+        assert!(value.get("samples").is_none());
+        assert_eq!(value["restoredPath"]["tested"], true);
     }
 }
