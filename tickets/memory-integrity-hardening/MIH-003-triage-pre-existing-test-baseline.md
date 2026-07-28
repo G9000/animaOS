@@ -1,16 +1,16 @@
 # MIH-003 - Triage the pre-existing test-failure baseline
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server/tests`, CoreFS/keyslots/recovery/vault domain
 - Parent: none
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
 - Updated: 2026-07-19 03:34 MYT
-- Started:
+- Started: 2026-07-22 MYT
 - Completed:
 
 ## Goal
