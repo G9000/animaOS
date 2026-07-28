@@ -432,6 +432,21 @@ enum RaceOperation {
     UnmountRevoke,
 }
 
+const OWNED_COMPONENTS: [OwnedComponent; 7] = [
+    OwnedComponent::ScratchRoot,
+    OwnedComponent::RenameableAncestor,
+    OwnedComponent::Mount,
+    OwnedComponent::Namespace,
+    OwnedComponent::Fs,
+    OwnedComponent::Catalogs,
+    OwnedComponent::Objects,
+];
+const RACE_OPERATIONS: [RaceOperation; 3] = [
+    RaceOperation::RenameRebindRenameBack,
+    RaceOperation::DeleteOriginalVnode,
+    RaceOperation::UnmountRevoke,
+];
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct RaceCase {
     component: OwnedComponent,
@@ -879,6 +894,19 @@ fn run_owned_cleanup(driver: &mut impl OwnedCleanupDriver) -> Result<(), String>
 }
 
 fn required_race_cases() -> Vec<RaceCase> {
+    OWNED_COMPONENTS
+        .into_iter()
+        .flat_map(|component| {
+            RACE_OPERATIONS.into_iter().map(move |operation| RaceCase {
+                component,
+                operation,
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn nested_mount_race_cases() -> Vec<RaceCase> {
     let mut cases = [
         OwnedComponent::ScratchRoot,
         OwnedComponent::RenameableAncestor,
@@ -3191,31 +3219,47 @@ mod macos_native {
 
     impl ApfsVolume {
         fn create(owned_root: &Path) -> Result<Self, ApfsCreateFailure> {
-            let owned = owned_root
-                .to_str()
-                .ok_or_else(|| "owned APFS root is not UTF-8".to_owned())
-                .map_err(|primary| ApfsCreateFailure {
-                    primary,
-                    volume: Self {
-                        image: owned_root.join("corefs-lease.sparseimage"),
-                        mount: owned_root.join("renameable").join("mount"),
-                        attached: false,
-                        mount_epoch: MountEpoch(0),
-                    },
-                })?;
-            let plan = apfs_driver_plan(owned);
-            let image = PathBuf::from(&plan.image);
-            let mount = PathBuf::from(&plan.mount);
+            Self::create_at(
+                owned_root.join("corefs-lease.sparseimage"),
+                owned_root.join("renameable").join("mount"),
+                "ANIMA_CORE_LEASE",
+            )
+        }
+
+        fn create_at(
+            image: PathBuf,
+            mount: PathBuf,
+            volume_name: &str,
+        ) -> Result<Self, ApfsCreateFailure> {
             let mut volume = Self {
                 image,
                 mount,
                 attached: false,
                 mount_epoch: MountEpoch(0),
             };
-            let primary = fs::create_dir_all(&volume.mount)
-                .map_err(|error| format!("create APFS mount point: {error}"))
-                .and_then(|()| run_command_plan(&plan.create))
-                .and_then(|()| volume.attach());
+            let primary = (|| {
+                let image = volume
+                    .image
+                    .to_str()
+                    .ok_or_else(|| "owned APFS image path is not UTF-8".to_owned())?;
+                let create = vec![
+                    "hdiutil".to_owned(),
+                    "create".to_owned(),
+                    "-size".to_owned(),
+                    "256m".to_owned(),
+                    "-fs".to_owned(),
+                    "APFS".to_owned(),
+                    "-volname".to_owned(),
+                    volume_name.to_owned(),
+                    "-type".to_owned(),
+                    "SPARSE".to_owned(),
+                    image.to_owned(),
+                ];
+                fs::create_dir_all(&volume.mount)
+                    .map_err(|error| format!("create APFS mount point: {error}"))?;
+                run_command_plan(&create)?;
+                volume.attach()
+            })();
             if let Err(error) = primary {
                 return Err(ApfsCreateFailure {
                     primary: error,
@@ -3486,16 +3530,192 @@ mod macos_native {
         }
     }
 
+    struct RaceScheduleResult {
+        evidence: RaceEvidence,
+        safe_open_samples: Vec<u128>,
+        fence_samples: Vec<u128>,
+        maximum_descriptors: i64,
+        callback_after_release: bool,
+    }
+
+    fn run_owned_component_matrix(
+        host_root: &Path,
+        object_count: usize,
+        sample_count: usize,
+        required_cases: &[RaceCase],
+        baseline_descriptors: i64,
+    ) -> NativeResult<RaceScheduleResult> {
+        if sample_count < required_cases.len() {
+            return Err(format!(
+                "owned-component matrix requires at least {} samples, got {sample_count}",
+                required_cases.len()
+            ));
+        }
+        let mut volume = match ApfsVolume::create_at(
+            host_root.join("owned-component-matrix.sparseimage"),
+            host_root.join("owned-component-matrix-volume"),
+            "ANIMA_CORE_LEASE_MATRIX",
+        ) {
+            Ok(volume) => volume,
+            Err(mut failure) => {
+                let cleanup = run_owned_cleanup(&mut NativeOwnedCleanup {
+                    volume: Some(&mut failure.volume),
+                    scratch: None,
+                });
+                return combine_primary_cleanup(Err(failure.primary), cleanup);
+            }
+        };
+        let primary = (|| {
+            let owned_root = volume.mount.clone();
+            let logical_scratch = owned_root.join("scratch");
+            let logical_mount = logical_scratch.join("renameable").join("mount");
+            let mut workspace =
+                ObjectWorkspace::create_under(&logical_mount, object_count, volume.mount_epoch)?;
+            let rename_cases = required_cases
+                .iter()
+                .copied()
+                .filter(|case| case.operation == RaceOperation::RenameRebindRenameBack)
+                .collect::<Vec<_>>();
+            let mut schedule = Vec::with_capacity(sample_count);
+            for sample in 0..sample_count - required_cases.len() {
+                schedule.push(rename_cases[sample % rename_cases.len()]);
+            }
+            schedule.extend(required_cases.iter().copied());
+
+            let mut evidence = RaceEvidence::new(required_cases.to_vec());
+            let mut safe_open_samples = Vec::with_capacity(sample_count);
+            let mut fence_samples = Vec::with_capacity(sample_count);
+            let mut maximum_descriptors = baseline_descriptors;
+            let mut callback_after_release = false;
+
+            for case in schedule {
+                workspace.require_current_mount(volume.mount_epoch)?;
+                let target = race_component_path(&logical_scratch, &logical_mount, case.component);
+                let fence_started = Instant::now();
+                let mut attempt = NativeArmedRaceAttempt {
+                    active_workspace: &workspace,
+                    stable_workspace: &workspace,
+                    scratch_root: &owned_root,
+                    target: &target,
+                    volume: &mut volume,
+                    case,
+                    lease: None,
+                    scan_elapsed_nanos: None,
+                };
+                let armed_rejection = run_armed_race_attempt(&mut attempt, case);
+                if attempt.scan_elapsed_nanos.is_some() {
+                    safe_open_samples.push(attempt.scan_elapsed_nanos()?);
+                }
+                let mut lease = match attempt.into_lease() {
+                    Ok(lease) => lease,
+                    Err(no_lease) => {
+                        return match armed_rejection {
+                            Ok(_) => Err(no_lease),
+                            Err(primary) => Err(primary),
+                        };
+                    }
+                };
+                let race_primary = (|| {
+                    let rejection = armed_rejection?;
+                    if matches!(
+                        case.operation,
+                        RaceOperation::UnmountRevoke | RaceOperation::DeleteOriginalVnode
+                    ) && !rejection.scan_failed
+                    {
+                        return Err(format!(
+                            "armed {:?} scan did not observe its revoked descriptor",
+                            case.operation
+                        ));
+                    }
+                    maximum_descriptors = maximum_descriptors
+                        .max(descriptor_count()?)
+                        .max(baseline_descriptors + lease.descriptor_count() as i64);
+
+                    if case.operation == RaceOperation::UnmountRevoke {
+                        volume.attach()?;
+                    }
+                    let restored_before_callback = target.exists();
+                    if !restored_before_callback {
+                        return Err(format!(
+                            "owned-component race path was not restored before delayed callback: {}",
+                            target.display()
+                        ));
+                    }
+
+                    let before_callback = lease.callback()?.snapshot();
+                    lease.inject_callback(FSEVENT_ROOT_CHANGED, 0)?;
+                    let after_callback = lease.callback()?.snapshot();
+                    let delayed_zero_id_callback_terminal = after_callback.publication_count
+                        > before_callback.publication_count
+                        && after_callback.generation == GenerationState::Unknown
+                        && after_callback.maximum_event_id == before_callback.maximum_event_id
+                        && lease.fence(&workspace.objects)? == GenerationState::Unknown;
+                    fence_samples.push(fence_started.elapsed().as_nanos());
+                    Ok(RaceObservation {
+                        case,
+                        fresh_generation: true,
+                        kqueue_proof: Some(rejection.proof),
+                        restored_before_callback,
+                        delayed_zero_id_callback_terminal,
+                    })
+                })();
+                let lease_cleanup = lease.shutdown().map(|snapshot| {
+                    callback_after_release |= snapshot.callback_after_release;
+                });
+                evidence.record(combine_primary_cleanup(race_primary, lease_cleanup)?);
+
+                drop(workspace);
+                if case.operation == RaceOperation::DeleteOriginalVnode {
+                    if logical_scratch.exists() {
+                        fs::remove_dir_all(&logical_scratch).map_err(|error| {
+                            format!(
+                                "reset owned-component matrix {}: {error}",
+                                logical_scratch.display()
+                            )
+                        })?;
+                    }
+                    workspace = ObjectWorkspace::create_under(
+                        &logical_mount,
+                        object_count,
+                        volume.mount_epoch,
+                    )?;
+                } else {
+                    workspace = ObjectWorkspace::reopen_existing(
+                        &logical_mount,
+                        object_count,
+                        volume.mount_epoch,
+                    )?;
+                }
+                workspace.require_current_mount(volume.mount_epoch)?;
+            }
+
+            Ok(RaceScheduleResult {
+                evidence,
+                safe_open_samples,
+                fence_samples,
+                maximum_descriptors,
+                callback_after_release,
+            })
+        })();
+        let cleanup = run_owned_cleanup(&mut NativeOwnedCleanup {
+            volume: Some(&mut volume),
+            scratch: None,
+        });
+        combine_primary_cleanup(primary, cleanup)
+    }
+
     fn run_restored_path_characterization(
         object_count: usize,
         race_samples: usize,
         argv: &[String],
     ) -> NativeResult<CharacterizationReport> {
         let required_cases = required_race_cases();
-        if race_samples < required_cases.len() {
+        let nested_mount_cases = nested_mount_race_cases();
+        let minimum_samples = required_cases.len() + nested_mount_cases.len();
+        if race_samples < minimum_samples {
             return Err(format!(
                 "restored-path characterization requires at least {} samples, got {race_samples}",
-                required_cases.len()
+                minimum_samples
             ));
         }
         let baseline_descriptors = descriptor_count()?;
@@ -3531,18 +3751,8 @@ mod macos_native {
                     return Err("fresh APFS outside hard link was not rejected".to_owned());
                 }
 
-                let rename_cases = required_cases
-                    .iter()
-                    .copied()
-                    .filter(|case| case.operation == RaceOperation::RenameRebindRenameBack)
-                    .collect::<Vec<_>>();
-                let mut schedule = Vec::with_capacity(race_samples);
-                for sample in 0..race_samples - required_cases.len() {
-                    schedule.push(rename_cases[sample % rename_cases.len()]);
-                }
-                schedule.extend(required_cases.iter().copied());
-
-                let mut evidence = RaceEvidence::new(required_cases.clone());
+                let schedule = nested_mount_cases.clone();
+                let mut nested_mount_evidence = RaceEvidence::new(nested_mount_cases.clone());
                 let mut safe_open_samples = Vec::with_capacity(race_samples);
                 let mut race_fence_samples = Vec::with_capacity(race_samples);
                 let mut maximum_descriptors = baseline_descriptors;
@@ -3638,7 +3848,8 @@ mod macos_native {
                     let lease_cleanup = lease.shutdown().map(|snapshot| {
                         callback_after_release |= snapshot.callback_after_release;
                     });
-                    evidence.record(combine_primary_cleanup(race_primary, lease_cleanup)?);
+                    nested_mount_evidence
+                        .record(combine_primary_cleanup(race_primary, lease_cleanup)?);
                     drop(disposable_workspace);
                     if case.operation == RaceOperation::DeleteOriginalVnode {
                         fs::remove_dir_all(&disposable_root).map_err(|error| {
@@ -3664,12 +3875,27 @@ mod macos_native {
                     }
                 }
 
-                let ordered_boundary_proven = evidence.ordered_boundary_proven();
-                let zero_id_root_changed_rejected_clean =
-                    evidence.zero_id_root_changed_rejected_clean();
-                let ancestor_above_volume_covered = evidence
+                let matrix = run_owned_component_matrix(
+                    &scratch.path,
+                    object_count,
+                    race_samples - nested_mount_cases.len(),
+                    &required_cases,
+                    baseline_descriptors,
+                )?;
+                safe_open_samples.extend(matrix.safe_open_samples);
+                race_fence_samples.extend(matrix.fence_samples);
+                maximum_descriptors = maximum_descriptors.max(matrix.maximum_descriptors);
+                callback_after_release |= matrix.callback_after_release;
+
+                let ordered_boundary_proven = nested_mount_evidence.ordered_boundary_proven()
+                    && matrix.evidence.ordered_boundary_proven();
+                let zero_id_root_changed_rejected_clean = nested_mount_evidence
+                    .zero_id_root_changed_rejected_clean()
+                    && matrix.evidence.zero_id_root_changed_rejected_clean();
+                let ancestor_above_volume_covered = nested_mount_evidence
                     .component_completed(OwnedComponent::ScratchRoot)
-                    && evidence.component_completed(OwnedComponent::RenameableAncestor);
+                    && nested_mount_evidence
+                        .component_completed(OwnedComponent::RenameableAncestor);
                 if !ordered_boundary_proven {
                     return Err(
                         "fresh-generation kqueue evidence did not cover every required race"
@@ -4453,6 +4679,38 @@ mod tests {
         assert!(ensure_output_available(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn required_race_matrix_covers_every_operation_for_every_owned_component() {
+        let required = required_race_cases();
+        let components = [
+            OwnedComponent::ScratchRoot,
+            OwnedComponent::RenameableAncestor,
+            OwnedComponent::Mount,
+            OwnedComponent::Namespace,
+            OwnedComponent::Fs,
+            OwnedComponent::Catalogs,
+            OwnedComponent::Objects,
+        ];
+        let operations = [
+            RaceOperation::RenameRebindRenameBack,
+            RaceOperation::DeleteOriginalVnode,
+            RaceOperation::UnmountRevoke,
+        ];
+
+        assert_eq!(required.len(), components.len() * operations.len());
+        for component in components {
+            for operation in operations {
+                assert!(
+                    required.contains(&RaceCase {
+                        component,
+                        operation,
+                    }),
+                    "missing {operation:?} characterization for {component:?}"
+                );
+            }
+        }
     }
 
     #[test]
