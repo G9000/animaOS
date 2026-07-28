@@ -1,16 +1,16 @@
 # MIH-003 - Triage the pre-existing test-failure baseline
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server/tests`, CoreFS/keyslots/recovery/vault domain
 - Parent: none
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-19 03:34 MYT
-- Started:
+- Updated: 2026-07-28 13:55 MYT
+- Started: 2026-07-28 13:32 MYT
 - Completed:
 
 ## Goal
@@ -37,12 +37,22 @@ The full suite has carried a growing set of failures throughout the Inner Life v
 
 - 2026-07-19 03:34 MYT - Ticket created; baseline drift observed across PRs #98/#104/#108/#112.
 - 2026-07-20 MYT - Baseline holds at 54 failed / 2821 passed / 2 skipped through IL-003 (CoreFS/keyslots 29, recovery 18, p5-transcript-archive 3, vault 2, encrypted-core-regression 2). Added the untracked-file-deletion suite-hygiene item after it produced 5 phantom failures on the IL-003 branch pre-commit.
+- 2026-07-28 13:32 MYT - Claimed (backlog/unassigned -> in_progress/Claude) and started triage on `feature/mih-003-baseline-triage`.
+- 2026-07-28 13:38 MYT - **Triage complete: ZERO real code regressions.** Three stacked causes:
+  1. **Environment (`.env.local`)** — `ANIMA_CORE_PASSPHRASE` leaks through pydantic-settings into every pytest process, flipping the server into env-passphrase mode; registration then skips versioned key-hierarchy provisioning (`_maybe_generate_sqlcipher_key` returns None), so ~51 CoreFS/keyslots/recovery/vault/encrypted-core tests failed (0 SoulKeyslots; "credential generation has an ambiguous scope" on login). Fix: conftest forces `ANIMA_CORE_PASSPHRASE=""` before settings import (mirrors the existing embedding-provider hermeticity guard); passphrase-mode tests still opt in via monkeypatch.
+  2. **Environment (stale native build)** — the installed `anima_core` wheel predated `CorefsSession` (present in `packages/anima-core/src/ffi.rs`); surfaced as `AttributeError` once cause 1 was fixed. Fix: `uv sync --reinstall-package anima-core`, plus a conftest fail-fast guard that names that exact command instead of emitting dozens of cryptic per-test errors.
+  3. **Test drift** — `eager_consolidation` renamed `get_active_dek` → `get_active_dek_async` (module-level import) but `test_p5_transcript_archive` still patched the old sync name (`AttributeError` in `mock.patch`); 5 tests (3 visible in the old baseline + 2 masked by cause 1). Fix: patch sites updated to the async seam with `AsyncMock`.
+  - The failure counts were mode-dependent, which is why the "baseline" drifted (47→54) as unrelated PRs merged.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_corefs_keyslots.py -q` -> 51 passed (was 29 failed)
+  - `uv run pytest tests/test_recovery.py tests/test_vault.py tests/test_encrypted_core_regression.py tests/test_p5_transcript_archive.py -q` -> all passed (was 25 failed)
+  - `bun run test` -> (green-baseline acceptance run: see PR)
 - Changed paths:
-  - none
+  - `apps/server/tests/conftest.py` (hermeticity: force unified mode; fail-fast on stale anima_core)
+  - `apps/server/tests/test_p5_transcript_archive.py` (patch the renamed async DEK seam)
 - Notes:
-  - Baseline: 54 failed / ~2610 passed as of IL-005 merge (2026-07-19).
+  - No production code changed — the entire baseline was environment + test drift.
+  - The suite-hygiene "untracked file deletion" item could not be attributed to any test (no `git clean`/repo-tree `rmtree` exists in the suite); the leading explanation is concurrent git checkpointing by a background agent during IL-003. Sentinel untracked files planted through a full-suite run to confirm.

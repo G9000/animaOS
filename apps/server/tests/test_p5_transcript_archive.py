@@ -1569,7 +1569,12 @@ class TestEagerConsolidation:
                 "maybe_generate_episode",
                 side_effect=fake_maybe_generate_episode,
             ),
-            patch.object(eager_consolidation, "get_active_dek", return_value=None),
+            patch.object(
+                eager_consolidation,
+                "get_active_dek_async",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             asyncio.run(
                 eager_consolidation.on_thread_close(
@@ -1618,7 +1623,8 @@ class TestEagerConsolidation:
                 return_value=None,
             ),
             patch(
-                "anima_server.services.agent.eager_consolidation.get_active_dek",
+                "anima_server.services.agent.eager_consolidation.get_active_dek_async",
+                new_callable=AsyncMock,
                 return_value=test_dek,
             ),
             patch(
@@ -1673,7 +1679,8 @@ class TestEagerConsolidation:
                 return_value=None,
             ),
             patch(
-                "anima_server.services.agent.eager_consolidation.get_active_dek",
+                "anima_server.services.agent.eager_consolidation.get_active_dek_async",
+                new_callable=AsyncMock,
                 return_value=test_dek,
             ),
             patch(
@@ -1740,7 +1747,8 @@ class TestEagerConsolidation:
                 return_value=episode,
             ),
             patch(
-                "anima_server.services.agent.eager_consolidation.get_active_dek",
+                "anima_server.services.agent.eager_consolidation.get_active_dek_async",
+                new_callable=AsyncMock,
                 return_value=test_dek,
             ),
             patch(
