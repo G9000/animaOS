@@ -12,6 +12,10 @@ const DEFAULT_CONFIG: PresenceConfig = {
   memoryNudgesEnabled: true,
   checkInNudgesEnabled: true,
   customInstruction: null,
+  initiativeEnabled: false,
+  quietHoursStart: null,
+  quietHoursEnd: null,
+  dreamSharing: "off",
 };
 
 const SURFACE_OPTIONS = [
