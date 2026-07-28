@@ -1,16 +1,16 @@
 # PCF-003 - Machine-local Runtime and progressive indexing
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server` runtime/indexing, desktop readiness/security UI
 - Parent: `PCF-000`
 - Depends on: `PCF-002`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 06:07 MYT
-- Started:
+- Updated: 2026-07-29 01:57 MYT
+- Started: 2026-07-29 01:57 MYT
 - Completed:
 
 ## Goal
@@ -39,6 +39,7 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 ## Activity Log
 
 - 2026-07-12 06:07 MYT - Ticket created.
+- 2026-07-29 01:57 MYT - Claimed PCF-003 from merged `main` (`7a390eb3`) on branch `codex/pcf-003-runtime-indexing` in `.worktrees/pcf-003-runtime-indexing`. The isolated baseline passed `35` focused backend tests, the desktop production build, and `cargo check -p desktop`; implementation will follow the approved Task 3 plan test-first.
 
 ## Validation
 

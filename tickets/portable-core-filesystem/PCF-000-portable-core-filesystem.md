@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 22:57 MYT
+- Updated: 2026-07-29 01:57 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
-| PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
+| PCF-003 | Machine-local Runtime and progressive indexing | in_progress | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
@@ -260,6 +260,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 22:34 MYT - The next native macOS strict-Clippy failure was a Windows-only cache lease replacement seam compiled but unused when the cross-platform test feature is enabled. Added a RED/GREEN cfg contract and gated the method on both the feature and Windows; all `129` benchmark/workflow contracts, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene pass locally. PCF-002 and its parent row remain `in_progress` pending refreshed native CI and review.
 - 2026-07-28 22:39 MYT - Codex review found stale completion markers in the object-lease and umbrella implementation plans despite PCF-002's synchronized reopen. Added a RED/GREEN plan-state contract, returned the lease plan's final-state step to pending, and replaced the umbrella Task 2 completion marker with the current PR #125 validation state. PCF-002 and its parent row remain `in_progress`; PCF-003 remains dependency-ineligible pending clean current-head validation and second-phase closeout.
 - 2026-07-28 22:57 MYT - Completed PCF-002's required second-phase closeout after implementation head `83a7d191` passed all four required checks and received a clean current-head Codex review. Restored synchronized completion markers in both plans, returned the parent row and completed history to `done`, and made PCF-003 dependency-eligible without claiming it. This parent remains `in_progress`.
+- 2026-07-29 01:57 MYT - Claimed dependency-eligible PCF-003 from merged `main` (`7a390eb3`) on branch `codex/pcf-003-runtime-indexing` in `.worktrees/pcf-003-runtime-indexing`. The child and parent row are synchronized to `in_progress`; the isolated focused backend, desktop build, and Tauri host baselines are clean.
 
 ## Validation
 
@@ -419,6 +420,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001 and PCF-002 are complete. PCF-003 remains `backlog`/`unassigned` and is dependency-eligible without being claimed.
+  - PCF-001 and PCF-002 are complete. PCF-003 is claimed by Codex and `in_progress` on `codex/pcf-003-runtime-indexing`.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.
