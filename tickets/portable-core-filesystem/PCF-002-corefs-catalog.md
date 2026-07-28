@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 22:18 MYT
+- Updated: 2026-07-28 22:25 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -239,6 +239,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 22:02 MYT - The refreshed native macOS job passed the full fallback test suite, then failed before Clippy crate analysis because the `macos-26-arm64` image selected Python 3.14 while PyO3 0.22.6 supports through 3.13. Added a RED/GREEN workflow contract and pinned Python 3.13 with the current Node-24-compatible `actions/setup-python@v6` before Rust setup. PCF-002 remains `in_progress` pending the next exact macOS run and current-head Codex review.
 - 2026-07-28 22:15 MYT - With Python 3.13 active, the native macOS job reached strict Clippy and exposed Windows-only diagnostic imports left unconditional in one integration test and the unit-test module. Added a RED/GREEN source contract, split both import sets behind `cfg(windows)`, and preserved the Windows test surface. Full local Rust 1.75 CoreFS, strict all-target/all-feature CoreFS/anima-core Clippy, `127` benchmark/workflow contracts, scoped Rust 1.75 rustfmt, YAML parsing, and diff hygiene pass. PCF-002 stays open for refreshed native validation and review.
 - 2026-07-28 22:18 MYT - Refreshed Codex review confirmed the cfg-import repair and found one stale closeout note that still described PCF-002 as complete and PCF-003 as eligible. Corrected the child and parent notes to the canonical reopened state; PCF-002 remains `in_progress`, and PCF-003 remains `backlog`/`unassigned` but dependency-ineligible until the two-phase closeout finishes.
+- 2026-07-28 22:25 MYT - Native macOS strict Clippy progressed past the cfg-import repair and found one `needless_borrows_for_generic_args` violation in the Unix-only stale-stage hard-link regression. Added a source contract that failed RED, passed the owned `PathBuf` directly to `fs::hard_link`, and passed the complete `128`-test contract file, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene locally. PCF-002 remains `in_progress` pending refreshed native validation and current-head review.
 
 ## Validation
 
@@ -400,6 +401,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #125 reopened macOS Clippy repair: direct job logs confirmed `dead_code` for the unused `Macos` variant and `needless_return` in the fallback. Both new assertions failed RED and passed GREEN; the complete benchmark/workflow contract passed `126/126`; full serialized Rust 1.75 CoreFS passed `213` library tests with `1` ignored plus every binary/integration/doc suite; strict combined CoreFS/anima-core Clippy, scoped Rust 1.75 rustfmt, workflow YAML parsing, and diff hygiene passed. Local Apple cross-target Clippy was blocked before crate analysis by the Windows host's missing Apple C compiler, so the required exact macOS CI run remains the closeout authority.
   - PR #125 macOS Python compatibility follow-up: the native job's full fallback suite passed before PyO3 rejected runner-default Python 3.14 during combined Clippy. The setup-python 3.13 workflow assertion failed RED and passed GREEN; the focused workflow contract and YAML parsing passed.
   - PR #125 macOS cfg-import follow-up: native strict Clippy exposed Windows-only diagnostic imports in `object_lease_tests.rs` and `tests/catalog_benchmark.rs`; the cfg-gate assertion failed RED and passed GREEN. Full serialized Rust 1.75 CoreFS passed `213` library tests with `1` ignored plus all binary/integration/doc suites, strict combined Clippy passed, the complete benchmark/workflow contract passed `127/127`, and scoped Rust 1.75 rustfmt, YAML parsing, and diff hygiene passed.
+  - PR #125 Unix hard-link Clippy follow-up: native macOS strict Clippy found an unnecessary borrow of the owned object path in the Unix-only stale-stage hard-link regression. The source contract failed RED and passed GREEN after the call consumed the `PathBuf`; the complete benchmark/workflow contract passed `128/128`, Rust 1.75 strict combined CoreFS/anima-core Clippy passed, and scoped Rust 1.75 rustfmt plus diff hygiene passed.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (macOS fallback cleanup)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
