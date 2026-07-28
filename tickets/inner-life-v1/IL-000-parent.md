@@ -29,6 +29,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 | `IL-006` | Recall reconsolidation (F2 extension) | `done` | none |
 | `IL-007` | Dream cycle (F5 extension) | `done` | `IL-001`, `IL-002`, `IL-006` |
 | `IL-008` | Wire push-initiative into the client (delivery + config UI) | `done` | `IL-003` |
+| `IL-009` | Initiative reply context carry-over | `backlog` | `IL-008` |
 
 ## Completed Ticket History
 
@@ -64,6 +65,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-15 17:10 MYT - Added implementation plan reference, child ticket status table, and completed-ticket history per review feedback.
 - 2026-07-28 MYT - Close-out pass: IL-007 marked done (was stale after PR #116 merged), IL-008 added to the child table, parent moved to in_progress. Remaining scope: `IL-008` (client delivery + presence-config UI).
 - 2026-07-28 MYT - `IL-008` (last child ticket) done; all eight child tickets are now `done`. Parent moved to `done`. Inner Life v1 — continuous affect state with offline catch-up, drive-based push initiative (now client-visible), latent trace crystallization, forgetting as distillation, recall reconsolidation, and the dream cycle — is complete end-to-end once the IL-008 PR merges.
+- 2026-07-28 MYT - `IL-009` filed as a backlog follow-up from the IL-008 final whole-branch review (Reply-context carry-over UX gap). This is post-v1 polish, not a blocker: it does not change the parent's `done` status or IL-008's completion.
 
 ## Validation
 

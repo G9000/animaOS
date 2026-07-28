@@ -245,7 +245,7 @@ export default function Presence() {
                 <span className="min-w-0 space-y-1">
                   <span className="block text-sm text-foreground">Quiet Hours</span>
                   <span className="block text-xs text-muted-foreground">
-                    No messages inside this window — set both to enable
+                    No messages inside this window — set both, to different hours, to enable
                   </span>
                 </span>
                 <span className="flex items-center gap-2">
