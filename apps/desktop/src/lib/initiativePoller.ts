@@ -63,6 +63,10 @@ export function createInitiativePoller(
       void pollNow();
     },
     stop() {
+      // Invalidate any in-flight poll (same mechanism `ack()` uses) so a
+      // fetch started before `stop()` never reports stale/foreign data via
+      // `onChange` after the caller has walked away (user switch, unmount).
+      generation += 1;
       if (timer !== null) {
         clearIntervalFn(timer);
         timer = null;

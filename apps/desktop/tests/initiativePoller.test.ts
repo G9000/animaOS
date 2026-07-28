@@ -162,4 +162,27 @@ describe("createInitiativePoller", () => {
     // the final state should not have row 1 (acked row won)
     expect(seen.at(-1)?.map((r) => r.id)).toEqual([2]);
   });
+
+  test("a poll resolving after stop() does not report its result", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        await gate;
+        return [row(1)];
+      },
+      ackInitiative: async () => ({}),
+      onChange: (pending) => seen.push(pending),
+    });
+    const pollPromise = poller.pollNow();
+    // poll is in flight (gated); stop while it's still pending — e.g. user
+    // switch or component unmount racing the in-flight fetch.
+    poller.stop();
+    release?.();
+    await pollPromise;
+    expect(seen).toHaveLength(0);
+  });
 });
