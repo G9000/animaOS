@@ -309,6 +309,335 @@ fn distribution_from_nanos(samples: &[u128]) -> Result<DistributionReport, &'sta
     })
 }
 
+fn classify_outside_hard_link(
+    admitted: PortableStamp,
+    observed: PortableStamp,
+) -> Result<bool, &'static str> {
+    if admitted.device != observed.device
+        || admitted.inode != observed.inode
+        || admitted.length != observed.length
+        || admitted.mode != observed.mode
+    {
+        return Err("outside hard link observation changed object identity");
+    }
+    if admitted.links != 1 {
+        return Err("admitted object did not begin with one link");
+    }
+    if observed.links != 2 {
+        return Err("outside hard link observation did not have exactly two links");
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+fn classify_fence_checkpoints(cancellations: [bool; 4]) -> GenerationState {
+    if cancellations.into_iter().any(|cancelled| cancelled) {
+        GenerationState::Unknown
+    } else {
+        GenerationState::Clean
+    }
+}
+
+fn combine_primary_cleanup<T>(
+    primary: Result<T, String>,
+    cleanup: Result<(), String>,
+) -> Result<T, String> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; cleanup also failed: {cleanup}")),
+    }
+}
+
+fn build_rustc_identity() -> &'static str {
+    env!("ANIMA_CORE_BUILD_RUSTC")
+}
+
+fn validate_release_quiescence(
+    publications_before_release: usize,
+    publications_after_release: usize,
+    retained_owner_count: usize,
+) -> Result<(), &'static str> {
+    if publications_after_release != publications_before_release {
+        return Err("callback publication occurred after stream release");
+    }
+    if retained_owner_count != 2 {
+        return Err("FSEvents context retain/release count is unbalanced");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum OwnedComponent {
+    ScratchRoot,
+    RenameableAncestor,
+    Mount,
+    Namespace,
+    Fs,
+    Catalogs,
+    Objects,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RaceOperation {
+    RenameRebindRenameBack,
+    DeleteOriginalVnode,
+    UnmountRevoke,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct RaceCase {
+    component: OwnedComponent,
+    operation: RaceOperation,
+}
+
+fn required_race_cases() -> Vec<RaceCase> {
+    let mut cases = [
+        OwnedComponent::ScratchRoot,
+        OwnedComponent::RenameableAncestor,
+        OwnedComponent::Namespace,
+        OwnedComponent::Fs,
+        OwnedComponent::Catalogs,
+        OwnedComponent::Objects,
+    ]
+    .into_iter()
+    .map(|component| RaceCase {
+        component,
+        operation: RaceOperation::RenameRebindRenameBack,
+    })
+    .collect::<Vec<_>>();
+    cases.push(RaceCase {
+        component: OwnedComponent::Mount,
+        operation: RaceOperation::UnmountRevoke,
+    });
+    cases.push(RaceCase {
+        component: OwnedComponent::Objects,
+        operation: RaceOperation::DeleteOriginalVnode,
+    });
+    cases
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RaceObservation {
+    case: RaceCase,
+    fresh_generation: bool,
+    kqueue_unknown_before_callback: bool,
+    restored_before_callback: bool,
+    delayed_zero_id_callback_terminal: bool,
+}
+
+struct RaceEvidence {
+    required: std::collections::HashSet<RaceCase>,
+    complete: std::collections::HashSet<RaceCase>,
+    delayed_callback_complete: std::collections::HashSet<RaceCase>,
+}
+
+impl RaceEvidence {
+    fn new(required: Vec<RaceCase>) -> Self {
+        Self {
+            required: required.into_iter().collect(),
+            complete: std::collections::HashSet::new(),
+            delayed_callback_complete: std::collections::HashSet::new(),
+        }
+    }
+
+    fn record(&mut self, observation: RaceObservation) {
+        if observation.fresh_generation
+            && observation.kqueue_unknown_before_callback
+            && observation.restored_before_callback
+        {
+            self.complete.insert(observation.case);
+        }
+        if observation.fresh_generation
+            && observation.kqueue_unknown_before_callback
+            && observation.restored_before_callback
+            && observation.delayed_zero_id_callback_terminal
+        {
+            self.delayed_callback_complete.insert(observation.case);
+        }
+    }
+
+    fn ordered_boundary_proven(&self) -> bool {
+        self.required.is_subset(&self.complete)
+    }
+
+    fn zero_id_root_changed_rejected_clean(&self) -> bool {
+        self.required.is_subset(&self.delayed_callback_complete)
+    }
+
+    fn component_completed(&self, component: OwnedComponent) -> bool {
+        self.required
+            .iter()
+            .filter(|case| case.component == component)
+            .all(|case| self.complete.contains(case))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeCall {
+    CreateStream,
+    Schedule,
+    Start,
+    Flush,
+    Cancel,
+    Stop,
+    Invalidate,
+    Barrier,
+    ReleaseStreamAndContext,
+    OwnerDrop,
+    QueueDrop,
+    KernelQueueDrop,
+    DescriptorDrop,
+}
+
+trait NativeCallDriver {
+    fn invoke(&mut self, call: NativeCall) -> Result<u64, String>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamPhase {
+    Created,
+    Scheduled,
+    Started,
+    Released,
+}
+
+struct StreamLifecycle {
+    phase: StreamPhase,
+}
+
+impl StreamLifecycle {
+    fn establish(driver: &mut impl NativeCallDriver) -> Result<Self, String> {
+        driver.invoke(NativeCall::CreateStream)?;
+        let mut lifecycle = Self {
+            phase: StreamPhase::Created,
+        };
+        if let Err(primary) = driver.invoke(NativeCall::Schedule) {
+            let cleanup = lifecycle.teardown(driver);
+            return combine_primary_cleanup(Err(primary), cleanup);
+        }
+        lifecycle.phase = StreamPhase::Scheduled;
+        if let Err(primary) = driver.invoke(NativeCall::Start) {
+            let cleanup = lifecycle.teardown(driver);
+            return combine_primary_cleanup(Err(primary), cleanup);
+        }
+        lifecycle.phase = StreamPhase::Started;
+        Ok(lifecycle)
+    }
+
+    #[cfg(test)]
+    fn flush(&mut self, driver: &mut impl NativeCallDriver) -> Result<u64, String> {
+        if self.phase != StreamPhase::Started {
+            return Err("flush requires a started stream".to_owned());
+        }
+        driver.invoke(NativeCall::Flush)
+    }
+
+    fn teardown(&mut self, driver: &mut impl NativeCallDriver) -> Result<(), String> {
+        if self.phase == StreamPhase::Released {
+            return Ok(());
+        }
+        let mut error = None;
+        if self.phase == StreamPhase::Started {
+            if let Err(value) = driver.invoke(NativeCall::Cancel) {
+                error = Some(value);
+            }
+            if let Err(value) = driver.invoke(NativeCall::Stop) {
+                error.get_or_insert(value);
+            }
+        }
+        if matches!(self.phase, StreamPhase::Scheduled | StreamPhase::Started) {
+            if let Err(value) = driver.invoke(NativeCall::Invalidate) {
+                error.get_or_insert(value);
+            }
+            if let Err(value) = driver.invoke(NativeCall::Barrier) {
+                error.get_or_insert(value);
+            }
+        }
+        if let Err(value) = driver.invoke(NativeCall::ReleaseStreamAndContext) {
+            error.get_or_insert(value);
+        }
+        self.phase = StreamPhase::Released;
+        error.map_or(Ok(()), Err)
+    }
+}
+
+enum TeardownRequest<T> {
+    Ready(Result<T, String>),
+    Deferred(std::thread::JoinHandle<T>),
+}
+
+impl<T> TeardownRequest<T> {
+    #[cfg(test)]
+    fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred(_))
+    }
+
+    fn wait(self) -> Result<T, String> {
+        match self {
+            Self::Ready(result) => result,
+            Self::Deferred(handle) => handle
+                .join()
+                .map_err(|_| "deferred teardown worker panicked".to_owned()),
+        }
+    }
+}
+
+fn transfer_teardown<R, T, F>(
+    on_callback_queue: bool,
+    resource: R,
+    teardown: F,
+) -> TeardownRequest<T>
+where
+    R: Send + 'static,
+    T: Send + 'static,
+    F: FnOnce(R) -> T + Send + 'static,
+{
+    if on_callback_queue {
+        TeardownRequest::Deferred(std::thread::spawn(move || teardown(resource)))
+    } else {
+        TeardownRequest::Ready(Ok(teardown(resource)))
+    }
+}
+
+#[cfg(test)]
+struct InjectedNativeCalls {
+    calls: Vec<NativeCall>,
+    fail_at: Option<NativeCall>,
+}
+
+#[cfg(test)]
+impl InjectedNativeCalls {
+    fn fail(call: NativeCall) -> Self {
+        Self {
+            calls: Vec::new(),
+            fail_at: Some(call),
+        }
+    }
+
+    fn success() -> Self {
+        Self {
+            calls: Vec::new(),
+            fail_at: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl NativeCallDriver for InjectedNativeCalls {
+    fn invoke(&mut self, call: NativeCall) -> Result<u64, String> {
+        self.calls.push(call);
+        if self.fail_at == Some(call) {
+            Err(format!("injected {call:?} failure"))
+        } else if call == NativeCall::Flush {
+            Ok(77)
+        } else {
+            Ok(1)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CleanupStep {
     Detach(String),
@@ -369,77 +698,10 @@ fn apfs_driver_plan(owned_root: &str) -> ApfsDriverPlan {
     }
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CleanupPhase {
-    BeforeStreamCreation,
-    CreatedNotScheduled,
-    ScheduledStartFailed,
-    Started,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CleanupAction {
-    Cancel,
-    StopStream,
-    InvalidateStream,
-    BarrierQueue,
-    ReleaseStream,
-    DropOwner,
-    ReleaseQueue,
-    CloseKernelQueue,
-    CloseDescriptors,
-}
-
-#[cfg(test)]
-const CLEANUP_BEFORE_CREATE: &[CleanupAction] = &[
-    CleanupAction::ReleaseQueue,
-    CleanupAction::CloseKernelQueue,
-    CleanupAction::CloseDescriptors,
-];
-#[cfg(test)]
-const CLEANUP_CREATED: &[CleanupAction] = &[
-    CleanupAction::ReleaseStream,
-    CleanupAction::ReleaseQueue,
-    CleanupAction::CloseKernelQueue,
-    CleanupAction::CloseDescriptors,
-];
-#[cfg(test)]
-const CLEANUP_START_FAILED: &[CleanupAction] = &[
-    CleanupAction::InvalidateStream,
-    CleanupAction::BarrierQueue,
-    CleanupAction::ReleaseStream,
-    CleanupAction::ReleaseQueue,
-    CleanupAction::CloseKernelQueue,
-    CleanupAction::CloseDescriptors,
-];
-#[cfg(test)]
-const CLEANUP_STARTED: &[CleanupAction] = &[
-    CleanupAction::Cancel,
-    CleanupAction::StopStream,
-    CleanupAction::InvalidateStream,
-    CleanupAction::BarrierQueue,
-    CleanupAction::ReleaseStream,
-    CleanupAction::DropOwner,
-    CleanupAction::ReleaseQueue,
-    CleanupAction::CloseKernelQueue,
-    CleanupAction::CloseDescriptors,
-];
-
-#[cfg(test)]
-fn cleanup_actions(phase: CleanupPhase) -> &'static [CleanupAction] {
-    match phase {
-        CleanupPhase::BeforeStreamCreation => CLEANUP_BEFORE_CREATE,
-        CleanupPhase::CreatedNotScheduled => CLEANUP_CREATED,
-        CleanupPhase::ScheduledStartFailed => CLEANUP_START_FAILED,
-        CleanupPhase::Started => CLEANUP_STARTED,
-    }
-}
-
 impl CharacterizationReport {
     #[cfg(test)]
     fn contract_example(sampling: SamplingReport) -> Self {
+        let restored_path_tested = matches!(&sampling, SamplingReport::RestoredPathRace { .. });
         Self {
             schema_version: 1,
             platform: "macos",
@@ -485,16 +747,16 @@ impl CharacterizationReport {
                 callback_after_release: false,
             },
             restored_path: RestoredPathReport {
-                tested: true,
-                ancestor_above_volume_covered: true,
-                zero_id_root_changed_rejected_clean: true,
+                tested: restored_path_tested,
+                ancestor_above_volume_covered: restored_path_tested,
+                zero_id_root_changed_rejected_clean: restored_path_tested,
             },
             outcomes: OutcomeReport {
                 ordinary_events_dirty_all: true,
                 ambiguous_flags_unknown: true,
                 outside_hard_link_rejected: true,
             },
-            ordered_boundary_proven: true,
+            ordered_boundary_proven: restored_path_tested,
         }
     }
 }
@@ -844,12 +1106,12 @@ mod macos_native {
             let target = outside.join("outside-hard-link");
             fs::hard_link(source, &target)
                 .map_err(|error| format!("create outside hard link: {error}"))?;
-            let result = stat_at(self.objects.raw(), &self.records[0].name)
-                .and_then(validate_stamp_shape)
-                .is_err();
-            fs::remove_file(&target)
-                .map_err(|error| format!("remove outside hard link: {error}"))?;
-            Ok(result)
+            let primary = stat_at(self.objects.raw(), &self.records[0].name).and_then(|observed| {
+                classify_outside_hard_link(self.records[0].stamp, observed).map_err(str::to_owned)
+            });
+            let cleanup = fs::remove_file(&target)
+                .map_err(|error| format!("remove outside hard link: {error}"));
+            combine_primary_cleanup(primary, cleanup)
         }
     }
 
@@ -873,22 +1135,20 @@ mod macos_native {
             Ok(Self { path, active: true })
         }
 
-        fn cleanup(mut self) -> NativeResult<()> {
+        fn cleanup(&mut self) -> NativeResult<()> {
             if self.active {
                 fs::remove_dir_all(&self.path).map_err(|error| {
                     format!("remove scratch root {}: {error}", self.path.display())
                 })?;
+                if self.path.exists() {
+                    return Err(format!(
+                        "scratch root still exists after removal: {}",
+                        self.path.display()
+                    ));
+                }
                 self.active = false;
             }
             Ok(())
-        }
-    }
-
-    impl Drop for ScratchRoot {
-        fn drop(&mut self) {
-            if self.active {
-                let _ = fs::remove_dir_all(&self.path);
-            }
         }
     }
 
@@ -1315,23 +1575,31 @@ mod macos_native {
         }
     }
 
-    struct NativeLease {
+    struct MacNativeCalls {
         stream: FSEventStreamRef,
-        started: bool,
-        callback: Option<Arc<CallbackOwner>>,
         queue: Option<SerialQueue>,
-        kqueue: Option<KernelQueue>,
-        chain: Option<DescriptorChain>,
+        callback: Option<Arc<CallbackOwner>>,
+        watch_path: PathBuf,
+        calls: Mutex<Vec<NativeCall>>,
     }
 
-    impl NativeLease {
-        fn create(objects: &OwnedFd) -> NativeResult<Self> {
-            let chain = DescriptorChain::open_from_pinned(objects)?;
-            let kqueue = KernelQueue::register(&chain)?;
-            let queue = SerialQueue::create()?;
-            let callback = Arc::new(CallbackOwner::new());
+    unsafe impl Send for MacNativeCalls {}
 
-            let watch_path = CString::new(chain.watch_path.as_os_str().as_bytes())
+    impl MacNativeCalls {
+        fn queue(&self) -> NativeResult<&SerialQueue> {
+            self.queue
+                .as_ref()
+                .ok_or_else(|| "dispatch queue was released".to_owned())
+        }
+
+        fn callback(&self) -> NativeResult<&Arc<CallbackOwner>> {
+            self.callback
+                .as_ref()
+                .ok_or_else(|| "callback owner was released".to_owned())
+        }
+
+        fn create_stream(&mut self) -> NativeResult<()> {
+            let watch_path = CString::new(self.watch_path.as_os_str().as_bytes())
                 .map_err(|_| "watch path contains NUL".to_owned())?;
             let cf_path = unsafe {
                 CFStringCreateWithFileSystemRepresentation(ptr::null(), watch_path.as_ptr())
@@ -1356,13 +1624,13 @@ mod macos_native {
             }
             let mut context = FSEventStreamContext {
                 version: 0,
-                info: Arc::as_ptr(&callback) as *mut c_void,
+                info: Arc::as_ptr(self.callback()?) as *mut c_void,
                 retain: Some(context_retain),
                 release: Some(context_release),
                 copy_description: None,
             };
             let plan = native_stream_plan();
-            let stream = unsafe {
+            self.stream = unsafe {
                 FSEventStreamCreate(
                     ptr::null(),
                     stream_callback,
@@ -1376,37 +1644,158 @@ mod macos_native {
             unsafe {
                 CFRelease(paths);
             }
-            if stream.is_null() {
-                return Err("FSEventStreamCreate returned null".to_owned());
+            if self.stream.is_null() {
+                Err("FSEventStreamCreate returned null".to_owned())
+            } else {
+                Ok(())
             }
+        }
 
-            let mut lease = Self {
-                stream,
-                started: false,
-                callback: Some(callback),
+        fn flush_shared(&self) -> NativeResult<u64> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(NativeCall::Flush);
+            Ok(unsafe { FSEventStreamFlushAsync(self.stream) })
+        }
+    }
+
+    impl NativeCallDriver for MacNativeCalls {
+        fn invoke(&mut self, call: NativeCall) -> Result<u64, String> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(call);
+            match call {
+                NativeCall::CreateStream => {
+                    self.create_stream()?;
+                    Ok(1)
+                }
+                NativeCall::Schedule => {
+                    unsafe {
+                        FSEventStreamSetDispatchQueue(self.stream, self.queue()?.0);
+                    }
+                    Ok(1)
+                }
+                NativeCall::Start => {
+                    if unsafe { FSEventStreamStart(self.stream) } == 0 {
+                        Err("FSEventStreamStart returned false".to_owned())
+                    } else {
+                        Ok(1)
+                    }
+                }
+                NativeCall::Flush => Ok(unsafe { FSEventStreamFlushAsync(self.stream) }),
+                NativeCall::Cancel => {
+                    self.callback()?.cancel();
+                    Ok(1)
+                }
+                NativeCall::Stop => {
+                    unsafe {
+                        FSEventStreamStop(self.stream);
+                    }
+                    Ok(1)
+                }
+                NativeCall::Invalidate => {
+                    unsafe {
+                        FSEventStreamInvalidate(self.stream);
+                    }
+                    Ok(1)
+                }
+                NativeCall::Barrier => {
+                    self.queue()?.barrier();
+                    Ok(1)
+                }
+                NativeCall::ReleaseStreamAndContext => {
+                    let callback = self.callback()?.clone();
+                    let publications = callback.snapshot().publication_count;
+                    unsafe {
+                        FSEventStreamRelease(self.stream);
+                    }
+                    self.stream = ptr::null_mut();
+                    callback.released.store(true, Ordering::Release);
+                    std::thread::sleep(CALLBACK_QUIET_PERIOD);
+                    if let Err(error) = validate_release_quiescence(
+                        publications,
+                        callback.snapshot().publication_count,
+                        Arc::strong_count(&callback),
+                    ) {
+                        callback.publish_unknown();
+                        return Err(error.to_owned());
+                    }
+                    Ok(1)
+                }
+                NativeCall::OwnerDrop => {
+                    self.callback.take();
+                    Ok(1)
+                }
+                NativeCall::QueueDrop => {
+                    self.queue.take();
+                    Ok(1)
+                }
+                NativeCall::KernelQueueDrop | NativeCall::DescriptorDrop => Ok(1),
+            }
+        }
+    }
+
+    struct NativeLease {
+        lifecycle: Option<StreamLifecycle>,
+        native: Option<MacNativeCalls>,
+        kqueue: Option<KernelQueue>,
+        chain: Option<DescriptorChain>,
+        fence_serialization: Mutex<()>,
+    }
+
+    unsafe impl Send for NativeLease {}
+
+    impl NativeLease {
+        fn create(objects: &OwnedFd) -> NativeResult<Self> {
+            let chain = DescriptorChain::open_from_pinned(objects)?;
+            let kqueue = KernelQueue::register(&chain)?;
+            let queue = SerialQueue::create()?;
+            let callback = Arc::new(CallbackOwner::new());
+            let mut native = MacNativeCalls {
+                stream: ptr::null_mut(),
                 queue: Some(queue),
+                callback: Some(callback),
+                watch_path: chain.watch_path.clone(),
+                calls: Mutex::new(Vec::new()),
+            };
+            let lifecycle = StreamLifecycle::establish(&mut native)?;
+            let lease = Self {
+                lifecycle: Some(lifecycle),
+                native: Some(native),
                 kqueue: Some(kqueue),
                 chain: Some(chain),
+                fence_serialization: Mutex::new(()),
             };
-            unsafe {
-                FSEventStreamSetDispatchQueue(
-                    lease.stream,
-                    lease.queue.as_ref().expect("queue is present").0,
-                );
+            if let Err(primary) = lease.revalidate(objects) {
+                let cleanup = lease
+                    .shutdown()
+                    .wait()
+                    .and_then(|result| result)
+                    .map(|_| ());
+                return match combine_primary_cleanup::<()>(Err(primary), cleanup) {
+                    Ok(()) => unreachable!("an error plus cleanup cannot become success"),
+                    Err(error) => Err(error),
+                };
             }
-            if unsafe { FSEventStreamStart(lease.stream) } == 0 {
-                lease.release_after_failed_start();
-                return Err("FSEventStreamStart returned false".to_owned());
-            }
-            lease.started = true;
-            lease.revalidate(objects)?;
             Ok(lease)
         }
 
-        fn callback(&self) -> NativeResult<&Arc<CallbackOwner>> {
-            self.callback
+        fn native(&self) -> NativeResult<&MacNativeCalls> {
+            self.native
                 .as_ref()
-                .ok_or_else(|| "callback owner was released".to_owned())
+                .ok_or_else(|| "native stream ownership was released".to_owned())
+        }
+
+        fn native_mut(&mut self) -> NativeResult<&mut MacNativeCalls> {
+            self.native
+                .as_mut()
+                .ok_or_else(|| "native stream ownership was released".to_owned())
+        }
+
+        fn callback(&self) -> NativeResult<&Arc<CallbackOwner>> {
+            self.native()?.callback()
         }
 
         fn poll_kernel(&self) -> NativeResult<KqueueClassification> {
@@ -1424,10 +1813,11 @@ mod macos_native {
         }
 
         fn fence(&self, objects: &OwnedFd) -> NativeResult<GenerationState> {
-            let queue = self
-                .queue
-                .as_ref()
-                .ok_or_else(|| "dispatch queue was released".to_owned())?;
+            let _fence = self
+                .fence_serialization
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let queue = self.native()?.queue()?;
             if queue.is_current() {
                 self.callback()?.publish_unknown();
                 return Err("fence invoked from callback queue".to_owned());
@@ -1445,7 +1835,21 @@ mod macos_native {
                 }
             }
 
-            let target = unsafe { FSEventStreamFlushAsync(self.stream) };
+            let target = {
+                let lifecycle = self
+                    .lifecycle
+                    .as_ref()
+                    .ok_or_else(|| "stream lifecycle was released".to_owned())?;
+                if lifecycle.phase != StreamPhase::Started {
+                    callback.publish_unknown();
+                    return Ok(GenerationState::Unknown);
+                }
+                self.native()?.flush_shared()?
+            };
+            if callback.cancelled.load(Ordering::Acquire) {
+                callback.publish_unknown();
+                return Ok(GenerationState::Unknown);
+            }
             if target != 0 {
                 let deadline = Instant::now() + FENCE_TIMEOUT;
                 let mut snapshot = callback
@@ -1479,6 +1883,10 @@ mod macos_native {
                     }
                 }
             }
+            if callback.cancelled.load(Ordering::Acquire) {
+                callback.publish_unknown();
+                return Ok(GenerationState::Unknown);
+            }
 
             match self.poll_kernel() {
                 Ok(KqueueClassification::Quiet) => {}
@@ -1491,7 +1899,16 @@ mod macos_native {
                 callback.publish_unknown();
                 return Ok(GenerationState::Unknown);
             }
-            Ok(callback.snapshot().generation)
+            if callback.cancelled.load(Ordering::Acquire) {
+                callback.publish_unknown();
+                return Ok(GenerationState::Unknown);
+            }
+            let generation = callback.snapshot().generation;
+            if callback.cancelled.load(Ordering::Acquire) {
+                callback.publish_unknown();
+                return Ok(GenerationState::Unknown);
+            }
+            Ok(generation)
         }
 
         fn descriptor_count(&self) -> usize {
@@ -1507,7 +1924,7 @@ mod macos_native {
             let event_ids = [event_id];
             unsafe {
                 stream_callback(
-                    self.stream,
+                    self.native()?.stream,
                     Arc::as_ptr(self.callback()?) as *mut c_void,
                     1,
                     ptr::null_mut(),
@@ -1523,92 +1940,84 @@ mod macos_native {
             Ok(())
         }
 
-        fn shutdown(mut self) -> NativeResult<CallbackSnapshot> {
-            self.release_started()?;
-            let snapshot = self
-                .callback
-                .as_ref()
-                .ok_or_else(|| "callback owner was released too early".to_owned())?
-                .snapshot();
-            self.callback.take();
-            self.queue.take();
+        fn shutdown(self) -> TeardownRequest<NativeResult<CallbackSnapshot>> {
+            let on_callback_queue = self
+                .native()
+                .and_then(MacNativeCalls::queue)
+                .map(SerialQueue::is_current)
+                .unwrap_or(false);
+            transfer_teardown(on_callback_queue, self, |mut lease| {
+                lease.shutdown_in_place()
+            })
+        }
+
+        fn shutdown_in_place(&mut self) -> NativeResult<CallbackSnapshot> {
+            let mut lifecycle = self
+                .lifecycle
+                .take()
+                .ok_or_else(|| "stream lifecycle was already released".to_owned())?;
+            let mut cleanup_error = match self.native_mut() {
+                Ok(native) => lifecycle.teardown(native).err(),
+                Err(error) => Some(error),
+            };
+            let snapshot = self.callback().map(|callback| callback.snapshot());
+            for call in [NativeCall::OwnerDrop, NativeCall::QueueDrop] {
+                if let Err(error) = self
+                    .native_mut()
+                    .and_then(|native| native.invoke(call).map(|_| ()))
+                {
+                    cleanup_error.get_or_insert(error);
+                }
+            }
+            if let Err(error) = self
+                .native_mut()
+                .and_then(|native| native.invoke(NativeCall::KernelQueueDrop).map(|_| ()))
+            {
+                cleanup_error.get_or_insert(error);
+            }
             self.kqueue.take();
+            if let Err(error) = self
+                .native_mut()
+                .and_then(|native| native.invoke(NativeCall::DescriptorDrop).map(|_| ()))
+            {
+                cleanup_error.get_or_insert(error);
+            }
             self.chain.take();
-            Ok(snapshot)
-        }
-
-        fn release_started(&mut self) -> NativeResult<()> {
-            let queue = self
-                .queue
-                .as_ref()
-                .ok_or_else(|| "dispatch queue was released".to_owned())?;
-            if queue.is_current() {
-                return Err("teardown invoked from callback queue".to_owned());
-            }
-            let callback = self
-                .callback
-                .as_ref()
-                .ok_or_else(|| "callback owner was released".to_owned())?;
-            callback.cancel();
-            if self.started {
-                unsafe {
-                    FSEventStreamStop(self.stream);
+            match (snapshot, cleanup_error) {
+                (Ok(snapshot), None) => Ok(snapshot),
+                (Ok(_), Some(error)) | (Err(error), None) => Err(error),
+                (Err(primary), Some(cleanup)) => {
+                    Err(format!("{primary}; cleanup also failed: {cleanup}"))
                 }
             }
-            unsafe {
-                FSEventStreamInvalidate(self.stream);
-            }
-            queue.barrier();
-            let publications = callback.snapshot().publication_count;
-            unsafe {
-                FSEventStreamRelease(self.stream);
-            }
-            self.stream = ptr::null_mut();
-            self.started = false;
-            callback.released.store(true, Ordering::Release);
-            std::thread::sleep(CALLBACK_QUIET_PERIOD);
-            if callback.snapshot().publication_count != publications {
-                callback.publish_unknown();
-                return Err("callback publication occurred after stream release".to_owned());
-            }
-            if Arc::strong_count(callback) != 1 {
-                callback.publish_unknown();
-                return Err("FSEvents context retain/release count is unbalanced".to_owned());
-            }
-            Ok(())
-        }
-
-        fn release_after_failed_start(&mut self) {
-            if self.stream.is_null() {
-                return;
-            }
-            if let Some(queue) = &self.queue {
-                unsafe {
-                    FSEventStreamInvalidate(self.stream);
-                }
-                queue.barrier();
-            }
-            unsafe {
-                FSEventStreamRelease(self.stream);
-            }
-            self.stream = ptr::null_mut();
         }
     }
 
     impl Drop for NativeLease {
         fn drop(&mut self) {
-            if self.stream.is_null() {
+            if self.lifecycle.is_none() {
                 return;
             }
-            if self
-                .queue
-                .as_ref()
+            let on_callback_queue = self
+                .native()
+                .and_then(MacNativeCalls::queue)
                 .map(SerialQueue::is_current)
-                .unwrap_or(false)
-            {
-                return;
+                .unwrap_or(false);
+            if on_callback_queue {
+                let transferred = Self {
+                    lifecycle: self.lifecycle.take(),
+                    native: self.native.take(),
+                    kqueue: self.kqueue.take(),
+                    chain: self.chain.take(),
+                    fence_serialization: Mutex::new(()),
+                };
+                std::thread::spawn(move || {
+                    let mut transferred = transferred;
+                    let _ = transferred.shutdown_in_place();
+                });
+            } else {
+                let _ = self.shutdown_in_place();
             }
-            let _ = self.release_started();
         }
     }
 
@@ -1730,71 +2139,137 @@ mod macos_native {
         samples: usize,
     ) -> NativeResult<CharacterizationReport> {
         let baseline_descriptors = descriptor_count()?;
-        let scratch = ScratchRoot::create("lease-performance")?;
-        let outside = scratch.path.join("outside");
-        fs::create_dir(&outside).map_err(|error| format!("create outside directory: {error}"))?;
-        let workspace = ObjectWorkspace::create_under(&scratch.path, object_count)?;
-        let filesystem = filesystem_report(&workspace.objects_path)?;
-        if !filesystem.name.eq_ignore_ascii_case("apfs") {
-            return Err(format!(
-                "performance namespace uses {}, expected APFS",
-                filesystem.name
-            ));
-        }
-        let outside_hard_link_rejected = workspace.prove_outside_hard_link_rejected(&outside)?;
-        if !outside_hard_link_rejected {
-            return Err("fresh outside hard link was not rejected".to_owned());
-        }
-
-        let lease = NativeLease::create(&workspace.objects)?;
-        if lease.poll_kernel()? != KqueueClassification::Quiet {
-            return Err("kqueue was terminal immediately after stream start".to_owned());
-        }
-        lease.revalidate(&workspace.objects)?;
-        workspace.safe_open_scan()?;
-        let maximum_descriptors =
-            descriptor_count()?.max(baseline_descriptors + lease.descriptor_count() as i64);
-
-        for _ in 0..warmups {
-            workspace.safe_open_scan()?;
-            sample_lease(&lease, &workspace)?;
-        }
-
-        let mut safe_open_samples = Vec::with_capacity(samples);
-        let mut lease_samples = Vec::with_capacity(samples);
-        for _ in 0..samples {
-            let started = Instant::now();
-            workspace.safe_open_scan()?;
-            safe_open_samples.push(started.elapsed().as_nanos());
-
-            let started = Instant::now();
-            sample_lease(&lease, &workspace)?;
-            lease_samples.push(started.elapsed().as_nanos());
-        }
-
-        let callback_panic_contained = CallbackOwner::prove_callback_panic_containment();
-        if !callback_panic_contained {
-            return Err("callback panic crossed the FSEvents ABI boundary".to_owned());
-        }
-        let ordinary_probe = CallbackOwner::new();
-        ordinary_probe.publish(classify_callback_batch(0, false), &[1]);
-        let ordinary_events_dirty_all =
-            ordinary_probe.snapshot().generation == GenerationState::DirtyAll;
-        let ambiguous_probe = CallbackOwner::new();
-        ambiguous_probe.publish(
-            classify_callback_batch(FSEVENT_MUST_SCAN_SUBDIRS, false),
-            &[1],
-        );
-        let ambiguous_flags_unknown =
-            ambiguous_probe.snapshot().generation == GenerationState::Unknown;
-
-        let snapshot = lease.shutdown()?;
-        drop(workspace);
-        let post_teardown_descriptors = descriptor_count()?;
+        let mut scratch = ScratchRoot::create("lease-performance")?;
         let scratch_path = scratch.path.clone();
-        scratch.cleanup()?;
-        let residue_count = usize::from(scratch_path.exists());
-        if residue_count != 0 {
+        let primary = (|| {
+            let outside = scratch.path.join("outside");
+            fs::create_dir(&outside)
+                .map_err(|error| format!("create outside directory: {error}"))?;
+            let workspace = ObjectWorkspace::create_under(&scratch.path, object_count)?;
+            let filesystem = filesystem_report(&workspace.objects_path)?;
+            if !filesystem.name.eq_ignore_ascii_case("apfs") {
+                return Err(format!(
+                    "performance namespace uses {}, expected APFS",
+                    filesystem.name
+                ));
+            }
+            let outside_hard_link_rejected =
+                workspace.prove_outside_hard_link_rejected(&outside)?;
+            if !outside_hard_link_rejected {
+                return Err("fresh outside hard link was not rejected".to_owned());
+            }
+
+            let lease = NativeLease::create(&workspace.objects)?;
+            let lease_primary = (|| {
+                if lease.poll_kernel()? != KqueueClassification::Quiet {
+                    return Err("kqueue was terminal immediately after stream start".to_owned());
+                }
+                lease.revalidate(&workspace.objects)?;
+                workspace.safe_open_scan()?;
+                let maximum_descriptors =
+                    descriptor_count()?.max(baseline_descriptors + lease.descriptor_count() as i64);
+
+                for _ in 0..warmups {
+                    workspace.safe_open_scan()?;
+                    sample_lease(&lease, &workspace)?;
+                }
+
+                let mut safe_open_samples = Vec::with_capacity(samples);
+                let mut lease_samples = Vec::with_capacity(samples);
+                for _ in 0..samples {
+                    let started = Instant::now();
+                    workspace.safe_open_scan()?;
+                    safe_open_samples.push(started.elapsed().as_nanos());
+
+                    let started = Instant::now();
+                    sample_lease(&lease, &workspace)?;
+                    lease_samples.push(started.elapsed().as_nanos());
+                }
+
+                let callback_panic_contained = CallbackOwner::prove_callback_panic_containment();
+                if !callback_panic_contained {
+                    return Err("callback panic crossed the FSEvents ABI boundary".to_owned());
+                }
+                let ordinary_probe = CallbackOwner::new();
+                ordinary_probe.publish(classify_callback_batch(0, false), &[1]);
+                let ordinary_events_dirty_all =
+                    ordinary_probe.snapshot().generation == GenerationState::DirtyAll;
+                let ambiguous_probe = CallbackOwner::new();
+                ambiguous_probe.publish(
+                    classify_callback_batch(FSEVENT_MUST_SCAN_SUBDIRS, false),
+                    &[1],
+                );
+                let ambiguous_flags_unknown =
+                    ambiguous_probe.snapshot().generation == GenerationState::Unknown;
+                Ok((
+                    maximum_descriptors,
+                    safe_open_samples,
+                    lease_samples,
+                    callback_panic_contained,
+                    ordinary_events_dirty_all,
+                    ambiguous_flags_unknown,
+                ))
+            })();
+            let mut snapshot = None;
+            let lease_cleanup = lease
+                .shutdown()
+                .wait()
+                .and_then(|result| result)
+                .map(|value| {
+                    snapshot = Some(value);
+                });
+            let (
+                maximum_descriptors,
+                safe_open_samples,
+                lease_samples,
+                callback_panic_contained,
+                ordinary_events_dirty_all,
+                ambiguous_flags_unknown,
+            ) = combine_primary_cleanup(lease_primary, lease_cleanup)?;
+            let snapshot =
+                snapshot.ok_or_else(|| "lease teardown did not return a snapshot".to_owned())?;
+            drop(workspace);
+            let post_teardown_descriptors = descriptor_count()?;
+
+            build_report(
+                object_count,
+                SamplingReport::Performance { warmups, samples },
+                filesystem,
+                ReportEvidence {
+                    safe_open: distribution_from_nanos(&safe_open_samples)
+                        .map_err(str::to_owned)?,
+                    lease: distribution_from_nanos(&lease_samples).map_err(str::to_owned)?,
+                    resources: ResourceReport {
+                        maximum_descriptor_delta: maximum_descriptors - baseline_descriptors,
+                        post_teardown_descriptor_delta: post_teardown_descriptors
+                            - baseline_descriptors,
+                        residue_count: 0,
+                    },
+                    lifecycle: LifecycleReport {
+                        creation_passed: true,
+                        start_passed: true,
+                        callback_panic_contained,
+                        teardown_passed: true,
+                        callback_after_release: snapshot.callback_after_release,
+                    },
+                    restored_path: RestoredPathReport {
+                        tested: false,
+                        ancestor_above_volume_covered: false,
+                        zero_id_root_changed_rejected_clean: false,
+                    },
+                    outcomes: OutcomeReport {
+                        ordinary_events_dirty_all,
+                        ambiguous_flags_unknown,
+                        outside_hard_link_rejected,
+                    },
+                    ordered_boundary_proven: false,
+                },
+            )
+        })();
+        let cleanup = scratch.cleanup();
+        let mut report = combine_primary_cleanup(primary, cleanup)?;
+        report.resources.residue_count = usize::from(scratch_path.exists());
+        if report.resources.residue_count != 0 {
             return Err(format!(
                 "scratch residue remains at {}",
                 scratch_path.display()
@@ -1807,40 +2282,9 @@ mod macos_native {
                 post_cleanup_descriptors - baseline_descriptors
             ));
         }
-
-        build_report(
-            object_count,
-            SamplingReport::Performance { warmups, samples },
-            filesystem,
-            ReportEvidence {
-                safe_open: distribution_from_nanos(&safe_open_samples).map_err(str::to_owned)?,
-                lease: distribution_from_nanos(&lease_samples).map_err(str::to_owned)?,
-                resources: ResourceReport {
-                    maximum_descriptor_delta: maximum_descriptors - baseline_descriptors,
-                    post_teardown_descriptor_delta: post_teardown_descriptors
-                        - baseline_descriptors,
-                    residue_count,
-                },
-                lifecycle: LifecycleReport {
-                    creation_passed: true,
-                    start_passed: true,
-                    callback_panic_contained,
-                    teardown_passed: true,
-                    callback_after_release: snapshot.callback_after_release,
-                },
-                restored_path: RestoredPathReport {
-                    tested: false,
-                    ancestor_above_volume_covered: false,
-                    zero_id_root_changed_rejected_clean: false,
-                },
-                outcomes: OutcomeReport {
-                    ordinary_events_dirty_all,
-                    ambiguous_flags_unknown,
-                    outside_hard_link_rejected,
-                },
-                ordered_boundary_proven: true,
-            },
-        )
+        report.resources.post_teardown_descriptor_delta =
+            post_cleanup_descriptors - baseline_descriptors;
+        Ok(report)
     }
 
     struct ReportEvidence {
@@ -1877,7 +2321,7 @@ mod macos_native {
                 } else {
                     "release"
                 },
-                rustc: command_text("rustup", &["run", "1.75.0", "rustc", "--version"])?,
+                rustc: build_rustc_identity().to_owned(),
                 source_commit: command_text(
                     "git",
                     &["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"],
@@ -1981,13 +2425,18 @@ mod macos_native {
             let mount = PathBuf::from(&plan.mount);
             fs::create_dir_all(&mount)
                 .map_err(|error| format!("create APFS mount point: {error}"))?;
-            run_command_plan(&plan.create)?;
             let mut volume = Self {
                 image,
                 mount,
                 attached: false,
             };
-            volume.attach()?;
+            let primary = run_command_plan(&plan.create).and_then(|()| volume.attach());
+            if let Err(error) = primary {
+                return match combine_primary_cleanup::<()>(Err(error), volume.cleanup()) {
+                    Ok(()) => unreachable!("an error plus cleanup cannot become success"),
+                    Err(error) => Err(error),
+                };
+            }
             Ok(volume)
         }
 
@@ -2050,30 +2499,27 @@ mod macos_native {
             Ok(())
         }
 
-        fn cleanup(mut self) -> NativeResult<()> {
+        fn cleanup(&mut self) -> NativeResult<()> {
             if self.attached {
                 self.detach()?;
+            }
+            if self.mount.exists() {
+                fs::remove_dir_all(&self.mount)
+                    .map_err(|error| format!("remove APFS mount point: {error}"))?;
             }
             if self.image.exists() {
                 fs::remove_file(&self.image)
                     .map_err(|error| format!("remove APFS image: {error}"))?;
             }
+            if self.attached || self.mount.exists() || self.image.exists() {
+                return Err(format!(
+                    "APFS cleanup residue: attached={}, mount_exists={}, image_exists={}",
+                    self.attached,
+                    self.mount.exists(),
+                    self.image.exists()
+                ));
+            }
             Ok(())
-        }
-    }
-
-    impl Drop for ApfsVolume {
-        fn drop(&mut self) {
-            if self.attached {
-                let _ = Command::new("hdiutil")
-                    .arg("detach")
-                    .arg(&self.mount)
-                    .status();
-                self.attached = false;
-            }
-            if self.image.exists() {
-                let _ = fs::remove_file(&self.image);
-            }
         }
     }
 
@@ -2116,100 +2562,251 @@ mod macos_native {
         object_count: usize,
         race_samples: usize,
     ) -> NativeResult<CharacterizationReport> {
-        let baseline_descriptors = descriptor_count()?;
-        let scratch = ScratchRoot::create("lease-apfs")?;
-        let mut volume = ApfsVolume::create(&scratch.path)?;
-        let workspace = ObjectWorkspace::create_under(&volume.mount, object_count)?;
-        let filesystem = filesystem_report(&workspace.objects_path)?;
-        if !filesystem.name.eq_ignore_ascii_case("apfs") {
+        let required_cases = required_race_cases();
+        if race_samples < required_cases.len() {
             return Err(format!(
-                "owned characterization image mounted as {}, expected APFS",
-                filesystem.name
+                "restored-path characterization requires at least {} samples, got {race_samples}",
+                required_cases.len()
             ));
         }
-        let outside = volume.mount.join("outside");
-        fs::create_dir(&outside).map_err(|error| format!("create APFS outside path: {error}"))?;
-        let outside_hard_link_rejected = workspace.prove_outside_hard_link_rejected(&outside)?;
-        if !outside_hard_link_rejected {
-            return Err("fresh APFS outside hard link was not rejected".to_owned());
-        }
-
-        let lease = NativeLease::create(&workspace.objects)?;
-        if lease.poll_kernel()? != KqueueClassification::Quiet {
-            return Err("kqueue was terminal immediately after APFS stream start".to_owned());
-        }
-        lease.revalidate(&workspace.objects)?;
-        workspace.safe_open_scan()?;
-        let maximum_descriptors =
-            descriptor_count()?.max(baseline_descriptors + lease.descriptor_count() as i64);
-
-        let plan = apfs_driver_plan(
-            scratch
-                .path
-                .to_str()
-                .ok_or_else(|| "scratch path is not UTF-8".to_owned())?,
-        );
-        let mut safe_open_samples = Vec::with_capacity(race_samples);
-        let mut race_fence_samples = Vec::with_capacity(race_samples);
-        let mut ancestor_above_volume_covered = false;
-        let zero_id_root_changed_rejected_clean = true;
-        for sample in 0..race_samples {
-            let started = Instant::now();
-            workspace.safe_open_scan()?;
-            safe_open_samples.push(started.elapsed().as_nanos());
-
-            let fence_started = Instant::now();
-            if sample + 1 == race_samples {
-                volume.detach_for_race()?;
-                lease.inject_callback(FSEVENT_UNMOUNT | FSEVENT_ROOT_CHANGED, 0)?;
-                if lease.fence(&workspace.objects)? != GenerationState::Unknown {
-                    return Err("unmount/root-changed race was admitted clean".to_owned());
-                }
-                volume.attach()?;
-            } else {
-                let path = PathBuf::from(&plan.race_paths[sample % plan.race_paths.len()]);
-                if path == PathBuf::from(&plan.race_paths[0]) {
-                    ancestor_above_volume_covered = true;
-                }
-                exercise_rename_delete_rebind_race(&scratch.path, &path, &workspace, &lease)?;
-                if lease.fence(&workspace.objects)? != GenerationState::Unknown {
+        let baseline_descriptors = descriptor_count()?;
+        let mut scratch = ScratchRoot::create("lease-apfs")?;
+        let scratch_path = scratch.path.clone();
+        let primary = (|| {
+            let mut volume = ApfsVolume::create(&scratch.path)?;
+            let volume_primary = (|| {
+                let workspace = ObjectWorkspace::create_under(&volume.mount, object_count)?;
+                let filesystem = filesystem_report(&workspace.objects_path)?;
+                if !filesystem.name.eq_ignore_ascii_case("apfs") {
                     return Err(format!(
-                        "zero-ID root-changed race at {} was admitted clean",
-                        path.display()
+                        "owned characterization image mounted as {}, expected APFS",
+                        filesystem.name
                     ));
                 }
-            }
-            race_fence_samples.push(fence_started.elapsed().as_nanos());
-        }
-        if !ancestor_above_volume_covered {
-            return Err("no race covered the disposable ancestor above the APFS volume".to_owned());
-        }
+                let outside = volume.mount.join("outside");
+                fs::create_dir(&outside)
+                    .map_err(|error| format!("create APFS outside path: {error}"))?;
+                let outside_hard_link_rejected =
+                    workspace.prove_outside_hard_link_rejected(&outside)?;
+                if !outside_hard_link_rejected {
+                    return Err("fresh APFS outside hard link was not rejected".to_owned());
+                }
 
-        let callback_panic_contained = CallbackOwner::prove_callback_panic_containment();
-        if !callback_panic_contained {
-            return Err("callback panic crossed the FSEvents ABI boundary".to_owned());
-        }
-        let ordinary_events_dirty_all =
-            classify_callback_batch(0, false) == GenerationState::DirtyAll;
-        let ambiguous_flags_unknown = classify_callback_batch(
-            FSEVENT_MUST_SCAN_SUBDIRS
-                | FSEVENT_USER_DROPPED
-                | FSEVENT_KERNEL_DROPPED
-                | FSEVENT_IDS_WRAPPED
-                | FSEVENT_ROOT_CHANGED
-                | FSEVENT_MOUNT
-                | FSEVENT_UNMOUNT,
-            false,
-        ) == GenerationState::Unknown;
+                let rename_cases = required_cases
+                    .iter()
+                    .copied()
+                    .filter(|case| case.operation == RaceOperation::RenameRebindRenameBack)
+                    .collect::<Vec<_>>();
+                let mut schedule = Vec::with_capacity(race_samples);
+                for sample in 0..race_samples - required_cases.len() {
+                    schedule.push(rename_cases[sample % rename_cases.len()]);
+                }
+                schedule.extend(required_cases.iter().copied());
 
-        let snapshot = lease.shutdown()?;
-        drop(workspace);
-        volume.cleanup()?;
-        let post_teardown_descriptors = descriptor_count()?;
-        let scratch_path = scratch.path.clone();
-        scratch.cleanup()?;
-        let residue_count = usize::from(scratch_path.exists());
-        if residue_count != 0 {
+                let mut evidence = RaceEvidence::new(required_cases.clone());
+                let mut safe_open_samples = Vec::with_capacity(race_samples);
+                let mut race_fence_samples = Vec::with_capacity(race_samples);
+                let mut maximum_descriptors = baseline_descriptors;
+                let mut callback_after_release = false;
+
+                for case in schedule {
+                    let started = Instant::now();
+                    workspace.safe_open_scan()?;
+                    safe_open_samples.push(started.elapsed().as_nanos());
+
+                    let disposable_root = volume.mount.join("original-vnode-delete-case");
+                    let disposable_workspace =
+                        if case.operation == RaceOperation::DeleteOriginalVnode {
+                            Some(ObjectWorkspace::create_under(
+                                &disposable_root,
+                                object_count,
+                            )?)
+                        } else {
+                            None
+                        };
+                    let active_workspace = disposable_workspace.as_ref().unwrap_or(&workspace);
+                    active_workspace.safe_open_scan()?;
+                    let lease = NativeLease::create(&active_workspace.objects)?;
+                    let target = if case.operation == RaceOperation::DeleteOriginalVnode {
+                        active_workspace.objects_path.clone()
+                    } else {
+                        race_component_path(&scratch.path, &volume.mount, case.component)
+                    };
+                    let fence_started = Instant::now();
+                    let race_primary = (|| {
+                        if lease.poll_kernel()? != KqueueClassification::Quiet {
+                            return Err(format!(
+                                "fresh {:?} lease was terminal immediately after start",
+                                case.component
+                            ));
+                        }
+                        lease.revalidate(&active_workspace.objects)?;
+                        maximum_descriptors = maximum_descriptors
+                            .max(descriptor_count()?)
+                            .max(baseline_descriptors + lease.descriptor_count() as i64);
+
+                        match case.operation {
+                            RaceOperation::RenameRebindRenameBack => {
+                                exercise_rename_delete_rebind_race(
+                                    &scratch.path,
+                                    &target,
+                                    &workspace,
+                                )?;
+                            }
+                            RaceOperation::UnmountRevoke => {
+                                volume.detach_for_race()?;
+                            }
+                            RaceOperation::DeleteOriginalVnode => {
+                                exercise_original_vnode_delete(&scratch.path, &target)?;
+                            }
+                        }
+
+                        let kqueue_unknown_before_callback =
+                            lease.fence(&active_workspace.objects)? == GenerationState::Unknown;
+                        if !kqueue_unknown_before_callback {
+                            return Err(format!(
+                                "kqueue did not reject {:?} on {:?} before callback",
+                                case.operation, case.component
+                            ));
+                        }
+
+                        if case.operation == RaceOperation::UnmountRevoke {
+                            volume.attach()?;
+                        }
+                        let restored_before_callback = target.exists();
+                        if !restored_before_callback {
+                            return Err(format!(
+                                "race path was not rebound before delayed callback: {}",
+                                target.display()
+                            ));
+                        }
+
+                        let before_callback = lease.callback()?.snapshot();
+                        lease.inject_callback(FSEVENT_ROOT_CHANGED, 0)?;
+                        let after_callback = lease.callback()?.snapshot();
+                        let delayed_zero_id_callback_terminal = after_callback.publication_count
+                            > before_callback.publication_count
+                            && after_callback.generation == GenerationState::Unknown
+                            && lease.fence(&active_workspace.objects)? == GenerationState::Unknown;
+                        race_fence_samples.push(fence_started.elapsed().as_nanos());
+                        Ok(RaceObservation {
+                            case,
+                            fresh_generation: true,
+                            kqueue_unknown_before_callback,
+                            restored_before_callback,
+                            delayed_zero_id_callback_terminal,
+                        })
+                    })();
+                    let lease_cleanup =
+                        lease
+                            .shutdown()
+                            .wait()
+                            .and_then(|result| result)
+                            .map(|snapshot| {
+                                callback_after_release |= snapshot.callback_after_release;
+                            });
+                    evidence.record(combine_primary_cleanup(race_primary, lease_cleanup)?);
+                    drop(disposable_workspace);
+                    if case.operation == RaceOperation::DeleteOriginalVnode {
+                        fs::remove_dir_all(&disposable_root).map_err(|error| {
+                            format!(
+                                "remove disposable original-vnode case {}: {error}",
+                                disposable_root.display()
+                            )
+                        })?;
+                        if disposable_root.exists() {
+                            return Err(format!(
+                                "disposable original-vnode case still exists: {}",
+                                disposable_root.display()
+                            ));
+                        }
+                    }
+                }
+
+                let ordered_boundary_proven = evidence.ordered_boundary_proven();
+                let zero_id_root_changed_rejected_clean =
+                    evidence.zero_id_root_changed_rejected_clean();
+                let ancestor_above_volume_covered = evidence
+                    .component_completed(OwnedComponent::ScratchRoot)
+                    && evidence.component_completed(OwnedComponent::RenameableAncestor);
+                if !ordered_boundary_proven {
+                    return Err(
+                        "fresh-generation kqueue evidence did not cover every required race"
+                            .to_owned(),
+                    );
+                }
+                if !zero_id_root_changed_rejected_clean {
+                    return Err(
+                        "delayed zero-ID root-changed callbacks were not terminal for every race"
+                            .to_owned(),
+                    );
+                }
+                if !ancestor_above_volume_covered {
+                    return Err(
+                        "race evidence did not cover both disposable ancestors above the volume"
+                            .to_owned(),
+                    );
+                }
+
+                let callback_panic_contained = CallbackOwner::prove_callback_panic_containment();
+                if !callback_panic_contained {
+                    return Err("callback panic crossed the FSEvents ABI boundary".to_owned());
+                }
+                let ordinary_events_dirty_all =
+                    classify_callback_batch(0, false) == GenerationState::DirtyAll;
+                let ambiguous_flags_unknown = classify_callback_batch(
+                    FSEVENT_MUST_SCAN_SUBDIRS
+                        | FSEVENT_USER_DROPPED
+                        | FSEVENT_KERNEL_DROPPED
+                        | FSEVENT_IDS_WRAPPED
+                        | FSEVENT_ROOT_CHANGED
+                        | FSEVENT_MOUNT
+                        | FSEVENT_UNMOUNT,
+                    false,
+                ) == GenerationState::Unknown;
+
+                drop(workspace);
+                build_report(
+                    object_count,
+                    SamplingReport::RestoredPathRace { race_samples },
+                    filesystem,
+                    ReportEvidence {
+                        safe_open: distribution_from_nanos(&safe_open_samples)
+                            .map_err(str::to_owned)?,
+                        lease: distribution_from_nanos(&race_fence_samples)
+                            .map_err(str::to_owned)?,
+                        resources: ResourceReport {
+                            maximum_descriptor_delta: maximum_descriptors - baseline_descriptors,
+                            post_teardown_descriptor_delta: 0,
+                            residue_count: 0,
+                        },
+                        lifecycle: LifecycleReport {
+                            creation_passed: true,
+                            start_passed: true,
+                            callback_panic_contained,
+                            teardown_passed: true,
+                            callback_after_release,
+                        },
+                        restored_path: RestoredPathReport {
+                            tested: true,
+                            ancestor_above_volume_covered,
+                            zero_id_root_changed_rejected_clean,
+                        },
+                        outcomes: OutcomeReport {
+                            ordinary_events_dirty_all,
+                            ambiguous_flags_unknown,
+                            outside_hard_link_rejected,
+                        },
+                        ordered_boundary_proven,
+                    },
+                )
+            })();
+            combine_primary_cleanup(volume_primary, volume.cleanup())
+        })();
+        let cleanup = scratch.cleanup();
+        let mut report = combine_primary_cleanup(primary, cleanup)?;
+        report.resources.residue_count = usize::from(scratch_path.exists());
+        if report.resources.residue_count != 0 {
             return Err(format!(
                 "APFS scratch residue remains at {}",
                 scratch_path.display()
@@ -2222,49 +2819,33 @@ mod macos_native {
                 post_cleanup_descriptors - baseline_descriptors
             ));
         }
+        report.resources.post_teardown_descriptor_delta =
+            post_cleanup_descriptors - baseline_descriptors;
+        Ok(report)
+    }
 
-        build_report(
-            object_count,
-            SamplingReport::RestoredPathRace { race_samples },
-            filesystem,
-            ReportEvidence {
-                safe_open: distribution_from_nanos(&safe_open_samples).map_err(str::to_owned)?,
-                lease: distribution_from_nanos(&race_fence_samples).map_err(str::to_owned)?,
-                resources: ResourceReport {
-                    maximum_descriptor_delta: maximum_descriptors - baseline_descriptors,
-                    post_teardown_descriptor_delta: post_teardown_descriptors
-                        - baseline_descriptors,
-                    residue_count,
-                },
-                lifecycle: LifecycleReport {
-                    creation_passed: true,
-                    start_passed: true,
-                    callback_panic_contained,
-                    teardown_passed: true,
-                    callback_after_release: snapshot.callback_after_release,
-                },
-                restored_path: RestoredPathReport {
-                    tested: true,
-                    ancestor_above_volume_covered,
-                    zero_id_root_changed_rejected_clean,
-                },
-                outcomes: OutcomeReport {
-                    ordinary_events_dirty_all,
-                    ambiguous_flags_unknown,
-                    outside_hard_link_rejected,
-                },
-                ordered_boundary_proven: true,
-            },
-        )
+    fn race_component_path(
+        scratch_root: &Path,
+        mount: &Path,
+        component: OwnedComponent,
+    ) -> PathBuf {
+        match component {
+            OwnedComponent::ScratchRoot => scratch_root.to_owned(),
+            OwnedComponent::RenameableAncestor => scratch_root.join("renameable"),
+            OwnedComponent::Mount => mount.to_owned(),
+            OwnedComponent::Namespace => mount.join("namespace"),
+            OwnedComponent::Fs => mount.join("namespace/fs"),
+            OwnedComponent::Catalogs => mount.join("namespace/fs/catalogs"),
+            OwnedComponent::Objects => mount.join("namespace/fs/catalogs/objects"),
+        }
     }
 
     fn exercise_rename_delete_rebind_race(
         owned_root: &Path,
         target: &Path,
         workspace: &ObjectWorkspace,
-        lease: &NativeLease,
     ) -> NativeResult<()> {
-        if !target.starts_with(owned_root) || target == owned_root {
+        if !target.starts_with(owned_root) {
             return Err(format!(
                 "refusing race outside owned scratch root: {}",
                 target.display()
@@ -2295,7 +2876,6 @@ mod macos_native {
                 ));
             }
             mutate_and_restore_first_object(workspace)?;
-            lease.inject_callback(FSEVENT_ROOT_CHANGED, 0)?;
             fs::remove_dir_all(target)
                 .map_err(|error| format!("delete rebound path {}: {error}", target.display()))?;
             fs::rename(&away, target)
@@ -2309,15 +2889,114 @@ mod macos_native {
             }
             Ok(())
         })();
-        if result.is_err() {
-            if target.exists() {
-                let _ = fs::remove_dir_all(target);
-            }
-            if away.exists() && !target.exists() {
-                let _ = fs::rename(&away, target);
-            }
+        if let Err(primary) = result {
+            let recovery = {
+                let mut errors = Vec::new();
+                if target.exists() {
+                    if let Err(error) = fs::remove_dir_all(target) {
+                        errors.push(format!(
+                            "remove rebound path {} during recovery: {error}",
+                            target.display()
+                        ));
+                    }
+                }
+                if away.exists() && !target.exists() {
+                    if let Err(error) = fs::rename(&away, target) {
+                        errors.push(format!(
+                            "restore {} during recovery: {error}",
+                            target.display()
+                        ));
+                    }
+                }
+                if !target.exists() || away.exists() {
+                    errors.push(format!(
+                        "rename race recovery left target_exists={} away_exists={}",
+                        target.exists(),
+                        away.exists()
+                    ));
+                }
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errors.join("; "))
+                }
+            };
+            return combine_primary_cleanup::<()>(Err(primary), recovery);
         }
-        result
+        Ok(())
+    }
+
+    fn exercise_original_vnode_delete(owned_root: &Path, target: &Path) -> NativeResult<()> {
+        if !target.starts_with(owned_root) || target == owned_root {
+            return Err(format!(
+                "refusing original-vnode deletion outside a child of owned scratch root: {}",
+                target.display()
+            ));
+        }
+        let file_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "delete target has no UTF-8 file name".to_owned())?;
+        let away = target.with_file_name(format!("{file_name}.original"));
+        if away.exists() {
+            return Err(format!(
+                "delete staging path already exists: {}",
+                away.display()
+            ));
+        }
+        let original_identity = directory_identity(open_directory(target, true)?.raw())?;
+        fs::rename(target, &away)
+            .map_err(|error| format!("rename original {} away: {error}", target.display()))?;
+        let primary = (|| {
+            fs::create_dir_all(target)
+                .map_err(|error| format!("create rebound path {}: {error}", target.display()))?;
+            let rebound_identity = directory_identity(open_directory(target, true)?.raw())?;
+            if rebound_identity == original_identity {
+                return Err(format!(
+                    "rebound path unexpectedly retained original vnode at {}",
+                    target.display()
+                ));
+            }
+            fs::remove_dir_all(&away).map_err(|error| {
+                format!("delete original vnode tree {}: {error}", away.display())
+            })?;
+            if !target.exists() || away.exists() {
+                return Err(format!(
+                    "original-vnode delete left target_exists={} original_exists={}",
+                    target.exists(),
+                    away.exists()
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(primary) = primary {
+            let recovery = {
+                let mut errors = Vec::new();
+                if target.exists() {
+                    if let Err(error) = fs::remove_dir_all(target) {
+                        errors.push(format!(
+                            "remove rebound path {} during recovery: {error}",
+                            target.display()
+                        ));
+                    }
+                }
+                if away.exists() && !target.exists() {
+                    if let Err(error) = fs::rename(&away, target) {
+                        errors.push(format!(
+                            "restore original path {} during recovery: {error}",
+                            target.display()
+                        ));
+                    }
+                }
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errors.join("; "))
+                }
+            };
+            return combine_primary_cleanup::<()>(Err(primary), recovery);
+        }
+        Ok(())
     }
 
     fn mutate_and_restore_first_object(workspace: &ObjectWorkspace) -> NativeResult<()> {
@@ -2569,16 +3248,16 @@ mod tests {
                     "callbackAfterRelease": false
                 },
                 "restoredPath": {
-                    "tested": true,
-                    "ancestorAboveVolumeCovered": true,
-                    "zeroIdRootChangedRejectedClean": true
+                    "tested": false,
+                    "ancestorAboveVolumeCovered": false,
+                    "zeroIdRootChangedRejectedClean": false
                 },
                 "outcomes": {
                     "ordinaryEventsDirtyAll": true,
                     "ambiguousFlagsUnknown": true,
                     "outsideHardLinkRejected": true
                 },
-                "orderedBoundaryProven": true
+                "orderedBoundaryProven": false
             })
         );
     }
@@ -2645,52 +3324,6 @@ mod tests {
         publish_event_id(&mut maximum, 12);
         publish_event_id(&mut maximum, 41);
         assert_eq!(maximum, 41);
-    }
-
-    #[test]
-    fn cleanup_sequences_match_each_partial_construction_state() {
-        assert_eq!(
-            cleanup_actions(CleanupPhase::BeforeStreamCreation),
-            &[
-                CleanupAction::ReleaseQueue,
-                CleanupAction::CloseKernelQueue,
-                CleanupAction::CloseDescriptors,
-            ]
-        );
-        assert_eq!(
-            cleanup_actions(CleanupPhase::CreatedNotScheduled),
-            &[
-                CleanupAction::ReleaseStream,
-                CleanupAction::ReleaseQueue,
-                CleanupAction::CloseKernelQueue,
-                CleanupAction::CloseDescriptors,
-            ]
-        );
-        assert_eq!(
-            cleanup_actions(CleanupPhase::ScheduledStartFailed),
-            &[
-                CleanupAction::InvalidateStream,
-                CleanupAction::BarrierQueue,
-                CleanupAction::ReleaseStream,
-                CleanupAction::ReleaseQueue,
-                CleanupAction::CloseKernelQueue,
-                CleanupAction::CloseDescriptors,
-            ]
-        );
-        assert_eq!(
-            cleanup_actions(CleanupPhase::Started),
-            &[
-                CleanupAction::Cancel,
-                CleanupAction::StopStream,
-                CleanupAction::InvalidateStream,
-                CleanupAction::BarrierQueue,
-                CleanupAction::ReleaseStream,
-                CleanupAction::DropOwner,
-                CleanupAction::ReleaseQueue,
-                CleanupAction::CloseKernelQueue,
-                CleanupAction::CloseDescriptors,
-            ]
-        );
     }
 
     #[test]
@@ -2842,5 +3475,235 @@ mod tests {
         assert!(ensure_output_available(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn race_evidence_requires_fresh_kqueue_and_delayed_callback_proof_for_every_case() {
+        let required = required_race_cases();
+        assert!(required
+            .iter()
+            .any(|case| case.component == OwnedComponent::ScratchRoot));
+        assert!(required
+            .iter()
+            .any(|case| case.component == OwnedComponent::Mount));
+        assert!(required
+            .iter()
+            .any(|case| case.operation == RaceOperation::DeleteOriginalVnode));
+        assert!(required
+            .iter()
+            .any(|case| case.operation == RaceOperation::UnmountRevoke));
+
+        let mut evidence = RaceEvidence::new(required.clone());
+        for case in &required {
+            evidence.record(RaceObservation {
+                case: *case,
+                fresh_generation: true,
+                kqueue_unknown_before_callback: true,
+                restored_before_callback: true,
+                delayed_zero_id_callback_terminal: true,
+            });
+        }
+        assert!(evidence.ordered_boundary_proven());
+        assert!(evidence.zero_id_root_changed_rejected_clean());
+        assert!(evidence.component_completed(OwnedComponent::ScratchRoot));
+        assert!(evidence.component_completed(OwnedComponent::Mount));
+
+        let mut incomplete = RaceEvidence::new(required);
+        incomplete.record(RaceObservation {
+            case: required_race_cases()[0],
+            fresh_generation: false,
+            kqueue_unknown_before_callback: true,
+            restored_before_callback: true,
+            delayed_zero_id_callback_terminal: true,
+        });
+        assert!(!incomplete.ordered_boundary_proven());
+        assert!(!incomplete.zero_id_root_changed_rejected_clean());
+    }
+
+    #[test]
+    fn native_lifecycle_injection_runs_the_real_partial_state_machine() {
+        let mut null_create = InjectedNativeCalls::fail(NativeCall::CreateStream);
+        assert!(StreamLifecycle::establish(&mut null_create).is_err());
+        assert_eq!(null_create.calls, vec![NativeCall::CreateStream]);
+
+        let mut failed_schedule = InjectedNativeCalls::fail(NativeCall::Schedule);
+        assert!(StreamLifecycle::establish(&mut failed_schedule).is_err());
+        assert_eq!(
+            failed_schedule.calls,
+            vec![
+                NativeCall::CreateStream,
+                NativeCall::Schedule,
+                NativeCall::ReleaseStreamAndContext,
+            ]
+        );
+
+        let mut failed_start = InjectedNativeCalls::fail(NativeCall::Start);
+        assert!(StreamLifecycle::establish(&mut failed_start).is_err());
+        assert_eq!(
+            failed_start.calls,
+            vec![
+                NativeCall::CreateStream,
+                NativeCall::Schedule,
+                NativeCall::Start,
+                NativeCall::Invalidate,
+                NativeCall::Barrier,
+                NativeCall::ReleaseStreamAndContext,
+            ]
+        );
+
+        let mut failed_cancel = InjectedNativeCalls::fail(NativeCall::Cancel);
+        let mut lifecycle = StreamLifecycle::establish(&mut failed_cancel).unwrap();
+        assert!(lifecycle.teardown(&mut failed_cancel).is_err());
+        assert_eq!(
+            failed_cancel.calls,
+            vec![
+                NativeCall::CreateStream,
+                NativeCall::Schedule,
+                NativeCall::Start,
+                NativeCall::Cancel,
+                NativeCall::Stop,
+                NativeCall::Invalidate,
+                NativeCall::Barrier,
+                NativeCall::ReleaseStreamAndContext,
+            ]
+        );
+
+        let mut failed_barrier = InjectedNativeCalls::fail(NativeCall::Barrier);
+        let mut lifecycle = StreamLifecycle::establish(&mut failed_barrier).unwrap();
+        assert!(lifecycle.teardown(&mut failed_barrier).is_err());
+        assert_eq!(
+            failed_barrier.calls.last(),
+            Some(&NativeCall::ReleaseStreamAndContext)
+        );
+
+        let mut successful = InjectedNativeCalls::success();
+        let mut lifecycle = StreamLifecycle::establish(&mut successful).unwrap();
+        assert_eq!(lifecycle.flush(&mut successful).unwrap(), 77);
+        lifecycle.teardown(&mut successful).unwrap();
+        for call in [
+            NativeCall::OwnerDrop,
+            NativeCall::QueueDrop,
+            NativeCall::KernelQueueDrop,
+            NativeCall::DescriptorDrop,
+        ] {
+            successful.invoke(call).unwrap();
+        }
+        assert_eq!(
+            successful.calls,
+            vec![
+                NativeCall::CreateStream,
+                NativeCall::Schedule,
+                NativeCall::Start,
+                NativeCall::Flush,
+                NativeCall::Cancel,
+                NativeCall::Stop,
+                NativeCall::Invalidate,
+                NativeCall::Barrier,
+                NativeCall::ReleaseStreamAndContext,
+                NativeCall::OwnerDrop,
+                NativeCall::QueueDrop,
+                NativeCall::KernelQueueDrop,
+                NativeCall::DescriptorDrop,
+            ]
+        );
+    }
+
+    #[test]
+    fn callback_queue_teardown_transfers_ownership_until_worker_finishes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{mpsc, Arc};
+
+        struct Resource(Arc<AtomicUsize>);
+        impl Drop for Resource {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (release_sender, release_receiver) = mpsc::channel();
+        let request = transfer_teardown(true, Resource(drops.clone()), move |resource| {
+            release_receiver.recv().unwrap();
+            drop(resource);
+            9
+        });
+        assert!(request.is_deferred());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        release_sender.send(()).unwrap();
+        assert_eq!(request.wait().unwrap(), 9);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn release_validation_rejects_late_callbacks_and_unbalanced_context_ownership() {
+        assert!(validate_release_quiescence(4, 4, 2).is_ok());
+        assert_eq!(
+            validate_release_quiescence(4, 5, 2).unwrap_err(),
+            "callback publication occurred after stream release"
+        );
+        assert_eq!(
+            validate_release_quiescence(4, 4, 3).unwrap_err(),
+            "FSEvents context retain/release count is unbalanced"
+        );
+    }
+
+    #[test]
+    fn cleanup_failures_are_combined_with_primary_failures() {
+        assert_eq!(
+            combine_primary_cleanup::<()>(
+                Err("primary failure".to_owned()),
+                Err("cleanup failure".to_owned())
+            )
+            .unwrap_err(),
+            "primary failure; cleanup also failed: cleanup failure"
+        );
+        assert_eq!(
+            combine_primary_cleanup(Ok(4), Err("cleanup failure".to_owned())).unwrap_err(),
+            "cleanup failure"
+        );
+    }
+
+    #[test]
+    fn hard_link_rejection_requires_an_exact_two_link_same_inode_observation() {
+        let original = PortableStamp {
+            device: 3,
+            inode: 7,
+            length: 10,
+            mode: PORTABLE_REGULAR_MODE,
+            links: 1,
+        };
+        let observed = PortableStamp {
+            links: 2,
+            ..original
+        };
+        assert!(classify_outside_hard_link(original, observed).unwrap());
+
+        let unrelated = PortableStamp {
+            inode: 8,
+            ..observed
+        };
+        assert!(classify_outside_hard_link(original, unrelated).is_err());
+    }
+
+    #[test]
+    fn cancellation_is_checked_at_every_fence_return_boundary() {
+        for checkpoint in 0..4 {
+            let mut cancellations = [false; 4];
+            cancellations[checkpoint] = true;
+            assert_eq!(
+                classify_fence_checkpoints(cancellations),
+                GenerationState::Unknown
+            );
+        }
+        assert_eq!(
+            classify_fence_checkpoints([false; 4]),
+            GenerationState::Clean
+        );
+    }
+
+    #[test]
+    fn build_compiler_identity_is_embedded_not_queried_at_runtime() {
+        let identity = build_rustc_identity();
+        assert!(identity.starts_with("rustc 1.75.0"));
     }
 }
