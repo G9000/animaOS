@@ -1,6 +1,6 @@
 # IL-007 - Dream cycle (F5 extension)
 
-- Status: in_progress
+- Status: done
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/agent/sleep_agent.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/server/src/anima_server/models`
 - Parent: `IL-000`
@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-21 MYT
+- Updated: 2026-07-28 MYT
 - Started: 2026-07-21 MYT
-- Completed:
+- Completed: 2026-07-23 MYT
 
 ## Goal
 
@@ -36,6 +36,8 @@ Add an idle-time dream cycle: during long-idle night windows, recombine importan
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:25 MYT - Dream sampling now uses rank-normalized coldness per review (raw heat exceeds 1, so `1 − heat` can go negative).
 - 2026-07-21 MYT - Implemented. Pure math (`inner_life/dream.py`): night-window + idle + per-night-cap eligibility, rank-normalized coldness, significance×coldness weighted (seeded, without-replacement) sampling, 25% affect scaling, share-worthy detection. Edge (`inner_life/dream_edge.py`): `run_dream_for_user` — eligibility (incl. consuming IL-002's `dream_deferred` catch-up marker), active-DEK gate, material = sampled important-but-cold non-identity memories + latent traces ≥0.5 + one best-effort random transcript fragment, ONE extraction-model reflection call, then effects: `dream_journal` row (narrative field-encrypted, rolling cap 30), 25% affect nudge, η=0.02 reconsolidation on touched memories, share-worthy → IL3 `dream_residue`. Wired into the presence tick idle loop (sibling of the initiative tick). Un-stubbed `dream_residue` in IL-003. `presence_config.dream_sharing` (off|on_ask|ambient) across model/service/schema/route. Soul migration `20260721_0001` (dream_journal + dream_sharing) + legacy repair. dream_journal in vault export/import + eval-reset.
+- 2026-07-23 MYT - Done: PR #116 (branch feature/il-007-dream-cycle) squash-merged to main as `bc7363c` (2026-07-23 02:16 MYT). Review rounds on the PR hardened right-to-forget (dream scrubbing on memory/latent-topic/derived-pattern forget, transcript-fragment source dropped), field-encrypted latent topic keys in dream source_refs (incl. vault-import re-keying), bounded failed dream attempts (marker committed before effects), non-finite delta rejection, configurable reconsolidation eta (full skip at eta<=0), and dreamSharing=off enforcement.
+- 2026-07-28 MYT - Ticket closed out (status/dates updated, merged feature branch deleted); tracker table in IL-000 updated.
 
 ## Validation
 

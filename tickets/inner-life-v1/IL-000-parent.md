@@ -1,6 +1,6 @@
 # IL-000 - Inner Life v1 parent tracker
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/agent`, `apps/server/src/anima_server/models`, `apps/server/src/anima_server/main.py`
 - Parent: none
@@ -9,8 +9,8 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-16 13:30 MYT
-- Started:
+- Updated: 2026-07-28 MYT
+- Started: 2026-07-15 MYT
 - Completed:
 
 ## Goal
@@ -27,7 +27,8 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 | `IL-004` | Latent trace buffer and crystallization | `done` | none |
 | `IL-005` | Forgetting as distillation (F7 extension) | `done` | none |
 | `IL-006` | Recall reconsolidation (F2 extension) | `done` | none |
-| `IL-007` | Dream cycle (F5 extension) | `backlog` | `IL-001`, `IL-002`, `IL-006` |
+| `IL-007` | Dream cycle (F5 extension) | `done` | `IL-001`, `IL-002`, `IL-006` |
+| `IL-008` | Wire push-initiative into the client (delivery + config UI) | `backlog` | `IL-003` |
 
 ## Completed Ticket History
 
@@ -37,6 +38,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-19 05:10 MYT - `IL-006` done: recall reconsolidation (branch feature/il-006-reconsolidation), task review approved after 1 fix round, final whole-branch review (controller-run, spend limit) clean.
 - 2026-07-16 13:30 MYT - `IL-002` done: presence tick loop and offline catch-up (branch feature/il-002-presence-tick), pending review.
 - 2026-07-21 07:27 MYT - `IL-003` done: drive accumulators and push initiative (branch feature/il-003-initiative, merged main as `5e38dbf`, PR #115). First user-visible Inner Life behavior. Task review + adversarial whole-branch review (Critical wiring fix: per-user soul-store resolution) + 8 further PR review rounds, all fixed with regression tests. Client-side delivery wiring intentionally deferred, filed as `IL-008`.
+- 2026-07-23 02:16 MYT - `IL-007` done: dream cycle (branch feature/il-007-dream-cycle, squash-merged main as `bc7363c`, PR #116). Many PR review rounds hardened right-to-forget dream scrubbing, field-encrypted dream source_refs, bounded dream attempts, and dream-sharing gating. Client-side dream surfacing folded into `IL-008` scope notes.
 
 ## Deliverables
 
@@ -47,6 +49,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - IL-005 Forgetting as distillation (IL5)
 - IL-006 Recall reconsolidation (IL6)
 - IL-007 Dream cycle (IL7)
+- IL-008 Client wiring for push initiative + presence-config UI (last-mile delivery)
 
 ## Acceptance
 
@@ -58,6 +61,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:10 MYT - Added implementation plan reference, child ticket status table, and completed-ticket history per review feedback.
+- 2026-07-28 MYT - Close-out pass: IL-007 marked done (was stale after PR #116 merged), IL-008 added to the child table, parent moved to in_progress. Remaining scope: `IL-008` (client delivery + presence-config UI).
 
 ## Validation
 
