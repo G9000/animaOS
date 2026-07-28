@@ -18,6 +18,29 @@ os.environ.setdefault("ANIMA_CORE_REQUIRE_ENCRYPTION", "false")
 os.environ["ANIMA_AGENT_EMBEDDING_PROVIDER"] = "fastembed"
 os.environ["ANIMA_AGENT_EMBEDDING_MODEL"] = ""
 
+# Same hermeticity requirement for the core passphrase: a developer's
+# ANIMA_CORE_PASSPHRASE (shell env or .env.local) flips the server into
+# env-passphrase mode, and registration then SKIPS the versioned key-hierarchy
+# provisioning (`_maybe_generate_sqlcipher_key` returns None) — which silently
+# failed ~54 CoreFS/keyslots/recovery/vault tests for months as a "pre-existing
+# baseline" (MIH-003). Tests assume unified (wrapped-key) mode; the handful
+# that exercise passphrase mode set `settings.core_passphrase` explicitly via
+# monkeypatch, which still wins over this.
+os.environ["ANIMA_CORE_PASSPHRASE"] = ""
+
+# Fail fast (with an actionable message) when the installed anima_core native
+# module is stale relative to the checkout: a missing symbol otherwise surfaces
+# as dozens of cryptic AttributeErrors deep inside the CoreFS suites (the other
+# half of the MIH-003 "pre-existing baseline"). CorefsSession is the symbol
+# services/sessions.py hard-requires.
+import anima_core as _anima_core
+
+if not hasattr(_anima_core, "CorefsSession"):
+    raise RuntimeError(
+        "The installed anima_core native module is stale (missing CorefsSession). "
+        "Rebuild it from the checkout: uv sync --reinstall-package anima-core"
+    )
+
 import shutil
 import sys
 import tempfile
