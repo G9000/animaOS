@@ -597,6 +597,21 @@ struct FenceOutcome {
     kqueue: KqueuePoll,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LeaseAcquisitionDecision {
+    Accept,
+    Retry,
+    Reject,
+}
+
+fn classify_lease_acquisition(attempt: usize, outcome: &FenceOutcome) -> LeaseAcquisitionDecision {
+    match (attempt, outcome.state, outcome.cause) {
+        (_, GenerationState::Clean, FenceCause::Clean) => LeaseAcquisitionDecision::Accept,
+        (0, GenerationState::DirtyAll, FenceCause::Callback) => LeaseAcquisitionDecision::Retry,
+        _ => LeaseAcquisitionDecision::Reject,
+    }
+}
+
 trait FenceDriver {
     fn on_callback_queue(&self) -> bool;
     fn cancelled(&mut self, checkpoint: FenceCheckpoint) -> bool;
@@ -2886,13 +2901,8 @@ mod macos_native {
                 return Err("fresh outside hard link was not rejected".to_owned());
             }
 
-            let mut lease = NativeLease::create(&workspace.objects)?;
+            let mut lease = acquire_clean_lease(&workspace)?;
             let lease_primary = (|| {
-                if lease.poll_kernel()?.is_terminal() {
-                    return Err("kqueue was terminal immediately after stream start".to_owned());
-                }
-                lease.revalidate(&workspace.objects)?;
-                workspace.safe_open_scan()?;
                 let maximum_descriptors =
                     descriptor_count()?.max(baseline_descriptors + lease.descriptor_count() as i64);
 
@@ -3009,6 +3019,49 @@ mod macos_native {
         report.resources.post_teardown_descriptor_delta =
             post_cleanup_descriptors - baseline_descriptors;
         Ok(report)
+    }
+
+    fn acquire_clean_lease(workspace: &ObjectWorkspace) -> NativeResult<NativeLease> {
+        for attempt in 0..=1 {
+            let mut lease = NativeLease::create(&workspace.objects)?;
+            let outcome = (|| {
+                let initial_kqueue = lease.poll_kernel()?;
+                if initial_kqueue.is_terminal() {
+                    return Ok(FenceOutcome {
+                        state: GenerationState::Unknown,
+                        cause: FenceCause::Kqueue,
+                        kqueue: initial_kqueue,
+                    });
+                }
+                lease.revalidate(&workspace.objects)?;
+                workspace.safe_open_scan()?;
+                lease.fence_with_evidence(&workspace.objects)
+            })();
+
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(primary) => {
+                    return combine_primary_cleanup(Err(primary), lease.shutdown().map(|_| ()))
+                }
+            };
+            match classify_lease_acquisition(attempt, &outcome) {
+                LeaseAcquisitionDecision::Accept => return Ok(lease),
+                LeaseAcquisitionDecision::Retry => {
+                    lease.shutdown()?;
+                }
+                LeaseAcquisitionDecision::Reject => {
+                    let primary = format!(
+                        "lease acquisition attempt {} rejected: state={:?}, cause={:?}, kqueue={:?}",
+                        attempt + 1,
+                        outcome.state,
+                        outcome.cause,
+                        outcome.kqueue
+                    );
+                    return combine_primary_cleanup(Err(primary), lease.shutdown().map(|_| ()));
+                }
+            }
+        }
+        unreachable!("the second lease acquisition attempt cannot request another retry")
     }
 
     struct ReportEvidence {
@@ -5095,6 +5148,52 @@ mod tests {
             run_fence(&mut revalidation).unwrap().cause,
             FenceCause::Revalidation
         );
+    }
+
+    #[test]
+    fn lease_acquisition_retries_one_dirty_scan_but_never_uncertainty() {
+        let clean = FenceOutcome {
+            state: GenerationState::Clean,
+            cause: FenceCause::Clean,
+            kqueue: KqueuePoll::default(),
+        };
+        assert_eq!(
+            classify_lease_acquisition(0, &clean),
+            LeaseAcquisitionDecision::Accept
+        );
+
+        let dirty = FenceOutcome {
+            state: GenerationState::DirtyAll,
+            cause: FenceCause::Callback,
+            kqueue: KqueuePoll::default(),
+        };
+        assert_eq!(
+            classify_lease_acquisition(0, &dirty),
+            LeaseAcquisitionDecision::Retry
+        );
+        assert_eq!(
+            classify_lease_acquisition(1, &dirty),
+            LeaseAcquisitionDecision::Reject
+        );
+
+        for cause in [
+            FenceCause::Kqueue,
+            FenceCause::Timeout,
+            FenceCause::Revalidation,
+            FenceCause::KqueueFailure,
+            FenceCause::FlushFailure,
+            FenceCause::WaitFailure,
+        ] {
+            let uncertain = FenceOutcome {
+                state: GenerationState::Unknown,
+                cause,
+                kqueue: KqueuePoll::default(),
+            };
+            assert_eq!(
+                classify_lease_acquisition(0, &uncertain),
+                LeaseAcquisitionDecision::Reject
+            );
+        }
     }
 
     #[test]
