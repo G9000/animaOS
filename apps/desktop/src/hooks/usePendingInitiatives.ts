@@ -33,6 +33,8 @@ export function usePendingInitiatives(userId: number | null | undefined): {
           return {
             enabled: config.enabled,
             initiativeEnabled: config.initiativeEnabled,
+            quietHoursStart: config.quietHoursStart,
+            quietHoursEnd: config.quietHoursEnd,
           };
         },
         fetchInitiatives: async () =>

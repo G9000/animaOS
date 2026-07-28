@@ -1462,6 +1462,65 @@ def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> Non
     runtime_engine.dispose()
 
 
+def test_poll_during_quiet_hours_lists_nothing_and_marks_nothing(db: Session) -> None:
+    """Regression (PR #123 review, P1): quiet hours must be re-evaluated at
+    delivery time, not only at fire time — an initiative fired just before
+    the window would otherwise be served inside it, breaking the Presence UI
+    promise. Inside the window the poll returns [] and marks nothing
+    delivered; after the window the row is served normally."""
+    from anima_server.services.presence_config import update_presence_config
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=datetime(2026, 1, 5, 21, 55, tzinfo=UTC),
+        drive=DRIVE_RELATIONAL, pressure_snapshot={}, gate_states={},
+        generated_text="hi", delivered=False, answered=False,
+    )
+    db.add(log_row)
+    db.commit()
+    update_presence_config(
+        db, 1, {"initiativeEnabled": True, "quietHoursStart": 22, "quietHoursEnd": 7}
+    )
+    db.commit()
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+
+        # 23:30 aware-UTC `now` keeps its own zone in resolve_local_now ->
+        # hour 23, inside the 22..7 wrap-around window.
+        inside = datetime(2026, 1, 5, 23, 30, tzinfo=UTC)
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db, now=inside)
+        rdb.commit()
+        assert fetched == []
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False  # held, not delivered, during the window
+
+        # 03:00 is still inside the wrapped window.
+        fetched = list_and_mark_delivered(
+            rdb, user_id=1, soul_db=db, now=datetime(2026, 1, 6, 3, 0, tzinfo=UTC)
+        )
+        rdb.commit()
+        assert fetched == []
+
+        # 12:00 is outside -> served and marked delivered.
+        fetched = list_and_mark_delivered(
+            rdb, user_id=1, soul_db=db, now=datetime(2026, 1, 6, 12, 0, tzinfo=UTC)
+        )
+        rdb.commit()
+        db.commit()
+        assert len(fetched) == 1
+        assert fetched[0].delivered is True
+
+    runtime_engine.dispose()
+
+
 def test_ack_soul_failure_is_isolated_and_keeps_session_usable(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

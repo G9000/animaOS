@@ -142,7 +142,11 @@ def _reconcile_soul_delivered(
 
 
 def list_and_mark_delivered(
-    runtime_db: Session, *, user_id: int, soul_db: Session | None = None
+    runtime_db: Session,
+    *,
+    user_id: int,
+    soul_db: Session | None = None,
+    now: datetime | None = None,
 ) -> list[PendingInitiative]:
     """Every not-yet-acknowledged pending initiative for ``user_id``,
     oldest first — and marks each ``delivered`` (the client has now been
@@ -158,12 +162,27 @@ def list_and_mark_delivered(
     delivery side effect closes the client-side race where consent is
     withdrawn between a client's own config check and its list call.
     ``soul_db=None`` callers (tests) skip the check; the API route always
-    passes the soul session."""
+    passes the soul session.
+
+    Quiet hours are re-evaluated here too (PR #123 review, P1): firing checks
+    them once, but an initiative fired just before the window would otherwise
+    be served inside it, breaking the Presence UI promise ("no messages
+    inside this window"). A row listed during quiet hours stays undelivered
+    and is served after the window ends. ``now`` follows the same local-time
+    discipline as the gate chain (``resolve_local_now``); the route omits it,
+    resolving the real system-zone wall clock."""
     if soul_db is not None:
+        from anima_server.services.agent.inner_life.initiative import _in_quiet_hours
+        from anima_server.services.agent.inner_life.presence import resolve_local_now
         from anima_server.services.presence_config import get_presence_config_values
 
         values = get_presence_config_values(soul_db, user_id)
         if not (values.enabled and values.initiative_enabled):
+            return []
+        local_now = resolve_local_now(now, None)
+        if _in_quiet_hours(
+            local_now.hour, values.quiet_hours_start, values.quiet_hours_end
+        ):
             return []
     rows = list(
         runtime_db.scalars(

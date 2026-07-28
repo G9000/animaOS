@@ -223,7 +223,12 @@ describe("createGatedInitiativeFetch", () => {
   test("returns [] without hitting the initiatives endpoint when initiative is disabled", async () => {
     let fetched = 0;
     const gated = createGatedInitiativeFetch({
-      getPresenceGate: async () => ({ enabled: true, initiativeEnabled: false }),
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: false,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      }),
       fetchInitiatives: async () => {
         fetched += 1;
         return [row(1)];
@@ -236,7 +241,12 @@ describe("createGatedInitiativeFetch", () => {
   test("returns [] when the presence master switch is off", async () => {
     let fetched = 0;
     const gated = createGatedInitiativeFetch({
-      getPresenceGate: async () => ({ enabled: false, initiativeEnabled: true }),
+      getPresenceGate: async () => ({
+        enabled: false,
+        initiativeEnabled: true,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      }),
       fetchInitiatives: async () => {
         fetched += 1;
         return [row(1)];
@@ -246,9 +256,47 @@ describe("createGatedInitiativeFetch", () => {
     expect(fetched).toBe(0);
   });
 
+  test("returns [] inside the quiet-hours window without fetching (midnight wrap)", async () => {
+    let fetched = 0;
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: true,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+      }),
+      fetchInitiatives: async () => {
+        fetched += 1;
+        return [row(1)];
+      },
+      getCurrentHour: () => 23,
+    });
+    expect(await gated()).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
+  test("serves normally outside the quiet-hours window", async () => {
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: true,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+      }),
+      fetchInitiatives: async () => [row(1)],
+      getCurrentHour: () => 12,
+    });
+    expect((await gated()).map((r) => r.id)).toEqual([1]);
+  });
+
   test("passes through when presence and initiative are both enabled", async () => {
     const gated = createGatedInitiativeFetch({
-      getPresenceGate: async () => ({ enabled: true, initiativeEnabled: true }),
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: true,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      }),
       fetchInitiatives: async () => [row(1)],
     });
     expect((await gated()).map((r) => r.id)).toEqual([1]);

@@ -98,23 +98,43 @@ export function createInitiativePoller(
 export interface PresenceGate {
   enabled: boolean;
   initiativeEnabled: boolean;
+  quietHoursStart: number | null;
+  quietHoursEnd: number | null;
+}
+
+// Same semantics as the server's `_in_quiet_hours`: inactive unless both
+// ends are set and differ; wraps past midnight when start > end.
+function inQuietHours(
+  hour: number,
+  start: number | null,
+  end: number | null,
+): boolean {
+  if (start == null || end == null || start === end) return false;
+  if (start < end) return start <= hour && hour < end;
+  return hour >= start || hour < end;
 }
 
 /**
  * Wraps an initiatives fetch behind the user's CURRENT presence config.
- * The server's list operation is the consent authority (it checks the
- * config atomically with the delivered side effect); this client-side gate
- * is the UX layer on top: it skips the initiatives request entirely when
- * opted out and returns [], clearing any initiative already on screen
- * within one cycle of opting out.
+ * The server's list operation is the consent authority (it re-checks
+ * opt-in AND quiet hours atomically with the delivered side effect); this
+ * client-side gate is the UX layer on top: it skips the initiatives
+ * request entirely when opted out or inside the quiet-hours window, and
+ * returns [], clearing any initiative already on screen within one cycle.
  */
 export function createGatedInitiativeFetch(deps: {
   getPresenceGate: () => Promise<PresenceGate>;
   fetchInitiatives: () => Promise<PendingInitiative[]>;
+  /** Injectable for tests; defaults to the local wall-clock hour. */
+  getCurrentHour?: () => number;
 }): () => Promise<PendingInitiative[]> {
+  const getCurrentHour = deps.getCurrentHour ?? (() => new Date().getHours());
   return async () => {
     const gate = await deps.getPresenceGate();
     if (!gate.enabled || !gate.initiativeEnabled) return [];
+    if (inQuietHours(getCurrentHour(), gate.quietHoursStart, gate.quietHoursEnd)) {
+      return [];
+    }
     return deps.fetchInitiatives();
   };
 }

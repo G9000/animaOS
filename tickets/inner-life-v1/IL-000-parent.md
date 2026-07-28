@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-28 19:29 MYT
+- Updated: 2026-07-28 20:04 MYT
 - Started: 2026-07-15 16:55 MYT
-- Completed: 2026-07-28 15:17 MYT
+- Completed: 2026-07-28 20:04 MYT
 
 ## Goal
 
@@ -71,6 +71,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-28 15:17 MYT - `IL-008` (last child ticket) done; all eight child tickets are now `done`. Parent moved to `done`. Inner Life v1 — continuous affect state with offline catch-up, drive-based push initiative (now client-visible), latent trace crystallization, forgetting as distillation, recall reconsolidation, and the dream cycle — is complete end-to-end once the IL-008 PR merges.
 - 2026-07-28 16:13 MYT - `IL-009` filed as a backlog follow-up from the IL-008 final whole-branch review (Reply-context carry-over UX gap). This is post-v1 polish, not a blocker: it does not change the parent's `done` status or IL-008's completion.
 - 2026-07-28 19:29 MYT - Codex review round 5 on PR #123: moved `IL-009` out of the child table into a "Follow-ups Beyond v1 Scope" section so the `done` parent is structurally consistent (no backlog child inside the acceptance-bearing table); IL-009's own metadata now records the lineage without a parent link.
+- 2026-07-28 20:04 MYT - Codex review round 6 on PR #123: `Completed` re-stamped from 15:17 to 20:04 MYT on this parent and `IL-008` — review rounds landed acceptance-affecting fixes (consent + quiet-hours delivery gates) after the original close, so completion now postdates the final validated state, per the completion-evidence rule.
 
 ## Validation
 
@@ -82,4 +83,4 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
   - `tickets/inner-life-v1/IL-005-forgetting-as-distillation.md`
   - `tickets/inner-life-v1/IL-006-recall-reconsolidation.md`
   - `tickets/inner-life-v1/IL-007-dream-cycle.md`
-  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 12/12, `tsc --noEmit` 0 errors, server consent-gate change validated with `tests/test_inner_life_initiative.py` 87 passed)
+  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 14/14, `tsc --noEmit` 0 errors, server consent-gate change validated with `tests/test_inner_life_initiative.py` 88 passed)
