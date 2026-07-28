@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: done
+- Status: in_progress
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -12,9 +12,9 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 21:38 MYT
+- Updated: 2026-07-28 21:52 MYT
 - Started: 2026-07-14 19:45 MYT
-- Completed: 2026-07-28 21:01 MYT
+- Completed:
 
 ## Goal
 
@@ -234,6 +234,8 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 19:37 MYT - PR #124's native macOS job passed the full `21`-case vnode matrix, and the refreshed Codex pass raised one P2 portability defect in its unit contract: it hard-coded Rust `1.75.0` even though that version is enforced independently for evidence builds. Reproduced RED under the supported newer Rust `1.93.0`, then changed the regression to prove a nonempty single-line compiler identity is compile-time embedded without pinning ordinary test runners. Both Rust `1.93.0` and `1.75.0` focused suites passed `39/39`, with strict Rust 1.75 Clippy, scoped rustfmt, and diff hygiene green. Task 2 and PCF-002 remain `in_progress` pending refreshed current-head CI/review; Task 5 remains gated and PCF-003 remains dependency-ineligible.
 - 2026-07-28 21:01 MYT - Closed PCF-002 after the user selected the approved macOS safe-open fallback. PR #124's native evidence proves the APFS boundary but remains a single evidence-only performance run, so it does not clear the repeatability gate; Task 5 and the conditional production diagnostic are skipped. Removed the disposable macOS spike, restored the backend-disabled macOS CI gate, synchronized the implementation plans/spec, and made PCF-003 dependency-eligible without claiming it.
 - 2026-07-28 21:38 MYT - PR #125 review found that the backend-disabled macOS job skipped every remaining Rust check. Added a RED/GREEN workflow contract, then made the full CoreFS fallback suite and strict CoreFS/anima-core Clippy unconditional while retaining backend-specific FSEvents/kqueue tests behind the production-backend gate. PCF-002 remains complete because this restores CI coverage without changing the accepted macOS safe-open fallback.
+- 2026-07-28 21:46 MYT - Reopened PCF-002 under the documented acceptance-breaking lifecycle after PR #125's current-head P1 and failed macOS job proved the unconditional Clippy gate could not pass on the selected fallback backend. Preserved the 2026-07-28 21:01 MYT completion in history, cleared the current completion timestamp, and synchronized the parent row/history before beginning the repair. PCF-003 is dependency-ineligible while this correction is open.
+- 2026-07-28 21:52 MYT - Diagnosed the failed macOS job directly: strict Clippy rejected both the fallback branch's `needless_return` and the now-unconstructed evidence-only `Macos` platform variant. Added two genuine RED assertions, converted both unsupported-platform branches to tail expressions, and removed the unused variant. Focused and full contracts, full serialized Rust 1.75 CoreFS tests, strict combined Clippy, scoped Rust 1.75 rustfmt, workflow YAML parsing, and diff hygiene pass locally; exact macOS validation remains assigned to the refreshed native CI head before closeout.
 
 ## Validation
 
@@ -392,6 +394,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 closeout: `.venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_catalog_benchmark.py -q` passed `125/125`; workflow YAML parsing, locked Cargo metadata, disposable-spike reference scan, and `git diff --check` passed.
   - PCF-002 closeout: `bun run check:repo` found no PCF-002/PCF-000 issue and exited `1` only for the two unrelated pre-existing Inner Life violations: the `IL-007` parent-row mismatch and missing `IL-008` row.
   - PR #125 macOS fallback CI follow-up: the workflow regression failed RED with four backend-gated steps, then passed after only the two native-backend tests remained gated; the complete benchmark/workflow contract passed `125/125`, and workflow YAML parsing passed.
+  - PR #125 reopened macOS Clippy repair: direct job logs confirmed `dead_code` for the unused `Macos` variant and `needless_return` in the fallback. Both new assertions failed RED and passed GREEN; the complete benchmark/workflow contract passed `126/126`; full serialized Rust 1.75 CoreFS passed `213` library tests with `1` ignored plus every binary/integration/doc suite; strict combined CoreFS/anima-core Clippy, scoped Rust 1.75 rustfmt, workflow YAML parsing, and diff hygiene passed. Local Apple cross-target Clippy was blocked before crate analysis by the Windows host's missing Apple C compiler, so the required exact macOS CI run remains the closeout authority.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (macOS fallback cleanup)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`

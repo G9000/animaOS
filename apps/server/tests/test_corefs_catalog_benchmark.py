@@ -506,6 +506,20 @@ def test_object_lease_diagnostic_cfg_and_macos_fallback_ci_are_explicit() -> Non
     assert "cargo +1.75.0 test --locked -p anima-corefs" in standalone
 
 
+def test_object_lease_diagnostic_fallbacks_are_clippy_clean_tail_expressions() -> None:
+    source = OBJECT_LEASE_BENCHMARK_SOURCE.read_text(encoding="utf-8")
+    assert "    Macos,\n" not in source
+
+    diagnostic = source.split("pub fn run_object_lease_diagnostic(", 1)[1]
+    diagnostic = diagnostic.split(
+        "#[cfg(windows)]\nfn run_windows_object_lease_diagnostic",
+        1,
+    )[0]
+
+    assert "return Err(BenchmarkError::BackendUnavailable" not in diagnostic
+    assert diagnostic.count("Err(BenchmarkError::BackendUnavailable") == 2
+
+
 def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
     workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
     windows = workflow.split("  windows-native-lease:", 1)[1].split("  macos-native-lease:", 1)[0]

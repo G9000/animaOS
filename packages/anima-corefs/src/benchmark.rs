@@ -1469,8 +1469,6 @@ struct ObjectLeaseDiagnosticCorrectness {
 enum ObjectLeaseDiagnosticPlatform {
     #[cfg(windows)]
     Windows,
-    #[cfg(target_os = "macos")]
-    Macos,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1746,16 +1744,16 @@ pub fn run_object_lease_diagnostic(
     #[cfg(target_os = "macos")]
     {
         let _ = (target, config);
-        return Err(BenchmarkError::BackendUnavailable(
+        Err(BenchmarkError::BackendUnavailable(
             "the approved macOS native backend is not enabled in this build",
-        ));
+        ))
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         let _ = (target, config);
-        return Err(BenchmarkError::BackendUnavailable(
+        Err(BenchmarkError::BackendUnavailable(
             "this platform has no production object-validation lease backend",
-        ));
+        ))
     }
     #[cfg(windows)]
     run_windows_object_lease_diagnostic(target, config)
