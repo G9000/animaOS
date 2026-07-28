@@ -522,6 +522,29 @@ def test_object_lease_diagnostic_fallbacks_are_clippy_clean_tail_expressions() -
     assert diagnostic.count("Err(BenchmarkError::BackendUnavailable") == 2
 
 
+def test_macos_fallback_clippy_cfg_gates_windows_only_test_imports() -> None:
+    integration = (
+        REPO_ROOT / "packages" / "anima-corefs" / "tests" / "catalog_benchmark.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        "#[cfg(windows)]\nuse anima_corefs::benchmark::{\n"
+        "    run_object_lease_diagnostic, ObjectLeaseDiagnosticConfig,"
+    ) in integration
+
+    unit = (
+        REPO_ROOT
+        / "packages"
+        / "anima-corefs"
+        / "src"
+        / "transaction"
+        / "object_lease_tests.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        "#[cfg(windows)]\n"
+        "use super::object_lease::ObjectLeaseDiagnosticObserver;"
+    ) in unit
+
+
 def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
     workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
     windows = workflow.split("  windows-native-lease:", 1)[1].split("  macos-native-lease:", 1)[0]
