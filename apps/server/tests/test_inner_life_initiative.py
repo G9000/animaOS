@@ -1529,6 +1529,84 @@ def test_opt_out_committed_mid_poll_serves_and_marks_nothing(
     runtime_engine.dispose()
 
 
+def test_consent_lock_serializes_delivery_against_config_updates(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #123 review round 8, P1): the freshness re-read only
+    narrowed the consent TOCTOU — an opt-out could still commit between the
+    re-check and the delivered side effect. Delivery now holds the per-user
+    consent lock from the authoritative check through the flush, and the
+    config PUT holds the same lock through its commit. This test parks a
+    poll inside its critical section and proves the lock cannot be acquired
+    (i.e. an opt-out PUT would block) until the delivery decision is done."""
+    import threading
+
+    from anima_server.services.agent.inner_life import delivery as delivery_module
+    from anima_server.services.presence_config import (
+        presence_consent_lock,
+        update_presence_config,
+    )
+
+    # Same-object guarantee: route and delivery serialize on one lock.
+    assert presence_consent_lock(1) is presence_consent_lock(1)
+
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    update_presence_config(db, 1, {"enabled": True, "initiativeEnabled": True})
+    db.commit()
+
+    in_critical = threading.Event()
+    proceed = threading.Event()
+    real_mark = delivery_module._mark_rows_delivered
+
+    def parked_mark(runtime_db, soul_db, *, user_id, rows):
+        in_critical.set()
+        assert proceed.wait(timeout=5.0)  # hold the critical section open
+        real_mark(runtime_db, soul_db, user_id=user_id, rows=rows)
+
+    monkeypatch.setattr(delivery_module, "_mark_rows_delivered", parked_mark)
+
+    results: list[int] = []
+
+    def poll() -> None:
+        with runtime_factory() as rdb:
+            rdb.add(
+                PendingInitiative(
+                    user_id=1, initiative_log_id=log_row.id,
+                    drive=DRIVE_RELATIONAL, text="hi",
+                )
+            )
+            rdb.commit()
+            fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+            rdb.commit()
+            results.append(len(fetched))
+
+    t = threading.Thread(target=poll)
+    t.start()
+    try:
+        assert in_critical.wait(timeout=5.0)  # poll is inside the locked section
+        # An opt-out PUT would block here: the lock is not acquirable.
+        assert presence_consent_lock(1).acquire(timeout=0.3) is False
+    finally:
+        proceed.set()
+        t.join(timeout=5.0)
+
+    assert results == [1]  # the delivery decision completed under the lock
+    # And the lock is free again afterwards.
+    assert presence_consent_lock(1).acquire(timeout=1.0) is True
+    presence_consent_lock(1).release()
+
+    runtime_engine.dispose()
+
+
 def test_poll_during_quiet_hours_lists_nothing_and_marks_nothing(db: Session) -> None:
     """Regression (PR #123 review, P1): quiet hours must be re-evaluated at
     delivery time, not only at fire time — an initiative fired just before

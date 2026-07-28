@@ -198,19 +198,43 @@ def list_and_mark_delivered(
     )
     if not rows:
         return []
-    # Revalidate consent on fresh state before the delivered side effect —
-    # nothing has been marked yet, so a mid-poll opt-out simply returns [].
-    if soul_db is not None and not _initiative_consent_allows(
-        soul_db, user_id=user_id, now=now, refresh=True
-    ):
-        return []
+    # Authoritative consent check + delivered side effect under the per-user
+    # consent lock (PR #123 review round 8, P1): the config PUT holds the same
+    # lock through its commit, so an opt-out can no longer commit between this
+    # fresh re-check and the marking/flush — the freshness re-read alone only
+    # narrowed that window. Single-process server, so the in-process lock is
+    # authoritative. soul_db=None callers (unit tests on the runtime side)
+    # skip consent entirely, so no lock is needed there.
+    if soul_db is None:
+        _mark_rows_delivered(runtime_db, soul_db, user_id=user_id, rows=rows)
+        return rows
+
+    from anima_server.services.presence_config import presence_consent_lock
+
+    with presence_consent_lock(user_id):
+        # Revalidate on fresh state — nothing has been marked yet, so a
+        # mid-poll opt-out (committed before this lock was acquired) simply
+        # returns []; one arriving now blocks until after the flush, i.e. it
+        # post-dates the delivery decision.
+        if not _initiative_consent_allows(soul_db, user_id=user_id, now=now, refresh=True):
+            return []
+        _mark_rows_delivered(runtime_db, soul_db, user_id=user_id, rows=rows)
+    return rows
+
+
+def _mark_rows_delivered(
+    runtime_db: Session,
+    soul_db: Session | None,
+    *,
+    user_id: int,
+    rows: list[PendingInitiative],
+) -> None:
     for row in rows:
         row.delivered = True
     runtime_db.flush()
     _reconcile_soul_delivered(
         soul_db, user_id=user_id, log_ids=[row.initiative_log_id for row in rows]
     )
-    return rows
 
 
 def _initiative_consent_allows(
