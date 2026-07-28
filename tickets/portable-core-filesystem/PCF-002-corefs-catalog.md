@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 22:15 MYT
+- Updated: 2026-07-28 22:18 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -238,6 +238,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 21:52 MYT - Diagnosed the failed macOS job directly: strict Clippy rejected both the fallback branch's `needless_return` and the now-unconstructed evidence-only `Macos` platform variant. Added two genuine RED assertions, converted both unsupported-platform branches to tail expressions, and removed the unused variant. Focused and full contracts, full serialized Rust 1.75 CoreFS tests, strict combined Clippy, scoped Rust 1.75 rustfmt, workflow YAML parsing, and diff hygiene pass locally; exact macOS validation remains assigned to the refreshed native CI head before closeout.
 - 2026-07-28 22:02 MYT - The refreshed native macOS job passed the full fallback test suite, then failed before Clippy crate analysis because the `macos-26-arm64` image selected Python 3.14 while PyO3 0.22.6 supports through 3.13. Added a RED/GREEN workflow contract and pinned Python 3.13 with the current Node-24-compatible `actions/setup-python@v6` before Rust setup. PCF-002 remains `in_progress` pending the next exact macOS run and current-head Codex review.
 - 2026-07-28 22:15 MYT - With Python 3.13 active, the native macOS job reached strict Clippy and exposed Windows-only diagnostic imports left unconditional in one integration test and the unit-test module. Added a RED/GREEN source contract, split both import sets behind `cfg(windows)`, and preserved the Windows test surface. Full local Rust 1.75 CoreFS, strict all-target/all-feature CoreFS/anima-core Clippy, `127` benchmark/workflow contracts, scoped Rust 1.75 rustfmt, YAML parsing, and diff hygiene pass. PCF-002 stays open for refreshed native validation and review.
+- 2026-07-28 22:18 MYT - Refreshed Codex review confirmed the cfg-import repair and found one stale closeout note that still described PCF-002 as complete and PCF-003 as eligible. Corrected the child and parent notes to the canonical reopened state; PCF-002 remains `in_progress`, and PCF-003 remains `backlog`/`unassigned` but dependency-ineligible until the two-phase closeout finishes.
 
 ## Validation
 
@@ -475,7 +476,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `Cargo.toml`, `Cargo.lock`, `apps/local-runtime-daemon/Cargo.toml`, and `packages/anima-core/{Cargo.toml,src/,tests/memory_contract.rs}` (Task 11 Rust 1.75 locked graph and strict all-feature compatibility)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`, `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`, `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`, and PCF-002/PCF-000 tracking (Task 12 Windows evidence)
 - Notes:
-  - PCF-001 and PCF-002 are complete. PCF-003 is the next dependency-eligible ticket and remains `backlog`/`unassigned`.
+  - PCF-001 is complete. PCF-002 is `in_progress` for reopened PR #125 validation and two-phase closeout; PCF-003 remains `backlog`/`unassigned` and dependency-ineligible until PCF-002 returns to `done`.
   - The normal parallel Animus run initially exposed a pre-existing shared secrets-fixture race. A red/green test-only fixture consolidation removed the race; the unchanged single-thread suite had already passed all 116 tests.
   - Tauri already maps `resources/.anima/` into the bundle, so staging `.anima/legal` required no `tauri.conf.json` change.
   - Reviews: https://github.com/G9000/animaOS/pull/91, https://github.com/G9000/animaOS/pull/94, https://github.com/G9000/animaOS/pull/96
