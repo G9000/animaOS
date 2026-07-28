@@ -9,8 +9,8 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-28 16:40 MYT
-- Started: 2026-07-21 MYT
+- Updated: 2026-07-28 18:24 MYT
+- Started: 2026-07-21 15:52 MYT
 - Completed: 2026-07-23 02:16 MYT
 
 ## Goal
@@ -39,6 +39,7 @@ Add an idle-time dream cycle: during long-idle night windows, recombine importan
 - 2026-07-23 02:16 MYT - Done: PR #116 (branch feature/il-007-dream-cycle) squash-merged to main as `bc7363c` (2026-07-23 02:16 MYT). Review rounds on the PR hardened right-to-forget (dream scrubbing on memory/latent-topic/derived-pattern forget, transcript-fragment source dropped), field-encrypted latent topic keys in dream source_refs (incl. vault-import re-keying), bounded failed dream attempts (marker committed before effects), non-finite delta rejection, configurable reconsolidation eta (full skip at eta<=0), and dreamSharing=off enforcement.
 - 2026-07-28 14:10 MYT - Ticket closed out by Claude (the recorded owner) — status/dates updated, merged feature branch deleted, tracker table in IL-000 updated (PR #122, carried into PR #123).
 - 2026-07-28 16:40 MYT - Codex PR review fixes (Claude): completed the Changed-paths evidence set against `bc7363c^..bc7363c` (added alembic_runtime `032`, `runtime_consciousness.py`, `forgetting.py`, `latent_traces.py` and their tests), full `HH:MM` timestamps, and explicit close-out attribution above.
+- 2026-07-28 18:24 MYT - Codex PR review round 3: `Started` recovered from evidence — PR #116's first commit (`IL-007: mark ticket in_progress`) is authored 2026-07-21 07:52:28Z = 15:52 MYT.
 
 ## Validation
 

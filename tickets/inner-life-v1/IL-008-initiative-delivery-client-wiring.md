@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-21 MYT
-- Updated: 2026-07-28 16:40 MYT
+- Updated: 2026-07-28 18:24 MYT
 - Started: 2026-07-28 14:20 MYT
 - Completed: 2026-07-28 15:17 MYT
 
@@ -66,6 +66,7 @@ here so it is tracked rather than lost.
 - 2026-07-28 15:17 MYT - Implemented on branch `feature/il-008-initiative-client-wiring`. `packages/api-client`: `PendingInitiative`/`PendingInitiativesResponse`/`DreamSharing` types, `presence.initiatives()` (fetch, server marks rows delivered) and `presence.ackInitiative(id)` methods, and the four presence-config fields (`initiativeEnabled`, `quietHoursStart`, `quietHoursEnd`, `dreamSharing`) added to `PresenceConfig`/`PresenceConfigUpdate`. Desktop: a framework-free generation-token poller (`apps/desktop/src/lib/initiativePoller.ts`, 8 bun tests) polls every 60 s plus on window focus; a `usePendingInitiatives` hook wraps it and an `InitiativeOverlay` is mounted globally in `Layout.tsx` so a fired initiative surfaces on every authenticated route. Acknowledgement is user-action-only (Reply/Dismiss in the overlay) — no auto-ack on poll. Presence page gained the initiative opt-in toggle, quiet-hours start/end selects (with a hint that both ends must be set to take effect), and a dream-sharing segmented control (`off`/`on_ask`/`ambient`). The OSNotificationDelivery adapter path from the ticket's Deliverables (implementing `InitiativeDelivery` via the Tauri notification shell) was explicitly NOT taken — the repo has no Tauri notification bridge — so the poll/display path was chosen instead; this mirrors the deferral already noted in the ticket's Context. Two review-fix rounds during implementation: (1) a concurrent ack-vs-poll race, fixed with a generation token so an ack during an in-flight poll wins over the stale poll result (regression test added); (2) a `stop()` staleness leak, where a poll already in flight when `stop()` was called (e.g. on user switch or unmount) could still resolve, pass the generation check, and call `onChange` after the caller had walked away — `stop()` now also bumps the generation token, reusing the same invalidation `ack()` uses (regression test added). Marking `done` pending PR review, mirroring IL-002's precedent (ticket closed out with the PR still to be opened/reviewed).
 - 2026-07-28 16:40 MYT - Codex review round 1 on PR #123, fixes by Claude: (1) P1 opt-out gate — every poll cycle now re-checks the current presence config via `createGatedInitiativeFetch` before hitting the initiatives endpoint, so withdrawing consent (initiative toggle or master switch) stops fetch/display/delivered-marking within one cycle and clears any on-screen initiative (3 regression tests); (2) P2 ack-window race — acknowledged-ID tombstones filter every poll result, so a poll that starts during a slow ack POST and reads the row pre-commit can no longer restore it; a failed ack drops its tombstone so the next poll re-serves the row (1 regression test); (3) ticket-hygiene P1 — full `YYYY-MM-DD HH:MM MYT` timestamps recorded from commit evidence across IL-000/IL-007/IL-008/IL-009. Poller suite now 12/12.
 - 2026-07-28 16:59 MYT - Codex review round 2 on PR #123, fixes by Claude: (1) P2 Presence page — a failed initial config GET no longer seeds a savable `DEFAULT_CONFIG` draft (Save could then silently overwrite stored settings, e.g. reset `initiativeEnabled`/quiet hours/`dreamSharing`); the draft stays null and every control plus Save is disabled until a real config loads. (2) P1 IL-009 ticket — added the template-required `Spec`/`Updated`/`Started`/`Completed` lifecycle fields.
+- 2026-07-28 18:24 MYT - Codex review round 3 on PR #123 (hygiene): `Updated` advanced with each material edit, Changed-paths made complete (added the plan doc and the IL-009 ticket; dropped the misleading `.superpowers` exclusion note — that directory is git-ignored and contains no committed paths), IL-007 `Started` recovered from PR #116 commit evidence.
 
 ## Validation
 
@@ -75,7 +76,8 @@ here so it is tracked rather than lost.
   - `cd apps/desktop && bunx tsc --noEmit` -> 0 errors
   - `git diff origin/main...HEAD -- apps/server` -> empty (this branch touches no server code)
   - Spot-check: `cd apps/server && uv run pytest tests/test_inner_life_initiative.py -q` -> 1 failed, 86 passed (`test_fetch_ack_route_end_to_end` fails with `TypeError: 'NoneType' object is not subscriptable` at `services/corefs/keyslots.py:483` inside `ensure_core_manifest()` during account registration in this worktree's environment). Since `apps/server` has zero diff against `origin/main`, this is an environment/corefs-manifest issue in the current sandbox, not a regression from this branch — consistent with MIH-003's characterization of environment-driven server test drift; server code is unchanged so main's green baseline stands.
-- Changed paths (`git diff --stat origin/main...HEAD`, excluding `.superpowers`):
+- Changed paths (`git diff --stat origin/main...HEAD`, complete):
+  - `docs/superpowers/plans/2026-07-28-il-008-initiative-client-wiring.md` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx` (new)
   - `apps/desktop/src/components/Layout.tsx`
   - `apps/desktop/src/hooks/usePendingInitiatives.ts` (new)
@@ -88,6 +90,7 @@ here so it is tracked rather than lost.
   - `tickets/inner-life-v1/IL-000-parent.md`
   - `tickets/inner-life-v1/IL-007-dream-cycle.md`
   - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md`
+  - `tickets/inner-life-v1/IL-009-initiative-reply-context.md` (new)
 - Notes:
   - Delivery mechanism is poll (60 s interval + focus refetch) and manual display (global overlay), not push notifications — see Activity Log for why the `OSNotificationDelivery` path was skipped.
   - Ack is user-action-only; a failed ack call self-heals because the server still holds the row and re-serves it on the next poll.
