@@ -34,13 +34,18 @@ export function createInitiativePoller(
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
   let pending: PendingInitiative[] = [];
+  let generation = 0;
 
   const pollNow = async (): Promise<void> => {
     if (inFlight) return;
     inFlight = true;
+    const gen = generation;
     try {
-      pending = await deps.fetchInitiatives();
-      deps.onChange(pending);
+      const result = await deps.fetchInitiatives();
+      if (generation === gen) {
+        pending = result;
+        deps.onChange(pending);
+      }
     } catch {
       // Best-effort poll: a locked session or unreachable server must stay
       // silent; the next tick retries.
@@ -65,6 +70,7 @@ export function createInitiativePoller(
     },
     pollNow,
     async ack(id: number) {
+      generation += 1;
       try {
         await deps.ackInitiative(id);
       } catch {

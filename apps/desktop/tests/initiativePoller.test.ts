@@ -128,4 +128,38 @@ describe("createInitiativePoller", () => {
     poller.stop();
     expect(cleared).toBe(true);
   });
+
+  test("an ack during an in-flight poll wins over the stale poll result", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    let pollCount = 0;
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        pollCount += 1;
+        if (pollCount === 1) {
+          // First poll: populate the list
+          return [row(1), row(2)];
+        }
+        // Second poll: gated, will return the same data
+        await gate;
+        return [row(1), row(2)];
+      },
+      ackInitiative: async () => ({}),
+      onChange: (pending) => seen.push(pending),
+    });
+    // First poll populates state
+    await poller.pollNow();
+    // Start second poll which is gated
+    const pollPromise = poller.pollNow();
+    // poll is now in flight, ack the row while it's gated
+    await poller.ack(1);
+    // release the gate so the poll completes
+    release?.();
+    await pollPromise;
+    // the final state should not have row 1 (acked row won)
+    expect(seen.at(-1)?.map((r) => r.id)).toEqual([2]);
+  });
 });
