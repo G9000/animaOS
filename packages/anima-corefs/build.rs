@@ -27,7 +27,7 @@ fn main() {
             let path = if path.is_absolute() {
                 path
             } else {
-                repository.join(path)
+                manifest.join(path)
             };
             println!("cargo:rerun-if-changed={}", path.display());
         }

@@ -1980,9 +1980,7 @@ mod macos_native {
                 return Err(last_error("kqueue"));
             }
             let fd = OwnedFd(fd);
-            if unsafe { libc::fcntl(fd.raw(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0
-                || unsafe { libc::fcntl(fd.raw(), libc::F_SETFL, libc::O_NONBLOCK) } != 0
-            {
+            if unsafe { libc::fcntl(fd.raw(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
                 return Err(last_error("configure kqueue"));
             }
             let mut registrations = std::collections::HashMap::new();
@@ -4692,6 +4690,40 @@ mod tests {
             validate_build_tracked_tree(false).unwrap_err(),
             "refusing native characterization from a dirty tracked build"
         );
+    }
+
+    #[test]
+    fn build_script_resolves_relative_git_paths_from_the_git_command_directory() {
+        let source = include_str!("../../build.rs");
+        let git_watch_setup = source
+            .split("for git_path in")
+            .nth(1)
+            .and_then(|source| source.split("let rustc =").next())
+            .expect("build script Git watch setup");
+
+        assert!(git_watch_setup.contains("manifest.join(path)"));
+        assert!(!git_watch_setup.contains("repository.join(path)"));
+    }
+
+    #[test]
+    fn macos_kqueue_uses_zero_timeout_instead_of_file_status_flags() {
+        let source = include_str!("object_lease_macos_spike.rs");
+        let registration = source
+            .split("impl KernelQueue {")
+            .nth(1)
+            .and_then(|source| source.split("fn poll(&self)").next())
+            .expect("macOS kqueue registration");
+        let polling = source
+            .split("fn poll(&self)")
+            .nth(1)
+            .and_then(|source| source.split("struct CallbackSnapshot").next())
+            .expect("macOS kqueue polling");
+
+        assert!(registration.contains("F_SETFD"));
+        assert!(!registration.contains("F_SETFL"));
+        assert!(!registration.contains("O_NONBLOCK"));
+        assert!(polling.contains("tv_sec: 0"));
+        assert!(polling.contains("tv_nsec: 0"));
     }
 
     #[test]

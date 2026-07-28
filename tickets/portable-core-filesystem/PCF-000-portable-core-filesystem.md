@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 17:21 MYT
+- Updated: 2026-07-28 18:35 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -241,6 +241,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 13:20 MYT - Addressed PR #120's current-head P2 mixed-mode panic finding test-first. Performance sampling now rejects `--mount-restored-path` during argument validation, so contradictory invocations return typed `invalidArguments` instead of reaching the validated-state `unreachable!` guard. The focused Rust 1.75 regression passed; PCF-002's row and this parent remain `in_progress`, PCF-003 remains `backlog` and dependency-ineligible, and native Tasks 2 and 5 remain open.
 - 2026-07-28 13:59 MYT - PR #120 merged the native-macOS characterization starting point into `main` at `8a323184`. Resumed PCF-002 Task 2 from that exact merged head on branch `codex/pcf-002-macos-native-lease` in `.worktrees/pcf-002-macos-native-lease`; the focused Rust 1.75 parser/report baseline passed `6/6`. This slice is limited to completing the disposable FSEvents/kqueue characterization backend and its native race/performance evidence path. Task 5 remains gated on a proven APFS boundary plus material repeatable improvement, PCF-003 remains `backlog` and dependency-ineligible, and no external publication or review action is authorized.
 - 2026-07-28 17:21 MYT - PCF-002 Task 2's disposable native macOS characterization backend and exact CI execution path are locally implementation-, specification-, and quality-review clean through `c9d083e0`. The Rust 1.75 focused suite passed `35/35`; the full serialized CoreFS suite, strict host spike Clippy, Apple cross-target check, formatting, workflow YAML/embedded-validator syntax, and diff hygiene passed. The harness now fails closed around exact FSEvents/kqueue ordering, APFS revoke/reopen epochs, synchronous completion-confirmed teardown, cleanup residue, and build-bound provenance, while CI requires every performance percentile to improve before accepting the performance record. Native APFS/FSEvents evidence remains unexecuted until a clean macOS runner builds this head, so PCF-002 and this parent remain `in_progress`, Task 5 remains gated, PCF-003 remains `backlog` and dependency-ineligible, and no push, PR, review request, monitoring, or merge was performed.
+- 2026-07-28 18:35 MYT - Addressed PR #124's current-head P2 Git-watch finding and failing macOS `ENOTTY` job test-first. Build provenance now anchors relative Git metadata paths to the Git command directory, and the native kqueue setup relies on zero-timeout `kevent` instead of applying unsupported file-status flags. The two regressions, focused `37/37` spike suite, strict host Clippy, Apple cross-target compilation, scoped Rust 1.75 rustfmt, diff hygiene, and complete serialized CoreFS suite passed; only unrelated updated-main rustfmt drift remains outside this slice. PCF-002 and this parent remain `in_progress` pending refreshed native evidence, Task 5 remains gated, and PCF-003 remains `backlog` and dependency-ineligible.
 
 ## Validation
 
