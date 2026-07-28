@@ -484,17 +484,115 @@ def test_object_lease_diagnostic_report_uses_typed_closed_sections() -> None:
         assert dynamic_field not in source
 
 
-def test_object_lease_diagnostic_cfg_and_disabled_macos_ci_are_explicit() -> None:
+def test_object_lease_diagnostic_cfg_and_macos_fallback_ci_are_explicit() -> None:
     source = OBJECT_LEASE_BENCHMARK_SOURCE.read_text(encoding="utf-8")
     assert '#[cfg(windows)]\nuse std::fs::File;' in source
     assert 'use std::io::Cursor;\n#[cfg(windows)]\nuse std::io::Read;' in source
     assert '#[cfg(windows)]\nuse std::process::Command;' in source
 
     workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
-    assert workflow.count("if: steps.macos-backend.outputs.enabled == 'true'") == 4
+    macos = workflow.split("  macos-native-lease:", 1)[1]
+    assert "uses: actions/setup-python@v6" in macos
+    assert 'python-version: "3.13"' in macos
+    assert macos.count("if: steps.macos-backend.outputs.enabled == 'true'") == 2
+    full_suite = macos.split("      - name: Test all CoreFS paths on macOS", 1)[1]
+    full_suite = full_suite.split("      - name:", 1)[0]
+    assert "if: steps.macos-backend.outputs.enabled" not in full_suite
+    assert "cargo +1.75.0 test --locked -p anima-corefs" in full_suite
+
+    clippy = macos.split("      - name: Enforce strict native Clippy", 1)[1]
+    assert "if: steps.macos-backend.outputs.enabled" not in clippy
+    assert "cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core" in clippy
     standalone = workflow.split("  windows-native-lease:", 1)[0]
     assert "name: Test CoreFS on Rust 1.75" in standalone
     assert "cargo +1.75.0 test --locked -p anima-corefs" in standalone
+
+
+def test_object_lease_diagnostic_fallbacks_are_clippy_clean_tail_expressions() -> None:
+    source = OBJECT_LEASE_BENCHMARK_SOURCE.read_text(encoding="utf-8")
+    assert "    Macos,\n" not in source
+
+    diagnostic = source.split("pub fn run_object_lease_diagnostic(", 1)[1]
+    diagnostic = diagnostic.split(
+        "#[cfg(windows)]\nfn run_windows_object_lease_diagnostic",
+        1,
+    )[0]
+
+    assert "return Err(BenchmarkError::BackendUnavailable" not in diagnostic
+    assert diagnostic.count("Err(BenchmarkError::BackendUnavailable") == 2
+
+
+def test_macos_fallback_clippy_cfg_gates_windows_only_test_imports() -> None:
+    integration = (
+        REPO_ROOT / "packages" / "anima-corefs" / "tests" / "catalog_benchmark.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        "#[cfg(windows)]\nuse anima_corefs::benchmark::{\n"
+        "    run_object_lease_diagnostic, ObjectLeaseDiagnosticConfig,"
+    ) in integration
+
+    unit = (
+        REPO_ROOT
+        / "packages"
+        / "anima-corefs"
+        / "src"
+        / "transaction"
+        / "object_lease_tests.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        "#[cfg(windows)]\n"
+        "use super::object_lease::ObjectLeaseDiagnosticObserver;"
+    ) in unit
+
+
+def test_macos_fallback_clippy_avoids_needless_unix_path_borrow() -> None:
+    transaction = (
+        REPO_ROOT / "packages" / "anima-corefs" / "tests" / "transaction.rs"
+    ).read_text(encoding="utf-8")
+    assert "fs::hard_link(&object_path, &stale_stage)" not in transaction
+
+
+def test_macos_fallback_clippy_cfg_gates_windows_session_lease_seam() -> None:
+    cache = (
+        REPO_ROOT
+        / "packages"
+        / "anima-corefs"
+        / "src"
+        / "transaction"
+        / "cache.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        '#[cfg(all(feature = "session-test-seams", windows))]\n'
+        "    pub(super) fn with_session_test_object_lease("
+    ) in cache
+
+
+def test_completed_pcf_002_plan_markers_are_synchronized() -> None:
+    lease_plan = (
+        REPO_ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-07-23-corefs-object-validation-lease.md"
+    ).read_text(encoding="utf-8")
+    plan_header = lease_plan.split("---", 1)[0]
+    assert "the plan is complete." in plan_header
+    assert "- [x] **Step 6: Apply the final ticket state**" in lease_plan
+
+    umbrella_plan = (
+        REPO_ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-07-12-portable-core-filesystem.md"
+    ).read_text(encoding="utf-8")
+    task_two_header = umbrella_plan.split("## Task 2:", 1)[1].split("**Files:**", 1)[0]
+    normalized_task_two_header = " ".join(task_two_header.split())
+    assert "**Completed:** 2026-07-28." in task_two_header
+    assert "**Status:** Reopened for PR #125 validation and closeout." not in task_two_header
+    assert "PCF-003 is dependency-eligible without being claimed" in (
+        normalized_task_two_header
+    )
 
 
 def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
@@ -505,15 +603,6 @@ def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
 
     assert "cargo +1.75.0 test --locked -p anima-corefs" in full_suite
     assert "-- --test-threads=1" in full_suite
-
-
-def test_macos_characterization_ci_is_explicitly_evidence_only() -> None:
-    workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
-    macos = workflow.split("  macos-native-lease:", 1)[1]
-
-    notice = "Evidence only: workflow success does not clear the Task 5 macOS backend gate."
-    assert notice in macos
-    assert 'report["lease"][percentile] < report["safeOpen"][percentile]' not in macos
 
 
 def load_benchmark_module():
