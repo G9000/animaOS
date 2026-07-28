@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -172,6 +173,12 @@ enum GenerationState {
     Unknown,
 }
 
+impl Default for GenerationState {
+    fn default() -> Self {
+        Self::Clean
+    }
+}
+
 impl GenerationState {
     fn publish(&mut self, incoming: Self) {
         *self = match (*self, incoming) {
@@ -329,15 +336,6 @@ fn classify_outside_hard_link(
     Ok(true)
 }
 
-#[cfg(test)]
-fn classify_fence_checkpoints(cancellations: [bool; 4]) -> GenerationState {
-    if cancellations.into_iter().any(|cancelled| cancelled) {
-        GenerationState::Unknown
-    } else {
-        GenerationState::Clean
-    }
-}
-
 fn combine_primary_cleanup<T>(
     primary: Result<T, String>,
     cleanup: Result<(), String>,
@@ -392,6 +390,425 @@ struct RaceCase {
     operation: RaceOperation,
 }
 
+const KQUEUE_NOTE_DELETE: u32 = 0x0000_0001;
+const KQUEUE_NOTE_RENAME: u32 = 0x0000_0020;
+const KQUEUE_NOTE_REVOKE: u32 = 0x0000_0040;
+const KQUEUE_RELEVANT_NOTES: u32 = KQUEUE_NOTE_DELETE | KQUEUE_NOTE_RENAME | KQUEUE_NOTE_REVOKE;
+const FENCE_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KqueueEventEvidence {
+    ident: usize,
+    component: Option<OwnedComponent>,
+    notes: u32,
+    has_error: bool,
+    has_eof: bool,
+}
+
+impl KqueueEventEvidence {
+    fn is_terminal(self) -> bool {
+        self.has_error || self.has_eof || self.notes & KQUEUE_RELEVANT_NOTES != 0
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct KqueuePoll {
+    events: Vec<KqueueEventEvidence>,
+}
+
+impl KqueuePoll {
+    fn is_terminal(&self) -> bool {
+        self.events
+            .iter()
+            .copied()
+            .any(KqueueEventEvidence::is_terminal)
+    }
+
+    fn extend(&mut self, mut other: Self) {
+        self.events.append(&mut other.events);
+    }
+
+    fn proof_for(&self, case: RaceCase) -> Option<KqueueProof> {
+        let expected = match case.operation {
+            RaceOperation::RenameRebindRenameBack => KQUEUE_NOTE_RENAME,
+            RaceOperation::DeleteOriginalVnode => KQUEUE_NOTE_DELETE,
+            RaceOperation::UnmountRevoke => KQUEUE_NOTE_REVOKE,
+        };
+        self.events
+            .iter()
+            .find(|event| {
+                event.component == Some(case.component)
+                    && event.notes & expected != 0
+                    && !event.has_error
+            })
+            .map(|event| KqueueProof {
+                case,
+                ident: event.ident,
+                component: case.component,
+                notes: event.notes,
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KqueueProof {
+    case: RaceCase,
+    ident: usize,
+    component: OwnedComponent,
+    notes: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FenceCheckpoint {
+    BeforeInitialPoll,
+    AfterInitialPoll,
+    AfterFlush,
+    AfterWait,
+    AfterFinalPoll,
+    AfterRevalidation,
+    BeforeReturn,
+    WhileWaiting,
+}
+
+impl FenceCheckpoint {
+    const ALL: [Self; 7] = [
+        Self::BeforeInitialPoll,
+        Self::AfterInitialPoll,
+        Self::AfterFlush,
+        Self::AfterWait,
+        Self::AfterFinalPoll,
+        Self::AfterRevalidation,
+        Self::BeforeReturn,
+    ];
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CallbackProgress {
+    generation: GenerationState,
+    maximum_event_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FenceWait {
+    Progress(CallbackProgress),
+    TimedOut,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FenceCause {
+    Clean,
+    Callback,
+    Kqueue,
+    Cancelled(FenceCheckpoint),
+    Timeout,
+    Revalidation,
+    KqueueFailure,
+    FlushFailure,
+    WaitFailure,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FenceOutcome {
+    state: GenerationState,
+    cause: FenceCause,
+    kqueue: KqueuePoll,
+}
+
+trait FenceDriver {
+    fn on_callback_queue(&self) -> bool;
+    fn cancelled(&mut self, checkpoint: FenceCheckpoint) -> bool;
+    fn poll_kqueue(&mut self) -> Result<KqueuePoll, String>;
+    fn flush_target(&mut self) -> Result<u64, String>;
+    fn callback_progress(&mut self) -> CallbackProgress;
+    fn monotonic_now(&mut self) -> Duration;
+    fn wait_for_callback_progress(
+        &mut self,
+        target: u64,
+        maximum_wait: Duration,
+    ) -> Result<FenceWait, String>;
+    fn revalidate(&mut self) -> Result<(), String>;
+    fn publish_unknown(&mut self);
+}
+
+fn unknown_fence(
+    driver: &mut impl FenceDriver,
+    cause: FenceCause,
+    kqueue: KqueuePoll,
+) -> FenceOutcome {
+    driver.publish_unknown();
+    FenceOutcome {
+        state: GenerationState::Unknown,
+        cause,
+        kqueue,
+    }
+}
+
+fn cancellation_outcome(
+    driver: &mut impl FenceDriver,
+    checkpoint: FenceCheckpoint,
+    kqueue: KqueuePoll,
+) -> Option<FenceOutcome> {
+    driver
+        .cancelled(checkpoint)
+        .then(|| unknown_fence(driver, FenceCause::Cancelled(checkpoint), kqueue))
+}
+
+fn run_fence(driver: &mut impl FenceDriver) -> Result<FenceOutcome, String> {
+    if driver.on_callback_queue() {
+        driver.publish_unknown();
+        return Err("fence invoked from callback queue".to_owned());
+    }
+    let mut kqueue = KqueuePoll::default();
+    if let Some(outcome) =
+        cancellation_outcome(driver, FenceCheckpoint::BeforeInitialPoll, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+    match driver.poll_kqueue() {
+        Ok(events) => kqueue.extend(events),
+        Err(_) => return Ok(unknown_fence(driver, FenceCause::KqueueFailure, kqueue)),
+    }
+    if kqueue.is_terminal() {
+        return Ok(unknown_fence(driver, FenceCause::Kqueue, kqueue));
+    }
+    if let Some(outcome) =
+        cancellation_outcome(driver, FenceCheckpoint::AfterInitialPoll, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+
+    let target = match driver.flush_target() {
+        Ok(target) => target,
+        Err(_) => return Ok(unknown_fence(driver, FenceCause::FlushFailure, kqueue)),
+    };
+    if let Some(outcome) = cancellation_outcome(driver, FenceCheckpoint::AfterFlush, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+    if target != 0 {
+        let deadline = driver.monotonic_now().saturating_add(FENCE_TIMEOUT);
+        loop {
+            let progress = driver.callback_progress();
+            if flush_target_acknowledged(target, progress.maximum_event_id) {
+                break;
+            }
+            let now = driver.monotonic_now();
+            if now >= deadline {
+                return Ok(unknown_fence(driver, FenceCause::Timeout, kqueue));
+            }
+            match driver.wait_for_callback_progress(target, deadline.saturating_sub(now)) {
+                Ok(FenceWait::Progress(progress))
+                    if flush_target_acknowledged(target, progress.maximum_event_id) =>
+                {
+                    break;
+                }
+                Ok(FenceWait::Progress(_)) => {}
+                Ok(FenceWait::TimedOut) => {
+                    return Ok(unknown_fence(driver, FenceCause::Timeout, kqueue))
+                }
+                Ok(FenceWait::Cancelled) => {
+                    return Ok(unknown_fence(
+                        driver,
+                        FenceCause::Cancelled(FenceCheckpoint::WhileWaiting),
+                        kqueue,
+                    ))
+                }
+                Err(_) => return Ok(unknown_fence(driver, FenceCause::WaitFailure, kqueue)),
+            }
+        }
+    }
+    if let Some(outcome) = cancellation_outcome(driver, FenceCheckpoint::AfterWait, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+
+    match driver.poll_kqueue() {
+        Ok(events) => kqueue.extend(events),
+        Err(_) => return Ok(unknown_fence(driver, FenceCause::KqueueFailure, kqueue)),
+    }
+    if kqueue.is_terminal() {
+        return Ok(unknown_fence(driver, FenceCause::Kqueue, kqueue));
+    }
+    if let Some(outcome) =
+        cancellation_outcome(driver, FenceCheckpoint::AfterFinalPoll, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+    if driver.revalidate().is_err() {
+        return Ok(unknown_fence(driver, FenceCause::Revalidation, kqueue));
+    }
+    if let Some(outcome) =
+        cancellation_outcome(driver, FenceCheckpoint::AfterRevalidation, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+    let progress = driver.callback_progress();
+    if let Some(outcome) =
+        cancellation_outcome(driver, FenceCheckpoint::BeforeReturn, kqueue.clone())
+    {
+        return Ok(outcome);
+    }
+    Ok(FenceOutcome {
+        state: progress.generation,
+        cause: if progress.generation == GenerationState::Clean {
+            FenceCause::Clean
+        } else {
+            FenceCause::Callback
+        },
+        kqueue,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct HeldCallbackBatch {
+    flags: u32,
+    event_ids: Vec<u64>,
+}
+
+#[derive(Default)]
+struct CallbackPublicationGate {
+    active: bool,
+    pending: Vec<HeldCallbackBatch>,
+}
+
+impl CallbackPublicationGate {
+    fn begin(&mut self) -> Result<(), String> {
+        if self.active || !self.pending.is_empty() {
+            return Err("callback proof gate is already active".to_owned());
+        }
+        self.active = true;
+        Ok(())
+    }
+
+    fn hold_if_needed(&mut self, flags: u32, event_ids: &[u64]) -> Option<()> {
+        if self.active && flags & FSEVENT_ROOT_CHANGED != 0 {
+            self.pending.push(HeldCallbackBatch {
+                flags,
+                event_ids: event_ids.to_vec(),
+            });
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn release_after(&mut self, proof: KqueueProof) -> Result<HeldCallbackRelease, String> {
+        if !self.active {
+            return Err("callback proof gate is not active".to_owned());
+        }
+        if proof.component != proof.case.component {
+            return Err("kqueue proof component does not match its race case".to_owned());
+        }
+        self.active = false;
+        let batches = std::mem::take(&mut self.pending);
+        let zero_id_root_changed = batches.iter().any(|batch| {
+            batch.flags & FSEVENT_ROOT_CHANGED != 0
+                && batch.event_ids.iter().any(|event_id| *event_id == 0)
+        });
+        Ok(HeldCallbackRelease {
+            batches,
+            zero_id_root_changed,
+        })
+    }
+
+    fn abort(&mut self) -> Vec<HeldCallbackBatch> {
+        self.active = false;
+        std::mem::take(&mut self.pending)
+    }
+}
+
+struct HeldCallbackRelease {
+    batches: Vec<HeldCallbackBatch>,
+    zero_id_root_changed: bool,
+}
+
+fn guarded_shutdown<R, T>(
+    on_callback_queue: bool,
+    resource: &mut R,
+    teardown: impl FnOnce(&mut R) -> Result<T, String>,
+) -> Result<T, String> {
+    if on_callback_queue {
+        return Err("shutdown invoked from callback queue".to_owned());
+    }
+    teardown(resource)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupOperation {
+    NormalDetach,
+    ForceDetach,
+    RemoveMount,
+    RemoveImage,
+    RemoveRoot,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CleanupResidue {
+    attached: bool,
+    mount_exists: bool,
+    image_exists: bool,
+    root_exists: bool,
+}
+
+impl CleanupResidue {
+    fn any(self) -> bool {
+        self.attached || self.mount_exists || self.image_exists || self.root_exists
+    }
+}
+
+trait OwnedCleanupDriver {
+    fn attached(&self) -> bool;
+    fn detach(&mut self, force: bool) -> Result<(), String>;
+    fn remove_mount(&mut self) -> Result<(), String>;
+    fn remove_image(&mut self) -> Result<(), String>;
+    fn remove_root(&mut self) -> Result<(), String>;
+    fn residue(&self) -> CleanupResidue;
+}
+
+fn run_owned_cleanup(driver: &mut impl OwnedCleanupDriver) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if driver.attached() {
+        if let Err(error) = driver.detach(false) {
+            errors.push(error);
+        }
+        if driver.attached() {
+            if let Err(error) = driver.detach(true) {
+                errors.push(error);
+            }
+        }
+    }
+    if !driver.attached() {
+        if let Err(error) = driver.remove_mount() {
+            errors.push(error);
+        }
+        if let Err(error) = driver.remove_image() {
+            errors.push(error);
+        }
+        if let Err(error) = driver.remove_root() {
+            errors.push(error);
+        }
+    } else {
+        errors.push("owned cleanup remains attached; unsafe removals were skipped".to_owned());
+    }
+    let residue = driver.residue();
+    if residue.any() {
+        errors.push(format!(
+            "cleanup residue: attached={}, mount_exists={}, image_exists={}, root_exists={}",
+            residue.attached, residue.mount_exists, residue.image_exists, residue.root_exists
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 fn required_race_cases() -> Vec<RaceCase> {
     let mut cases = [
         OwnedComponent::ScratchRoot,
@@ -422,7 +839,7 @@ fn required_race_cases() -> Vec<RaceCase> {
 struct RaceObservation {
     case: RaceCase,
     fresh_generation: bool,
-    kqueue_unknown_before_callback: bool,
+    kqueue_proof: Option<KqueueProof>,
     restored_before_callback: bool,
     delayed_zero_id_callback_terminal: bool,
 }
@@ -443,14 +860,17 @@ impl RaceEvidence {
     }
 
     fn record(&mut self, observation: RaceObservation) {
+        let exact_kqueue_proof = observation
+            .kqueue_proof
+            .is_some_and(|proof| proof.case == observation.case);
         if observation.fresh_generation
-            && observation.kqueue_unknown_before_callback
+            && exact_kqueue_proof
             && observation.restored_before_callback
         {
             self.complete.insert(observation.case);
         }
         if observation.fresh_generation
-            && observation.kqueue_unknown_before_callback
+            && exact_kqueue_proof
             && observation.restored_before_callback
             && observation.delayed_zero_id_callback_terminal
         {
@@ -500,6 +920,9 @@ enum StreamPhase {
     Created,
     Scheduled,
     Started,
+    Stopped,
+    Invalidated,
+    Quiesced,
     Released,
 }
 
@@ -538,66 +961,51 @@ impl StreamLifecycle {
         if self.phase == StreamPhase::Released {
             return Ok(());
         }
-        let mut error = None;
+        let mut errors = Vec::new();
         if self.phase == StreamPhase::Started {
             if let Err(value) = driver.invoke(NativeCall::Cancel) {
-                error = Some(value);
+                errors.push(value);
             }
-            if let Err(value) = driver.invoke(NativeCall::Stop) {
-                error.get_or_insert(value);
-            }
-        }
-        if matches!(self.phase, StreamPhase::Scheduled | StreamPhase::Started) {
-            if let Err(value) = driver.invoke(NativeCall::Invalidate) {
-                error.get_or_insert(value);
-            }
-            if let Err(value) = driver.invoke(NativeCall::Barrier) {
-                error.get_or_insert(value);
+            match driver.invoke(NativeCall::Stop) {
+                Ok(_) => self.phase = StreamPhase::Stopped,
+                Err(value) => {
+                    errors.push(value);
+                    return Err(errors.join("; "));
+                }
             }
         }
-        if let Err(value) = driver.invoke(NativeCall::ReleaseStreamAndContext) {
-            error.get_or_insert(value);
+        if matches!(self.phase, StreamPhase::Scheduled | StreamPhase::Stopped) {
+            match driver.invoke(NativeCall::Invalidate) {
+                Ok(_) => self.phase = StreamPhase::Invalidated,
+                Err(value) => {
+                    errors.push(value);
+                    return Err(errors.join("; "));
+                }
+            }
         }
-        self.phase = StreamPhase::Released;
-        error.map_or(Ok(()), Err)
-    }
-}
-
-enum TeardownRequest<T> {
-    Ready(Result<T, String>),
-    Deferred(std::thread::JoinHandle<T>),
-}
-
-impl<T> TeardownRequest<T> {
-    #[cfg(test)]
-    fn is_deferred(&self) -> bool {
-        matches!(self, Self::Deferred(_))
-    }
-
-    fn wait(self) -> Result<T, String> {
-        match self {
-            Self::Ready(result) => result,
-            Self::Deferred(handle) => handle
-                .join()
-                .map_err(|_| "deferred teardown worker panicked".to_owned()),
+        if self.phase == StreamPhase::Invalidated {
+            match driver.invoke(NativeCall::Barrier) {
+                Ok(_) => self.phase = StreamPhase::Quiesced,
+                Err(value) => {
+                    errors.push(value);
+                    return Err(errors.join("; "));
+                }
+            }
         }
-    }
-}
-
-fn transfer_teardown<R, T, F>(
-    on_callback_queue: bool,
-    resource: R,
-    teardown: F,
-) -> TeardownRequest<T>
-where
-    R: Send + 'static,
-    T: Send + 'static,
-    F: FnOnce(R) -> T + Send + 'static,
-{
-    if on_callback_queue {
-        TeardownRequest::Deferred(std::thread::spawn(move || teardown(resource)))
-    } else {
-        TeardownRequest::Ready(Ok(teardown(resource)))
+        if matches!(self.phase, StreamPhase::Created | StreamPhase::Quiesced) {
+            match driver.invoke(NativeCall::ReleaseStreamAndContext) {
+                Ok(_) => self.phase = StreamPhase::Released,
+                Err(value) => {
+                    errors.push(value);
+                    return Err(errors.join("; "));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
@@ -914,7 +1322,7 @@ mod macos_native {
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -929,7 +1337,6 @@ mod macos_native {
     type FSEventStreamEventId = u64;
     type FSEventStreamEventFlags = u32;
 
-    const FENCE_TIMEOUT: Duration = Duration::from_secs(2);
     const CALLBACK_QUIET_PERIOD: Duration = Duration::from_millis(100);
     const OBJECT_BYTES: &[u8] = b"anima-corefs-object-lease-characterization\n";
 
@@ -1136,19 +1543,10 @@ mod macos_native {
         }
 
         fn cleanup(&mut self) -> NativeResult<()> {
-            if self.active {
-                fs::remove_dir_all(&self.path).map_err(|error| {
-                    format!("remove scratch root {}: {error}", self.path.display())
-                })?;
-                if self.path.exists() {
-                    return Err(format!(
-                        "scratch root still exists after removal: {}",
-                        self.path.display()
-                    ));
-                }
-                self.active = false;
-            }
-            Ok(())
+            run_owned_cleanup(&mut NativeOwnedCleanup {
+                volume: None,
+                scratch: Some(self),
+            })
         }
     }
 
@@ -1163,6 +1561,7 @@ mod macos_native {
         fd: OwnedFd,
         identity: DirectoryIdentity,
         path: PathBuf,
+        component: Option<OwnedComponent>,
     }
 
     struct DescriptorChain {
@@ -1183,6 +1582,7 @@ mod macos_native {
                 identity: directory_identity(root.raw())?,
                 path: PathBuf::from("/"),
                 fd: root,
+                component: None,
             });
             for component in components {
                 let component = CString::new(component)
@@ -1205,8 +1605,10 @@ mod macos_native {
                     identity: directory_identity(fd.raw())?,
                     path: fd_path(fd.raw())?,
                     fd,
+                    component: None,
                 });
             }
+            assign_owned_components(&mut entries, &watch_path)?;
             let chain = Self {
                 entries,
                 watch_path,
@@ -1260,6 +1662,52 @@ mod macos_native {
         }
     }
 
+    fn assign_owned_components(
+        entries: &mut [DescriptorEntry],
+        watch_path: &Path,
+    ) -> NativeResult<()> {
+        let objects = watch_path;
+        let catalogs = objects
+            .parent()
+            .ok_or_else(|| "objects path has no catalogs parent".to_owned())?;
+        let fs_path = catalogs
+            .parent()
+            .ok_or_else(|| "catalogs path has no fs parent".to_owned())?;
+        let namespace = fs_path
+            .parent()
+            .ok_or_else(|| "fs path has no namespace parent".to_owned())?;
+        let namespace_parent = namespace
+            .parent()
+            .ok_or_else(|| "namespace path has no owned parent".to_owned())?;
+        let mount = (namespace_parent.file_name().and_then(|name| name.to_str()) == Some("mount"))
+            .then_some(namespace_parent);
+        let renameable = mount.and_then(Path::parent);
+        let scratch = renameable
+            .and_then(Path::parent)
+            .unwrap_or(namespace_parent);
+
+        for entry in entries {
+            entry.component = if entry.path == objects {
+                Some(OwnedComponent::Objects)
+            } else if entry.path == catalogs {
+                Some(OwnedComponent::Catalogs)
+            } else if entry.path == fs_path {
+                Some(OwnedComponent::Fs)
+            } else if entry.path == namespace {
+                Some(OwnedComponent::Namespace)
+            } else if mount == Some(entry.path.as_path()) {
+                Some(OwnedComponent::Mount)
+            } else if renameable == Some(entry.path.as_path()) {
+                Some(OwnedComponent::RenameableAncestor)
+            } else if entry.path == scratch {
+                Some(OwnedComponent::ScratchRoot)
+            } else {
+                None
+            };
+        }
+        Ok(())
+    }
+
     fn canonical_components(path: &Path) -> NativeResult<Vec<String>> {
         if !path.is_absolute() {
             return Err("F_GETPATH did not return an absolute path".to_owned());
@@ -1307,6 +1755,7 @@ mod macos_native {
     struct KernelQueue {
         fd: OwnedFd,
         event_capacity: usize,
+        registrations: std::collections::HashMap<usize, OwnedComponent>,
     }
 
     impl KernelQueue {
@@ -1321,7 +1770,11 @@ mod macos_native {
             {
                 return Err(last_error("configure kqueue"));
             }
+            let mut registrations = std::collections::HashMap::new();
             for entry in &chain.entries {
+                if let Some(component) = entry.component {
+                    registrations.insert(entry.fd.raw() as usize, component);
+                }
                 let change = libc::kevent {
                     ident: entry.fd.raw() as usize,
                     filter: libc::EVFILT_VNODE,
@@ -1339,10 +1792,11 @@ mod macos_native {
             Ok(Self {
                 fd,
                 event_capacity: chain.entries.len().max(1),
+                registrations,
             })
         }
 
-        fn poll(&self) -> NativeResult<KqueueClassification> {
+        fn poll(&self) -> NativeResult<KqueuePoll> {
             let mut events = vec![unsafe { mem::zeroed::<libc::kevent>() }; self.event_capacity];
             let timeout = libc::timespec {
                 tv_sec: 0,
@@ -1361,20 +1815,29 @@ mod macos_native {
             if count < 0 {
                 return Err(last_error("poll kqueue"));
             }
+            let mut evidence = Vec::with_capacity(count as usize);
             for event in events.into_iter().take(count as usize) {
+                let ident = event.ident;
                 let flags = event.flags;
-                let notes =
-                    event.fflags & (libc::NOTE_RENAME | libc::NOTE_DELETE | libc::NOTE_REVOKE);
-                if classify_kqueue_event(
-                    flags & libc::EV_ERROR != 0,
-                    flags & libc::EV_EOF != 0,
-                    notes,
-                ) == KqueueClassification::Unknown
-                {
-                    return Ok(KqueueClassification::Unknown);
+                let mut notes = 0;
+                if event.fflags & libc::NOTE_RENAME != 0 {
+                    notes |= KQUEUE_NOTE_RENAME;
                 }
+                if event.fflags & libc::NOTE_DELETE != 0 {
+                    notes |= KQUEUE_NOTE_DELETE;
+                }
+                if event.fflags & libc::NOTE_REVOKE != 0 {
+                    notes |= KQUEUE_NOTE_REVOKE;
+                }
+                evidence.push(KqueueEventEvidence {
+                    ident,
+                    component: self.registrations.get(&ident).copied(),
+                    notes,
+                    has_error: flags & libc::EV_ERROR != 0,
+                    has_eof: flags & libc::EV_EOF != 0,
+                });
             }
-            Ok(KqueueClassification::Quiet)
+            Ok(KqueuePoll { events: evidence })
         }
     }
 
@@ -1389,6 +1852,7 @@ mod macos_native {
 
     struct CallbackOwner {
         snapshot: Mutex<CallbackSnapshot>,
+        publication_gate: Mutex<CallbackPublicationGate>,
         notification: Condvar,
         cancelled: AtomicBool,
         released: AtomicBool,
@@ -1405,6 +1869,7 @@ mod macos_native {
                     callback_panic_contained: false,
                     callback_after_release: false,
                 }),
+                publication_gate: Mutex::new(CallbackPublicationGate::default()),
                 notification: Condvar::new(),
                 cancelled: AtomicBool::new(false),
                 released: AtomicBool::new(false),
@@ -1438,6 +1903,54 @@ mod macos_native {
 
         fn publish_unknown(&self) {
             self.publish(GenerationState::Unknown, &[]);
+        }
+
+        fn publish_callback(&self, flags: u32, event_ids: &[u64]) {
+            let held = self
+                .publication_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .hold_if_needed(flags, event_ids)
+                .is_some();
+            if !held {
+                self.publish(classify_callback_batch(flags, false), event_ids);
+            }
+        }
+
+        fn begin_kqueue_proof(&self) -> NativeResult<()> {
+            self.publication_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .begin()
+        }
+
+        fn release_after_kqueue_proof(
+            &self,
+            proof: KqueueProof,
+        ) -> NativeResult<HeldCallbackRelease> {
+            let release = self
+                .publication_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .release_after(proof)?;
+            for batch in &release.batches {
+                self.publish(
+                    classify_callback_batch(batch.flags, false),
+                    &batch.event_ids,
+                );
+            }
+            Ok(release)
+        }
+
+        fn abort_kqueue_proof(&self) {
+            let batches = self
+                .publication_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .abort();
+            for batch in batches {
+                self.publish(GenerationState::Unknown, &batch.event_ids);
+            }
         }
 
         fn cancel(&self) {
@@ -1507,7 +2020,7 @@ mod macos_native {
                 std::slice::from_raw_parts(event_ids, event_count)
             };
             let combined = flags.iter().fold(0_u32, |combined, flag| combined | flag);
-            owner.publish(classify_callback_batch(combined, false), ids);
+            owner.publish_callback(combined, ids);
         }));
         if outcome.is_err() {
             let ids = if event_count == 0 || event_ids.is_null() {
@@ -1686,6 +2199,7 @@ mod macos_native {
                 }
                 NativeCall::Flush => Ok(unsafe { FSEventStreamFlushAsync(self.stream) }),
                 NativeCall::Cancel => {
+                    self.callback()?.abort_kqueue_proof();
                     self.callback()?.cancel();
                     Ok(1)
                 }
@@ -1747,6 +2261,115 @@ mod macos_native {
 
     unsafe impl Send for NativeLease {}
 
+    struct NativeFenceDriver<'a> {
+        lease: &'a NativeLease,
+        objects: &'a OwnedFd,
+        started: Instant,
+    }
+
+    impl FenceDriver for NativeFenceDriver<'_> {
+        fn on_callback_queue(&self) -> bool {
+            self.lease
+                .native()
+                .and_then(MacNativeCalls::queue)
+                .map(SerialQueue::is_current)
+                .unwrap_or(false)
+        }
+
+        fn cancelled(&mut self, _checkpoint: FenceCheckpoint) -> bool {
+            self.lease
+                .callback()
+                .map(|callback| callback.cancelled.load(Ordering::Acquire))
+                .unwrap_or(true)
+        }
+
+        fn poll_kqueue(&mut self) -> NativeResult<KqueuePoll> {
+            self.lease.poll_kernel()
+        }
+
+        fn flush_target(&mut self) -> NativeResult<u64> {
+            let lifecycle = self
+                .lease
+                .lifecycle
+                .as_ref()
+                .ok_or_else(|| "stream lifecycle was released".to_owned())?;
+            if lifecycle.phase != StreamPhase::Started {
+                return Err("flush requires a started stream".to_owned());
+            }
+            self.lease.native()?.flush_shared()
+        }
+
+        fn callback_progress(&mut self) -> CallbackProgress {
+            self.lease
+                .callback()
+                .map(|callback| {
+                    let snapshot = callback.snapshot();
+                    CallbackProgress {
+                        generation: snapshot.generation,
+                        maximum_event_id: snapshot.maximum_event_id,
+                    }
+                })
+                .unwrap_or(CallbackProgress {
+                    generation: GenerationState::Unknown,
+                    maximum_event_id: 0,
+                })
+        }
+
+        fn monotonic_now(&mut self) -> Duration {
+            self.started.elapsed()
+        }
+
+        fn wait_for_callback_progress(
+            &mut self,
+            target: u64,
+            maximum_wait: Duration,
+        ) -> NativeResult<FenceWait> {
+            let callback = self.lease.callback()?;
+            let mut snapshot = callback
+                .snapshot
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if callback.cancelled.load(Ordering::Acquire) {
+                snapshot.generation.publish(GenerationState::Unknown);
+                callback.notification.notify_all();
+                return Ok(FenceWait::Cancelled);
+            }
+            if flush_target_acknowledged(target, snapshot.maximum_event_id) {
+                return Ok(FenceWait::Progress(CallbackProgress {
+                    generation: snapshot.generation,
+                    maximum_event_id: snapshot.maximum_event_id,
+                }));
+            }
+            let (snapshot, timeout) = callback
+                .notification
+                .wait_timeout(snapshot, maximum_wait)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if callback.cancelled.load(Ordering::Acquire) {
+                return Ok(FenceWait::Cancelled);
+            }
+            let progress = CallbackProgress {
+                generation: snapshot.generation,
+                maximum_event_id: snapshot.maximum_event_id,
+            };
+            if timeout.timed_out() && !flush_target_acknowledged(target, progress.maximum_event_id)
+            {
+                Ok(FenceWait::TimedOut)
+            } else {
+                Ok(FenceWait::Progress(progress))
+            }
+        }
+
+        fn revalidate(&mut self) -> NativeResult<()> {
+            self.lease.revalidate(self.objects)
+        }
+
+        fn publish_unknown(&mut self) {
+            if let Ok(callback) = self.lease.callback() {
+                callback.publish_unknown();
+            }
+        }
+    }
+
     impl NativeLease {
         fn create(objects: &OwnedFd) -> NativeResult<Self> {
             let chain = DescriptorChain::open_from_pinned(objects)?;
@@ -1761,7 +2384,7 @@ mod macos_native {
                 calls: Mutex::new(Vec::new()),
             };
             let lifecycle = StreamLifecycle::establish(&mut native)?;
-            let lease = Self {
+            let mut lease = Self {
                 lifecycle: Some(lifecycle),
                 native: Some(native),
                 kqueue: Some(kqueue),
@@ -1769,11 +2392,7 @@ mod macos_native {
                 fence_serialization: Mutex::new(()),
             };
             if let Err(primary) = lease.revalidate(objects) {
-                let cleanup = lease
-                    .shutdown()
-                    .wait()
-                    .and_then(|result| result)
-                    .map(|_| ());
+                let cleanup = lease.shutdown().map(|_| ());
                 return match combine_primary_cleanup::<()>(Err(primary), cleanup) {
                     Ok(()) => unreachable!("an error plus cleanup cannot become success"),
                     Err(error) => Err(error),
@@ -1798,7 +2417,7 @@ mod macos_native {
             self.native()?.callback()
         }
 
-        fn poll_kernel(&self) -> NativeResult<KqueueClassification> {
+        fn poll_kernel(&self) -> NativeResult<KqueuePoll> {
             self.kqueue
                 .as_ref()
                 .ok_or_else(|| "kqueue was released".to_owned())?
@@ -1812,103 +2431,31 @@ mod macos_native {
                 .revalidate(objects)
         }
 
-        fn fence(&self, objects: &OwnedFd) -> NativeResult<GenerationState> {
+        fn fence_with_evidence(&self, objects: &OwnedFd) -> NativeResult<FenceOutcome> {
             let _fence = self
                 .fence_serialization
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let queue = self.native()?.queue()?;
-            if queue.is_current() {
-                self.callback()?.publish_unknown();
-                return Err("fence invoked from callback queue".to_owned());
-            }
-            let callback = self.callback()?;
-            if callback.cancelled.load(Ordering::Acquire) {
-                callback.publish_unknown();
-                return Err("fence cancelled".to_owned());
-            }
-            match self.poll_kernel() {
-                Ok(KqueueClassification::Quiet) => {}
-                Ok(KqueueClassification::Unknown) | Err(_) => {
-                    callback.publish_unknown();
-                    return Ok(GenerationState::Unknown);
-                }
-            }
+            run_fence(&mut NativeFenceDriver {
+                lease: self,
+                objects,
+                started: Instant::now(),
+            })
+        }
 
-            let target = {
-                let lifecycle = self
-                    .lifecycle
-                    .as_ref()
-                    .ok_or_else(|| "stream lifecycle was released".to_owned())?;
-                if lifecycle.phase != StreamPhase::Started {
-                    callback.publish_unknown();
-                    return Ok(GenerationState::Unknown);
-                }
-                self.native()?.flush_shared()?
-            };
-            if callback.cancelled.load(Ordering::Acquire) {
-                callback.publish_unknown();
-                return Ok(GenerationState::Unknown);
-            }
-            if target != 0 {
-                let deadline = Instant::now() + FENCE_TIMEOUT;
-                let mut snapshot = callback
-                    .snapshot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                while !flush_target_acknowledged(target, snapshot.maximum_event_id) {
-                    if callback.cancelled.load(Ordering::Acquire) {
-                        snapshot.generation.publish(GenerationState::Unknown);
-                        callback.notification.notify_all();
-                        return Err("fence cancelled while waiting".to_owned());
-                    }
-                    let now = Instant::now();
-                    if now >= deadline {
-                        snapshot.generation.publish(GenerationState::Unknown);
-                        callback.notification.notify_all();
-                        return Ok(GenerationState::Unknown);
-                    }
-                    let duration = deadline.saturating_duration_since(now);
-                    let (next, timeout) = callback
-                        .notification
-                        .wait_timeout(snapshot, duration)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    snapshot = next;
-                    if timeout.timed_out()
-                        && !flush_target_acknowledged(target, snapshot.maximum_event_id)
-                    {
-                        snapshot.generation.publish(GenerationState::Unknown);
-                        callback.notification.notify_all();
-                        return Ok(GenerationState::Unknown);
-                    }
-                }
-            }
-            if callback.cancelled.load(Ordering::Acquire) {
-                callback.publish_unknown();
-                return Ok(GenerationState::Unknown);
-            }
+        fn fence(&self, objects: &OwnedFd) -> NativeResult<GenerationState> {
+            Ok(self.fence_with_evidence(objects)?.state)
+        }
 
-            match self.poll_kernel() {
-                Ok(KqueueClassification::Quiet) => {}
-                Ok(KqueueClassification::Unknown) | Err(_) => {
-                    callback.publish_unknown();
-                    return Ok(GenerationState::Unknown);
-                }
-            }
-            if self.revalidate(objects).is_err() {
-                callback.publish_unknown();
-                return Ok(GenerationState::Unknown);
-            }
-            if callback.cancelled.load(Ordering::Acquire) {
-                callback.publish_unknown();
-                return Ok(GenerationState::Unknown);
-            }
-            let generation = callback.snapshot().generation;
-            if callback.cancelled.load(Ordering::Acquire) {
-                callback.publish_unknown();
-                return Ok(GenerationState::Unknown);
-            }
-            Ok(generation)
+        fn begin_kqueue_proof(&self) -> NativeResult<()> {
+            self.callback()?.begin_kqueue_proof()
+        }
+
+        fn release_after_kqueue_proof(
+            &self,
+            proof: KqueueProof,
+        ) -> NativeResult<HeldCallbackRelease> {
+            self.callback()?.release_after_kqueue_proof(proof)
         }
 
         fn descriptor_count(&self) -> usize {
@@ -1940,56 +2487,77 @@ mod macos_native {
             Ok(())
         }
 
-        fn shutdown(self) -> TeardownRequest<NativeResult<CallbackSnapshot>> {
+        fn shutdown(&mut self) -> NativeResult<CallbackSnapshot> {
             let on_callback_queue = self
                 .native()
                 .and_then(MacNativeCalls::queue)
                 .map(SerialQueue::is_current)
                 .unwrap_or(false);
-            transfer_teardown(on_callback_queue, self, |mut lease| {
-                lease.shutdown_in_place()
-            })
+            guarded_shutdown(on_callback_queue, self, NativeLease::shutdown_in_place)
         }
 
         fn shutdown_in_place(&mut self) -> NativeResult<CallbackSnapshot> {
-            let mut lifecycle = self
-                .lifecycle
-                .take()
-                .ok_or_else(|| "stream lifecycle was already released".to_owned())?;
-            let mut cleanup_error = match self.native_mut() {
-                Ok(native) => lifecycle.teardown(native).err(),
-                Err(error) => Some(error),
-            };
-            let snapshot = self.callback().map(|callback| callback.snapshot());
+            {
+                let lifecycle = self
+                    .lifecycle
+                    .as_mut()
+                    .ok_or_else(|| "stream lifecycle was already released".to_owned())?;
+                let native = self
+                    .native
+                    .as_mut()
+                    .ok_or_else(|| "native stream ownership was released".to_owned())?;
+                lifecycle.teardown(native)?;
+            }
+            let snapshot = self.callback()?.snapshot();
+            let mut cleanup_errors = Vec::new();
             for call in [NativeCall::OwnerDrop, NativeCall::QueueDrop] {
                 if let Err(error) = self
                     .native_mut()
                     .and_then(|native| native.invoke(call).map(|_| ()))
                 {
-                    cleanup_error.get_or_insert(error);
+                    cleanup_errors.push(error);
                 }
             }
             if let Err(error) = self
                 .native_mut()
                 .and_then(|native| native.invoke(NativeCall::KernelQueueDrop).map(|_| ()))
             {
-                cleanup_error.get_or_insert(error);
+                cleanup_errors.push(error);
             }
             self.kqueue.take();
             if let Err(error) = self
                 .native_mut()
                 .and_then(|native| native.invoke(NativeCall::DescriptorDrop).map(|_| ()))
             {
-                cleanup_error.get_or_insert(error);
+                cleanup_errors.push(error);
             }
             self.chain.take();
-            match (snapshot, cleanup_error) {
-                (Ok(snapshot), None) => Ok(snapshot),
-                (Ok(_), Some(error)) | (Err(error), None) => Err(error),
-                (Err(primary), Some(cleanup)) => {
-                    Err(format!("{primary}; cleanup also failed: {cleanup}"))
-                }
+            if cleanup_errors.is_empty() {
+                self.lifecycle.take();
+                self.native.take();
+                Ok(snapshot)
+            } else {
+                Err(cleanup_errors.join("; "))
             }
+        }
+
+        fn take_for_teardown_transfer(&mut self) -> Self {
+            Self {
+                lifecycle: self.lifecycle.take(),
+                native: self.native.take(),
+                kqueue: self.kqueue.take(),
+                chain: self.chain.take(),
+                fence_serialization: Mutex::new(()),
+            }
+        }
+
+        fn transfer_teardown(mut lease: Self) {
+            std::thread::spawn(move || loop {
+                match lease.shutdown_in_place() {
+                    Ok(_) => break,
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            });
         }
     }
 
@@ -2003,20 +2571,9 @@ mod macos_native {
                 .and_then(MacNativeCalls::queue)
                 .map(SerialQueue::is_current)
                 .unwrap_or(false);
-            if on_callback_queue {
-                let transferred = Self {
-                    lifecycle: self.lifecycle.take(),
-                    native: self.native.take(),
-                    kqueue: self.kqueue.take(),
-                    chain: self.chain.take(),
-                    fence_serialization: Mutex::new(()),
-                };
-                std::thread::spawn(move || {
-                    let mut transferred = transferred;
-                    let _ = transferred.shutdown_in_place();
-                });
-            } else {
-                let _ = self.shutdown_in_place();
+            let transfer_required = on_callback_queue || self.shutdown_in_place().is_err();
+            if transfer_required {
+                Self::transfer_teardown(self.take_for_teardown_transfer());
             }
         }
     }
@@ -2159,9 +2716,9 @@ mod macos_native {
                 return Err("fresh outside hard link was not rejected".to_owned());
             }
 
-            let lease = NativeLease::create(&workspace.objects)?;
+            let mut lease = NativeLease::create(&workspace.objects)?;
             let lease_primary = (|| {
-                if lease.poll_kernel()? != KqueueClassification::Quiet {
+                if lease.poll_kernel()?.is_terminal() {
                     return Err("kqueue was terminal immediately after stream start".to_owned());
                 }
                 lease.revalidate(&workspace.objects)?;
@@ -2211,13 +2768,9 @@ mod macos_native {
                 ))
             })();
             let mut snapshot = None;
-            let lease_cleanup = lease
-                .shutdown()
-                .wait()
-                .and_then(|result| result)
-                .map(|value| {
-                    snapshot = Some(value);
-                });
+            let lease_cleanup = lease.shutdown().map(|value| {
+                snapshot = Some(value);
+            });
             let (
                 maximum_descriptors,
                 safe_open_samples,
@@ -2415,27 +2968,41 @@ mod macos_native {
         attached: bool,
     }
 
+    struct ApfsCreateFailure {
+        primary: String,
+        volume: ApfsVolume,
+    }
+
     impl ApfsVolume {
-        fn create(owned_root: &Path) -> NativeResult<Self> {
+        fn create(owned_root: &Path) -> Result<Self, ApfsCreateFailure> {
             let owned = owned_root
                 .to_str()
-                .ok_or_else(|| "owned APFS root is not UTF-8".to_owned())?;
+                .ok_or_else(|| "owned APFS root is not UTF-8".to_owned())
+                .map_err(|primary| ApfsCreateFailure {
+                    primary,
+                    volume: Self {
+                        image: owned_root.join("corefs-lease.sparseimage"),
+                        mount: owned_root.join("renameable").join("mount"),
+                        attached: false,
+                    },
+                })?;
             let plan = apfs_driver_plan(owned);
             let image = PathBuf::from(&plan.image);
             let mount = PathBuf::from(&plan.mount);
-            fs::create_dir_all(&mount)
-                .map_err(|error| format!("create APFS mount point: {error}"))?;
             let mut volume = Self {
                 image,
                 mount,
                 attached: false,
             };
-            let primary = run_command_plan(&plan.create).and_then(|()| volume.attach());
+            let primary = fs::create_dir_all(&volume.mount)
+                .map_err(|error| format!("create APFS mount point: {error}"))
+                .and_then(|()| run_command_plan(&plan.create))
+                .and_then(|()| volume.attach());
             if let Err(error) = primary {
-                return match combine_primary_cleanup::<()>(Err(error), volume.cleanup()) {
-                    Ok(()) => unreachable!("an error plus cleanup cannot become success"),
-                    Err(error) => Err(error),
-                };
+                return Err(ApfsCreateFailure {
+                    primary: error,
+                    volume,
+                });
             }
             Ok(volume)
         }
@@ -2446,7 +3013,8 @@ mod macos_native {
             }
             fs::create_dir_all(&self.mount)
                 .map_err(|error| format!("recreate APFS mount point: {error}"))?;
-            run_status(
+            self.attached = true;
+            let result = run_status(
                 "hdiutil",
                 &[
                     "attach",
@@ -2459,8 +3027,10 @@ mod macos_native {
                         .to_str()
                         .ok_or_else(|| "APFS image path is not UTF-8".to_owned())?,
                 ],
-            )?;
-            self.attached = true;
+            );
+            // hdiutil failures are ambiguous: the attached state intentionally remains set so
+            // cleanup must prove detachment before removing any owned paths.
+            result?;
             Ok(())
         }
 
@@ -2498,28 +3068,85 @@ mod macos_native {
             self.attached = false;
             Ok(())
         }
+    }
 
-        fn cleanup(&mut self) -> NativeResult<()> {
-            if self.attached {
-                self.detach()?;
+    struct NativeOwnedCleanup<'a> {
+        volume: Option<&'a mut ApfsVolume>,
+        scratch: Option<&'a mut ScratchRoot>,
+    }
+
+    impl OwnedCleanupDriver for NativeOwnedCleanup<'_> {
+        fn attached(&self) -> bool {
+            self.volume.as_deref().is_some_and(|volume| volume.attached)
+        }
+
+        fn detach(&mut self, force: bool) -> NativeResult<()> {
+            let volume = self
+                .volume
+                .as_deref_mut()
+                .ok_or_else(|| "cleanup has no APFS volume to detach".to_owned())?;
+            if force {
+                volume.detach_for_race()
+            } else {
+                volume.detach()
             }
-            if self.mount.exists() {
-                fs::remove_dir_all(&self.mount)
+        }
+
+        fn remove_mount(&mut self) -> NativeResult<()> {
+            let Some(volume) = self.volume.as_deref_mut() else {
+                return Ok(());
+            };
+            if volume.mount.exists() {
+                fs::remove_dir_all(&volume.mount)
                     .map_err(|error| format!("remove APFS mount point: {error}"))?;
             }
-            if self.image.exists() {
-                fs::remove_file(&self.image)
+            Ok(())
+        }
+
+        fn remove_image(&mut self) -> NativeResult<()> {
+            let Some(volume) = self.volume.as_deref_mut() else {
+                return Ok(());
+            };
+            if volume.image.exists() {
+                fs::remove_file(&volume.image)
                     .map_err(|error| format!("remove APFS image: {error}"))?;
             }
-            if self.attached || self.mount.exists() || self.image.exists() {
-                return Err(format!(
-                    "APFS cleanup residue: attached={}, mount_exists={}, image_exists={}",
-                    self.attached,
-                    self.mount.exists(),
-                    self.image.exists()
-                ));
-            }
             Ok(())
+        }
+
+        fn remove_root(&mut self) -> NativeResult<()> {
+            let Some(scratch) = self.scratch.as_deref_mut() else {
+                return Ok(());
+            };
+            let result = if scratch.path.exists() {
+                fs::remove_dir_all(&scratch.path).map_err(|error| {
+                    format!("remove scratch root {}: {error}", scratch.path.display())
+                })
+            } else {
+                Ok(())
+            };
+            if !scratch.path.exists() {
+                scratch.active = false;
+            }
+            result
+        }
+
+        fn residue(&self) -> CleanupResidue {
+            CleanupResidue {
+                attached: self.volume.as_deref().is_some_and(|volume| volume.attached),
+                mount_exists: self
+                    .volume
+                    .as_deref()
+                    .is_some_and(|volume| volume.mount.exists()),
+                image_exists: self
+                    .volume
+                    .as_deref()
+                    .is_some_and(|volume| volume.image.exists()),
+                root_exists: self
+                    .scratch
+                    .as_deref()
+                    .is_some_and(|scratch| scratch.path.exists()),
+            }
         }
     }
 
@@ -2572,8 +3199,17 @@ mod macos_native {
         let baseline_descriptors = descriptor_count()?;
         let mut scratch = ScratchRoot::create("lease-apfs")?;
         let scratch_path = scratch.path.clone();
-        let primary = (|| {
-            let mut volume = ApfsVolume::create(&scratch.path)?;
+        let primary = (|| -> NativeResult<CharacterizationReport> {
+            let mut volume = match ApfsVolume::create(&scratch.path) {
+                Ok(volume) => volume,
+                Err(mut failure) => {
+                    let cleanup = run_owned_cleanup(&mut NativeOwnedCleanup {
+                        volume: Some(&mut failure.volume),
+                        scratch: Some(&mut scratch),
+                    });
+                    return combine_primary_cleanup(Err(failure.primary), cleanup);
+                }
+            };
             let volume_primary = (|| {
                 let workspace = ObjectWorkspace::create_under(&volume.mount, object_count)?;
                 let filesystem = filesystem_report(&workspace.objects_path)?;
@@ -2626,7 +3262,7 @@ mod macos_native {
                         };
                     let active_workspace = disposable_workspace.as_ref().unwrap_or(&workspace);
                     active_workspace.safe_open_scan()?;
-                    let lease = NativeLease::create(&active_workspace.objects)?;
+                    let mut lease = NativeLease::create(&active_workspace.objects)?;
                     let target = if case.operation == RaceOperation::DeleteOriginalVnode {
                         active_workspace.objects_path.clone()
                     } else {
@@ -2634,7 +3270,7 @@ mod macos_native {
                     };
                     let fence_started = Instant::now();
                     let race_primary = (|| {
-                        if lease.poll_kernel()? != KqueueClassification::Quiet {
+                        if lease.poll_kernel()?.is_terminal() {
                             return Err(format!(
                                 "fresh {:?} lease was terminal immediately after start",
                                 case.component
@@ -2644,6 +3280,7 @@ mod macos_native {
                         maximum_descriptors = maximum_descriptors
                             .max(descriptor_count()?)
                             .max(baseline_descriptors + lease.descriptor_count() as i64);
+                        lease.begin_kqueue_proof()?;
 
                         match case.operation {
                             RaceOperation::RenameRebindRenameBack => {
@@ -2661,14 +3298,21 @@ mod macos_native {
                             }
                         }
 
-                        let kqueue_unknown_before_callback =
-                            lease.fence(&active_workspace.objects)? == GenerationState::Unknown;
-                        if !kqueue_unknown_before_callback {
+                        let kqueue_outcome =
+                            lease.fence_with_evidence(&active_workspace.objects)?;
+                        if kqueue_outcome.cause != FenceCause::Kqueue {
                             return Err(format!(
-                                "kqueue did not reject {:?} on {:?} before callback",
-                                case.operation, case.component
+                                "race {:?} on {:?} terminated as {:?}, not kqueue evidence",
+                                case.operation, case.component, kqueue_outcome.cause
                             ));
                         }
+                        let kqueue_proof =
+                            kqueue_outcome.kqueue.proof_for(case).ok_or_else(|| {
+                                format!(
+                                    "kqueue evidence did not contain {:?} for {:?}",
+                                    case.operation, case.component
+                                )
+                            })?;
 
                         if case.operation == RaceOperation::UnmountRevoke {
                             volume.attach()?;
@@ -2683,28 +3327,24 @@ mod macos_native {
 
                         let before_callback = lease.callback()?.snapshot();
                         lease.inject_callback(FSEVENT_ROOT_CHANGED, 0)?;
+                        let released = lease.release_after_kqueue_proof(kqueue_proof)?;
                         let after_callback = lease.callback()?.snapshot();
-                        let delayed_zero_id_callback_terminal = after_callback.publication_count
-                            > before_callback.publication_count
+                        let delayed_zero_id_callback_terminal = released.zero_id_root_changed
+                            && after_callback.publication_count > before_callback.publication_count
                             && after_callback.generation == GenerationState::Unknown
                             && lease.fence(&active_workspace.objects)? == GenerationState::Unknown;
                         race_fence_samples.push(fence_started.elapsed().as_nanos());
                         Ok(RaceObservation {
                             case,
                             fresh_generation: true,
-                            kqueue_unknown_before_callback,
+                            kqueue_proof: Some(kqueue_proof),
                             restored_before_callback,
                             delayed_zero_id_callback_terminal,
                         })
                     })();
-                    let lease_cleanup =
-                        lease
-                            .shutdown()
-                            .wait()
-                            .and_then(|result| result)
-                            .map(|snapshot| {
-                                callback_after_release |= snapshot.callback_after_release;
-                            });
+                    let lease_cleanup = lease.shutdown().map(|snapshot| {
+                        callback_after_release |= snapshot.callback_after_release;
+                    });
                     evidence.record(combine_primary_cleanup(race_primary, lease_cleanup)?);
                     drop(disposable_workspace);
                     if case.operation == RaceOperation::DeleteOriginalVnode {
@@ -2801,10 +3441,13 @@ mod macos_native {
                     },
                 )
             })();
-            combine_primary_cleanup(volume_primary, volume.cleanup())
+            let cleanup = run_owned_cleanup(&mut NativeOwnedCleanup {
+                volume: Some(&mut volume),
+                scratch: Some(&mut scratch),
+            });
+            combine_primary_cleanup(volume_primary, cleanup)
         })();
-        let cleanup = scratch.cleanup();
-        let mut report = combine_primary_cleanup(primary, cleanup)?;
+        let mut report = primary?;
         report.resources.residue_count = usize::from(scratch_path.exists());
         if report.resources.residue_count != 0 {
             return Err(format!(
@@ -3498,7 +4141,16 @@ mod tests {
             evidence.record(RaceObservation {
                 case: *case,
                 fresh_generation: true,
-                kqueue_unknown_before_callback: true,
+                kqueue_proof: Some(KqueueProof {
+                    case: *case,
+                    ident: 1,
+                    component: case.component,
+                    notes: match case.operation {
+                        RaceOperation::RenameRebindRenameBack => KQUEUE_NOTE_RENAME,
+                        RaceOperation::DeleteOriginalVnode => KQUEUE_NOTE_DELETE,
+                        RaceOperation::UnmountRevoke => KQUEUE_NOTE_REVOKE,
+                    },
+                }),
                 restored_before_callback: true,
                 delayed_zero_id_callback_terminal: true,
             });
@@ -3512,7 +4164,7 @@ mod tests {
         incomplete.record(RaceObservation {
             case: required_race_cases()[0],
             fresh_generation: false,
-            kqueue_unknown_before_callback: true,
+            kqueue_proof: None,
             restored_before_callback: true,
             delayed_zero_id_callback_terminal: true,
         });
@@ -3571,10 +4223,8 @@ mod tests {
         let mut failed_barrier = InjectedNativeCalls::fail(NativeCall::Barrier);
         let mut lifecycle = StreamLifecycle::establish(&mut failed_barrier).unwrap();
         assert!(lifecycle.teardown(&mut failed_barrier).is_err());
-        assert_eq!(
-            failed_barrier.calls.last(),
-            Some(&NativeCall::ReleaseStreamAndContext)
-        );
+        assert_eq!(failed_barrier.calls.last(), Some(&NativeCall::Barrier));
+        assert_eq!(lifecycle.phase, StreamPhase::Invalidated);
 
         let mut successful = InjectedNativeCalls::success();
         let mut lifecycle = StreamLifecycle::establish(&mut successful).unwrap();
@@ -3606,32 +4256,6 @@ mod tests {
                 NativeCall::DescriptorDrop,
             ]
         );
-    }
-
-    #[test]
-    fn callback_queue_teardown_transfers_ownership_until_worker_finishes() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::{mpsc, Arc};
-
-        struct Resource(Arc<AtomicUsize>);
-        impl Drop for Resource {
-            fn drop(&mut self) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let drops = Arc::new(AtomicUsize::new(0));
-        let (release_sender, release_receiver) = mpsc::channel();
-        let request = transfer_teardown(true, Resource(drops.clone()), move |resource| {
-            release_receiver.recv().unwrap();
-            drop(resource);
-            9
-        });
-        assert!(request.is_deferred());
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
-        release_sender.send(()).unwrap();
-        assert_eq!(request.wait().unwrap(), 9);
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -3686,24 +4310,456 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_is_checked_at_every_fence_return_boundary() {
-        for checkpoint in 0..4 {
-            let mut cancellations = [false; 4];
-            cancellations[checkpoint] = true;
-            assert_eq!(
-                classify_fence_checkpoints(cancellations),
-                GenerationState::Unknown
-            );
+    fn build_compiler_identity_is_embedded_not_queried_at_runtime() {
+        let identity = build_rustc_identity();
+        assert!(identity.starts_with("rustc 1.75.0"));
+    }
+
+    #[test]
+    fn kqueue_proof_preserves_ident_component_and_exact_operation_notes() {
+        let delete_case = RaceCase {
+            component: OwnedComponent::Objects,
+            operation: RaceOperation::DeleteOriginalVnode,
+        };
+        let poll = KqueuePoll {
+            events: vec![
+                KqueueEventEvidence {
+                    ident: 41,
+                    component: Some(OwnedComponent::Objects),
+                    notes: KQUEUE_NOTE_RENAME,
+                    has_error: false,
+                    has_eof: false,
+                },
+                KqueueEventEvidence {
+                    ident: 41,
+                    component: Some(OwnedComponent::Objects),
+                    notes: KQUEUE_NOTE_DELETE,
+                    has_error: false,
+                    has_eof: false,
+                },
+            ],
+        };
+        let proof = poll.proof_for(delete_case).unwrap();
+        assert_eq!(proof.ident, 41);
+        assert_eq!(proof.component, OwnedComponent::Objects);
+        assert_eq!(proof.notes, KQUEUE_NOTE_DELETE);
+
+        let rename_only = KqueuePoll {
+            events: vec![KqueueEventEvidence {
+                ident: 41,
+                component: Some(OwnedComponent::Objects),
+                notes: KQUEUE_NOTE_RENAME,
+                has_error: false,
+                has_eof: false,
+            }],
+        };
+        assert!(rename_only.proof_for(delete_case).is_none());
+
+        let unmount_case = RaceCase {
+            component: OwnedComponent::Mount,
+            operation: RaceOperation::UnmountRevoke,
+        };
+        assert!(KqueuePoll {
+            events: vec![KqueueEventEvidence {
+                ident: 17,
+                component: Some(OwnedComponent::Mount),
+                notes: KQUEUE_NOTE_RENAME,
+                has_error: false,
+                has_eof: false,
+            }],
         }
+        .proof_for(unmount_case)
+        .is_none());
+        assert!(KqueuePoll {
+            events: vec![KqueueEventEvidence {
+                ident: 17,
+                component: Some(OwnedComponent::Mount),
+                notes: KQUEUE_NOTE_REVOKE,
+                has_error: false,
+                has_eof: false,
+            }],
+        }
+        .proof_for(unmount_case)
+        .is_some());
+    }
+
+    #[derive(Default)]
+    struct ScriptedFenceDriver {
+        cancel_at: Option<FenceCheckpoint>,
+        checkpoints: Vec<FenceCheckpoint>,
+        polls: std::collections::VecDeque<KqueuePoll>,
+        flush_target: u64,
+        progress: CallbackProgress,
+        waits: std::collections::VecDeque<FenceWait>,
+        clock: Duration,
+        wait_clock_advance: Duration,
+        revalidation_failure: bool,
+        unknown_publications: usize,
+    }
+
+    impl FenceDriver for ScriptedFenceDriver {
+        fn on_callback_queue(&self) -> bool {
+            false
+        }
+
+        fn cancelled(&mut self, checkpoint: FenceCheckpoint) -> bool {
+            self.checkpoints.push(checkpoint);
+            self.cancel_at == Some(checkpoint)
+        }
+
+        fn poll_kqueue(&mut self) -> Result<KqueuePoll, String> {
+            Ok(self.polls.pop_front().unwrap_or_default())
+        }
+
+        fn flush_target(&mut self) -> Result<u64, String> {
+            Ok(self.flush_target)
+        }
+
+        fn callback_progress(&mut self) -> CallbackProgress {
+            self.progress
+        }
+
+        fn monotonic_now(&mut self) -> Duration {
+            self.clock
+        }
+
+        fn wait_for_callback_progress(
+            &mut self,
+            _target: u64,
+            _maximum_wait: Duration,
+        ) -> Result<FenceWait, String> {
+            self.clock = self.clock.saturating_add(self.wait_clock_advance);
+            let wait = self.waits.pop_front().unwrap_or(FenceWait::TimedOut);
+            if let FenceWait::Progress(progress) = wait {
+                self.progress = progress;
+            }
+            Ok(wait)
+        }
+
+        fn revalidate(&mut self) -> Result<(), String> {
+            if self.revalidation_failure {
+                Err("injected revalidation failure".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn publish_unknown(&mut self) {
+            self.unknown_publications += 1;
+            self.progress.generation.publish(GenerationState::Unknown);
+        }
+    }
+
+    fn clean_fence_driver() -> ScriptedFenceDriver {
+        ScriptedFenceDriver {
+            polls: [KqueuePoll::default(), KqueuePoll::default()].into(),
+            ..ScriptedFenceDriver::default()
+        }
+    }
+
+    #[test]
+    fn real_fence_algorithm_covers_every_cancellation_checkpoint_with_zero_target() {
+        for checkpoint in FenceCheckpoint::ALL {
+            let mut driver = clean_fence_driver();
+            driver.cancel_at = Some(checkpoint);
+            let outcome = run_fence(&mut driver).unwrap();
+            assert_eq!(outcome.state, GenerationState::Unknown);
+            assert_eq!(outcome.cause, FenceCause::Cancelled(checkpoint));
+            assert_eq!(driver.unknown_publications, 1);
+        }
+    }
+
+    #[test]
+    fn real_fence_algorithm_exposes_timeout_progress_kqueue_and_revalidation_causes() {
+        let mut timeout = clean_fence_driver();
+        timeout.flush_target = 9;
+        timeout.waits.push_back(FenceWait::TimedOut);
+        assert_eq!(run_fence(&mut timeout).unwrap().cause, FenceCause::Timeout);
+
+        let mut timeout_clock = clean_fence_driver();
+        timeout_clock.flush_target = 9;
+        timeout_clock.wait_clock_advance = FENCE_TIMEOUT;
+        timeout_clock
+            .waits
+            .push_back(FenceWait::Progress(CallbackProgress::default()));
         assert_eq!(
-            classify_fence_checkpoints([false; 4]),
-            GenerationState::Clean
+            run_fence(&mut timeout_clock).unwrap().cause,
+            FenceCause::Timeout
+        );
+
+        let mut cancelled_wait = clean_fence_driver();
+        cancelled_wait.flush_target = 9;
+        cancelled_wait.waits.push_back(FenceWait::Cancelled);
+        assert_eq!(
+            run_fence(&mut cancelled_wait).unwrap().cause,
+            FenceCause::Cancelled(FenceCheckpoint::WhileWaiting)
+        );
+
+        let mut progress = clean_fence_driver();
+        progress.flush_target = 9;
+        progress
+            .waits
+            .push_back(FenceWait::Progress(CallbackProgress {
+                generation: GenerationState::DirtyAll,
+                maximum_event_id: 9,
+            }));
+        let progress_outcome = run_fence(&mut progress).unwrap();
+        assert_eq!(progress_outcome.state, GenerationState::DirtyAll);
+        assert_eq!(progress_outcome.cause, FenceCause::Callback);
+
+        let mut kqueue = clean_fence_driver();
+        kqueue.polls[0] = KqueuePoll {
+            events: vec![KqueueEventEvidence {
+                ident: 72,
+                component: Some(OwnedComponent::Catalogs),
+                notes: KQUEUE_NOTE_RENAME,
+                has_error: false,
+                has_eof: false,
+            }],
+        };
+        let kqueue_outcome = run_fence(&mut kqueue).unwrap();
+        assert_eq!(kqueue_outcome.cause, FenceCause::Kqueue);
+        assert_eq!(kqueue_outcome.kqueue.events.len(), 1);
+
+        let mut revalidation = clean_fence_driver();
+        revalidation.revalidation_failure = true;
+        assert_eq!(
+            run_fence(&mut revalidation).unwrap().cause,
+            FenceCause::Revalidation
         );
     }
 
     #[test]
-    fn build_compiler_identity_is_embedded_not_queried_at_runtime() {
-        let identity = build_rustc_identity();
-        assert!(identity.starts_with("rustc 1.75.0"));
+    fn root_changed_gate_holds_real_and_synthetic_callbacks_until_kqueue_proof() {
+        let mut gate = CallbackPublicationGate::default();
+        gate.begin().unwrap();
+        assert!(gate.hold_if_needed(FSEVENT_ROOT_CHANGED, &[55]).is_some());
+        assert!(gate.hold_if_needed(FSEVENT_ROOT_CHANGED, &[0]).is_some());
+        assert_eq!(gate.pending_count(), 2);
+
+        let proof = KqueueProof {
+            case: RaceCase {
+                component: OwnedComponent::Objects,
+                operation: RaceOperation::RenameRebindRenameBack,
+            },
+            ident: 8,
+            component: OwnedComponent::Objects,
+            notes: KQUEUE_NOTE_RENAME,
+        };
+        let released = gate.release_after(proof).unwrap();
+        assert_eq!(released.batches.len(), 2);
+        assert!(released.zero_id_root_changed);
+        assert_eq!(gate.pending_count(), 0);
+
+        gate.begin().unwrap();
+        assert!(gate.hold_if_needed(FSEVENT_ROOT_CHANGED, &[0]).is_some());
+        assert_eq!(gate.abort().len(), 1);
+        assert_eq!(gate.pending_count(), 0);
+    }
+
+    #[test]
+    fn callback_queue_shutdown_rejection_preserves_ownership_for_non_callback_retry() {
+        let mut ownership = 7_u64;
+        let rejected = guarded_shutdown(true, &mut ownership, |value| {
+            *value = 0;
+            Ok(*value)
+        });
+        assert_eq!(
+            rejected.unwrap_err(),
+            "shutdown invoked from callback queue"
+        );
+        assert_eq!(ownership, 7);
+
+        assert_eq!(
+            guarded_shutdown(false, &mut ownership, |value| {
+                *value = 0;
+                Ok(*value)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(ownership, 0);
+    }
+
+    #[test]
+    fn barrier_failure_retains_stream_and_context_until_retry_quiesces() {
+        let mut calls = InjectedNativeCalls::success();
+        let mut lifecycle = StreamLifecycle::establish(&mut calls).unwrap();
+        calls.fail_at = Some(NativeCall::Barrier);
+        assert!(lifecycle.teardown(&mut calls).is_err());
+        assert_ne!(lifecycle.phase, StreamPhase::Released);
+        assert_eq!(
+            calls
+                .calls
+                .iter()
+                .filter(|call| **call == NativeCall::ReleaseStreamAndContext)
+                .count(),
+            0
+        );
+
+        calls.fail_at = None;
+        lifecycle.teardown(&mut calls).unwrap();
+        assert_eq!(lifecycle.phase, StreamPhase::Released);
+        assert_eq!(
+            calls
+                .calls
+                .iter()
+                .filter(|call| **call == NativeCall::ReleaseStreamAndContext)
+                .count(),
+            1
+        );
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum InjectedCleanupFailure {
+        NormalDetach,
+        ForceDetach,
+        RemoveMount,
+        RemoveImage,
+        RemoveRoot,
+    }
+
+    struct InjectedOwnedCleanup {
+        attached: bool,
+        mount_exists: bool,
+        image_exists: bool,
+        root_exists: bool,
+        failures: Vec<InjectedCleanupFailure>,
+        calls: Vec<CleanupOperation>,
+    }
+
+    impl OwnedCleanupDriver for InjectedOwnedCleanup {
+        fn attached(&self) -> bool {
+            self.attached
+        }
+
+        fn detach(&mut self, force: bool) -> Result<(), String> {
+            self.calls.push(if force {
+                CleanupOperation::ForceDetach
+            } else {
+                CleanupOperation::NormalDetach
+            });
+            if !force
+                && self
+                    .failures
+                    .contains(&InjectedCleanupFailure::NormalDetach)
+            {
+                return Err("normal detach failed".to_owned());
+            }
+            if force && self.failures.contains(&InjectedCleanupFailure::ForceDetach) {
+                return Err("force detach failed".to_owned());
+            }
+            self.attached = false;
+            Ok(())
+        }
+
+        fn remove_mount(&mut self) -> Result<(), String> {
+            self.calls.push(CleanupOperation::RemoveMount);
+            if self.failures.contains(&InjectedCleanupFailure::RemoveMount) {
+                return Err("mount removal failed".to_owned());
+            }
+            self.mount_exists = false;
+            Ok(())
+        }
+
+        fn remove_image(&mut self) -> Result<(), String> {
+            self.calls.push(CleanupOperation::RemoveImage);
+            if self.failures.contains(&InjectedCleanupFailure::RemoveImage) {
+                return Err("image removal failed".to_owned());
+            }
+            self.image_exists = false;
+            Ok(())
+        }
+
+        fn remove_root(&mut self) -> Result<(), String> {
+            self.calls.push(CleanupOperation::RemoveRoot);
+            if self.failures.contains(&InjectedCleanupFailure::RemoveRoot) {
+                return Err("root removal failed".to_owned());
+            }
+            self.root_exists = false;
+            Ok(())
+        }
+
+        fn residue(&self) -> CleanupResidue {
+            CleanupResidue {
+                attached: self.attached,
+                mount_exists: self.mount_exists,
+                image_exists: self.image_exists,
+                root_exists: self.root_exists,
+            }
+        }
+    }
+
+    #[test]
+    fn cleanup_force_detaches_attempts_every_safe_step_and_reports_all_residue() {
+        let mut cleanup = InjectedOwnedCleanup {
+            attached: true,
+            mount_exists: true,
+            image_exists: true,
+            root_exists: true,
+            failures: vec![
+                InjectedCleanupFailure::NormalDetach,
+                InjectedCleanupFailure::RemoveMount,
+                InjectedCleanupFailure::RemoveImage,
+                InjectedCleanupFailure::RemoveRoot,
+            ],
+            calls: Vec::new(),
+        };
+        let error = run_owned_cleanup(&mut cleanup).unwrap_err();
+        assert_eq!(
+            cleanup.calls,
+            vec![
+                CleanupOperation::NormalDetach,
+                CleanupOperation::ForceDetach,
+                CleanupOperation::RemoveMount,
+                CleanupOperation::RemoveImage,
+                CleanupOperation::RemoveRoot,
+            ]
+        );
+        for expected in [
+            "normal detach failed",
+            "mount removal failed",
+            "image removal failed",
+            "root removal failed",
+            "mount_exists=true",
+            "image_exists=true",
+            "root_exists=true",
+        ] {
+            assert!(error.contains(expected), "missing {expected}: {error}");
+        }
+    }
+
+    #[test]
+    fn cleanup_retains_attached_volume_and_skips_unsafe_removals_when_force_detach_fails() {
+        let mut cleanup = InjectedOwnedCleanup {
+            attached: true,
+            mount_exists: true,
+            image_exists: true,
+            root_exists: true,
+            failures: vec![
+                InjectedCleanupFailure::NormalDetach,
+                InjectedCleanupFailure::ForceDetach,
+            ],
+            calls: Vec::new(),
+        };
+        let error = run_owned_cleanup(&mut cleanup).unwrap_err();
+        assert_eq!(
+            cleanup.calls,
+            vec![
+                CleanupOperation::NormalDetach,
+                CleanupOperation::ForceDetach
+            ]
+        );
+        for expected in [
+            "normal detach failed",
+            "force detach failed",
+            "unsafe removals were skipped",
+            "attached=true",
+            "mount_exists=true",
+            "image_exists=true",
+            "root_exists=true",
+        ] {
+            assert!(error.contains(expected), "missing {expected}: {error}");
+        }
     }
 }
