@@ -301,7 +301,8 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Argu
     if !(1..=4_096).contains(&object_count) {
         return Err("--objects must be between 1 and 4096".to_owned());
     }
-    let performance_mode = warmups.is_some() && samples.is_some() && race_samples.is_none();
+    let performance_mode =
+        warmups.is_some() && samples.is_some() && race_samples.is_none() && !mount_restored_path;
     let race_mode =
         warmups.is_none() && samples.is_none() && race_samples.is_some() && mount_restored_path;
     if !performance_mode && !race_mode {
@@ -437,6 +438,22 @@ mod tests {
             "30",
             "--samples",
             "200",
+            "--output",
+            "/tmp/out.json",
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn restored_path_flag_is_rejected_in_performance_mode() {
+        assert!(parse_arguments(arguments(&[
+            "--objects",
+            "2500",
+            "--warmups",
+            "30",
+            "--samples",
+            "200",
+            "--mount-restored-path",
             "--output",
             "/tmp/out.json",
         ]))
