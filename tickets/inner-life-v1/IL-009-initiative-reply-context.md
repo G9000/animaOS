@@ -7,8 +7,12 @@
 - Depends on: `IL-008`
 - Owner: unassigned
 - PRD: docs/prds/presence/inner-life-v1.md
+- Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
+- Updated: 2026-07-28 16:59 MYT
+- Started:
+- Completed:
 
 ## Goal
 
@@ -50,6 +54,7 @@ rather than blocking IL-008 on it.
 ## Activity Log
 
 - 2026-07-28 16:13 MYT - Ticket created from the IL-008 final whole-branch review.
+- 2026-07-28 16:59 MYT - Codex review round 2 on PR #123: added the template-required `Spec`/`Updated`/`Started`/`Completed` lifecycle fields.
 
 ## Validation
 
