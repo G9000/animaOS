@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { PendingInitiative } from "@anima/api-client";
 
-import { createInitiativePoller } from "../src/lib/initiativePoller";
+import {
+  createGatedInitiativeFetch,
+  createInitiativePoller,
+} from "../src/lib/initiativePoller";
 
 function row(id: number, overrides: Partial<PendingInitiative> = {}): PendingInitiative {
   return {
@@ -184,5 +187,70 @@ describe("createInitiativePoller", () => {
     release?.();
     await pollPromise;
     expect(seen).toHaveLength(0);
+  });
+
+  test("a poll started during a slow ack does not restore the acked row", async () => {
+    let releaseAck: (() => void) | null = null;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      // The server keeps returning row 1 until the ack POST commits.
+      fetchInitiatives: async () => [row(1), row(2)],
+      ackInitiative: async () => {
+        await ackGate;
+        return {};
+      },
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    // Ack is in flight (POST gated); an interval/focus/remount poll starts
+    // now, reads the row pre-commit, and resolves before the ack finishes.
+    const acking = poller.ack(1);
+    await poller.pollNow();
+    releaseAck?.();
+    await acking;
+    expect(seen.at(-1)?.map((r) => r.id)).toEqual([2]);
+    // No report after the initial poll may resurrect the acked row.
+    expect(seen.slice(1).every((list) => list.every((r) => r.id !== 1))).toBe(
+      true,
+    );
+  });
+});
+
+describe("createGatedInitiativeFetch", () => {
+  test("returns [] without hitting the initiatives endpoint when initiative is disabled", async () => {
+    let fetched = 0;
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({ enabled: true, initiativeEnabled: false }),
+      fetchInitiatives: async () => {
+        fetched += 1;
+        return [row(1)];
+      },
+    });
+    expect(await gated()).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
+  test("returns [] when the presence master switch is off", async () => {
+    let fetched = 0;
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({ enabled: false, initiativeEnabled: true }),
+      fetchInitiatives: async () => {
+        fetched += 1;
+        return [row(1)];
+      },
+    });
+    expect(await gated()).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
+  test("passes through when presence and initiative are both enabled", async () => {
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({ enabled: true, initiativeEnabled: true }),
+      fetchInitiatives: async () => [row(1)],
+    });
+    expect((await gated()).map((r) => r.id)).toEqual([1]);
   });
 });

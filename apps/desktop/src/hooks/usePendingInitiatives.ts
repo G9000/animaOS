@@ -3,6 +3,7 @@ import type { PendingInitiative } from "@anima/api-client";
 
 import { api } from "../lib/api";
 import {
+  createGatedInitiativeFetch,
   createInitiativePoller,
   type InitiativePoller,
 } from "../lib/initiativePoller";
@@ -22,8 +23,21 @@ export function usePendingInitiatives(userId: number | null | undefined): {
   useEffect(() => {
     if (userId == null) return;
     const poller = createInitiativePoller({
-      fetchInitiatives: async () =>
-        (await api.presence.initiatives(userId)).initiatives,
+      // Every cycle re-checks the CURRENT presence config before fetching,
+      // so withdrawing consent (initiative toggle or the master switch)
+      // stops delivery within one cycle — the server's list endpoint does
+      // not consult the config itself.
+      fetchInitiatives: createGatedInitiativeFetch({
+        getPresenceGate: async () => {
+          const config = await api.presence.get(userId);
+          return {
+            enabled: config.enabled,
+            initiativeEnabled: config.initiativeEnabled,
+          };
+        },
+        fetchInitiatives: async () =>
+          (await api.presence.initiatives(userId)).initiatives,
+      }),
       ackInitiative: (id) => api.presence.ackInitiative(userId, id),
       onChange: setPending,
     });

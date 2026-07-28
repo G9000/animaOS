@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-28 MYT
-- Started: 2026-07-15 MYT
-- Completed: 2026-07-28 MYT
+- Updated: 2026-07-28 16:40 MYT
+- Started: 2026-07-15 16:55 MYT
+- Completed: 2026-07-28 15:17 MYT
 
 ## Goal
 
@@ -40,7 +40,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-16 13:30 MYT - `IL-002` done: presence tick loop and offline catch-up (branch feature/il-002-presence-tick), pending review.
 - 2026-07-21 07:27 MYT - `IL-003` done: drive accumulators and push initiative (branch feature/il-003-initiative, merged main as `5e38dbf`, PR #115). First user-visible Inner Life behavior. Task review + adversarial whole-branch review (Critical wiring fix: per-user soul-store resolution) + 8 further PR review rounds, all fixed with regression tests. Client-side delivery wiring intentionally deferred, filed as `IL-008`.
 - 2026-07-23 02:16 MYT - `IL-007` done: dream cycle (branch feature/il-007-dream-cycle, squash-merged main as `bc7363c`, PR #116). Many PR review rounds hardened right-to-forget dream scrubbing, field-encrypted dream source_refs, bounded dream attempts, and dream-sharing gating. Client-side dream surfacing folded into `IL-008` scope notes.
-- 2026-07-28 MYT - `IL-008` done: push-initiative client wiring (branch feature/il-008-initiative-client-wiring, PR to follow). Poll/display path chosen over an `OSNotificationDelivery` adapter — no Tauri notification bridge exists in the repo. One task-review fix round each on the poller's concurrent ack-vs-poll race (generation-token fix) and the `stop()` staleness leak (in-flight poll invalidation on stop), both with regression tests. Last child ticket; Inner Life v1 scope is now complete end-to-end pending this PR's merge.
+- 2026-07-28 15:17 MYT - `IL-008` done: push-initiative client wiring (branch feature/il-008-initiative-client-wiring, PR to follow). Poll/display path chosen over an `OSNotificationDelivery` adapter — no Tauri notification bridge exists in the repo. One task-review fix round each on the poller's concurrent ack-vs-poll race (generation-token fix) and the `stop()` staleness leak (in-flight poll invalidation on stop), both with regression tests. Last child ticket; Inner Life v1 scope is now complete end-to-end pending this PR's merge.
 
 ## Deliverables
 
@@ -63,9 +63,9 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:10 MYT - Added implementation plan reference, child ticket status table, and completed-ticket history per review feedback.
-- 2026-07-28 MYT - Close-out pass: IL-007 marked done (was stale after PR #116 merged), IL-008 added to the child table, parent moved to in_progress. Remaining scope: `IL-008` (client delivery + presence-config UI).
-- 2026-07-28 MYT - `IL-008` (last child ticket) done; all eight child tickets are now `done`. Parent moved to `done`. Inner Life v1 — continuous affect state with offline catch-up, drive-based push initiative (now client-visible), latent trace crystallization, forgetting as distillation, recall reconsolidation, and the dream cycle — is complete end-to-end once the IL-008 PR merges.
-- 2026-07-28 MYT - `IL-009` filed as a backlog follow-up from the IL-008 final whole-branch review (Reply-context carry-over UX gap). This is post-v1 polish, not a blocker: it does not change the parent's `done` status or IL-008's completion.
+- 2026-07-28 14:10 MYT - Close-out pass: IL-007 marked done (was stale after PR #116 merged), IL-008 added to the child table, parent moved to in_progress. Remaining scope: `IL-008` (client delivery + presence-config UI).
+- 2026-07-28 15:17 MYT - `IL-008` (last child ticket) done; all eight child tickets are now `done`. Parent moved to `done`. Inner Life v1 — continuous affect state with offline catch-up, drive-based push initiative (now client-visible), latent trace crystallization, forgetting as distillation, recall reconsolidation, and the dream cycle — is complete end-to-end once the IL-008 PR merges.
+- 2026-07-28 16:13 MYT - `IL-009` filed as a backlog follow-up from the IL-008 final whole-branch review (Reply-context carry-over UX gap). This is post-v1 polish, not a blocker: it does not change the parent's `done` status or IL-008's completion.
 
 ## Validation
 
@@ -77,4 +77,4 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
   - `tickets/inner-life-v1/IL-005-forgetting-as-distillation.md`
   - `tickets/inner-life-v1/IL-006-recall-reconsolidation.md`
   - `tickets/inner-life-v1/IL-007-dream-cycle.md`
-  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 8/8, `tsc --noEmit` 0 errors, server untouched with a spot-check pytest run recorded)
+  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 12/12, `tsc --noEmit` 0 errors, server untouched with a spot-check pytest run recorded)

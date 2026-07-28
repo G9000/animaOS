@@ -8,7 +8,7 @@
 - Owner: unassigned
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
-- Created: 2026-07-28 MYT
+- Created: 2026-07-28 16:13 MYT
 
 ## Goal
 
@@ -49,7 +49,7 @@ rather than blocking IL-008 on it.
 
 ## Activity Log
 
-- 2026-07-28 MYT - Ticket created from the IL-008 final whole-branch review.
+- 2026-07-28 16:13 MYT - Ticket created from the IL-008 final whole-branch review.
 
 ## Validation
 

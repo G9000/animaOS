@@ -35,6 +35,12 @@ export function createInitiativePoller(
   let inFlight = false;
   let pending: PendingInitiative[] = [];
   let generation = 0;
+  // Tombstones for acked rows: a poll that starts DURING a slow ack captures
+  // the post-bump generation, can read the row before the ack POST commits,
+  // and would otherwise restore it. Tombstoned ids are filtered from every
+  // poll result; a failed ack removes its tombstone so the next poll
+  // re-serves the row (the server is still the source of truth).
+  const acked = new Set<number>();
 
   const pollNow = async (): Promise<void> => {
     if (inFlight) return;
@@ -43,7 +49,7 @@ export function createInitiativePoller(
     try {
       const result = await deps.fetchInitiatives();
       if (generation === gen) {
-        pending = result;
+        pending = result.filter((rowItem) => !acked.has(rowItem.id));
         deps.onChange(pending);
       }
     } catch {
@@ -75,13 +81,40 @@ export function createInitiativePoller(
     pollNow,
     async ack(id: number) {
       generation += 1;
+      acked.add(id);
       try {
         await deps.ackInitiative(id);
       } catch {
-        // The server still holds the row; the next poll re-serves it.
+        // The server still holds the row; drop the tombstone so the next
+        // poll re-serves it.
+        acked.delete(id);
       }
       pending = pending.filter((rowItem) => rowItem.id !== id);
       deps.onChange(pending);
     },
+  };
+}
+
+export interface PresenceGate {
+  enabled: boolean;
+  initiativeEnabled: boolean;
+}
+
+/**
+ * Wraps an initiatives fetch behind the user's CURRENT presence config so a
+ * poll cycle never fetches (and therefore never marks `delivered`) after
+ * consent is withdrawn: the server's list endpoint returns every
+ * unacknowledged row without consulting the config, so the client must
+ * re-check opt-in on every cycle. Returning [] also clears any initiative
+ * already on screen within one cycle of opting out.
+ */
+export function createGatedInitiativeFetch(deps: {
+  getPresenceGate: () => Promise<PresenceGate>;
+  fetchInitiatives: () => Promise<PendingInitiative[]>;
+}): () => Promise<PendingInitiative[]> {
+  return async () => {
+    const gate = await deps.getPresenceGate();
+    if (!gate.enabled || !gate.initiativeEnabled) return [];
+    return deps.fetchInitiatives();
   };
 }
