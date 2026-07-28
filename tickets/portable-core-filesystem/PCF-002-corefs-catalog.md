@@ -1,6 +1,6 @@
 # PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `apps/animus`, `apps/server` Core Filesystem/API/agent tools, `apps/desktop` release packaging, `.github/workflows`, `scripts`, and `third_party`
 - Parent: `PCF-000`
@@ -12,9 +12,9 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 22:39 MYT
+- Updated: 2026-07-28 22:57 MYT
 - Started: 2026-07-14 19:45 MYT
-- Completed:
+- Completed: 2026-07-28 22:57 MYT
 
 ## Goal
 
@@ -75,6 +75,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - PR #119 current-head P2 follow-up evidence (2026-07-27 17:44 MYT): WebSocket disconnect now cancels and drains both connection-owned turn/approval tasks with collected exceptions before revoking the password-owned unlock token, so native session teardown cannot race admitted stream/database cleanup. Every failure after `unlock_session_store.start()` now shuts down the unlock store, disposes runtime-engine state, and stops any returned embedded PostgreSQL instance before propagating the startup failure. Three focused regressions failed RED and passed GREEN; the complete WebSocket suite passed `18/18` with the repository keyslot plugin, runtime lifecycle passed `34/34`, the established CoreFS/session band passed `86/86`, exact Server Ruff and Python compileall passed, and the root server/desktop/Animus build passed after installing the frozen worktree dependencies. `bun run check:repo` found no PCF-002/PCF-000 issue and exited only for the two pre-existing Inner Life tracker violations.
 - PR #119 current-head P1 Windows-writer follow-up evidence (2026-07-27 21:50 MYT): Windows CoreFS safe opens now retain `FILE_SHARE_READ | FILE_SHARE_DELETE` without `FILE_SHARE_WRITE`, so validation refuses to begin over an already-open writer and the exact retained anchor denies later in-place writers until lease teardown. Both race directions failed RED and passed GREEN. The production diagnostic now records an explicit `InPlaceWriteBlocked` case after requiring an active lease while preserving create/delete/rename/replace invalidation coverage. The complete Rust 1.75 CoreFS suite passed with `213` library tests and `1` helper ignored, including all `12` diagnostic integration tests and the real 2,500-object isolated child; strict all-target/all-feature Clippy, scoped rustfmt, both release link-count tests, the root build, and diff hygiene passed.
 - macOS closeout evidence (2026-07-28 21:01 MYT): PR #124 merged as `3f38ebe7` after current-head Codex review and all standalone, lint, Windows-native, and macOS-native checks passed. Native APFS run `30355598174` proved the complete 21-case vnode-operation matrix and 200-sample restored-path boundary with `orderedBoundaryProven=true`, maximum descriptor delta `27`, zero post-teardown descriptor delta, zero residue, and complete lifecycle/outcome gates. Its single evidence-only `30/200` distribution measured safe-open p50/p95/p99 `22.2365/34.079666/39.410416` ms versus lease `2.821291/4.939375/6.41925` ms, but did not establish the separately required repeatability. The user selected the approved `macOS=safe-open fallback`; Task 5 and the conditional production diagnostic are skipped, the disposable probe and spike-only wiring are removed, and the accepted Windows backend is unchanged.
+- PR #125 final closeout evidence (2026-07-28 22:57 MYT): implementation head `83a7d191` passed standalone checkout, Server Ruff, Windows native lease, and macOS fallback/native compilation checks, and current-head Codex review reported no major issues after full pagination found zero unresolved actionable threads. The reopened fallback-CI acceptance state is repaired, so the synchronized second-phase closeout returns PCF-002 to `done` and makes PCF-003 dependency-eligible without claiming it.
 
 ## Activity Log
 
@@ -242,6 +243,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 22:25 MYT - Native macOS strict Clippy progressed past the cfg-import repair and found one `needless_borrows_for_generic_args` violation in the Unix-only stale-stage hard-link regression. Added a source contract that failed RED, passed the owned `PathBuf` directly to `fs::hard_link`, and passed the complete `128`-test contract file, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene locally. PCF-002 remains `in_progress` pending refreshed native validation and current-head review.
 - 2026-07-28 22:34 MYT - Native macOS strict Clippy next found the Windows-only `with_session_test_object_lease` seam compiled but unused when `anima-core` enables `session-test-seams` on macOS. Added a source contract that failed RED, gated the method on both the feature and Windows, and passed all `129` benchmark/workflow contracts, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene locally. PCF-002 remains `in_progress` pending refreshed native CI and current-head review.
 - 2026-07-28 22:39 MYT - Codex review of the preceding head found that both implementation plans still advertised the historical PCF-002 completion while the canonical child and parent were reopened. Added a plan-state contract that failed RED, changed the lease plan's final-state step back to pending, and replaced the umbrella plan's completion marker with the synchronized PR #125 reopen state. PCF-003 remains dependency-ineligible until current-head CI/review are clean and the second-phase closeout is committed.
+- 2026-07-28 22:57 MYT - Completed the required second-phase closeout after implementation head `83a7d191` passed all four required checks and received a clean current-head Codex review. Restored synchronized completion markers in both plans, set this child to `done`, and made PCF-003 dependency-eligible without claiming it.
 
 ## Validation
 
@@ -406,6 +408,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #125 Unix hard-link Clippy follow-up: native macOS strict Clippy found an unnecessary borrow of the owned object path in the Unix-only stale-stage hard-link regression. The source contract failed RED and passed GREEN after the call consumed the `PathBuf`; the complete benchmark/workflow contract passed `128/128`, Rust 1.75 strict combined CoreFS/anima-core Clippy passed, and scoped Rust 1.75 rustfmt plus diff hygiene passed.
   - PR #125 session-test seam Clippy follow-up: native macOS strict Clippy found the Windows-only cache lease replacement seam compiled but unused under the cross-platform `session-test-seams` feature. The cfg contract failed RED and passed GREEN after the method required both the feature and Windows; the complete benchmark/workflow contract passed `129/129`, Rust 1.75 strict combined CoreFS/anima-core Clippy passed, and scoped Rust 1.75 rustfmt plus diff hygiene passed.
   - PR #125 reopened plan-state follow-up: the plan-state contract failed RED while the lease plan and umbrella Task 2 still claimed current completion, then passed GREEN after both were changed to the canonical pending closeout state with PCF-003 dependency-ineligible.
+  - PR #125 clean implementation head and second-phase closeout: head `83a7d191` passed standalone checkout, Server Ruff, Windows native lease, and macOS fallback/native compilation checks; current-head Codex review was clean, full GraphQL pagination found zero unresolved actionable threads, and the completion-marker contract passed after the synchronized closeout.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (macOS fallback cleanup)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
@@ -482,7 +485,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - `Cargo.toml`, `Cargo.lock`, `apps/local-runtime-daemon/Cargo.toml`, and `packages/anima-core/{Cargo.toml,src/,tests/memory_contract.rs}` (Task 11 Rust 1.75 locked graph and strict all-feature compatibility)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`, `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`, `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`, and PCF-002/PCF-000 tracking (Task 12 Windows evidence)
 - Notes:
-  - PCF-001 is complete. PCF-002 is `in_progress` for reopened PR #125 validation and two-phase closeout; PCF-003 remains `backlog`/`unassigned` and dependency-ineligible until PCF-002 returns to `done`.
+  - PCF-001 and PCF-002 are complete. PCF-003 remains `backlog`/`unassigned` and is dependency-eligible without being claimed.
   - The normal parallel Animus run initially exposed a pre-existing shared secrets-fixture race. A red/green test-only fixture consolidation removed the race; the unchanged single-thread suite had already passed all 116 tests.
   - Tauri already maps `resources/.anima/` into the bundle, so staging `.anima/legal` required no `tauri.conf.json` change.
   - Reviews: https://github.com/G9000/animaOS/pull/91, https://github.com/G9000/animaOS/pull/94, https://github.com/G9000/animaOS/pull/96

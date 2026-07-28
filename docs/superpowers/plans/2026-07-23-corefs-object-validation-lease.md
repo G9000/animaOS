@@ -22,8 +22,9 @@ namespace boundary and produced one strong but explicitly evidence-only performa
 distribution. Because that run did not establish the required repeatability, the user
 selected the approved `macOS=safe-open fallback` on 2026-07-28. Task 5 and the
 conditional macOS production diagnostic are skipped. PR #125 subsequently reopened
-PCF-002 after the fallback CI acceptance gate was found incomplete; plan closeout is
-pending current-head native CI and review, and PCF-003 remains dependency-ineligible.
+PCF-002 after the fallback CI acceptance gate was found incomplete. Current-head native
+CI and Codex review now pass after the repair, so the plan is complete. PCF-003 is
+dependency-eligible without being claimed.
 
 ---
 
@@ -1065,7 +1066,7 @@ the preserved binary SHA-256 is
 Historical read-only source/build/binary/Cargo.lock/target/argv/schema/tree validation,
 all `124` benchmark contracts, and the `50` named provenance regressions passed.
 
-- [ ] **Step 6: Reapply the final ticket state after reopened validation**
+- [x] **Step 6: Apply the final ticket state**
 
 If the Windows native lifecycle target/resource gate or official performance gate is
 red, record exact evidence, disable the Windows lease backend in favor of safe-open
@@ -1078,15 +1079,15 @@ Windows target metric and separate completion-confirmed ownership evidence, set
 PCF-002 to `done` with `Completed: <timestamp>`, move it into the parent's completed
 history, and make PCF-003 eligible without claiming it. Mark this plan complete and the
 approved spec implemented. The 2026-07-28 21:01 MYT closeout applied this state once,
-but PR #125 reopened it after the fallback CI acceptance gate proved incomplete; do not
-reapply it until current-head native CI and review are clean. Do not push, open a PR,
-request review, merge, deploy, or start PCF-003 without separate authority.
+but PR #125 reopened it after the fallback CI acceptance gate proved incomplete. The
+clean current-head native CI and Codex review re-established this state at the
+2026-07-28 22:57 MYT second-phase closeout. Do not push, open a PR, request review,
+merge, deploy, or start PCF-003 without separate authority.
 
-Target final state: the Windows branch is green and enabled. macOS did not clear the
+Final state: the Windows branch is green and enabled. macOS did not clear the
 repeatability gate and remains on the approved safe-open fallback, so Task 5 and the
-conditional production-backend diagnostic are skipped. Once the reopened validation
-is clean, PCF-002 can close and PCF-003 becomes dependency-eligible without being
-claimed; until then both this step and that dependency transition remain pending.
+conditional production-backend diagnostic are skipped. PCF-002 is closed and PCF-003
+is dependency-eligible without being claimed.
 
 - [x] **Step 7: Commit final Windows evidence**
 

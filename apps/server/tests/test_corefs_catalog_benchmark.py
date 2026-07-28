@@ -567,7 +567,7 @@ def test_macos_fallback_clippy_cfg_gates_windows_session_lease_seam() -> None:
     ) in cache
 
 
-def test_reopened_pcf_002_plan_markers_remain_pending() -> None:
+def test_completed_pcf_002_plan_markers_are_synchronized() -> None:
     lease_plan = (
         REPO_ROOT
         / "docs"
@@ -576,11 +576,8 @@ def test_reopened_pcf_002_plan_markers_remain_pending() -> None:
         / "2026-07-23-corefs-object-validation-lease.md"
     ).read_text(encoding="utf-8")
     plan_header = lease_plan.split("---", 1)[0]
-    assert "the plan is complete." not in plan_header
-    assert (
-        "- [ ] **Step 6: Reapply the final ticket state after reopened validation**"
-        in lease_plan
-    )
+    assert "the plan is complete." in plan_header
+    assert "- [x] **Step 6: Apply the final ticket state**" in lease_plan
 
     umbrella_plan = (
         REPO_ROOT
@@ -591,9 +588,11 @@ def test_reopened_pcf_002_plan_markers_remain_pending() -> None:
     ).read_text(encoding="utf-8")
     task_two_header = umbrella_plan.split("## Task 2:", 1)[1].split("**Files:**", 1)[0]
     normalized_task_two_header = " ".join(task_two_header.split())
-    assert "**Completed:**" not in task_two_header
-    assert "**Status:** Reopened for PR #125 validation and closeout." in task_two_header
-    assert "PCF-003 remains dependency-ineligible" in normalized_task_two_header
+    assert "**Completed:** 2026-07-28." in task_two_header
+    assert "**Status:** Reopened for PR #125 validation and closeout." not in task_two_header
+    assert "PCF-003 is dependency-eligible without being claimed" in (
+        normalized_task_two_header
+    )
 
 
 def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
