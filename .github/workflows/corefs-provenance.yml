@@ -141,6 +141,40 @@ jobs:
       - name: Install Rust 1.75
         run: rustup toolchain install 1.75.0 --profile minimal --component clippy
 
+      - name: Prove macOS characterization starts RED
+        shell: bash
+        run: |
+          cargo +1.75.0 build --release --locked -p anima-corefs \
+            --bin object_lease_macos_spike
+
+          set +e
+          diagnostic="$(
+            ./target/release/object_lease_macos_spike \
+              --objects 2500 \
+              --warmups 30 \
+              --samples 200 \
+              --output /tmp/corefs-object-lease-macos.json 2>&1
+          )"
+          status=$?
+          set -e
+          printf '%s\n' "$diagnostic"
+          test "$status" -eq 1
+          printf '%s\n' "$diagnostic" | python3 -c '
+          import json
+          import sys
+
+          diagnostic = json.load(sys.stdin)
+          expected = {
+              "error": "backendUnavailable",
+              "message": (
+                  "the native macOS FSEvents/kqueue characterization backend "
+                  "is not implemented"
+              ),
+          }
+          assert diagnostic == expected, diagnostic
+          '
+          test ! -e /tmp/corefs-object-lease-macos.json
+
       - name: Detect enabled macOS native backend
         id: macos-backend
         shell: bash
