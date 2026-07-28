@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-21 MYT
-- Updated: 2026-07-28 19:20 MYT
+- Updated: 2026-07-28 19:09 MYT
 - Started: 2026-07-28 14:20 MYT
 - Completed: 2026-07-28 15:17 MYT
 
@@ -67,7 +67,7 @@ here so it is tracked rather than lost.
 - 2026-07-28 16:40 MYT - Codex review round 1 on PR #123, fixes by Claude: (1) P1 opt-out gate — every poll cycle now re-checks the current presence config via `createGatedInitiativeFetch` before hitting the initiatives endpoint, so withdrawing consent (initiative toggle or master switch) stops fetch/display/delivered-marking within one cycle and clears any on-screen initiative (3 regression tests); (2) P2 ack-window race — acknowledged-ID tombstones filter every poll result, so a poll that starts during a slow ack POST and reads the row pre-commit can no longer restore it; a failed ack drops its tombstone so the next poll re-serves the row (1 regression test); (3) ticket-hygiene P1 — full `YYYY-MM-DD HH:MM MYT` timestamps recorded from commit evidence across IL-000/IL-007/IL-008/IL-009. Poller suite now 12/12.
 - 2026-07-28 16:59 MYT - Codex review round 2 on PR #123, fixes by Claude: (1) P2 Presence page — a failed initial config GET no longer seeds a savable `DEFAULT_CONFIG` draft (Save could then silently overwrite stored settings, e.g. reset `initiativeEnabled`/quiet hours/`dreamSharing`); the draft stays null and every control plus Save is disabled until a real config loads. (2) P1 IL-009 ticket — added the template-required `Spec`/`Updated`/`Started`/`Completed` lifecycle fields.
 - 2026-07-28 18:24 MYT - Codex review round 3 on PR #123 (hygiene): `Updated` advanced with each material edit, Changed-paths made complete (added the plan doc and the IL-009 ticket; dropped the misleading `.superpowers` exclusion note — that directory is git-ignored and contains no committed paths), IL-007 `Started` recovered from PR #116 commit evidence.
-- 2026-07-28 19:20 MYT - Codex review round 4 on PR #123: P2 — Reply now awaits the ack POST before navigating to `/chat` (`event.preventDefault()` + `navigate` after `ack` resolves). Each route renders its own `Layout`, so navigation remounts the poller with a fresh tombstone set; navigating mid-POST let the new poller's initial GET re-fetch the just-acknowledged row for up to one cycle.
+- 2026-07-28 19:09 MYT - Codex review round 4 on PR #123: P2 — Reply now awaits the ack POST before navigating to `/chat` (`event.preventDefault()` + `navigate` after `ack` resolves). Each route renders its own `Layout`, so navigation remounts the poller with a fresh tombstone set; navigating mid-POST let the new poller's initial GET re-fetch the just-acknowledged row for up to one cycle.
 
 ## Validation
 
