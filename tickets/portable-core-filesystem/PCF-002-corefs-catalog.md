@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 22:34 MYT
+- Updated: 2026-07-28 22:39 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -241,6 +241,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 22:18 MYT - Refreshed Codex review confirmed the cfg-import repair and found one stale closeout note that still described PCF-002 as complete and PCF-003 as eligible. Corrected the child and parent notes to the canonical reopened state; PCF-002 remains `in_progress`, and PCF-003 remains `backlog`/`unassigned` but dependency-ineligible until the two-phase closeout finishes.
 - 2026-07-28 22:25 MYT - Native macOS strict Clippy progressed past the cfg-import repair and found one `needless_borrows_for_generic_args` violation in the Unix-only stale-stage hard-link regression. Added a source contract that failed RED, passed the owned `PathBuf` directly to `fs::hard_link`, and passed the complete `128`-test contract file, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene locally. PCF-002 remains `in_progress` pending refreshed native validation and current-head review.
 - 2026-07-28 22:34 MYT - Native macOS strict Clippy next found the Windows-only `with_session_test_object_lease` seam compiled but unused when `anima-core` enables `session-test-seams` on macOS. Added a source contract that failed RED, gated the method on both the feature and Windows, and passed all `129` benchmark/workflow contracts, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene locally. PCF-002 remains `in_progress` pending refreshed native CI and current-head review.
+- 2026-07-28 22:39 MYT - Codex review of the preceding head found that both implementation plans still advertised the historical PCF-002 completion while the canonical child and parent were reopened. Added a plan-state contract that failed RED, changed the lease plan's final-state step back to pending, and replaced the umbrella plan's completion marker with the synchronized PR #125 reopen state. PCF-003 remains dependency-ineligible until current-head CI/review are clean and the second-phase closeout is committed.
 
 ## Validation
 
@@ -404,6 +405,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PR #125 macOS cfg-import follow-up: native strict Clippy exposed Windows-only diagnostic imports in `object_lease_tests.rs` and `tests/catalog_benchmark.rs`; the cfg-gate assertion failed RED and passed GREEN. Full serialized Rust 1.75 CoreFS passed `213` library tests with `1` ignored plus all binary/integration/doc suites, strict combined Clippy passed, the complete benchmark/workflow contract passed `127/127`, and scoped Rust 1.75 rustfmt, YAML parsing, and diff hygiene passed.
   - PR #125 Unix hard-link Clippy follow-up: native macOS strict Clippy found an unnecessary borrow of the owned object path in the Unix-only stale-stage hard-link regression. The source contract failed RED and passed GREEN after the call consumed the `PathBuf`; the complete benchmark/workflow contract passed `128/128`, Rust 1.75 strict combined CoreFS/anima-core Clippy passed, and scoped Rust 1.75 rustfmt plus diff hygiene passed.
   - PR #125 session-test seam Clippy follow-up: native macOS strict Clippy found the Windows-only cache lease replacement seam compiled but unused under the cross-platform `session-test-seams` feature. The cfg contract failed RED and passed GREEN after the method required both the feature and Windows; the complete benchmark/workflow contract passed `129/129`, Rust 1.75 strict combined CoreFS/anima-core Clippy passed, and scoped Rust 1.75 rustfmt plus diff hygiene passed.
+  - PR #125 reopened plan-state follow-up: the plan-state contract failed RED while the lease plan and umbrella Task 2 still claimed current completion, then passed GREEN after both were changed to the canonical pending closeout state with PCF-003 dependency-ineligible.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (macOS fallback cleanup)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`

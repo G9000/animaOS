@@ -231,8 +231,13 @@ git -c commit.gpgsign=false commit -m "core: add portable filesystem key hierarc
 **Ticket:** `PCF-002`  
 **Depends on:** `PCF-001`
 
-**Completed:** 2026-07-28. Windows uses the accepted native object-validation lease;
-macOS and other unsupported platforms retain the fail-closed safe-open validator.
+**Status:** Reopened for PR #125 validation and closeout.
+
+Windows uses the accepted native object-validation lease; macOS and other unsupported
+platforms retain the fail-closed safe-open validator. The 2026-07-28 completion remains
+preserved in ticket activity, but PCF-002 is currently `in_progress` and PCF-003 remains
+dependency-ineligible until current-head native CI and review pass and the synchronized
+second-phase closeout is committed.
 
 **Files:**
 - Create: `packages/anima-file-tools/Cargo.toml`
