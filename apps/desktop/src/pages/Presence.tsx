@@ -15,7 +15,7 @@ const DEFAULT_CONFIG: PresenceConfig = {
   initiativeEnabled: false,
   quietHoursStart: null,
   quietHoursEnd: null,
-  dreamSharing: "off",
+  dreamSharing: "on_ask",
 };
 
 const SURFACE_OPTIONS = [
@@ -47,6 +47,12 @@ const SIGNAL_OPTIONS = [
     label: "Check-ins",
     detail: "Conversation gaps",
   },
+] as const;
+
+const DREAM_SHARING_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "on_ask", label: "On Ask" },
+  { value: "ambient", label: "Ambient" },
 ] as const;
 
 export default function Presence() {
@@ -93,6 +99,7 @@ export default function Presence() {
     config.taskNudgesEnabled,
     config.memoryNudgesEnabled,
     config.checkInNudgesEnabled,
+    config.initiativeEnabled,
   ].filter(Boolean).length;
 
   const updateDraft = (updates: Partial<PresenceConfig>) => {
@@ -116,6 +123,10 @@ export default function Presence() {
         memoryNudgesEnabled: config.memoryNudgesEnabled,
         checkInNudgesEnabled: config.checkInNudgesEnabled,
         customInstruction: config.customInstruction || null,
+        initiativeEnabled: config.initiativeEnabled,
+        quietHoursStart: config.quietHoursStart,
+        quietHoursEnd: config.quietHoursEnd,
+        dreamSharing: config.dreamSharing,
       });
       setDraft(next);
       setSaved(true);
@@ -141,7 +152,7 @@ export default function Presence() {
           </div>
           <div className="flex items-center gap-3">
             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/55">
-              {loading ? "Syncing" : `${activeCount}/5 Active`}
+              {loading ? "Syncing" : `${activeCount}/6 Active`}
             </span>
             <button
               type="button"
@@ -188,6 +199,10 @@ export default function Presence() {
                 label="Check-in signal"
                 enabled={config.enabled && config.checkInNudgesEnabled}
               />
+              <StatusLine
+                label="Initiative"
+                enabled={config.enabled && config.initiativeEnabled}
+              />
             </div>
           </aside>
 
@@ -216,6 +231,64 @@ export default function Presence() {
                   onChange={(checked) => updateDraft({ [option.key]: checked })}
                 />
               ))}
+            </ControlGroup>
+
+            <ControlGroup title="Initiative">
+              <SwitchRow
+                label="Unprompted Messages"
+                detail="May reach out when a drive crosses its threshold"
+                checked={config.initiativeEnabled}
+                disabled={!config.enabled}
+                onChange={(checked) => updateDraft({ initiativeEnabled: checked })}
+              />
+              <div className="flex items-center justify-between gap-4 px-1 py-4">
+                <span className="min-w-0 space-y-1">
+                  <span className="block text-sm text-foreground">Quiet Hours</span>
+                  <span className="block text-xs text-muted-foreground">
+                    No messages inside this window — set both to enable
+                  </span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <HourSelect
+                    value={config.quietHoursStart}
+                    disabled={!config.enabled || !config.initiativeEnabled}
+                    onChange={(value) => updateDraft({ quietHoursStart: value })}
+                  />
+                  <span className="font-mono text-[10px] text-muted-foreground/40">
+                    TO
+                  </span>
+                  <HourSelect
+                    value={config.quietHoursEnd}
+                    disabled={!config.enabled || !config.initiativeEnabled}
+                    onChange={(value) => updateDraft({ quietHoursEnd: value })}
+                  />
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4 px-1 py-4">
+                <span className="min-w-0 space-y-1">
+                  <span className="block text-sm text-foreground">Dream Sharing</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Whether night reflections may surface
+                  </span>
+                </span>
+                <span className="flex border border-border">
+                  {DREAM_SHARING_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={!config.enabled}
+                      onClick={() => updateDraft({ dreamSharing: option.value })}
+                      className={`px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors disabled:opacity-45 ${
+                        config.dreamSharing === option.value
+                          ? "bg-primary/15 text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </span>
+              </div>
             </ControlGroup>
 
             <section className="space-y-3">
@@ -324,5 +397,34 @@ function SwitchVisual({ enabled }: { enabled: boolean }) {
         }`}
       />
     </span>
+  );
+}
+
+function HourSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: number | null;
+  disabled: boolean;
+  onChange: (value: number | null) => void;
+}) {
+  return (
+    <select
+      value={value == null ? "" : String(value)}
+      disabled={disabled}
+      onChange={(event) => {
+        const raw = event.currentTarget.value;
+        onChange(raw === "" ? null : Number(raw));
+      }}
+      className="border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-primary disabled:opacity-45"
+    >
+      <option value="">—</option>
+      {Array.from({ length: 24 }, (_, hour) => (
+        <option key={hour} value={hour}>
+          {String(hour).padStart(2, "0")}:00
+        </option>
+      ))}
+    </select>
   );
 }
