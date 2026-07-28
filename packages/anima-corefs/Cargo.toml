@@ -42,3 +42,6 @@ libc = "0.2"
 
 [dev-dependencies]
 hex = "0.4"
+
+[build-dependencies]
+sha2 = "0.10"
