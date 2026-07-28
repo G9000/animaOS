@@ -9,7 +9,7 @@
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-28 22:31 MYT
+- Updated: 2026-07-29 01:55 MYT
 - Started: 2026-07-28 13:32 MYT
 - Completed: 2026-07-28 22:31 MYT
 
@@ -46,7 +46,9 @@ The full suite has carried a growing set of failures throughout the Inner Life v
 
 - 2026-07-28 21:40 MYT - Second stratum fixed (unmasked by the green baseline; all reproduce on unmodified main): async unlock-deps migration drift across chat (3), capabilities (2), health_api (5), user_profile (2), dashboard config-route (3) — stale patch targets updated to the *_async seams; embedding-hermeticity interaction in test_http_backend_status (explicit provider now set per the conftest guard's contract); platform-sensitive Windows-path assertion in the catalog-benchmark CLI-contract test.
 - 2026-07-28 22:15 MYT - Order-dependence poisoner found by bisection (150 files -> 1): test_corefs_package popped corefs/corefs.logical/corefs.types from sys.modules without restoring, minting duplicate PayloadScope/KeyslotStatus enum classes — identity comparisons in keyslots then matched nothing, 401-failing 21 recovery/vault/encrypted-core tests at full-suite scale ("valid phrase -> ambiguous scope"). Fixed with snapshot/restore of the popped modules plus re-binding the original corefs attribute on the parent services package (attribute-walking resolvers bypass sys.modules).
-- 2026-07-28 22:31 MYT - **Acceptance met: `bun run test` -> 3124 passed, 0 failed, 10 skipped** — first fully green suite; no allowlist needed. Sentinel untracked files survived two complete suite runs: no test deletes untracked working-tree files; the IL-003 "phantom deletion" is attributed to concurrent agent git operations. Done pending PR #121 merge (user).
+- 2026-07-28 22:31 MYT - Completed by Claude, the recorded owner (user-authorized in-session; same owner as the 13:32 claim — no reassignment occurred). **Acceptance met: `bun run test` -> 3124 passed, 0 failed, 10 skipped** — first fully green suite; no allowlist needed. Sentinel untracked files survived two complete suite runs: no test deletes untracked working-tree files; the IL-003 "phantom deletion" is attributed to concurrent agent git operations. Done pending PR #121 merge (user).
+
+- 2026-07-29 01:55 MYT - PR #126 review fixes (Claude, recorded owner): removed the sentinel probe accidentally committed by a directory-level git add (it was a working-tree-only experiment; its removal keeps the changed-path record truthful); test_corefs_package cleanup now DELETES the parent corefs attribute when no original module was saved (running the file alone would otherwise leave the fresh package bound while sys.modules is cleaned — recreating the split-module state); explicit completed-by-owner attribution added above.
 
 ## Validation
 
