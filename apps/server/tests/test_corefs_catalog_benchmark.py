@@ -507,15 +507,6 @@ def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
     assert "-- --test-threads=1" in full_suite
 
 
-def test_macos_characterization_ci_is_explicitly_evidence_only() -> None:
-    workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
-    macos = workflow.split("  macos-native-lease:", 1)[1]
-
-    notice = "Evidence only: workflow success does not clear the Task 5 macOS backend gate."
-    assert notice in macos
-    assert 'report["lease"][percentile] < report["safeOpen"][percentile]' not in macos
-
-
 def load_benchmark_module():
     assert SCRIPT_PATH.is_file(), "catalog benchmark feature is missing"
     spec = importlib.util.spec_from_file_location("benchmark_corefs_catalog", SCRIPT_PATH)

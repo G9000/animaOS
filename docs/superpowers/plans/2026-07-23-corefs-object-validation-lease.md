@@ -17,9 +17,11 @@ user-approved and independently approved on 2026-07-23. The focused plan revisio
 `0a409ea7` passed independent plan re-review with no remaining substantive findings.
 Tasks 4, 6, 7, 8, 9, 10, and 11 are implemented and independently review-clean. The
 Windows portion of Task 12 passed its permanent production diagnostic and unchanged
-exact reference from source `370ba5cc` on 2026-07-27. The overall plan remains in
-progress: Task 2's native macOS/APFS characterization, Task 5's backend, and Task 12's
-macOS/final-state steps remain pending.
+exact reference from source `370ba5cc` on 2026-07-27. PR #124 proved the macOS/APFS
+namespace boundary and produced one strong but explicitly evidence-only performance
+distribution. Because that run did not establish the required repeatability, the user
+selected the approved `macOS=safe-open fallback` on 2026-07-28. Task 5 and the
+conditional macOS production diagnostic are skipped; the plan is complete.
 
 ---
 
@@ -146,13 +148,13 @@ git commit -m "docs: record Windows CoreFS lease characterization"
 - Modify: `tickets/portable-core-filesystem/PCF-002-corefs-catalog.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Write a failing macOS-only characterization harness**
+- [x] **Step 1: Write a failing macOS-only characterization harness**
 
 Add a release binary that uses the pinned `objects/` descriptor to derive its absolute path, opens the complete no-follow `O_EVTONLY` directory chain from `/`, registers each descriptor with one nonblocking close-on-exec kqueue, starts an FSEvents stream with exact `SinceNow | WatchRoot | FileEvents | NoDefer` settings on a serial queue, and exposes injected creation/start/callback/fence/teardown states.
 
 The harness must compare the existing safe-open loop with two async acknowledgment fences plus 2,500 `fstatat(..., AT_SYMLINK_NOFOLLOW)` stamp checks and two-sided kqueue polling. Its closed JSON record must include hardware, macOS, filesystem, build, object count, warm-up/sample counts, distributions, maximum descriptor delta, lifecycle results, restored-path results, and `orderedBoundaryProven`.
 
-- [ ] **Step 2: Run the harness before implementation on native macOS**
+- [x] **Step 2: Run the harness before implementation on native macOS**
 
 Run on an APFS macOS host:
 
@@ -162,11 +164,11 @@ cargo +1.75.0 run --release --locked -p anima-corefs --bin object_lease_macos_sp
 
 Expected: FAIL because the native macOS fence is not implemented.
 
-- [ ] **Step 3: Implement only the disposable macOS probe**
+- [x] **Step 3: Implement only the disposable macOS probe**
 
 Use thin, audited FFI kept inside the probe. Queue before `Start`; poll and revalidate after start; wrap the callback in `catch_unwind`; synchronously publish terminal state, maximum nonzero callback event ID, and a condition-variable wakeup. Use `FlushAsync`, a two-second cancellation-aware wait, kqueue polls before and after, and complete path/identity revalidation. Implement state-specific partial cleanup and successful `cancel -> Stop -> Invalidate -> dispatch_sync_f barrier -> stream/context release -> queue release -> kqueue/descriptor close`.
 
-- [ ] **Step 4: Prove the zero-ID and mount-namespace race**
+- [x] **Step 4: Prove the zero-ID and mount-namespace race**
 
 Create a disposable APFS image mounted below a renameable temporary parent. For every watched component, including an ancestor above the mounted volume root, exercise rename/delete/revoke and rename-away/mutate-or-rebind/rename-back while delaying a zero-ID `RootChanged` callback.
 
@@ -178,11 +180,16 @@ cargo +1.75.0 run --release --locked -p anima-corefs --bin object_lease_macos_sp
 
 Expected: PASS; the vnode queue stays terminally `Unknown`, ordinary events become `DirtyAll`, all documented dropped/root/mount flags become `Unknown`, callback panic stays inside the C ABI, and teardown has no callback-after-release or descriptor leak.
 
-- [ ] **Step 5: Apply the macOS backend gate**
+- [x] **Step 5: Apply the macOS backend gate**
 
 Enable future macOS implementation only if the boundary is proven and the native lease loop shows a material, repeatable reduction versus the same safe-open loop. Do not invent a numeric PCF-002 macOS threshold. If either condition fails, record `macOS=safe-open fallback` and skip macOS production Tasks 5-specific implementation while continuing Windows.
 
-- [ ] **Step 6: Remove the disposable binary and commit the evidence**
+Decision recorded 2026-07-28: the APFS boundary is proven, and the single native
+`30/200` distribution showed a strong directional improvement, but the workflow and
+review record explicitly classify one run as evidence-only rather than repeatability
+proof. The user selected `macOS=safe-open fallback`; Task 5 is skipped.
+
+- [x] **Step 6: Remove the disposable binary and commit the evidence**
 
 Remove the probe and spike-only dependencies. Record commands, environment, distributions, lifecycle/resource evidence, and the platform decision in both tickets.
 
@@ -396,6 +403,8 @@ git commit -m "corefs: add Windows object lease monitor"
 ### Task 5: Implement the independently gated macOS FSEvents and kqueue backend
 
 Skip this task and retain the safe-open fallback if Task 2 did not clear the macOS gate.
+
+**Decision:** Skipped on 2026-07-28. macOS retains the existing safe-open fallback.
 
 **Files:**
 - Create: `packages/anima-corefs/src/transaction/object_lease/macos.rs`
@@ -993,7 +1002,7 @@ record the completed teardown evidence, disable the Windows backend, retain safe
 fallback, and stop before treating the official Windows performance run as lease
 acceptance.
 
-- [ ] **Step 3: Run the permanent macOS production-backend diagnostic when enabled**
+- [x] **Step 3: Run the permanent macOS production-backend diagnostic when enabled**
 
 On the approved APFS host, run:
 
@@ -1006,6 +1015,9 @@ safe-open/lease distributions, fence/callback/kqueue results, fixed
 ancestor/kqueue resources, no per-object descriptor growth, and zero residue.
 If correctness/resource/lifecycle or material improvement regresses, disable
 the macOS backend and retain safe-open fallback before proceeding.
+
+Not run: the macOS production backend was not enabled, so this conditional step is
+not applicable.
 
 - [x] **Step 4: Run the exact unchanged Windows 30/200 reference**
 
@@ -1051,7 +1063,7 @@ the preserved binary SHA-256 is
 Historical read-only source/build/binary/Cargo.lock/target/argv/schema/tree validation,
 all `124` benchmark contracts, and the `50` named provenance regressions passed.
 
-- [ ] **Step 6: Apply the final ticket state**
+- [x] **Step 6: Apply the final ticket state**
 
 If the Windows native lifecycle target/resource gate or official performance gate is
 red, record exact evidence, disable the Windows lease backend in favor of safe-open
@@ -1066,10 +1078,10 @@ history, and make PCF-003 eligible without claiming it. Mark this plan complete 
 approved spec implemented. Do not push, open a PR, request review, merge, deploy, or
 start PCF-003 without separate authority.
 
-Current state: the Windows branch of this decision is green, but the Apple-inclusive
-plan has not satisfied the native macOS/APFS gates. Keep PCF-002 `in_progress`, leave
-`Completed:` blank, and keep PCF-003 dependency-ineligible until Tasks 2 and 5 plus
-Task 12 Step 3 are complete and Step 6 can be applied to the whole design.
+Final state: the Windows branch is green and enabled. macOS did not clear the
+repeatability gate and remains on the approved safe-open fallback, so Task 5 and the
+conditional production-backend diagnostic are skipped. PCF-002 can close and PCF-003
+becomes dependency-eligible without being claimed.
 
 - [x] **Step 7: Commit final Windows evidence**
 

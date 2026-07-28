@@ -231,6 +231,9 @@ git -c commit.gpgsign=false commit -m "core: add portable filesystem key hierarc
 **Ticket:** `PCF-002`  
 **Depends on:** `PCF-001`
 
+**Completed:** 2026-07-28. Windows uses the accepted native object-validation lease;
+macOS and other unsupported platforms retain the fail-closed safe-open validator.
+
 **Files:**
 - Create: `packages/anima-file-tools/Cargo.toml`
 - Create: `packages/anima-file-tools/src/lib.rs`
@@ -283,11 +286,11 @@ git -c commit.gpgsign=false commit -m "core: add portable filesystem key hierarc
 - Test: `apps/server/tests/test_corefs_process_lock.py`
 - Test: `apps/server/tests/test_corefs_clients.py`
 
-- [ ] **Step 1: Write failing envelope/catalog tests**
+- [x] **Step 1: Write failing envelope/catalog tests**
 
 Cover raw-byte privacy, tamper/wrong-AAD rejection, immutable revisions, catalog-only logical paths, `fs/HEAD` validation, orphan non-resurrection, move/trash/restore/tombstone semantics, retained-catalog reads, portable NFC/case-sensitive path lookup, and first-class empty folders with stable IDs/roles across rename and move.
 
-- [ ] **Step 2: Write failing CoreFS safety tests**
+- [x] **Step 2: Write failing CoreFS safety tests**
 
 Cover absolute paths, `..`, NUL, Unicode normalization collisions, reserved names, symlink/junction escape, output limits, optimistic revisions, explicit full `write(...)`, HTML sanitization boundaries, the per-principal operation matrix, owner/access inheritance, explicit-deny precedence, user-owned non-escalation, client-descendant policy inheritance, client-ID spoofing, manifest/payload substitution, unsigned digest mismatch, signature/publisher mismatch, package-ID collision, stale capability replay, update without reapproval, destination-machine reapproval, reserved-role collisions, lock-time handle revocation, and a real OS-backed interprocess Core/catalog lock. Spawn competing processes to prove simultaneous open/commit exclusion, safe crash recovery, and PID-reuse resistance using process-start identity rather than PID alone.
 
@@ -333,11 +336,11 @@ Implement `list`, `walk`, `glob`, authoritative streaming `grep`, Runtime-index-
 
 Register `corefs_router` in `main.py`; require an unlocked Core session, authenticate the caller, and resolve the distinct user, ANIMA, or installed-client principal before evaluating that principal's folder capability. Require owner scope only for user-only operations such as policy, ownership, grants, reserved-role binding, purge, and key retirement. Enforce the same migration-write gate server-side regardless of caller and keep arbitrary host filesystem access impossible. The device-local broker, never the caller, canonicalizes the installed manifest, hashes package payloads, verifies optional publisher signatures against a user-trusted key, and assigns the local installation principal. Unsigned packages bind to an exact digest; V1 requires reapproval after every digest change even when signed. Reject conflicting publisher/digest claims on one package ID for explicit user resolution. Add explicit user-approved folder-scoped read/write/manage grants bound to Core/instance/install principal/folder/scope/generation, and issue only short-lived audience-scoped capabilities to launched processes. Keep reusable bearer material in process memory or the OS credential store. Resolve inherited policy with explicit deny precedence on every call; `manage` is structural only, and policy/ownership/grants/reserved roles/purge remain user-only. Clients cannot claim reserved roles, access siblings, mutate grants, or retain valid handles after lock/revocation. Moving the Core preserves client-authored content but requires destination reapproval.
 
-- [ ] **Step 12: Implement and run the catalog benchmark**
+- [x] **Step 12: Implement and run the catalog benchmark**
 
 Generate the deterministic fixture matrix from the spec: 5,000 live entries plus 500 tombstones; 25,000 live entries plus 2,500 tombstones that must serialize at or below 16 MiB; and, if the maximum-live fixture is smaller than 16 MiB, a separate 16-MiB serialized-catalog fixture with no more than 25,000 live entries. Measure the full durable commit path. Commit `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json` with OS/CPU/RAM/storage/filesystem, 4-KiB durable-write p95, crypto/serialization versions, warm-up/sample counts, live/tombstone/total counts, serialized size, p50/p95/p99, bytes written, and pass/fail for the 100-ms medium gate, the maximum-live size gate, and both 250-ms maximum gates. A maximum-live fixture above 16 MiB fails the design and blocks cutover. Do not treat an unrecorded local timing as release evidence.
 
-- [ ] **Step 13: Run focused tests**
+- [x] **Step 13: Run focused tests**
 
 ```powershell
 cargo test -p anima-file-tools -p anima-corefs -p anima-core -p animus
@@ -350,7 +353,7 @@ $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test
 
 Expected: PASS locally, followed by a green `corefs-provenance` pull-request workflow from a clean checkout with no sibling Codex directory.
 
-- [ ] **Step 14: Commit CoreFS**
+- [x] **Step 14: Commit CoreFS**
 
 ```powershell
 git add Cargo.toml Cargo.lock THIRD_PARTY_NOTICES.md third_party/licenses/Apache-2.0.txt third_party/notices/openai-codex-NOTICE.txt scripts/check_codex_attribution.py scripts/check_corefs_release_notices.py scripts/prepare-desktop-release.ts .github/workflows/corefs-provenance.yml apps/desktop/src-tauri/tauri.conf.json packages/anima-file-tools packages/anima-corefs packages/anima-core/Cargo.toml packages/anima-core/src/ffi.rs apps/animus/Cargo.toml apps/animus/src/tools/files.rs apps/animus/src/tools/files apps/animus/src/tools/mod.rs apps/server/src/anima_server/services/corefs apps/server/src/anima_server/services/core.py apps/server/src/anima_server/schemas/corefs.py apps/server/src/anima_server/api/routes/corefs.py apps/server/src/anima_server/main.py apps/server/src/anima_server/services/agent/tools.py apps/server/scripts/benchmark_corefs_catalog.py docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json apps/server/tests/test_corefs_envelope.py apps/server/tests/test_corefs_catalog.py apps/server/tests/test_corefs_filesystem.py apps/server/tests/test_corefs_tools.py apps/server/tests/test_corefs_rotation.py apps/server/tests/test_corefs_process_lock.py apps/server/tests/test_corefs_clients.py

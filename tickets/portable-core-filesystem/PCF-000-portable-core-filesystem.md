@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 19:37 MYT
+- Updated: 2026-07-28 21:01 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -23,7 +23,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | Ticket | Title | Status | Depends on |
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
-| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | in_progress | PCF-001 |
+| PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | backlog | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
@@ -72,10 +72,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PR #119 Windows CI follow-up evidence (2026-07-27 17:20 MYT): all dedicated native Windows lease gates passed before the parallel aggregate suite lost a diagnostic child's create-only output and the test masked its stderr as a generic missing-file error. The aggregate Windows CoreFS job is now serialized, and child output failures expose status/stdout/stderr. The exact serialized Rust 1.75 CoreFS suite, all `125` Python contracts, strict combined Clippy, formatting/lint, workflow YAML parsing, and diff hygiene passed locally. `bun run check:repo` found no PCF-002/PCF-000 issue and exited only for the two pre-existing Inner Life tracker violations. PCF-002 and this parent remain `in_progress`; macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains dependency-ineligible.
 - PR #119 current-head P2 follow-up evidence (2026-07-27 17:44 MYT): connection-owned WebSocket turn/approval tasks now drain before password-owned unlock-token revocation, and every post-unlock-store-start startup failure drains the store plus runtime/PostgreSQL resources before propagation. Three focused regressions failed RED and passed GREEN; the WebSocket suite passed `18/18`, runtime lifecycle passed `34/34`, the CoreFS/session band passed `86/86`, exact Server Ruff and Python compileall passed, and the root server/desktop/Animus build passed after installing the frozen worktree dependencies. `bun run check:repo` found no PCF-002/PCF-000 issue and exited only for the two pre-existing Inner Life tracker violations. PCF-002 and this parent remain `in_progress`; macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains dependency-ineligible.
 - PR #119 current-head P1 Windows-writer follow-up evidence (2026-07-27 21:50 MYT): Windows CoreFS validation handles now omit `FILE_SHARE_WRITE`, rejecting an already-open writer and denying later in-place writers throughout the retained anchor lifetime while preserving read and delete/rename sharing. Both race regressions failed RED and passed GREEN; the production diagnostic now requires and records an active-lease `InPlaceWriteBlocked` case. The complete Rust 1.75 CoreFS suite passed with `213` library tests and `1` helper ignored, all `12` diagnostic integrations including the real 2,500-object child, strict Clippy, rustfmt, release link-count `2/2`, root build, and diff hygiene. PCF-002 and this parent remain `in_progress`; macOS/APFS Tasks 2 and 5 remain pending and PCF-003 remains dependency-ineligible.
+- PCF-002 closeout evidence (2026-07-28 21:01 MYT): PR #124 merged as `3f38ebe7` with all required checks green. Its native APFS artifact proves the complete namespace boundary and clean resources/lifecycle, while its single `30/200` performance distribution remains evidence-only rather than repeatability proof. The user selected the approved `macOS=safe-open fallback`, so the optional Task 5 backend and conditional production diagnostic are skipped. Windows retains the accepted native lease backend; the disposable macOS spike and temporary CI/provenance wiring are removed. PCF-002 is complete and PCF-003 is dependency-eligible without being claimed.
 
 ## Completed Tickets
 
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
+- PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (Windows native lease accepted; macOS safe-open fallback selected; completed 2026-07-28 21:01 MYT).
 
 ## Activity Log
 
@@ -246,6 +248,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 19:03 MYT - Addressed PR #124's current-head P2 performance-gate finding test-first. A focused workflow contract failed RED before the fix, then passed after macOS CI stopped treating one potentially noisy `30/200` distribution with strict per-percentile `<` comparisons as the Task 5 gate. The job still validates the closed APFS correctness, resource, lifecycle, provenance, and distribution evidence and now emits an explicit evidence-only notice; material, repeatable improvement remains a separately documented Task 5 decision under the approved no-invented-threshold rule. The full benchmark contract file passed `126/126`, scoped Ruff and YAML parsing passed, and PCF-002 plus this parent remain `in_progress` pending refreshed current-head CI/review; Task 5 remains gated and PCF-003 remains dependency-ineligible.
 - 2026-07-28 19:26 MYT - Addressed PR #124's current-head P1 incomplete vnode-operation matrix test-first. The regression failed RED at `8 != 21`; the restored-path schedule now requires every exact rename, delete, and revoke case for all seven owned watched components. A separate owned APFS matrix volume makes each operation destructive only inside disposable state, reopens fresh descriptor epochs after revoke, rebuilds deleted workspaces, and preserves the existing nested mounted-Core-volume cases that prove coverage above the actual mount boundary, while the combined schedule remains exactly `200` samples. The focused spike suite passed `39/39`, the complete serialized CoreFS suite passed, strict host Clippy, both Apple cross-target checks, scoped Rust 1.75 rustfmt, and diff hygiene passed. PCF-002 plus this parent remain `in_progress` pending refreshed native APFS/FSEvents CI and current-head review; Task 5 remains gated and PCF-003 remains dependency-ineligible.
 - 2026-07-28 19:37 MYT - PR #124's native macOS job passed the full `21`-case vnode matrix, and the refreshed Codex pass raised one P2 portability defect in its unit contract: it hard-coded Rust `1.75.0` even though that version is enforced independently for evidence builds. Reproduced RED under the supported newer Rust `1.93.0`, then changed the regression to prove a nonempty single-line compiler identity is compile-time embedded without pinning ordinary test runners. Both Rust `1.93.0` and `1.75.0` focused suites passed `39/39`, with strict Rust 1.75 Clippy, scoped rustfmt, and diff hygiene green. PCF-002 plus this parent remain `in_progress` pending refreshed current-head CI/review; Task 5 remains gated and PCF-003 remains dependency-ineligible.
+- 2026-07-28 21:01 MYT - Closed PCF-002 after the user selected the approved macOS safe-open fallback. Synchronized the child and parent row, added PCF-002 to completed history, removed the disposable spike and temporary characterization wiring, and made PCF-003 dependency-eligible without changing its `backlog`/`unassigned` state. This parent remains `in_progress`.
 
 ## Validation
 
@@ -332,7 +335,13 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PR #119 unlock-store lifecycle follow-up: the new managed-client regression failed RED with `RuntimeError: Unlock session store is shut down`, then passed GREEN; the ordered WebSocket-client-then-bare-CoreFS reproduction passed `2/2`, and the full ordered WebSocket/session/CoreFS API band passed `100/100`.
   - PR #119 development-reload continuity follow-up: the encrypted-snapshot and real-lifespan/bare-CoreFS order regressions both failed RED and passed GREEN; the full continuity/auth/WebSocket/runtime/CoreFS band passed `149/149`; launcher continuity passed `12/12`; server Ruff, Python compileall, root build, and diff hygiene passed. The repository check retained only the unrelated pre-existing `IL-007`/`IL-008` findings.
   - PR #119 Windows writer-exclusion follow-up: both writer-order regressions failed RED and passed GREEN; Windows object-lease tests passed `24/24`; the diagnostic mutation integration and isolated 2,500-object child passed; the complete Rust 1.75 CoreFS suite passed with `213` library tests and `1` helper ignored plus all integrations/docs; strict all-target/all-feature Clippy, scoped rustfmt, release link-count `2/2`, root build, and diff hygiene passed.
+  - PCF-002 closeout: full Rust 1.75 CoreFS, strict combined CoreFS/anima-core Clippy, `125` benchmark/workflow contracts, workflow YAML parsing, locked Cargo metadata, disposable-spike reference scan, and diff hygiene passed. `bun run check:repo` found no PCF-002/PCF-000 issue and retained only the two unrelated pre-existing Inner Life violations.
 - Changed paths:
+  - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (PCF-002 fallback closeout)
+  - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
+  - `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
+  - `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
+  - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-002-corefs-catalog.md}`
   - `packages/anima-corefs/src/{envelope.rs,catalog/,crypto.rs,lib.rs,id.rs,bounded.rs}`
   - `packages/anima-corefs/tests/{envelope.rs,catalog.rs,opaque_id.rs}`
   - `packages/anima-corefs/src/{transaction.rs,publication.rs}` and `packages/anima-corefs/tests/{transaction.rs,publication.rs}`
@@ -391,7 +400,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001 is complete; PCF-002 is the next implementation slice.
+  - PCF-001 and PCF-002 are complete; PCF-003 is the next dependency-eligible implementation slice and remains unclaimed.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
-  - PCF-002 Task 1 cleared the approved Windows boundary/performance decision gate. Production object-lease integration and the unchanged final exact reference remain outstanding; downstream tickets are still dependency-ineligible, and publication/current-head review remain separate and unauthorized.
-  - PCF-002 Tasks 4, 6, 7, 8, 9, 10, and 11 plus Task 12's Windows diagnostic/reference steps are complete and review-clean. Tasks 2 and 5 remain pending on native macOS/APFS evidence; Task 12 remains open for its macOS and final-state steps. PCF-003 remains dependency-ineligible.
+  - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.
