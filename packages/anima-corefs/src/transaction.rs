@@ -2,6 +2,9 @@
 
 #[cfg_attr(not(test), allow(dead_code))]
 mod cache;
+// The lease contract is integrated incrementally by the following implementation tasks.
+#[allow(dead_code)]
+mod object_lease;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +15,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use cap_fs_ext::MetadataExt as _;
@@ -26,10 +30,23 @@ use fs4::FileExt;
 use getrandom::getrandom;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
 
 use self::cache::{
     AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet, ValidatedObjectBinding,
     ValidatedObjectState,
+};
+use self::object_lease::global_lease_budget;
+pub(crate) use self::object_lease::ObjectLeaseDiagnosticBoundaryEvent;
+use self::object_lease::{
+    object_set_fingerprint, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision,
+    LeaseAttemptPolicy, LeaseBudget, LeaseResourceFactory, MonotonicClock, ObjectLeaseCandidate,
+    ObjectLeaseDiagnosticObserver, ObjectValidationLease, OptimizationMiss,
+};
+#[cfg(windows)]
+pub(crate) use self::object_lease::{
+    ObjectLeaseDiagnosticCounterSnapshot, ObjectLeaseTeardownObservation,
 };
 
 #[cfg(test)]
@@ -798,6 +815,115 @@ struct CommitCallbacks<'a, I, H> {
     hook: &'a mut H,
 }
 
+#[derive(Default)]
+struct DeferredLeaseTeardown {
+    cache_snapshots: Vec<Arc<AuthenticatedCommitSnapshot>>,
+    candidates: Vec<ObjectLeaseCandidate>,
+    leases: Vec<Arc<ObjectValidationLease>>,
+}
+
+impl DeferredLeaseTeardown {
+    fn cache_snapshots(&mut self) -> &mut Vec<Arc<AuthenticatedCommitSnapshot>> {
+        &mut self.cache_snapshots
+    }
+
+    fn retain_snapshot_lease_owner(&mut self, snapshot: Option<&Arc<AuthenticatedCommitSnapshot>>) {
+        let Some(snapshot) = snapshot.filter(|snapshot| snapshot.object_lease.is_some()) else {
+            return;
+        };
+        if self
+            .cache_snapshots
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, snapshot))
+        {
+            return;
+        }
+        self.cache_snapshots.push(Arc::clone(snapshot));
+    }
+
+    fn retain_current_cache_lease_owner(&mut self, cache: &CommitCache) {
+        let snapshot = cache.current_deferred(&mut self.cache_snapshots);
+        self.retain_snapshot_lease_owner(snapshot.as_ref());
+    }
+
+    fn retain_candidate(&mut self, candidate: ObjectLeaseCandidate) {
+        self.candidates.push(candidate);
+    }
+
+    fn retain_lease(&mut self, lease: &Arc<ObjectValidationLease>) {
+        self.leases.push(Arc::clone(lease));
+    }
+}
+
+struct RotationCacheKeyMaterial<'a, 'keys> {
+    keyring: &'a FrkKeyring<'keys>,
+    pending: &'a FrkSubkeys,
+}
+
+struct DeferredCandidateGuard<'a> {
+    candidate: Option<ObjectLeaseCandidate>,
+    deferred_teardown: &'a mut DeferredLeaseTeardown,
+}
+
+impl<'a> DeferredCandidateGuard<'a> {
+    fn new(
+        candidate: ObjectLeaseCandidate,
+        deferred_teardown: &'a mut DeferredLeaseTeardown,
+    ) -> Self {
+        Self {
+            candidate: Some(candidate),
+            deferred_teardown,
+        }
+    }
+
+    fn candidate(&self) -> Option<&ObjectLeaseCandidate> {
+        self.candidate.as_ref()
+    }
+
+    fn candidate_mut(&mut self) -> Option<&mut ObjectLeaseCandidate> {
+        self.candidate.as_mut()
+    }
+
+    fn take(&mut self) -> Option<ObjectLeaseCandidate> {
+        self.candidate.take()
+    }
+
+    fn defer_now(&mut self) {
+        if let Some(candidate) = self.candidate.take() {
+            self.deferred_teardown.retain_candidate(candidate);
+        }
+    }
+}
+
+impl Drop for DeferredCandidateGuard<'_> {
+    fn drop(&mut self) {
+        self.defer_now();
+    }
+}
+
+struct LeaseFailureGuard<'a> {
+    cache: &'a CommitCache,
+    armed: bool,
+}
+
+impl<'a> LeaseFailureGuard<'a> {
+    fn new(cache: &'a CommitCache) -> Self {
+        Self { cache, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LeaseFailureGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.drop_object_lease();
+        }
+    }
+}
+
 #[cfg(test)]
 #[derive(Default)]
 struct CoordinatorPublicationProbe {
@@ -884,6 +1010,10 @@ enum CommitStage {
     KeyDerivation,
     CatalogIoCrypto,
     PreconditionAndBuild,
+    LeaseMonitorArmed,
+    LeaseLayoutRevalidated,
+    LeaseObjectValidated,
+    LeaseFence,
     EncryptionAndPublication,
     FailureHook,
     InvalidationCallback,
@@ -931,6 +1061,7 @@ struct CommitProbe<'a> {
     catalog_decrypts: usize,
     catalog_encodes: usize,
     object_dek_unwraps: usize,
+    object_safe_opens: usize,
     observe_stage: Option<&'a mut dyn FnMut(CommitStage)>,
 }
 
@@ -965,6 +1096,10 @@ impl<'a> CommitProbe<'a> {
     fn object_dek_unwrap(&mut self) {
         self.object_dek_unwraps += 1;
     }
+
+    fn object_safe_open(&mut self) {
+        self.object_safe_opens += 1;
+    }
 }
 
 #[cfg(test)]
@@ -981,6 +1116,50 @@ fn observe_commit_failure_hook<T>(value: T, probe: Option<&mut CommitProbe<'_>>)
         probe.stage(CommitStage::FailureHook);
     }
     value
+}
+
+#[derive(Debug)]
+struct CoordinatorMonotonicClock {
+    started: Instant,
+}
+
+impl CoordinatorMonotonicClock {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+impl MonotonicClock for CoordinatorMonotonicClock {
+    fn now(&self) -> Duration {
+        self.started.elapsed()
+    }
+}
+
+#[derive(Debug)]
+struct UnsupportedLeaseFactory;
+
+impl LeaseResourceFactory for UnsupportedLeaseFactory {
+    fn resource_plan(&self) -> object_lease::LeaseResourcePlan {
+        object_lease::LeaseResourcePlan::unsupported()
+    }
+
+    fn create_monitor(
+        &self,
+        _plan: object_lease::LeaseResourcePlan,
+        _state: Arc<object_lease::MonitorStateCell>,
+    ) -> Result<Box<dyn object_lease::LeaseMonitorResource>, ()> {
+        Err(())
+    }
+
+    fn create_anchor(
+        &self,
+        _index: usize,
+        _binding: &ValidatedObjectBinding,
+    ) -> Result<object_lease::ValidationAnchor, ()> {
+        Ok(object_lease::ValidationAnchor::Unsupported)
+    }
 }
 
 pub struct CoreCommitCoordinator {
@@ -1000,6 +1179,199 @@ pub struct CoreCommitCoordinator {
     fs_dir: Dir,
     catalogs_dir: Dir,
     objects_dir: Dir,
+    lease_publication: LeasePublicationAuthority,
+    lease_attempt_policy: Mutex<LeaseAttemptPolicy>,
+    #[cfg(test)]
+    lease_factory_override: Mutex<Option<Arc<dyn object_lease::LeaseResourceFactory>>>,
+    lease_budget_override: Option<LeaseBudget>,
+    object_lease_diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
+}
+
+#[derive(Debug)]
+struct LeasePublicationAuthority {
+    state: Mutex<LeasePublicationState>,
+    changed: Condvar,
+}
+
+#[derive(Debug)]
+struct LeasePublicationState {
+    open: bool,
+    generation: u64,
+    active_operations: usize,
+    active_operations_by_thread: HashMap<ThreadId, usize>,
+    release_depth: usize,
+}
+
+impl Default for LeasePublicationAuthority {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(LeasePublicationState {
+                open: true,
+                generation: 0,
+                active_operations: 0,
+                active_operations_by_thread: HashMap::new(),
+                release_depth: 0,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+}
+
+impl LeasePublicationAuthority {
+    fn admit(&self) -> Result<LeasePublicationOperation<'_>, CommitError> {
+        let owner_thread = thread::current().id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.open {
+            return Err(CommitError::ObjectLeaseReleaseInProgress);
+        }
+        let active_operations = state
+            .active_operations
+            .checked_add(1)
+            .ok_or(CommitError::ObjectLeaseOperationOverflow)?;
+        let active_on_thread = state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(CommitError::ObjectLeaseOperationOverflow)?;
+        state.active_operations = active_operations;
+        state
+            .active_operations_by_thread
+            .insert(owner_thread, active_on_thread);
+        Ok(LeasePublicationOperation {
+            authority: self,
+            owner_thread,
+        })
+    }
+
+    fn ensure_release_not_reentrant(&self) -> Result<(), CommitError> {
+        let owner_thread = thread::current().id();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            != 0
+        {
+            return Err(CommitError::ObjectLeaseReleaseReentrant);
+        }
+        Ok(())
+    }
+
+    fn begin_release(&self) -> Result<(), CommitError> {
+        let owner_thread = thread::current().id();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            != 0
+        {
+            return Err(CommitError::ObjectLeaseReleaseReentrant);
+        }
+        state.release_depth = state.release_depth.saturating_add(1);
+        if state.open {
+            state.open = false;
+            state.generation = state.generation.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    fn wait_for_drain(&self) -> Result<(), CommitError> {
+        let owner_thread = thread::current().id();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_operations_by_thread
+            .get(&owner_thread)
+            .copied()
+            .unwrap_or(0)
+            != 0
+        {
+            return Err(CommitError::ObjectLeaseReleaseReentrant);
+        }
+        drop(
+            self.changed
+                .wait_while(state, |state| state.active_operations != 0)
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        Ok(())
+    }
+
+    fn resume(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.release_depth = state.release_depth.saturating_sub(1);
+        if state.release_depth == 0 {
+            state.open = true;
+            self.changed.notify_all();
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .open
+    }
+
+    fn generation(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .generation
+    }
+
+    fn can_publish(&self, generation: u64) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.open && state.generation == generation
+    }
+}
+
+struct LeasePublicationOperation<'a> {
+    authority: &'a LeasePublicationAuthority,
+    owner_thread: ThreadId,
+}
+
+impl Drop for LeasePublicationOperation<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .authority
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(state.active_operations > 0);
+        state.active_operations = state.active_operations.saturating_sub(1);
+        let active_on_thread = state
+            .active_operations_by_thread
+            .get_mut(&self.owner_thread)
+            .expect("admitted lease operation retains its thread owner");
+        debug_assert!(*active_on_thread > 0);
+        *active_on_thread = active_on_thread.saturating_sub(1);
+        if *active_on_thread == 0 {
+            state.active_operations_by_thread.remove(&self.owner_thread);
+        }
+        self.authority.changed.notify_all();
+    }
 }
 
 impl fmt::Debug for CoreCommitCoordinator {
@@ -1016,6 +1388,37 @@ impl CoreCommitCoordinator {
     pub fn new(
         core_root: impl AsRef<Path>,
         core_id: impl Into<String>,
+    ) -> Result<Self, CommitError> {
+        Self::new_with_lease_budget(core_root, core_id, None, None)
+    }
+
+    #[cfg(any(test, feature = "session-test-seams"))]
+    fn new_with_isolated_lease_budget(
+        core_root: impl AsRef<Path>,
+        core_id: impl Into<String>,
+    ) -> Result<Self, CommitError> {
+        Self::new_with_lease_budget(core_root, core_id, Some(LeaseBudget::isolated()), None)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn new_with_object_lease_diagnostics(
+        core_root: impl AsRef<Path>,
+        core_id: impl Into<String>,
+    ) -> Result<Self, CommitError> {
+        let diagnostics = Arc::new(ObjectLeaseDiagnosticObserver::default());
+        Self::new_with_lease_budget(
+            core_root,
+            core_id,
+            Some(LeaseBudget::isolated()),
+            Some(diagnostics),
+        )
+    }
+
+    fn new_with_lease_budget(
+        core_root: impl AsRef<Path>,
+        core_id: impl Into<String>,
+        lease_budget_override: Option<LeaseBudget>,
+        object_lease_diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
     ) -> Result<Self, CommitError> {
         let core_root = core_root.as_ref();
         ensure_ambient_directory(core_root)?;
@@ -1047,7 +1450,376 @@ impl CoreCommitCoordinator {
             fs_dir,
             catalogs_dir,
             objects_dir,
+            lease_publication: LeasePublicationAuthority::default(),
+            lease_attempt_policy: Mutex::new(LeaseAttemptPolicy::new(Arc::new(
+                CoordinatorMonotonicClock::new(),
+            ))),
+            #[cfg(test)]
+            lease_factory_override: Mutex::new(None),
+            lease_budget_override,
+            object_lease_diagnostics,
         })
+    }
+
+    #[cfg(test)]
+    fn set_lease_factory_for_test(&self, factory: Arc<dyn object_lease::LeaseResourceFactory>) {
+        *self
+            .lease_factory_override
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(factory);
+    }
+
+    fn lease_budget(&self) -> &LeaseBudget {
+        self.lease_budget_override
+            .as_ref()
+            .unwrap_or_else(|| global_lease_budget())
+    }
+
+    fn lease_factory(&self) -> Arc<dyn LeaseResourceFactory> {
+        #[cfg(test)]
+        if let Some(factory) = self
+            .lease_factory_override
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            return factory;
+        }
+
+        #[cfg(all(windows, not(test)))]
+        {
+            let objects_dir = match self.objects_dir.try_clone() {
+                Ok(objects_dir) => objects_dir,
+                Err(_) => return Arc::new(UnsupportedLeaseFactory),
+            };
+            let factory = if let Some(diagnostics) = &self.object_lease_diagnostics {
+                object_lease::windows::WindowsLeaseFactory::new_observed(
+                    objects_dir,
+                    Arc::clone(diagnostics),
+                )
+            } else {
+                object_lease::windows::WindowsLeaseFactory::new(objects_dir)
+            };
+            factory.map_or_else(
+                |_| Arc::new(UnsupportedLeaseFactory) as Arc<dyn LeaseResourceFactory>,
+                |factory| Arc::new(factory) as Arc<dyn LeaseResourceFactory>,
+            )
+        }
+
+        #[cfg(any(test, not(windows)))]
+        Arc::new(UnsupportedLeaseFactory)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_counters(
+        &self,
+    ) -> Option<ObjectLeaseDiagnosticCounterSnapshot> {
+        self.object_lease_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.counters())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_boundary_events(
+        &self,
+    ) -> Option<Vec<ObjectLeaseDiagnosticBoundaryEvent>> {
+        self.object_lease_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.boundary_events())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn reset_object_lease_diagnostic_counters(&self) {
+        if let Some(diagnostics) = &self.object_lease_diagnostics {
+            diagnostics.reset_counters();
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_resources(&self) -> (usize, usize, usize) {
+        let usage = self.lease_budget().usage();
+        (usage.entries, usage.leases, usage.monitor_resources)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_diagnostic_target_identity(
+        &self,
+    ) -> Result<(u64, u64), CommitError> {
+        let metadata = Metadata::from_file(&self.root_dir.try_clone()?.into_std_file())?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn object_lease_teardown_observation(
+        &self,
+    ) -> Option<ObjectLeaseTeardownObservation> {
+        self.object_lease_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.teardown())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn publish_object_lease_unknown_for_diagnostic(&self) -> bool {
+        self.cache
+            .current()
+            .and_then(|snapshot| snapshot.object_lease.clone())
+            .is_some_and(|lease| {
+                lease.publish_unknown();
+                true
+            })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn prove_between_fence_mutation_for_diagnostic(&self, path: &Path) -> bool {
+        let Some(diagnostics) = &self.object_lease_diagnostics else {
+            return false;
+        };
+        let Some(lease) = self
+            .cache
+            .current()
+            .and_then(|snapshot| snapshot.object_lease.clone())
+        else {
+            return false;
+        };
+        diagnostics.arm_between_fence_mutation(path.to_path_buf());
+        let outcome = lease.fence();
+        diagnostics.between_fence_mutation_succeeded()
+            && outcome == object_lease::MonitorState::DirtyAll
+    }
+
+    fn object_directory_identity(&self) -> Result<DirectoryIdentity, CommitError> {
+        let metadata = Metadata::from_file(&self.objects_dir.try_clone()?.into_std_file())?;
+        Ok(DirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    fn record_lease_optimization_miss(
+        &self,
+        miss: OptimizationMiss,
+        fingerprint: object_lease::ObjectSetFingerprint,
+        requested_count: usize,
+        budget_epoch: u64,
+    ) {
+        let mut policy = self
+            .lease_attempt_policy
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match miss {
+            OptimizationMiss::BudgetDenied => {
+                policy.record_budget_denial(fingerprint, requested_count, budget_epoch);
+            }
+            OptimizationMiss::TransientAcquisition => policy.record_transient_failure(),
+            OptimizationMiss::UnsupportedPlatform
+            | OptimizationMiss::OverCeiling
+            | OptimizationMiss::TransientBackoff => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_prepared_revisions_with_candidate(
+        &self,
+        keys: &FrkSubkeys,
+        current: &CatalogGeneration,
+        next: &CatalogGeneration,
+        prepared: &[PreparedObjectRevision],
+        cached: Option<&ValidatedObjectState>,
+        expected_pointers: &PointerSet,
+        deferred_teardown: &mut DeferredLeaseTeardown,
+        #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+    ) -> Result<(ValidatedObjectState, Option<Arc<ObjectValidationLease>>), CommitError> {
+        let expected_bindings = catalog_object_bindings(next)?;
+        let candidate_publication_generation = self.lease_publication_generation();
+        if !self.lease_publication_is_open() {
+            let validated = validate_prepared_revisions_observed(
+                &self.objects_dir,
+                keys,
+                &self.core_id,
+                (Some(current), next),
+                prepared,
+                cached,
+                self.object_lease_diagnostics.as_deref(),
+                |_, _| {},
+                #[cfg(test)]
+                probe,
+            )?;
+            return Ok((validated, None));
+        }
+        let fingerprint = object_set_fingerprint(&expected_bindings);
+        let requested_count = expected_bindings.len();
+        let budget = self.lease_budget();
+        let decision_budget_epoch = budget.epoch();
+        let decision = self
+            .lease_attempt_policy
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .decision(fingerprint, requested_count, decision_budget_epoch);
+        if decision != LeaseAttemptDecision::Eligible {
+            let validated = validate_prepared_revisions_observed(
+                &self.objects_dir,
+                keys,
+                &self.core_id,
+                (Some(current), next),
+                prepared,
+                cached,
+                self.object_lease_diagnostics.as_deref(),
+                |_, _| {},
+                #[cfg(test)]
+                probe,
+            )?;
+            return Ok((validated, None));
+        }
+
+        let factory = self.lease_factory();
+        for attempt in 0..2 {
+            #[cfg(test)]
+            let observed_pointers = self.load_pointer_set(None)?;
+            #[cfg(not(test))]
+            let observed_pointers = self.load_pointer_set()?;
+            if &observed_pointers != expected_pointers {
+                let validated = validate_prepared_revisions_observed(
+                    &self.objects_dir,
+                    keys,
+                    &self.core_id,
+                    (Some(current), next),
+                    prepared,
+                    cached,
+                    self.object_lease_diagnostics.as_deref(),
+                    |_, _| {},
+                    #[cfg(test)]
+                    probe,
+                )?;
+                return Ok((validated, None));
+            }
+
+            let directory_identity = self.object_directory_identity()?;
+            let acquisition_budget_epoch = budget.epoch();
+            let candidate = match ObjectLeaseCandidate::try_begin(
+                budget,
+                expected_bindings.clone(),
+                directory_identity,
+                candidate_publication_generation,
+                factory.as_ref(),
+            ) {
+                Ok(candidate) => candidate,
+                Err(miss) => {
+                    self.record_lease_optimization_miss(
+                        miss,
+                        fingerprint,
+                        requested_count,
+                        acquisition_budget_epoch,
+                    );
+                    let validated = validate_prepared_revisions_observed(
+                        &self.objects_dir,
+                        keys,
+                        &self.core_id,
+                        (Some(current), next),
+                        prepared,
+                        cached,
+                        self.object_lease_diagnostics.as_deref(),
+                        |_, _| {},
+                        #[cfg(test)]
+                        probe,
+                    )?;
+                    return Ok((validated, None));
+                }
+            };
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CommitStage::LeaseMonitorArmed);
+            }
+
+            let mut candidate = DeferredCandidateGuard::new(candidate, deferred_teardown);
+            self.validate_pinned_layout()?;
+            let current_directory_identity = self.object_directory_identity()?;
+            if current_directory_identity != directory_identity {
+                return Err(CommitError::InvalidCoreLayout);
+            }
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CommitStage::LeaseLayoutRevalidated);
+            }
+
+            let validated = validate_prepared_revisions_observed(
+                &self.objects_dir,
+                keys,
+                &self.core_id,
+                (Some(current), next),
+                prepared,
+                cached,
+                self.object_lease_diagnostics.as_deref(),
+                |binding, file| {
+                    let acquisition_failed = candidate.candidate_mut().is_some_and(|active| {
+                        active
+                            .add_validated_file(binding, file, factory.as_ref())
+                            .is_err()
+                    });
+                    if acquisition_failed {
+                        candidate.defer_now();
+                    }
+                },
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
+            let Some(active) = candidate.candidate() else {
+                self.record_lease_optimization_miss(
+                    OptimizationMiss::TransientAcquisition,
+                    fingerprint,
+                    requested_count,
+                    acquisition_budget_epoch,
+                );
+                return Ok((validated, None));
+            };
+            let fence = active.fence();
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CommitStage::LeaseFence);
+            }
+            if fence == FenceOutcome::Clean {
+                if !self.lease_publication_is_open()
+                    || self.lease_publication_generation() != candidate_publication_generation
+                {
+                    candidate.defer_now();
+                    return Ok((validated, None));
+                }
+                let active_candidate = candidate
+                    .take()
+                    .expect("clean fence retains the active lease candidate");
+                drop(candidate);
+                return match active_candidate.finish(fence) {
+                    Ok(lease) => {
+                        self.lease_attempt_policy
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .record_success();
+                        Ok((validated, Some(lease)))
+                    }
+                    Err(candidate) => {
+                        deferred_teardown.retain_candidate(*candidate);
+                        self.record_lease_optimization_miss(
+                            OptimizationMiss::TransientAcquisition,
+                            fingerprint,
+                            requested_count,
+                            acquisition_budget_epoch,
+                        );
+                        Ok((validated, None))
+                    }
+                };
+            }
+            candidate.defer_now();
+            drop(candidate);
+            if fence != FenceOutcome::DirtyAll || attempt == 1 {
+                self.record_lease_optimization_miss(
+                    OptimizationMiss::TransientAcquisition,
+                    fingerprint,
+                    requested_count,
+                    acquisition_budget_epoch,
+                );
+                return Ok((validated, None));
+            }
+        }
+        unreachable!("candidate scan retries at most once")
     }
 
     pub fn head_path(&self) -> &Path {
@@ -1084,6 +1856,72 @@ impl CoreCommitCoordinator {
 
     pub fn lock_path(&self) -> &Path {
         &self.lock_path
+    }
+
+    pub fn core_root(&self) -> &Path {
+        &self.core_root
+    }
+
+    fn admit_lease_publication_operation(
+        &self,
+    ) -> Result<LeasePublicationOperation<'_>, CommitError> {
+        self.lease_publication.admit()
+    }
+
+    /// Marks the current object-validation lease terminally unknown and wakes any
+    /// cancellation-aware monitor fence without waiting for backend destruction.
+    pub fn ensure_object_lease_release_not_reentrant(&self) -> Result<(), CommitError> {
+        self.lease_publication.ensure_release_not_reentrant()
+    }
+
+    pub fn begin_object_lease_release(&self) -> Result<(), CommitError> {
+        self.lease_publication.begin_release()?;
+        self.cache.begin_object_lease_release();
+        Ok(())
+    }
+
+    /// Clears and completion-drains the current object-validation lease.
+    ///
+    /// The cache mutex is released before monitor destruction, native completion,
+    /// worker join, anchor destruction, or process-budget permit return.
+    pub fn finish_object_lease_release(&self) -> Result<(), CommitError> {
+        self.lease_publication.wait_for_drain()?;
+        self.cache.drop_object_lease();
+        Ok(())
+    }
+
+    /// Idempotently cancels, drains, and clears the current object-validation lease.
+    pub fn release_object_lease(&self) -> Result<(), CommitError> {
+        self.begin_object_lease_release()?;
+        let result = self.finish_object_lease_release();
+        self.resume_object_lease_publication();
+        result
+    }
+
+    /// Reopens lease construction after a non-terminal, completion-confirmed release.
+    pub fn resume_object_lease_publication(&self) {
+        self.lease_publication.resume();
+    }
+
+    /// Clears all process-local authenticated cache state after lease cancellation.
+    ///
+    /// Disk pointers and authenticated catalog bytes remain authoritative; a later
+    /// operation on an open coordinator rebuilds the cache from disk.
+    pub fn clear_cached_state(&self) {
+        self.cache.clear();
+    }
+
+    fn lease_publication_is_open(&self) -> bool {
+        self.lease_publication.is_open()
+    }
+
+    fn lease_publication_generation(&self) -> u64 {
+        self.lease_publication.generation()
+    }
+
+    fn object_lease_can_publish(&self, lease: &ObjectValidationLease) -> bool {
+        self.lease_publication
+            .can_publish(lease.publication_generation())
     }
 
     pub fn prepare_object_revision<R: Read>(
@@ -1385,17 +2223,22 @@ impl CoreCommitCoordinator {
         keyring: &FrkKeyring<'_>,
         probe: &mut CatalogLoadProbe<'_>,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
             &self.root_dir,
             &self.fs_dir,
             || probe.stage(CatalogLoadStage::KernelLock),
         )?;
-        self.load_committed_recovering_with_keyring_and_hook_inner(
+        let result = self.load_committed_recovering_with_keyring_and_hook_inner(
             &commit_lock,
             keyring,
             &mut |_| Ok(()),
+            &mut deferred_teardown,
             Some(probe),
-        )
+        );
+        drop(commit_lock);
+        drop(deferred_teardown);
+        result
     }
 
     /// Reads the version declared by the current HEAD so the session can select
@@ -1445,6 +2288,7 @@ impl CoreCommitCoordinator {
     where
         R: FnOnce(),
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
         self.validate_pinned_layout()?;
         let pointers = self.load_pointer_set(
             #[cfg(test)]
@@ -1474,9 +2318,17 @@ impl CoreCommitCoordinator {
             probe.as_deref_mut(),
         )? != pointers.head
         {
+            let mut deferred_teardown = DeferredLeaseTeardown::default();
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             self.validate_pinned_layout()?;
-            return self.load_committed_recovering_with_keyring(&commit_lock, keyring);
+            let result = self.load_committed_recovering_with_keyring(
+                &commit_lock,
+                keyring,
+                &mut deferred_teardown,
+            );
+            drop(commit_lock);
+            drop(deferred_teardown);
+            return result;
         }
 
         if let (Some(head), Some(snapshot)) = (pointers.head.clone(), cached) {
@@ -1516,11 +2368,22 @@ impl CoreCommitCoordinator {
                 | CommitError::AuthoritativeHeadMissingAfterCutover
                 | CommitError::AuthoritativeHeadViolatesCutoverReceipt)
         ) {
+            if !matches!(&committed, Ok(Some(_))) {
+                self.cache.clear();
+            }
             return committed;
         }
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_recovering_with_keyring(&commit_lock, keyring)
+        let result = self.load_committed_recovering_with_keyring(
+            &commit_lock,
+            keyring,
+            &mut deferred_teardown,
+        );
+        drop(commit_lock);
+        drop(deferred_teardown);
+        result
     }
 
     fn cache_lookup_key(
@@ -1648,9 +2511,18 @@ impl CoreCommitCoordinator {
             return committed;
         }
 
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
-        self.load_committed_recovering_with_hook(&commit_lock, keys, hook)
+        let result = self.load_committed_recovering_with_hook(
+            &commit_lock,
+            keys,
+            hook,
+            &mut deferred_teardown,
+        );
+        drop(commit_lock);
+        drop(deferred_teardown);
+        result
     }
 
     #[cfg(test)]
@@ -1713,19 +2585,26 @@ impl CoreCommitCoordinator {
         &self,
         commit_lock: &CoreCommitLock,
         keys: &FrkSubkeys,
+        deferred_teardown: &mut DeferredLeaseTeardown,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
-        self.load_committed_recovering_with_keyring(commit_lock, &FrkKeyring::single(keys))
+        self.load_committed_recovering_with_keyring(
+            commit_lock,
+            &FrkKeyring::single(keys),
+            deferred_teardown,
+        )
     }
 
     fn load_committed_recovering_with_keyring(
         &self,
         commit_lock: &CoreCommitLock,
         keyring: &FrkKeyring<'_>,
+        deferred_teardown: &mut DeferredLeaseTeardown,
     ) -> Result<Option<CommittedCatalog>, CommitError> {
         self.load_committed_recovering_with_keyring_and_hook_inner(
             commit_lock,
             keyring,
             &mut |_| Ok(()),
+            deferred_teardown,
             #[cfg(test)]
             None,
         )
@@ -1736,11 +2615,13 @@ impl CoreCommitCoordinator {
         commit_lock: &CoreCommitLock,
         keyring: &FrkKeyring<'_>,
         hook: &mut H,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CatalogLoadProbe<'_>>,
     ) -> Result<Option<CommittedCatalog>, CommitError>
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        deferred_teardown.retain_current_cache_lease_owner(&self.cache);
         self.validate_pinned_layout()?;
         let pointers = self.load_pointer_set(
             #[cfg(test)]
@@ -1752,7 +2633,10 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe.as_deref_mut(),
         );
-        let cached = lookup_key.as_ref().and_then(|key| self.cache.get(key));
+        let cached = lookup_key.as_ref().and_then(|key| {
+            self.cache
+                .get_deferred(key, deferred_teardown.cache_snapshots())
+        });
         #[cfg(test)]
         if lookup_key.is_some() {
             if let Some(probe) = probe.as_deref_mut() {
@@ -1765,7 +2649,11 @@ impl CoreCommitCoordinator {
                 #[cfg(test)]
                 probe.as_deref_mut(),
             ) {
-                self.cache.clear();
+                if let Some(lease) = snapshot.object_lease.as_ref() {
+                    lease.publish_unknown();
+                }
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return Err(error);
             }
             return Ok(Some(CommittedCatalog {
@@ -1811,7 +2699,8 @@ impl CoreCommitCoordinator {
             ) {
                 Ok(pointers) => pointers,
                 Err(error) => {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                     return Err(error);
                 }
             };
@@ -1824,7 +2713,8 @@ impl CoreCommitCoordinator {
                 probe.as_deref_mut(),
             );
             let Ok(Some(verified_catalog)) = verified.as_ref() else {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return verified;
             };
             let replacement_key = self.cache_lookup_key(
@@ -1834,27 +2724,33 @@ impl CoreCommitCoordinator {
                 probe,
             );
             if let Some(key) = replacement_key.as_ref() {
-                self.cache
-                    .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+                self.cache.replace_deferred(
+                    Arc::new(AuthenticatedCommitSnapshot::new(
                         key,
                         Arc::clone(&verified_catalog.catalog),
                         None,
-                    )));
+                    )),
+                    deferred_teardown.cache_snapshots(),
+                );
             } else {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
             }
             return verified;
         }
         if let (Some(key), Ok(Some(committed_catalog))) = (lookup_key.as_ref(), committed.as_ref())
         {
-            self.cache
-                .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+            self.cache.replace_deferred(
+                Arc::new(AuthenticatedCommitSnapshot::new(
                     key,
                     Arc::clone(&committed_catalog.catalog),
                     None,
-                )));
+                )),
+                deferred_teardown.cache_snapshots(),
+            );
         } else if recovery_required || matches!(&committed, Ok(None)) {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
         }
         committed
     }
@@ -1865,6 +2761,7 @@ impl CoreCommitCoordinator {
         commit_lock: &CoreCommitLock,
         keys: &FrkSubkeys,
         hook: &mut H,
+        deferred_teardown: &mut DeferredLeaseTeardown,
     ) -> Result<Option<CommittedCatalog>, CommitError>
     where
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
@@ -1873,6 +2770,7 @@ impl CoreCommitCoordinator {
             commit_lock,
             &FrkKeyring::single(keys),
             hook,
+            deferred_teardown,
             #[cfg(test)]
             None,
         )
@@ -2199,12 +3097,43 @@ impl CoreCommitCoordinator {
         expected_generation: u64,
         invalidate: I,
         hook: &mut H,
+        #[cfg(test)] probe: Option<&mut RotationProbe<'_>>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let mut lease_failure = LeaseFailureGuard::new(&self.cache);
+        let result = self.rotate_frk_with_hook_inner(
+            keyring,
+            pending_keys,
+            expected_generation,
+            invalidate,
+            hook,
+            #[cfg(test)]
+            probe,
+        );
+        if result.is_ok() {
+            lease_failure.disarm();
+        }
+        result
+    }
+
+    fn rotate_frk_with_hook_inner<I, H>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        pending_keys: &FrkSubkeys,
+        expected_generation: u64,
+        invalidate: I,
+        hook: &mut H,
         #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
     ) -> Result<CommitOutcome, CommitError>
     where
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let (event, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             #[cfg(test)]
             let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
@@ -2242,12 +3171,17 @@ impl CoreCommitCoordinator {
                     &commit_lock,
                     keyring,
                     &mut |_| Ok(()),
+                    &mut deferred_teardown,
                     Some(&mut load_probe),
                 )?
             };
             #[cfg(not(test))]
             let committed = self
-                .load_committed_recovering_with_keyring(&commit_lock, keyring)?
+                .load_committed_recovering_with_keyring(
+                    &commit_lock,
+                    keyring,
+                    &mut deferred_teardown,
+                )?
                 .ok_or(CommitError::CoreNotInitialized)?;
             #[cfg(test)]
             let committed = committed.ok_or(CommitError::CoreNotInitialized)?;
@@ -2256,7 +3190,8 @@ impl CoreCommitCoordinator {
                 probe.as_deref_mut(),
             )?;
             if initial_pointers.head.as_ref() != Some(committed.head()) {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return Err(CommitError::AuthoritativeHeadViolatesCutoverReceipt);
             }
             #[cfg(test)]
@@ -2295,14 +3230,24 @@ impl CoreCommitCoordinator {
             let committed = match reauthenticated {
                 Ok(Some(committed)) => committed,
                 Ok(None) => {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                     return Err(CommitError::CoreNotInitialized);
                 }
                 Err(error) => {
-                    self.cache.clear();
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
                     return Err(error);
                 }
             };
+            let prior_snapshot = self
+                .cache
+                .current_deferred(deferred_teardown.cache_snapshots())
+                .filter(|snapshot| {
+                    snapshot.pointers == initial_pointers
+                        && snapshot.catalog().as_ref() == committed.catalog.as_ref()
+                });
+            deferred_teardown.retain_snapshot_lease_owner(prior_snapshot.as_ref());
             let actual_generation = committed.head.generation();
             if actual_generation != expected_generation {
                 return Err(RotationError::GenerationMismatch {
@@ -2377,10 +3322,14 @@ impl CoreCommitCoordinator {
                 complete: initial_pointers.complete,
             };
             self.publish_rotation_cache_authority(
-                keyring,
-                pending_keys,
+                RotationCacheKeyMaterial {
+                    keyring,
+                    pending: pending_keys,
+                },
                 &expected_final_pointers,
                 Arc::clone(&next_catalog),
+                prior_snapshot,
+                &mut deferred_teardown,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             );
@@ -2398,14 +3347,21 @@ impl CoreCommitCoordinator {
                 catalog_plaintext_bytes,
             )
         };
+        drop(deferred_teardown);
 
         let before_invalidation = hook(CommitFailurePoint::BeforeInvalidation);
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(RotationStage::FailureHook);
         }
-        before_invalidation?;
+        if let Err(error) = before_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         let invalidation_delivered = invalidate(event.clone()).is_ok();
+        if !invalidation_delivered {
+            self.cache.drop_object_lease();
+        }
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(RotationStage::InvalidationCallback);
@@ -2415,7 +3371,10 @@ impl CoreCommitCoordinator {
         if let Some(probe) = probe {
             probe.stage(RotationStage::FailureHook);
         }
-        after_invalidation?;
+        if let Err(error) = after_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
@@ -2450,10 +3409,11 @@ impl CoreCommitCoordinator {
 
     fn publish_rotation_cache_authority(
         &self,
-        keyring: &FrkKeyring<'_>,
-        pending_keys: &FrkSubkeys,
+        key_material: RotationCacheKeyMaterial<'_, '_>,
         expected_pointers: &PointerSet,
         catalog: Arc<CatalogGeneration>,
+        prior_snapshot: Option<Arc<AuthenticatedCommitSnapshot>>,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut RotationProbe<'_>>,
     ) {
         let final_pointers = match self.load_rotation_pointer_set(
@@ -2462,27 +3422,90 @@ impl CoreCommitCoordinator {
         ) {
             Ok(pointers) => pointers,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
         if &final_pointers != expected_pointers {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
+            return;
+        }
+        if self
+            .reauthenticate_cached_catalog_bytes(
+                &final_pointers,
+                #[cfg(test)]
+                None,
+            )
+            .is_err()
+        {
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         #[cfg(test)]
         if let Some(probe) = probe {
             probe.stage(RotationStage::KeyDerivation);
         }
-        let Some(key) = self.rotation_cache_lookup_key(&final_pointers, keyring, pending_keys)
-        else {
-            self.cache.clear();
+        let Some(key) = self.rotation_cache_lookup_key(
+            &final_pointers,
+            key_material.keyring,
+            key_material.pending,
+        ) else {
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
-        self.cache
-            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
-                &key, catalog, None,
-            )));
+        let next_bindings = match catalog_object_bindings(&catalog) {
+            Ok(bindings) => bindings,
+            Err(_) => {
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
+                return;
+            }
+        };
+        let objects = match ValidatedObjectState::from_catalog_bindings(next_bindings.clone()) {
+            Ok(objects) => Arc::new(objects),
+            Err(_) => {
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
+                return;
+            }
+        };
+        let mut object_lease = prior_snapshot.and_then(|snapshot| {
+            let lease = snapshot.object_lease.as_ref()?;
+            let old_bindings = catalog_object_bindings(snapshot.catalog()).ok()?;
+            let directory_identity = match self.object_directory_identity() {
+                Ok(identity) => identity,
+                Err(_) => {
+                    lease.publish_unknown();
+                    return None;
+                }
+            };
+            let carried =
+                lease.try_rebind_after_rotation(&old_bindings, next_bindings, directory_identity);
+            if carried.is_none() {
+                lease.publish_unknown();
+            }
+            carried
+        });
+        if object_lease
+            .as_ref()
+            .is_some_and(|lease| !self.object_lease_can_publish(lease))
+        {
+            if let Some(lease) = object_lease.take() {
+                lease.begin_release();
+                deferred_teardown.retain_lease(&lease);
+            }
+        }
+        self.cache.replace_deferred(
+            Arc::new(
+                AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
+                    .with_object_lease(object_lease),
+            ),
+            deferred_teardown.cache_snapshots(),
+        );
     }
 
     fn rotation_cache_lookup_key(
@@ -2545,10 +3568,12 @@ impl CoreCommitCoordinator {
         B: FnOnce(u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
         if self
-            .load_committed_recovering(&commit_lock, keys)?
+            .load_committed_recovering(&commit_lock, keys, &mut deferred_teardown)?
             .is_some()
             || self.load_validation_snapshot(keys)?.is_some()
         {
@@ -2618,10 +3643,12 @@ impl CoreCommitCoordinator {
         B: FnOnce(&CatalogGeneration, u64) -> Result<CatalogGeneration, CatalogError>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
         if self
-            .load_committed_recovering(&commit_lock, keys)?
+            .load_committed_recovering(&commit_lock, keys, &mut deferred_teardown)?
             .is_some()
         {
             return Err(CommitError::CutoverAlreadyCommitted);
@@ -2849,6 +3876,42 @@ impl CoreCommitCoordinator {
         mode: CommitMode,
         build_next: B,
         callbacks: CommitCallbacks<'_, I, H>,
+        #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
+    ) -> Result<CommitOutcome, CommitError>
+    where
+        B: FnOnce(Option<&CatalogGeneration>, u64) -> Result<CatalogGeneration, CatalogError>,
+        I: FnOnce(InvalidationEvent) -> Result<(), String>,
+        H: FnMut(CommitFailurePoint) -> io::Result<()>,
+    {
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let mut lease_failure = LeaseFailureGuard::new(&self.cache);
+        let result = self.commit_internal_with_keyring_and_hook_inner(
+            keyring,
+            active_keys,
+            prepared_revisions,
+            preconditions,
+            mode,
+            build_next,
+            callbacks,
+            #[cfg(test)]
+            probe,
+        );
+        if result.is_ok() {
+            lease_failure.disarm();
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_internal_with_keyring_and_hook_inner<B, I, H>(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        prepared_revisions: &[PreparedObjectRevision],
+        preconditions: &[CatalogPrecondition],
+        mode: CommitMode,
+        build_next: B,
+        callbacks: CommitCallbacks<'_, I, H>,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) -> Result<CommitOutcome, CommitError>
     where
@@ -2856,6 +3919,7 @@ impl CoreCommitCoordinator {
         I: FnOnce(InvalidationEvent) -> Result<(), String>,
         H: FnMut(CommitFailurePoint) -> io::Result<()>,
     {
+        let mut deferred_teardown = DeferredLeaseTeardown::default();
         let (event, recovery_pending, lock_hold_duration, bytes_written, catalog_plaintext_bytes) = {
             #[cfg(test)]
             let commit_lock = CoreCommitLock::acquire_in_with_post_kernel_lock_hook(
@@ -2894,6 +3958,7 @@ impl CoreCommitCoordinator {
                         &commit_lock,
                         keyring,
                         &mut |_| Ok(()),
+                        &mut deferred_teardown,
                         Some(&mut load_probe),
                     );
                     let counts = (
@@ -2910,13 +3975,18 @@ impl CoreCommitCoordinator {
                 result?
             };
             #[cfg(not(test))]
-            let authoritative =
-                self.load_committed_recovering_with_keyring(&commit_lock, keyring)?;
-            let initial_snapshot = self.cache.current();
+            let authoritative = self.load_committed_recovering_with_keyring(
+                &commit_lock,
+                keyring,
+                &mut deferred_teardown,
+            )?;
+            let initial_snapshot = self
+                .cache
+                .current_deferred(deferred_teardown.cache_snapshots());
             let initial_pointers = initial_snapshot
                 .as_ref()
                 .map_or_else(PointerSet::default, |snapshot| snapshot.pointers.clone());
-            let cached_objects = match (mode, authoritative.as_ref(), initial_snapshot.as_ref()) {
+            let matched_snapshot = match (mode, authoritative.as_ref(), initial_snapshot.as_ref()) {
                 (CommitMode::Normal, Some(authoritative), Some(snapshot))
                     if snapshot.pointers.head.as_ref() == Some(&authoritative.head)
                         && Arc::ptr_eq(snapshot.catalog(), &authoritative.catalog) =>
@@ -2928,12 +3998,19 @@ impl CoreCommitCoordinator {
                         active_keys,
                     )
                     .ok()
-                    .and_then(|key| self.cache.get(&key))
+                    .and_then(|key| {
+                        self.cache
+                            .get_deferred(&key, deferred_teardown.cache_snapshots())
+                    })
                     .filter(|matched| Arc::ptr_eq(matched, snapshot))
-                    .and_then(|matched| matched.objects.clone())
                 }
                 _ => None,
             };
+            deferred_teardown.retain_snapshot_lease_owner(initial_snapshot.as_ref());
+            deferred_teardown.retain_snapshot_lease_owner(matched_snapshot.as_ref());
+            let cached_objects = matched_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.objects.clone());
             let current = match mode {
                 CommitMode::FirstMutation { .. } => {
                     if authoritative.is_some() {
@@ -2980,16 +4057,70 @@ impl CoreCommitCoordinator {
             }
             let next_catalog = mode.apply_cutover_marker(&current, next_catalog)?;
             validate_precondition_coverage(current.catalog(), &next_catalog, preconditions)?;
-            let validated_objects = Arc::new(validate_prepared_revisions(
-                &self.objects_dir,
-                active_keys,
-                &self.core_id,
-                (Some(current.catalog()), &next_catalog),
-                prepared_revisions,
-                cached_objects.as_deref(),
-                #[cfg(test)]
-                probe.as_deref_mut(),
-            )?);
+            let expected_bindings = catalog_object_bindings(&next_catalog)?;
+            let had_cached_lease = matched_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.object_lease.is_some());
+            let carried = if prepared_revisions.is_empty() {
+                matched_snapshot.as_ref().and_then(|snapshot| {
+                    let lease = snapshot.object_lease.as_ref()?;
+                    let Some(objects) = snapshot.objects.as_ref() else {
+                        lease.publish_unknown();
+                        return None;
+                    };
+                    if !lease.matches_object_tuple(&expected_bindings) {
+                        lease.publish_dirty();
+                        return None;
+                    }
+                    let directory_identity = match self.object_directory_identity() {
+                        Ok(identity) => identity,
+                        Err(_) => {
+                            lease.publish_unknown();
+                            return None;
+                        }
+                    };
+                    #[cfg(test)]
+                    if let Some(probe) = probe.as_deref_mut() {
+                        probe.stage(CommitStage::LeaseFence);
+                    }
+                    lease
+                        .try_carry_forward(&expected_bindings, directory_identity)
+                        .map(|lease| (Arc::clone(objects), lease))
+                })
+            } else {
+                if let Some(lease) = matched_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.object_lease.as_ref())
+                {
+                    lease.publish_dirty();
+                }
+                None
+            };
+            let (validated_objects, candidate_lease) = if let Some((objects, lease)) = carried {
+                (objects, Some(lease))
+            } else {
+                if had_cached_lease {
+                    self.cache
+                        .clear_deferred(deferred_teardown.cache_snapshots());
+                }
+                drop(matched_snapshot);
+                drop(initial_snapshot);
+                let (objects, candidate) = self.validate_prepared_revisions_with_candidate(
+                    active_keys,
+                    current.catalog(),
+                    &next_catalog,
+                    prepared_revisions,
+                    cached_objects.as_deref(),
+                    &initial_pointers,
+                    &mut deferred_teardown,
+                    #[cfg(test)]
+                    probe.as_deref_mut(),
+                )?;
+                (Arc::new(objects), candidate)
+            };
+            if let Some(lease) = candidate_lease.as_ref() {
+                deferred_teardown.retain_lease(lease);
+            }
             let next_catalog = Arc::new(next_catalog);
             #[cfg(test)]
             if let Some(probe) = probe.as_deref_mut() {
@@ -3032,6 +4163,7 @@ impl CoreCommitCoordinator {
                                 &initial_pointers,
                                 keyring,
                                 mode,
+                                &mut deferred_teardown,
                                 #[cfg(test)]
                                 probe.as_deref_mut(),
                             );
@@ -3059,7 +4191,9 @@ impl CoreCommitCoordinator {
                 &expected_final_pointers,
                 Arc::clone(&next_catalog),
                 validated_objects,
+                candidate_lease,
                 recovery_pending,
+                &mut deferred_teardown,
                 #[cfg(test)]
                 probe.as_deref_mut(),
             );
@@ -3078,25 +4212,35 @@ impl CoreCommitCoordinator {
                 catalog_plaintext_bytes,
             )
         };
+        drop(deferred_teardown);
 
         let before_invalidation = (callbacks.hook)(CommitFailurePoint::BeforeInvalidation);
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(CommitStage::FailureHook);
         }
-        before_invalidation?;
+        if let Err(error) = before_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         let invalidation_result = (callbacks.invalidate)(event.clone());
         #[cfg(test)]
         if let Some(probe) = probe.as_deref_mut() {
             probe.stage(CommitStage::InvalidationCallback);
         }
         let invalidation_delivered = invalidation_result.is_ok();
+        if !invalidation_delivered {
+            self.cache.drop_object_lease();
+        }
         let after_invalidation = (callbacks.hook)(CommitFailurePoint::AfterInvalidation);
         #[cfg(test)]
         if let Some(probe) = probe {
             probe.stage(CommitStage::FailureHook);
         }
-        after_invalidation?;
+        if let Err(error) = after_invalidation {
+            self.cache.drop_object_lease();
+            return Err(error.into());
+        }
         Ok(CommitOutcome {
             event,
             invalidation_delivered,
@@ -3107,17 +4251,21 @@ impl CoreCommitCoordinator {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn publish_commit_cache_authority(
         &self,
         keyring: &FrkKeyring<'_>,
         expected_pointers: &PointerSet,
         catalog: Arc<CatalogGeneration>,
         objects: Arc<ValidatedObjectState>,
+        object_lease: Option<Arc<ObjectValidationLease>>,
         recovery_pending: bool,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) {
         if recovery_pending {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         let final_pointers = match self.load_commit_pointer_set(
@@ -3126,12 +4274,14 @@ impl CoreCommitCoordinator {
         ) {
             Ok(pointers) => pointers,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
         if &final_pointers != expected_pointers {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         let Some(key) = self.commit_cache_lookup_key(
@@ -3140,15 +4290,39 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe,
         ) else {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
-        self.cache
-            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
-                &key,
-                catalog,
-                Some(objects),
-            )));
+        if self
+            .reauthenticate_cached_catalog_bytes(
+                &final_pointers,
+                #[cfg(test)]
+                None,
+            )
+            .is_err()
+        {
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
+            return;
+        }
+        let mut object_lease = object_lease;
+        if object_lease
+            .as_ref()
+            .is_some_and(|lease| !self.object_lease_can_publish(lease))
+        {
+            if let Some(lease) = object_lease.take() {
+                lease.begin_release();
+                deferred_teardown.retain_lease(&lease);
+            }
+        }
+        self.cache.replace_deferred(
+            Arc::new(
+                AuthenticatedCommitSnapshot::new(&key, catalog, Some(objects))
+                    .with_object_lease(object_lease),
+            ),
+            deferred_teardown.cache_snapshots(),
+        );
     }
 
     fn reconcile_cache_after_commit_publication_error(
@@ -3156,6 +4330,7 @@ impl CoreCommitCoordinator {
         initial_pointers: &PointerSet,
         keyring: &FrkKeyring<'_>,
         mode: CommitMode,
+        deferred_teardown: &mut DeferredLeaseTeardown,
         #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
     ) {
         let final_pointers = match self.load_commit_pointer_set(
@@ -3164,7 +4339,8 @@ impl CoreCommitCoordinator {
         ) {
             Ok(pointers) => pointers,
             Err(_) => {
-                self.cache.clear();
+                self.cache
+                    .clear_deferred(deferred_teardown.cache_snapshots());
                 return;
             }
         };
@@ -3174,7 +4350,8 @@ impl CoreCommitCoordinator {
         if matches!(mode, CommitMode::FirstMutation { .. })
             || self.validate_pinned_layout().is_err()
         {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         }
         let authenticated = self.load_committed_once_with_keyring_heads_inner(
@@ -3186,7 +4363,8 @@ impl CoreCommitCoordinator {
             None,
         );
         let Ok(Some(committed)) = authenticated else {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
         let Some(key) = self.commit_cache_lookup_key(
@@ -3195,15 +4373,18 @@ impl CoreCommitCoordinator {
             #[cfg(test)]
             probe,
         ) else {
-            self.cache.clear();
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
             return;
         };
-        self.cache
-            .replace(Arc::new(AuthenticatedCommitSnapshot::new(
+        self.cache.replace_deferred(
+            Arc::new(AuthenticatedCommitSnapshot::new(
                 &key,
                 Arc::clone(&committed.catalog),
                 None,
-            )));
+            )),
+            deferred_teardown.cache_snapshots(),
+        );
     }
 
     fn commit_cache_lookup_key(
@@ -3790,8 +4971,52 @@ fn validate_prepared_revisions(
     catalogs: (Option<&CatalogGeneration>, &CatalogGeneration),
     prepared: &[PreparedObjectRevision],
     cached: Option<&ValidatedObjectState>,
-    #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+    #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
 ) -> Result<ValidatedObjectState, CommitError> {
+    validate_prepared_revisions_observed(
+        objects_dir,
+        keys,
+        core_id,
+        catalogs,
+        prepared,
+        cached,
+        None,
+        |_, _| {},
+        #[cfg(test)]
+        probe,
+    )
+}
+
+fn catalog_object_bindings(
+    catalog: &CatalogGeneration,
+) -> Result<Vec<ValidatedObjectBinding>, CommitError> {
+    catalog
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            entry.object_payload().map(|object| {
+                ValidatedObjectBinding::from_catalog_object(entry.stable_id(), object)
+                    .map_err(CommitError::from)
+            })
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_prepared_revisions_observed<F>(
+    objects_dir: &Dir,
+    keys: &FrkSubkeys,
+    core_id: &str,
+    catalogs: (Option<&CatalogGeneration>, &CatalogGeneration),
+    prepared: &[PreparedObjectRevision],
+    cached: Option<&ValidatedObjectState>,
+    diagnostics: Option<&ObjectLeaseDiagnosticObserver>,
+    mut observe_validated: F,
+    #[cfg(test)] mut probe: Option<&mut CommitProbe<'_>>,
+) -> Result<ValidatedObjectState, CommitError>
+where
+    F: FnMut(ValidatedObjectBinding, File),
+{
     let (current, next) = catalogs;
     let mut by_physical_name = HashMap::new();
     for value in prepared {
@@ -3826,11 +5051,22 @@ fn validate_prepared_revisions(
             .get(entry.stable_id().as_str())
             .is_some_and(|current| same_object_body(current, object));
         if unchanged {
-            validate_existing_object_file(objects_dir, object.physical_name())?;
+            let file = validate_existing_object_file(
+                objects_dir,
+                object.physical_name(),
+                diagnostics,
+                #[cfg(test)]
+                probe.as_deref_mut(),
+            )?;
             if cached
                 .and_then(|state| state.get(entry.stable_id()))
                 .is_some_and(|binding| binding == &candidate)
             {
+                #[cfg(test)]
+                if let Some(probe) = probe.as_deref_mut() {
+                    probe.stage(CommitStage::LeaseObjectValidated);
+                }
+                observe_validated(candidate.clone(), file);
                 validated.push(candidate);
                 continue;
             }
@@ -3842,6 +5078,11 @@ fn validate_prepared_revisions(
                 #[cfg(test)]
                 probe.as_deref_mut(),
             )?;
+            #[cfg(test)]
+            if let Some(probe) = probe.as_deref_mut() {
+                probe.stage(CommitStage::LeaseObjectValidated);
+            }
+            observe_validated(candidate.clone(), file);
             validated.push(candidate);
             continue;
         }
@@ -3874,8 +5115,19 @@ fn validate_prepared_revisions(
                 physical_name: object.physical_name().as_str().to_owned(),
             });
         }
-        validate_prepared_file(objects_dir, token)?;
+        let file = validate_prepared_file(
+            objects_dir,
+            token,
+            diagnostics,
+            #[cfg(test)]
+            probe.as_deref_mut(),
+        )?;
         consumed.insert(token.physical_name.as_str());
+        #[cfg(test)]
+        if let Some(probe) = probe.as_deref_mut() {
+            probe.stage(CommitStage::LeaseObjectValidated);
+        }
+        observe_validated(candidate.clone(), file);
         validated.push(candidate);
     }
 
@@ -3935,20 +5187,38 @@ fn object_key_binding(object_key: &SecretBytes) -> [u8; 32] {
 fn validate_existing_object_file(
     objects_dir: &Dir,
     physical_name: &ObjectPhysicalName,
-) -> Result<(), CommitError> {
+    diagnostics: Option<&ObjectLeaseDiagnosticObserver>,
+    #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
+) -> Result<File, CommitError> {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.record_safe_open();
+    }
+    #[cfg(test)]
+    if let Some(probe) = probe {
+        probe.object_safe_open();
+    }
     let file = open_regular_file_in(objects_dir, OsStr::new(physical_name.as_str()))?;
     if file.metadata()?.len() == 0 {
         return Err(CommitError::ReferencedObjectMissing {
             physical_name: physical_name.as_str().to_owned(),
         });
     }
-    Ok(())
+    Ok(file)
 }
 
 fn validate_prepared_file(
     objects_dir: &Dir,
     prepared: &PreparedObjectRevision,
-) -> Result<(), CommitError> {
+    diagnostics: Option<&ObjectLeaseDiagnosticObserver>,
+    #[cfg(test)] probe: Option<&mut CommitProbe<'_>>,
+) -> Result<File, CommitError> {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.record_safe_open();
+    }
+    #[cfg(test)]
+    if let Some(probe) = probe {
+        probe.object_safe_open();
+    }
     let mut file = open_regular_file_in(objects_dir, OsStr::new(prepared.physical_name.as_str()))
         .map_err(|_| CommitError::PreparedRevisionCorrupt {
         physical_name: prepared.physical_name.as_str().to_owned(),
@@ -3973,7 +5243,7 @@ fn validate_prepared_file(
             physical_name: prepared.physical_name.as_str().to_owned(),
         });
     }
-    Ok(())
+    Ok(file)
 }
 
 fn find_entry<'a>(
@@ -4109,6 +5379,15 @@ fn reject_symlink_in(dir: &Dir, name: &OsStr) -> Result<(), CommitError> {
 }
 
 pub(crate) fn open_regular_file_in(dir: &Dir, name: &OsStr) -> io::Result<File> {
+    #[cfg(windows)]
+    let file = {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+        dir.open_with(name, &options)?.into_std()
+    };
+    #[cfg(not(windows))]
     let file = dir.open(name)?.into_std();
     validate_opened_regular_file(dir, name, &file).map_err(|error| match error {
         CommitError::Io(error) => error,
@@ -4289,6 +5568,14 @@ pub enum CommitConflict {
 pub enum CommitError {
     #[error("CoreFS commit lock is already held")]
     LockBusy,
+    #[error("CoreFS object-lease release is in progress")]
+    ObjectLeaseReleaseInProgress,
+    #[error(
+        "CoreFS object-lease release cannot wait on an operation active on the current thread"
+    )]
+    ObjectLeaseReleaseReentrant,
+    #[error("CoreFS object-lease operation count overflow")]
+    ObjectLeaseOperationOverflow,
     #[error("recorded CoreFS lock owner is still alive: pid={pid}, start={process_start_time}")]
     RecordedOwnerAlive { pid: u32, process_start_time: u64 },
     #[error("invalid CoreFS lock metadata")]
@@ -4719,3 +6006,7 @@ mod tests {
 mod cache_tests;
 #[cfg(test)]
 mod failure_tests;
+#[cfg(test)]
+mod object_lease_tests;
+#[cfg(feature = "session-test-seams")]
+pub mod session_test_support;

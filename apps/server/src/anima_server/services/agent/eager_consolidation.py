@@ -24,7 +24,8 @@ from anima_server.services.agent.transcript_archive import (
     messages_to_transcript_dicts,
     resolve_transcript_path,
 )
-from anima_server.services.data_crypto import df, get_active_dek
+from anima_server.services.data_crypto import df
+from anima_server.services.sessions import get_active_dek_async
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ async def on_thread_close(
     try:
         with session_scope(resolved_runtime_db_factory) as db:
             messages = list_transcript_messages(db, thread_id=thread_id)
-            dek = get_active_dek(user_id, "conversations")
+            dek = await get_active_dek_async(user_id, "conversations")
             episode_ids = _episode_ids(episode)
             sidecar_summary = _episode_summary(episode, user_id=user_id)
 

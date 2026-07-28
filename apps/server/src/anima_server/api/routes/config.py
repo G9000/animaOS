@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.db_mode import require_sqlite_mode
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.config import (
     get_provider_api_key,
     has_provider_api_keys,
@@ -348,7 +348,7 @@ async def get_config(
     but updates are persisted in the local runtime config so restart does
     not silently revert to defaults.
     """
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
     embedding_provider = resolve_embedding_provider()
     embedding_is_explicit = bool(settings.agent_embedding_provider.strip()) or has_embedding_piggyback_intent()
 
@@ -414,7 +414,7 @@ async def update_config(
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Update and persist the active agent config."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     if payload.provider not in VALID_PROVIDERS:
         raise HTTPException(

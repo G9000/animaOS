@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.unlock import require_unlocked_session_async
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import RuntimeImageAsset
 from anima_server.schemas.images import ImageRetentionUpdate
@@ -29,7 +29,7 @@ async def remove_message_image_attachment(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     result = remove_message_image_link(
         runtime_db,
         user_id=unlock_session.user_id,
@@ -54,7 +54,7 @@ async def get_image_asset(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> FileResponse:
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     asset = _owned_image_asset(runtime_db, unlock_session.user_id, image_asset_id)
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
@@ -70,7 +70,7 @@ async def forget_image_asset_endpoint(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     result = forget_image_asset(
         runtime_db,
         user_id=unlock_session.user_id,
@@ -94,7 +94,7 @@ async def update_image_retention(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     try:
         asset = set_image_retention_state(
             runtime_db,

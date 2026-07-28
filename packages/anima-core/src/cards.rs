@@ -45,6 +45,7 @@ impl MemoryKind {
     }
 
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // Public lossy parser preserves its fallback variant.
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "fact" => Self::Fact,
@@ -103,6 +104,7 @@ impl VersionRelation {
     }
 
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // Public lossy parser preserves its fallback variant.
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "updates" => Self::Updates,
@@ -140,6 +142,7 @@ impl Polarity {
     }
 
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // Public lossy parser preserves its fallback variant.
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "positive" => Self::Positive,
@@ -557,16 +560,18 @@ impl CardStore {
     }
 
     fn find_active_duplicate(&self, card: &MemoryCard) -> Option<CardId> {
-        self.version_index.get(&card.version_key()).and_then(|indices| {
-            indices.iter().find_map(|&idx| {
-                let existing = &self.cards[idx];
-                if existing.active && cards_share_active_state(existing, card) {
-                    Some(existing.id)
-                } else {
-                    None
-                }
+        self.version_index
+            .get(&card.version_key())
+            .and_then(|indices| {
+                indices.iter().find_map(|&idx| {
+                    let existing = &self.cards[idx];
+                    if existing.active && cards_share_active_state(existing, card) {
+                        Some(existing.id)
+                    } else {
+                        None
+                    }
+                })
             })
-        })
     }
 }
 
@@ -838,7 +843,12 @@ mod tests {
         let mut store = CardStore::new(SchemaRegistry::new());
 
         let first_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Sets));
-        let second_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Extends));
+        let second_id = store.put(make_card(
+            "user",
+            "likes",
+            "coffee",
+            VersionRelation::Extends,
+        ));
 
         assert_eq!(first_id, second_id);
         assert_eq!(store.len(), 1);
@@ -851,10 +861,18 @@ mod tests {
         let mut store = CardStore::new(SchemaRegistry::new());
 
         let first_id = store.put(make_card("user", "employer", "Meta", VersionRelation::Sets));
-        let second_id =
-            store.put(make_card("user", "employer", "Meta", VersionRelation::Updates));
-        let third_id =
-            store.put(make_card("user", "employer", "Meta", VersionRelation::Extends));
+        let second_id = store.put(make_card(
+            "user",
+            "employer",
+            "Meta",
+            VersionRelation::Updates,
+        ));
+        let third_id = store.put(make_card(
+            "user",
+            "employer",
+            "Meta",
+            VersionRelation::Extends,
+        ));
 
         assert_eq!(first_id, second_id);
         assert_eq!(second_id, third_id);
@@ -868,8 +886,18 @@ mod tests {
         let mut store = CardStore::new(SchemaRegistry::new());
 
         let first_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Sets));
-        let retraction_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Retracts));
-        let second_id = store.put(make_card("user", "likes", "coffee", VersionRelation::Extends));
+        let retraction_id = store.put(make_card(
+            "user",
+            "likes",
+            "coffee",
+            VersionRelation::Retracts,
+        ));
+        let second_id = store.put(make_card(
+            "user",
+            "likes",
+            "coffee",
+            VersionRelation::Extends,
+        ));
 
         assert_eq!(first_id, 0);
         assert_eq!(retraction_id, 1);

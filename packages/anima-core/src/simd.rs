@@ -235,7 +235,7 @@ mod tests {
         let b = [4.0, 5.0, 6.0];
         let dist = cosine_distance(&a, &b);
         assert!(
-            dist >= 0.0 && dist <= 2.0,
+            (0.0..=2.0).contains(&dist),
             "cosine distance out of range: {dist}"
         );
     }

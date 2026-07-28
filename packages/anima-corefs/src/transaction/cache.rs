@@ -14,6 +14,8 @@ use crate::head::HeadRecord;
 use crate::id::OpaqueId;
 use crate::rotation::{FrkKeyring, RotationError};
 
+use super::object_lease::ObjectValidationLease;
+
 const CACHE_ID_DOMAIN: &[u8] = b"anima-corefs-commit-cache-key-id-v1\0";
 const CATALOG_KEY_PURPOSE: &[u8] = b"catalog";
 const OBJECT_WRAP_KEY_PURPOSE: &[u8] = b"object-wrap";
@@ -284,6 +286,7 @@ pub(super) struct AuthenticatedCommitSnapshot {
     pub(super) key_ids: RequiredCacheKeyIds,
     catalog: Arc<CatalogGeneration>,
     pub(super) objects: Option<Arc<ValidatedObjectState>>,
+    pub(super) object_lease: Option<Arc<ObjectValidationLease>>,
 }
 
 impl AuthenticatedCommitSnapshot {
@@ -297,7 +300,16 @@ impl AuthenticatedCommitSnapshot {
             key_ids: key.key_ids.clone(),
             catalog,
             objects,
+            object_lease: None,
         }
+    }
+
+    pub(super) fn with_object_lease(
+        mut self,
+        object_lease: Option<Arc<ObjectValidationLease>>,
+    ) -> Self {
+        self.object_lease = object_lease;
+        self
     }
 
     pub(super) fn catalog(&self) -> &Arc<CatalogGeneration> {
@@ -306,6 +318,30 @@ impl AuthenticatedCommitSnapshot {
 
     fn matches(&self, key: &CacheLookupKey) -> bool {
         self.pointers == key.pointers && self.key_ids == key.key_ids
+    }
+
+    fn without_object_lease(&self) -> Self {
+        Self {
+            pointers: self.pointers.clone(),
+            key_ids: self.key_ids.clone(),
+            catalog: Arc::clone(&self.catalog),
+            objects: self.objects.clone(),
+            object_lease: None,
+        }
+    }
+
+    #[cfg(feature = "session-test-seams")]
+    pub(super) fn with_session_test_object_lease(
+        &self,
+        object_lease: Option<Arc<ObjectValidationLease>>,
+    ) -> Self {
+        Self {
+            pointers: self.pointers.clone(),
+            key_ids: self.key_ids.clone(),
+            catalog: Arc::clone(&self.catalog),
+            objects: self.objects.clone(),
+            object_lease,
+        }
     }
 }
 
@@ -322,6 +358,26 @@ pub(super) struct CommitCache {
 
 impl CommitCache {
     pub(super) fn current(&self) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (current, discarded) = self.current_with_discarded();
+        drop(discarded);
+        current
+    }
+
+    pub(super) fn current_deferred(
+        &self,
+        deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>,
+    ) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (current, discarded) = self.current_with_discarded();
+        deferred.extend(discarded);
+        current
+    }
+
+    fn current_with_discarded(
+        &self,
+    ) -> (
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+    ) {
         let mut discarded = None;
         let current = {
             let mut recovered_now = false;
@@ -345,11 +401,32 @@ impl CommitCache {
                 guard.as_ref().cloned()
             }
         };
-        drop(discarded);
-        current
+        (current, discarded)
     }
 
     pub(super) fn get(&self, key: &CacheLookupKey) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (hit, discarded) = self.get_with_discarded(key);
+        drop(discarded);
+        hit
+    }
+
+    pub(super) fn get_deferred(
+        &self,
+        key: &CacheLookupKey,
+        deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>,
+    ) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        let (hit, discarded) = self.get_with_discarded(key);
+        deferred.extend(discarded);
+        hit
+    }
+
+    fn get_with_discarded(
+        &self,
+        key: &CacheLookupKey,
+    ) -> (
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+        Option<Arc<AuthenticatedCommitSnapshot>>,
+    ) {
         let mut discarded = None;
         let hit = {
             let mut recovered_now = false;
@@ -376,12 +453,27 @@ impl CommitCache {
                     .cloned()
             }
         };
-        drop(discarded);
-        hit
+        (hit, discarded)
     }
 
     pub(super) fn replace(&self, value: Arc<AuthenticatedCommitSnapshot>) {
-        let discarded = {
+        let discarded = self.replace_with_discarded(value);
+        drop(discarded);
+    }
+
+    pub(super) fn replace_deferred(
+        &self,
+        value: Arc<AuthenticatedCommitSnapshot>,
+        deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>,
+    ) {
+        deferred.extend(self.replace_with_discarded(value));
+    }
+
+    fn replace_with_discarded(
+        &self,
+        value: Arc<AuthenticatedCommitSnapshot>,
+    ) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        {
             let mut guard = match self.inner.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -396,12 +488,20 @@ impl CommitCache {
                 }
             };
             guard.replace(value)
-        };
-        drop(discarded);
+        }
     }
 
     pub(super) fn clear(&self) {
-        let discarded = {
+        let discarded = self.clear_with_discarded();
+        drop(discarded);
+    }
+
+    pub(super) fn clear_deferred(&self, deferred: &mut Vec<Arc<AuthenticatedCommitSnapshot>>) {
+        deferred.extend(self.clear_with_discarded());
+    }
+
+    fn clear_with_discarded(&self) -> Option<Arc<AuthenticatedCommitSnapshot>> {
+        {
             let mut guard = match self.inner.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -416,8 +516,46 @@ impl CommitCache {
                 }
             };
             guard.take()
+        }
+    }
+
+    pub(super) fn drop_object_lease(&self) {
+        let discarded = match self.inner.lock() {
+            Ok(mut guard) => {
+                let replacement = guard
+                    .as_ref()
+                    .filter(|snapshot| snapshot.object_lease.is_some())
+                    .map(|snapshot| Arc::new(snapshot.without_object_lease()));
+                replacement.and_then(|replacement| guard.replace(replacement))
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                let _ = self.recovered_poison.compare_exchange(
+                    false,
+                    true,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                guard.take()
+            }
         };
+        if let Some(lease) = discarded
+            .as_ref()
+            .and_then(|snapshot| snapshot.object_lease.as_ref())
+        {
+            lease.begin_release();
+        }
         drop(discarded);
+    }
+
+    pub(super) fn begin_object_lease_release(&self) {
+        let current = self.current();
+        if let Some(lease) = current
+            .as_ref()
+            .and_then(|snapshot| snapshot.object_lease.as_ref())
+        {
+            lease.begin_release();
+        }
     }
 }
 

@@ -184,6 +184,7 @@ def managed_test_client(
 
     settings.data_dir = temp_root / "anima-data"
     dispose_cached_engines()
+    unlock_session_store.start()
     unlock_session_store.clear()
     clear_sqlcipher_key()
     reset_vector_store()
@@ -209,6 +210,7 @@ def managed_test_client(
             yield client
     finally:
         unlock_session_store.clear()
+        unlock_session_store.start()
         clear_sqlcipher_key()
         reset_vector_store()
         dispose_cached_engines()

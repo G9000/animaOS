@@ -14,7 +14,8 @@ mod python {
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::io::{self, Read, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex};
 
     use crate::cards::{
         CardStore, Cardinality, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation,
@@ -109,12 +110,10 @@ mod python {
         }
 
         fn rollback(&mut self) -> PyResult<()> {
-            self.inner
-                .call_method1("seek", (self.start_position, 0))?;
+            self.inner.call_method1("seek", (self.start_position, 0))?;
             self.inner
                 .call_method1("truncate", (self.start_position,))?;
-            self.inner
-                .call_method1("seek", (self.start_position, 0))?;
+            self.inner.call_method1("seek", (self.start_position, 0))?;
             Ok(())
         }
     }
@@ -255,6 +254,31 @@ mod python {
         .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
+    fn corefs_open_read_snapshot_with_coordinator(
+        coordinator: &anima_corefs::transaction::CoreCommitCoordinator,
+        keys: &PyCorefsSubkeys,
+        selected_generation: u64,
+        selected_catalog_hash: &str,
+    ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+        let selected = coordinator
+            .load_validation_snapshot(&keys.inner)
+            .map_err(corefs_commit_error)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+            })?;
+        let head = selected.head();
+        if head.generation() != selected_generation || head.catalog_hash() != selected_catalog_hash
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS validation snapshot no longer matches selected generation/catalog hash",
+            ));
+        }
+        let keyring = anima_corefs::rotation::FrkKeyring::new([&keys.inner])
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        anima_corefs::logical::CoreFsReadSnapshot::open(coordinator, &selected, &keyring)
+            .map_err(corefs_logical_error)
+    }
+
     fn corefs_open_read_snapshot(
         core_root: &str,
         core_id: &str,
@@ -264,34 +288,730 @@ mod python {
     ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
         let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
             .map_err(corefs_commit_error)?;
-        let selected = coordinator
-            .load_validation_snapshot(&keys.inner)
-            .map_err(corefs_commit_error)?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
-            })?;
-        let head = selected.head();
-        if head.generation() != selected_generation
-            || head.catalog_hash() != selected_catalog_hash
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "CoreFS validation snapshot no longer matches selected generation/catalog hash",
-            ));
-        }
-        let keyring = anima_corefs::rotation::FrkKeyring::new([&keys.inner])
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
-        anima_corefs::logical::CoreFsReadSnapshot::open(&coordinator, &selected, &keyring)
-            .map_err(corefs_logical_error)
+        corefs_open_read_snapshot_with_coordinator(
+            &coordinator,
+            keys,
+            selected_generation,
+            selected_catalog_hash,
+        )
     }
 
     fn corefs_wire_to_py(
         py: Python<'_>,
         result: impl anima_corefs::logical::ModelWireV1,
     ) -> PyResult<PyObject> {
-        let wire = result
-            .to_model_wire_v1()
-            .map_err(corefs_logical_error)?;
+        let wire = result.to_model_wire_v1().map_err(corefs_logical_error)?;
         Ok(PyBytes::new_bound(py, &wire).into_py(py))
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CorefsSessionPhase {
+        Open,
+        Releasing,
+        Closing,
+        Closed,
+    }
+
+    #[derive(Debug)]
+    struct CorefsSessionState {
+        phase: CorefsSessionPhase,
+        active_operations: usize,
+        terminal_close: bool,
+        teardown_owned: bool,
+    }
+
+    impl Default for CorefsSessionState {
+        fn default() -> Self {
+            Self {
+                phase: CorefsSessionPhase::Open,
+                active_operations: 0,
+                terminal_close: false,
+                teardown_owned: false,
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct CorefsSessionLifecycle {
+        state: Mutex<CorefsSessionState>,
+        changed: Condvar,
+    }
+
+    #[derive(Debug)]
+    struct CorefsOperationGuard {
+        lifecycle: Arc<CorefsSessionLifecycle>,
+    }
+
+    impl Drop for CorefsOperationGuard {
+        fn drop(&mut self) {
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            debug_assert!(state.active_operations > 0);
+            state.active_operations = state.active_operations.saturating_sub(1);
+            self.lifecycle.changed.notify_all();
+        }
+    }
+
+    #[pyclass(name = "CorefsSession")]
+    struct PyCorefsSession {
+        canonical_root: PathBuf,
+        core_id: String,
+        coordinator: Arc<anima_corefs::transaction::CoreCommitCoordinator>,
+        lifecycle: Arc<CorefsSessionLifecycle>,
+    }
+
+    impl PyCorefsSession {
+        fn acquire_operation(&self) -> PyResult<CorefsOperationGuard> {
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.phase != CorefsSessionPhase::Open || state.terminal_close {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "CoreFS session is {}",
+                    match state.phase {
+                        CorefsSessionPhase::Open => "not accepting operations",
+                        CorefsSessionPhase::Releasing => "releasing its object lease",
+                        CorefsSessionPhase::Closing => "closing",
+                        CorefsSessionPhase::Closed => "closed",
+                    }
+                )));
+            }
+            state.active_operations = state.active_operations.checked_add(1).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("CoreFS session operation count overflow")
+            })?;
+            Ok(CorefsOperationGuard {
+                lifecycle: Arc::clone(&self.lifecycle),
+            })
+        }
+
+        fn begin_lease_release(&self) -> PyResult<()> {
+            self.coordinator
+                .begin_object_lease_release()
+                .map_err(corefs_commit_error)
+        }
+
+        fn finish_lease_release(&self, clear_cached_state: bool) -> PyResult<()> {
+            self.coordinator
+                .finish_object_lease_release()
+                .map_err(corefs_commit_error)?;
+            if clear_cached_state {
+                self.coordinator.clear_cached_state();
+            }
+            Ok(())
+        }
+
+        fn wait_for_active_operations(&self) {
+            let state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(
+                self.lifecycle
+                    .changed
+                    .wait_while(state, |state| state.active_operations != 0)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }
+
+        fn begin_close_native(&self) {
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.terminal_close = true;
+            self.lifecycle.changed.notify_all();
+        }
+
+        fn release_native(&self) -> PyResult<()> {
+            self.coordinator
+                .ensure_object_lease_release_not_reentrant()
+                .map_err(corefs_commit_error)?;
+            {
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match state.phase {
+                    CorefsSessionPhase::Open if !state.terminal_close => {
+                        state.phase = CorefsSessionPhase::Releasing;
+                        state.teardown_owned = true;
+                        self.lifecycle.changed.notify_all();
+                    }
+                    CorefsSessionPhase::Releasing => {
+                        drop(
+                            self.lifecycle
+                                .changed
+                                .wait_while(state, |state| {
+                                    matches!(
+                                        state.phase,
+                                        CorefsSessionPhase::Releasing | CorefsSessionPhase::Closing
+                                    )
+                                })
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                        return Ok(());
+                    }
+                    CorefsSessionPhase::Closing => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "CoreFS session is closing",
+                        ));
+                    }
+                    CorefsSessionPhase::Closed => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "CoreFS session is closed",
+                        ));
+                    }
+                    CorefsSessionPhase::Open => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "CoreFS session is closing",
+                        ));
+                    }
+                }
+            }
+
+            self.begin_lease_release()?;
+            self.wait_for_active_operations();
+            self.finish_lease_release(false)?;
+
+            let terminal_close = {
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                debug_assert!(state.teardown_owned);
+                if state.terminal_close {
+                    true
+                } else {
+                    state.teardown_owned = false;
+                    state.phase = CorefsSessionPhase::Open;
+                    self.coordinator.resume_object_lease_publication();
+                    self.lifecycle.changed.notify_all();
+                    false
+                }
+            };
+            if terminal_close {
+                self.coordinator.clear_cached_state();
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                debug_assert!(state.teardown_owned);
+                state.teardown_owned = false;
+                state.phase = CorefsSessionPhase::Closed;
+                self.lifecycle.changed.notify_all();
+            }
+            Ok(())
+        }
+
+        fn close_native(&self) -> PyResult<()> {
+            self.coordinator
+                .ensure_object_lease_release_not_reentrant()
+                .map_err(corefs_commit_error)?;
+            let owns_teardown = {
+                let mut state = self
+                    .lifecycle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.terminal_close = true;
+                match state.phase {
+                    CorefsSessionPhase::Open => {
+                        state.phase = CorefsSessionPhase::Closing;
+                        state.teardown_owned = true;
+                        self.lifecycle.changed.notify_all();
+                        true
+                    }
+                    CorefsSessionPhase::Releasing => {
+                        state.phase = CorefsSessionPhase::Closing;
+                        self.lifecycle.changed.notify_all();
+                        drop(
+                            self.lifecycle
+                                .changed
+                                .wait_while(state, |state| {
+                                    state.phase != CorefsSessionPhase::Closed
+                                })
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                        false
+                    }
+                    CorefsSessionPhase::Closing => {
+                        drop(
+                            self.lifecycle
+                                .changed
+                                .wait_while(state, |state| {
+                                    state.phase != CorefsSessionPhase::Closed
+                                })
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                        false
+                    }
+                    CorefsSessionPhase::Closed => false,
+                }
+            };
+            if !owns_teardown {
+                return Ok(());
+            }
+
+            self.begin_lease_release()?;
+            self.wait_for_active_operations();
+            self.finish_lease_release(true)?;
+
+            let mut state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            debug_assert!(state.teardown_owned);
+            state.teardown_owned = false;
+            state.phase = CorefsSessionPhase::Closed;
+            self.lifecycle.changed.notify_all();
+            Ok(())
+        }
+
+        fn open_read_snapshot(
+            &self,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+        ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+            corefs_open_read_snapshot_with_coordinator(
+                self.coordinator.as_ref(),
+                keys,
+                selected_generation,
+                selected_catalog_hash,
+            )
+        }
+
+        #[cfg(test)]
+        fn coordinator_for_test(&self) -> Arc<anima_corefs::transaction::CoreCommitCoordinator> {
+            Arc::clone(&self.coordinator)
+        }
+
+        #[cfg(test)]
+        fn acquire_operation_for_test(&self) -> PyResult<CorefsOperationGuard> {
+            self.acquire_operation()
+        }
+
+        #[cfg(test)]
+        fn phase_for_test(&self) -> CorefsSessionPhase {
+            self.lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .phase
+        }
+
+        #[cfg(test)]
+        fn active_operations_for_test(&self) -> usize {
+            self.lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active_operations
+        }
+
+        #[cfg(test)]
+        fn wait_for_phase_for_test(&self, expected: CorefsSessionPhase) {
+            let state = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(
+                self.lifecycle
+                    .changed
+                    .wait_while(state, |state| state.phase != expected)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }
+    }
+
+    impl Drop for PyCorefsSession {
+        fn drop(&mut self) {
+            // SAFETY: `Py_IsInitialized` has no preconditions and does not require
+            // the GIL. A Python-owned instance takes the allow-threads path; pure
+            // Rust tests and interpreter shutdown can drain natively without trying
+            // to initialize or re-enter Python.
+            if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
+                Python::with_gil(|py| {
+                    let _ = py.allow_threads(|| self.close_native());
+                });
+            } else {
+                let _ = self.close_native();
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pymethods]
+    impl PyCorefsSession {
+        #[new]
+        fn new(core_root: &str, core_id: &str) -> PyResult<Self> {
+            let coordinator =
+                anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
+                    .map_err(corefs_commit_error)?;
+            let canonical_root = coordinator.core_root().to_path_buf();
+            Ok(Self {
+                canonical_root,
+                core_id: core_id.to_owned(),
+                coordinator: Arc::new(coordinator),
+                lifecycle: Arc::new(CorefsSessionLifecycle::default()),
+            })
+        }
+
+        #[getter]
+        fn core_root(&self) -> String {
+            self.canonical_root.to_string_lossy().into_owned()
+        }
+
+        #[getter]
+        fn core_id(&self) -> &str {
+            &self.core_id
+        }
+
+        fn release_object_lease(&self, py: Python<'_>) -> PyResult<()> {
+            py.allow_threads(|| self.release_native())
+        }
+
+        fn close(&self, py: Python<'_>) -> PyResult<()> {
+            py.allow_threads(|| self.close_native())
+        }
+
+        fn begin_close(&self) {
+            self.begin_close_native();
+        }
+
+        fn validation_snapshot(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let selected = self
+                .coordinator
+                .load_validation_snapshot(&keys.inner)
+                .map_err(corefs_commit_error)?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+                })?;
+            let head = selected.head();
+            json_value_to_py(
+                py,
+                json!({
+                    "generation": head.generation(),
+                    "catalogHash": head.catalog_hash(),
+                }),
+            )
+        }
+
+        fn stat_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            path: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            corefs_wire_to_py(py, snapshot.stat(path).map_err(corefs_logical_error)?)
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, path, cursor_after = None, limit = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn list_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            path: &str,
+            cursor_after: Option<String>,
+            limit: usize,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let cursor = cursor_after
+                .map(|after| anima_corefs::logical::ListCursor::new(selected_generation, after));
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .list(
+                        path,
+                        cursor,
+                        limit,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, root, cursor_after = None, page_size = 100, include_directories = true, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn walk_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            root: &str,
+            cursor_after: Option<String>,
+            page_size: usize,
+            include_directories: bool,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let options = anima_corefs::logical::LogicalWalkOptions {
+                page_size,
+                cursor: cursor_after.map(|after| {
+                    anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)
+                }),
+                include_directories,
+            };
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .walk(
+                        root,
+                        options,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, cursor_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn glob_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            root: &str,
+            pattern: &str,
+            max_results: usize,
+            cursor_after: Option<String>,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let cursor = cursor_after.map(|after| {
+                anima_corefs::logical::LogicalGlobCursor::new(selected_generation, after)
+            });
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .glob(
+                        root,
+                        pattern,
+                        cursor,
+                        max_results,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, cursor_path = None, cursor_byte_offset = None, cursor_walk_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn grep_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            root: &str,
+            query: &str,
+            regex: bool,
+            max_files: usize,
+            max_matches: usize,
+            max_line_bytes: usize,
+            cursor_path: Option<String>,
+            cursor_byte_offset: Option<u64>,
+            cursor_walk_after: Option<String>,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let request = anima_corefs::logical::LogicalGrepRequest {
+                root: root.to_owned(),
+                query: query.to_owned(),
+                mode: if regex {
+                    anima_file_tools::GrepMode::Regex
+                } else {
+                    anima_file_tools::GrepMode::Literal
+                },
+                cursor: cursor_path.map(|path| {
+                    anima_corefs::logical::LogicalGrepCursor::new(
+                        selected_generation,
+                        path,
+                        cursor_byte_offset,
+                        cursor_walk_after,
+                    )
+                }),
+                max_files,
+                max_matches,
+                max_line_bytes,
+            };
+            corefs_wire_to_py(
+                py,
+                snapshot
+                    .grep(
+                        request,
+                        limits,
+                        anima_file_tools::OperationControl::default(),
+                    )
+                    .map_err(corefs_logical_error)?,
+            )
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, path, offset = 0, max_bytes = 65536, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+        fn read_chunk_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            path: &str,
+            offset: u64,
+            max_bytes: usize,
+            read_chunk_bytes: Option<usize>,
+            walk_depth: Option<usize>,
+            walk_directories: Option<usize>,
+            walk_entries: Option<usize>,
+            response_bytes: Option<usize>,
+        ) -> PyResult<Option<PyObject>> {
+            let _operation = self.acquire_operation()?;
+            let limits = corefs_validated_limits(
+                read_chunk_bytes,
+                walk_depth,
+                walk_directories,
+                walk_entries,
+                response_bytes,
+            )?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let mut stream = snapshot
+                .read(
+                    path,
+                    anima_file_tools::ReadOptions { offset, max_bytes },
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
+                .map_err(corefs_logical_error)?;
+            stream
+                .next()
+                .transpose()
+                .map_err(corefs_logical_error)?
+                .map(|chunk| corefs_wire_to_py(py, chunk))
+                .transpose()
+        }
+
+        #[pyo3(signature = (keys, selected_generation, selected_catalog_hash, state, index_generation = None))]
+        fn search_readiness_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            selected_generation: u64,
+            selected_catalog_hash: &str,
+            state: &str,
+            index_generation: Option<u64>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let snapshot =
+                self.open_read_snapshot(keys, selected_generation, selected_catalog_hash)?;
+            let state = match state {
+                "missing" => anima_corefs::logical::RuntimeSearchState::Missing,
+                "building" => anima_corefs::logical::RuntimeSearchState::Building {
+                    generation: index_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS search state building requires index_generation",
+                        )
+                    })?,
+                },
+                "ready" => anima_corefs::logical::RuntimeSearchState::Ready {
+                    generation: index_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS search state ready requires index_generation",
+                        )
+                    })?,
+                },
+                "degraded" => anima_corefs::logical::RuntimeSearchState::Degraded {
+                    generation: index_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS search state degraded requires index_generation",
+                        )
+                    })?,
+                },
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS search state must be missing, building, ready, or degraded",
+                    ))
+                }
+            };
+            corefs_wire_to_py(py, snapshot.search_readiness(state))
+        }
     }
 
     #[pyclass(name = "CorefsSubkeys")]
@@ -1081,10 +1801,13 @@ mod python {
                 pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
             })?;
         let head = selected.head();
-        json_value_to_py(py, json!({
-            "generation": head.generation(),
-            "catalogHash": head.catalog_hash(),
-        }))
+        json_value_to_py(
+            py,
+            json!({
+                "generation": head.generation(),
+                "catalogHash": head.catalog_hash(),
+            }),
+        )
     }
 
     #[pyfunction]
@@ -1109,6 +1832,7 @@ mod python {
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, path, cursor_after = None, limit = 100, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_list_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1144,13 +1868,20 @@ mod python {
         corefs_wire_to_py(
             py,
             snapshot
-                .list(path, cursor, limit, limits, anima_file_tools::OperationControl::default())
+                .list(
+                    path,
+                    cursor,
+                    limit,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, cursor_after = None, page_size = 100, include_directories = true, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_walk_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1184,20 +1915,27 @@ mod python {
         )?;
         let options = anima_corefs::logical::LogicalWalkOptions {
             page_size,
-            cursor: cursor_after
-                .map(|after| anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)),
+            cursor: cursor_after.map(|after| {
+                anima_corefs::logical::LogicalWalkCursor::new(selected_generation, after)
+            }),
             include_directories,
         };
         corefs_wire_to_py(
             py,
             snapshot
-                .walk(root, options, limits, anima_file_tools::OperationControl::default())
+                .walk(
+                    root,
+                    options,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, pattern, max_results = 100, cursor_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_glob_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1234,13 +1972,21 @@ mod python {
         corefs_wire_to_py(
             py,
             snapshot
-                .glob(root, pattern, cursor, max_results, limits, anima_file_tools::OperationControl::default())
+                .glob(
+                    root,
+                    pattern,
+                    cursor,
+                    max_results,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, root, query, regex = false, max_files = 1000, max_matches = 100, max_line_bytes = 4096, cursor_path = None, cursor_byte_offset = None, cursor_walk_after = None, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each bounded grep option.
     fn corefs_grep_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1300,13 +2046,18 @@ mod python {
         corefs_wire_to_py(
             py,
             snapshot
-                .grep(request, limits, anima_file_tools::OperationControl::default())
+                .grep(
+                    request,
+                    limits,
+                    anima_file_tools::OperationControl::default(),
+                )
                 .map_err(corefs_logical_error)?,
         )
     }
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, path, offset = 0, max_bytes = 65536, read_chunk_bytes = None, walk_depth = None, walk_directories = None, walk_entries = None, response_bytes = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI exposes each validated limit.
     fn corefs_read_chunk_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1355,6 +2106,7 @@ mod python {
 
     #[pyfunction]
     #[pyo3(signature = (core_root, core_id, keys, selected_generation, selected_catalog_hash, state, index_generation = None))]
+    #[allow(clippy::too_many_arguments)] // Stable Python ABI carries authenticated snapshot identity.
     fn corefs_search_readiness_v1(
         py: Python<'_>,
         core_root: &str,
@@ -1405,11 +2157,14 @@ mod python {
     }
 
     fn corefs_frozen_result(py: Python<'_>, operation: &str) -> PyResult<PyObject> {
-        json_value_to_py(py, json!({
-            "ok": false,
-            "operation": operation,
-            "code": anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN,
-        }))
+        json_value_to_py(
+            py,
+            json!({
+                "ok": false,
+                "operation": operation,
+                "code": anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN,
+            }),
+        )
     }
 
     #[pyfunction]
@@ -1932,6 +2687,7 @@ mod python {
 
     #[pyfunction]
     #[pyo3(signature = (scores, strategy = "combined", min_results = 1, max_results = 100, normalize = true, absolute_min = 0.3, relative_threshold = 0.5, max_drop_ratio = 0.4, sensitivity = 1.0))]
+    #[allow(clippy::too_many_arguments)] // Python API intentionally exposes the cutoff policy.
     fn find_adaptive_cutoff(
         scores: Vec<f32>,
         strategy: &str,
@@ -2041,6 +2797,7 @@ mod python {
         }
 
         #[pyo3(signature = (entity, slot, value, kind = "fact", version = "sets", confidence = 1.0, frame_id = 0))]
+        #[allow(clippy::too_many_arguments)] // Python card API mirrors the portable card schema.
         fn put(
             &mut self,
             entity: &str,
@@ -2187,7 +2944,7 @@ mod python {
             &graph.inner,
             entity,
         );
-        let value = serde_json::to_value(&state)
+        let value = serde_json::to_value(state)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         json_value_to_py(py, value)
     }
@@ -2200,7 +2957,7 @@ mod python {
         slot: &str,
     ) -> PyResult<PyObject> {
         let history = crate::projection::slot_history(&cards.inner, entity, slot);
-        let value = serde_json::to_value(&history)
+        let value = serde_json::to_value(history)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         json_value_to_py(py, value)
     }
@@ -2483,10 +3240,10 @@ mod python {
         crate::text::fix_pdf_spacing(text)
     }
 
+    type ExtractedTriplet = (String, String, String, String, String, f32, usize, usize);
+
     #[pyfunction]
-    fn extract_triplets(
-        text: &str,
-    ) -> Vec<(String, String, String, String, String, f32, usize, usize)> {
+    fn extract_triplets(text: &str) -> Vec<ExtractedTriplet> {
         crate::triplet::extract_triplets(text)
             .into_iter()
             .map(|triplet| {
@@ -2509,7 +3266,7 @@ mod python {
     #[pyclass(name = "ChunkOptions")]
     #[derive(Clone)]
     struct PyChunkOptions {
-        inner: crate::chunker::ChunkOptions,
+        _inner: crate::chunker::ChunkOptions,
     }
 
     #[pymethods]
@@ -2525,7 +3282,7 @@ mod python {
             preserve_lists: bool,
         ) -> Self {
             Self {
-                inner: crate::chunker::ChunkOptions {
+                _inner: crate::chunker::ChunkOptions {
                     max_chars,
                     overlap_chars,
                     preserve_code_blocks,
@@ -2607,10 +3364,7 @@ mod python {
         }
 
         /// Returns list of (rule_name, entity, slot, value, kind, confidence, char_start, char_end)
-        fn extract(
-            &self,
-            text: &str,
-        ) -> Vec<(String, String, String, String, String, f32, usize, usize)> {
+        fn extract(&self, text: &str) -> Vec<ExtractedTriplet> {
             self.inner
                 .extract(text)
                 .into_iter()
@@ -2629,11 +3383,7 @@ mod python {
                 .collect()
         }
 
-        fn extract_above(
-            &self,
-            text: &str,
-            min_confidence: f32,
-        ) -> Vec<(String, String, String, String, String, f32, usize, usize)> {
+        fn extract_above(&self, text: &str, min_confidence: f32) -> Vec<ExtractedTriplet> {
             self.inner
                 .extract_above(text, min_confidence)
                 .into_iter()
@@ -2683,11 +3433,7 @@ mod python {
             last_accessed_at: Some(now - age_seconds),
             is_superseded: superseded,
         };
-        crate::search::compute_heat(
-            &meta,
-            &HeatParams::default(),
-            now,
-        )
+        crate::search::compute_heat(&meta, &HeatParams::default(), now)
     }
 
     // ── Module Registration ──────────────────────────────────────────
@@ -2740,6 +3486,8 @@ mod python {
     }
 
     #[pyfunction]
+    #[pyo3(signature = (root, record_id, user_id, text, source_type, category, importance, created_at, embedding=None))]
+    #[allow(clippy::too_many_arguments)] // Python API mirrors the durable memory record schema.
     fn memory_index_upsert(
         root: &str,
         record_id: u64,
@@ -2793,13 +3541,9 @@ mod python {
         query: &str,
         limit: usize,
     ) -> PyResult<PyObject> {
-        let hits = crate::retrieval_index::search_memory_documents(
-            Path::new(root),
-            user_id,
-            query,
-            limit,
-        )
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let hits =
+            crate::retrieval_index::search_memory_documents(Path::new(root), user_id, query, limit)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let value = serde_json::to_value(hits)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         json_value_to_py(py, value)
@@ -2826,6 +3570,7 @@ mod python {
     }
 
     #[pyfunction]
+    #[allow(clippy::too_many_arguments)] // Python API mirrors the durable transcript schema.
     fn transcript_index_upsert(
         root: &str,
         thread_id: u64,
@@ -2902,6 +3647,7 @@ mod python {
         m.add_class::<PyCorefsObjectDek>()?;
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
+        m.add_class::<PyCorefsSession>()?;
         m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_manifest_keyslot_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_soul_keyslot_aad, m)?)?;
@@ -2922,7 +3668,10 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_encrypt_object_envelope_stream, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decrypt_object_envelope_stream, m)?)?;
-        m.add_function(wrap_pyfunction!(corefs_read_object_envelope_range_stream, m)?)?;
+        m.add_function(wrap_pyfunction!(
+            corefs_read_object_envelope_range_stream,
+            m
+        )?)?;
         m.add_function(wrap_pyfunction!(corefs_encode_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decode_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
@@ -3022,7 +3771,13 @@ mod python {
         use super::*;
         use std::fs;
         use std::io::Cursor;
-        use std::sync::Once;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        #[cfg(windows)]
+        use std::sync::Mutex;
+        use std::sync::{Arc, Barrier, Once};
+        use std::thread;
+        use std::time::{Duration, Instant};
 
         use anima_corefs::catalog::{
             CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
@@ -3037,6 +3792,10 @@ mod python {
         use anima_corefs::folders::{FolderOwner, PortableName};
         use anima_corefs::id::OpaqueId;
         use anima_corefs::policy::AnimaAccess;
+        #[cfg(windows)]
+        use anima_corefs::transaction::session_test_support::{
+            SessionLeaseUsage, SessionPublicationPause, WindowsSessionLeaseControl,
+        };
         use anima_corefs::transaction::{
             CoreCommitCoordinator, PreparedObjectRevision, ValidationSnapshot,
         };
@@ -3069,8 +3828,838 @@ mod python {
 
         fn with_python<T>(f: impl FnOnce(Python<'_>) -> T) -> T {
             static INIT: Once = Once::new();
-            INIT.call_once(|| pyo3::prepare_freethreaded_python());
+            INIT.call_once(pyo3::prepare_freethreaded_python);
             Python::with_gil(f)
+        }
+
+        mod corefs_session {
+            use super::*;
+
+            #[cfg(windows)]
+            static PROCESS_HANDLE_PROOF_LOCK: Mutex<()> = Mutex::new(());
+
+            #[cfg(windows)]
+            fn process_handle_count() -> u32 {
+                use windows_sys::Win32::System::Threading::{
+                    GetCurrentProcess, GetProcessHandleCount,
+                };
+
+                let mut count = 0;
+                // SAFETY: GetCurrentProcess returns a process-local pseudo-handle, and
+                // `count` is a valid writable u32 for the duration of the call.
+                let succeeded = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+                assert_ne!(succeeded, 0, "GetProcessHandleCount failed");
+                count
+            }
+
+            #[cfg(windows)]
+            fn settled_process_handle_count(timeout: Duration) -> u32 {
+                let deadline = Instant::now() + timeout;
+                let mut last = process_handle_count();
+                let mut stable_samples = 0;
+                loop {
+                    thread::sleep(Duration::from_millis(10));
+                    let current = process_handle_count();
+                    if current == last {
+                        stable_samples += 1;
+                        if stable_samples == 5 {
+                            return current;
+                        }
+                    } else {
+                        last = current;
+                        stable_samples = 0;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "process handle count did not settle before resource proof"
+                    );
+                }
+            }
+
+            #[cfg(windows)]
+            fn wait_for_process_handle_baseline(expected: u32, timeout: Duration) -> u32 {
+                let deadline = Instant::now() + timeout;
+                loop {
+                    let current = process_handle_count();
+                    if current == expected {
+                        return current;
+                    }
+                    if Instant::now() >= deadline {
+                        return current;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+
+            fn isolated_session_for_test(
+                core_root: &std::path::Path,
+                core_id: &str,
+            ) -> PyCorefsSession {
+                let coordinator =
+                    CoreCommitCoordinator::session_test_new_isolated(core_root, core_id).unwrap();
+                PyCorefsSession {
+                    canonical_root: coordinator.core_root().to_path_buf(),
+                    core_id: core_id.to_owned(),
+                    coordinator: Arc::new(coordinator),
+                    lifecycle: Arc::new(CorefsSessionLifecycle::default()),
+                }
+            }
+
+            #[cfg(unix)]
+            fn session_with_post_coordinator_hook(
+                core_root: &std::path::Path,
+                core_id: &str,
+                after_coordinator: impl FnOnce(),
+            ) -> Result<PyCorefsSession, String> {
+                let coordinator = CoreCommitCoordinator::new(core_root, core_id)
+                    .map_err(|error| error.to_string())?;
+                after_coordinator();
+                let canonical_root = coordinator.core_root().to_path_buf();
+                Ok(PyCorefsSession {
+                    canonical_root,
+                    core_id: core_id.to_owned(),
+                    coordinator: Arc::new(coordinator),
+                    lifecycle: Arc::new(CorefsSessionLifecycle::default()),
+                })
+            }
+
+            fn native_session(
+                name: &str,
+                core_id: &str,
+            ) -> (tempfile::TempDir, Arc<PyCorefsSession>) {
+                let root = tempfile::tempdir().unwrap();
+                let core_root = root.path().join(name);
+                fs::create_dir_all(&core_root).unwrap();
+                let session = isolated_session_for_test(&core_root, core_id);
+                (root, Arc::new(session))
+            }
+
+            #[cfg(windows)]
+            fn cached_windows_session(
+                name: &str,
+            ) -> (
+                Arc<LogicalFixture>,
+                Arc<PyCorefsSession>,
+                WindowsSessionLeaseControl,
+            ) {
+                let fixture = Arc::new(logical_fixture(name));
+                let session = Arc::new(isolated_session_for_test(
+                    std::path::Path::new(fixture.root_path()),
+                    LOGICAL_CORE_ID,
+                ));
+                with_python(|py| {
+                    session.validation_snapshot(py, &fixture.keys).unwrap();
+                });
+                let coordinator = session.coordinator_for_test();
+                coordinator
+                    .session_test_seed_validation_cache(&fixture.keys.inner)
+                    .unwrap();
+                let control = coordinator.session_test_install_windows_lease().unwrap();
+                assert!(session
+                    .coordinator_for_test()
+                    .session_test_cache_has_object_lease());
+                assert_eq!(
+                    control.usage(),
+                    SessionLeaseUsage {
+                        entries: 1,
+                        leases: 1,
+                        monitor_resources: 3,
+                    }
+                );
+                (fixture, session, control)
+            }
+
+            #[cfg(windows)]
+            fn fence_then_safe_open_stat(
+                session: &PyCorefsSession,
+                fixture: &LogicalFixture,
+            ) -> PyResult<()> {
+                let _operation = session.acquire_operation()?;
+                assert_eq!(
+                    session
+                        .coordinator_for_test()
+                        .session_test_fence_cached_lease_is_unknown(),
+                    Some(true),
+                    "release cancellation must make the blocked real monitor fence Unknown"
+                );
+                let snapshot = session.open_read_snapshot(
+                    &fixture.keys,
+                    fixture.selected.head().generation(),
+                    fixture.selected.head().catalog_hash(),
+                )?;
+                snapshot
+                    .stat("Notes/Alpha.md")
+                    .map_err(corefs_logical_error)?;
+                Ok(())
+            }
+
+            #[test]
+            fn two_calls_in_one_native_session_reuse_one_coordinator() {
+                let fixture = logical_fixture("same-session");
+                let session =
+                    Arc::new(PyCorefsSession::new(fixture.root_path(), LOGICAL_CORE_ID).unwrap());
+                let first = session.coordinator_for_test();
+                with_python(|py| {
+                    session.validation_snapshot(py, &fixture.keys).unwrap();
+                    session
+                        .stat_v1(
+                            py,
+                            &fixture.keys,
+                            fixture.selected.head().generation(),
+                            fixture.selected.head().catalog_hash(),
+                            "Notes/Alpha.md",
+                        )
+                        .unwrap();
+                });
+                let second = session.coordinator_for_test();
+                assert!(Arc::ptr_eq(&first, &second));
+            }
+
+            #[test]
+            fn different_roots_or_core_ids_never_share_a_coordinator() {
+                let (_left_root, left) = native_session("left", "core-left");
+                let (_right_root, right) = native_session("right", "core-left");
+                let (_other_id_root, other_id) = native_session("left", "core-right");
+                assert!(!Arc::ptr_eq(
+                    &left.coordinator_for_test(),
+                    &right.coordinator_for_test()
+                ));
+                assert!(!Arc::ptr_eq(
+                    &left.coordinator_for_test(),
+                    &other_id.coordinator_for_test()
+                ));
+            }
+
+            #[test]
+            fn operation_guard_drains_before_close_releases_lease() {
+                let (_root, session) = native_session("drain-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let close_session = Arc::clone(&session);
+                let close_done = Arc::new(AtomicBool::new(false));
+                let close_done_thread = Arc::clone(&close_done);
+                let closer = thread::spawn(move || {
+                    close_session.close_native().unwrap();
+                    close_done_thread.store(true, Ordering::SeqCst);
+                });
+                session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                assert!(!close_done.load(Ordering::SeqCst));
+                drop(guard);
+                closer.join().unwrap();
+                assert!(close_done.load(Ordering::SeqCst));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn begin_close_terminalizes_before_active_operations_drain() {
+                let (_root, session) = native_session("begin-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+
+                session.begin_close_native();
+
+                assert!(session.acquire_operation_for_test().is_err());
+                assert!(session.release_native().is_err());
+                drop(guard);
+                session.close_native().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn release_rejects_new_operations_then_returns_to_open() {
+                let (_root, session) = native_session("release-reopen", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let release_session = Arc::clone(&session);
+                let releaser = thread::spawn(move || release_session.release_native().unwrap());
+                session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+                assert!(session.acquire_operation_for_test().is_err());
+                drop(guard);
+                releaser.join().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                drop(session.acquire_operation_for_test().unwrap());
+            }
+
+            #[test]
+            fn close_racing_release_is_terminal_and_never_reopens() {
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) = cached_windows_session("release-close-real");
+                    let coordinator = session.coordinator_for_test();
+                    let mut late_candidate = coordinator
+                        .session_test_prepare_windows_candidate()
+                        .unwrap();
+                    let late_control = late_candidate.control().clone();
+                    control.pause_next_native_completion();
+                    let release_session = Arc::clone(&session);
+                    let releaser = thread::spawn(move || release_session.release_native());
+                    assert!(control.wait_until_native_completion_paused(Duration::from_secs(2)));
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    control.release_native_completion();
+
+                    assert!(releaser.join().unwrap().is_ok());
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(
+                        coordinator.session_test_cache_is_empty(),
+                        "a close racing the release owner must clear all authenticated cache state"
+                    );
+                    assert_eq!(control.join_count(), 1);
+                    assert_eq!(control.native_completion_count(), 1);
+                    assert_eq!(
+                        control.usage(),
+                        SessionLeaseUsage {
+                            entries: 1,
+                            leases: 1,
+                            monitor_resources: 3,
+                        }
+                    );
+                    assert!(
+                        !coordinator
+                            .session_test_attempt_candidate_publication(&mut late_candidate),
+                        "a candidate prepared before terminal close must never publish afterward"
+                    );
+                    assert!(coordinator.session_test_cache_is_empty());
+                    assert_eq!(late_control.join_count(), 1);
+                    assert_eq!(late_control.native_completion_count(), 1);
+                    assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("release-close", LOGICAL_CORE_ID);
+                    let guard = session.acquire_operation_for_test().unwrap();
+                    let release_session = Arc::clone(&session);
+                    let releaser = thread::spawn(move || release_session.release_native());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Releasing);
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                    drop(guard);
+                    assert!(releaser.join().unwrap().is_ok());
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(session.acquire_operation_for_test().is_err());
+                }
+            }
+
+            #[test]
+            #[cfg(windows)]
+            fn direct_coordinator_release_drains_eligible_late_publisher() {
+                let (_fixture, session, _cached_control) =
+                    cached_windows_session("direct-release-overlap");
+                let coordinator = session.coordinator_for_test();
+                let mut late_candidate = coordinator
+                    .session_test_prepare_windows_candidate()
+                    .unwrap();
+                let late_control = late_candidate.control().clone();
+                let pause = SessionPublicationPause::default();
+                let publisher_coordinator = Arc::clone(&coordinator);
+                let publisher_pause = pause.clone();
+                let publisher = thread::spawn(move || {
+                    publisher_coordinator.session_test_attempt_candidate_publication_paused(
+                        &mut late_candidate,
+                        &publisher_pause,
+                    )
+                });
+                assert!(pause.wait_until_paused(Duration::from_secs(2)));
+
+                let (release_done_sender, release_done_receiver) = std::sync::mpsc::channel();
+                let release_coordinator = Arc::clone(&coordinator);
+                let releaser = thread::spawn(move || {
+                    release_coordinator.release_object_lease().unwrap();
+                    release_done_sender.send(()).unwrap();
+                });
+                assert!(
+                    release_done_receiver
+                        .recv_timeout(Duration::from_millis(250))
+                        .is_err(),
+                    "direct coordinator release returned while an admitted publisher still owned a real candidate"
+                );
+
+                pause.release();
+                assert!(publisher.join().unwrap());
+                releaser.join().unwrap();
+                release_done_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("direct coordinator release did not finish after publisher drain");
+                assert!(!coordinator.session_test_cache_has_object_lease());
+                assert_eq!(late_control.live_monitor_resource_count(), 0);
+                assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+            }
+
+            #[test]
+            fn python_session_maps_reentrant_release_without_mutating_lifecycle() {
+                let fixture = logical_fixture("python-reentrant-release");
+                let session = Arc::new(isolated_session_for_test(
+                    std::path::Path::new(fixture.root_path()),
+                    LOGICAL_CORE_ID,
+                ));
+                let coordinator = session.coordinator_for_test();
+                let entries = fixture.selected.catalog().entries().to_vec();
+                let (entered_sender, entered_receiver) = std::sync::mpsc::channel();
+                let (returned_sender, returned_receiver) = std::sync::mpsc::channel();
+                let (completed_sender, completed_receiver) = std::sync::mpsc::channel();
+                let worker_session = Arc::clone(&session);
+                let worker = thread::spawn(move || {
+                    let callback_session = Arc::clone(&worker_session);
+                    let outcome = coordinator.commit_first_mutation(
+                        &fixture.keys.inner,
+                        1,
+                        &[],
+                        &[],
+                        |_, generation| CatalogGeneration::new(generation, entries),
+                        |_| {
+                            entered_sender.send(()).unwrap();
+                            let release = callback_session.release_native().map_err(|error| {
+                                let is_value_error = with_python(|py| {
+                                    error.is_instance_of::<pyo3::exceptions::PyValueError>(py)
+                                });
+                                (is_value_error, error.to_string())
+                            });
+                            returned_sender.send(release).unwrap();
+                            Ok(())
+                        },
+                    );
+                    completed_sender
+                        .send(
+                            outcome
+                                .map(|outcome| outcome.generation())
+                                .map_err(|error| error.to_string()),
+                        )
+                        .unwrap();
+                });
+
+                entered_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("Python release mapping callback was not reached");
+                let release = returned_receiver
+                    .recv_timeout(Duration::from_millis(250))
+                    .expect("Python session release blocked reentrantly");
+                let (is_value_error, message) =
+                    release.expect_err("reentrant Python session release unexpectedly succeeded");
+                assert!(is_value_error);
+                assert!(message.contains("current thread"));
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                assert_eq!(
+                    completed_receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("outer commit did not complete after Python release rejection")
+                        .unwrap(),
+                    2
+                );
+                worker.join().unwrap();
+                session.release_native().unwrap();
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+            }
+
+            #[test]
+            fn all_features_normal_coordinators_share_process_lease_budget() {
+                let first_root = tempfile::tempdir().unwrap();
+                let second_root = tempfile::tempdir().unwrap();
+                let isolated_root = tempfile::tempdir().unwrap();
+                let first = CoreCommitCoordinator::new(first_root.path(), "budget-first").unwrap();
+                let second =
+                    CoreCommitCoordinator::new(second_root.path(), "budget-second").unwrap();
+                let isolated = CoreCommitCoordinator::session_test_new_isolated(
+                    isolated_root.path(),
+                    "budget-isolated",
+                )
+                .unwrap();
+
+                let entry_limit = first
+                    .session_test_try_reserve_budget(4_096, 0)
+                    .expect("normal coordinator should reserve the process entry ceiling");
+                assert!(
+                    second.session_test_try_reserve_budget(1, 0).is_none(),
+                    "normal coordinators must share the 4096-entry process ceiling"
+                );
+                assert!(isolated.session_test_try_reserve_budget(1, 0).is_some());
+                drop(entry_limit);
+
+                let lease_limit = (0..4)
+                    .map(|_| {
+                        first
+                            .session_test_try_reserve_budget(0, 0)
+                            .expect("normal coordinator should reserve four process lease slots")
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    second.session_test_try_reserve_budget(0, 0).is_none(),
+                    "normal coordinators must share the four-lease process ceiling"
+                );
+                drop(lease_limit);
+
+                let resource_limit = first
+                    .session_test_try_reserve_budget(0, 260)
+                    .expect("normal coordinator should reserve the process monitor ceiling");
+                assert!(
+                    second.session_test_try_reserve_budget(0, 1).is_none(),
+                    "normal coordinators must share the 260-resource process ceiling"
+                );
+                drop(resource_limit);
+            }
+
+            #[test]
+            #[cfg(unix)]
+            fn session_root_identity_stays_bound_to_pinned_coordinator_tree() {
+                let parent = tempfile::tempdir().unwrap();
+                let requested = parent.path().join("requested");
+                let pinned = parent.path().join("pinned-tree");
+                let replacement = parent.path().join("replacement-tree");
+                fs::create_dir_all(&pinned).unwrap();
+                fs::create_dir_all(&replacement).unwrap();
+                std::os::unix::fs::symlink(&pinned, &requested).unwrap();
+                let session = session_with_post_coordinator_hook(&requested, "root-race", || {
+                    fs::remove_dir(&requested).unwrap();
+                    std::os::unix::fs::symlink(&replacement, &requested).unwrap();
+                })
+                .unwrap();
+                assert_eq!(
+                    session.canonical_root,
+                    session
+                        .coordinator_for_test()
+                        .session_test_core_root()
+                        .to_path_buf(),
+                    "session identity must name the same tree pinned by its coordinator"
+                );
+            }
+
+            #[test]
+            fn session_root_identity_uses_coordinator_canonical_root() {
+                let (_root, session) = native_session("root-identity", "root-identity");
+                assert_eq!(
+                    session.canonical_root,
+                    session
+                        .coordinator_for_test()
+                        .session_test_core_root()
+                        .to_path_buf()
+                );
+            }
+
+            #[test]
+            fn two_close_callers_wait_for_closed() {
+                let (_root, session) = native_session("two-close", LOGICAL_CORE_ID);
+                let guard = session.acquire_operation_for_test().unwrap();
+                let rendezvous = Arc::new(Barrier::new(3));
+                let completed = Arc::new(AtomicUsize::new(0));
+                let callers = (0..2)
+                    .map(|_| {
+                        let session = Arc::clone(&session);
+                        let rendezvous = Arc::clone(&rendezvous);
+                        let completed = Arc::clone(&completed);
+                        thread::spawn(move || {
+                            rendezvous.wait();
+                            session.close_native().unwrap();
+                            completed.fetch_add(1, Ordering::SeqCst);
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                rendezvous.wait();
+                session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                assert_eq!(completed.load(Ordering::SeqCst), 0);
+                drop(guard);
+                for caller in callers {
+                    caller.join().unwrap();
+                }
+                assert_eq!(completed.load(Ordering::SeqCst), 2);
+                assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+            }
+
+            #[test]
+            fn guard_drop_on_panic_decrements_active_count() {
+                let (_root, session) = native_session("panic-guard", LOGICAL_CORE_ID);
+                let result = catch_unwind(AssertUnwindSafe({
+                    let session = Arc::clone(&session);
+                    move || {
+                        let _guard = session.acquire_operation_for_test().unwrap();
+                        panic!("injected operation panic");
+                    }
+                }));
+                assert!(result.is_err());
+                assert_eq!(session.active_operations_for_test(), 0);
+                session.close_native().unwrap();
+            }
+
+            #[test]
+            fn blocked_fence_cancellation_is_bounded_and_falls_back_unknown() {
+                #[cfg(windows)]
+                {
+                    let (fixture, session, control) = cached_windows_session("blocked-fence-real");
+                    let initial_probe_attempts = control.probe_attempt_count();
+                    control.pause_next_read();
+                    fs::write(
+                        session
+                            .coordinator_for_test()
+                            .objects_path()
+                            .join("wake-current-read"),
+                        b"wake",
+                    )
+                    .unwrap();
+                    assert!(control.wait_until_read_paused(Duration::from_secs(2)));
+
+                    let operation_session = Arc::clone(&session);
+                    let operation_fixture = Arc::clone(&fixture);
+                    let operation = thread::spawn(move || {
+                        with_python(|_| {
+                            fence_then_safe_open_stat(&operation_session, &operation_fixture)
+                        })
+                    });
+                    assert!(control.wait_until_probe_attempt_count(
+                        initial_probe_attempts + 1,
+                        Duration::from_secs(2)
+                    ));
+
+                    let started = Instant::now();
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native());
+                    assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+                    control.release_read_pause();
+                    assert!(operation.join().unwrap().is_ok());
+                    assert!(closer.join().unwrap().is_ok());
+
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    assert!(control.monitor_is_unknown());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
+                    assert!(session.coordinator_for_test().session_test_cache_is_empty());
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("blocked-fence", LOGICAL_CORE_ID);
+                    let guard = session.acquire_operation_for_test().unwrap();
+                    let started = Instant::now();
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || close_session.close_native().unwrap());
+                    session.wait_for_phase_for_test(CorefsSessionPhase::Closing);
+                    drop(guard);
+                    closer.join().unwrap();
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                }
+            }
+
+            #[test]
+            fn windows_supported_profile_teardown_meets_target() {
+                #[cfg(windows)]
+                {
+                    const HANDLE_PROOF_HELPER: &str =
+                        "ANIMA_CORE_NATIVE_SESSION_HANDLE_PROOF_HELPER";
+                    if std::env::var_os(HANDLE_PROOF_HELPER).is_none() {
+                        let status = std::process::Command::new(std::env::current_exe().unwrap())
+                            .arg("--exact")
+                            .arg(
+                                "ffi::python::tests::corefs_session::windows_supported_profile_teardown_meets_target",
+                            )
+                            .arg("--nocapture")
+                            .env(HANDLE_PROOF_HELPER, "1")
+                            .status()
+                            .unwrap();
+                        assert!(
+                            status.success(),
+                            "isolated Windows process-handle proof failed"
+                        );
+                        return;
+                    }
+                    let _handle_proof = PROCESS_HANDLE_PROOF_LOCK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    with_python(|_| ());
+                    {
+                        let (fixture, session, control) =
+                            cached_windows_session("windows-target-handle-warmup");
+                        session.release_native().unwrap();
+                        session.close_native().unwrap();
+                        drop(control);
+                        drop(session);
+                        drop(fixture);
+                    }
+                    let baseline = settled_process_handle_count(Duration::from_secs(2));
+                    {
+                        let (fixture, session, control) =
+                            cached_windows_session("windows-target-real");
+                        let started = Instant::now();
+                        session.release_native().unwrap();
+                        assert!(started.elapsed() < Duration::from_secs(2));
+                        assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
+                        assert_eq!(control.native_completion_count(), 1);
+                        assert_eq!(control.join_count(), 1);
+                        assert!(!control.native_buffer_alive());
+                        assert_eq!(control.live_monitor_resource_count(), 0);
+                        assert_eq!(control.usage(), SessionLeaseUsage::default());
+                        assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                        session.close_native().unwrap();
+                        assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                        drop(control);
+                        drop(session);
+                        drop(fixture);
+                    }
+                    assert_eq!(
+                        wait_for_process_handle_baseline(baseline, Duration::from_secs(2)),
+                        baseline,
+                        "real Windows session create/release/close leaked a process handle"
+                    );
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("windows-target", LOGICAL_CORE_ID);
+                    let started = Instant::now();
+                    session.release_native().unwrap();
+                    assert!(started.elapsed() < Duration::from_secs(2));
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Open);
+                }
+            }
+
+            #[test]
+            fn windows_delayed_native_completion_keeps_session_closing_and_ownership_live() {
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) =
+                        cached_windows_session("delayed-completion-real");
+                    control.pause_next_native_completion();
+                    let close_session = Arc::clone(&session);
+                    let (done_sender, done_receiver) = std::sync::mpsc::channel();
+                    let closer = thread::spawn(move || {
+                        let result = close_session.close_native();
+                        let _ = done_sender.send(());
+                        result
+                    });
+                    assert!(control.wait_until_native_completion_paused(Duration::from_secs(2)));
+
+                    thread::sleep(Duration::from_millis(2_100));
+                    assert!(done_receiver.try_recv().is_err());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    assert_eq!(control.teardown_target_miss_count(), 1);
+                    assert_eq!(control.native_completion_count(), 0);
+                    assert_eq!(control.join_count(), 0);
+                    assert!(control.native_buffer_alive());
+                    assert_eq!(control.live_monitor_resource_count(), 3);
+                    assert_eq!(
+                        control.usage(),
+                        SessionLeaseUsage {
+                            entries: 1,
+                            leases: 1,
+                            monitor_resources: 3,
+                        }
+                    );
+
+                    control.release_native_completion();
+                    done_receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("session close did not finish after native completion release");
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert_eq!(control.native_completion_count(), 1);
+                    assert_eq!(control.join_count(), 1);
+                    assert!(!control.native_buffer_alive());
+                    assert_eq!(control.live_monitor_resource_count(), 0);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("delayed-completion", LOGICAL_CORE_ID);
+                    session.close_native().unwrap();
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                }
+            }
+
+            #[test]
+            fn extended_close_wait_holds_no_gil_or_internal_lock() {
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, control) =
+                        cached_windows_session("gil-free-close-real");
+                    control.pause_next_native_completion();
+                    let close_session = Arc::clone(&session);
+                    let closer = thread::spawn(move || with_python(|py| close_session.close(py)));
+                    assert!(control.wait_until_native_completion_paused(Duration::from_secs(2)));
+
+                    let gil_probe_started = Instant::now();
+                    with_python(|_| ());
+                    assert!(gil_probe_started.elapsed() < Duration::from_secs(1));
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closing);
+                    let coordinator = session.coordinator_for_test();
+                    assert!(coordinator.session_test_cache_lock_available());
+                    assert!(coordinator.session_test_budget_lock_available());
+                    let lock_probe_deadline = Instant::now() + Duration::from_secs(1);
+                    while !control.internal_locks_available() {
+                        assert!(
+                            Instant::now() < lock_probe_deadline,
+                            "native completion wait retained a Windows monitor internal lock"
+                        );
+                        thread::yield_now();
+                    }
+
+                    control.release_native_completion();
+                    assert!(closer.join().unwrap().is_ok());
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert_eq!(control.usage(), SessionLeaseUsage::default());
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("gil-free-close", LOGICAL_CORE_ID);
+                    with_python(|py| session.close(py).unwrap());
+                }
+            }
+
+            #[test]
+            fn no_resource_or_cache_publication_occurs_after_close_returns() {
+                #[cfg(windows)]
+                {
+                    let (_fixture, session, cached_control) =
+                        cached_windows_session("closed-publication-real");
+                    let coordinator = session.coordinator_for_test();
+                    let mut late_candidate = coordinator
+                        .session_test_prepare_windows_candidate()
+                        .unwrap();
+                    let late_control = late_candidate.control().clone();
+                    assert_eq!(
+                        late_control.usage(),
+                        SessionLeaseUsage {
+                            entries: 2,
+                            leases: 2,
+                            monitor_resources: 6,
+                        }
+                    );
+
+                    session.close_native().unwrap();
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    assert!(session.release_native().is_err());
+                    assert!(coordinator.session_test_cache_is_empty());
+                    assert_eq!(cached_control.live_monitor_resource_count(), 0);
+                    assert_eq!(
+                        late_control.usage(),
+                        SessionLeaseUsage {
+                            entries: 1,
+                            leases: 1,
+                            monitor_resources: 3,
+                        }
+                    );
+
+                    assert!(!coordinator
+                        .session_test_attempt_candidate_publication(&mut late_candidate));
+                    assert!(!coordinator
+                        .session_test_attempt_candidate_publication(&mut late_candidate));
+                    assert!(coordinator.session_test_cache_is_empty());
+                    assert_eq!(late_control.live_monitor_resource_count(), 0);
+                    assert_eq!(late_control.native_completion_count(), 1);
+                    assert_eq!(late_control.join_count(), 1);
+                    assert_eq!(late_control.usage(), SessionLeaseUsage::default());
+                    session.close_native().unwrap();
+                }
+                #[cfg(not(windows))]
+                {
+                    let (_root, session) = native_session("closed-publication", LOGICAL_CORE_ID);
+                    session.close_native().unwrap();
+                    assert_eq!(session.phase_for_test(), CorefsSessionPhase::Closed);
+                    assert!(session.acquire_operation_for_test().is_err());
+                    assert!(session.release_native().is_err());
+                    session.close_native().unwrap();
+                }
+            }
         }
 
         #[test]
@@ -3204,8 +4793,7 @@ mod python {
             let root = tempfile::tempdir().unwrap();
             let core_root = root.path().join(name);
             fs::create_dir_all(&core_root).unwrap();
-            let coordinator =
-                CoreCommitCoordinator::new(&core_root, LOGICAL_CORE_ID).unwrap();
+            let coordinator = CoreCommitCoordinator::new(&core_root, LOGICAL_CORE_ID).unwrap();
             let root_key = SecretBytes::new(vec![0x83; 32]).unwrap();
             let keys = derive_corefs_subkeys(&root_key, 1).unwrap();
             let prepared = prepare_logical_object(
@@ -3216,43 +4804,50 @@ mod python {
             );
             let physical_name = prepared.physical_name().as_str().to_owned();
             let selected = coordinator
-                .initialize_validation_snapshot(&keys, std::slice::from_ref(&prepared), |generation| {
-                    CatalogGeneration::new(
-                        generation,
-                        vec![
-                            CatalogGenerationEntry::folder(logical_common(
-                                LOGICAL_ROOT_ID,
-                                None,
-                                "Core",
-                            )),
-                            CatalogGenerationEntry::folder(logical_common(
-                                LOGICAL_NOTES_ID,
-                                Some(LOGICAL_ROOT_ID),
-                                "Notes",
-                            )),
-                            CatalogGenerationEntry::object(
-                                logical_common(
-                                    LOGICAL_OBJECT_ID,
-                                    Some(LOGICAL_NOTES_ID),
-                                    "Alpha.md",
+                .initialize_validation_snapshot(
+                    &keys,
+                    std::slice::from_ref(&prepared),
+                    |generation| {
+                        CatalogGeneration::new(
+                            generation,
+                            vec![
+                                CatalogGenerationEntry::folder(logical_common(
+                                    LOGICAL_ROOT_ID,
+                                    None,
+                                    "Core",
+                                )),
+                                CatalogGenerationEntry::folder(logical_common(
+                                    LOGICAL_NOTES_ID,
+                                    Some(LOGICAL_ROOT_ID),
+                                    "Notes",
+                                )),
+                                CatalogGenerationEntry::object(
+                                    logical_common(
+                                        LOGICAL_OBJECT_ID,
+                                        Some(LOGICAL_NOTES_ID),
+                                        "Alpha.md",
+                                    ),
+                                    CatalogObject::new(
+                                        prepared.revision(),
+                                        prepared.physical_name().clone(),
+                                        prepared.content_hash().clone(),
+                                        ObjectKind::Note,
+                                        prepared.wrapped_dek().clone(),
+                                        ObjectLifecycle::Live,
+                                    )
+                                    .unwrap(),
                                 ),
-                                CatalogObject::new(
-                                    prepared.revision(),
-                                    prepared.physical_name().clone(),
-                                    prepared.content_hash().clone(),
-                                    ObjectKind::Note,
-                                    prepared.wrapped_dek().clone(),
-                                    ObjectLifecycle::Live,
-                                )
-                                .unwrap(),
-                            ),
-                        ],
-                    )
-                })
+                            ],
+                        )
+                    },
+                )
                 .unwrap();
             LogicalFixture {
                 _root: root,
-                core_root: core_root.to_str().expect("tempdir path is utf-8").to_owned(),
+                core_root: core_root
+                    .to_str()
+                    .expect("tempdir path is utf-8")
+                    .to_owned(),
                 keys: PyCorefsSubkeys { inner: keys },
                 selected,
                 physical_name,
@@ -3421,9 +5016,7 @@ mod python {
                 .unwrap();
                 let metadata_json = serde_json::to_vec(&metadata).unwrap();
                 let bytes_io = py.import_bound("io").unwrap().getattr("BytesIO").unwrap();
-                let body_reader = bytes_io
-                    .call1((PyBytes::new_bound(py, body),))
-                    .unwrap();
+                let body_reader = bytes_io.call1((PyBytes::new_bound(py, body),)).unwrap();
                 let envelope_writer = bytes_io.call0().unwrap();
                 corefs_encrypt_object_envelope_stream(
                     py,
@@ -3522,9 +5115,7 @@ mod python {
                 assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
                 assert!(error.to_string().contains("use a streaming CoreFS binding"));
 
-                let closed_reader = bytes_io
-                    .call1((PyBytes::new_bound(py, body),))
-                    .unwrap();
+                let closed_reader = bytes_io.call1((PyBytes::new_bound(py, body),)).unwrap();
                 closed_reader.call_method0("close").unwrap();
                 let unused_writer = bytes_io.call0().unwrap();
                 let error = corefs_encrypt_object_envelope_stream(
@@ -3613,10 +5204,7 @@ mod python {
                     .unwrap()
                     .as_bytes()
                     .to_vec();
-                oversized_envelope.resize(
-                    anima_corefs::catalog::MAX_CATALOG_ENVELOPE_SIZE + 1,
-                    0,
-                );
+                oversized_envelope.resize(anima_corefs::catalog::MAX_CATALOG_ENVELOPE_SIZE + 1, 0);
                 let error = corefs_catalog_physical_name(1, &oversized_envelope).unwrap_err();
                 assert!(error.to_string().contains("catalog envelope"));
             });
@@ -3658,9 +5246,7 @@ mod python {
                 let body_reader = bytes_io
                     .call1((PyBytes::new_bound(py, &too_long),))
                     .unwrap();
-                let envelope_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let envelope_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 envelope_writer.call_method1("seek", (0, 2)).unwrap();
                 assert!(corefs_encrypt_object_envelope_stream(
                     py,
@@ -3691,9 +5277,7 @@ mod python {
                 let envelope_reader = bytes_io
                     .call1((PyBytes::new_bound(py, &trailing),))
                     .unwrap();
-                let body_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let body_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 body_writer.call_method1("seek", (0, 2)).unwrap();
                 assert!(corefs_decrypt_object_envelope_stream(
                     py,
@@ -3721,9 +5305,7 @@ mod python {
                 let envelope_reader = bytes_io
                     .call1((PyBytes::new_bound(py, &trailing),))
                     .unwrap();
-                let range_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let range_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 range_writer.call_method1("seek", (0, 2)).unwrap();
                 assert!(corefs_read_object_envelope_range_stream(
                     py,
@@ -3786,12 +5368,8 @@ mod python {
                     .as_bytes()
                     .is_empty());
 
-                let envelope_reader = bytes_io
-                    .call1((PyBytes::new_bound(py, &encoded),))
-                    .unwrap();
-                let non_append_writer = bytes_io
-                    .call1((PyBytes::new_bound(py, prefix),))
-                    .unwrap();
+                let envelope_reader = bytes_io.call1((PyBytes::new_bound(py, &encoded),)).unwrap();
+                let non_append_writer = bytes_io.call1((PyBytes::new_bound(py, prefix),)).unwrap();
                 let error = corefs_decrypt_object_envelope_stream(
                     py,
                     &object_dek,
@@ -3835,14 +5413,16 @@ mod python {
                 let obj = integrity_report_to_py_dict(py, &report).unwrap();
                 let dict = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(dict.get_item("ok").unwrap().unwrap().extract::<bool>().unwrap(), false);
+                assert!(!dict
+                    .get_item("ok")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
                 assert!(dict.get_item("issues").unwrap().is_some());
                 assert!(dict.get_item("stats").unwrap().is_some());
 
-                let issues_obj = dict
-                    .get_item("issues")
-                    .unwrap()
-                    .unwrap();
+                let issues_obj = dict.get_item("issues").unwrap().unwrap();
                 let issues = issues_obj.downcast::<PyList>().unwrap();
                 let first_issue_obj = issues.get_item(0).unwrap();
                 let first_issue = first_issue_obj.downcast::<PyDict>().unwrap();
@@ -3871,14 +5451,16 @@ mod python {
                 let obj = capsule_report_to_py_dict(py, &report).unwrap();
                 let dict = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(dict.get_item("ok").unwrap().unwrap().extract::<bool>().unwrap(), false);
+                assert!(!dict
+                    .get_item("ok")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
                 assert!(dict.get_item("stats").unwrap().is_some());
                 assert!(dict.get_item("capsule").unwrap().is_some());
 
-                let issues_obj = dict
-                    .get_item("issues")
-                    .unwrap()
-                    .unwrap();
+                let issues_obj = dict.get_item("issues").unwrap().unwrap();
                 let issues = issues_obj.downcast::<PyList>().unwrap();
                 let first_issue_obj = issues.get_item(0).unwrap();
                 let first_issue = first_issue_obj.downcast::<PyDict>().unwrap();
@@ -3932,10 +5514,7 @@ mod python {
 
                 let capsule_obj = verify_capsule_bytes(py, capsule, None).unwrap();
                 let capsule_dict = capsule_obj.bind(py).downcast::<PyDict>().unwrap();
-                let capsule_meta_obj = capsule_dict
-                    .get_item("capsule")
-                    .unwrap()
-                    .unwrap();
+                let capsule_meta_obj = capsule_dict.get_item("capsule").unwrap().unwrap();
                 let capsule_meta = capsule_meta_obj.downcast::<PyDict>().unwrap();
                 assert!(capsule_meta.get_item("sections").unwrap().is_some());
             });
@@ -3960,7 +5539,8 @@ mod python {
                 }
 
                 let results = store.temporal_range(Some(1100), Some(1300), None);
-                let timestamps: Vec<i64> = results.into_iter().map(|frame| frame.timestamp()).collect();
+                let timestamps: Vec<i64> =
+                    results.into_iter().map(|frame| frame.timestamp()).collect();
                 assert_eq!(timestamps, vec![1300, 1200, 1100]);
             });
         }
@@ -3984,7 +5564,8 @@ mod python {
                 }
 
                 let results = store.temporal_as_of(1250, Some(2));
-                let timestamps: Vec<i64> = results.into_iter().map(|frame| frame.timestamp()).collect();
+                let timestamps: Vec<i64> =
+                    results.into_iter().map(|frame| frame.timestamp()).collect();
                 assert_eq!(timestamps, vec![1200, 1100]);
             });
         }
@@ -4008,7 +5589,10 @@ mod python {
                 };
 
                 let bytes = serde_json::to_vec(&session).unwrap();
-                assert_eq!(replay_session_time_bounds(bytes).unwrap(), Some((1_700_000_000, 1_700_000_002)));
+                assert_eq!(
+                    replay_session_time_bounds(bytes).unwrap(),
+                    Some((1_700_000_000, 1_700_000_002))
+                );
             });
         }
 
@@ -4016,7 +5600,10 @@ mod python {
         fn exported_temporal_session_window_queries_frames_around_serialized_session() {
             with_python(|_py| {
                 let mut store = PyFrameStore::new();
-                for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104].into_iter().enumerate() {
+                for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104]
+                    .into_iter()
+                    .enumerate()
+                {
                     let frame = PyFrame {
                         inner: Frame::new(
                             idx as u64,
@@ -4047,7 +5634,8 @@ mod python {
 
                 let bytes = serde_json::to_vec(&session).unwrap();
                 let results = store.temporal_session_window(bytes, 1, 1, None).unwrap();
-                let timestamps: Vec<i64> = results.into_iter().map(|frame| frame.timestamp()).collect();
+                let timestamps: Vec<i64> =
+                    results.into_iter().map(|frame| frame.timestamp()).collect();
                 assert_eq!(timestamps, vec![1103, 1102, 1101, 1100, 1099]);
             });
         }
@@ -4086,8 +5674,10 @@ mod python {
                 store.insert(&fresh);
 
                 let cached_range = index.range(Some(1000), Some(1300), None);
-                let cached_timestamps: Vec<i64> =
-                    cached_range.into_iter().map(|frame| frame.timestamp()).collect();
+                let cached_timestamps: Vec<i64> = cached_range
+                    .into_iter()
+                    .map(|frame| frame.timestamp())
+                    .collect();
                 assert_eq!(cached_timestamps, vec![1200, 1100, 1000]);
 
                 let rebuilt_timestamps: Vec<i64> = store
@@ -4135,11 +5725,21 @@ mod python {
                 let first_obj = checkpoints.get_item(0).unwrap();
                 let first = first_obj.downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    first.get_item("label").unwrap().unwrap().extract::<String>().unwrap(),
+                    first
+                        .get_item("label")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "before reflection"
                 );
                 assert_eq!(
-                    first.get_item("timestamp").unwrap().unwrap().extract::<i64>().unwrap(),
+                    first
+                        .get_item("timestamp")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
                     1_700_000_000
                 );
             });
@@ -4214,7 +5814,12 @@ mod python {
                 let comparison = obj.bind(py).downcast::<PyDict>().unwrap();
 
                 assert_eq!(
-                    comparison.get_item("action_count_delta").unwrap().unwrap().extract::<i64>().unwrap(),
+                    comparison
+                        .get_item("action_count_delta")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
                     1
                 );
                 let shared_obj = comparison
@@ -4222,15 +5827,31 @@ mod python {
                     .unwrap()
                     .unwrap();
                 let shared = shared_obj.downcast::<PyList>().unwrap();
-                assert_eq!(shared.get_item(0).unwrap().extract::<String>().unwrap(), "before reflection");
+                assert_eq!(
+                    shared.get_item(0).unwrap().extract::<String>().unwrap(),
+                    "before reflection"
+                );
 
-                let kind_deltas_obj = comparison
-                    .get_item("kind_count_delta")
-                    .unwrap()
-                    .unwrap();
+                let kind_deltas_obj = comparison.get_item("kind_count_delta").unwrap().unwrap();
                 let kind_deltas = kind_deltas_obj.downcast::<PyDict>().unwrap();
-                assert_eq!(kind_deltas.get_item("decision").unwrap().unwrap().extract::<i64>().unwrap(), 1);
-                assert_eq!(kind_deltas.get_item("reflection").unwrap().unwrap().extract::<i64>().unwrap(), -1);
+                assert_eq!(
+                    kind_deltas
+                        .get_item("decision")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    kind_deltas
+                        .get_item("reflection")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    -1
+                );
             });
         }
 
@@ -4285,21 +5906,83 @@ mod python {
                 let obj = replay_session_summary(py, bytes).unwrap();
                 let summary = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(summary.get_item("action_count").unwrap().unwrap().extract::<usize>().unwrap(), 4);
-                assert_eq!(summary.get_item("checkpoint_count").unwrap().unwrap().extract::<usize>().unwrap(), 2);
-                assert_eq!(summary.get_item("referenced_frame_count").unwrap().unwrap().extract::<usize>().unwrap(), 3);
-                assert_eq!(summary.get_item("ended_at").unwrap().unwrap().extract::<i64>().unwrap(), 1_700_000_002);
+                assert_eq!(
+                    summary
+                        .get_item("action_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    4
+                );
+                assert_eq!(
+                    summary
+                        .get_item("checkpoint_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    summary
+                        .get_item("referenced_frame_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    3
+                );
+                assert_eq!(
+                    summary
+                        .get_item("ended_at")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
+                    1_700_000_002
+                );
 
                 let labels_obj = summary.get_item("checkpoint_labels").unwrap().unwrap();
                 let labels = labels_obj.downcast::<PyList>().unwrap();
-                assert_eq!(labels.get_item(0).unwrap().extract::<String>().unwrap(), "before reflection");
-                assert_eq!(labels.get_item(1).unwrap().extract::<String>().unwrap(), "after decision");
+                assert_eq!(
+                    labels.get_item(0).unwrap().extract::<String>().unwrap(),
+                    "before reflection"
+                );
+                assert_eq!(
+                    labels.get_item(1).unwrap().extract::<String>().unwrap(),
+                    "after decision"
+                );
 
                 let kind_counts_obj = summary.get_item("kind_counts").unwrap().unwrap();
                 let kind_counts = kind_counts_obj.downcast::<PyDict>().unwrap();
-                assert_eq!(kind_counts.get_item("checkpoint").unwrap().unwrap().extract::<usize>().unwrap(), 2);
-                assert_eq!(kind_counts.get_item("memory_retrieve").unwrap().unwrap().extract::<usize>().unwrap(), 1);
-                assert_eq!(kind_counts.get_item("decision").unwrap().unwrap().extract::<usize>().unwrap(), 1);
+                assert_eq!(
+                    kind_counts
+                        .get_item("checkpoint")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    kind_counts
+                        .get_item("memory_retrieve")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    kind_counts
+                        .get_item("decision")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    1
+                );
             });
         }
 
@@ -4347,17 +6030,37 @@ mod python {
                     .unwrap();
                 let checkpoint = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(checkpoint.get_item("seq").unwrap().unwrap().extract::<u32>().unwrap(), 2);
                 assert_eq!(
-                    checkpoint.get_item("label").unwrap().unwrap().extract::<String>().unwrap(),
+                    checkpoint
+                        .get_item("seq")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u32>()
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    checkpoint
+                        .get_item("label")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "after reflection"
                 );
                 assert_eq!(
-                    checkpoint.get_item("timestamp").unwrap().unwrap().extract::<i64>().unwrap(),
+                    checkpoint
+                        .get_item("timestamp")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<i64>()
+                        .unwrap(),
                     1_700_000_001
                 );
 
-                assert!(replay_session_checkpoint_by_seq(py, bytes, 99).unwrap().is_none());
+                assert!(replay_session_checkpoint_by_seq(py, bytes, 99)
+                    .unwrap()
+                    .is_none());
             });
         }
 
@@ -4391,13 +6094,30 @@ mod python {
                 };
 
                 let bytes = serde_json::to_vec(&session).unwrap();
-                let obj = replay_session_checkpoint_by_label(py, bytes.clone(), "before reflection")
-                    .unwrap()
-                    .unwrap();
+                let obj =
+                    replay_session_checkpoint_by_label(py, bytes.clone(), "before reflection")
+                        .unwrap()
+                        .unwrap();
                 let checkpoint = obj.bind(py).downcast::<PyDict>().unwrap();
 
-                assert_eq!(checkpoint.get_item("seq").unwrap().unwrap().extract::<u32>().unwrap(), 0);
-                assert_eq!(checkpoint.get_item("offset_us").unwrap().unwrap().extract::<u64>().unwrap(), 250_000);
+                assert_eq!(
+                    checkpoint
+                        .get_item("seq")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u32>()
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    checkpoint
+                        .get_item("offset_us")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    250_000
+                );
 
                 assert!(replay_session_checkpoint_by_label(py, bytes, "missing")
                     .unwrap()
@@ -4453,10 +6173,9 @@ mod python {
                 .map(|session| serde_json::to_vec(&session).unwrap())
                 .collect();
 
-                let summary_obj =
-                    replay_registry_session_summary(py, sessions.clone(), "turn-12")
-                        .unwrap()
-                        .unwrap();
+                let summary_obj = replay_registry_session_summary(py, sessions.clone(), "turn-12")
+                    .unwrap()
+                    .unwrap();
                 let summary = summary_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
                     summary
@@ -4478,7 +6197,12 @@ mod python {
                 .unwrap();
                 let checkpoint = checkpoint_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    checkpoint.get_item("seq").unwrap().unwrap().extract::<u32>().unwrap(),
+                    checkpoint
+                        .get_item("seq")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u32>()
+                        .unwrap(),
                     0
                 );
                 assert_eq!(
@@ -4491,12 +6215,16 @@ mod python {
                     1_700_000_101
                 );
 
-                assert!(replay_registry_session_summary(py, sessions.clone(), "missing")
-                    .unwrap()
-                    .is_none());
-                assert!(replay_registry_checkpoint_by_label(py, sessions, "turn-12", "missing")
-                    .unwrap()
-                    .is_none());
+                assert!(
+                    replay_registry_session_summary(py, sessions.clone(), "missing")
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    replay_registry_checkpoint_by_label(py, sessions, "turn-12", "missing")
+                        .unwrap()
+                        .is_none()
+                );
             });
         }
 
@@ -4521,10 +6249,12 @@ mod python {
                 .map(|session| serde_json::to_vec(&session).unwrap())
                 .collect();
 
-                let err = replay_registry_session_summary(py, duplicate_sessions, "turn-14")
-                    .unwrap_err();
+                let err =
+                    replay_registry_session_summary(py, duplicate_sessions, "turn-14").unwrap_err();
                 assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
-                assert!(err.to_string().contains("duplicate replay session id: turn-14"));
+                assert!(err
+                    .to_string()
+                    .contains("duplicate replay session id: turn-14"));
             });
         }
 
@@ -4586,15 +6316,26 @@ mod python {
                 .map(|session| serde_json::to_vec(&session).unwrap())
                 .collect();
 
-                let checkpoint = replay_registry_checkpoint_by_seq(py, sessions.clone(), "turn-16", 0)
-                    .unwrap()
-                    .unwrap();
+                let checkpoint =
+                    replay_registry_checkpoint_by_seq(py, sessions.clone(), "turn-16", 0)
+                        .unwrap()
+                        .unwrap();
                 let checkpoint = checkpoint.bind(py).downcast::<PyDict>().unwrap();
-                assert_eq!(checkpoint.get_item("label").unwrap().unwrap().extract::<String>().unwrap(), "before reflection");
+                assert_eq!(
+                    checkpoint
+                        .get_item("label")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "before reflection"
+                );
 
-                assert!(replay_registry_checkpoint_by_seq(py, sessions, "turn-16", 99)
-                    .unwrap()
-                    .is_none());
+                assert!(
+                    replay_registry_checkpoint_by_seq(py, sessions, "turn-16", 99)
+                        .unwrap()
+                        .is_none()
+                );
             });
         }
 
@@ -4609,10 +6350,7 @@ mod python {
 
                 let capsule_obj = verify_capsule_bytes(py, capsule, None).unwrap();
                 let capsule_dict = capsule_obj.bind(py).downcast::<PyDict>().unwrap();
-                let issues_obj = capsule_dict
-                    .get_item("issues")
-                    .unwrap()
-                    .unwrap();
+                let issues_obj = capsule_dict.get_item("issues").unwrap().unwrap();
                 let issues = issues_obj.downcast::<PyList>().unwrap();
                 let first_issue_obj = issues.get_item(0).unwrap();
                 let first_issue = first_issue_obj.downcast::<PyDict>().unwrap();
@@ -4696,7 +6434,11 @@ mod python {
                 let dict = obj.bind(py).downcast::<PyDict>().unwrap();
 
                 assert_eq!(
-                    dict.get_item("entity").unwrap().unwrap().extract::<String>().unwrap(),
+                    dict.get_item("entity")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "user"
                 );
                 assert!(dict.get_item("slots").unwrap().is_some());
@@ -4708,7 +6450,14 @@ mod python {
                 assert_eq!(slots.len(), 1);
                 let slot_value = slots.get_item(0).unwrap();
                 let slot = slot_value.downcast::<PyDict>().unwrap();
-                assert_eq!(slot.get_item("slot").unwrap().unwrap().extract::<String>().unwrap(), "likes");
+                assert_eq!(
+                    slot.get_item("slot")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "likes"
+                );
                 let values_binding = slot.get_item("values").unwrap().unwrap();
                 let values = values_binding.downcast::<PyList>().unwrap();
                 assert_eq!(
@@ -4718,10 +6467,8 @@ mod python {
                         .collect::<Vec<_>>(),
                     vec!["alpha".to_string(), "coffee".to_string()]
                 );
-                let slot_supporting_binding = slot
-                    .get_item("supporting_frame_ids")
-                    .unwrap()
-                    .unwrap();
+                let slot_supporting_binding =
+                    slot.get_item("supporting_frame_ids").unwrap().unwrap();
                 let slot_supporting = slot_supporting_binding.downcast::<PyList>().unwrap();
                 assert_eq!(
                     slot_supporting
@@ -4776,10 +6523,7 @@ mod python {
                     vec![99]
                 );
 
-                let supporting_binding = dict
-                    .get_item("supporting_frame_ids")
-                    .unwrap()
-                    .unwrap();
+                let supporting_binding = dict.get_item("supporting_frame_ids").unwrap().unwrap();
                 let supporting = supporting_binding.downcast::<PyList>().unwrap();
                 assert_eq!(
                     supporting
@@ -4831,19 +6575,58 @@ mod python {
                 let second = second_value.downcast::<PyDict>().unwrap();
                 let third = third_value.downcast::<PyDict>().unwrap();
 
-                assert_eq!(first.get_item("value").unwrap().unwrap().extract::<String>().unwrap(), "Google");
                 assert_eq!(
-                    first.get_item("version").unwrap().unwrap().extract::<String>().unwrap(),
+                    first
+                        .get_item("value")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Google"
+                );
+                assert_eq!(
+                    first
+                        .get_item("version")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "sets"
                 );
-                assert_eq!(second.get_item("value").unwrap().unwrap().extract::<String>().unwrap(), "Meta");
                 assert_eq!(
-                    second.get_item("version").unwrap().unwrap().extract::<String>().unwrap(),
+                    second
+                        .get_item("value")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Meta"
+                );
+                assert_eq!(
+                    second
+                        .get_item("version")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "updates"
                 );
-                assert_eq!(third.get_item("value").unwrap().unwrap().extract::<String>().unwrap(), "Meta");
                 assert_eq!(
-                    third.get_item("version").unwrap().unwrap().extract::<String>().unwrap(),
+                    third
+                        .get_item("value")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Meta"
+                );
+                assert_eq!(
+                    third
+                        .get_item("version")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "retracts"
                 );
             });
@@ -4894,13 +6677,17 @@ mod python {
                     200,
                 ));
 
-                graph.upsert_node("user", EntityKind::Person, 1.0, newer_frame_id).unwrap();
+                graph
+                    .upsert_node("user", EntityKind::Person, 1.0, newer_frame_id)
+                    .unwrap();
                 graph
                     .upsert_node("OpenAI", EntityKind::Organization, 1.0, newer_frame_id)
                     .unwrap();
                 let from = graph.get_by_name("user").unwrap().id;
                 let to = graph.get_by_name("OpenAI").unwrap().id;
-                graph.upsert_edge(from, to, "employer", 1.0, newer_frame_id).unwrap();
+                graph
+                    .upsert_edge(from, to, "employer", 1.0, newer_frame_id)
+                    .unwrap();
 
                 let engine = PyAnimaEngine {
                     inner: crate::engine::AnimaEngine::from_parts(frames, cards, graph),
@@ -4908,35 +6695,56 @@ mod python {
 
                 let verify_obj = engine.verify(py).unwrap();
                 let verify = verify_obj.bind(py).downcast::<PyDict>().unwrap();
-                assert!(!verify.get_item("ok").unwrap().unwrap().extract::<bool>().unwrap());
+                assert!(!verify
+                    .get_item("ok")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
 
                 let stats_obj = engine.stats(py).unwrap();
                 let stats = stats_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    stats.get_item("frame_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("frame_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     2
                 );
                 assert_eq!(
-                    stats.get_item("graph_edge_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("graph_edge_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     1
                 );
 
                 let state_obj = engine.project_entity_state(py, "user").unwrap();
                 let state = state_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    state.get_item("entity").unwrap().unwrap().extract::<String>().unwrap(),
+                    state
+                        .get_item("entity")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "user"
                 );
-                let slots_value = state
-                    .get_item("slots")
-                    .unwrap()
-                    .unwrap();
+                let slots_value = state.get_item("slots").unwrap().unwrap();
                 let slots = slots_value.downcast::<PyList>().unwrap();
                 assert_eq!(slots.len(), 1);
                 let slot_value = slots.get_item(0).unwrap();
                 let slot = slot_value.downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    slot.get_item("slot").unwrap().unwrap().extract::<String>().unwrap(),
+                    slot.get_item("slot")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
                     "employer"
                 );
 
@@ -5031,13 +6839,17 @@ mod python {
                     200,
                 ));
 
-                graph.upsert_node("user", EntityKind::Person, 1.0, frame_id).unwrap();
+                graph
+                    .upsert_node("user", EntityKind::Person, 1.0, frame_id)
+                    .unwrap();
                 graph
                     .upsert_node("OpenAI", EntityKind::Organization, 1.0, frame_id)
                     .unwrap();
                 let from = graph.get_by_name("user").unwrap().id;
                 let to = graph.get_by_name("OpenAI").unwrap().id;
-                graph.upsert_edge(from, to, "employer", 1.0, frame_id).unwrap();
+                graph
+                    .upsert_edge(from, to, "employer", 1.0, frame_id)
+                    .unwrap();
 
                 let engine = PyAnimaEngine {
                     inner: crate::engine::AnimaEngine::from_parts(frames, cards, graph),
@@ -5048,28 +6860,32 @@ mod python {
                 let stats_obj = restored.stats(py).unwrap();
                 let stats = stats_obj.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
-                    stats.get_item("frame_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("frame_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     1
                 );
                 assert_eq!(
-                    stats.get_item("card_count").unwrap().unwrap().extract::<usize>().unwrap(),
+                    stats
+                        .get_item("card_count")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
                     1
                 );
 
                 let state_obj = restored.project_entity_state(py, "user").unwrap();
                 let state = state_obj.bind(py).downcast::<PyDict>().unwrap();
-                let slots_value = state
-                    .get_item("slots")
-                    .unwrap()
-                    .unwrap();
+                let slots_value = state.get_item("slots").unwrap().unwrap();
                 let slots = slots_value.downcast::<PyList>().unwrap();
                 assert_eq!(slots.len(), 1);
                 let slot_item = slots.get_item(0).unwrap();
                 let slot_value = slot_item.downcast::<PyDict>().unwrap();
-                let values_value = slot_value
-                    .get_item("values")
-                    .unwrap()
-                    .unwrap();
+                let values_value = slot_value.get_item("values").unwrap().unwrap();
                 let values = values_value.downcast::<PyList>().unwrap();
                 assert_eq!(
                     values

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -236,10 +237,15 @@ def me(
 
 
 @router.post("/logout", response_model=LogoutResponse)
-def logout(request: Request) -> dict[str, bool]:
-    unlock_session_store.revoke(read_unlock_token(request))
-    clear_sqlcipher_key()
-    dispose_all_user_engines()
+async def logout(request: Request) -> dict[str, bool]:
+    token = read_unlock_token(request)
+
+    def detach_and_destroy() -> None:
+        unlock_session_store.revoke(token)
+        clear_sqlcipher_key()
+        dispose_all_user_engines()
+
+    await asyncio.to_thread(detach_and_destroy)
     return {"success": True}
 
 

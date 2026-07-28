@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.config import settings
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
@@ -105,7 +105,7 @@ async def reset_eval_state(
             ),
         )
 
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     from anima_server.services.agent.consolidation import drain_background_memory_tasks
 
@@ -143,7 +143,7 @@ async def import_eval_transcript(
             ),
         )
 
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
 
     imported = _persist_imported_transcript(
         payload,

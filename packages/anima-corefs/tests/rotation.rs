@@ -288,6 +288,7 @@ fn targeted_object_rotation_rejects_authenticated_content_outside_the_catalog_ha
         forged_body,
     )
     .unwrap();
+    coordinator.release_object_lease().unwrap();
     fs::write(
         coordinator
             .objects_path()
@@ -512,7 +513,7 @@ fn frk_rotation_rewraps_live_deks_without_rewriting_object_ciphertext() {
 }
 
 #[test]
-fn cached_load_rejects_wrong_same_version_retained_material() {
+fn lease_rotation_wrong_same_version_retained_material_fails_closed() {
     let root = reset_root("cached-wrong-retained-material");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let retained_keys = keys(0x42, 1);
@@ -537,7 +538,7 @@ fn cached_load_rejects_wrong_same_version_retained_material() {
 }
 
 #[test]
-fn successful_rotation_cache_rejects_missing_catalog_after_cutover_completion() {
+fn lease_rotation_rejects_missing_catalog_after_verified_cutover_completion() {
     let root = reset_root("successful-rotation-cache-replacement");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let old_keys = keys(0x42, 1);

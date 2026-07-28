@@ -345,6 +345,7 @@ fn cache_hit_rejects_missing_object() {
 #[test]
 fn cache_hit_rejects_empty_object() {
     let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-empty-object");
+    coordinator.release_object_lease().unwrap();
     fs::write(
         coordinator
             .objects_path()
@@ -395,7 +396,7 @@ fn cache_hit_rejects_replaced_object() {
 }
 
 #[test]
-fn cache_hit_rejects_unexpected_hard_link() {
+fn cache_hit_rejects_unexpected_hard_link_production_link_count() {
     let (root, coordinator, keys, prepared) = seed_cached_object("cache-hit-hard-link-object");
     let object_path = coordinator
         .objects_path()
@@ -412,8 +413,29 @@ fn cache_hit_rejects_unexpected_hard_link() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(windows)]
 #[test]
-fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
+fn cache_hit_rejects_unexpected_hard_link_named_like_unix_crash_stage_on_windows_production_link_count(
+) {
+    let (root, coordinator, keys, prepared) =
+        seed_cached_object("cache-hit-unix-crash-alias-on-windows");
+    let object_path = coordinator
+        .objects_path()
+        .join(prepared.physical_name().as_str());
+    fs::hard_link(
+        object_path,
+        coordinator.objects_path().join(".object.17.tmp"),
+    )
+    .unwrap();
+
+    assert!(unchanged_cached_commit(&coordinator, &keys, &prepared).is_err());
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lease_lock_order_another_coordinator_advancing_head_forces_unlocked_load_miss() {
     let root = reset_root("cross-coordinator-unlocked-cache-miss");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
@@ -459,7 +481,7 @@ fn another_coordinator_advancing_head_forces_unlocked_load_miss() {
 }
 
 #[test]
-fn another_coordinator_advance_is_observed_by_commit() {
+fn lease_lock_order_another_coordinator_advance_is_observed_by_commit() {
     let root = reset_root("cross-coordinator-commit-cache-miss");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let other = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
@@ -1456,7 +1478,7 @@ fn cutover_receipt_rejects_a_divergent_head_at_its_generation() {
 }
 
 #[test]
-fn invalidation_runs_after_unlock_and_failure_does_not_rollback_commit() {
+fn lease_lock_order_invalidation_runs_after_unlock_and_failure_does_not_rollback_commit() {
     let root = reset_root("invalidation-after-unlock");
     let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
     let keys = keys();

@@ -267,8 +267,8 @@ fn compress(data: &[u8]) -> crate::Result<Vec<u8>> {
 
 /// Decompress Zstd data.
 fn decompress(data: &[u8]) -> crate::Result<Vec<u8>> {
-    let decoder =
-        zstd::stream::read::Decoder::new(Cursor::new(data)).map_err(|e| crate::Error::Io(e.to_string()))?;
+    let decoder = zstd::stream::read::Decoder::new(Cursor::new(data))
+        .map_err(|e| crate::Error::Io(e.to_string()))?;
     let mut limited = decoder.take((MAX_DECOMPRESSED_SECTION_SIZE + 1) as u64);
     let mut output = Vec::new();
     limited
@@ -568,8 +568,9 @@ impl CapsuleReader {
         #[cfg(feature = "encryption")]
         let data = if self.header.is_encrypted() {
             if let Some(ref password) = self.password {
-                crypto::decrypt(&data, password)
-                    .map_err(|e| crate::Error::Capsule(format!("section {:?} decrypt failed: {e}", kind)))?
+                crypto::decrypt(&data, password).map_err(|e| {
+                    crate::Error::Capsule(format!("section {:?} decrypt failed: {e}", kind))
+                })?
             } else {
                 data
             }
@@ -584,8 +585,9 @@ impl CapsuleReader {
             ));
         }
 
-        decompress(&data)
-            .map_err(|e| crate::Error::Capsule(format!("section {:?} decompress failed: {e}", kind)))
+        decompress(&data).map_err(|e| {
+            crate::Error::Capsule(format!("section {:?} decompress failed: {e}", kind))
+        })
     }
 
     /// List available section kinds.
@@ -929,9 +931,10 @@ mod tests {
         let report = verify_capsule(&capsule, None);
 
         assert!(!report.ok);
-        assert!(report.issues.iter().any(|issue| {
-            issue.kind == CapsuleVerificationIssueKind::FooterChecksumMismatch
-        }));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == CapsuleVerificationIssueKind::FooterChecksumMismatch }));
     }
 
     #[test]
@@ -991,9 +994,10 @@ mod tests {
 
         let report = verify_capsule(&capsule, None);
         assert!(!report.ok);
-        assert!(report.issues.iter().any(|issue| {
-            issue.kind == CapsuleVerificationIssueKind::DuplicateSectionKind
-        }));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == CapsuleVerificationIssueKind::DuplicateSectionKind }));
 
         assert!(CapsuleReader::open(capsule, None).is_err());
     }

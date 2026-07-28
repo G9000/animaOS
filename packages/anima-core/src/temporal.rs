@@ -74,9 +74,12 @@ impl TemporalIndex {
             return Vec::new();
         }
 
-        let start_idx = start.map_or(0, |ts| self.entries.partition_point(|entry| entry.timestamp < ts));
-        let end_idx =
-            end.map_or(self.entries.len(), |ts| self.entries.partition_point(|entry| entry.timestamp <= ts));
+        let start_idx = start.map_or(0, |ts| {
+            self.entries.partition_point(|entry| entry.timestamp < ts)
+        });
+        let end_idx = end.map_or(self.entries.len(), |ts| {
+            self.entries.partition_point(|entry| entry.timestamp <= ts)
+        });
 
         self.entries[start_idx..end_idx]
             .iter()
@@ -197,7 +200,7 @@ fn parse_relative_ago(input: &str, now: DateTime<Utc>) -> Option<TemporalMention
     }
 
     let n: i64 = parts[0].parse().ok()?;
-    if n < 0 || n > 365 * 100 {
+    if !(0..=365 * 100).contains(&n) {
         return None; // Reject negative and absurdly large values
     }
 
@@ -304,7 +307,11 @@ impl TimelineQuery {
     }
 
     /// Apply this query through a pre-built temporal index.
-    pub fn apply_indexed<'a>(&self, index: &TemporalIndex, store: &'a FrameStore) -> Vec<&'a Frame> {
+    pub fn apply_indexed<'a>(
+        &self,
+        index: &TemporalIndex,
+        store: &'a FrameStore,
+    ) -> Vec<&'a Frame> {
         index.query(store, self)
     }
 }
@@ -344,8 +351,8 @@ pub fn assemble_timeline(frames: &[Frame]) -> Vec<(String, Vec<&Frame>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use crate::frame::FrameStore;
+    use chrono::TimeZone;
 
     fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
@@ -508,7 +515,10 @@ mod tests {
         use crate::replay::{ActionKind, ReplayAction, SerializedSession};
 
         let mut store = FrameStore::new();
-        for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104].into_iter().enumerate() {
+        for (idx, ts) in [1098_i64, 1099, 1100, 1101, 1102, 1103, 1104]
+            .into_iter()
+            .enumerate()
+        {
             let frame = Frame::new(
                 idx as u64,
                 FrameKind::Fact,
@@ -568,6 +578,8 @@ mod tests {
         };
 
         let index = TemporalIndex::from_store(&store);
-        assert!(index.session_window(&store, &session, 1, 1, None).is_empty());
+        assert!(index
+            .session_window(&store, &session, 1, 1, None)
+            .is_empty());
     }
 }

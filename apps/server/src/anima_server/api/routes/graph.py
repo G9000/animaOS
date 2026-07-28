@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.models import KGEntity, KGRelation
 from anima_server.services.agent.knowledge_graph import (
@@ -28,7 +28,7 @@ async def get_graph_overview(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Get knowledge graph statistics."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     entity_count = (
         db.scalar(select(func.count(KGEntity.id)).where(KGEntity.user_id == user_id)) or 0
@@ -101,7 +101,7 @@ async def list_entities(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """List entities with optional filtering."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     query = select(KGEntity).where(KGEntity.user_id == user_id)
 
@@ -150,7 +150,7 @@ async def get_entity(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Get a single entity with its relations."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     entity = db.get(KGEntity, entity_id)
     if entity is None or entity.user_id != user_id:
@@ -247,7 +247,7 @@ async def list_relations(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """List relations with optional filtering."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     query = select(KGRelation).where(
         KGRelation.user_id == user_id,
@@ -313,7 +313,7 @@ async def search_graph_endpoint(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Search the knowledge graph from entity names."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     # Find matching entities
     normalized = normalize_entity_name(q)
@@ -368,7 +368,7 @@ async def get_graph_context(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Get formatted graph context for a query."""
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     context_lines = graph_context_for_query(
         db,

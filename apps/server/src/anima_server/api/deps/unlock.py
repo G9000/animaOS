@@ -23,8 +23,31 @@ def require_unlocked_session(request: Request) -> UnlockSession:
     return session
 
 
+async def require_unlocked_session_async(request: Request) -> UnlockSession:
+    session = await unlock_session_store.resolve_async(read_unlock_token(request))
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session locked. Please sign in again.",
+        )
+    return session
+
+
 def require_unlocked_user(request: Request, user_id: int) -> UnlockSession:
     session = require_unlocked_session(request)
+    if session.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Session user mismatch.",
+        )
+    return session
+
+
+async def require_unlocked_user_async(
+    request: Request,
+    user_id: int,
+) -> UnlockSession:
+    session = await require_unlocked_session_async(request)
     if session.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

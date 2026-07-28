@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.unlock import require_unlocked_session_async
 from anima_server.config import settings
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
@@ -19,7 +19,7 @@ from anima_server.services.agent.persistence import close_thread, create_thread,
 from anima_server.services.agent.service import _track_background_task
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
 from anima_server.services.images.deletion import delete_thread_with_image_cleanup
-from anima_server.services.sessions import get_active_dek
+from anima_server.services.sessions import get_active_dek_async
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ async def list_user_threads(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """List all threads for the authenticated user, newest first."""
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     rows = list_threads(runtime_db, user_id=unlock_session.user_id)
     return {
         "threads": [_thread_to_dict(t, first_role) for t, first_role in rows]
@@ -81,7 +81,7 @@ async def create_new_thread(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Create a new conversation thread, closing the existing active one."""
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     user_id = unlock_session.user_id
 
     # Reuse the current active thread when it's still completely empty.
@@ -123,13 +123,13 @@ async def get_thread_messages(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Return all messages for a thread (active from PG, archived from JSONL)."""
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
-    dek = get_active_dek(unlock_session.user_id, "conversations")
+    dek = await get_active_dek_async(unlock_session.user_id, "conversations")
     messages = get_thread_messages_for_display(
         runtime_db,
         thread=thread,
@@ -148,7 +148,7 @@ async def close_thread_endpoint(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Close a thread and trigger background consolidation."""
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(
@@ -180,7 +180,7 @@ async def get_thread_context_stats(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Return context window usage stats for a thread."""
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
@@ -232,7 +232,7 @@ async def delete_thread_endpoint(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     """Permanently delete a thread and all its messages."""
-    unlock_session = require_unlocked_session(request)
+    unlock_session = await require_unlocked_session_async(request)
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(

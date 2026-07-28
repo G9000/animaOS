@@ -1,52 +1,88 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from anima_server.services.corefs import logical
 
 
-def test_validation_snapshot_and_read_wrappers_bind_selected_head(monkeypatch) -> None:
+def test_validation_snapshot_and_read_wrappers_bind_selected_head() -> None:
     calls: list[tuple[object, ...]] = []
 
-    def fake_snapshot(core_root: str, core_id: str, keys: object) -> dict[str, object]:
-        calls.append(("snapshot", core_root, core_id, keys))
+    def fake_snapshot(keys: object) -> dict[str, object]:
+        calls.append(("snapshot", keys))
         return {"generation": 7, "catalogHash": "abc123"}
 
     def fake_stat(*args: object) -> bytes:
         calls.append(("stat", *args))
         return b'{"version":"corefs-logical-v1","result":{}}'
 
-    monkeypatch.setattr(logical.anima_core, "corefs_validation_snapshot", fake_snapshot, raising=False)
-    monkeypatch.setattr(logical.anima_core, "corefs_stat_v1", fake_stat, raising=False)
-
+    native_session = SimpleNamespace(
+        validation_snapshot=fake_snapshot,
+        stat_v1=fake_stat,
+    )
     keys = object()
     selected = logical.select_validation_snapshot(
-        core_root="C:/core",
-        core_id="core-1",
+        corefs_session=native_session,
         keys=keys,
     )
     assert selected == logical.CoreFsValidationSnapshot(generation=7, catalog_hash="abc123")
     assert logical.stat_v1(
-        core_root="C:/core",
-        core_id="core-1",
+        corefs_session=native_session,
         keys=keys,
         selected=selected,
         path="Diary/today.md",
     ) == b'{"version":"corefs-logical-v1","result":{}}'
     assert calls == [
-        ("snapshot", "C:/core", "core-1", keys),
-        ("stat", "C:/core", "core-1", keys, 7, "abc123", "Diary/today.md"),
+        ("snapshot", keys),
+        ("stat", keys, 7, "abc123", "Diary/today.md"),
     ]
 
 
-def test_read_chunk_preserves_empty_result(monkeypatch) -> None:
+def test_validation_snapshot_and_read_use_one_resolved_native_session() -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def validation_snapshot(keys: object) -> dict[str, object]:
+        calls.append(("snapshot", keys))
+        return {"generation": 7, "catalogHash": "abc123"}
+
+    def stat_v1(
+        keys: object,
+        generation: int,
+        catalog_hash: str,
+        path: str,
+    ) -> bytes:
+        calls.append(("stat", keys, generation, catalog_hash, path))
+        return b'{"version":"corefs-logical-v1","result":{}}'
+
+    native_session = SimpleNamespace(
+        validation_snapshot=validation_snapshot,
+        stat_v1=stat_v1,
+    )
+    keys = object()
+
+    selected = logical.select_validation_snapshot(
+        corefs_session=native_session,
+        keys=keys,
+    )
+    assert logical.stat_v1(
+        corefs_session=native_session,
+        keys=keys,
+        selected=selected,
+        path="Diary/today.md",
+    ) == b'{"version":"corefs-logical-v1","result":{}}'
+    assert calls == [
+        ("snapshot", keys),
+        ("stat", keys, 7, "abc123", "Diary/today.md"),
+    ]
+
+
+def test_read_chunk_preserves_empty_result() -> None:
     def fake_read_chunk(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(logical.anima_core, "corefs_read_chunk_v1", fake_read_chunk, raising=False)
-
     assert (
         logical.read_chunk_v1(
-            core_root="C:/core",
-            core_id="core-1",
+            corefs_session=SimpleNamespace(read_chunk_v1=fake_read_chunk),
             keys=object(),
             selected=logical.CoreFsValidationSnapshot(generation=1, catalog_hash="hash"),
             path="empty.md",
@@ -55,7 +91,7 @@ def test_read_chunk_preserves_empty_result(monkeypatch) -> None:
     )
 
 
-def test_glob_and_grep_wrappers_pass_continuation_cursors(monkeypatch) -> None:
+def test_glob_and_grep_wrappers_pass_continuation_cursors() -> None:
     calls: list[tuple[object, ...]] = []
 
     def fake_glob(*args: object, **kwargs: object) -> bytes:
@@ -66,13 +102,10 @@ def test_glob_and_grep_wrappers_pass_continuation_cursors(monkeypatch) -> None:
         calls.append(("grep", *args, kwargs))
         return b'{"version":"corefs-logical-v1","result":{"matches":[]}}'
 
-    monkeypatch.setattr(logical.anima_core, "corefs_glob_v1", fake_glob, raising=False)
-    monkeypatch.setattr(logical.anima_core, "corefs_grep_v1", fake_grep, raising=False)
-
+    native_session = SimpleNamespace(glob_v1=fake_glob, grep_v1=fake_grep)
     selected = logical.CoreFsValidationSnapshot(generation=3, catalog_hash="hash")
     logical.glob_v1(
-        core_root="C:/core",
-        core_id="core-1",
+        corefs_session=native_session,
         keys="keys",
         selected=selected,
         root="Notes",
@@ -82,8 +115,7 @@ def test_glob_and_grep_wrappers_pass_continuation_cursors(monkeypatch) -> None:
         response_bytes=1024,
     )
     logical.grep_v1(
-        core_root="C:/core",
-        core_id="core-1",
+        corefs_session=native_session,
         keys="keys",
         selected=selected,
         root="Notes",
@@ -99,8 +131,6 @@ def test_glob_and_grep_wrappers_pass_continuation_cursors(monkeypatch) -> None:
     assert calls == [
         (
             "glob",
-            "C:/core",
-            "core-1",
             "keys",
             3,
             "hash",
@@ -112,8 +142,6 @@ def test_glob_and_grep_wrappers_pass_continuation_cursors(monkeypatch) -> None:
         ),
         (
             "grep",
-            "C:/core",
-            "core-1",
             "keys",
             3,
             "hash",

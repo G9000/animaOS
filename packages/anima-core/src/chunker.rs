@@ -83,9 +83,9 @@ pub struct Chunk {
 
 #[derive(Debug, Clone)]
 enum Element {
-    Heading { level: u8, text: String },
+    Heading { _level: u8, text: String },
     Paragraph(String),
-    CodeBlock { lang: Option<String>, text: String },
+    CodeBlock { _lang: Option<String>, text: String },
     Table(String),
     List(String),
     Separator,
@@ -154,7 +154,7 @@ fn detect_structure(text: &str) -> Vec<(Element, usize, usize)> {
             let code_text = code_lines.join("\n");
             elements.push((
                 Element::CodeBlock {
-                    lang,
+                    _lang: lang,
                     text: code_text,
                 },
                 line_start,
@@ -170,7 +170,7 @@ fn detect_structure(text: &str) -> Vec<(Element, usize, usize)> {
             char_offset += line.len() + 1;
             elements.push((
                 Element::Heading {
-                    level,
+                    _level: level,
                     text: heading_text,
                 },
                 line_start,
@@ -906,7 +906,7 @@ mod tests {
             overlap_chars: 10,
             ..Default::default()
         };
-        let chunks = chunk_text(&text, &opts);
+        let chunks = chunk_text(text, &opts);
         if chunks.len() > 1 {
             // Second chunk should contain overlap from first
             let first_end: String = chunks[0]
@@ -923,7 +923,7 @@ mod tests {
                 chunks[1].text.len() > chunks[0].text.len() - 10
                     || chunks[1]
                         .text
-                        .contains(&first_end.trim().split_whitespace().last().unwrap_or("")),
+                        .contains(first_end.split_whitespace().last().unwrap_or("")),
                 "overlap should propagate"
             );
         }
