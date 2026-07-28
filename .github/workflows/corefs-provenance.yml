@@ -138,6 +138,11 @@ jobs:
       - name: Checkout animaOS
         uses: actions/checkout@v4
 
+      - name: Install PyO3-compatible Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Install Rust 1.75
         run: rustup toolchain install 1.75.0 --profile minimal --component clippy
 

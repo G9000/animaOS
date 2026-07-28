@@ -492,6 +492,8 @@ def test_object_lease_diagnostic_cfg_and_macos_fallback_ci_are_explicit() -> Non
 
     workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
     macos = workflow.split("  macos-native-lease:", 1)[1]
+    assert "uses: actions/setup-python@v6" in macos
+    assert 'python-version: "3.13"' in macos
     assert macos.count("if: steps.macos-backend.outputs.enabled == 'true'") == 2
     full_suite = macos.split("      - name: Test all CoreFS paths on macOS", 1)[1]
     full_suite = full_suite.split("      - name:", 1)[0]

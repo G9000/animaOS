@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 21:52 MYT
+- Updated: 2026-07-28 22:02 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -236,6 +236,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 21:38 MYT - PR #125 review found that the backend-disabled macOS job skipped every remaining Rust check. Added a RED/GREEN workflow contract, then made the full CoreFS fallback suite and strict CoreFS/anima-core Clippy unconditional while retaining backend-specific FSEvents/kqueue tests behind the production-backend gate. PCF-002 remains complete because this restores CI coverage without changing the accepted macOS safe-open fallback.
 - 2026-07-28 21:46 MYT - Reopened PCF-002 under the documented acceptance-breaking lifecycle after PR #125's current-head P1 and failed macOS job proved the unconditional Clippy gate could not pass on the selected fallback backend. Preserved the 2026-07-28 21:01 MYT completion in history, cleared the current completion timestamp, and synchronized the parent row/history before beginning the repair. PCF-003 is dependency-ineligible while this correction is open.
 - 2026-07-28 21:52 MYT - Diagnosed the failed macOS job directly: strict Clippy rejected both the fallback branch's `needless_return` and the now-unconstructed evidence-only `Macos` platform variant. Added two genuine RED assertions, converted both unsupported-platform branches to tail expressions, and removed the unused variant. Focused and full contracts, full serialized Rust 1.75 CoreFS tests, strict combined Clippy, scoped Rust 1.75 rustfmt, workflow YAML parsing, and diff hygiene pass locally; exact macOS validation remains assigned to the refreshed native CI head before closeout.
+- 2026-07-28 22:02 MYT - The refreshed native macOS job passed the full fallback test suite, then failed before Clippy crate analysis because the `macos-26-arm64` image selected Python 3.14 while PyO3 0.22.6 supports through 3.13. Added a RED/GREEN workflow contract and pinned Python 3.13 with the current Node-24-compatible `actions/setup-python@v6` before Rust setup. PCF-002 remains `in_progress` pending the next exact macOS run and current-head Codex review.
 
 ## Validation
 
@@ -395,6 +396,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 closeout: `bun run check:repo` found no PCF-002/PCF-000 issue and exited `1` only for the two unrelated pre-existing Inner Life violations: the `IL-007` parent-row mismatch and missing `IL-008` row.
   - PR #125 macOS fallback CI follow-up: the workflow regression failed RED with four backend-gated steps, then passed after only the two native-backend tests remained gated; the complete benchmark/workflow contract passed `125/125`, and workflow YAML parsing passed.
   - PR #125 reopened macOS Clippy repair: direct job logs confirmed `dead_code` for the unused `Macos` variant and `needless_return` in the fallback. Both new assertions failed RED and passed GREEN; the complete benchmark/workflow contract passed `126/126`; full serialized Rust 1.75 CoreFS passed `213` library tests with `1` ignored plus every binary/integration/doc suite; strict combined CoreFS/anima-core Clippy, scoped Rust 1.75 rustfmt, workflow YAML parsing, and diff hygiene passed. Local Apple cross-target Clippy was blocked before crate analysis by the Windows host's missing Apple C compiler, so the required exact macOS CI run remains the closeout authority.
+  - PR #125 macOS Python compatibility follow-up: the native job's full fallback suite passed before PyO3 rejected runner-default Python 3.14 during combined Clippy. The setup-python 3.13 workflow assertion failed RED and passed GREEN; the focused workflow contract and YAML parsing passed.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (macOS fallback cleanup)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`

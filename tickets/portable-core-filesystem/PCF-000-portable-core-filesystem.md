@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 21:52 MYT
+- Updated: 2026-07-28 22:02 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -251,6 +251,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 21:38 MYT - PR #125 review caught that the backend-disabled macOS job had become a no-op after disposable-spike cleanup. Restored unconditional full CoreFS fallback tests and strict CoreFS/anima-core Clippy with a RED/GREEN workflow contract, leaving only production-backend-specific tests gated. PCF-002 remains complete, this parent remains `in_progress`, and PCF-003 eligibility is unchanged.
 - 2026-07-28 21:46 MYT - Reopened PCF-002 after PR #125's current-head P1 and failed macOS job invalidated the new fallback CI acceptance state. Cleared the child's current completion timestamp, changed the parent row to `in_progress`, removed PCF-002 from current completed history while preserving its 2026-07-28 21:01 MYT closeout in activity, and made PCF-003 dependency-ineligible until the repair is validated and reclosed. This parent remains `in_progress`.
 - 2026-07-28 21:52 MYT - Direct macOS job logs exposed two strict-Clippy failures in the fallback diagnostic: an unnecessary `return` and the removed spike's now-unused `Macos` report variant. Added separate RED/GREEN contract assertions, converted fallback errors to tail expressions, and removed the dead variant. Full local Rust 1.75 CoreFS, strict combined Clippy, `126` benchmark/workflow contracts, scoped formatting, YAML parsing, and diff hygiene pass; PCF-002 and its parent row remain `in_progress` until the refreshed native macOS head is clean.
+- 2026-07-28 22:02 MYT - The next native macOS job passed fallback tests but its combined Clippy setup selected runner-default Python 3.14, which PyO3 0.22.6 rejects before crate analysis. Added a RED/GREEN workflow contract and explicit Python 3.13 setup through `actions/setup-python@v6`. PCF-002 and the parent row remain `in_progress`; PCF-003 remains dependency-ineligible pending refreshed macOS CI and review.
 
 ## Validation
 
@@ -340,6 +341,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - PCF-002 closeout: full Rust 1.75 CoreFS, strict combined CoreFS/anima-core Clippy, `125` benchmark/workflow contracts, workflow YAML parsing, locked Cargo metadata, disposable-spike reference scan, and diff hygiene passed. `bun run check:repo` found no PCF-002/PCF-000 issue and retained only the two unrelated pre-existing Inner Life violations.
   - PR #125 macOS fallback CI follow-up: the workflow regression failed RED with four backend-gated steps, then passed with only two native-backend gates; the complete benchmark/workflow contract passed `125/125`, and workflow YAML parsing passed.
   - PR #125 reopened macOS Clippy repair: direct CI logs confirmed the unused `Macos` variant and fallback `needless_return`; both new assertions failed RED and passed GREEN, the complete benchmark/workflow contract passed `126/126`, full serialized Rust 1.75 CoreFS passed, and strict combined Clippy, scoped Rust 1.75 rustfmt, YAML parsing, and diff hygiene passed. The Windows host cannot provide an Apple C compiler for local cross-target Clippy, so refreshed native macOS CI remains the closeout authority.
+  - PR #125 macOS Python compatibility follow-up: native fallback tests passed before PyO3 rejected Python 3.14 during combined Clippy; the setup-python 3.13 workflow assertion failed RED and passed GREEN, and focused workflow/YAML validation passed.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (PCF-002 fallback closeout)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
