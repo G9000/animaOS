@@ -4959,7 +4959,10 @@ mod tests {
     #[test]
     fn build_compiler_identity_is_embedded_not_queried_at_runtime() {
         let identity = build_rustc_identity();
-        assert!(identity.starts_with("rustc 1.75.0"));
+        assert_eq!(identity, env!("ANIMA_CORE_BUILD_RUSTC"));
+        assert!(identity.starts_with("rustc "));
+        assert!(!identity.trim_start_matches("rustc ").is_empty());
+        assert!(!identity.contains('\r') && !identity.contains('\n'));
     }
 
     #[test]
