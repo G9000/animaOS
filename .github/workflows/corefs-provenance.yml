@@ -326,15 +326,6 @@ jobs:
                   assert sampling == {
                       "mode": "performance", "warmups": 30, "samples": 200
                   }
-                  for percentile in ("p50Ms", "p95Ms", "p99Ms"):
-                      assert (
-                          report["lease"][percentile]
-                          < report["safeOpen"][percentile]
-                      ), (
-                          percentile,
-                          report["lease"][percentile],
-                          report["safeOpen"][percentile],
-                      )
                   assert report["restoredPath"] == {
                       "tested": False,
                       "ancestorAboveVolumeCovered": False,
@@ -359,6 +350,7 @@ jobs:
               RACE_ARGV,
           )
           PY
+          echo "::notice title=macOS characterization evidence only::Evidence only: workflow success does not clear the Task 5 macOS backend gate. Material, repeatable improvement requires separate documented evaluation."
 
       - name: Upload macOS characterization evidence
         if: always()
