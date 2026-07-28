@@ -132,11 +132,12 @@ from anima_server.services.agent.tool_context import (
 )
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
-from anima_server.services.data_crypto import df, get_active_dek
+from anima_server.services.data_crypto import df
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.documents.store import get_document_for_user, list_document_chunks
 from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
+from anima_server.services.sessions import get_active_dek_async
 
 logger = logging.getLogger(__name__)
 
@@ -1048,7 +1049,7 @@ async def _prepare_turn_context(
             raise ValueError(
                 f"Thread {thread_id} not found for user {user_id}")
         if thread.status != "active":
-            dek = get_active_dek(user_id, "conversations")
+            dek = await get_active_dek_async(user_id, "conversations")
             displaced_thread_ids = reactivate_thread_if_needed(
                 runtime_db,
                 thread=thread,

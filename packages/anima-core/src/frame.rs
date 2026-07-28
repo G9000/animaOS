@@ -71,6 +71,7 @@ impl FrameKind {
     }
 
     #[must_use]
+    #[allow(clippy::should_implement_trait)] // Public lossy parser preserves its fallback variant.
     pub fn from_str(s: &str) -> Self {
         match s {
             "fact" => Self::Fact,

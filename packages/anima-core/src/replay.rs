@@ -418,9 +418,7 @@ pub struct ReplayRegistry {
 
 impl ReplayRegistry {
     /// Build a registry from serialized sessions, rejecting duplicate IDs.
-    pub fn from_sessions(
-        sessions: Vec<SerializedSession>,
-    ) -> Result<Self, ReplayRegistryError> {
+    pub fn from_sessions(sessions: Vec<SerializedSession>) -> Result<Self, ReplayRegistryError> {
         let mut indexed = std::collections::BTreeMap::new();
         for session in sessions {
             let session_id = session.session_id.clone();
@@ -446,21 +444,13 @@ impl ReplayRegistry {
 
     /// Fetch a checkpoint by sequence number within a single session.
     #[must_use]
-    pub fn checkpoint_by_seq(
-        &self,
-        session_id: &str,
-        seq: u32,
-    ) -> Option<ReplayCheckpoint> {
+    pub fn checkpoint_by_seq(&self, session_id: &str, seq: u32) -> Option<ReplayCheckpoint> {
         self.session(session_id)?.checkpoint_by_seq(seq)
     }
 
     /// Fetch a checkpoint by exact label match within a single session.
     #[must_use]
-    pub fn checkpoint_by_label(
-        &self,
-        session_id: &str,
-        label: &str,
-    ) -> Option<ReplayCheckpoint> {
+    pub fn checkpoint_by_label(&self, session_id: &str, label: &str) -> Option<ReplayCheckpoint> {
         self.session(session_id)?.checkpoint_by_label(label)
     }
 
@@ -491,8 +481,8 @@ impl ReplayRegistry {
 
     /// Deserialize a registry from JSON.
     pub fn deserialize(bytes: &[u8]) -> crate::Result<Self> {
-        let sessions: Vec<SerializedSession> =
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::Serialization(e.to_string()))?;
+        let sessions: Vec<SerializedSession> = serde_json::from_slice(bytes)
+            .map_err(|e| crate::Error::Serialization(e.to_string()))?;
         Self::from_sessions(sessions).map_err(|e| crate::Error::Serialization(e.to_string()))
     }
 }
@@ -546,7 +536,8 @@ impl SerializedSession {
     pub fn compare(&self, other: &Self) -> ReplayComparison {
         let left_counts = action_kind_counts(self);
         let right_counts = action_kind_counts(other);
-        let mut all_kinds: std::collections::BTreeSet<String> = left_counts.keys().cloned().collect();
+        let mut all_kinds: std::collections::BTreeSet<String> =
+            left_counts.keys().cloned().collect();
         all_kinds.extend(right_counts.keys().cloned());
 
         let kind_count_delta = all_kinds
@@ -562,10 +553,16 @@ impl SerializedSession {
         let left_duration_us = total_duration_us(&self.actions);
         let right_duration_us = total_duration_us(&other.actions);
 
-        let left_labels: std::collections::BTreeSet<String> =
-            self.checkpoints().into_iter().map(|checkpoint| checkpoint.label).collect();
-        let right_labels: std::collections::BTreeSet<String> =
-            other.checkpoints().into_iter().map(|checkpoint| checkpoint.label).collect();
+        let left_labels: std::collections::BTreeSet<String> = self
+            .checkpoints()
+            .into_iter()
+            .map(|checkpoint| checkpoint.label)
+            .collect();
+        let right_labels: std::collections::BTreeSet<String> = other
+            .checkpoints()
+            .into_iter()
+            .map(|checkpoint| checkpoint.label)
+            .collect();
 
         ReplayComparison {
             left_action_count: self.actions.len(),
@@ -575,18 +572,9 @@ impl SerializedSession {
             right_duration_us,
             duration_us_delta: right_duration_us as i64 - left_duration_us as i64,
             kind_count_delta,
-            shared_checkpoint_labels: left_labels
-                .intersection(&right_labels)
-                .cloned()
-                .collect(),
-            left_only_checkpoint_labels: left_labels
-                .difference(&right_labels)
-                .cloned()
-                .collect(),
-            right_only_checkpoint_labels: right_labels
-                .difference(&left_labels)
-                .cloned()
-                .collect(),
+            shared_checkpoint_labels: left_labels.intersection(&right_labels).cloned().collect(),
+            left_only_checkpoint_labels: left_labels.difference(&right_labels).cloned().collect(),
+            right_only_checkpoint_labels: right_labels.difference(&left_labels).cloned().collect(),
         }
     }
 
@@ -644,9 +632,7 @@ fn total_duration_us(actions: &[ReplayAction]) -> u64 {
     actions.iter().map(|action| action.duration_us).sum()
 }
 
-fn action_kind_counts(
-    session: &SerializedSession,
-) -> std::collections::BTreeMap<String, i64> {
+fn action_kind_counts(session: &SerializedSession) -> std::collections::BTreeMap<String, i64> {
     let mut counts = std::collections::BTreeMap::new();
     for action in &session.actions {
         *counts.entry(action.kind.as_str().to_string()).or_insert(0) += 1;
@@ -654,9 +640,7 @@ fn action_kind_counts(
     counts
 }
 
-fn action_kind_totals(
-    session: &SerializedSession,
-) -> std::collections::BTreeMap<String, usize> {
+fn action_kind_totals(session: &SerializedSession) -> std::collections::BTreeMap<String, usize> {
     let mut counts = std::collections::BTreeMap::new();
     for action in &session.actions {
         *counts.entry(action.kind.as_str().to_string()).or_insert(0) += 1;
@@ -719,7 +703,6 @@ mod tests {
         assert_eq!(seq, Some(0));
         let action = &session.actions()[0];
         assert_eq!(action.kind, ActionKind::ToolCall);
-        assert!(action.duration_us > 0 || action.duration_us == 0); // might be 0 on fast machines
         assert_eq!(action.metadata.get("tool").unwrap(), "search");
     }
 
@@ -950,9 +933,15 @@ mod tests {
         assert_eq!(comparison.right_action_count, 3);
         assert_eq!(comparison.action_count_delta, 1);
         assert_eq!(comparison.duration_us_delta, 500_000);
-        assert_eq!(comparison.shared_checkpoint_labels, vec!["before reflection"]);
+        assert_eq!(
+            comparison.shared_checkpoint_labels,
+            vec!["before reflection"]
+        );
         assert_eq!(comparison.left_only_checkpoint_labels, Vec::<String>::new());
-        assert_eq!(comparison.right_only_checkpoint_labels, vec!["after decision"]);
+        assert_eq!(
+            comparison.right_only_checkpoint_labels,
+            vec!["after decision"]
+        );
         assert_eq!(comparison.kind_count_delta.get("decision"), Some(&1));
         assert_eq!(comparison.kind_count_delta.get("reflection"), Some(&-1));
     }
@@ -1017,7 +1006,10 @@ mod tests {
         assert_eq!(summary.kind_counts.get("decision"), Some(&1));
         assert_eq!(
             summary.checkpoint_labels,
-            vec!["before reflection".to_string(), "after decision".to_string()]
+            vec![
+                "before reflection".to_string(),
+                "after decision".to_string()
+            ]
         );
     }
 
@@ -1136,7 +1128,10 @@ mod tests {
         let summary = registry.summary("turn-12").unwrap();
         assert_eq!(summary.session_id, "turn-12");
         assert_eq!(summary.action_count, 2);
-        assert_eq!(summary.checkpoint_labels, vec!["before reflection".to_string()]);
+        assert_eq!(
+            summary.checkpoint_labels,
+            vec!["before reflection".to_string()]
+        );
 
         let checkpoint = registry
             .checkpoint_by_label("turn-13", "after tool")
@@ -1238,7 +1233,10 @@ mod tests {
 
         let bytes = registry.serialize().unwrap();
         let stored: Vec<SerializedSession> = serde_json::from_slice(&bytes).unwrap();
-        let ids: Vec<String> = stored.into_iter().map(|session| session.session_id).collect();
+        let ids: Vec<String> = stored
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect();
         assert_eq!(ids, vec!["turn-a".to_string(), "turn-b".to_string()]);
 
         let roundtrip = ReplayRegistry::deserialize(&bytes).unwrap();

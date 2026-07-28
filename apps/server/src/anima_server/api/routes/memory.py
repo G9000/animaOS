@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.models import MemoryEpisode, MemoryItem, MemoryItemEvidence
 from anima_server.schemas.memory import (
@@ -105,7 +105,7 @@ async def get_memory_overview(
     request: Request,
     db: Session = Depends(get_db),
 ) -> MemoryOverview:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     counts: dict[str, int] = {}
     for category in ("fact", "preference", "goal", "relationship"):
@@ -153,7 +153,7 @@ async def get_memory_evidence_audit(
     missing_limit: int = Query(default=50, ge=0, le=500),
     db: Session = Depends(get_db),
 ) -> MemoryEvidenceAuditResponse:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
     return _evidence_audit_to_response(
         audit_memory_item_evidence(
             db,
@@ -170,7 +170,7 @@ async def run_memory_evidence_backfill(
     limit: int = Query(default=500, ge=1, le=5000),
     db: Session = Depends(get_db),
 ) -> MemoryEvidenceBackfillRunResponse:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
     backfill = backfill_memory_item_evidence(db, user_id=user_id, limit=limit)
     db.commit()
     audit = audit_memory_item_evidence(db, user_id=user_id)
@@ -188,7 +188,7 @@ async def list_memory_items(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[MemoryItemResponse]:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
     items = get_memory_items(
         db,
         user_id=user_id,
@@ -209,7 +209,7 @@ async def create_memory_item(
     request: Request,
     db: Session = Depends(get_db),
 ) -> MemoryItemResponse:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     if payload.category not in ("fact", "preference", "goal", "relationship"):
         raise HTTPException(
@@ -244,7 +244,7 @@ async def update_memory_item(
     request: Request,
     db: Session = Depends(get_db),
 ) -> MemoryItemResponse:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     existing = db.get(MemoryItem, item_id)
     if existing is None or existing.user_id != user_id:
@@ -293,7 +293,7 @@ async def delete_memory_item(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     existing = db.get(MemoryItem, item_id)
     if existing is None or existing.user_id != user_id:
@@ -425,7 +425,7 @@ async def search_memory(
     mode: str = Query(default="auto"),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     # Try semantic search first if mode allows
     semantic_results: list[dict[str, object]] = []
@@ -535,7 +535,7 @@ async def list_episodes(
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> list[MemoryEpisodeResponse]:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
     fetch_limit = min(max(limit * 5, limit + 20), 500)
     episodes = list(
         db.scalars(

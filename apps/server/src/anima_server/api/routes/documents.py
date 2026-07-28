@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_session, require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_session_async, require_unlocked_user_async
 from anima_server.config import settings
 from anima_server.db import get_runtime_db
 from anima_server.models.runtime import (
@@ -119,7 +119,7 @@ async def upload_pdf_document(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, userId)
+    await require_unlocked_user_async(request, userId)
     if threadId is not None:
         _load_owned_thread(runtime_db, threadId, user_id=userId)
 
@@ -196,7 +196,7 @@ async def start_pdf_workflow(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     try:
         resolve_document_storage_path(payload.storagePath, user_id=payload.userId)
     except DocumentStoragePathError as exc:
@@ -230,7 +230,7 @@ async def get_workflow_status(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     run = _load_owned_workflow(runtime_db, workflow_id, user_id=session.user_id)
     return _workflow_to_response(run, runtime_db)
 
@@ -241,7 +241,7 @@ async def resume_workflow(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     _load_owned_workflow(runtime_db, workflow_id, user_id=session.user_id)
 
     try:
@@ -273,7 +273,7 @@ async def approve_memory(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     _load_owned_workflow(runtime_db, workflow_id, user_id=session.user_id)
 
     try:
@@ -294,7 +294,7 @@ async def search_documents(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    require_unlocked_user(request, payload.userId)
+    await require_unlocked_user_async(request, payload.userId)
     results = search_document_chunks(
         runtime_db,
         payload.userId,
@@ -320,13 +320,13 @@ async def search_documents(
 
 @router.get("/parsing-pack")
 async def get_parsing_pack_status(request: Request) -> dict[str, Any]:
-    require_unlocked_session(request)
+    await require_unlocked_session_async(request)
     return _parsing_pack_response(pack_status())
 
 
 @router.post("/parsing-pack/download")
 async def download_parsing_pack(request: Request) -> dict[str, Any]:
-    require_unlocked_session(request)
+    await require_unlocked_session_async(request)
     return _parsing_pack_response(ensure_parsing_pack())
 
 
@@ -336,7 +336,7 @@ async def reparse_document_route(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     try:
         result = reparse_document(
             runtime_db,

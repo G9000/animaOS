@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Generator
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,17 +13,17 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
-def corefs_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[TestClient, None, None]:
+def corefs_client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    unlock_session_store.start()
     app = FastAPI()
     app.include_router(corefs_route.router)
     calls: list[tuple[str, object]] = []
-    core_root = str(tmp_path / "core")
+    native_session = object()
 
     def fake_context(session: object) -> corefs_route.CoreFsRequestContext:
         calls.append(("context", session))
         return corefs_route.CoreFsRequestContext(
-            core_root=core_root,
-            core_id="core-test",
+            corefs_session=native_session,
             keys={"memories": b"unit-test-dek"},
         )
 
@@ -32,7 +31,7 @@ def corefs_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             client._corefs_calls = calls  # type: ignore[attr-defined]
-            client._corefs_root = core_root  # type: ignore[attr-defined]
+            client._corefs_session = native_session  # type: ignore[attr-defined]
             yield client
     finally:
         unlock_session_store.clear()
@@ -59,31 +58,48 @@ def test_corefs_operation_runs_sync_native_work_in_fastapi_threadpool() -> None:
 
 def test_request_context_uses_corefs_session_subkeys(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     corefs_keys = object()
+    native_session = object()
     session = SimpleNamespace(
         deks={"memories": b"soul-domain-dek"},
         corefs_keys=corefs_keys,
+        corefs_session=native_session,
     )
-    monkeypatch.setattr(corefs_route, "get_core_dir", lambda: tmp_path / "core")
-    monkeypatch.setattr(corefs_route, "get_core_id", lambda: "core-test")
+    monkeypatch.setattr(
+        corefs_route,
+        "get_core_dir",
+        lambda: pytest.fail("route must not select a CoreFS root"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        corefs_route,
+        "get_core_id",
+        lambda: pytest.fail("route must not select a CoreFS ID"),
+        raising=False,
+    )
 
     context = corefs_route._resolve_request_context(session)  # type: ignore[arg-type]
+    second_context = corefs_route._resolve_request_context(session)  # type: ignore[arg-type]
 
     assert context.keys is corefs_keys
+    assert context.corefs_session is native_session
+    assert second_context.corefs_session is native_session
 
 
-def test_request_context_rejects_session_without_corefs_subkeys(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("corefs_keys", "native_session"),
+    [(None, object()), (object(), None), (None, None)],
+)
+def test_request_context_rejects_incomplete_corefs_authority(
+    corefs_keys: object | None,
+    native_session: object | None,
 ) -> None:
     session = SimpleNamespace(
         deks={"memories": b"soul-domain-dek"},
-        corefs_keys=None,
+        corefs_keys=corefs_keys,
+        corefs_session=native_session,
     )
-    monkeypatch.setattr(corefs_route, "get_core_dir", lambda: tmp_path / "core")
-    monkeypatch.setattr(corefs_route, "get_core_id", lambda: "core-test")
 
     with pytest.raises(HTTPException) as exc_info:
         corefs_route._resolve_request_context(session)  # type: ignore[arg-type]
@@ -126,15 +142,13 @@ def test_user_read_operation_dispatches_with_selected_snapshot(
     assert calls[0] == (
         "select",
         {
-            "core_root": corefs_client._corefs_root,  # type: ignore[attr-defined]
-            "core_id": "core-test",
+            "corefs_session": corefs_client._corefs_session,  # type: ignore[attr-defined]
             "keys": {"memories": b"unit-test-dek"},
         },
     )
     stat_kwargs = calls[1][1]
     assert isinstance(stat_kwargs, dict)
-    assert stat_kwargs["core_root"] == corefs_client._corefs_root  # type: ignore[attr-defined]
-    assert stat_kwargs["core_id"] == "core-test"
+    assert stat_kwargs["corefs_session"] is corefs_client._corefs_session  # type: ignore[attr-defined]
     assert stat_kwargs["selected"] == selected
     assert stat_kwargs["path"] == "Diary/today.md"
 

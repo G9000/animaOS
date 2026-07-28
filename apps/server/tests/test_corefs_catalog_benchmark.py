@@ -7,13 +7,27 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "apps" / "server" / "scripts" / "benchmark_corefs_catalog.py"
+OBJECT_LEASE_DIAGNOSTIC_SOURCE = (
+    REPO_ROOT
+    / "packages"
+    / "anima-corefs"
+    / "src"
+    / "bin"
+    / "object_lease_diagnostic.rs"
+)
+OBJECT_LEASE_BENCHMARK_SOURCE = (
+    REPO_ROOT / "packages" / "anima-corefs" / "src" / "benchmark.rs"
+)
+CORE_FS_PROVENANCE_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "corefs-provenance.yml"
+)
 PUBLICATION_PATH = [
     "commit-lock",
     "serialize",
@@ -39,6 +53,458 @@ EXPECTED_FIXTURE_MANIFEST_FINGERPRINTS = {
     "maximum-live": "1c37d0254fbb9852b5789fa39811f0e1a23a4a3ae440b20c9c478fbf8bf9f7b5",
     "serialized-limit": "26c1c693e8b564e6a971c0af6b62b9b223612bea8bc7c0fe71388abfb06fbd87",
 }
+
+OBJECT_LEASE_DIAGNOSTIC_KEYS = {
+    "schemaVersion",
+    "platform",
+    "hardware",
+    "os",
+    "filesystem",
+    "build",
+    "objectCount",
+    "warmups",
+    "samples",
+    "safeOpen",
+    "lease",
+    "resources",
+    "teardown",
+    "correctness",
+    "residueCount",
+}
+
+
+def assert_closed_object_lease_diagnostic_schema(report: dict[str, object]) -> None:
+    def exact_type(value: object, expected: type[object]) -> None:
+        assert type(value) is expected
+
+    def numeric(value: object) -> None:
+        assert type(value) in (int, float)
+
+    assert set(report) == OBJECT_LEASE_DIAGNOSTIC_KEYS
+    exact_type(report["schemaVersion"], int)
+    assert report["platform"] in {"windows", "macos"}
+    exact_type(report["platform"], str)
+    exact_type(report["objectCount"], int)
+    exact_type(report["warmups"], int)
+    exact_type(report["samples"], int)
+    exact_type(report["residueCount"], int)
+    assert set(report["hardware"]) == {"architecture", "logicalProcessors"}
+    exact_type(report["hardware"]["architecture"], str)
+    exact_type(report["hardware"]["logicalProcessors"], int)
+    assert set(report["os"]) == {"family", "version"}
+    exact_type(report["os"]["family"], str)
+    exact_type(report["os"]["version"], str)
+    assert set(report["filesystem"]) == {"name", "target"}
+    exact_type(report["filesystem"]["name"], str)
+    exact_type(report["filesystem"]["target"], str)
+    assert set(report["safeOpen"]) == {"p50Ms", "p95Ms", "p99Ms"}
+    for value in report["safeOpen"].values():
+        numeric(value)
+    assert set(report["lease"]) == {
+        "p50Ms",
+        "p95Ms",
+        "p99Ms",
+        "safeOpenCount",
+        "metadataQueryCount",
+        "fenceCount",
+    }
+    for key in ("p50Ms", "p95Ms", "p99Ms"):
+        numeric(report["lease"][key])
+    for key in ("safeOpenCount", "metadataQueryCount", "fenceCount"):
+        exact_type(report["lease"][key], int)
+    assert set(report["resources"]) == {
+        "liveEntryPermits",
+        "liveLeasePermits",
+        "liveMonitorResources",
+        "postTeardownEntryPermits",
+        "postTeardownLeasePermits",
+        "postTeardownMonitorResources",
+        "descriptorDelta",
+    }
+    for value in report["resources"].values():
+        exact_type(value, int)
+    assert set(report["teardown"]) == {
+        "targetMs",
+        "elapsedMs",
+        "completionConfirmed",
+        "targetMet",
+    }
+    assert report["teardown"]["targetMs"] is None or type(
+        report["teardown"]["targetMs"]
+    ) is int
+    assert report["teardown"]["elapsedMs"] is None or type(
+        report["teardown"]["elapsedMs"]
+    ) in (int, float)
+    exact_type(report["teardown"]["completionConfirmed"], bool)
+    assert report["teardown"]["targetMet"] is None or type(
+        report["teardown"]["targetMet"]
+    ) is bool
+    assert set(report["correctness"]) == {
+        "orderedBoundaryProven",
+        "mutationMatrixPassed",
+        "teardownPassed",
+    }
+    for value in report["correctness"].values():
+        exact_type(value, bool)
+    assert set(report["build"]) == {
+        "architecture",
+        "argv",
+        "cargoLock",
+        "crateVersion",
+        "debugAssertions",
+        "executable",
+        "nativeTestContract",
+        "output",
+        "source",
+        "target",
+    }
+    assert set(report["build"]["source"]) == {"repositoryRoot", "commit", "clean"}
+    assert set(report["build"]["executable"]) == {
+        "canonicalPath",
+        "sha256",
+        "volumeSerial",
+        "fileId",
+    }
+    assert set(report["build"]["cargoLock"]) == {
+        "canonicalPath",
+        "workingSha256",
+        "committedSha256",
+        "matchesCommit",
+    }
+    assert set(report["build"]["target"]) == {
+        "canonicalPath",
+        "volumeSerial",
+        "fileId",
+    }
+    exact_type(report["build"]["argv"], list)
+    assert all(type(argument) is str for argument in report["build"]["argv"])
+    assert set(report["build"]["output"]) == {
+        "canonicalPath",
+        "volumeSerial",
+        "fileId",
+    }
+    assert set(report["build"]["nativeTestContract"]) == {
+        "sourceCommit",
+        "requiredTests",
+    }
+    exact_type(report["build"]["architecture"], str)
+    exact_type(report["build"]["crateVersion"], str)
+    exact_type(report["build"]["debugAssertions"], bool)
+    exact_type(report["build"]["source"]["repositoryRoot"], str)
+    exact_type(report["build"]["source"]["commit"], str)
+    exact_type(report["build"]["source"]["clean"], bool)
+    exact_type(report["build"]["executable"]["canonicalPath"], str)
+    exact_type(report["build"]["executable"]["sha256"], str)
+    exact_type(report["build"]["executable"]["volumeSerial"], int)
+    exact_type(report["build"]["executable"]["fileId"], int)
+    exact_type(report["build"]["cargoLock"]["canonicalPath"], str)
+    exact_type(report["build"]["cargoLock"]["workingSha256"], str)
+    exact_type(report["build"]["cargoLock"]["committedSha256"], str)
+    exact_type(report["build"]["cargoLock"]["matchesCommit"], bool)
+    exact_type(report["build"]["target"]["canonicalPath"], str)
+    exact_type(report["build"]["target"]["volumeSerial"], int)
+    exact_type(report["build"]["target"]["fileId"], int)
+    exact_type(report["build"]["output"]["canonicalPath"], str)
+    exact_type(report["build"]["output"]["volumeSerial"], int)
+    exact_type(report["build"]["output"]["fileId"], int)
+    exact_type(report["build"]["nativeTestContract"]["sourceCommit"], str)
+    exact_type(report["build"]["nativeTestContract"]["requiredTests"], list)
+    assert all(
+        type(name) is str
+        for name in report["build"]["nativeTestContract"]["requiredTests"]
+    )
+
+
+def assert_object_lease_diagnostic_semantics(report: dict[str, object]) -> None:
+    resources = report["resources"]
+    teardown = report["teardown"]
+    correctness = report["correctness"]
+    resource_contract = (
+        teardown["completionConfirmed"]
+        and resources["postTeardownEntryPermits"] == 0
+        and resources["postTeardownLeasePermits"] == 0
+        and resources["postTeardownMonitorResources"] == 0
+        and resources["descriptorDelta"] == 0
+        and report["residueCount"] == 0
+    )
+    if report["platform"] == "windows":
+        assert teardown["targetMs"] == 2000
+        assert isinstance(teardown["elapsedMs"], (int, float))
+        assert teardown["targetMet"] is True
+        assert resources["liveMonitorResources"] == 3
+        assert correctness["teardownPassed"] is (
+            resource_contract and teardown["targetMet"]
+        )
+    elif report["platform"] == "macos":
+        assert teardown["targetMs"] is None
+        assert teardown["elapsedMs"] is None
+        assert teardown["targetMet"] is None
+        assert correctness["teardownPassed"] is resource_contract
+    assert report["lease"]["safeOpenCount"] == 0
+    assert report["lease"]["metadataQueryCount"] == report["objectCount"]
+    assert report["lease"]["fenceCount"] == 2
+    assert correctness["orderedBoundaryProven"] is True
+    assert correctness["mutationMatrixPassed"] is True
+    build = report["build"]
+    source = build["source"]
+    executable = build["executable"]
+    cargo_lock = build["cargoLock"]
+    target = build["target"]
+    output = build["output"]
+    argv = build["argv"]
+
+    def normalized_path(value: str) -> str:
+        without_extended_prefix = (
+            value[4:] if value.startswith("\\\\?\\") else value
+        )
+        return os.path.normcase(os.path.normpath(without_extended_prefix))
+
+    def is_hex(value: str, length: int) -> bool:
+        return len(value) == length and all(
+            character in "0123456789abcdefABCDEF" for character in value
+        )
+
+    def resolved_argv_path(value: str) -> str:
+        if report["platform"] == "windows":
+            path = PureWindowsPath(value)
+            if not path.is_absolute():
+                path = PureWindowsPath(source["repositoryRoot"]) / path
+        else:
+            path = PurePosixPath(value)
+            if not path.is_absolute():
+                path = PurePosixPath(source["repositoryRoot"]) / path
+        return normalized_path(str(path))
+
+    assert source["clean"] is True
+    assert is_hex(source["commit"], 40)
+    assert source["commit"] == build["nativeTestContract"]["sourceCommit"]
+    assert is_hex(executable["sha256"], 64)
+    assert is_hex(cargo_lock["workingSha256"], 64)
+    assert is_hex(cargo_lock["committedSha256"], 64)
+    assert cargo_lock["matchesCommit"] is True
+    assert normalized_path(cargo_lock["canonicalPath"]) == normalized_path(
+        str(Path(source["repositoryRoot"]) / "Cargo.lock")
+    )
+    assert len(argv) == 12
+    assert resolved_argv_path(argv[0]) == normalized_path(
+        executable["canonicalPath"]
+    )
+    assert argv[1] == "--target"
+    assert normalized_path(argv[2]) == normalized_path(target["canonicalPath"])
+    assert argv[3:10] == [
+        "--objects",
+        str(report["objectCount"]),
+        "--warmups",
+        str(report["warmups"]),
+        "--samples",
+        str(report["samples"]),
+        "--mutation-matrix",
+    ]
+    assert argv[10] == "--output"
+    assert normalized_path(argv[11]) == normalized_path(output["canonicalPath"])
+    assert normalized_path(report["filesystem"]["target"]) == normalized_path(
+        target["canonicalPath"]
+    )
+
+
+def test_object_lease_diagnostic_source_locks_the_closed_cli_contract() -> None:
+    assert OBJECT_LEASE_DIAGNOSTIC_SOURCE.is_file()
+    source = OBJECT_LEASE_DIAGNOSTIC_SOURCE.read_text(encoding="utf-8")
+    for flag in (
+        "--target",
+        "--objects",
+        "--warmups",
+        "--samples",
+        "--mutation-matrix",
+        "--output",
+    ):
+        assert flag in source
+
+    report = {
+        "schemaVersion": 1,
+        "platform": "windows",
+        "hardware": {"architecture": "x86_64", "logicalProcessors": 24},
+        "os": {"family": "windows", "version": "10.0.26200"},
+        "filesystem": {"name": "NTFS", "target": r"C:\diagnostic-target"},
+        "build": {
+            "architecture": "x86_64",
+            "argv": [
+                r"target\release\object_lease_diagnostic.exe",
+                "--target",
+                r"C:\diagnostic-target",
+                "--objects",
+                "2500",
+                "--warmups",
+                "30",
+                "--samples",
+                "200",
+                "--mutation-matrix",
+                "--output",
+                r"C:\diagnostic.json",
+            ],
+            "cargoLock": {
+                "canonicalPath": r"C:\repo\Cargo.lock",
+                "workingSha256": "a" * 64,
+                "committedSha256": "d" * 64,
+                "matchesCommit": True,
+            },
+            "crateVersion": "0.1.0",
+            "debugAssertions": False,
+            "executable": {
+                "canonicalPath": r"C:\repo\target\release\object_lease_diagnostic.exe",
+                "sha256": "b" * 64,
+                "volumeSerial": 17,
+                "fileId": 23,
+            },
+            "nativeTestContract": {
+                "sourceCommit": "c" * 40,
+                "requiredTests": ["windows_event_flood_is_constant_space_and_terminal"],
+            },
+            "source": {
+                "repositoryRoot": r"C:\repo",
+                "commit": "c" * 40,
+                "clean": True,
+            },
+            "target": {
+                "canonicalPath": r"C:\diagnostic-target",
+                "volumeSerial": 17,
+                "fileId": 22,
+            },
+            "output": {
+                "canonicalPath": r"C:\diagnostic.json",
+                "volumeSerial": 17,
+                "fileId": 24,
+            },
+        },
+        "objectCount": 2500,
+        "warmups": 30,
+        "samples": 200,
+        "safeOpen": {"p50Ms": 1.0, "p95Ms": 2.0, "p99Ms": 3.0},
+        "lease": {
+            "p50Ms": 1.0,
+            "p95Ms": 2.0,
+            "p99Ms": 3.0,
+            "safeOpenCount": 0,
+            "metadataQueryCount": 2500,
+            "fenceCount": 2,
+        },
+        "resources": {
+            "liveEntryPermits": 2500,
+            "liveLeasePermits": 1,
+            "liveMonitorResources": 3,
+            "postTeardownEntryPermits": 0,
+            "postTeardownLeasePermits": 0,
+            "postTeardownMonitorResources": 0,
+            "descriptorDelta": 0,
+        },
+        "teardown": {
+            "targetMs": 2000,
+            "elapsedMs": 10.0,
+            "completionConfirmed": True,
+            "targetMet": True,
+        },
+        "correctness": {
+            "orderedBoundaryProven": True,
+            "mutationMatrixPassed": True,
+            "teardownPassed": True,
+        },
+        "residueCount": 0,
+    }
+    assert_closed_object_lease_diagnostic_schema(report)
+    assert_object_lease_diagnostic_semantics(report)
+
+    macos_report = copy.deepcopy(report)
+    macos_report["platform"] = "macos"
+    macos_report["teardown"] = {
+        "targetMs": None,
+        "elapsedMs": None,
+        "completionConfirmed": True,
+        "targetMet": None,
+    }
+    assert_closed_object_lease_diagnostic_schema(macos_report)
+    assert_object_lease_diagnostic_semantics(macos_report)
+
+    for mutation in (
+        lambda value: value.__setitem__("extra", True),
+        lambda value: value.pop("platform"),
+        lambda value: value["hardware"].__setitem__("extra", True),
+        lambda value: value["os"].pop("version"),
+        lambda value: value["filesystem"].__setitem__("target", 42),
+        lambda value: value.__setitem__("platform", "linux"),
+        lambda value: value["lease"].__setitem__("extra", True),
+        lambda value: value["resources"].pop("descriptorDelta"),
+        lambda value: value["build"]["source"].__setitem__("extra", True),
+        lambda value: value["build"].__setitem__("argv", {}),
+        lambda value: value["build"]["output"].__setitem__("extra", True),
+        lambda value: value["build"]["nativeTestContract"].__setitem__(
+            "requiredTests", [1]
+        ),
+    ):
+        invalid = copy.deepcopy(report)
+        mutation(invalid)
+        with pytest.raises(AssertionError):
+            assert_closed_object_lease_diagnostic_schema(invalid)
+
+    for mutation in (
+        lambda value: value["build"]["source"].__setitem__("clean", False),
+        lambda value: value["build"]["source"].__setitem__("commit", "d" * 40),
+        lambda value: value["build"]["executable"].__setitem__("sha256", "not-hex"),
+        lambda value: value["build"]["cargoLock"].__setitem__(
+            "matchesCommit", False
+        ),
+        lambda value: value["build"]["cargoLock"].__setitem__(
+            "workingSha256", "not-hex"
+        ),
+        lambda value: value["build"]["argv"].__setitem__(4, "02500"),
+        lambda value: value["build"]["argv"].__setitem__(5, "--samples"),
+        lambda value: value["build"]["argv"].__setitem__(
+            2, r"C:\different-target"
+        ),
+        lambda value: value["build"]["argv"].__setitem__(
+            11, r"C:\different-output.json"
+        ),
+        lambda value: value["filesystem"].__setitem__(
+            "target", r"C:\different-target"
+        ),
+    ):
+        invalid = copy.deepcopy(report)
+        mutation(invalid)
+        with pytest.raises(AssertionError):
+            assert_object_lease_diagnostic_semantics(invalid)
+
+
+def test_object_lease_diagnostic_report_uses_typed_closed_sections() -> None:
+    source = OBJECT_LEASE_BENCHMARK_SOURCE.read_text(encoding="utf-8")
+    for dynamic_field in (
+        "hardware: serde_json::Value",
+        "os: serde_json::Value",
+        "filesystem: serde_json::Value",
+        "build: serde_json::Value",
+    ):
+        assert dynamic_field not in source
+
+
+def test_object_lease_diagnostic_cfg_and_disabled_macos_ci_are_explicit() -> None:
+    source = OBJECT_LEASE_BENCHMARK_SOURCE.read_text(encoding="utf-8")
+    assert '#[cfg(windows)]\nuse std::fs::File;' in source
+    assert 'use std::io::Cursor;\n#[cfg(windows)]\nuse std::io::Read;' in source
+    assert '#[cfg(windows)]\nuse std::process::Command;' in source
+
+    workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count("if: steps.macos-backend.outputs.enabled == 'true'") == 4
+    standalone = workflow.split("  windows-native-lease:", 1)[0]
+    assert "name: Test CoreFS on Rust 1.75" in standalone
+    assert "cargo +1.75.0 test --locked -p anima-corefs" in standalone
+
+
+def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
+    workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
+    windows = workflow.split("  windows-native-lease:", 1)[1].split("  macos-native-lease:", 1)[0]
+    full_suite = windows.split("      - name: Test all CoreFS paths on Windows", 1)[1]
+    full_suite = full_suite.split("      - name:", 1)[0]
+
+    assert "cargo +1.75.0 test --locked -p anima-corefs" in full_suite
+    assert "-- --test-threads=1" in full_suite
 
 
 def load_benchmark_module():

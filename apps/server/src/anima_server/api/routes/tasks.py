@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.api.deps.unlock import require_unlocked_session_async
 from anima_server.db import get_db
 from anima_server.models.task import Task
 from anima_server.schemas.task import TaskCreateRequest, TaskResponse, TaskUpdateRequest
@@ -34,7 +34,7 @@ async def list_tasks(
     userId: int = Query(ge=0),
     db: Session = Depends(get_db),
 ) -> list[TaskResponse]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     if session.user_id != userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
 
@@ -54,7 +54,7 @@ async def create_task(
     request: Request,
     db: Session = Depends(get_db),
 ) -> TaskResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
     if session.user_id != payload.userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
 
@@ -77,7 +77,7 @@ async def update_task(
     request: Request,
     db: Session = Depends(get_db),
 ) -> TaskResponse:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
 
     task = db.get(Task, task_id)
     if task is None or task.user_id != session.user_id:
@@ -105,7 +105,7 @@ async def delete_task(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    session = require_unlocked_session(request)
+    session = await require_unlocked_session_async(request)
 
     task = db.get(Task, task_id)
     if task is None or task.user_id != session.user_id:

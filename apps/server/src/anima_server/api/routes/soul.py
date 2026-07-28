@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from anima_server.api.deps.unlock import require_unlocked_user
+from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.models import SelfModelBlock
 from anima_server.services.agent.soul_blocks import set_soul_block
@@ -89,7 +89,7 @@ async def get_user_directive(
     request: Request,
     db: Session = Depends(get_db),
 ) -> UserDirectiveResponse:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     block = _get_user_directive_block(db, user_id)
     if block is not None:
@@ -114,7 +114,7 @@ async def update_user_directive(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    require_unlocked_user(request, user_id)
+    await require_unlocked_user_async(request, user_id)
     _set_user_directive_block(db, user_id, payload.content)
     db.commit()
     # The directive is rendered in the cached static memory blocks; bump

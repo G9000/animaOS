@@ -119,9 +119,9 @@ pub fn verify_capsule_integrity(raw: &[u8], password: Option<&[u8]>) -> CapsuleI
                 crate::capsule::CapsuleVerificationIssueKind::SectionChecksumMismatch => {
                     Some("re-export the capsule because one section payload was modified".into())
                 }
-                crate::capsule::CapsuleVerificationIssueKind::SectionOutOfBounds => {
-                    Some("re-export the capsule because a section directory entry is invalid".into())
-                }
+                crate::capsule::CapsuleVerificationIssueKind::SectionOutOfBounds => Some(
+                    "re-export the capsule because a section directory entry is invalid".into(),
+                ),
                 crate::capsule::CapsuleVerificationIssueKind::MissingPassword => {
                     Some("provide the capsule password before verifying encrypted content".into())
                 }
@@ -198,7 +198,8 @@ pub fn scan_card_store(store: &CardStore) -> IntegrityReport {
     let mut stats = CoreStats::default();
     let mut issues = Vec::new();
     let mut single_groups: BTreeMap<(String, String), Vec<&MemoryCard>> = BTreeMap::new();
-    let mut multiple_groups: BTreeMap<(String, String), BTreeMap<String, Vec<u64>>> = BTreeMap::new();
+    let mut multiple_groups: BTreeMap<(String, String), BTreeMap<String, Vec<u64>>> =
+        BTreeMap::new();
 
     for card in store.iter() {
         stats.card_count += 1;
@@ -233,10 +234,7 @@ pub fn scan_card_store(store: &CardStore) -> IntegrityReport {
                 issues.push(IntegrityIssue {
                     kind: IntegrityIssueKind::InvalidSupersession,
                     severity: IntegritySeverity::Error,
-                    message: format!(
-                        "single slot {}:{} has multiple active values",
-                        entity, slot
-                    ),
+                    message: format!("single slot {}:{} has multiple active values", entity, slot),
                     record_ids,
                     repair_hint: Some(
                         "supersede or retract the older active cards so only one value remains"
@@ -247,7 +245,10 @@ pub fn scan_card_store(store: &CardStore) -> IntegrityReport {
                 issues.push(IntegrityIssue {
                     kind: IntegrityIssueKind::DuplicateActiveCard,
                     severity: IntegritySeverity::Error,
-                    message: format!("duplicate active cards for {}:{}={}", entity, slot, cards[0].value),
+                    message: format!(
+                        "duplicate active cards for {}:{}={}",
+                        entity, slot, cards[0].value
+                    ),
                     record_ids,
                     repair_hint: Some(
                         "keep one active card and supersede or retract the duplicates".into(),
@@ -333,8 +334,10 @@ fn active_frame_identity(frame: &Frame) -> String {
 mod tests {
     use super::*;
 
-    use crate::cards::{CardStore, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation};
     use crate::capsule::{CapsuleWriter, SectionKind};
+    use crate::cards::{
+        CardStore, MemoryCard, MemoryKind, Polarity, SchemaRegistry, VersionRelation,
+    };
     use crate::frame::{Frame, FrameKind, FrameSource};
 
     fn make_card(entity: &str, slot: &str, value: &str, version: VersionRelation) -> MemoryCard {
@@ -369,7 +372,10 @@ mod tests {
         let report = scan_frame_store(&store);
 
         assert_eq!(report.issues.len(), 1);
-        assert_eq!(report.issues[0].kind, IntegrityIssueKind::FrameChecksumMismatch);
+        assert_eq!(
+            report.issues[0].kind,
+            IntegrityIssueKind::FrameChecksumMismatch
+        );
         assert_eq!(report.issues[0].record_ids, vec![id]);
     }
 
@@ -412,7 +418,10 @@ mod tests {
         let report = scan_card_store(&store);
 
         assert_eq!(report.issues.len(), 1);
-        assert_eq!(report.issues[0].kind, IntegrityIssueKind::DuplicateActiveCard);
+        assert_eq!(
+            report.issues[0].kind,
+            IntegrityIssueKind::DuplicateActiveCard
+        );
         assert_eq!(report.issues[0].record_ids, vec![7, 8]);
         assert!(report.issues[0].repair_hint.is_some());
     }
@@ -458,7 +467,10 @@ mod tests {
         let report = scan_card_store(&store);
 
         assert_eq!(report.issues.len(), 1);
-        assert_eq!(report.issues[0].kind, IntegrityIssueKind::InvalidSupersession);
+        assert_eq!(
+            report.issues[0].kind,
+            IntegrityIssueKind::InvalidSupersession
+        );
         assert_eq!(report.issues[0].record_ids, vec![10, 11]);
     }
 
@@ -496,8 +508,18 @@ mod tests {
         frame_store.get_mut(frame_a).unwrap().supersede(frame_b);
 
         let mut card_store = CardStore::new(SchemaRegistry::new());
-        let _card_a = card_store.put(make_card("user", "employer", "Google", VersionRelation::Sets));
-        let _card_b = card_store.put(make_card("user", "employer", "Meta", VersionRelation::Updates));
+        let _card_a = card_store.put(make_card(
+            "user",
+            "employer",
+            "Google",
+            VersionRelation::Sets,
+        ));
+        let _card_b = card_store.put(make_card(
+            "user",
+            "employer",
+            "Meta",
+            VersionRelation::Updates,
+        ));
 
         let stats = core_stats(&frame_store, &card_store);
 

@@ -24,7 +24,7 @@ anima-corefs = { path = "../anima-corefs" }
 anima-file-tools = { path = "../anima-file-tools" }
 
 # SIMD
-wide = { version = "1.1", optional = true }
+wide = { version = "=0.7.33", optional = true }
 
 # HNSW vector index
 instant-distance = { version = "0.6", optional = true }
@@ -50,7 +50,7 @@ pyo3 = { version = "0.22", optional = true, features = ["extension-module"] }
 # Regex (chunker + enrich)
 regex = "1.10"
 unicode-normalization = "0.1"
-unicode-segmentation = "1.11"
+unicode-segmentation = "=1.11.0"
 
 # Logging
 log = "0.4"
@@ -86,7 +86,12 @@ encryption = ["dep:aes-gcm", "dep:argon2", "dep:rand", "dep:zeroize"]
 python = ["dep:pyo3", "dep:hex", "temporal", "replay", "encryption"]
 
 [dev-dependencies]
-tempfile = "3.10"
+anima-corefs = { path = "../anima-corefs", features = ["session-test-seams"] }
+tempfile = "=3.10.1"
+time = "=0.3.36"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [package.metadata.maturin]
 features = ["python"]

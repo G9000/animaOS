@@ -212,7 +212,6 @@ pub mod tantivy_index {
     /// Full-text search index backed by Tantivy.
     pub struct TantivyLexIndex {
         index: Index,
-        schema: Schema,
         content_field: tantivy::schema::Field,
         id_field: tantivy::schema::Field,
         reader: tantivy::IndexReader,
@@ -241,7 +240,6 @@ pub mod tantivy_index {
 
             Ok(Self {
                 index,
-                schema,
                 content_field,
                 id_field,
                 reader,

@@ -13,7 +13,6 @@ from anima_server.schemas.corefs import (
     CoreFsPrincipalResponse,
     CoreFsSelectedSnapshotResponse,
 )
-from anima_server.services.core import get_core_dir, get_core_id
 from anima_server.services.corefs import logical
 from anima_server.services.sessions import UnlockSession
 
@@ -57,8 +56,7 @@ class CoreFsPrincipal:
 
 @dataclass(frozen=True, slots=True)
 class CoreFsRequestContext:
-    core_root: str
-    core_id: str
+    corefs_session: object
     keys: object
 
 
@@ -69,7 +67,7 @@ class CoreFsSearchRuntimeState:
 
 
 def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
-    if session.corefs_keys is None:
+    if session.corefs_keys is None or session.corefs_session is None:
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail={
@@ -78,8 +76,7 @@ def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
             },
         )
     return CoreFsRequestContext(
-        core_root=str(get_core_dir()),
-        core_id=get_core_id(),
+        corefs_session=session.corefs_session,
         keys=session.corefs_keys,
     )
 
@@ -269,8 +266,7 @@ def _dispatch_read(
 ) -> dict[str, Any] | None:
     _validate_cursor_generation(payload, selected)
     common = {
-        "core_root": context.core_root,
-        "core_id": context.core_id,
+        "corefs_session": context.corefs_session,
         "keys": context.keys,
         "selected": selected,
     }
@@ -383,6 +379,7 @@ def run_corefs_operation(
     if principal.kind == "client":
         _client_grant_required(principal)
 
+    context = _resolve_request_context(session)
     if is_write_operation:
         return CoreFsOperationResponse(
             principal=principal.to_response(),
@@ -391,11 +388,9 @@ def run_corefs_operation(
             result=logical.frozen_mutation_result(payload.operation),
         )
 
-    context = _resolve_request_context(session)
     try:
         selected = logical.select_validation_snapshot(
-            core_root=context.core_root,
-            core_id=context.core_id,
+            corefs_session=context.corefs_session,
             keys=context.keys,
         )
         result = _dispatch_read(payload, context=context, selected=selected)

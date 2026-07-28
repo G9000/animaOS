@@ -18,6 +18,7 @@
 - Active child: `tickets/portable-core-filesystem/PCF-002-corefs-catalog.md`
 - Parent tracker: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 - Existing umbrella plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`, Task 2 Steps 12-14
+- Approved follow-up after this plan's Task 10 stop: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Baseline source: merged `main` at `5a3a7a0feadad5734e297ce2e09835008660da15`
 - Baseline evidence: medium/maximum-live/serialized-limit commit p95 values are 207.7262/1,060.9271/1,131.7692 ms; the unchanged gates are 100/250/250 ms.
 

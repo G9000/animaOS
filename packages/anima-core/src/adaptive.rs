@@ -312,8 +312,7 @@ mod tests {
             ..AdaptiveConfig::default()
         };
 
-        let (cutoff, trigger, _normalized) =
-            find_adaptive_cutoff(&[1.0, 0.95, 0.7, 0.65], &config);
+        let (cutoff, trigger, _normalized) = find_adaptive_cutoff(&[1.0, 0.95, 0.7, 0.65], &config);
 
         assert_eq!(cutoff, 2);
         assert_eq!(trigger, "relative_threshold");

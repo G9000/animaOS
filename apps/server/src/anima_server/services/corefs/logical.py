@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import anima_core
 
@@ -40,27 +40,23 @@ class CoreFsGrepCursor:
 
 def select_validation_snapshot(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
 ) -> CoreFsValidationSnapshot:
     return CoreFsValidationSnapshot.from_native(
-        anima_core.corefs_validation_snapshot(core_root, core_id, keys)
+        corefs_session.validation_snapshot(keys)
     )
 
 
 def stat_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     path: str,
 ) -> bytes:
     return bytes(
-        anima_core.corefs_stat_v1(
-            core_root,
-            core_id,
+        corefs_session.stat_v1(
             keys,
             selected.generation,
             selected.catalog_hash,
@@ -71,8 +67,7 @@ def stat_v1(
 
 def list_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     path: str,
@@ -81,9 +76,7 @@ def list_v1(
     response_bytes: int | None = None,
 ) -> bytes:
     return bytes(
-        anima_core.corefs_list_v1(
-            core_root,
-            core_id,
+        corefs_session.list_v1(
             keys,
             selected.generation,
             selected.catalog_hash,
@@ -97,8 +90,7 @@ def list_v1(
 
 def walk_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     root: str,
@@ -108,9 +100,7 @@ def walk_v1(
     response_bytes: int | None = None,
 ) -> bytes:
     return bytes(
-        anima_core.corefs_walk_v1(
-            core_root,
-            core_id,
+        corefs_session.walk_v1(
             keys,
             selected.generation,
             selected.catalog_hash,
@@ -125,8 +115,7 @@ def walk_v1(
 
 def glob_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     root: str,
@@ -136,9 +125,7 @@ def glob_v1(
     response_bytes: int | None = None,
 ) -> bytes:
     return bytes(
-        anima_core.corefs_glob_v1(
-            core_root,
-            core_id,
+        corefs_session.glob_v1(
             keys,
             selected.generation,
             selected.catalog_hash,
@@ -153,8 +140,7 @@ def glob_v1(
 
 def grep_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     root: str,
@@ -167,9 +153,7 @@ def grep_v1(
     response_bytes: int | None = None,
 ) -> bytes:
     return bytes(
-        anima_core.corefs_grep_v1(
-            core_root,
-            core_id,
+        corefs_session.grep_v1(
             keys,
             selected.generation,
             selected.catalog_hash,
@@ -189,8 +173,7 @@ def grep_v1(
 
 def read_chunk_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     path: str,
@@ -198,9 +181,7 @@ def read_chunk_v1(
     max_bytes: int = 65536,
     response_bytes: int | None = None,
 ) -> bytes | None:
-    chunk = anima_core.corefs_read_chunk_v1(
-        core_root,
-        core_id,
+    chunk = corefs_session.read_chunk_v1(
         keys,
         selected.generation,
         selected.catalog_hash,
@@ -214,17 +195,14 @@ def read_chunk_v1(
 
 def search_readiness_v1(
     *,
-    core_root: str,
-    core_id: str,
+    corefs_session: Any,
     keys: object,
     selected: CoreFsValidationSnapshot,
     state: CoreFsSearchState,
     index_generation: int | None = None,
 ) -> bytes:
     return bytes(
-        anima_core.corefs_search_readiness_v1(
-            core_root,
-            core_id,
+        corefs_session.search_readiness_v1(
             keys,
             selected.generation,
             selected.catalog_hash,

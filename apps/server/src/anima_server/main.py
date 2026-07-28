@@ -99,11 +99,19 @@ def _start_embedded_pg() -> EmbeddedPG | None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    embedded_pg = _start_embedded_pg()
-    runtime_url = embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
+    from .services.sessions import unlock_session_store
+
+    unlock_session_store.start()
+    embedded_pg: EmbeddedPG | None = None
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
+        embedded_pg = _start_embedded_pg()
+        runtime_url = (
+            embedded_pg.database_url
+            if embedded_pg is not None
+            else settings.runtime_database_url
+        )
         if runtime_url:
             init_runtime_engine(
                 runtime_url,
@@ -127,9 +135,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                     )
             except Exception:
                 logger.warning("Offline presence catch-up failed", exc_info=True)
-    except Exception:
-        if embedded_pg is not None:
-            embedded_pg.stop()
+    except BaseException:
+        try:
+            await unlock_session_store.shutdown()
+        finally:
+            try:
+                dispose_runtime_engine()
+            finally:
+                if embedded_pg is not None:
+                    embedded_pg.stop()
         raise
 
     from .services.health.event_logger import (
@@ -221,7 +235,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
         from .services.agent.reflection import cancel_pending_reflection
-
         try:
             # Flush pending Soul Writer candidates for all active users unless
             # background memory work was explicitly disabled for this process.
@@ -253,13 +266,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await cancel_pending_reflection()
             await drain_background_memory_tasks()
         finally:
-            if health_handler is not None:
-                logging.getLogger("anima_server").removeHandler(health_handler)
-            if health_logger is not None:
-                health_logger.flush()
-            dispose_runtime_engine()
-            if embedded_pg is not None:
-                embedded_pg.stop()
+            try:
+                await unlock_session_store.shutdown()
+            finally:
+                if health_handler is not None:
+                    logging.getLogger("anima_server").removeHandler(health_handler)
+                if health_logger is not None:
+                    health_logger.flush()
+                dispose_runtime_engine()
+                if embedded_pg is not None:
+                    embedded_pg.stop()
 
 
 class SidecarNonceMiddleware(BaseHTTPMiddleware):
