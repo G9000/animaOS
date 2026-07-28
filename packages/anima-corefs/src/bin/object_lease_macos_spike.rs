@@ -660,71 +660,16 @@ fn run_fence(driver: &mut impl FenceDriver) -> Result<FenceOutcome, String> {
     })
 }
 
-#[derive(Clone, Debug)]
-struct HeldCallbackBatch {
+trait NativeCallbackPublisher {
+    fn publish_native_batch(&self, state: GenerationState, event_ids: &[u64]);
+}
+
+fn publish_native_callback_synchronously(
+    publisher: &impl NativeCallbackPublisher,
     flags: u32,
-    event_ids: Vec<u64>,
-}
-
-#[derive(Default)]
-struct CallbackPublicationGate {
-    active: bool,
-    pending: Vec<HeldCallbackBatch>,
-}
-
-impl CallbackPublicationGate {
-    fn begin(&mut self) -> Result<(), String> {
-        if self.active || !self.pending.is_empty() {
-            return Err("callback proof gate is already active".to_owned());
-        }
-        self.active = true;
-        Ok(())
-    }
-
-    fn hold_if_needed(&mut self, flags: u32, event_ids: &[u64]) -> Option<()> {
-        if self.active && flags & FSEVENT_ROOT_CHANGED != 0 {
-            self.pending.push(HeldCallbackBatch {
-                flags,
-                event_ids: event_ids.to_vec(),
-            });
-            Some(())
-        } else {
-            None
-        }
-    }
-
-    fn pending_count(&self) -> usize {
-        self.pending.len()
-    }
-
-    fn release_after(&mut self, proof: KqueueProof) -> Result<HeldCallbackRelease, String> {
-        if !self.active {
-            return Err("callback proof gate is not active".to_owned());
-        }
-        if proof.component != proof.case.component {
-            return Err("kqueue proof component does not match its race case".to_owned());
-        }
-        self.active = false;
-        let batches = std::mem::take(&mut self.pending);
-        let zero_id_root_changed = batches.iter().any(|batch| {
-            batch.flags & FSEVENT_ROOT_CHANGED != 0
-                && batch.event_ids.iter().any(|event_id| *event_id == 0)
-        });
-        Ok(HeldCallbackRelease {
-            batches,
-            zero_id_root_changed,
-        })
-    }
-
-    fn abort(&mut self) -> Vec<HeldCallbackBatch> {
-        self.active = false;
-        std::mem::take(&mut self.pending)
-    }
-}
-
-struct HeldCallbackRelease {
-    batches: Vec<HeldCallbackBatch>,
-    zero_id_root_changed: bool,
+    event_ids: &[u64],
+) {
+    publisher.publish_native_batch(classify_callback_batch(flags, false), event_ids);
 }
 
 fn guarded_shutdown<R, T>(
@@ -905,6 +850,7 @@ enum NativeCall {
     Invalidate,
     Barrier,
     ReleaseStreamAndContext,
+    ValidateReleaseQuiescence,
     OwnerDrop,
     QueueDrop,
     KernelQueueDrop,
@@ -999,6 +945,10 @@ impl StreamLifecycle {
                     errors.push(value);
                     return Err(errors.join("; "));
                 }
+            }
+            if let Err(value) = driver.invoke(NativeCall::ValidateReleaseQuiescence) {
+                errors.push(value);
+                return Err(errors.join("; "));
             }
         }
         if errors.is_empty() {
@@ -1852,7 +1802,6 @@ mod macos_native {
 
     struct CallbackOwner {
         snapshot: Mutex<CallbackSnapshot>,
-        publication_gate: Mutex<CallbackPublicationGate>,
         notification: Condvar,
         cancelled: AtomicBool,
         released: AtomicBool,
@@ -1869,7 +1818,6 @@ mod macos_native {
                     callback_panic_contained: false,
                     callback_after_release: false,
                 }),
-                publication_gate: Mutex::new(CallbackPublicationGate::default()),
                 notification: Condvar::new(),
                 cancelled: AtomicBool::new(false),
                 released: AtomicBool::new(false),
@@ -1905,54 +1853,6 @@ mod macos_native {
             self.publish(GenerationState::Unknown, &[]);
         }
 
-        fn publish_callback(&self, flags: u32, event_ids: &[u64]) {
-            let held = self
-                .publication_gate
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .hold_if_needed(flags, event_ids)
-                .is_some();
-            if !held {
-                self.publish(classify_callback_batch(flags, false), event_ids);
-            }
-        }
-
-        fn begin_kqueue_proof(&self) -> NativeResult<()> {
-            self.publication_gate
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .begin()
-        }
-
-        fn release_after_kqueue_proof(
-            &self,
-            proof: KqueueProof,
-        ) -> NativeResult<HeldCallbackRelease> {
-            let release = self
-                .publication_gate
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .release_after(proof)?;
-            for batch in &release.batches {
-                self.publish(
-                    classify_callback_batch(batch.flags, false),
-                    &batch.event_ids,
-                );
-            }
-            Ok(release)
-        }
-
-        fn abort_kqueue_proof(&self) {
-            let batches = self
-                .publication_gate
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .abort();
-            for batch in batches {
-                self.publish(GenerationState::Unknown, &batch.event_ids);
-            }
-        }
-
         fn cancel(&self) {
             self.cancelled.store(true, Ordering::Release);
             self.notification.notify_all();
@@ -1977,6 +1877,12 @@ mod macos_native {
             snapshot.callback_panic_contained
                 && snapshot.generation == GenerationState::Unknown
                 && snapshot.maximum_event_id == 1
+        }
+    }
+
+    impl NativeCallbackPublisher for CallbackOwner {
+        fn publish_native_batch(&self, state: GenerationState, event_ids: &[u64]) {
+            self.publish(state, event_ids);
         }
     }
 
@@ -2020,7 +1926,7 @@ mod macos_native {
                 std::slice::from_raw_parts(event_ids, event_count)
             };
             let combined = flags.iter().fold(0_u32, |combined, flag| combined | flag);
-            owner.publish_callback(combined, ids);
+            publish_native_callback_synchronously(owner, combined, ids);
         }));
         if outcome.is_err() {
             let ids = if event_count == 0 || event_ids.is_null() {
@@ -2094,6 +2000,7 @@ mod macos_native {
         callback: Option<Arc<CallbackOwner>>,
         watch_path: PathBuf,
         calls: Mutex<Vec<NativeCall>>,
+        release_publications: Option<usize>,
     }
 
     unsafe impl Send for MacNativeCalls {}
@@ -2199,7 +2106,6 @@ mod macos_native {
                 }
                 NativeCall::Flush => Ok(unsafe { FSEventStreamFlushAsync(self.stream) }),
                 NativeCall::Cancel => {
-                    self.callback()?.abort_kqueue_proof();
                     self.callback()?.cancel();
                     Ok(1)
                 }
@@ -2220,6 +2126,9 @@ mod macos_native {
                     Ok(1)
                 }
                 NativeCall::ReleaseStreamAndContext => {
+                    if self.stream.is_null() {
+                        return Err("FSEventStream was already released".to_owned());
+                    }
                     let callback = self.callback()?.clone();
                     let publications = callback.snapshot().publication_count;
                     unsafe {
@@ -2227,16 +2136,22 @@ mod macos_native {
                     }
                     self.stream = ptr::null_mut();
                     callback.released.store(true, Ordering::Release);
+                    self.release_publications = Some(publications);
+                    Ok(1)
+                }
+                NativeCall::ValidateReleaseQuiescence => {
+                    let publications = self.release_publications.ok_or_else(|| {
+                        "release quiescence validation ran before stream release".to_owned()
+                    })?;
+                    let callback = self.callback()?.clone();
                     std::thread::sleep(CALLBACK_QUIET_PERIOD);
-                    if let Err(error) = validate_release_quiescence(
+                    validate_release_quiescence(
                         publications,
                         callback.snapshot().publication_count,
                         Arc::strong_count(&callback),
-                    ) {
-                        callback.publish_unknown();
-                        return Err(error.to_owned());
-                    }
-                    Ok(1)
+                    )
+                    .map(|()| 1)
+                    .map_err(str::to_owned)
                 }
                 NativeCall::OwnerDrop => {
                     self.callback.take();
@@ -2382,6 +2297,7 @@ mod macos_native {
                 callback: Some(callback),
                 watch_path: chain.watch_path.clone(),
                 calls: Mutex::new(Vec::new()),
+                release_publications: None,
             };
             let lifecycle = StreamLifecycle::establish(&mut native)?;
             let mut lease = Self {
@@ -2445,17 +2361,6 @@ mod macos_native {
 
         fn fence(&self, objects: &OwnedFd) -> NativeResult<GenerationState> {
             Ok(self.fence_with_evidence(objects)?.state)
-        }
-
-        fn begin_kqueue_proof(&self) -> NativeResult<()> {
-            self.callback()?.begin_kqueue_proof()
-        }
-
-        fn release_after_kqueue_proof(
-            &self,
-            proof: KqueueProof,
-        ) -> NativeResult<HeldCallbackRelease> {
-            self.callback()?.release_after_kqueue_proof(proof)
         }
 
         fn descriptor_count(&self) -> usize {
@@ -3280,7 +3185,6 @@ mod macos_native {
                         maximum_descriptors = maximum_descriptors
                             .max(descriptor_count()?)
                             .max(baseline_descriptors + lease.descriptor_count() as i64);
-                        lease.begin_kqueue_proof()?;
 
                         match case.operation {
                             RaceOperation::RenameRebindRenameBack => {
@@ -3327,11 +3231,11 @@ mod macos_native {
 
                         let before_callback = lease.callback()?.snapshot();
                         lease.inject_callback(FSEVENT_ROOT_CHANGED, 0)?;
-                        let released = lease.release_after_kqueue_proof(kqueue_proof)?;
                         let after_callback = lease.callback()?.snapshot();
-                        let delayed_zero_id_callback_terminal = released.zero_id_root_changed
-                            && after_callback.publication_count > before_callback.publication_count
+                        let delayed_zero_id_callback_terminal = after_callback.publication_count
+                            > before_callback.publication_count
                             && after_callback.generation == GenerationState::Unknown
+                            && after_callback.maximum_event_id == before_callback.maximum_event_id
                             && lease.fence(&active_workspace.objects)? == GenerationState::Unknown;
                         race_fence_samples.push(fence_started.elapsed().as_nanos());
                         Ok(RaceObservation {
@@ -4186,6 +4090,7 @@ mod tests {
                 NativeCall::CreateStream,
                 NativeCall::Schedule,
                 NativeCall::ReleaseStreamAndContext,
+                NativeCall::ValidateReleaseQuiescence,
             ]
         );
 
@@ -4200,6 +4105,7 @@ mod tests {
                 NativeCall::Invalidate,
                 NativeCall::Barrier,
                 NativeCall::ReleaseStreamAndContext,
+                NativeCall::ValidateReleaseQuiescence,
             ]
         );
 
@@ -4217,6 +4123,7 @@ mod tests {
                 NativeCall::Invalidate,
                 NativeCall::Barrier,
                 NativeCall::ReleaseStreamAndContext,
+                NativeCall::ValidateReleaseQuiescence,
             ]
         );
 
@@ -4250,6 +4157,7 @@ mod tests {
                 NativeCall::Invalidate,
                 NativeCall::Barrier,
                 NativeCall::ReleaseStreamAndContext,
+                NativeCall::ValidateReleaseQuiescence,
                 NativeCall::OwnerDrop,
                 NativeCall::QueueDrop,
                 NativeCall::KernelQueueDrop,
@@ -4269,6 +4177,56 @@ mod tests {
             validate_release_quiescence(4, 4, 3).unwrap_err(),
             "FSEvents context retain/release count is unbalanced"
         );
+    }
+
+    struct ReleaseThenValidationFailure {
+        release_count: usize,
+        validation_count: usize,
+        retained_owner_count: usize,
+    }
+
+    impl NativeCallDriver for ReleaseThenValidationFailure {
+        fn invoke(&mut self, call: NativeCall) -> Result<u64, String> {
+            match call {
+                NativeCall::ReleaseStreamAndContext => {
+                    self.release_count += 1;
+                    self.retained_owner_count = 2;
+                    Ok(1)
+                }
+                NativeCall::ValidateReleaseQuiescence => {
+                    self.validation_count += 1;
+                    assert_eq!(self.retained_owner_count, 2);
+                    Err("injected post-release validation failure".to_owned())
+                }
+                _ => Err(format!("unexpected native call: {call:?}")),
+            }
+        }
+    }
+
+    #[test]
+    fn successful_native_release_is_terminal_when_post_release_validation_fails() {
+        let mut calls = ReleaseThenValidationFailure {
+            release_count: 0,
+            validation_count: 0,
+            retained_owner_count: 0,
+        };
+        let mut lifecycle = StreamLifecycle {
+            phase: StreamPhase::Quiesced,
+        };
+
+        assert_eq!(
+            lifecycle.teardown(&mut calls).unwrap_err(),
+            "injected post-release validation failure"
+        );
+        assert_eq!(lifecycle.phase, StreamPhase::Released);
+        assert_eq!(calls.release_count, 1);
+        assert_eq!(calls.validation_count, 1);
+        assert_eq!(calls.retained_owner_count, 2);
+
+        lifecycle.teardown(&mut calls).unwrap();
+        assert_eq!(calls.release_count, 1);
+        assert_eq!(calls.validation_count, 1);
+        assert_eq!(calls.retained_owner_count, 2);
     }
 
     #[test]
@@ -4530,31 +4488,44 @@ mod tests {
     }
 
     #[test]
-    fn root_changed_gate_holds_real_and_synthetic_callbacks_until_kqueue_proof() {
-        let mut gate = CallbackPublicationGate::default();
-        gate.begin().unwrap();
-        assert!(gate.hold_if_needed(FSEVENT_ROOT_CHANGED, &[55]).is_some());
-        assert!(gate.hold_if_needed(FSEVENT_ROOT_CHANGED, &[0]).is_some());
-        assert_eq!(gate.pending_count(), 2);
+    fn native_callback_publication_is_synchronous_and_kqueue_proof_is_independent() {
+        #[derive(Default)]
+        struct RecordingPublisher {
+            publications: std::cell::RefCell<Vec<(GenerationState, Vec<u64>)>>,
+        }
 
-        let proof = KqueueProof {
-            case: RaceCase {
-                component: OwnedComponent::Objects,
-                operation: RaceOperation::RenameRebindRenameBack,
-            },
-            ident: 8,
+        impl NativeCallbackPublisher for RecordingPublisher {
+            fn publish_native_batch(&self, state: GenerationState, event_ids: &[u64]) {
+                self.publications
+                    .borrow_mut()
+                    .push((state, event_ids.to_vec()));
+            }
+        }
+
+        let case = RaceCase {
             component: OwnedComponent::Objects,
-            notes: KQUEUE_NOTE_RENAME,
+            operation: RaceOperation::RenameRebindRenameBack,
         };
-        let released = gate.release_after(proof).unwrap();
-        assert_eq!(released.batches.len(), 2);
-        assert!(released.zero_id_root_changed);
-        assert_eq!(gate.pending_count(), 0);
+        let kqueue = KqueuePoll {
+            events: vec![KqueueEventEvidence {
+                ident: 8,
+                component: Some(OwnedComponent::Objects),
+                notes: KQUEUE_NOTE_RENAME,
+                has_error: false,
+                has_eof: false,
+            }],
+        };
+        let proof = kqueue.proof_for(case).unwrap();
+        let publisher = RecordingPublisher::default();
 
-        gate.begin().unwrap();
-        assert!(gate.hold_if_needed(FSEVENT_ROOT_CHANGED, &[0]).is_some());
-        assert_eq!(gate.abort().len(), 1);
-        assert_eq!(gate.pending_count(), 0);
+        publish_native_callback_synchronously(&publisher, FSEVENT_ROOT_CHANGED, &[0]);
+
+        assert_eq!(
+            *publisher.publications.borrow(),
+            vec![(GenerationState::Unknown, vec![0])]
+        );
+        assert_eq!(kqueue.proof_for(case), Some(proof));
+        assert!(KqueuePoll::default().proof_for(case).is_none());
     }
 
     #[test]
