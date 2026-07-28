@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { usePendingInitiatives } from "../hooks/usePendingInitiatives";
 
@@ -10,6 +10,7 @@ import { usePendingInitiatives } from "../hooks/usePendingInitiatives";
 export default function InitiativeOverlay() {
   const { user } = useAuth();
   const { pending, ack } = usePendingInitiatives(user?.id);
+  const navigate = useNavigate();
   const current = pending[0];
   if (!current) return null;
 
@@ -28,7 +29,14 @@ export default function InitiativeOverlay() {
         <div className="flex gap-2">
           <Link
             to="/chat"
-            onClick={() => void ack(current.id)}
+            onClick={(event) => {
+              // Each route renders its own Layout, so navigating remounts
+              // the poller with a fresh tombstone set. Ack must complete
+              // before navigation or the new poller's initial GET could
+              // re-fetch this row while the POST is still in flight.
+              event.preventDefault();
+              void ack(current.id).then(() => navigate("/chat"));
+            }}
             className="border border-primary bg-input px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-foreground transition-colors hover:bg-background"
           >
             Reply
