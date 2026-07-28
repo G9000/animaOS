@@ -1376,6 +1376,11 @@ def test_poll_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     )
     db.add(log_row)
     db.commit()
+    # The poll path is consent-gated when soul_db is supplied; opt in first.
+    from anima_server.services.presence_config import update_presence_config
+
+    update_presence_config(db, 1, {"initiativeEnabled": True})
+    db.commit()
 
     with runtime_factory() as rdb:
         rdb.add(
@@ -1393,6 +1398,66 @@ def test_poll_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     assert refreshed.delivered is True  # reconciled by the poll, before any ack
     assert refreshed.answered is False  # poll is delivery, not acknowledgement
     assert count_recent_fires(db, user_id=1, now=now) == (1, 1)
+
+    runtime_engine.dispose()
+
+
+def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> None:
+    """Regression (PR #123 review, P1): the consent check and the delivered
+    side effect must be atomic in the server operation. With ``soul_db``
+    supplied and no active opt-in, ``list_and_mark_delivered`` returns []
+    and leaves rows undelivered — a client racing its own config check can
+    no longer get rows displayed/marked delivered after consent was
+    withdrawn."""
+    from anima_server.services.presence_config import update_presence_config
+
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    db.commit()
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+
+        # No presence config row at all -> default initiative_enabled=False.
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        assert fetched == []
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False  # nothing marked delivered while gated
+
+        # Initiative opted in but the presence master switch is off -> still gated.
+        update_presence_config(db, 1, {"initiativeEnabled": True, "enabled": False})
+        db.commit()
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        assert fetched == []
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False
+
+        # Full opt-in -> served and marked delivered.
+        update_presence_config(db, 1, {"enabled": True})
+        db.commit()
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        db.commit()
+        assert len(fetched) == 1
+        assert fetched[0].delivered is True
+
+    refreshed = db.get(InitiativeLog, log_row.id)
+    assert refreshed.delivered is True  # reconciled only once actually served
 
     runtime_engine.dispose()
 
@@ -1489,6 +1554,17 @@ def test_fetch_ack_route_end_to_end() -> None:
         reg = resp.json()
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        # The list path is consent-gated server-side (PR #123 review): without
+        # an active opt-in it returns [] and marks nothing delivered. Opt in
+        # before exercising the delivery flow.
+        resp = client.put(
+            f"/api/presence/{user_id}",
+            json={"initiativeEnabled": True},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["initiativeEnabled"] is True
 
         # No pending initiatives yet.
         resp = client.get(f"/api/presence/{user_id}/initiatives", headers=headers)

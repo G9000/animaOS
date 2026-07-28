@@ -149,7 +149,22 @@ def list_and_mark_delivered(
     handed the row) as a side effect. When ``soul_db`` is supplied, also
     best-effort reconciles the soul-store ``InitiativeLog.delivered`` flag for
     the fetched rows — the poll is the first proof of delivery, so it must not
-    rely on a later ack to make ``count_recent_fires`` count the message."""
+    rely on a later ack to make ``count_recent_fires`` count the message.
+
+    ``soul_db`` is also the consent authority (PR #123 review, P1): the
+    user's presence config is checked FIRST, and without an active opt-in
+    (``enabled`` AND ``initiative_enabled``) nothing is listed and nothing is
+    marked delivered. Doing the check inside the same operation as the
+    delivery side effect closes the client-side race where consent is
+    withdrawn between a client's own config check and its list call.
+    ``soul_db=None`` callers (tests) skip the check; the API route always
+    passes the soul session."""
+    if soul_db is not None:
+        from anima_server.services.presence_config import get_presence_config_values
+
+        values = get_presence_config_values(soul_db, user_id)
+        if not (values.enabled and values.initiative_enabled):
+            return []
     rows = list(
         runtime_db.scalars(
             select(PendingInitiative)

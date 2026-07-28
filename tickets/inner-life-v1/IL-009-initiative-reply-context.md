@@ -3,14 +3,14 @@
 - Status: backlog
 - Priority: P3
 - Scope: `apps/desktop/src/components/InitiativeOverlay.tsx`, `apps/desktop/src/pages/chat`
-- Parent: `IL-000`
+- Parent: none
 - Depends on: `IL-008`
 - Owner: unassigned
 - PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-28 16:59 MYT
+- Updated: 2026-07-28 19:29 MYT
 - Started:
 - Completed:
 
@@ -55,6 +55,7 @@ rather than blocking IL-008 on it.
 
 - 2026-07-28 16:13 MYT - Ticket created from the IL-008 final whole-branch review.
 - 2026-07-28 16:59 MYT - Codex review round 2 on PR #123: added the template-required `Spec`/`Updated`/`Started`/`Completed` lifecycle fields.
+- 2026-07-28 19:29 MYT - Codex review round 5 on PR #123: detached from `IL-000` (`Parent: none`) — the v1 parent is `done` and a backlog child inside its acceptance-bearing table made the tracker inconsistent. Lineage: filed from the IL-008 final review; IL-000 lists this under "Follow-ups Beyond v1 Scope".
 
 ## Validation
 

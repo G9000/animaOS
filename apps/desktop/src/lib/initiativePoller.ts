@@ -101,12 +101,12 @@ export interface PresenceGate {
 }
 
 /**
- * Wraps an initiatives fetch behind the user's CURRENT presence config so a
- * poll cycle never fetches (and therefore never marks `delivered`) after
- * consent is withdrawn: the server's list endpoint returns every
- * unacknowledged row without consulting the config, so the client must
- * re-check opt-in on every cycle. Returning [] also clears any initiative
- * already on screen within one cycle of opting out.
+ * Wraps an initiatives fetch behind the user's CURRENT presence config.
+ * The server's list operation is the consent authority (it checks the
+ * config atomically with the delivered side effect); this client-side gate
+ * is the UX layer on top: it skips the initiatives request entirely when
+ * opted out and returns [], clearing any initiative already on screen
+ * within one cycle of opting out.
  */
 export function createGatedInitiativeFetch(deps: {
   getPresenceGate: () => Promise<PresenceGate>;
