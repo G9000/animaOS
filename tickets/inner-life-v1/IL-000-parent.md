@@ -1,6 +1,6 @@
 # IL-000 - Inner Life v1 parent tracker
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server/src/anima_server/services/agent`, `apps/server/src/anima_server/models`, `apps/server/src/anima_server/main.py`
 - Parent: none
@@ -11,7 +11,7 @@
 - Created: 2026-07-15 16:55 MYT
 - Updated: 2026-07-28 MYT
 - Started: 2026-07-15 MYT
-- Completed:
+- Completed: 2026-07-28 MYT
 
 ## Goal
 
@@ -28,7 +28,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 | `IL-005` | Forgetting as distillation (F7 extension) | `done` | none |
 | `IL-006` | Recall reconsolidation (F2 extension) | `done` | none |
 | `IL-007` | Dream cycle (F5 extension) | `done` | `IL-001`, `IL-002`, `IL-006` |
-| `IL-008` | Wire push-initiative into the client (delivery + config UI) | `backlog` | `IL-003` |
+| `IL-008` | Wire push-initiative into the client (delivery + config UI) | `done` | `IL-003` |
 
 ## Completed Ticket History
 
@@ -39,6 +39,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-16 13:30 MYT - `IL-002` done: presence tick loop and offline catch-up (branch feature/il-002-presence-tick), pending review.
 - 2026-07-21 07:27 MYT - `IL-003` done: drive accumulators and push initiative (branch feature/il-003-initiative, merged main as `5e38dbf`, PR #115). First user-visible Inner Life behavior. Task review + adversarial whole-branch review (Critical wiring fix: per-user soul-store resolution) + 8 further PR review rounds, all fixed with regression tests. Client-side delivery wiring intentionally deferred, filed as `IL-008`.
 - 2026-07-23 02:16 MYT - `IL-007` done: dream cycle (branch feature/il-007-dream-cycle, squash-merged main as `bc7363c`, PR #116). Many PR review rounds hardened right-to-forget dream scrubbing, field-encrypted dream source_refs, bounded dream attempts, and dream-sharing gating. Client-side dream surfacing folded into `IL-008` scope notes.
+- 2026-07-28 MYT - `IL-008` done: push-initiative client wiring (branch feature/il-008-initiative-client-wiring, PR to follow). Poll/display path chosen over an `OSNotificationDelivery` adapter — no Tauri notification bridge exists in the repo. One task-review fix round each on the poller's concurrent ack-vs-poll race (generation-token fix) and the `stop()` staleness leak (in-flight poll invalidation on stop), both with regression tests. Last child ticket; Inner Life v1 scope is now complete end-to-end pending this PR's merge.
 
 ## Deliverables
 
@@ -62,12 +63,16 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:10 MYT - Added implementation plan reference, child ticket status table, and completed-ticket history per review feedback.
 - 2026-07-28 MYT - Close-out pass: IL-007 marked done (was stale after PR #116 merged), IL-008 added to the child table, parent moved to in_progress. Remaining scope: `IL-008` (client delivery + presence-config UI).
+- 2026-07-28 MYT - `IL-008` (last child ticket) done; all eight child tickets are now `done`. Parent moved to `done`. Inner Life v1 — continuous affect state with offline catch-up, drive-based push initiative (now client-visible), latent trace crystallization, forgetting as distillation, recall reconsolidation, and the dream cycle — is complete end-to-end once the IL-008 PR merges.
 
 ## Validation
 
-- Commands:
-  - `not run yet`
-- Changed paths:
-  - none
-- Notes:
-  - none
+- Each child ticket carries its own Validation section with the exact commands and results for its scope; this parent has no independent validation beyond those. See:
+  - `tickets/inner-life-v1/IL-001-affect-state-vector.md`
+  - `tickets/inner-life-v1/IL-002-presence-tick-offline-catchup.md`
+  - `tickets/inner-life-v1/IL-003-drive-accumulators-push-initiative.md`
+  - `tickets/inner-life-v1/IL-004-latent-trace-crystallization.md`
+  - `tickets/inner-life-v1/IL-005-forgetting-as-distillation.md`
+  - `tickets/inner-life-v1/IL-006-recall-reconsolidation.md`
+  - `tickets/inner-life-v1/IL-007-dream-cycle.md`
+  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 8/8, `tsc --noEmit` 0 errors, server untouched with a spot-check pytest run recorded)
