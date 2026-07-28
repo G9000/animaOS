@@ -1554,10 +1554,13 @@ async def test_user_profile_api_lists_corrects_and_retracts_fields(
     from anima_server.api.routes import consciousness
     from anima_server.models import UserProfileField
 
+    async def _unlocked_ok(request: object, user_id: object) -> None:
+        return None
+
     monkeypatch.setattr(
         consciousness,
-        "require_unlocked_user",
-        lambda request, user_id: None,
+        "require_unlocked_user_async",
+        _unlocked_ok,
     )
     monkeypatch.setattr(
         consciousness,
@@ -1633,10 +1636,13 @@ async def test_user_profile_api_returns_400_for_blank_correction(
     from anima_server.api.routes import consciousness
     from fastapi import HTTPException
 
+    async def _unlocked_ok(request: object, user_id: object) -> None:
+        return None
+
     monkeypatch.setattr(
         consciousness,
-        "require_unlocked_user",
-        lambda request, user_id: None,
+        "require_unlocked_user_async",
+        _unlocked_ok,
     )
 
     with _db_session() as db:
