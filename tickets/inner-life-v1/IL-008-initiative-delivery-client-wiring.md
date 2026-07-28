@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-21 MYT
-- Updated: 2026-07-28 20:04 MYT
+- Updated: 2026-07-29 02:50 MYT
 - Started: 2026-07-28 14:20 MYT
-- Completed: 2026-07-28 20:04 MYT
+- Completed: 2026-07-29 02:39 MYT
 
 ## Goal
 
@@ -71,6 +71,8 @@ here so it is tracked rather than lost.
 - 2026-07-28 19:09 MYT - Codex review round 4 on PR #123: P2 — Reply now awaits the ack POST before navigating to `/chat` (`event.preventDefault()` + `navigate` after `ack` resolves). Each route renders its own `Layout`, so navigation remounts the poller with a fresh tombstone set; navigating mid-POST let the new poller's initial GET re-fetch the just-acknowledged row for up to one cycle.
 - 2026-07-28 19:29 MYT - Codex review round 5 on PR #123, fixes by Claude: (1) P1 consent TOCTOU — `list_and_mark_delivered` (server) is now itself the consent authority: it checks the presence config atomically with the delivered side effect and returns [] (marking nothing delivered) without an active opt-in (`enabled` AND `initiativeEnabled`); the client-side gate remains as the UX layer. First server change on this branch: `inner_life/delivery.py` + regression test `test_poll_without_opt_in_lists_nothing_and_marks_nothing`, opt-in setup added to the two existing poll-path tests (incl. the route e2e, which env-fails locally per the note below and will be exercised in CI). (2) P1 claim audit — retroactive claim/start entry recorded above with commit evidence. (3) P1 parent structure — IL-009 moved out of IL-000's child table into a follow-ups section (see IL-000/IL-009 logs).
 - 2026-07-28 20:04 MYT - Codex review round 6 on PR #123, fixes by Claude: (1) P1 quiet-hours delivery gate — quiet hours are now re-evaluated when LISTING pending initiatives, not only when firing: `list_and_mark_delivered` holds rows (returns [], marks nothing delivered) while the local hour is inside the configured window, using the gate chain's `_in_quiet_hours`/`resolve_local_now` discipline; served after the window ends. Regression test `test_poll_during_quiet_hours_lists_nothing_and_marks_nothing` (wrap-around window covered). The client gate mirrors it (`PresenceGate` carries the quiet-hour fields; local wall-clock hour, injectable for tests; 2 new bun tests — poller suite 14/14). (2) P1 completion evidence — `Completed` re-stamped from 15:17 to 20:04 MYT: review rounds 1-6 landed acceptance-affecting fixes (consent gate, quiet-hours delivery gate, opt-out UX) after the original close, so the recorded completion now reflects the final validated state; parent synchronized.
+- 2026-07-28 20:50 MYT - Codex review round 7 on PR #123, fix by Claude (`2554429`): P1 consent check-then-act — the round-5 gate read config (soul session) then marked rows (runtime session) with no revalidation; an opt-out committing between them still got rows served. `list_and_mark_delivered` now revalidates consent on an expired (fresh) config read AFTER the runtime rows are read and BEFORE anything is marked. Regression test `test_opt_out_committed_mid_poll_serves_and_marks_nothing`.
+- 2026-07-29 02:39 MYT - Codex review round 8 on PR #123, fix by Claude (`c39200f`): P1 residual TOCTOU — the freshness re-read only narrowed the window. Added `presence_consent_lock(user_id)` (`services/presence_config.py`): the config PUT (`api/routes/presence.py`) holds it through its commit; delivery holds it from the authoritative fresh check through the delivered side effect. Single-process server, so the in-process per-user lock closes the race rather than narrowing it. Regression test `test_consent_lock_serializes_delivery_against_config_updates` proves mutual exclusion. Completion re-stamped to this final acceptance-affecting fix; parent synchronized.
 
 ## Validation
 
@@ -78,7 +80,7 @@ here so it is tracked rather than lost.
   - `cd packages/api-client && bun test` -> 26 pass, 0 fail (68 expect() calls)
   - `cd apps/desktop && bun test` -> 62 pass, 3 fail, 1 error across 65 tests in 16 files. All failures are pre-existing and unrelated to this branch (confirmed via `git diff origin/main...HEAD -- apps/desktop/tests/layout-nav.test.ts apps/desktop/tests/layout-top-nav.test.tsx apps/desktop/tests/recovery-credential-replacement.test.ts apps/desktop/src/components/layout/LayoutTopNav.tsx`, which is empty): `layout-nav.test.ts` (nav-order assertion drifted from current `TOP_NAV_ITEMS`), `layout-top-nav.test.tsx` (missing module `../src/components/layout/LayoutTopNav` — component was never added/renamed), `recovery-credential-replacement.test.ts` (request body now includes a `replacePending` field the test doesn't expect). This branch's own suite, `tests/initiativePoller.test.ts`, is 14/14 pass (includes the ack-vs-poll, stop-vs-poll, and poll-during-slow-ack race regression tests plus the opt-out gate tests). No new failures introduced.
   - `cd apps/desktop && bunx tsc --noEmit` -> 0 errors
-  - `cd apps/server && uv run pytest tests/test_inner_life_initiative.py -q --deselect tests/test_inner_life_initiative.py::test_fetch_ack_route_end_to_end` -> 88 passed, 1 deselected (the deselected e2e is the pre-existing env-drift failure below); `ruff check` on the two changed server files -> clean
+  - `cd apps/server && uv run pytest tests/test_inner_life_initiative.py -q --deselect tests/test_inner_life_initiative.py::test_fetch_ack_route_end_to_end` -> 90 passed, 1 deselected (was 88 before rounds 7-8 added two consent regression tests) (the deselected e2e is the pre-existing env-drift failure below); `ruff check` on the two changed server files -> clean
   - Spot-check: `cd apps/server && uv run pytest tests/test_inner_life_initiative.py -q` -> 1 failed, 86 passed (`test_fetch_ack_route_end_to_end` fails with `TypeError: 'NoneType' object is not subscriptable` at `services/corefs/keyslots.py:483` inside `ensure_core_manifest()` during account registration in this worktree's environment). The failure is in the registration fixture, untouched by this branch's server change (consent gate in `delivery.py`), so this is an environment/corefs-manifest issue in the current sandbox, not a regression from this branch — consistent with MIH-003's characterization of environment-driven server test drift; server code is unchanged so main's green baseline stands.
 - Changed paths (`git diff --stat origin/main...HEAD`, complete):
   - `docs/superpowers/plans/2026-07-28-il-008-initiative-client-wiring.md` (new)
@@ -95,8 +97,10 @@ here so it is tracked rather than lost.
   - `tickets/inner-life-v1/IL-007-dream-cycle.md`
   - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md`
   - `tickets/inner-life-v1/IL-009-initiative-reply-context.md` (new)
-  - `apps/server/src/anima_server/services/agent/inner_life/delivery.py` (consent gate, review round 5)
-  - `apps/server/tests/test_inner_life_initiative.py` (gate regression test + opt-in setup)
+  - `apps/server/src/anima_server/services/agent/inner_life/delivery.py` (consent gate rounds 5/7/8: quiet-hours + fresh revalidation + locked side effect)
+  - `apps/server/src/anima_server/services/presence_config.py` (per-user `presence_consent_lock`, round 8)
+  - `apps/server/src/anima_server/api/routes/presence.py` (PUT holds the consent lock through commit, round 8)
+  - `apps/server/tests/test_inner_life_initiative.py` (gate + mid-poll opt-out + lock mutual-exclusion regression tests)
 - Notes:
   - Delivery mechanism is poll (60 s interval + focus refetch) and manual display (global overlay), not push notifications — see Activity Log for why the `OSNotificationDelivery` path was skipped.
   - Ack is user-action-only; a failed ack call self-heals because the server still holds the row and re-serves it on the next poll.
