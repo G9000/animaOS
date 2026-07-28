@@ -1,6 +1,6 @@
 # MIH-003 - Triage the pre-existing test-failure baseline
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server/tests`, CoreFS/keyslots/recovery/vault domain
 - Parent: none
@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-28 13:55 MYT
+- Updated: 2026-07-28 22:31 MYT
 - Started: 2026-07-28 13:32 MYT
-- Completed:
+- Completed: 2026-07-28 22:31 MYT
 
 ## Goal
 
@@ -44,15 +44,22 @@ The full suite has carried a growing set of failures throughout the Inner Life v
   3. **Test drift** — `eager_consolidation` renamed `get_active_dek` → `get_active_dek_async` (module-level import) but `test_p5_transcript_archive` still patched the old sync name (`AttributeError` in `mock.patch`); 5 tests (3 visible in the old baseline + 2 masked by cause 1). Fix: patch sites updated to the async seam with `AsyncMock`.
   - The failure counts were mode-dependent, which is why the "baseline" drifted (47→54) as unrelated PRs merged.
 
+- 2026-07-28 21:40 MYT - Second stratum fixed (unmasked by the green baseline; all reproduce on unmodified main): async unlock-deps migration drift across chat (3), capabilities (2), health_api (5), user_profile (2), dashboard config-route (3) — stale patch targets updated to the *_async seams; embedding-hermeticity interaction in test_http_backend_status (explicit provider now set per the conftest guard's contract); platform-sensitive Windows-path assertion in the catalog-benchmark CLI-contract test.
+- 2026-07-28 22:15 MYT - Order-dependence poisoner found by bisection (150 files -> 1): test_corefs_package popped corefs/corefs.logical/corefs.types from sys.modules without restoring, minting duplicate PayloadScope/KeyslotStatus enum classes — identity comparisons in keyslots then matched nothing, 401-failing 21 recovery/vault/encrypted-core tests at full-suite scale ("valid phrase -> ambiguous scope"). Fixed with snapshot/restore of the popped modules plus re-binding the original corefs attribute on the parent services package (attribute-walking resolvers bypass sys.modules).
+- 2026-07-28 22:31 MYT - **Acceptance met: `bun run test` -> 3124 passed, 0 failed, 10 skipped** — first fully green suite; no allowlist needed. Sentinel untracked files survived two complete suite runs: no test deletes untracked working-tree files; the IL-003 "phantom deletion" is attributed to concurrent agent git operations. Done pending PR #121 merge (user).
+
 ## Validation
 
 - Commands:
   - `uv run pytest tests/test_corefs_keyslots.py -q` -> 51 passed (was 29 failed)
   - `uv run pytest tests/test_recovery.py tests/test_vault.py tests/test_encrypted_core_regression.py tests/test_p5_transcript_archive.py -q` -> all passed (was 25 failed)
-  - `bun run test` -> (green-baseline acceptance run: see PR)
+  - `bun run test` -> **3124 passed, 0 failed, 10 skipped** (was 54 failed)
 - Changed paths:
   - `apps/server/tests/conftest.py` (hermeticity: force unified mode; fail-fast on stale anima_core)
   - `apps/server/tests/test_p5_transcript_archive.py` (patch the renamed async DEK seam)
+  - `apps/server/tests/{test_chat,test_capabilities_api,test_health_api,test_user_profile,test_dashboard_api}.py` (async unlock-deps patch targets)
+  - `apps/server/tests/test_corefs_catalog_benchmark.py` (platform-agnostic path comparison)
+  - `apps/server/tests/test_corefs_package.py` (sys.modules snapshot/restore — the 21-test poisoner)
 - Notes:
   - No production code changed — the entire baseline was environment + test drift.
   - The suite-hygiene "untracked file deletion" item could not be attributed to any test (no `git clean`/repo-tree `rmtree` exists in the suite); the leading explanation is concurrent git checkpointing by a background agent during IL-003. Sentinel untracked files planted through a full-suite run to confirm.
