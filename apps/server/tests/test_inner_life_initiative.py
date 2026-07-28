@@ -1462,6 +1462,73 @@ def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> Non
     runtime_engine.dispose()
 
 
+def test_opt_out_committed_mid_poll_serves_and_marks_nothing(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #123 review round 7, P1): the config and pending rows
+    live in separate stores/sessions, so a single up-front consent check is
+    check-then-act — an opt-out committing between it and the runtime read
+    could still get rows served and marked delivered. Consent is now
+    revalidated on a fresh read AFTER the runtime rows are read and BEFORE
+    anything is marked. This test commits the opt-out exactly in that window
+    (via a side-effecting config read) and asserts the poll serves nothing
+    and marks nothing."""
+    from anima_server.services import presence_config as presence_config_module
+    from anima_server.services.presence_config import update_presence_config
+
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    update_presence_config(db, 1, {"enabled": True, "initiativeEnabled": True})
+    db.commit()
+
+    real_get_values = presence_config_module.get_presence_config_values
+    calls = {"n": 0}
+
+    def get_values_with_midpoll_optout(soul_db, user_id):
+        calls["n"] += 1
+        values = real_get_values(soul_db, user_id)
+        if calls["n"] == 1:
+            # Simulate another session committing the opt-out right after the
+            # first (passing) consent check — i.e. inside the race window.
+            update_presence_config(db, 1, {"initiativeEnabled": False})
+            db.commit()
+        return values
+
+    monkeypatch.setattr(
+        presence_config_module,
+        "get_presence_config_values",
+        get_values_with_midpoll_optout,
+    )
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        assert fetched == []  # the mid-poll opt-out won
+        assert calls["n"] == 2  # consent was revalidated after the runtime read
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False  # nothing marked delivered
+
+    refreshed = db.get(InitiativeLog, log_row.id)
+    assert refreshed.delivered is False  # no soul reconcile either
+
+    runtime_engine.dispose()
+
+
 def test_poll_during_quiet_hours_lists_nothing_and_marks_nothing(db: Session) -> None:
     """Regression (PR #123 review, P1): quiet hours must be re-evaluated at
     delivery time, not only at fire time — an initiative fired just before

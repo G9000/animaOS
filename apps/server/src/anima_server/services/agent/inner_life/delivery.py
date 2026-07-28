@@ -170,20 +170,22 @@ def list_and_mark_delivered(
     inside this window"). A row listed during quiet hours stays undelivered
     and is served after the window ends. ``now`` follows the same local-time
     discipline as the gate chain (``resolve_local_now``); the route omits it,
-    resolving the real system-zone wall clock."""
-    if soul_db is not None:
-        from anima_server.services.agent.inner_life.initiative import _in_quiet_hours
-        from anima_server.services.agent.inner_life.presence import resolve_local_now
-        from anima_server.services.presence_config import get_presence_config_values
+    resolving the real system-zone wall clock.
 
-        values = get_presence_config_values(soul_db, user_id)
-        if not (values.enabled and values.initiative_enabled):
-            return []
-        local_now = resolve_local_now(now, None)
-        if _in_quiet_hours(
-            local_now.hour, values.quiet_hours_start, values.quiet_hours_end
-        ):
-            return []
+    Consent is checked TWICE (PR #123 review round 7, P1): the config and the
+    pending rows live in separate stores/sessions with no shared lock, so a
+    single up-front check is check-then-act — an opt-out committing between it
+    and the runtime read would still get rows served. The second check runs
+    AFTER the runtime rows are read, on a freshly-expired config read (so it
+    sees the latest committed state, not the session's cached row), and only
+    then are rows marked delivered and returned. An opt-out that commits
+    before the revalidation therefore always wins; the only residual window is
+    an opt-out committing while the HTTP response is already in flight, which
+    no server-side ordering can remove."""
+    if soul_db is not None and not _initiative_consent_allows(
+        soul_db, user_id=user_id, now=now
+    ):
+        return []
     rows = list(
         runtime_db.scalars(
             select(PendingInitiative)
@@ -194,14 +196,50 @@ def list_and_mark_delivered(
             .order_by(PendingInitiative.created_at.asc())
         ).all()
     )
+    if not rows:
+        return []
+    # Revalidate consent on fresh state before the delivered side effect —
+    # nothing has been marked yet, so a mid-poll opt-out simply returns [].
+    if soul_db is not None and not _initiative_consent_allows(
+        soul_db, user_id=user_id, now=now, refresh=True
+    ):
+        return []
     for row in rows:
         row.delivered = True
-    if rows:
-        runtime_db.flush()
-        _reconcile_soul_delivered(
-            soul_db, user_id=user_id, log_ids=[row.initiative_log_id for row in rows]
-        )
+    runtime_db.flush()
+    _reconcile_soul_delivered(
+        soul_db, user_id=user_id, log_ids=[row.initiative_log_id for row in rows]
+    )
     return rows
+
+
+def _initiative_consent_allows(
+    soul_db: Session,
+    *,
+    user_id: int,
+    now: datetime | None,
+    refresh: bool = False,
+) -> bool:
+    """Whether initiatives may be served to ``user_id`` right now: master
+    Presence switch AND initiative opt-in AND outside quiet hours.
+
+    ``refresh=True`` expires the session's cached state first so the read
+    reflects the latest COMMITTED config — a plain re-query would return the
+    identity-mapped row with stale attributes and miss an opt-out committed by
+    another session mid-poll."""
+    from anima_server.services.agent.inner_life.initiative import _in_quiet_hours
+    from anima_server.services.agent.inner_life.presence import resolve_local_now
+    from anima_server.services.presence_config import get_presence_config_values
+
+    if refresh:
+        soul_db.expire_all()
+    values = get_presence_config_values(soul_db, user_id)
+    if not (values.enabled and values.initiative_enabled):
+        return False
+    local_now = resolve_local_now(now, None)
+    return not _in_quiet_hours(
+        local_now.hour, values.quiet_hours_start, values.quiet_hours_end
+    )
 
 
 def acknowledge_pending_initiative(
