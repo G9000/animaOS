@@ -330,7 +330,7 @@ impl AuthenticatedCommitSnapshot {
         }
     }
 
-    #[cfg(feature = "session-test-seams")]
+    #[cfg(all(feature = "session-test-seams", windows))]
     pub(super) fn with_session_test_object_lease(
         &self,
         object_lease: Option<Arc<ObjectValidationLease>>,

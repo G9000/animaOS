@@ -552,6 +552,21 @@ def test_macos_fallback_clippy_avoids_needless_unix_path_borrow() -> None:
     assert "fs::hard_link(&object_path, &stale_stage)" not in transaction
 
 
+def test_macos_fallback_clippy_cfg_gates_windows_session_lease_seam() -> None:
+    cache = (
+        REPO_ROOT
+        / "packages"
+        / "anima-corefs"
+        / "src"
+        / "transaction"
+        / "cache.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        '#[cfg(all(feature = "session-test-seams", windows))]\n'
+        "    pub(super) fn with_session_test_object_lease("
+    ) in cache
+
+
 def test_windows_native_full_suite_serializes_catalog_diagnostics() -> None:
     workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
     windows = workflow.split("  windows-native-lease:", 1)[1].split("  macos-native-lease:", 1)[0]
