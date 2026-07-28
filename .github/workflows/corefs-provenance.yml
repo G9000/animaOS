@@ -164,11 +164,9 @@ jobs:
           macos_object_lease -- --nocapture
 
       - name: Test all CoreFS paths on macOS
-        if: steps.macos-backend.outputs.enabled == 'true'
         run: cargo +1.75.0 test --locked -p anima-corefs
 
       - name: Enforce strict native Clippy
-        if: steps.macos-backend.outputs.enabled == 'true'
         run: >-
           cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core
           --all-targets --all-features -- -D warnings

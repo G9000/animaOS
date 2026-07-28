@@ -484,14 +484,23 @@ def test_object_lease_diagnostic_report_uses_typed_closed_sections() -> None:
         assert dynamic_field not in source
 
 
-def test_object_lease_diagnostic_cfg_and_disabled_macos_ci_are_explicit() -> None:
+def test_object_lease_diagnostic_cfg_and_macos_fallback_ci_are_explicit() -> None:
     source = OBJECT_LEASE_BENCHMARK_SOURCE.read_text(encoding="utf-8")
     assert '#[cfg(windows)]\nuse std::fs::File;' in source
     assert 'use std::io::Cursor;\n#[cfg(windows)]\nuse std::io::Read;' in source
     assert '#[cfg(windows)]\nuse std::process::Command;' in source
 
     workflow = CORE_FS_PROVENANCE_WORKFLOW.read_text(encoding="utf-8")
-    assert workflow.count("if: steps.macos-backend.outputs.enabled == 'true'") == 4
+    macos = workflow.split("  macos-native-lease:", 1)[1]
+    assert macos.count("if: steps.macos-backend.outputs.enabled == 'true'") == 2
+    full_suite = macos.split("      - name: Test all CoreFS paths on macOS", 1)[1]
+    full_suite = full_suite.split("      - name:", 1)[0]
+    assert "if: steps.macos-backend.outputs.enabled" not in full_suite
+    assert "cargo +1.75.0 test --locked -p anima-corefs" in full_suite
+
+    clippy = macos.split("      - name: Enforce strict native Clippy", 1)[1]
+    assert "if: steps.macos-backend.outputs.enabled" not in clippy
+    assert "cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core" in clippy
     standalone = workflow.split("  windows-native-lease:", 1)[0]
     assert "name: Test CoreFS on Rust 1.75" in standalone
     assert "cargo +1.75.0 test --locked -p anima-corefs" in standalone

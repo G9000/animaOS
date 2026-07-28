@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 21:01 MYT
+- Updated: 2026-07-28 21:38 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed: 2026-07-28 21:01 MYT
 
@@ -233,6 +233,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 19:26 MYT - Addressed PR #124's current-head P1 incomplete vnode-operation matrix test-first. The regression failed RED at `8 != 21`; the restored-path schedule now requires every exact rename, delete, and revoke case for all seven owned watched components. A separate owned APFS matrix volume makes each operation destructive only inside disposable state, reopens fresh descriptor epochs after revoke, rebuilds deleted workspaces, and preserves the existing nested mounted-Core-volume cases that prove coverage above the actual mount boundary, while the combined schedule remains exactly `200` samples. The focused spike suite passed `39/39`, the complete serialized CoreFS suite passed, strict host Clippy, both Apple cross-target checks, scoped Rust 1.75 rustfmt, and diff hygiene passed. Task 2 and PCF-002 remain `in_progress` pending refreshed native APFS/FSEvents CI and current-head review; Task 5 remains gated and PCF-003 remains dependency-ineligible.
 - 2026-07-28 19:37 MYT - PR #124's native macOS job passed the full `21`-case vnode matrix, and the refreshed Codex pass raised one P2 portability defect in its unit contract: it hard-coded Rust `1.75.0` even though that version is enforced independently for evidence builds. Reproduced RED under the supported newer Rust `1.93.0`, then changed the regression to prove a nonempty single-line compiler identity is compile-time embedded without pinning ordinary test runners. Both Rust `1.93.0` and `1.75.0` focused suites passed `39/39`, with strict Rust 1.75 Clippy, scoped rustfmt, and diff hygiene green. Task 2 and PCF-002 remain `in_progress` pending refreshed current-head CI/review; Task 5 remains gated and PCF-003 remains dependency-ineligible.
 - 2026-07-28 21:01 MYT - Closed PCF-002 after the user selected the approved macOS safe-open fallback. PR #124's native evidence proves the APFS boundary but remains a single evidence-only performance run, so it does not clear the repeatability gate; Task 5 and the conditional production diagnostic are skipped. Removed the disposable macOS spike, restored the backend-disabled macOS CI gate, synchronized the implementation plans/spec, and made PCF-003 dependency-eligible without claiming it.
+- 2026-07-28 21:38 MYT - PR #125 review found that the backend-disabled macOS job skipped every remaining Rust check. Added a RED/GREEN workflow contract, then made the full CoreFS fallback suite and strict CoreFS/anima-core Clippy unconditional while retaining backend-specific FSEvents/kqueue tests behind the production-backend gate. PCF-002 remains complete because this restores CI coverage without changing the accepted macOS safe-open fallback.
 
 ## Validation
 
@@ -390,6 +391,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
   - PCF-002 closeout: `cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core --all-targets --all-features -- -D warnings` passed.
   - PCF-002 closeout: `.venv/Scripts/python.exe -m pytest apps/server/tests/test_corefs_catalog_benchmark.py -q` passed `125/125`; workflow YAML parsing, locked Cargo metadata, disposable-spike reference scan, and `git diff --check` passed.
   - PCF-002 closeout: `bun run check:repo` found no PCF-002/PCF-000 issue and exited `1` only for the two unrelated pre-existing Inner Life violations: the `IL-007` parent-row mismatch and missing `IL-008` row.
+  - PR #125 macOS fallback CI follow-up: the workflow regression failed RED with four backend-gated steps, then passed after only the two native-backend tests remained gated; the complete benchmark/workflow contract passed `125/125`, and workflow YAML parsing passed.
 - Changed paths:
   - `.github/workflows/corefs-provenance.yml`, `apps/server/tests/test_corefs_catalog_benchmark.py`, and `packages/anima-corefs/{Cargo.toml,build.rs,src/bin/object_lease_macos_spike.rs}` (macOS fallback cleanup)
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
