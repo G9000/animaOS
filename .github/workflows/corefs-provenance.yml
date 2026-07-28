@@ -144,10 +144,12 @@ jobs:
       - name: Prove macOS characterization starts RED
         shell: bash
         run: |
+          cargo +1.75.0 build --release --locked -p anima-corefs \
+            --bin object_lease_macos_spike
+
           set +e
-          output="$(
-            cargo +1.75.0 run --release --locked -p anima-corefs \
-              --bin object_lease_macos_spike -- \
+          diagnostic="$(
+            ./target/release/object_lease_macos_spike \
               --objects 2500 \
               --warmups 30 \
               --samples 200 \
@@ -155,10 +157,22 @@ jobs:
           )"
           status=$?
           set -e
-          printf '%s\n' "$output"
-          test "$status" -ne 0
-          printf '%s\n' "$output" | grep -F '"error":"backendUnavailable"'
-          printf '%s\n' "$output" | grep -F 'not implemented'
+          printf '%s\n' "$diagnostic"
+          test "$status" -eq 1
+          printf '%s\n' "$diagnostic" | python3 -c '
+          import json
+          import sys
+
+          diagnostic = json.load(sys.stdin)
+          expected = {
+              "error": "backendUnavailable",
+              "message": (
+                  "the native macOS FSEvents/kqueue characterization backend "
+                  "is not implemented"
+              ),
+          }
+          assert diagnostic == expected, diagnostic
+          '
           test ! -e /tmp/corefs-object-lease-macos.json
 
       - name: Detect enabled macOS native backend

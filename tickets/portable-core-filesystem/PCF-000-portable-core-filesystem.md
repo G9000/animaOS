@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 09:33 MYT
+- Updated: 2026-07-28 09:49 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -237,6 +237,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 08:58 MYT - Resumed PCF-002 object-validation-lease Task 2 from merged `main` (`d46df5d5`, including PR #119 squash `c00df1b2`) on branch `codex/pcf-002-macos-validation-lease` in `.worktrees/pcf-002-macos-validation-lease`. The Rust 1.75 CoreFS baseline is clean after the sandbox-blocked Windows symlink case passed with its required native privileges. The disposable macOS characterization command now has a test-first closed parser/report contract (`4/4` green) and fails closed locally with typed `backendUnavailable`; native APFS execution remains the next gate before Task 5 can be enabled. PCF-002's row and this parent remain `in_progress`, PCF-003 remains `backlog` and dependency-ineligible, and no external action was taken.
 - 2026-07-28 09:12 MYT - The user approved temporary publication of PCF-002 Task 2's pre-implementation macOS RED through a CI commit, branch push, and draft PR. The scoped native macOS step asserts the exact 2,500-object characterization command fails only for the absent approved backend and leaves no artifact; it does not enable Task 5 or change downstream eligibility. PCF-002's row and this parent remain `in_progress`, PCF-003 remains `backlog` and dependency-ineligible, and merge/review/monitoring are not authorized.
 - 2026-07-28 09:33 MYT - Addressed PR #120's current-head P2 report-reproducibility finding test-first. The disposable macOS characterization schema now records its invocation as an explicit performance or restored-path-race sampling mode, so race evidence carries the exact `raceSamples` count without placeholder performance fields. The focused Rust 1.75 binary suite passed `5/5`; PCF-002's row and this parent remain `in_progress`, PCF-003 remains `backlog` and dependency-ineligible, and native Tasks 2 and 5 remain open.
+- 2026-07-28 09:49 MYT - Addressed PR #120's current-head P2 false-RED finding with a workflow contract RED/GREEN. The temporary native macOS gate now separates compilation from execution and accepts only exit `1` plus the exact parsed runtime JSON and absent artifact, so quoted compiler source cannot masquerade as characterization evidence. The workflow contract and YAML parse passed locally; PCF-002's row and this parent remain `in_progress`, PCF-003 remains `backlog` and dependency-ineligible, and native Tasks 2 and 5 remain open.
 
 ## Validation
 

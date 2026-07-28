@@ -12,7 +12,7 @@
 - Architecture revision: `docs/superpowers/specs/2026-07-23-corefs-object-validation-lease-design.md`
 - Object validation lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 09:33 MYT
+- Updated: 2026-07-28 09:49 MYT
 - Started: 2026-07-14 19:45 MYT
 - Completed:
 
@@ -222,6 +222,7 @@ Create production-grade shared Rust file-operation contracts, reuse them explici
 - 2026-07-28 08:58 MYT - Resumed object-validation-lease Task 2 from merged `main` (`d46df5d5`, including PR #119 squash `c00df1b2`) on branch `codex/pcf-002-macos-validation-lease` in worktree `.worktrees/pcf-002-macos-validation-lease`. The Rust 1.75 CoreFS baseline passed through 213 library tests plus all suites reached before one Windows symlink case hit sandbox-denied WSL; the exact case passed outside that sandbox, confirming no baseline regression. Added the disposable macOS characterization command test-first: its parser/closed-report contract failed RED on the missing types and passed GREEN `4/4`, while the local release command fails closed with typed `backendUnavailable` because native macOS/APFS execution is still required. PCF-002 remains `in_progress`; PCF-003 remains dependency-ineligible and no external action was taken.
 - 2026-07-28 09:12 MYT - The user approved a temporary CI commit, branch push, and draft PR so Task 2 can execute its mandatory pre-implementation RED on GitHub's native macOS runner. Added a scoped `macos-native-lease` step that runs the exact 2,500-object command and passes only when the command exits nonzero with typed `backendUnavailable`, the missing-backend explanation, and no output artifact. This is characterization evidence only: the production macOS backend remains disabled, Tasks 2 and 5 remain open, and merge/review/monitoring are not authorized.
 - 2026-07-28 09:33 MYT - Addressed PR #120's current-head P2 report-reproducibility finding test-first. The new race-mode serialization regression failed RED because the closed characterization report lacked a sampling-mode type and field, then passed GREEN after replacing unconditional `warmups`/`samples` fields with an explicit tagged `sampling` record for either performance samples or restored-path race samples. The focused Rust 1.75 binary suite passed `5/5`; PCF-002 and PCF-000 remain `in_progress`, Tasks 2 and 5 remain open, and PCF-003 remains dependency-ineligible.
+- 2026-07-28 09:49 MYT - Addressed PR #120's current-head P2 false-RED finding with a workflow contract RED/GREEN. The temporary macOS job now completes a separate Rust 1.75 release build, executes only the finished binary, requires exit `1`, parses its complete output as the exact expected JSON diagnostic, and confirms no artifact exists; compiler text can no longer satisfy the native runtime gate. The workflow contract and YAML parse passed locally. PCF-002 and PCF-000 remain `in_progress`, Tasks 2 and 5 remain open, and PCF-003 remains dependency-ineligible.
 
 ## Validation
 
