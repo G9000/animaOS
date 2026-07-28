@@ -10,6 +10,7 @@ use serde::Serialize;
 
 #[derive(Debug)]
 struct Arguments {
+    argv: Vec<String>,
     output: PathBuf,
     object_count: usize,
     warmups: Option<usize>,
@@ -103,6 +104,18 @@ struct BuildReport {
     profile: &'static str,
     rustc: String,
     source_commit: String,
+    tracked_tree_clean: bool,
+    target_triple: String,
+    spike_source: BuildArtifactReport,
+    cargo_lock: BuildArtifactReport,
+    argv: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildArtifactReport {
+    sha256: String,
+    git_blob: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -352,6 +365,41 @@ fn build_rustc_identity() -> &'static str {
     env!("ANIMA_CORE_BUILD_RUSTC")
 }
 
+fn build_tracked_tree_clean() -> bool {
+    env!("ANIMA_CORE_BUILD_TRACKED_TREE_CLEAN") == "true"
+}
+
+fn validate_build_tracked_tree(clean: bool) -> Result<(), &'static str> {
+    if clean {
+        Ok(())
+    } else {
+        Err("refusing native characterization from a dirty tracked build")
+    }
+}
+
+fn build_report_from_embedded_provenance(argv: Vec<String>) -> BuildReport {
+    BuildReport {
+        profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        rustc: build_rustc_identity().to_owned(),
+        source_commit: env!("ANIMA_CORE_BUILD_SOURCE_COMMIT").to_owned(),
+        tracked_tree_clean: build_tracked_tree_clean(),
+        target_triple: env!("ANIMA_CORE_BUILD_TARGET").to_owned(),
+        spike_source: BuildArtifactReport {
+            sha256: env!("ANIMA_CORE_BUILD_SPIKE_SOURCE_SHA256").to_owned(),
+            git_blob: env!("ANIMA_CORE_BUILD_SPIKE_SOURCE_BLOB").to_owned(),
+        },
+        cargo_lock: BuildArtifactReport {
+            sha256: env!("ANIMA_CORE_BUILD_CARGO_LOCK_SHA256").to_owned(),
+            git_blob: env!("ANIMA_CORE_BUILD_CARGO_LOCK_BLOB").to_owned(),
+        },
+        argv,
+    }
+}
+
 fn validate_release_quiescence(
     publications_before_release: usize,
     publications_after_release: usize,
@@ -388,6 +436,40 @@ enum RaceOperation {
 struct RaceCase {
     component: OwnedComponent,
     operation: RaceOperation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MountEpoch(u64);
+
+impl MountEpoch {
+    fn first_attach() -> Self {
+        Self(1)
+    }
+
+    fn next_attach(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("mount epoch cannot overflow in one characterization run"),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DescriptorEpoch(MountEpoch);
+
+impl DescriptorEpoch {
+    fn opened_for(mount: MountEpoch) -> Self {
+        Self(mount)
+    }
+
+    fn require_current(self, mount: MountEpoch) -> Result<(), &'static str> {
+        if self.0 == mount {
+            Ok(())
+        } else {
+            Err("descriptor epoch belongs to a revoked mount")
+        }
+    }
 }
 
 const KQUEUE_NOTE_DELETE: u32 = 0x0000_0001;
@@ -672,15 +754,42 @@ fn publish_native_callback_synchronously(
     publisher.publish_native_batch(classify_callback_batch(flags, false), event_ids);
 }
 
-fn guarded_shutdown<R, T>(
-    on_callback_queue: bool,
-    resource: &mut R,
-    teardown: impl FnOnce(&mut R) -> Result<T, String>,
-) -> Result<T, String> {
-    if on_callback_queue {
+trait SynchronousTeardownDriver {
+    type Output;
+
+    fn on_callback_queue(&self) -> bool;
+    fn teardown_complete(&self) -> bool;
+    fn teardown_step(&mut self) -> Result<Self::Output, String>;
+}
+
+fn run_synchronous_teardown<D: SynchronousTeardownDriver>(
+    driver: &mut D,
+) -> Result<D::Output, String> {
+    if driver.on_callback_queue() {
         return Err("shutdown invoked from callback queue".to_owned());
     }
-    teardown(resource)
+    let mut first_error = None;
+    loop {
+        match driver.teardown_step() {
+            Ok(output) => {
+                if !driver.teardown_complete() {
+                    return Err("teardown step returned before resource completion".to_owned());
+                }
+                return match first_error {
+                    Some(error) => Err(error),
+                    None => Ok(output),
+                };
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+                if driver.teardown_complete() {
+                    return Err(first_error.expect("teardown error was recorded"));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -787,6 +896,48 @@ struct RaceObservation {
     kqueue_proof: Option<KqueueProof>,
     restored_before_callback: bool,
     delayed_zero_id_callback_terminal: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArmedRaceStep {
+    Arm,
+    Scan,
+    Mutation,
+    TerminalEvidence,
+}
+
+trait ArmedRaceDriver {
+    fn arm(&mut self) -> Result<(), String>;
+    fn scan_with_mutation(&mut self) -> Result<Option<String>, String>;
+    fn terminal_evidence(&mut self) -> Result<FenceOutcome, String>;
+}
+
+struct ArmedRaceRejection {
+    proof: KqueueProof,
+    scan_failed: bool,
+}
+
+fn run_armed_race_attempt(
+    driver: &mut impl ArmedRaceDriver,
+    case: RaceCase,
+) -> Result<ArmedRaceRejection, String> {
+    driver.arm()?;
+    let scan_failed = driver.scan_with_mutation()?.is_some();
+    let outcome = driver.terminal_evidence()?;
+    if outcome.cause != FenceCause::Kqueue {
+        return Err(format!(
+            "armed race {:?} on {:?} terminated as {:?}, not kqueue evidence",
+            case.operation, case.component, outcome.cause
+        ));
+    }
+    let proof = outcome.kqueue.proof_for(case).ok_or_else(|| {
+        format!(
+            "armed race lacks exact kqueue {:?} proof for {:?}",
+            case.operation, case.component
+        )
+    })?;
+    Ok(ArmedRaceRejection { proof, scan_failed })
 }
 
 struct RaceEvidence {
@@ -1060,8 +1211,29 @@ impl CharacterizationReport {
     #[cfg(test)]
     fn contract_example(sampling: SamplingReport) -> Self {
         let restored_path_tested = matches!(&sampling, SamplingReport::RestoredPathRace { .. });
+        let argv = match sampling {
+            SamplingReport::Performance { warmups, samples } => vec![
+                "--objects".to_owned(),
+                "2500".to_owned(),
+                "--warmups".to_owned(),
+                warmups.to_string(),
+                "--samples".to_owned(),
+                samples.to_string(),
+                "--output".to_owned(),
+                "/tmp/corefs-object-lease-macos.json".to_owned(),
+            ],
+            SamplingReport::RestoredPathRace { race_samples } => vec![
+                "--objects".to_owned(),
+                "2500".to_owned(),
+                "--race-samples".to_owned(),
+                race_samples.to_string(),
+                "--mount-restored-path".to_owned(),
+                "--output".to_owned(),
+                "/tmp/corefs-object-lease-macos-races.json".to_owned(),
+            ],
+        };
         Self {
-            schema_version: 1,
+            schema_version: 2,
             platform: "macos",
             hardware: HardwareReport {
                 model: "contract-example".to_owned(),
@@ -1079,6 +1251,17 @@ impl CharacterizationReport {
                 profile: "release",
                 rustc: "1.75.0".to_owned(),
                 source_commit: "contract-example".to_owned(),
+                tracked_tree_clean: true,
+                target_triple: "aarch64-apple-darwin".to_owned(),
+                spike_source: BuildArtifactReport {
+                    sha256: "contract-example-sha256".to_owned(),
+                    git_blob: "contract-example-blob".to_owned(),
+                },
+                cargo_lock: BuildArtifactReport {
+                    sha256: "contract-example-sha256".to_owned(),
+                    git_blob: "contract-example-blob".to_owned(),
+                },
+                argv,
             },
             object_count: 2_500,
             sampling,
@@ -1137,6 +1320,8 @@ fn main() -> ExitCode {
 fn run() -> Result<(), (&'static str, String)> {
     let arguments = parse_arguments(std::env::args_os().skip(1))
         .map_err(|message| ("invalidArguments", message))?;
+    validate_build_tracked_tree(build_tracked_tree_clean())
+        .map_err(|message| ("buildProvenanceRejected", message.to_owned()))?;
     ensure_output_available(&arguments.output).map_err(|message| ("outputUnavailable", message))?;
     run_native_characterization(&arguments)
 }
@@ -1167,6 +1352,16 @@ fn run_native_characterization(arguments: &Arguments) -> Result<(), (&'static st
 }
 
 fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Arguments, String> {
+    let arguments = arguments.into_iter().collect::<Vec<_>>();
+    let argv = arguments
+        .iter()
+        .map(|argument| {
+            argument
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "arguments must be valid Unicode".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut output = None;
     let mut object_count = None;
     let mut warmups = None;
@@ -1227,6 +1422,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Argu
     }
 
     Ok(Arguments {
+        argv,
         output: output.ok_or_else(|| "missing --output".to_owned())?,
         object_count,
         warmups,
@@ -1401,10 +1597,15 @@ mod macos_native {
         objects_path: PathBuf,
         objects: OwnedFd,
         records: Vec<ObjectRecord>,
+        descriptor_epoch: DescriptorEpoch,
     }
 
     impl ObjectWorkspace {
-        fn create_under(parent: &Path, object_count: usize) -> NativeResult<Self> {
+        fn create_under(
+            parent: &Path,
+            object_count: usize,
+            mount_epoch: MountEpoch,
+        ) -> NativeResult<Self> {
             let root = parent.join("namespace");
             let objects_path = root.join("fs").join("catalogs").join("objects");
             fs::create_dir_all(&objects_path)
@@ -1435,7 +1636,50 @@ mod macos_native {
                 objects_path,
                 objects,
                 records,
+                descriptor_epoch: DescriptorEpoch::opened_for(mount_epoch),
             })
+        }
+
+        fn reopen_existing(
+            parent: &Path,
+            object_count: usize,
+            mount_epoch: MountEpoch,
+        ) -> NativeResult<Self> {
+            let objects_path = parent
+                .join("namespace")
+                .join("fs")
+                .join("catalogs")
+                .join("objects");
+            let objects = open_directory(&objects_path, false)?;
+            let mut records = Vec::with_capacity(object_count);
+            for index in 0..object_count {
+                let name = CString::new(format!("{index:08}.object"))
+                    .map_err(|_| "object name contains NUL".to_owned())?;
+                let stamp = admit_opened_linked(objects.raw(), &name)?;
+                records.push(ObjectRecord { name, stamp });
+            }
+            let entry_count = fs::read_dir(&objects_path)
+                .map_err(|error| format!("enumerate reopened object namespace: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("enumerate reopened object entry: {error}"))?
+                .len();
+            if entry_count != object_count {
+                return Err(format!(
+                    "reopened object namespace contains {entry_count} entries, expected {object_count}"
+                ));
+            }
+            Ok(Self {
+                objects_path,
+                objects,
+                records,
+                descriptor_epoch: DescriptorEpoch::opened_for(mount_epoch),
+            })
+        }
+
+        fn require_current_mount(&self, mount_epoch: MountEpoch) -> NativeResult<()> {
+            self.descriptor_epoch
+                .require_current(mount_epoch)
+                .map_err(str::to_owned)
         }
 
         fn safe_open_scan(&self) -> NativeResult<()> {
@@ -1444,6 +1688,27 @@ mod macos_native {
                 validate_object_stamp(record.stamp, stamp)?;
             }
             Ok(())
+        }
+
+        fn safe_open_scan_with_mutation(
+            &self,
+            mut mutation: impl FnMut() -> NativeResult<()>,
+        ) -> NativeResult<Option<String>> {
+            let mutation_index = self.records.len() / 2;
+            let mut scan_failure = None;
+            for (index, record) in self.records.iter().enumerate() {
+                if index == mutation_index {
+                    mutation()?;
+                }
+                if scan_failure.is_none() {
+                    let result = admit_opened_linked(self.objects.raw(), &record.name)
+                        .and_then(|stamp| validate_object_stamp(record.stamp, stamp));
+                    if let Err(error) = result {
+                        scan_failure = Some(error);
+                    }
+                }
+            }
+            Ok(scan_failure)
         }
 
         fn stamp_scan(&self) -> NativeResult<()> {
@@ -2393,12 +2658,7 @@ mod macos_native {
         }
 
         fn shutdown(&mut self) -> NativeResult<CallbackSnapshot> {
-            let on_callback_queue = self
-                .native()
-                .and_then(MacNativeCalls::queue)
-                .map(SerialQueue::is_current)
-                .unwrap_or(false);
-            guarded_shutdown(on_callback_queue, self, NativeLease::shutdown_in_place)
+            run_synchronous_teardown(self)
         }
 
         fn shutdown_in_place(&mut self) -> NativeResult<CallbackSnapshot> {
@@ -2445,24 +2705,24 @@ mod macos_native {
                 Err(cleanup_errors.join("; "))
             }
         }
+    }
 
-        fn take_for_teardown_transfer(&mut self) -> Self {
-            Self {
-                lifecycle: self.lifecycle.take(),
-                native: self.native.take(),
-                kqueue: self.kqueue.take(),
-                chain: self.chain.take(),
-                fence_serialization: Mutex::new(()),
-            }
+    impl SynchronousTeardownDriver for NativeLease {
+        type Output = CallbackSnapshot;
+
+        fn on_callback_queue(&self) -> bool {
+            self.native()
+                .and_then(MacNativeCalls::queue)
+                .map(SerialQueue::is_current)
+                .unwrap_or(false)
         }
 
-        fn transfer_teardown(mut lease: Self) {
-            std::thread::spawn(move || loop {
-                match lease.shutdown_in_place() {
-                    Ok(_) => break,
-                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
-                }
-            });
+        fn teardown_complete(&self) -> bool {
+            self.lifecycle.is_none()
+        }
+
+        fn teardown_step(&mut self) -> NativeResult<Self::Output> {
+            self.shutdown_in_place()
         }
     }
 
@@ -2471,15 +2731,17 @@ mod macos_native {
             if self.lifecycle.is_none() {
                 return;
             }
-            let on_callback_queue = self
-                .native()
-                .and_then(MacNativeCalls::queue)
-                .map(SerialQueue::is_current)
-                .unwrap_or(false);
-            let transfer_required = on_callback_queue || self.shutdown_in_place().is_err();
-            if transfer_required {
-                Self::transfer_teardown(self.take_for_teardown_transfer());
+            if SynchronousTeardownDriver::on_callback_queue(self) {
+                eprintln!("live NativeLease dropped on its callback queue; aborting");
+                std::process::abort();
             }
+            if let Err(error) = run_synchronous_teardown(self) {
+                eprintln!("NativeLease teardown completed after error: {error}");
+            }
+            assert!(
+                self.lifecycle.is_none(),
+                "NativeLease teardown did not complete"
+            );
         }
     }
 
@@ -2585,10 +2847,10 @@ mod macos_native {
     pub(super) fn run(arguments: &Arguments) -> Result<(), (&'static str, String)> {
         let result = match arguments.sampling_report() {
             SamplingReport::Performance { warmups, samples } => {
-                run_performance(arguments.object_count, warmups, samples)
+                run_performance(arguments.object_count, warmups, samples, &arguments.argv)
             }
             SamplingReport::RestoredPathRace { race_samples } => {
-                run_restored_path(arguments.object_count, race_samples)
+                run_restored_path(arguments.object_count, race_samples, &arguments.argv)
             }
         };
         let report = result.map_err(|message| ("nativeCharacterizationFailed", message))?;
@@ -2599,6 +2861,7 @@ mod macos_native {
         object_count: usize,
         warmups: usize,
         samples: usize,
+        argv: &[String],
     ) -> NativeResult<CharacterizationReport> {
         let baseline_descriptors = descriptor_count()?;
         let mut scratch = ScratchRoot::create("lease-performance")?;
@@ -2607,7 +2870,11 @@ mod macos_native {
             let outside = scratch.path.join("outside");
             fs::create_dir(&outside)
                 .map_err(|error| format!("create outside directory: {error}"))?;
-            let workspace = ObjectWorkspace::create_under(&scratch.path, object_count)?;
+            let workspace = ObjectWorkspace::create_under(
+                &scratch.path,
+                object_count,
+                MountEpoch::first_attach(),
+            )?;
             let filesystem = filesystem_report(&workspace.objects_path)?;
             if !filesystem.name.eq_ignore_ascii_case("apfs") {
                 return Err(format!(
@@ -2693,6 +2960,7 @@ mod macos_native {
                 object_count,
                 SamplingReport::Performance { warmups, samples },
                 filesystem,
+                argv,
                 ReportEvidence {
                     safe_open: distribution_from_nanos(&safe_open_samples)
                         .map_err(str::to_owned)?,
@@ -2759,10 +3027,11 @@ mod macos_native {
         object_count: usize,
         sampling: SamplingReport,
         filesystem: FilesystemReport,
+        argv: &[String],
         evidence: ReportEvidence,
     ) -> NativeResult<CharacterizationReport> {
         Ok(CharacterizationReport {
-            schema_version: 1,
+            schema_version: 2,
             platform: "macos",
             hardware: HardwareReport {
                 model: command_text("sysctl", &["-n", "hw.model"])?,
@@ -2773,18 +3042,7 @@ mod macos_native {
                 build: command_text("sw_vers", &["-buildVersion"])?,
             },
             filesystem,
-            build: BuildReport {
-                profile: if cfg!(debug_assertions) {
-                    "debug"
-                } else {
-                    "release"
-                },
-                rustc: build_rustc_identity().to_owned(),
-                source_commit: command_text(
-                    "git",
-                    &["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"],
-                )?,
-            },
+            build: build_report_from_embedded_provenance(argv.to_vec()),
             object_count,
             sampling,
             safe_open: evidence.safe_open,
@@ -2800,8 +3058,9 @@ mod macos_native {
     fn run_restored_path(
         object_count: usize,
         race_samples: usize,
+        argv: &[String],
     ) -> NativeResult<CharacterizationReport> {
-        run_restored_path_characterization(object_count, race_samples)
+        run_restored_path_characterization(object_count, race_samples, argv)
     }
 
     fn sample_lease(lease: &NativeLease, workspace: &ObjectWorkspace) -> NativeResult<()> {
@@ -2871,6 +3130,7 @@ mod macos_native {
         image: PathBuf,
         mount: PathBuf,
         attached: bool,
+        mount_epoch: MountEpoch,
     }
 
     struct ApfsCreateFailure {
@@ -2889,6 +3149,7 @@ mod macos_native {
                         image: owned_root.join("corefs-lease.sparseimage"),
                         mount: owned_root.join("renameable").join("mount"),
                         attached: false,
+                        mount_epoch: MountEpoch(0),
                     },
                 })?;
             let plan = apfs_driver_plan(owned);
@@ -2898,6 +3159,7 @@ mod macos_native {
                 image,
                 mount,
                 attached: false,
+                mount_epoch: MountEpoch(0),
             };
             let primary = fs::create_dir_all(&volume.mount)
                 .map_err(|error| format!("create APFS mount point: {error}"))
@@ -2936,6 +3198,11 @@ mod macos_native {
             // hdiutil failures are ambiguous: the attached state intentionally remains set so
             // cleanup must prove detachment before removing any owned paths.
             result?;
+            self.mount_epoch = if self.mount_epoch.0 == 0 {
+                MountEpoch::first_attach()
+            } else {
+                self.mount_epoch.next_attach()
+            };
             Ok(())
         }
 
@@ -3090,9 +3357,88 @@ mod macos_native {
         }
     }
 
+    struct NativeArmedRaceAttempt<'a> {
+        active_workspace: &'a ObjectWorkspace,
+        stable_workspace: &'a ObjectWorkspace,
+        scratch_root: &'a Path,
+        target: &'a Path,
+        volume: &'a mut ApfsVolume,
+        case: RaceCase,
+        lease: Option<NativeLease>,
+        scan_elapsed_nanos: Option<u128>,
+    }
+
+    impl NativeArmedRaceAttempt<'_> {
+        fn lease(&self) -> NativeResult<&NativeLease> {
+            self.lease
+                .as_ref()
+                .ok_or_else(|| "armed race lease was not established".to_owned())
+        }
+
+        fn into_lease(mut self) -> NativeResult<NativeLease> {
+            self.lease
+                .take()
+                .ok_or_else(|| "armed race lease was not established".to_owned())
+        }
+
+        fn scan_elapsed_nanos(&self) -> NativeResult<u128> {
+            self.scan_elapsed_nanos
+                .ok_or_else(|| "armed race validation scan did not run".to_owned())
+        }
+    }
+
+    impl ArmedRaceDriver for NativeArmedRaceAttempt<'_> {
+        fn arm(&mut self) -> NativeResult<()> {
+            self.active_workspace
+                .require_current_mount(self.volume.mount_epoch)?;
+            let lease = NativeLease::create(&self.active_workspace.objects)?;
+            if lease.poll_kernel()?.is_terminal() {
+                return Err(format!(
+                    "fresh {:?} lease was terminal immediately after start",
+                    self.case.component
+                ));
+            }
+            lease.revalidate(&self.active_workspace.objects)?;
+            self.lease = Some(lease);
+            Ok(())
+        }
+
+        fn scan_with_mutation(&mut self) -> NativeResult<Option<String>> {
+            let case = self.case;
+            let scratch_root = self.scratch_root;
+            let target = self.target;
+            let stable_workspace = self.stable_workspace;
+            let volume = &mut self.volume;
+            let started = Instant::now();
+            let result =
+                self.active_workspace
+                    .safe_open_scan_with_mutation(|| match case.operation {
+                        RaceOperation::RenameRebindRenameBack => {
+                            exercise_rename_delete_rebind_race(
+                                scratch_root,
+                                target,
+                                stable_workspace,
+                            )
+                        }
+                        RaceOperation::UnmountRevoke => volume.detach_for_race(),
+                        RaceOperation::DeleteOriginalVnode => {
+                            exercise_original_vnode_delete(scratch_root, target)
+                        }
+                    });
+            self.scan_elapsed_nanos = Some(started.elapsed().as_nanos());
+            result
+        }
+
+        fn terminal_evidence(&mut self) -> NativeResult<FenceOutcome> {
+            self.lease()?
+                .fence_with_evidence(&self.active_workspace.objects)
+        }
+    }
+
     fn run_restored_path_characterization(
         object_count: usize,
         race_samples: usize,
+        argv: &[String],
     ) -> NativeResult<CharacterizationReport> {
         let required_cases = required_race_cases();
         if race_samples < required_cases.len() {
@@ -3116,7 +3462,8 @@ mod macos_native {
                 }
             };
             let volume_primary = (|| {
-                let workspace = ObjectWorkspace::create_under(&volume.mount, object_count)?;
+                let mut workspace =
+                    ObjectWorkspace::create_under(&volume.mount, object_count, volume.mount_epoch)?;
                 let filesystem = filesystem_report(&workspace.objects_path)?;
                 if !filesystem.name.eq_ignore_ascii_case("apfs") {
                     return Err(format!(
@@ -3151,72 +3498,63 @@ mod macos_native {
                 let mut callback_after_release = false;
 
                 for case in schedule {
-                    let started = Instant::now();
-                    workspace.safe_open_scan()?;
-                    safe_open_samples.push(started.elapsed().as_nanos());
-
+                    workspace.require_current_mount(volume.mount_epoch)?;
                     let disposable_root = volume.mount.join("original-vnode-delete-case");
                     let disposable_workspace =
                         if case.operation == RaceOperation::DeleteOriginalVnode {
                             Some(ObjectWorkspace::create_under(
                                 &disposable_root,
                                 object_count,
+                                volume.mount_epoch,
                             )?)
                         } else {
                             None
                         };
                     let active_workspace = disposable_workspace.as_ref().unwrap_or(&workspace);
-                    active_workspace.safe_open_scan()?;
-                    let mut lease = NativeLease::create(&active_workspace.objects)?;
                     let target = if case.operation == RaceOperation::DeleteOriginalVnode {
                         active_workspace.objects_path.clone()
                     } else {
                         race_component_path(&scratch.path, &volume.mount, case.component)
                     };
                     let fence_started = Instant::now();
+                    let mut attempt = NativeArmedRaceAttempt {
+                        active_workspace,
+                        stable_workspace: &workspace,
+                        scratch_root: &scratch.path,
+                        target: &target,
+                        volume: &mut volume,
+                        case,
+                        lease: None,
+                        scan_elapsed_nanos: None,
+                    };
+                    let armed_rejection = run_armed_race_attempt(&mut attempt, case);
+                    if attempt.scan_elapsed_nanos.is_some() {
+                        safe_open_samples.push(attempt.scan_elapsed_nanos()?);
+                    }
+                    let mut lease = match attempt.into_lease() {
+                        Ok(lease) => lease,
+                        Err(no_lease) => {
+                            return match armed_rejection {
+                                Ok(_) => Err(no_lease),
+                                Err(primary) => Err(primary),
+                            };
+                        }
+                    };
                     let race_primary = (|| {
-                        if lease.poll_kernel()?.is_terminal() {
+                        let rejection = armed_rejection?;
+                        if matches!(
+                            case.operation,
+                            RaceOperation::UnmountRevoke | RaceOperation::DeleteOriginalVnode
+                        ) && !rejection.scan_failed
+                        {
                             return Err(format!(
-                                "fresh {:?} lease was terminal immediately after start",
-                                case.component
+                                "armed {:?} scan did not observe its revoked descriptor",
+                                case.operation
                             ));
                         }
-                        lease.revalidate(&active_workspace.objects)?;
                         maximum_descriptors = maximum_descriptors
                             .max(descriptor_count()?)
                             .max(baseline_descriptors + lease.descriptor_count() as i64);
-
-                        match case.operation {
-                            RaceOperation::RenameRebindRenameBack => {
-                                exercise_rename_delete_rebind_race(
-                                    &scratch.path,
-                                    &target,
-                                    &workspace,
-                                )?;
-                            }
-                            RaceOperation::UnmountRevoke => {
-                                volume.detach_for_race()?;
-                            }
-                            RaceOperation::DeleteOriginalVnode => {
-                                exercise_original_vnode_delete(&scratch.path, &target)?;
-                            }
-                        }
-
-                        let kqueue_outcome =
-                            lease.fence_with_evidence(&active_workspace.objects)?;
-                        if kqueue_outcome.cause != FenceCause::Kqueue {
-                            return Err(format!(
-                                "race {:?} on {:?} terminated as {:?}, not kqueue evidence",
-                                case.operation, case.component, kqueue_outcome.cause
-                            ));
-                        }
-                        let kqueue_proof =
-                            kqueue_outcome.kqueue.proof_for(case).ok_or_else(|| {
-                                format!(
-                                    "kqueue evidence did not contain {:?} for {:?}",
-                                    case.operation, case.component
-                                )
-                            })?;
 
                         if case.operation == RaceOperation::UnmountRevoke {
                             volume.attach()?;
@@ -3241,7 +3579,7 @@ mod macos_native {
                         Ok(RaceObservation {
                             case,
                             fresh_generation: true,
-                            kqueue_proof: Some(kqueue_proof),
+                            kqueue_proof: Some(rejection.proof),
                             restored_before_callback,
                             delayed_zero_id_callback_terminal,
                         })
@@ -3264,6 +3602,14 @@ mod macos_native {
                                 disposable_root.display()
                             ));
                         }
+                    }
+                    if case.operation == RaceOperation::UnmountRevoke {
+                        workspace = ObjectWorkspace::reopen_existing(
+                            &volume.mount,
+                            object_count,
+                            volume.mount_epoch,
+                        )?;
+                        workspace.require_current_mount(volume.mount_epoch)?;
                     }
                 }
 
@@ -3314,6 +3660,7 @@ mod macos_native {
                     object_count,
                     SamplingReport::RestoredPathRace { race_samples },
                     filesystem,
+                    argv,
                     ReportEvidence {
                         safe_open: distribution_from_nanos(&safe_open_samples)
                             .map_err(str::to_owned)?,
@@ -3656,6 +4003,19 @@ mod tests {
         assert_eq!(parsed.race_samples, None);
         assert!(!parsed.mount_restored_path);
         assert_eq!(
+            parsed.argv,
+            vec![
+                "--objects",
+                "2500",
+                "--warmups",
+                "30",
+                "--samples",
+                "200",
+                "--output",
+                "/tmp/corefs-object-lease-macos.json",
+            ]
+        );
+        assert_eq!(
             serde_json::to_value(parsed.sampling_report()).unwrap(),
             json!({
                 "mode": "performance",
@@ -3747,7 +4107,7 @@ mod tests {
         assert_eq!(
             value,
             json!({
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "platform": "macos",
                 "hardware": {
                     "model": "contract-example",
@@ -3764,7 +4124,27 @@ mod tests {
                 "build": {
                     "profile": "release",
                     "rustc": "1.75.0",
-                    "sourceCommit": "contract-example"
+                    "sourceCommit": "contract-example",
+                    "trackedTreeClean": true,
+                    "targetTriple": "aarch64-apple-darwin",
+                    "spikeSource": {
+                        "sha256": "contract-example-sha256",
+                        "gitBlob": "contract-example-blob"
+                    },
+                    "cargoLock": {
+                        "sha256": "contract-example-sha256",
+                        "gitBlob": "contract-example-blob"
+                    },
+                    "argv": [
+                        "--objects",
+                        "2500",
+                        "--warmups",
+                        "30",
+                        "--samples",
+                        "200",
+                        "--output",
+                        "/tmp/corefs-object-lease-macos.json"
+                    ]
                 },
                 "objectCount": 2500,
                 "sampling": {
@@ -4274,6 +4654,204 @@ mod tests {
     }
 
     #[test]
+    fn build_provenance_is_embedded_and_dirty_tracked_builds_are_rejected() {
+        use sha2::{Digest, Sha256};
+
+        let argv = vec![
+            "--objects".to_owned(),
+            "2500".to_owned(),
+            "--warmups".to_owned(),
+            "30".to_owned(),
+        ];
+        let build = build_report_from_embedded_provenance(argv.clone());
+        assert!(!build.source_commit.is_empty());
+        assert!(!build.target_triple.is_empty());
+        assert_eq!(build.spike_source.sha256.len(), 64);
+        assert!(!build.spike_source.git_blob.is_empty());
+        assert_eq!(build.cargo_lock.sha256.len(), 64);
+        assert!(!build.cargo_lock.git_blob.is_empty());
+        assert_eq!(build.argv, argv);
+        assert_eq!(
+            build.spike_source.sha256,
+            hex::encode(Sha256::digest(include_bytes!(
+                "object_lease_macos_spike.rs"
+            )))
+        );
+        let cargo_lock = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock"),
+        )
+        .unwrap();
+        assert_eq!(
+            build.cargo_lock.sha256,
+            hex::encode(Sha256::digest(cargo_lock))
+        );
+        let runtime_git_query = ["rev", "-parse"].concat();
+        assert!(!include_str!("object_lease_macos_spike.rs").contains(&runtime_git_query));
+        assert!(validate_build_tracked_tree(true).is_ok());
+        assert_eq!(
+            validate_build_tracked_tree(false).unwrap_err(),
+            "refusing native characterization from a dirty tracked build"
+        );
+    }
+
+    #[test]
+    fn revoked_descriptor_epochs_cannot_be_reused_after_reattach() {
+        let first_mount = MountEpoch::first_attach();
+        let first_descriptors = DescriptorEpoch::opened_for(first_mount);
+        first_descriptors.require_current(first_mount).unwrap();
+
+        let second_mount = first_mount.next_attach();
+        assert_eq!(
+            first_descriptors.require_current(second_mount).unwrap_err(),
+            "descriptor epoch belongs to a revoked mount"
+        );
+        DescriptorEpoch::opened_for(second_mount)
+            .require_current(second_mount)
+            .unwrap();
+    }
+
+    struct InjectedArmedRace {
+        steps: Vec<ArmedRaceStep>,
+        scan_failure: Option<String>,
+        kqueue: KqueuePoll,
+    }
+
+    impl ArmedRaceDriver for InjectedArmedRace {
+        fn arm(&mut self) -> Result<(), String> {
+            self.steps.push(ArmedRaceStep::Arm);
+            Ok(())
+        }
+
+        fn scan_with_mutation(&mut self) -> Result<Option<String>, String> {
+            self.steps.push(ArmedRaceStep::Scan);
+            self.steps.push(ArmedRaceStep::Mutation);
+            Ok(self.scan_failure.take())
+        }
+
+        fn terminal_evidence(&mut self) -> Result<FenceOutcome, String> {
+            self.steps.push(ArmedRaceStep::TerminalEvidence);
+            Ok(FenceOutcome {
+                state: GenerationState::Unknown,
+                cause: FenceCause::Kqueue,
+                kqueue: self.kqueue.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn armed_scan_mutations_require_exact_kqueue_rejection_for_rename_and_revoke() {
+        for (case, notes, scan_failure) in [
+            (
+                RaceCase {
+                    component: OwnedComponent::Objects,
+                    operation: RaceOperation::RenameRebindRenameBack,
+                },
+                KQUEUE_NOTE_RENAME,
+                None,
+            ),
+            (
+                RaceCase {
+                    component: OwnedComponent::Mount,
+                    operation: RaceOperation::UnmountRevoke,
+                },
+                KQUEUE_NOTE_REVOKE,
+                Some("scan observed revoked descriptor".to_owned()),
+            ),
+        ] {
+            let mut driver = InjectedArmedRace {
+                steps: Vec::new(),
+                scan_failure,
+                kqueue: KqueuePoll {
+                    events: vec![KqueueEventEvidence {
+                        ident: 17,
+                        component: Some(case.component),
+                        notes,
+                        has_error: false,
+                        has_eof: false,
+                    }],
+                },
+            };
+            let rejection = run_armed_race_attempt(&mut driver, case).unwrap();
+            assert_eq!(
+                driver.steps,
+                vec![
+                    ArmedRaceStep::Arm,
+                    ArmedRaceStep::Scan,
+                    ArmedRaceStep::Mutation,
+                    ArmedRaceStep::TerminalEvidence,
+                ]
+            );
+            assert_eq!(rejection.proof.case, case);
+            assert_eq!(
+                rejection.scan_failed,
+                case.operation == RaceOperation::UnmountRevoke
+            );
+        }
+
+        let case = RaceCase {
+            component: OwnedComponent::Objects,
+            operation: RaceOperation::RenameRebindRenameBack,
+        };
+        let mut missing_evidence = InjectedArmedRace {
+            steps: Vec::new(),
+            scan_failure: Some("scan failed".to_owned()),
+            kqueue: KqueuePoll::default(),
+        };
+        assert!(run_armed_race_attempt(&mut missing_evidence, case).is_err());
+    }
+
+    struct InjectedSynchronousTeardown {
+        callback_queue: bool,
+        fail_first: bool,
+        complete: bool,
+        attempts: usize,
+    }
+
+    impl SynchronousTeardownDriver for InjectedSynchronousTeardown {
+        type Output = ();
+
+        fn on_callback_queue(&self) -> bool {
+            self.callback_queue
+        }
+
+        fn teardown_complete(&self) -> bool {
+            self.complete
+        }
+
+        fn teardown_step(&mut self) -> Result<Self::Output, String> {
+            self.attempts += 1;
+            if self.fail_first && self.attempts == 1 {
+                Err("injected retryable teardown failure".to_owned())
+            } else {
+                self.complete = true;
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn teardown_is_synchronous_and_complete_before_error_return() {
+        let mut teardown = InjectedSynchronousTeardown {
+            callback_queue: false,
+            fail_first: true,
+            complete: false,
+            attempts: 0,
+        };
+        assert_eq!(
+            run_synchronous_teardown(&mut teardown).unwrap_err(),
+            "injected retryable teardown failure"
+        );
+        assert!(teardown.complete);
+        assert_eq!(teardown.attempts, 2);
+
+        let source = include_str!("object_lease_macos_spike.rs");
+        let detached_spawn = ["thread", "::spawn"].concat();
+        let forbidden_transfer = ["transfer", "_teardown"].concat();
+        assert!(!source.contains(&detached_spawn));
+        assert!(!source.contains(&forbidden_transfer));
+    }
+
+    #[test]
     fn kqueue_proof_preserves_ident_component_and_exact_operation_notes() {
         let delete_case = RaceCase {
             component: OwnedComponent::Objects,
@@ -4530,26 +5108,24 @@ mod tests {
 
     #[test]
     fn callback_queue_shutdown_rejection_preserves_ownership_for_non_callback_retry() {
-        let mut ownership = 7_u64;
-        let rejected = guarded_shutdown(true, &mut ownership, |value| {
-            *value = 0;
-            Ok(*value)
-        });
+        let mut teardown = InjectedSynchronousTeardown {
+            callback_queue: true,
+            fail_first: false,
+            complete: false,
+            attempts: 0,
+        };
+        let rejected = run_synchronous_teardown(&mut teardown);
         assert_eq!(
             rejected.unwrap_err(),
             "shutdown invoked from callback queue"
         );
-        assert_eq!(ownership, 7);
+        assert_eq!(teardown.attempts, 0);
+        assert!(!teardown.complete);
 
-        assert_eq!(
-            guarded_shutdown(false, &mut ownership, |value| {
-                *value = 0;
-                Ok(*value)
-            })
-            .unwrap(),
-            0
-        );
-        assert_eq!(ownership, 0);
+        teardown.callback_queue = false;
+        run_synchronous_teardown(&mut teardown).unwrap();
+        assert_eq!(teardown.attempts, 1);
+        assert!(teardown.complete);
     }
 
     #[test]
