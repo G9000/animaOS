@@ -273,8 +273,13 @@ def generate_all(output_dir: Path) -> None:
     _write_tables_pdf(output_dir / "tables.pdf")
     _write_scanned_pdf(output_dir / "scanned.pdf", tmp_dir=output_dir)
     gold_path = output_dir / "gold.json"
+    # newline="\n": without it, text mode translates "\n" to os.linesep, so a
+    # Windows run emits CRLF and fails the byte-exact cross-environment
+    # comparison against the (LF) checked-in copy.
     gold_path.write_text(
-        json.dumps(_gold_corpus(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(_gold_corpus(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
 
 

@@ -49,7 +49,7 @@ This repo is a mixed monorepo:
 Run from repo root unless noted.
 
 - `bun install`: install workspace dependencies.
-- `uv sync --all-packages`: install/update Python workspace dependencies.
+- `uv sync --all-packages --all-extras`: install/update Python workspace dependencies. `--all-extras` is required: it pulls in the `docling` extra, which is the only durable PDF parser — without it every PDF stays at preview quality and scanned PDFs cannot ingest. A plain `uv sync` prunes extras and silently uninstalls it.
 - `bun dev`: start the Python server, desktop, and anima-mod through the root supervisor; it launches the server with uv and the desktop/anima-mod processes with Bun.
 - `bun run dev:server`: run the FastAPI backend on port `3031`.
 - `bun run dev:desktop`: run the desktop web UI.

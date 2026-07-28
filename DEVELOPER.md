@@ -19,7 +19,7 @@ Mixed monorepo for ANIMA:
 
 ```bash
 bun install
-uv sync --all-packages
+uv sync --all-packages --all-extras
 bun run db:server:upgrade
 bun run dev
 ```
