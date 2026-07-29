@@ -1109,6 +1109,75 @@ def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
         sys.modules.pop("anima_server.main", None)
 
 
+def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    app_data = managed_tmp_path / "machine-app-data"
+    core = managed_tmp_path / "portable" / ".anima"
+    core.mkdir(parents=True)
+    (core / "manifest.json").write_text(
+        json.dumps({"core_id": "core-legacy-runtime"}),
+        encoding="utf-8",
+    )
+    legacy_pg = core / "runtime" / "pg_data"
+    legacy_pg.mkdir(parents=True)
+    (legacy_pg / "PG_VERSION").write_text("17", encoding="ascii")
+    observed: list[Path] = []
+
+    class FakeEmbeddedPG:
+        def __init__(self, data_dir: Path) -> None:
+            self.data_dir = data_dir
+
+        def start(self) -> None:
+            observed.append(self.data_dir)
+
+        def stop(self) -> None:
+            return None
+
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_health_log_dir = settings.health_log_dir
+
+    try:
+        settings.data_dir = core
+        settings.runtime_database_url = ""
+        settings.runtime_pg_data_dir = ""
+        settings.runtime_app_data_dir = str(app_data)
+        settings.health_log_dir = ""
+        main_module = _reload_main_module()
+        monkeypatch.setattr(main_module, "EmbeddedPG", FakeEmbeddedPG)
+
+        pg = main_module._start_embedded_pg()
+
+        assert pg is not None
+        registry = json.loads(
+            (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
+        )
+        record = registry["instances"][0]
+        assert observed == [
+            app_data
+            / "cores"
+            / record["core_id"]
+            / "instances"
+            / record["local_instance_id"]
+            / "legacy-runtime-source"
+            / "pg_data"
+        ]
+        assert not legacy_pg.exists()
+        main_module._release_runtime_instance_claim()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.health_log_dir = original_health_log_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
 def test_explicit_runtime_url_skips_embedded_pg(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
@@ -1150,6 +1219,13 @@ def test_explicit_runtime_url_skips_embedded_pg(
                 init_calls.append((database_url, echo)),
             ),
         )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: startup_order.append(
+                f"bind:{core_id}:{local_instance_id}"
+            ),
+        )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
         monkeypatch.setattr(
@@ -1172,6 +1248,7 @@ def test_explicit_runtime_url_skips_embedded_pg(
             f"claim:{explicit_url}",
             f"init:{explicit_url}",
         ]
+        assert startup_order[2].startswith("bind:")
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
@@ -1343,6 +1420,14 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         )
         monkeypatch.setattr(
             main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: startup_calls.append(
+                f"bind:{core_id}:{local_instance_id}"
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module,
             "ensure_pgvector",
             lambda: startup_calls.append("pgvector"),
             raising=False,
@@ -1367,8 +1452,19 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         app = main_module.create_app()
 
         _run_app_lifespan(app)
+        registry = json.loads(
+            (
+                Path(settings.runtime_app_data_dir)
+                / "core-instance-registry.json"
+            ).read_text(encoding="utf-8")
+        )
+        binding_record = registry["instances"][0]
         assert startup_calls == [
             f"init:{explicit_url}",
+            (
+                f"bind:{binding_record['core_id']}:"
+                f"{binding_record['local_instance_id']}"
+            ),
             "pgvector",
             "migrate",
         ]
@@ -1381,6 +1477,37 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         settings.runtime_pg_data_dir = original_runtime_pg_data_dir
         dispose_cached_engines()
         sys.modules.pop("anima_server.main", None)
+
+
+def test_runtime_database_binding_rejects_another_core_instance(
+    managed_tmp_path: Path,
+) -> None:
+    runtime_db = managed_tmp_path / "shared-runtime.db"
+    init_runtime_engine(f"sqlite+pysqlite:///{runtime_db.as_posix()}")
+
+    runtime_module.ensure_runtime_database_binding(
+        core_id="core-a",
+        local_instance_id="instance-a",
+    )
+    runtime_module.ensure_runtime_database_binding(
+        core_id="core-a",
+        local_instance_id="instance-a",
+    )
+
+    with pytest.raises(RuntimeError, match="another Core instance"):
+        runtime_module.ensure_runtime_database_binding(
+            core_id="core-b",
+            local_instance_id="instance-b",
+        )
+
+    with get_runtime_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT core_id, local_instance_id "
+                "FROM corefs_runtime_binding WHERE binding_slot = 1"
+            )
+        ).one()
+    assert row == ("core-a", "instance-a")
 
 
 @pytest.mark.skipif(

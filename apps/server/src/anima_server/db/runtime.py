@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Generator
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
 from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.schema import CreateTable
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ class RuntimeDatabaseEngine(StrEnum):
     POSTGRES = "postgresql"
     SQLITE = "sqlite"
     OTHER = "other"
+
+
+class RuntimeDatabaseBindingCollision(RuntimeError):
+    """Raised when a Runtime database belongs to another Core instance."""
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +134,59 @@ def get_runtime_db() -> Generator[Session, None, None]:
         raise
     finally:
         session.close()
+
+
+def ensure_runtime_database_binding(
+    *,
+    core_id: str,
+    local_instance_id: str,
+) -> None:
+    """Atomically claim the target Runtime database before other DB work."""
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+
+    engine = get_runtime_engine()
+    table = CoreFSRuntimeBinding.__table__
+    now = datetime.now(UTC)
+    values = {
+        "binding_slot": 1,
+        "core_id": core_id,
+        "local_instance_id": local_instance_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    with engine.begin() as connection:
+        connection.execute(CreateTable(table, if_not_exists=True))
+        if connection.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert
+
+            statement = insert(table).values(**values).on_conflict_do_nothing(
+                index_elements=[table.c.binding_slot]
+            )
+            connection.execute(statement)
+        elif connection.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+
+            statement = insert(table).values(**values).on_conflict_do_nothing(
+                index_elements=[table.c.binding_slot]
+            )
+            connection.execute(statement)
+        else:
+            existing = connection.execute(
+                select(table.c.binding_slot).where(table.c.binding_slot == 1)
+            ).first()
+            if existing is None:
+                connection.execute(table.insert().values(**values))
+
+        binding = connection.execute(
+            select(table.c.core_id, table.c.local_instance_id).where(
+                table.c.binding_slot == 1
+            )
+        ).one()
+        if binding != (core_id, local_instance_id):
+            raise RuntimeDatabaseBindingCollision(
+                "Runtime database is already bound to another Core instance"
+            )
 
 
 # ---------------------------------------------------------------------------

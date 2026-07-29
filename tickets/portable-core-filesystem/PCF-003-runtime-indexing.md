@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-29 15:37 MYT
+- Updated: 2026-07-29 15:56 MYT
 - Started: 2026-07-29 01:57 MYT
 - Completed:
 
@@ -44,11 +44,12 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 - 2026-07-29 14:07 MYT - Added authenticated catalog reconciliation, private-text-free progress/rotation status, resumable two-credential FRK rotation through the native CoreFS catalog transaction, unlock-token replacement after cutover, atomic blind-index generation reset, the desktop readiness provider and Security UI, and the root `test:desktop` command. Server status/index/API reconciliation passed `52` focused tests, the complete existing keyslot band plus new API coverage passed `55`, desktop readiness/rotation passed `3`, the desktop production build passed, and both the Python-enabled `anima-core` binding and Tauri host compile.
 - 2026-07-29 14:55 MYT - Completed PCF-003 implementation validation on current `main`. The fresh server integration and credential bands passed `162` tests with `8` environment-dependent embedded-PostgreSQL skips; the complete desktop suite passed `77/77`; the desktop production build, Tauri host, Python-enabled `anima-core`, focused native CoreFS binding tests, scoped Ruff, Rust formatting, and diff hygiene passed. The root desktop runner also exposed and repaired three stale mainline test contracts for the current HUD navigation and recovery replacement payload. The child and parent remain `in_progress` pending a clean current-head review and the required second-phase metadata closeout.
 - 2026-07-29 15:37 MYT - Fixed PR #127's failed standalone release-notice gate test-first. Release staging already wrote to `resources/runtime`, but the provenance workflow, notice validator default/resource-map contract, and Tauri resource ignore still named obsolete `resources/.anima` paths. The new static contract failed RED, then the complete `77/77` desktop suite, exact legal-only staging plus notice validation, scoped Ruff, and diff hygiene passed GREEN. PCF-003 and its parent remain `in_progress` pending refreshed CI/current-head review and second-phase closeout.
+- 2026-07-29 15:56 MYT - Addressed all four actionable P1 findings from PR #127's review of `89f98dfb` test-first. Catalog refresh now preserves the unlock-scoped local-instance binding; legacy PostgreSQL remains the active source until converter cutover; legacy `runtime-config.json` moves by verified copy/delete into instance config without journal secrets; and explicit Runtime databases atomically claim a database-local singleton before pgvector or Alembic. Five focused regressions failed RED and passed GREEN; the expanded startup/schema/privacy band passed `49` with `8` embedded-PostgreSQL skips, and the full PCF-003 integration band passed `108` with the same `8` skips. Scoped Ruff, repository organization, and diff hygiene pass. The child and parent remain `in_progress` pending refreshed CI/current-head review and second-phase closeout.
 
 ## Validation
 
 - Commands:
-  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_indexer.py apps/server/tests/test_corefs_instance_registry.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_corefs_path_inventory.py apps/server/tests/test_corefs_runtime_privacy.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_health_startup.py apps/server/tests/test_runtime_db.py -q` (`104` passed, `8` skipped)
+  - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_indexer.py apps/server/tests/test_corefs_instance_registry.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_corefs_path_inventory.py apps/server/tests/test_corefs_runtime_privacy.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_health_startup.py apps/server/tests/test_runtime_db.py -q` (`108` passed, `8` skipped)
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_crypto.py apps/server/tests/test_corefs_keyslots.py -q` (`58` passed)
   - `bun run test:desktop` (`77` passed)
   - `bun run --cwd apps/desktop build`
@@ -59,7 +60,7 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
   - `cargo fmt --package anima-core -- --check`
   - `git diff --check`
 - Changed paths:
-  - `apps/server/alembic_runtime/`, `apps/server/src/anima_server/{api,models,schemas,services}/`, and focused server tests
+  - `apps/server/alembic_runtime/`, `apps/server/src/anima_server/{api,db,models,schemas,services}/`, `apps/server/src/anima_server/{config,main}.py`, and focused server tests
   - `packages/anima-core/`, `packages/api-client/`, and `package.json`
   - `apps/desktop/src/`, `apps/desktop/src-tauri/`, `apps/desktop/tests/`, and `scripts/prepare-desktop-release.ts`
   - `.github/workflows/corefs-provenance.yml` and `scripts/check_corefs_release_notices.py`

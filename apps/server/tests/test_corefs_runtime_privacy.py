@@ -10,6 +10,7 @@ from anima_server.models.corefs_runtime import (
     CoreFSIndexCheckpoint,
     CoreFSIndexEntry,
     CoreFSMigrationJournal,
+    CoreFSRuntimeBinding,
     CoreFSSealedPayload,
 )
 from anima_server.services.corefs.runtime_sealing import (
@@ -127,6 +128,7 @@ def test_corefs_runtime_tables_have_only_safe_or_sealed_payload_columns() -> Non
         CoreFSIndexCheckpoint.__tablename__,
         CoreFSBlindToken.__tablename__,
         CoreFSMigrationJournal.__tablename__,
+        CoreFSRuntimeBinding.__tablename__,
         CoreFSSealedPayload.__tablename__,
     }
 
@@ -135,6 +137,7 @@ def test_corefs_runtime_tables_have_only_safe_or_sealed_payload_columns() -> Non
         "corefs_index_checkpoints",
         "corefs_blind_tokens",
         "corefs_migration_journal",
+        "corefs_runtime_binding",
         "corefs_sealed_payloads",
     }
     for table_name in expected_tables:
@@ -153,6 +156,7 @@ def test_corefs_runtime_schema_builds_without_plaintext_search_columns() -> None
         CoreFSIndexCheckpoint.__table__,
         CoreFSBlindToken.__table__,
         CoreFSMigrationJournal.__table__,
+        CoreFSRuntimeBinding.__table__,
         CoreFSSealedPayload.__table__,
     ]
 

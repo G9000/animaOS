@@ -160,7 +160,6 @@ class CoreFSProgressiveIndex:
             self._pending_blind_generation = None
             self._pending_blind_expected_count = None
             self._catalog_generation = None
-            self._local_instance_id = None
             self._last_cursor = None
             self._state = ReadinessState.CATALOG_LOADING
 
@@ -455,6 +454,7 @@ class CoreFSProgressiveIndex:
             self._pending_blind_expected_count = None
             self._families.clear()
             self._catalog_generation = None
+            self._local_instance_id = None
             self._last_cursor = None
             if self._search_key is not None:
                 self._search_key[:] = b"\0" * len(self._search_key)

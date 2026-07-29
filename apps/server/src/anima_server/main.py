@@ -49,6 +49,7 @@ from .db.pg_lifecycle import EmbeddedPG
 from .db.runtime import (
     dispose_runtime_engine,
     ensure_pgvector,
+    ensure_runtime_database_binding,
     ensure_runtime_tables,
     get_runtime_session_factory,
     init_runtime_engine,
@@ -165,12 +166,12 @@ def _start_embedded_pg() -> EmbeddedPG | None:
 
     if settings.runtime_pg_data_dir:
         configured_pg_data = Path(settings.runtime_pg_data_dir).expanduser().resolve()
-        if configured_pg_data != binding.pg_data_dir:
+        if configured_pg_data != binding.active_pg_data_dir:
             raise RuntimeError(
                 "ANIMA_RUNTIME_PG_DATA_DIR must match the claimed machine-local "
                 "Core instance path; configure ANIMA_RUNTIME_APP_DATA_DIR instead"
             )
-    pg_data_dir = binding.pg_data_dir
+    pg_data_dir = binding.active_pg_data_dir
 
     pg = EmbeddedPG(data_dir=pg_data_dir)
     pg.start()
@@ -183,11 +184,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     unlock_session_store.start()
     embedded_pg: EmbeddedPG | None = None
+    runtime_binding: RuntimeInstanceBinding | None = None
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
         if settings.runtime_database_url:
-            _claim_runtime_instance(runtime_url=settings.runtime_database_url)
+            runtime_binding = _claim_runtime_instance(
+                runtime_url=settings.runtime_database_url
+            )
         embedded_pg = _start_embedded_pg()
         load_persisted_runtime_settings()
         runtime_url = (
@@ -202,6 +206,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 pool_size=settings.runtime_pool_size,
                 max_overflow=settings.runtime_pool_max_overflow,
             )
+            if settings.runtime_database_url:
+                if runtime_binding is None:
+                    raise RuntimeError("explicit Runtime database has no instance binding")
+                ensure_runtime_database_binding(
+                    core_id=runtime_binding.core_id,
+                    local_instance_id=runtime_binding.local_instance_id,
+                )
             ensure_pgvector()
             ensure_runtime_tables()
 

@@ -39,6 +39,13 @@ class RuntimeInstanceBinding:
     filesystem_identity: str
     runtime_url_fingerprint: str | None = None
 
+    @property
+    def active_pg_data_dir(self) -> Path:
+        """Keep relocated legacy Runtime active until its converters finish."""
+        if self.legacy_pg_data_dir.is_dir():
+            return self.legacy_pg_data_dir
+        return self.pg_data_dir
+
 
 class RuntimeInstanceRegistry:
     def __init__(

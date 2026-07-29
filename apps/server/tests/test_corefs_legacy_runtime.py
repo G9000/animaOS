@@ -69,6 +69,30 @@ def test_relocation_quarantines_legacy_pg_and_moves_only_derived_directories(
     assert assert_core_root_inventory(core) == ()
 
 
+def test_relocation_moves_persisted_runtime_config_without_logging_secrets(
+    managed_tmp_path: Path,
+) -> None:
+    core = _make_core(managed_tmp_path / "portable" / ".anima")
+    binding = RuntimeInstanceRegistry(managed_tmp_path / "app-data").resolve(core)
+    secret_marker = "provider-secret-marker"
+    legacy_config = core / "runtime-config.json"
+    legacy_config.write_text(
+        json.dumps({"agent_provider": "openai", "agent_api_key": secret_marker}),
+        encoding="utf-8",
+    )
+
+    result = relocate_legacy_runtime(core, binding, postgres_running=False)
+
+    target = binding.instance_root / "config" / "runtime-config.json"
+    assert result.runtime_config_moved is True
+    assert not legacy_config.exists()
+    assert json.loads(target.read_text(encoding="utf-8"))["agent_api_key"] == secret_marker
+    journal_text = binding.migration_journal_path.read_text(encoding="utf-8")
+    assert json.loads(journal_text)["runtime_config"]["status"] == "relocated"
+    assert secret_marker not in journal_text
+    assert assert_core_root_inventory(core) == ()
+
+
 def test_relocation_refuses_to_touch_pg_data_while_postgres_is_running(
     managed_tmp_path: Path,
 ) -> None:

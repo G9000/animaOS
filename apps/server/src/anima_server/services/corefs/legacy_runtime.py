@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from anima_server.config import RUNTIME_SETTINGS_FILENAME
 from anima_server.services.corefs.instance_registry import RuntimeInstanceBinding
 
 _APPROVED_CORE_ROOT_ENTRIES = frozenset(
@@ -32,6 +33,7 @@ class LegacyRuntimeRelocation:
     legacy_pg_moved: bool
     indices_moved: bool
     health_logs_moved: bool
+    runtime_config_moved: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,20 +73,31 @@ def relocate_legacy_runtime(
         canonical_core / "logs",
         binding.health_log_dir,
     )
+    runtime_config_moved, runtime_config_inventory = _move_verified_file(
+        canonical_core / RUNTIME_SETTINGS_FILENAME,
+        binding.instance_root / "config" / RUNTIME_SETTINGS_FILENAME,
+    )
     _remove_empty_directory(canonical_core / "runtime")
 
-    if legacy_pg_moved or indices_moved or health_logs_moved:
+    if (
+        legacy_pg_moved
+        or indices_moved
+        or health_logs_moved
+        or runtime_config_moved
+    ):
         _write_migration_journal(
             binding,
             legacy_pg=legacy_pg_inventory,
             indices=indices_inventory,
             health_logs=health_logs_inventory,
+            runtime_config=runtime_config_inventory,
         )
 
     return LegacyRuntimeRelocation(
         legacy_pg_moved=legacy_pg_moved,
         indices_moved=indices_moved,
         health_logs_moved=health_logs_moved,
+        runtime_config_moved=runtime_config_moved,
     )
 
 
@@ -136,6 +149,58 @@ def _move_verified_tree(
             shutil.rmtree(staging)
         raise
     return True, source_inventory
+
+
+def _move_verified_file(
+    source: Path,
+    target: Path,
+) -> tuple[bool, _TreeInventory | None]:
+    if not source.exists():
+        return False, None
+    _reject_link(source)
+    if not source.is_file():
+        raise LegacyRuntimeCollision(
+            f"legacy Runtime source is not a file: {source}"
+        )
+
+    inventory = _TreeInventory(files=1, digest=_hash_file(source))
+    if target.exists():
+        _reject_link(target)
+        if not target.is_file() or _hash_file(target) != inventory.digest:
+            raise LegacyRuntimeCollision(
+                f"legacy Runtime target contains different bytes: {target}"
+            )
+        source.unlink()
+        return True, inventory
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with source.open("rb") as source_handle, os.fdopen(
+            descriptor, "wb"
+        ) as target_handle:
+            shutil.copyfileobj(source_handle, target_handle)
+            target_handle.flush()
+            os.fsync(target_handle.fileno())
+        if _hash_file(temporary) != inventory.digest:
+            raise LegacyRuntimeCollision(
+                f"legacy Runtime copy verification failed: {source}"
+            )
+        os.replace(temporary, target)
+        if _hash_file(target) != inventory.digest:
+            raise LegacyRuntimeCollision(
+                f"legacy Runtime target verification failed: {target}"
+            )
+        source.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return True, inventory
 
 
 def _inventory_tree(root: Path) -> _TreeInventory:
@@ -196,6 +261,7 @@ def _write_migration_journal(
     legacy_pg: _TreeInventory | None,
     indices: _TreeInventory | None,
     health_logs: _TreeInventory | None,
+    runtime_config: _TreeInventory | None,
 ) -> None:
     payload: dict[str, object] = {
         "version": 1,
@@ -204,6 +270,7 @@ def _write_migration_journal(
         "legacy_pg": _journal_entry(legacy_pg, status="quarantined"),
         "indices": _journal_entry(indices, status="relocated"),
         "health_logs": _journal_entry(health_logs, status="relocated"),
+        "runtime_config": _journal_entry(runtime_config, status="relocated"),
     }
     path = binding.migration_journal_path
     path.parent.mkdir(parents=True, exist_ok=True)

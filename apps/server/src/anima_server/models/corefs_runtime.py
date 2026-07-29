@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Integer,
     LargeBinary,
@@ -17,6 +18,25 @@ from anima_server.db.runtime_base import RuntimeBase
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class CoreFSRuntimeBinding(RuntimeBase):
+    """Authoritative database-local claim for one Core Runtime instance."""
+
+    __tablename__ = "corefs_runtime_binding"
+    __table_args__ = (
+        CheckConstraint("binding_slot = 1", name="ck_corefs_runtime_binding_singleton"),
+    )
+
+    binding_slot: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    core_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    local_instance_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
 
 
 class CoreFSIndexEntry(RuntimeBase):

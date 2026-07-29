@@ -18,6 +18,7 @@ depends_on = None
 
 
 TABLES = (
+    "corefs_runtime_binding",
     "corefs_index_entries",
     "corefs_index_checkpoints",
     "corefs_blind_tokens",
@@ -29,6 +30,21 @@ TABLES = (
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
+
+    if not inspector.has_table("corefs_runtime_binding"):
+        op.create_table(
+            "corefs_runtime_binding",
+            sa.Column("binding_slot", sa.Integer(), nullable=False),
+            sa.Column("core_id", sa.String(64), nullable=False),
+            sa.Column("local_instance_id", sa.String(64), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.CheckConstraint(
+                "binding_slot = 1",
+                name="ck_corefs_runtime_binding_singleton",
+            ),
+            sa.PrimaryKeyConstraint("binding_slot"),
+        )
 
     if not inspector.has_table("corefs_index_entries"):
         op.create_table(

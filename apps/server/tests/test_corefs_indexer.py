@@ -90,6 +90,15 @@ def test_indexer_cancel_resume_is_idempotent_and_keeps_canonical_state_untouched
     assert checkpoint.cursor == "message-1:rev-1"
 
 
+def test_catalog_refresh_retains_instance_binding_for_runtime_sealing() -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+
+    index.begin_catalog()
+
+    assert index.local_instance_id == "instance-a"
+
+
 def test_clear_unlocked_state_revokes_search_keys_vectors_and_queries() -> None:
     index = CoreFSProgressiveIndex("core-index")
     index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
