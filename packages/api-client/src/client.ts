@@ -57,6 +57,8 @@ import type {
   MemorySearchResult,
   Nudge,
   OllamaModelInfo,
+  PendingInitiative,
+  PendingInitiativesResponse,
   PendingMemoryConsolidationResponse,
   PendingMemoryOpsResponse,
   PersonaTemplate,
@@ -928,6 +930,13 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PUT",
           body: data,
         }),
+      initiatives: (userId: number) =>
+        request<PendingInitiativesResponse>(`/presence/${userId}/initiatives`),
+      ackInitiative: (userId: number, initiativeId: number) =>
+        request<PendingInitiative>(
+          `/presence/${userId}/initiatives/${initiativeId}/ack`,
+          { method: "POST" },
+        ),
     },
     graph: {
       overview: (userId: number) =>

@@ -1,6 +1,6 @@
 # IL-007 - Dream cycle (F5 extension)
 
-- Status: in_progress
+- Status: done
 - Priority: P2
 - Scope: `apps/server/src/anima_server/services/agent/sleep_agent.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/server/src/anima_server/models`
 - Parent: `IL-000`
@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-21 MYT
-- Started: 2026-07-21 MYT
-- Completed:
+- Updated: 2026-07-28 18:24 MYT
+- Started: 2026-07-21 15:52 MYT
+- Completed: 2026-07-23 02:16 MYT
 
 ## Goal
 
@@ -36,6 +36,10 @@ Add an idle-time dream cycle: during long-idle night windows, recombine importan
 - 2026-07-15 16:55 MYT - Ticket created.
 - 2026-07-15 17:25 MYT - Dream sampling now uses rank-normalized coldness per review (raw heat exceeds 1, so `1 − heat` can go negative).
 - 2026-07-21 MYT - Implemented. Pure math (`inner_life/dream.py`): night-window + idle + per-night-cap eligibility, rank-normalized coldness, significance×coldness weighted (seeded, without-replacement) sampling, 25% affect scaling, share-worthy detection. Edge (`inner_life/dream_edge.py`): `run_dream_for_user` — eligibility (incl. consuming IL-002's `dream_deferred` catch-up marker), active-DEK gate, material = sampled important-but-cold non-identity memories + latent traces ≥0.5 + one best-effort random transcript fragment, ONE extraction-model reflection call, then effects: `dream_journal` row (narrative field-encrypted, rolling cap 30), 25% affect nudge, η=0.02 reconsolidation on touched memories, share-worthy → IL3 `dream_residue`. Wired into the presence tick idle loop (sibling of the initiative tick). Un-stubbed `dream_residue` in IL-003. `presence_config.dream_sharing` (off|on_ask|ambient) across model/service/schema/route. Soul migration `20260721_0001` (dream_journal + dream_sharing) + legacy repair. dream_journal in vault export/import + eval-reset.
+- 2026-07-23 02:16 MYT - Done: PR #116 (branch feature/il-007-dream-cycle) squash-merged to main as `bc7363c` (2026-07-23 02:16 MYT). Review rounds on the PR hardened right-to-forget (dream scrubbing on memory/latent-topic/derived-pattern forget, transcript-fragment source dropped), field-encrypted latent topic keys in dream source_refs (incl. vault-import re-keying), bounded failed dream attempts (marker committed before effects), non-finite delta rejection, configurable reconsolidation eta (full skip at eta<=0), and dreamSharing=off enforcement.
+- 2026-07-28 14:10 MYT - Ticket closed out by Claude (the recorded owner) — status/dates updated, merged feature branch deleted, tracker table in IL-000 updated (PR #122, carried into PR #123).
+- 2026-07-28 16:40 MYT - Codex PR review fixes (Claude): completed the Changed-paths evidence set against `bc7363c^..bc7363c` (added alembic_runtime `032`, `runtime_consciousness.py`, `forgetting.py`, `latent_traces.py` and their tests), full `HH:MM` timestamps, and explicit close-out attribution above.
+- 2026-07-28 18:24 MYT - Codex PR review round 3: `Started` recovered from evidence — PR #116's first commit (`IL-007: mark ticket in_progress`) is authored 2026-07-21 07:52:28Z = 15:52 MYT.
 
 ## Validation
 
@@ -54,6 +58,11 @@ Add an idle-time dream cycle: during long-idle night windows, recombine importan
   - `apps/server/src/anima_server/services/{presence_config,vault,eval_reset}.py`
   - `apps/server/src/anima_server/{schemas/presence.py,api/routes/presence.py,services/agent/prompt_loader.py}`
   - `apps/server/tests/{test_inner_life_dream,test_inner_life_dream_edge}.py` (new), `tests/{test_inner_life_initiative,test_dashboard_api}.py`
+  - `apps/server/alembic_runtime/versions/032_drive_state_dream_attempt.py` (new)
+  - `apps/server/src/anima_server/models/runtime_consciousness.py`
+  - `apps/server/src/anima_server/services/agent/{forgetting,latent_traces}.py` (right-to-forget dream scrubbing hooks)
+  - `apps/server/tests/{test_forgetting,test_inner_life_latent}.py`
+  - (complete set verified against `git diff bc7363c^..bc7363c -- apps/server`)
 - Notes:
   - Never runs during an active session (idle-only loop); nightly cap + idle≥4h + 00:00–06:00 gates; requires an active memories DEK (no plaintext at rest, mirrors IL3).
   - Identity-class memories excluded from dream material; touched memories reconsolidated at η=0.02 (identity confined to confidence-only inside `apply_reconsolidation`).

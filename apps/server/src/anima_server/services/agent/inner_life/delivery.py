@@ -142,14 +142,50 @@ def _reconcile_soul_delivered(
 
 
 def list_and_mark_delivered(
-    runtime_db: Session, *, user_id: int, soul_db: Session | None = None
+    runtime_db: Session,
+    *,
+    user_id: int,
+    soul_db: Session | None = None,
+    now: datetime | None = None,
 ) -> list[PendingInitiative]:
     """Every not-yet-acknowledged pending initiative for ``user_id``,
     oldest first — and marks each ``delivered`` (the client has now been
     handed the row) as a side effect. When ``soul_db`` is supplied, also
     best-effort reconciles the soul-store ``InitiativeLog.delivered`` flag for
     the fetched rows — the poll is the first proof of delivery, so it must not
-    rely on a later ack to make ``count_recent_fires`` count the message."""
+    rely on a later ack to make ``count_recent_fires`` count the message.
+
+    ``soul_db`` is also the consent authority (PR #123 review, P1): the
+    user's presence config is checked FIRST, and without an active opt-in
+    (``enabled`` AND ``initiative_enabled``) nothing is listed and nothing is
+    marked delivered. Doing the check inside the same operation as the
+    delivery side effect closes the client-side race where consent is
+    withdrawn between a client's own config check and its list call.
+    ``soul_db=None`` callers (tests) skip the check; the API route always
+    passes the soul session.
+
+    Quiet hours are re-evaluated here too (PR #123 review, P1): firing checks
+    them once, but an initiative fired just before the window would otherwise
+    be served inside it, breaking the Presence UI promise ("no messages
+    inside this window"). A row listed during quiet hours stays undelivered
+    and is served after the window ends. ``now`` follows the same local-time
+    discipline as the gate chain (``resolve_local_now``); the route omits it,
+    resolving the real system-zone wall clock.
+
+    Consent is checked TWICE (PR #123 review round 7, P1): the config and the
+    pending rows live in separate stores/sessions with no shared lock, so a
+    single up-front check is check-then-act — an opt-out committing between it
+    and the runtime read would still get rows served. The second check runs
+    AFTER the runtime rows are read, on a freshly-expired config read (so it
+    sees the latest committed state, not the session's cached row), and only
+    then are rows marked delivered and returned. An opt-out that commits
+    before the revalidation therefore always wins; the only residual window is
+    an opt-out committing while the HTTP response is already in flight, which
+    no server-side ordering can remove."""
+    if soul_db is not None and not _initiative_consent_allows(
+        soul_db, user_id=user_id, now=now
+    ):
+        return []
     rows = list(
         runtime_db.scalars(
             select(PendingInitiative)
@@ -160,14 +196,74 @@ def list_and_mark_delivered(
             .order_by(PendingInitiative.created_at.asc())
         ).all()
     )
+    if not rows:
+        return []
+    # Authoritative consent check + delivered side effect under the per-user
+    # consent lock (PR #123 review round 8, P1): the config PUT holds the same
+    # lock through its commit, so an opt-out can no longer commit between this
+    # fresh re-check and the marking/flush — the freshness re-read alone only
+    # narrowed that window. Single-process server, so the in-process lock is
+    # authoritative. soul_db=None callers (unit tests on the runtime side)
+    # skip consent entirely, so no lock is needed there.
+    if soul_db is None:
+        _mark_rows_delivered(runtime_db, soul_db, user_id=user_id, rows=rows)
+        return rows
+
+    from anima_server.services.presence_config import presence_consent_lock
+
+    with presence_consent_lock(user_id):
+        # Revalidate on fresh state — nothing has been marked yet, so a
+        # mid-poll opt-out (committed before this lock was acquired) simply
+        # returns []; one arriving now blocks until after the flush, i.e. it
+        # post-dates the delivery decision.
+        if not _initiative_consent_allows(soul_db, user_id=user_id, now=now, refresh=True):
+            return []
+        _mark_rows_delivered(runtime_db, soul_db, user_id=user_id, rows=rows)
+    return rows
+
+
+def _mark_rows_delivered(
+    runtime_db: Session,
+    soul_db: Session | None,
+    *,
+    user_id: int,
+    rows: list[PendingInitiative],
+) -> None:
     for row in rows:
         row.delivered = True
-    if rows:
-        runtime_db.flush()
-        _reconcile_soul_delivered(
-            soul_db, user_id=user_id, log_ids=[row.initiative_log_id for row in rows]
-        )
-    return rows
+    runtime_db.flush()
+    _reconcile_soul_delivered(
+        soul_db, user_id=user_id, log_ids=[row.initiative_log_id for row in rows]
+    )
+
+
+def _initiative_consent_allows(
+    soul_db: Session,
+    *,
+    user_id: int,
+    now: datetime | None,
+    refresh: bool = False,
+) -> bool:
+    """Whether initiatives may be served to ``user_id`` right now: master
+    Presence switch AND initiative opt-in AND outside quiet hours.
+
+    ``refresh=True`` expires the session's cached state first so the read
+    reflects the latest COMMITTED config — a plain re-query would return the
+    identity-mapped row with stale attributes and miss an opt-out committed by
+    another session mid-poll."""
+    from anima_server.services.agent.inner_life.initiative import _in_quiet_hours
+    from anima_server.services.agent.inner_life.presence import resolve_local_now
+    from anima_server.services.presence_config import get_presence_config_values
+
+    if refresh:
+        soul_db.expire_all()
+    values = get_presence_config_values(soul_db, user_id)
+    if not (values.enabled and values.initiative_enabled):
+        return False
+    local_now = resolve_local_now(now, None)
+    return not _in_quiet_hours(
+        local_now.hour, values.quiet_hours_start, values.quiet_hours_end
+    )
 
 
 def acknowledge_pending_initiative(

@@ -654,6 +654,8 @@ export interface ProactiveNotice {
   contextMessages: ChatContextMessage[];
 }
 
+export type DreamSharing = "off" | "on_ask" | "ambient";
+
 export interface PresenceConfig {
   userId: number;
   enabled: boolean;
@@ -663,11 +665,29 @@ export interface PresenceConfig {
   memoryNudgesEnabled: boolean;
   checkInNudgesEnabled: boolean;
   customInstruction?: string | null;
+  initiativeEnabled: boolean;
+  quietHoursStart: number | null;
+  quietHoursEnd: number | null;
+  dreamSharing: DreamSharing;
 }
 
 export type PresenceConfigUpdate = Partial<
   Omit<PresenceConfig, "userId">
 >;
+
+export interface PendingInitiative {
+  id: number;
+  drive: string;
+  text: string;
+  createdAt: string;
+  delivered: boolean;
+  acknowledged: boolean;
+}
+
+export interface PendingInitiativesResponse {
+  userId: number;
+  initiatives: PendingInitiative[];
+}
 
 export interface TaskItem {
   id: number;

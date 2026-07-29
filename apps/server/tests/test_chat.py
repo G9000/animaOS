@@ -363,7 +363,10 @@ async def test_chat_stream_closes_service_stream_when_transport_stops(
         finally:
             closed.set()
 
-    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    async def _unlocked_ok(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user_async", _unlocked_ok)
     monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
     monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
 
@@ -407,7 +410,10 @@ async def test_chat_stream_shields_cleanup_on_legacy_asgi_disconnect(
             await asyncio.sleep(0)
             closed.set()
 
-    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    async def _unlocked_ok(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user_async", _unlocked_ok)
     monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
     monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
 
@@ -456,7 +462,10 @@ async def test_approval_stream_closes_service_stream_when_transport_stops(
             status="awaiting_approval",
         )
     )
-    monkeypatch.setattr(chat_routes, "require_unlocked_user", lambda *_args: None)
+    async def _unlocked_ok(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(chat_routes, "require_unlocked_user_async", _unlocked_ok)
     monkeypatch.setattr(chat_routes, "stream_approve_or_deny", tracked_stream)
 
     response = await chat_routes.handle_approval(

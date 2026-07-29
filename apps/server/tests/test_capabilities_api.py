@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from conftest import managed_test_client
@@ -40,7 +40,8 @@ def test_get_capabilities_returns_payload_shape() -> None:
 
     with managed_test_client("anima-capabilities-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.capabilities.require_unlocked_session",
+            "anima_server.api.routes.capabilities.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.capabilities.collect_capabilities",
@@ -84,7 +85,8 @@ def test_get_capabilities_reflects_degraded_backend_states() -> None:
 
     with managed_test_client("anima-capabilities-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.capabilities.require_unlocked_session",
+            "anima_server.api.routes.capabilities.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.capabilities.collect_capabilities",
@@ -429,6 +431,10 @@ def test_http_backend_status_ready_when_key_configured_and_not_cooling_down(
     from anima_server.services.agent import embeddings as embeddings_module
 
     embeddings_module._provider_unavailable_until.clear()
+    # conftest pins an EXPLICIT agent_embedding_provider=fastembed for suite
+    # hermeticity, and the dedicated key is honored only for the explicitly
+    # configured provider — so querying openai needs the provider set too.
+    monkeypatch.setattr(settings, "agent_embedding_provider", "openai")
     monkeypatch.setattr(settings, "agent_embedding_api_key", "sk-test-openai-key")
     assert embeddings_module.http_backend_status("openai") == "ready"
 

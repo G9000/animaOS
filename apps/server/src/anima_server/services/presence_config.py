@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import PresenceConfig
+
+_consent_locks: dict[int, threading.Lock] = {}
+_consent_locks_guard = threading.Lock()
+
+
+def presence_consent_lock(user_id: int) -> threading.Lock:
+    """Per-user lock serializing presence-config CONSENT updates against
+    initiative delivery (PR #123 review, P1).
+
+    The presence config (soul store) and pending initiatives (runtime store)
+    live in separate databases, so no DB transaction can make "check consent,
+    then mark delivered" atomic — a freshness re-read only narrows the TOCTOU.
+    This server runs as a single process (desktop deployment), so an in-process
+    per-user lock CAN close it: the config PUT holds the lock through its
+    commit, and ``list_and_mark_delivered`` holds it from its authoritative
+    consent check through the delivered side effect. An opt-out therefore
+    either commits before the check (poll serves nothing) or blocks until the
+    delivery decision is made (the opt-out post-dates the delivery)."""
+    with _consent_locks_guard:
+        lock = _consent_locks.get(user_id)
+        if lock is None:
+            lock = _consent_locks[user_id] = threading.Lock()
+        return lock
 
 
 @dataclass(frozen=True)
