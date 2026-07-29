@@ -7,6 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models import PendingMemoryOp
+from anima_server.services.corefs.sealed_runtime import (
+    active_runtime_index,
+    seal_runtime_record,
+)
 
 _VALID_OP_TYPES = frozenset({"append", "replace", "full_replace"})
 
@@ -31,18 +35,35 @@ def create_pending_op(
         f"{user_id}:{target_block.strip()}:{normalized_type}:{content.strip()}".encode()
     ).hexdigest()
 
+    runtime_index = active_runtime_index(user_id)
     op = PendingMemoryOp(
         user_id=user_id,
         op_type=normalized_type,
         target_block=target_block.strip(),
-        content=content.strip(),
-        old_content=old_content,
+        content="" if runtime_index is not None else content.strip(),
+        old_content=None if runtime_index is not None else old_content,
         source_run_id=source_run_id,
         source_tool_call_id=source_tool_call_id,
         content_hash=content_hash,
     )
     runtime_db.add(op)
     runtime_db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            runtime_db,
+            index=runtime_index,
+            row_type="pending_memory_op",
+            row_id=int(op.id),
+            owner_id=user_id,
+            payload={
+                "content": content.strip(),
+                "old_content": old_content,
+            },
+        )
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        set_committed_value(op, "content", content.strip())
+        set_committed_value(op, "old_content", old_content)
     return op
 
 

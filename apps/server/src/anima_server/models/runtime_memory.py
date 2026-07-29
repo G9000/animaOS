@@ -22,12 +22,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSON
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, object_session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.db.runtime_base import RuntimeBase
 
@@ -68,6 +70,38 @@ class MemoryCandidate(RuntimeBase):
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+
+@event.listens_for(MemoryCandidate, "load")
+def _hydrate_sealed_memory_candidate(
+    candidate: MemoryCandidate,
+    _context: object,
+) -> None:
+    runtime_db = object_session(candidate)
+    if runtime_db is None or candidate.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="memory_candidate",
+        row_id=int(candidate.id),
+        owner_id=int(candidate.user_id),
+    )
+    if payload is None:
+        return
+    content = payload.get("content")
+    if not isinstance(content, str):
+        raise ValueError("sealed memory candidate content is invalid")
+    tags = payload.get("tags")
+    salience = payload.get("salience")
+    if tags is not None and not isinstance(tags, list):
+        raise ValueError("sealed memory candidate tags are invalid")
+    if salience is not None and not isinstance(salience, dict):
+        raise ValueError("sealed memory candidate salience is invalid")
+    set_committed_value(candidate, "content", content)
+    set_committed_value(candidate, "tags_json", tags)
+    set_committed_value(candidate, "salience_json", salience)
 
 
 class MemoryExtractionFailure(RuntimeBase):

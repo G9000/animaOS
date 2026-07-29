@@ -146,6 +146,10 @@ export interface CoreFSSecurityStatus {
     pendingFrkVersion: number | null;
     decryptOnlyFrkVersions: number[];
     phase: "idle" | "prepared" | "verifying";
+    passwordReopenVerified: boolean;
+    recoveryReopenVerified: boolean;
+    oldKeyRetirementSafe: boolean;
+    oldKeyRetirementBlockers: string[];
     blindIndexGeneration: number | null;
     blindIndexPendingGeneration: number | null;
     blindIndexProgress: number;

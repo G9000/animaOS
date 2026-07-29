@@ -26,6 +26,10 @@ class CoreFSRotationStatusResponse(BaseModel):
     pendingFrkVersion: int | None
     decryptOnlyFrkVersions: list[int]
     phase: Literal["idle", "prepared", "verifying"]
+    passwordReopenVerified: bool
+    recoveryReopenVerified: bool
+    oldKeyRetirementSafe: bool
+    oldKeyRetirementBlockers: list[str]
     blindIndexGeneration: int | None
     blindIndexPendingGeneration: int | None
     blindIndexProgress: int

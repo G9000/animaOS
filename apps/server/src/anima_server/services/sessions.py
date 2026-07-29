@@ -298,6 +298,22 @@ class UnlockSessionStore:
         self._run_cleanup(cleanup)
         return deks
 
+    def get_active_runtime_index(
+        self,
+        user_id: int,
+    ) -> CoreFSProgressiveIndex | None:
+        cleanup = _CleanupBatch()
+        with self._lock:
+            cleanup.extend(self._purge_expired_locked())
+            indexes = [
+                session.runtime_index
+                for session in self._sessions.values()
+                if session.user_id == user_id and session.runtime_index is not None
+            ]
+            index = indexes[-1] if indexes else None
+        self._run_cleanup(cleanup)
+        return index
+
     def set_db_viewer_verified_at(
         self,
         token: str | None,

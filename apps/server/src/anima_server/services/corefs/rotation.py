@@ -256,12 +256,30 @@ def _activate_rotation(
                 ),
                 "phase": "idle",
                 "committed_catalog_generation": committed_generation,
+                "password_reopen_verified": True,
+                "recovery_reopen_verified": True,
             }
         )
         rotation.pop("source_catalog_generation", None)
         rotation.pop("source_catalog_hash", None)
 
     update_core_manifest(activate)
+
+
+def _mark_verifying(*, pending_version: int) -> None:
+    def mark(value: dict[str, object]) -> None:
+        rotation = _rotation_state(value)
+        if int(rotation["pending_version"]) != pending_version:
+            raise ValueError("pending FRK version changed before verification")
+        rotation.update(
+            {
+                "phase": "verifying",
+                "password_reopen_verified": True,
+                "recovery_reopen_verified": True,
+            }
+        )
+
+    update_core_manifest(mark)
 
 
 def rotate_or_resume_frk(
@@ -288,6 +306,8 @@ def rotate_or_resume_frk(
             recovery_phrase=recovery_phrase,
         )
         source_generation = int(rotation["source_catalog_generation"])
+        _mark_verifying(pending_version=pending_version)
+        manifest = _manifest()
     else:
         selected = logical.select_validation_snapshot(
             corefs_session=session.corefs_session,
@@ -301,6 +321,16 @@ def rotate_or_resume_frk(
             source_catalog_hash=selected.catalog_hash,
         )
         source_generation = selected.generation
+        manifest = _manifest()
+        reopened_version, reopened_root = _resume_material(
+            manifest=manifest,
+            current_password=current_password,
+            recovery_phrase=recovery_phrase,
+        )
+        if reopened_version != pending_version or not bool(pending_root.matches(reopened_root)):
+            raise ValueError("pending filesystem root failed independent reopen")
+        pending_root = reopened_root
+        _mark_verifying(pending_version=pending_version)
         manifest = _manifest()
 
     pending_subkeys = anima_core.corefs_derive_subkeys(

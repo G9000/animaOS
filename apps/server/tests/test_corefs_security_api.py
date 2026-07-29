@@ -22,6 +22,55 @@ def test_corefs_security_status_requires_unlock() -> None:
     assert response.status_code == 401
 
 
+def test_corefs_security_status_starts_unlocked_rebuild_after_catalog(
+    monkeypatch,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=SimpleNamespace(walk_v1=lambda *_args, **_kwargs: b""),
+        corefs_keys=object(),
+    )
+    calls: list[str] = []
+
+    def reconcile(current):
+        assert current is session
+        current.runtime_index.begin_catalog()
+        current.runtime_index.publish_catalog(catalog_generation=1, families={})
+        calls.append("catalog")
+
+    def rebuild(current):
+        assert current is session
+        current.runtime_index.finish()
+        calls.append("rebuild")
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: session,
+    )
+    monkeypatch.setattr(corefs_security, "reconcile_authenticated_catalog", reconcile)
+    monkeypatch.setattr(corefs_security, "rebuild_unlocked_search", rebuild)
+    monkeypatch.setattr(
+        corefs_security,
+        "_rotation_manifest_state",
+        lambda: {
+            "active_version": 1,
+            "pending_version": None,
+            "decrypt_only_versions": [],
+            "phase": "idle",
+        },
+    )
+
+    with TestClient(_app()) as client:
+        response = client.get("/api/corefs/security/status")
+
+    assert response.status_code == 200
+    assert response.json()["readiness"]["state"] == "ready"
+    assert calls == ["catalog", "rebuild"]
+
+
 def test_corefs_security_status_exposes_only_progress_and_rotation_metadata(
     monkeypatch,
 ) -> None:
@@ -75,6 +124,14 @@ def test_corefs_security_status_exposes_only_progress_and_rotation_metadata(
         "pendingFrkVersion": None,
         "decryptOnlyFrkVersions": [1],
         "phase": "idle",
+        "passwordReopenVerified": False,
+        "recoveryReopenVerified": False,
+        "oldKeyRetirementSafe": False,
+        "oldKeyRetirementBlockers": [
+            "retained_catalogs_require_decrypt_only_keys",
+            "verified_active_backup_required",
+            "pcf_010_authenticated_prune_required",
+        ],
         "blindIndexGeneration": None,
         "blindIndexPendingGeneration": None,
         "blindIndexProgress": 0,
@@ -168,3 +225,52 @@ def test_corefs_rotation_rejects_wrong_recovery_without_replacing_session(
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "corefs_rotation_failed"
+
+
+def test_corefs_rotation_resume_uses_the_same_fail_closed_operation(
+    monkeypatch,
+) -> None:
+    session = SimpleNamespace(user_id=7, deks={"memories": b"m" * 32})
+    replacement = SimpleNamespace(runtime_index=None)
+    paths: list[tuple[str, str]] = []
+
+    class Store:
+        def replace_user(self, user_id, deks, *, corefs_keys):
+            paths.append(("replace", str(user_id)))
+            return "replacement-token"
+
+        def resolve(self, _token):
+            return replacement
+
+    def rotate(_session, *, current_password, recovery_phrase):
+        paths.append((current_password, recovery_phrase))
+        return CoreFSRotationResult(
+            active_subkeys=object(),
+            active_version=4,
+            committed_catalog_generation=22,
+            resumed=True,
+        )
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: session,
+    )
+    monkeypatch.setattr(corefs_security, "rotate_or_resume_frk", rotate)
+    monkeypatch.setattr(corefs_security, "unlock_session_store", Store())
+
+    with TestClient(_app()) as client:
+        response = client.post(
+            "/api/corefs/security/rotate/resume",
+            json={
+                "currentPassword": "password",
+                "recoveryPhrase": "recovery words",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["resumed"] is True
+    assert paths == [
+        ("password", "recovery words"),
+        ("replace", "7"),
+    ]

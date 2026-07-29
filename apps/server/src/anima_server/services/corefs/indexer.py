@@ -11,7 +11,11 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from anima_server.services.corefs.runtime_sealing import RuntimePayloadSealer
+from anima_server.services.corefs.runtime_sealing import (
+    RuntimePayloadAAD,
+    RuntimePayloadSealer,
+    SealedRuntimePayload,
+)
 
 _BLIND_INDEX_INFO = b"anima-blind-index-v1"
 
@@ -79,6 +83,7 @@ class CoreFSProgressiveIndex:
         self.core_id = core_id
         self._lock = RLock()
         self._state = ReadinessState.LOCKED
+        self._local_instance_id: str | None = None
         self._catalog_generation: int | None = None
         self._families: dict[str, FamilyReadiness] = {}
         self._documents: dict[str, tuple[str, str, str]] = {}
@@ -99,6 +104,7 @@ class CoreFSProgressiveIndex:
         with self._lock:
             self.clear_unlocked_state()
             self._state = ReadinessState.OPENING_CORE
+            self._local_instance_id = local_instance_id
             self._search_key = bytearray(
                 HKDF(
                     algorithm=hashes.SHA256(),
@@ -113,6 +119,34 @@ class CoreFSProgressiveIndex:
             )
             self._state = ReadinessState.VALIDATING_CORE
 
+    @property
+    def local_instance_id(self) -> str:
+        with self._lock:
+            self._require_unlocked()
+            if self._local_instance_id is None:
+                raise CoreFSRuntimeLocked("CoreFS Runtime instance binding is unavailable")
+            return self._local_instance_id
+
+    def seal_runtime_payload(
+        self,
+        plaintext: bytes,
+        *,
+        aad: RuntimePayloadAAD,
+    ) -> SealedRuntimePayload:
+        with self._lock:
+            self._require_unlocked()
+            return self._sealer.seal(plaintext, aad=aad)
+
+    def open_runtime_payload(
+        self,
+        payload: SealedRuntimePayload,
+        *,
+        aad: RuntimePayloadAAD,
+    ) -> bytes:
+        with self._lock:
+            self._require_unlocked()
+            return self._sealer.open(payload, aad=aad)
+
     def begin_catalog(self) -> None:
         with self._lock:
             self._require_unlocked()
@@ -126,6 +160,7 @@ class CoreFSProgressiveIndex:
             self._pending_blind_generation = None
             self._pending_blind_expected_count = None
             self._catalog_generation = None
+            self._local_instance_id = None
             self._last_cursor = None
             self._state = ReadinessState.CATALOG_LOADING
 
@@ -199,6 +234,23 @@ class CoreFSProgressiveIndex:
         with self._lock:
             self._require_catalog()
             self._state = ReadinessState.SEMANTIC_INDEXING
+
+    def mark_family_failure(self, *, family: str, object_id: str) -> None:
+        if not object_id:
+            raise ValueError("failed object ID must be non-empty")
+        with self._lock:
+            self._require_catalog()
+            current = self._families.get(family)
+            if current is None:
+                raise ValueError(f"family is absent from catalog: {family}")
+            unavailable = tuple(sorted({*current.unavailable_object_ids, object_id}))
+            self._families[family] = FamilyReadiness(
+                total=current.total,
+                processed=current.processed,
+                failed=len(unavailable),
+                degraded=True,
+                unavailable_object_ids=unavailable,
+            )
 
     def index_vector(self, *, object_id: str, vector: tuple[float, ...]) -> None:
         if not vector:

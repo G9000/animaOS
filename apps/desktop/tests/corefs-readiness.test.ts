@@ -19,6 +19,13 @@ const status: CoreFSSecurityStatus = {
     pendingFrkVersion: null,
     decryptOnlyFrkVersions: [],
     phase: "idle",
+    passwordReopenVerified: true,
+    recoveryReopenVerified: true,
+    oldKeyRetirementSafe: false,
+    oldKeyRetirementBlockers: [
+      "verified_active_backup_required",
+      "pcf_010_authenticated_prune_required",
+    ],
     blindIndexGeneration: null,
     blindIndexPendingGeneration: 2,
     blindIndexProgress: 1,

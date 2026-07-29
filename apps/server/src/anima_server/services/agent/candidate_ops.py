@@ -14,6 +14,10 @@ from anima_server.services.agent.memory_salience import (
     merge_salience,
     serialize_memory_salience,
 )
+from anima_server.services.corefs.sealed_runtime import (
+    active_runtime_index,
+    seal_runtime_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +132,13 @@ def create_memory_candidate(
             runtime_db.flush()
             return None
 
+    runtime_index = active_runtime_index(user_id)
+    stored_content = "" if runtime_index is not None else content.strip()
+    stored_tags = None if runtime_index is not None else tags
+    stored_salience = None if runtime_index is not None else salience_json
     candidate = MemoryCandidate(
         user_id=user_id,
-        content=content.strip(),
+        content=stored_content,
         category=category,
         importance=importance,
         importance_source=importance_source,
@@ -140,13 +148,31 @@ def create_memory_candidate(
         supersedes_item_id=supersedes_item_id,
         source_message_ids=source_message_ids,
         extraction_model=extraction_model,
-        tags_json=tags,
-        salience_json=salience_json,
+        tags_json=stored_tags,
+        salience_json=stored_salience,
     )
     try:
         with runtime_db.begin_nested():
             runtime_db.add(candidate)
             runtime_db.flush()
+            if runtime_index is not None:
+                seal_runtime_record(
+                    runtime_db,
+                    index=runtime_index,
+                    row_type="memory_candidate",
+                    row_id=int(candidate.id),
+                    owner_id=user_id,
+                    payload={
+                        "content": content.strip(),
+                        "tags": tags,
+                        "salience": salience_json,
+                    },
+                )
+                from sqlalchemy.orm.attributes import set_committed_value
+
+                set_committed_value(candidate, "content", content.strip())
+                set_committed_value(candidate, "tags_json", tags)
+                set_committed_value(candidate, "salience_json", salience_json)
         return candidate
     except IntegrityError:
         return None

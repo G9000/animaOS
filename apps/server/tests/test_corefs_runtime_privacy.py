@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,8 @@ from anima_server.services.corefs.runtime_sealing import (
     RuntimeSealingLocked,
 )
 from cryptography.exceptions import InvalidTag
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.orm import Session
 
 
 def test_runtime_payload_sealing_is_instance_bound_and_contains_no_plaintext(
@@ -163,3 +165,139 @@ def test_corefs_runtime_schema_builds_without_plaintext_search_columns() -> None
         assert "content_text" not in columns
         assert "embedding" not in columns
         assert "preview" not in columns
+
+
+def test_fresh_runtime_disk_contains_none_of_the_seeded_private_markers(
+    managed_tmp_path: Path,
+) -> None:
+    markers = {
+        "message": b"seeded message plaintext",
+        "chunk": b"seeded chunk plaintext",
+        "ocr": b"seeded OCR plaintext",
+        "source_span": b"seeded source span plaintext",
+        "memory_candidate": b"seeded candidate plaintext",
+        "pending_memory_op": b"seeded pending-op plaintext",
+        "preview": b"seeded preview plaintext",
+        "vector": b"seeded vector plaintext",
+    }
+    runtime_file = managed_tmp_path / "fresh-runtime.db"
+    engine = create_engine(f"sqlite+pysqlite:///{runtime_file.as_posix()}")
+    RuntimeBase.metadata.create_all(engine, tables=[CoreFSSealedPayload.__table__])
+    sealer = RuntimePayloadSealer()
+    sealer.install(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+
+    with Session(engine) as session:
+        for row_id, (row_type, marker) in enumerate(markers.items(), start=1):
+            aad = RuntimePayloadAAD(
+                row_type=row_type,
+                row_id=str(row_id),
+                owner_id="owner-1",
+            )
+            sealed = sealer.seal(marker, aad=aad)
+            session.add(
+                CoreFSSealedPayload(
+                    id=row_id,
+                    core_id="core-a",
+                    local_instance_id="instance-a",
+                    row_type=row_type,
+                    row_id_hash=hashlib.sha256(str(row_id).encode()).hexdigest(),
+                    owner_id_hash=hashlib.sha256(b"owner-1").hexdigest(),
+                    key_version=sealed.version,
+                    nonce=sealed.nonce,
+                    ciphertext=sealed.ciphertext,
+                    aad_digest=hashlib.sha256(aad.encode()).hexdigest(),
+                )
+            )
+        session.commit()
+    engine.dispose()
+
+    raw_runtime = runtime_file.read_bytes()
+    for marker in markers.values():
+        assert marker not in raw_runtime
+
+
+def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
+    monkeypatch,
+) -> None:
+    from anima_server.models.pending_memory_op import PendingMemoryOp
+    from anima_server.models.runtime_memory import MemoryCandidate
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+    from anima_server.services.agent.pending_ops import create_pending_op
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        candidate = create_memory_candidate(
+            runtime_db,
+            user_id=7,
+            content="seeded candidate plaintext",
+            category="fact",
+        )
+        pending = create_pending_op(
+            runtime_db,
+            user_id=7,
+            op_type="replace",
+            target_block="human",
+            content="seeded pending-op plaintext",
+            old_content="seeded old pending-op plaintext",
+            source_run_id=None,
+            source_tool_call_id=None,
+        )
+        runtime_db.flush()
+
+        assert candidate is not None
+        assert (
+            runtime_db.scalar(
+                text("SELECT content FROM memory_candidates WHERE id = :id"),
+                {"id": candidate.id},
+            )
+            == ""
+        )
+        stored_pending = runtime_db.execute(
+            text("SELECT content, old_content FROM pending_memory_ops WHERE id = :id"),
+            {"id": pending.id},
+        ).one()
+        assert stored_pending == ("", None)
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "memory_candidate"
+                )
+            )
+            is not None
+        )
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "pending_memory_op"
+                )
+            )
+            is not None
+        )
+
+        runtime_db.expunge_all()
+        loaded_candidate = runtime_db.scalar(
+            select(MemoryCandidate).where(MemoryCandidate.id == candidate.id)
+        )
+        loaded_pending = runtime_db.scalar(
+            select(PendingMemoryOp).where(PendingMemoryOp.id == pending.id)
+        )
+        assert loaded_candidate is not None
+        assert loaded_candidate.content == "seeded candidate plaintext"
+        assert loaded_pending is not None
+        assert loaded_pending.content == "seeded pending-op plaintext"
+        assert loaded_pending.old_content == "seeded old pending-op plaintext"
+
+        index.clear_unlocked_state()
+        runtime_db.expunge_all()
+        with pytest.raises(RuntimeSealingLocked):
+            runtime_db.scalar(select(PendingMemoryOp).where(PendingMemoryOp.id == pending.id))

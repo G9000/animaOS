@@ -216,6 +216,22 @@ export default function SecuritySettings() {
                   : `generation ${coreFSStatus.rotation.blindIndexGeneration}`
               }
             />
+            <StatusCell
+              label="Password Reopen"
+              value={
+                coreFSStatus.rotation.passwordReopenVerified
+                  ? "verified"
+                  : "not verified"
+              }
+            />
+            <StatusCell
+              label="Recovery Reopen"
+              value={
+                coreFSStatus.rotation.recoveryReopenVerified
+                  ? "verified"
+                  : "not verified"
+              }
+            />
           </div>
         ) : (
           <p className="font-mono text-[9px] text-foreground/30 tracking-wide">
@@ -234,6 +250,21 @@ export default function SecuritySettings() {
           Rewraps the committed Core catalog under a new filesystem root. Both
           credential paths are verified before the new generation is activated.
         </p>
+        {coreFSStatus && (
+          <div className="border border-foreground/[0.06] bg-foreground/[0.02] p-3">
+            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-foreground/45">
+              Old-key retirement:{" "}
+              {coreFSStatus.rotation.oldKeyRetirementSafe ? "safe" : "blocked"}
+            </p>
+            {!coreFSStatus.rotation.oldKeyRetirementSafe && (
+              <p className="mt-1 font-mono text-[8px] tracking-wide text-foreground/30">
+                {coreFSStatus.rotation.oldKeyRetirementBlockers
+                  .map((blocker) => blocker.replace(/_/g, " "))
+                  .join(" · ")}
+              </p>
+            )}
+          </div>
+        )}
         <form onSubmit={handleRotateFilesystemKey} className="space-y-4">
           <Field label="Current Password">
             <input

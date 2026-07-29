@@ -244,7 +244,7 @@ try {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_DAEMON_CONTROL_TOKEN_FILE: &str = "runtime-daemon.control-token";
-const DEFAULT_DAEMON_RELEASE_MANIFEST: &str = ".anima/runtime-daemon-release.json";
+const DEFAULT_DAEMON_RELEASE_MANIFEST: &str = "runtime/runtime-daemon-release.json";
 
 fn default_daemon_data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|dir| dir.join("anima").join("runtime-daemon"))

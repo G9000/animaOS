@@ -16,7 +16,10 @@ from anima_server.schemas.corefs_security import (
 )
 from anima_server.services.core import get_core_id, get_manifest_path
 from anima_server.services.corefs.indexer import ReadinessState
-from anima_server.services.corefs.migration import reconcile_authenticated_catalog
+from anima_server.services.corefs.migration import (
+    rebuild_unlocked_search,
+    reconcile_authenticated_catalog,
+)
 from anima_server.services.corefs.rotation import rotate_or_resume_frk
 from anima_server.services.sessions import UnlockSession, unlock_session_store
 
@@ -52,6 +55,12 @@ def _security_status(session: UnlockSession) -> CoreFSSecurityStatusResponse:
         and getattr(session, "corefs_keys", None) is not None
     ):
         reconcile_authenticated_catalog(session)
+        reconciled = index.snapshot()
+        if reconciled.state in {
+            ReadinessState.CATALOG_READY,
+            ReadinessState.CATALOG_READY_DEGRADED,
+        } and callable(getattr(session.corefs_session, "walk_v1", None)):
+            rebuild_unlocked_search(session)
     snapshot = index.snapshot()
     rotation = _rotation_manifest_state()
     try:
@@ -100,6 +109,14 @@ def _security_status(session: UnlockSession) -> CoreFSSecurityStatusResponse:
             pendingFrkVersion=pending_version,
             decryptOnlyFrkVersions=decrypt_only,
             phase=phase,  # type: ignore[arg-type]
+            passwordReopenVerified=bool(rotation.get("password_reopen_verified", False)),
+            recoveryReopenVerified=bool(rotation.get("recovery_reopen_verified", False)),
+            oldKeyRetirementSafe=False,
+            oldKeyRetirementBlockers=[
+                *(["retained_catalogs_require_decrypt_only_keys"] if decrypt_only else []),
+                "verified_active_backup_required",
+                "pcf_010_authenticated_prune_required",
+            ],
             blindIndexGeneration=snapshot.blind_index_generation,
             blindIndexPendingGeneration=snapshot.blind_index_pending_generation,
             blindIndexProgress=snapshot.blind_index_progress,
@@ -112,8 +129,7 @@ def get_corefs_security_status(request: Request) -> CoreFSSecurityStatusResponse
     return _security_status(require_unlocked_session(request))
 
 
-@router.post("/rotate", response_model=CoreFSRotateResponse)
-def rotate_corefs_root_key(
+def _rotate_corefs_root_key(
     payload: CoreFSRotateRequest,
     request: Request,
 ) -> CoreFSRotateResponse:
@@ -148,3 +164,19 @@ def rotate_corefs_root_key(
         committedCatalogGeneration=result.committed_catalog_generation,
         resumed=result.resumed,
     )
+
+
+@router.post("/rotate", response_model=CoreFSRotateResponse)
+def rotate_corefs_root_key(
+    payload: CoreFSRotateRequest,
+    request: Request,
+) -> CoreFSRotateResponse:
+    return _rotate_corefs_root_key(payload, request)
+
+
+@router.post("/rotate/resume", response_model=CoreFSRotateResponse)
+def resume_corefs_root_key_rotation(
+    payload: CoreFSRotateRequest,
+    request: Request,
+) -> CoreFSRotateResponse:
+    return _rotate_corefs_root_key(payload, request)

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createApiClient } from "@anima/api-client";
 
 describe("CoreFS key rotation", () => {
@@ -40,5 +42,17 @@ describe("CoreFS key rotation", () => {
     );
     expect(requests[0]?.url).not.toContain("current-password");
     expect(requests[0]?.url).not.toContain("recovery");
+  });
+
+  test("shows reopen verification and old-key retirement gates", () => {
+    const settings = readFileSync(
+      join(import.meta.dir, "..", "src", "pages", "settings", "SecuritySettings.tsx"),
+      "utf8",
+    );
+
+    expect(settings).toContain("passwordReopenVerified");
+    expect(settings).toContain("recoveryReopenVerified");
+    expect(settings).toContain("oldKeyRetirementSafe");
+    expect(settings).toContain("oldKeyRetirementBlockers");
   });
 });
