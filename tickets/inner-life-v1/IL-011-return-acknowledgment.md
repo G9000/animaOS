@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 14:14 MYT
+- Updated: 2026-07-29 15:16 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed:
 
@@ -63,12 +63,28 @@ hour — in two small, strictly grounded ways:
 
 - 2026-07-29 14:14 MYT - Ticket created; implementation started on branch
   `il-011-013-inner-life-texture`.
+- 2026-07-29 15:16 MYT - Implemented. Held thought: `GreetingContext.held_thought`
+  resolved by `_resolve_held_thought` (consent gate -> gap floor -> pressure
+  floor -> open in-horizon foresight, reusing IL3's single definition), DEK
+  gate before the decrypted read, woven into the greeting LLM prompt with a
+  no-invention instruction and into the static fallback. Reconnect texture:
+  `catchup.reconnect_energy_dip` (48h floor, 0.01/day, 0.06 cap) applied
+  after closed-form relaxation, energy-only, audit `components` records
+  `reconnect_energy`. Equivalence tests updated to assert the dip as an
+  explicit divergence.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_held_thought.py` — 10 passed
+  - `uv run pytest tests/test_inner_life_presence.py` — 28 passed
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/server/src/anima_server/services/agent/inner_life/catchup.py`
+  - `apps/server/src/anima_server/config.py`
+  - `apps/server/tests/test_inner_life_held_thought.py` (new)
+  - `apps/server/tests/test_inner_life_presence.py`
 - Notes:
-  - none
+  - The dip applies at offline catch-up only (the absence handler); a gap
+    spent with the server running is untouched by design — the presence tick
+    keeps exact closed-form relaxation.

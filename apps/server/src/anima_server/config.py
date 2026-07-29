@@ -210,6 +210,14 @@ class Settings(BaseSettings):
     # affects ranking only, never theta qualification.
     initiative_starvation_boost_per_loss: float = Field(default=0.03, ge=0.0)
     initiative_starvation_boost_cap: float = Field(default=0.15, ge=0.0)
+    # IL-011 reconnect texture: bounded energy dip applied by offline
+    # catch-up after a long absence (energy only — never valence).
+    presence_reconnect_dip_min_gap_hours: float = Field(default=48.0, ge=0.0)
+    presence_reconnect_dip_per_day: float = Field(default=0.01, ge=0.0)
+    presence_reconnect_dip_cap: float = Field(default=0.06, ge=0.0, le=1.0)
+    # IL-011 held thought: greeting-context gate values (see proactive.py).
+    greeting_held_thought_min_gap_hours: float = Field(default=8.0, ge=0.0)
+    greeting_held_thought_min_pressure: float = Field(default=0.3, ge=0.0, le=1.0)
     # Contact-cadence proxy: no learned per-relationship cadence model
     # exists yet, so "relational" grows once days-since-contact exceeds this
     # fixed baseline (documented proxy — see initiative.py).

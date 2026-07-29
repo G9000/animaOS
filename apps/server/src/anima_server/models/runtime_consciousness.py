@@ -9,6 +9,8 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON as SA_JSON,
+)
+from sqlalchemy import (
     BigInteger,
     Boolean,
     Float,

@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 14:14 MYT
+- Updated: 2026-07-29 15:16 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed:
 
@@ -61,12 +61,20 @@ reconstructability, the identity exemption — is unchanged.
 
 - 2026-07-29 14:14 MYT - Ticket created; implementation started on branch
   `il-011-013-inner-life-texture`.
+- 2026-07-29 15:16 MYT - Implemented: `mood_congruent_magnitude` replaces the
+  symmetric `affect_magnitude` (its only caller was
+  `resolve_current_affect_magnitude`); η, drift cap, provenance, identity
+  exemption untouched. Five new tests including the flagship
+  joyful-recall-softens regression; downstream consumers
+  (retrieval-feedback sync, dream edge) re-run green.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_reconsolidation.py` — 34 passed
+  - `uv run pytest tests/test_retrieval_feedback.py tests/test_inner_life_dream_edge.py` — 36 passed
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/reconsolidation.py`
+  - `apps/server/tests/test_inner_life_reconsolidation.py`
 - Notes:
   - none

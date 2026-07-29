@@ -59,6 +59,11 @@ class GreetingContext:
     recent_episode_summary: str | None = None
     is_birthday: bool = False
     days_until_birthday: int | None = None
+    # IL-011: one open thread that GENUINELY stayed active while the user was
+    # away — verbatim-traceable to a persisted ForesightSignal whose
+    # unresolved_thread pressure actually accumulated over the gap. None
+    # whenever any grounding condition fails; never synthesized.
+    held_thought: str | None = None
 
 
 @dataclass(frozen=True)
@@ -270,6 +275,75 @@ async def _invoke_ollama_native_chat(
     return stripped or None
 
 
+def _resolve_held_thought(
+    db: Session,
+    runtime_db: Session | None,
+    *,
+    user_id: int,
+    last_message_at: datetime | None,
+    now: datetime,
+) -> str | None:
+    """IL-011: the one open thread that genuinely stayed with the agent over
+    the absence, or None. Grounded, never confabulated — every condition is a
+    real persisted signal, and if any fails there is no held thought:
+
+    1. Consent: the Presence master switch AND home-greeting context are on.
+    2. A real absence: the gap since the user's last message is at least
+       ``greeting_held_thought_min_gap_hours``.
+    3. Accumulated pressure: the runtime ``unresolved_thread`` drive is at or
+       above ``greeting_held_thought_min_pressure`` — i.e. the thread
+       measurably built up while they were away, we are not inventing
+       preoccupation after the fact.
+    4. The material exists: an open, in-horizon ForesightSignal — the SAME
+       definition IL3 uses for the drive's grow signal, so the thought voiced
+       is the thread that actually accumulated the pressure.
+
+    Requires an active memories DEK (``df`` fails open, so without one the
+    decrypted read would return ciphertext into the greeting prompt)."""
+    from anima_server.services.presence_config import get_presence_config_values
+
+    values = get_presence_config_values(db, user_id)
+    if not (values.enabled and values.home_greeting_context_enabled):
+        return None
+
+    if last_message_at is None:
+        return None  # first meeting: nothing was ever left open
+    gap_hours = (now - _normalize_utc(last_message_at)).total_seconds() / 3600.0
+    if gap_hours < settings.greeting_held_thought_min_gap_hours:
+        return None
+
+    if runtime_db is None:
+        return None
+    from anima_server.models.runtime_consciousness import DriveStateRow
+
+    pressure = runtime_db.scalar(
+        select(DriveStateRow.unresolved_thread).where(DriveStateRow.user_id == user_id)
+    )
+    if pressure is None or pressure < settings.greeting_held_thought_min_pressure:
+        return None
+
+    from anima_server.services.agent.inner_life.initiative import (
+        _open_in_horizon_foresight,
+    )
+    from anima_server.services.data_crypto import DOMAIN_MEMORIES
+    from anima_server.services.sessions import get_active_dek
+
+    if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
+        return None
+    row = db.scalar(
+        _open_in_horizon_foresight(
+            user_id,
+            now.date(),
+            settings.initiative_unresolved_thread_horizon_days,
+        ).limit(1)
+    )
+    if row is None:
+        return None
+    content = df(user_id, row.content, table="foresight_signals", field="content")
+    content = (content or "").strip()
+    return content[:200] or None
+
+
 def gather_greeting_context(
     db: Session,
     user_id: int,
@@ -313,6 +387,14 @@ def gather_greeting_context(
     if last_message and last_message.created_at:
         delta = now - _normalize_utc(last_message.created_at)
         days_since = delta.days
+
+    held_thought = _resolve_held_thought(
+        db,
+        runtime_db,
+        user_id=user_id,
+        last_message_at=last_message.created_at if last_message else None,
+        now=now,
+    )
 
     # Get recent episode summary
     recent_episode = db.scalar(
@@ -421,6 +503,7 @@ def gather_greeting_context(
         recent_episode_summary=episode_summary,
         is_birthday=is_birthday,
         days_until_birthday=days_until_birthday,
+        held_thought=held_thought,
     )
 
 
@@ -439,6 +522,9 @@ def build_static_greeting(ctx: GreetingContext) -> str:
     else:
         parts.append(
             f"It's been {ctx.days_since_last_chat} days. Welcome back.")
+
+    if ctx.held_thought:
+        parts.append(f'Something you mentioned stayed with me — "{ctx.held_thought}".')
 
     if ctx.overdue_task_count:
         s = "s" if ctx.overdue_task_count != 1 else ""
@@ -760,6 +846,17 @@ async def generate_greeting(
         time_context = (
             time_context
             + f"\nThe user's birthday is in {days} day{'s' if days != 1 else ''}."
+        ).strip()
+
+    if ctx.held_thought:
+        # IL-011: grounded in a real open thread whose pressure accumulated
+        # over the gap — the instruction pins the model to that material.
+        time_context = (
+            time_context
+            + "\nWhile they were away, one open thread genuinely stayed with "
+            + f'you: "{ctx.held_thought}". You may mention it briefly and '
+            + "naturally, but only what is stated here — do not invent "
+            + "details, outcomes, or feelings about it."
         ).strip()
 
     # Use templated greeting prompt

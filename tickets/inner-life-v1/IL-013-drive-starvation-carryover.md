@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 14:14 MYT
+- Updated: 2026-07-29 15:16 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed:
 
@@ -62,12 +62,26 @@ every fire decision remains fully explainable.
 
 - 2026-07-29 14:14 MYT - Ticket created; implementation started on branch
   `il-011-013-inner-life-texture`.
+- 2026-07-29 15:16 MYT - Implemented: `starvation_boost` + loss-aware
+  `dominant_drive` (ranking only), `DriveDecision.starvation_snapshot`
+  folded under a dedicated `starvation` key in the logged
+  pressure_snapshot, edge bookkeeping (losers increment on DELIVERED fires
+  only; winner and hard-reset drives clear), migration 033 smoke-tested
+  up/down/up on SQLite with single-head verification.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_initiative.py` — 98 passed (the one
+    failure, `test_fetch_ack_route_end_to_end`, fails identically on
+    unmodified main when the file runs standalone; it passes in-suite)
+  - alembic 033 upgrade/downgrade/upgrade smoke on temp SQLite — clean
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/inner_life/initiative.py`
+  - `apps/server/src/anima_server/models/runtime_consciousness.py`
+  - `apps/server/src/anima_server/config.py`
+  - `apps/server/alembic_runtime/versions/033_drive_state_starvation.py` (new)
+  - `apps/server/tests/test_inner_life_initiative.py`
 - Notes:
-  - none
+  - A pressure gap wider than the 0.15 boost cap is never overcome —
+    intended: the cap bounds how much fairness can override pressure.
