@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON as SA_JSON,
     BigInteger,
     Boolean,
     Float,
@@ -207,6 +208,12 @@ class DriveStateRow(RuntimeBase):
         TIMESTAMPTZ, nullable=True
     )
     unanswered_initiatives: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # IL-013: per-drive count of initiative selections this drive lost while
+    # above its theta ({drive_name: losses}); feeds the bounded ranking boost
+    # in ``initiative.dominant_drive`` so a chronically outranked drive
+    # eventually surfaces. NULL/missing keys mean zero losses. Reset per
+    # drive when it fires or when its pressure is hard-reset.
+    starvation_losses: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ,
         nullable=False,

@@ -205,6 +205,11 @@ class Settings(BaseSettings):
     initiative_growth_relational: float = Field(default=0.05, ge=0.0)
     initiative_growth_novelty: float = Field(default=0.05, ge=0.0)
     initiative_growth_dream_residue: float = Field(default=0.05, ge=0.0)
+    # IL-013 starvation carryover: each selection loss by an above-theta
+    # drive adds this much to its future ranking, up to the cap. The boost
+    # affects ranking only, never theta qualification.
+    initiative_starvation_boost_per_loss: float = Field(default=0.03, ge=0.0)
+    initiative_starvation_boost_cap: float = Field(default=0.15, ge=0.0)
     # Contact-cadence proxy: no learned per-relationship cadence model
     # exists yet, so "relational" grows once days-since-contact exceeds this
     # fixed baseline (documented proxy — see initiative.py).
