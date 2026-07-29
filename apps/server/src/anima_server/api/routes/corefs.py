@@ -147,6 +147,13 @@ def _resolve_search_runtime_state(
     if index is None:
         return CoreFsSearchRuntimeState(state="missing")
     snapshot = index.snapshot()
+    if snapshot.catalog_generation is None:
+        index.begin_catalog()
+        index.publish_catalog(
+            catalog_generation=selected.generation,
+            families={},
+        )
+        snapshot = index.snapshot()
     if snapshot.state is ReadinessState.LOCKED:
         return CoreFsSearchRuntimeState(state="missing")
     if snapshot.catalog_generation is None:

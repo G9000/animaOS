@@ -21,6 +21,7 @@ from .api.routes.config import router as config_router
 from .api.routes.consciousness import router as consciousness_router
 from .api.routes.core import router as core_router
 from .api.routes.corefs import router as corefs_router
+from .api.routes.corefs_security import router as corefs_security_router
 from .api.routes.db import router as db_router
 from .api.routes.diary import router as diary_router
 from .api.routes.documents import router as documents_router
@@ -481,6 +482,7 @@ def create_app() -> FastAPI:
     app.include_router(consciousness_router)
     app.include_router(core_router)
     app.include_router(corefs_router)
+    app.include_router(corefs_security_router)
     app.include_router(db_router)
     app.include_router(diary_router)
     app.include_router(documents_router)

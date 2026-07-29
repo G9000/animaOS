@@ -31,14 +31,16 @@ def _create_native_corefs_session() -> object:
     return anima_core.CorefsSession(str(get_core_dir()), get_core_id())
 
 
-def _create_runtime_index(corefs_keys: object) -> CoreFSProgressiveIndex | None:
-    sqlcipher_key = getattr(corefs_keys, "sqlcipher_key", None)
-    if not isinstance(sqlcipher_key, bytes):
+def _create_runtime_index(
+    _corefs_keys: object,
+    sqlcipher_key: bytes | None,
+) -> CoreFSProgressiveIndex | None:
+    if sqlcipher_key is None:
         return None
     from anima_server.config import settings
 
     if not settings.runtime_instance_data_dir:
-        raise RuntimeError("CoreFS Runtime instance binding is unavailable")
+        return None
     local_instance_id = Path(settings.runtime_instance_data_dir).name
     index = CoreFSProgressiveIndex(get_core_id())
     index.unlock(
@@ -86,7 +88,7 @@ class UnlockSessionStore:
         snapshot: Any | None = None,
         corefs_session_factory: Callable[[], object] | None = None,
         runtime_index_factory: (
-            Callable[[object], CoreFSProgressiveIndex | None] | None
+            Callable[[object, bytes | None], CoreFSProgressiveIndex | None] | None
         ) = None,
     ) -> None:
         self._lock = RLock()
@@ -442,7 +444,12 @@ class UnlockSessionStore:
                     "CoreFS native session does not implement begin_close"
                 )
             if corefs_keys is not None:
-                runtime_index = self._runtime_index_factory(corefs_keys)
+                with self._lock:
+                    sqlcipher_key = self._sqlcipher_key
+                runtime_index = self._runtime_index_factory(
+                    corefs_keys,
+                    sqlcipher_key,
+                )
         except Exception:
             if runtime_index is not None:
                 runtime_index.clear_unlocked_state()

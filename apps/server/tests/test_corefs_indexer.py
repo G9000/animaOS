@@ -200,7 +200,7 @@ def test_unlock_session_revocation_clears_the_attached_runtime_index() -> None:
     )
     store = UnlockSessionStore(
         corefs_session_factory=NativeSession,
-        runtime_index_factory=lambda _keys: index,
+        runtime_index_factory=lambda _keys, _sqlcipher_key: index,
     )
 
     token = store.create(7, {"memories": b"m" * 32}, corefs_keys=object())
@@ -212,3 +212,26 @@ def test_unlock_session_revocation_clears_the_attached_runtime_index() -> None:
 
     assert index.snapshot().state is ReadinessState.LOCKED
     assert index.sensitive_buffer_counts()["documents"] == 0
+
+
+def test_unlock_session_factory_receives_process_sqlcipher_key() -> None:
+    class NativeSession:
+        def begin_close(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    seen: list[bytes | None] = []
+    store = UnlockSessionStore(
+        corefs_session_factory=NativeSession,
+        runtime_index_factory=lambda _keys, key: seen.append(key) or None,
+    )
+    store.set_sqlcipher_key(b"k" * 32)
+
+    token = store.create(8, {"memories": b"m" * 32}, corefs_keys=object())
+    try:
+        assert seen == [b"k" * 32]
+    finally:
+        store.revoke(token)
+        store.clear_sqlcipher_key()

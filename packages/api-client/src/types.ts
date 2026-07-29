@@ -124,6 +124,42 @@ export interface CoreFsOperationResponse {
   result?: Record<string, unknown> | null;
 }
 
+export interface CoreFSFamilyReadiness {
+  total: number;
+  processed: number;
+  failed: number;
+  degraded: boolean;
+}
+
+export interface CoreFSSecurityStatus {
+  coreId: string;
+  readiness: {
+    state: string;
+    catalogGeneration: number | null;
+    processedObjects: number;
+    capabilities: string[];
+    retryable: boolean;
+    families: Record<string, CoreFSFamilyReadiness>;
+  };
+  rotation: {
+    activeFrkVersion: number;
+    pendingFrkVersion: number | null;
+    decryptOnlyFrkVersions: number[];
+    phase: "idle" | "prepared" | "verifying";
+    blindIndexGeneration: number | null;
+    blindIndexPendingGeneration: number | null;
+    blindIndexProgress: number;
+  };
+}
+
+export interface CoreFSRotationResponse {
+  success: boolean;
+  unlockToken: string;
+  activeFrkVersion: number;
+  committedCatalogGeneration: number;
+  resumed: boolean;
+}
+
 export type VaultTransferFormat = "vault_json" | "anima_capsule";
 
 export interface VaultExportResponse {

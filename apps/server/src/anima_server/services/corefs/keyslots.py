@@ -640,12 +640,17 @@ def unlock_manifest_key_hierarchy(
     selected_generation = int(manifest[generation_field]) if generation is None else generation
     if selected_generation <= 0:
         raise ValueError("active credential generation must be positive")
+    allowed_statuses = (
+        {KeyslotStatus.ACTIVE, KeyslotStatus.DECRYPT_ONLY}
+        if status is KeyslotStatus.ACTIVE
+        else {status}
+    )
     candidates = [
         slot
         for slot in _manifest_slots(manifest)
         if slot.wrapping_path is wrapping_path
         and slot.credential_generation == selected_generation
-        and slot.status is status
+        and slot.status in allowed_statuses
     ]
     scopes = {slot.scope for slot in candidates}
     if len(scopes) != 1:

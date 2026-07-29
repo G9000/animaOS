@@ -56,6 +56,9 @@ class ReadinessSnapshot:
     processed_objects: int
     capabilities: frozenset[IndexCapability]
     families: Mapping[str, FamilyReadiness]
+    blind_index_generation: int | None
+    blind_index_pending_generation: int | None
+    blind_index_progress: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,17 @@ class CoreFSProgressiveIndex:
     def begin_catalog(self) -> None:
         with self._lock:
             self._require_unlocked()
+            self._documents.clear()
+            self._vectors.clear()
+            self._processed_revisions.clear()
+            self._queries.clear()
+            self._families.clear()
+            self._blind_generations.clear()
+            self._active_blind_generation = None
+            self._pending_blind_generation = None
+            self._pending_blind_expected_count = None
+            self._catalog_generation = None
+            self._last_cursor = None
             self._state = ReadinessState.CATALOG_LOADING
 
     def publish_catalog(
@@ -346,6 +360,18 @@ class CoreFSProgressiveIndex:
                 processed_objects=len(self._processed_revisions),
                 capabilities=self._capabilities_locked(),
                 families=MappingProxyType(dict(self._families)),
+                blind_index_generation=self._active_blind_generation,
+                blind_index_pending_generation=self._pending_blind_generation,
+                blind_index_progress=(
+                    0
+                    if self._pending_blind_generation is None
+                    else sum(
+                        len(object_ids)
+                        for object_ids in self._blind_generations[
+                            self._pending_blind_generation
+                        ].values()
+                    )
+                ),
             )
 
     def sensitive_buffer_counts(self) -> dict[str, int]:

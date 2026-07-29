@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
+from anima_server.services.corefs.indexer import (
+    CoreFSProgressiveIndex,
+    IndexCapability,
+    ReadinessState,
+)
+from anima_server.services.corefs.migration import reconcile_authenticated_catalog
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
@@ -70,3 +77,29 @@ def test_soul_keyslot_migration_roundtrips_without_touching_legacy_keys(
         assert connection.scalar(text("SELECT wrapped_dek FROM user_keys WHERE id = 1")) == "dek"
 
     engine.dispose()
+
+
+def test_reconciliation_authenticates_catalog_before_publishing_navigation() -> None:
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 7, "catalogHash": "catalog-hash"}
+
+    corefs_keys = object()
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    selected = reconcile_authenticated_catalog(session)
+    snapshot = index.snapshot()
+
+    assert selected.generation == 7
+    assert snapshot.state is ReadinessState.CATALOG_READY
+    assert snapshot.catalog_generation == 7
+    assert snapshot.capabilities == frozenset(
+        {IndexCapability.NAVIGATION, IndexCapability.EXACT_SEARCH}
+    )

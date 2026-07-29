@@ -450,7 +450,7 @@ def test_search_readiness_maps_progressive_index_state_without_private_data() ->
         selected=selected,
     )
     assert building.state == "building"
-    assert building.index_generation is None
+    assert building.index_generation == 9
 
     index.begin_catalog()
     index.publish_catalog(

@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-29 13:49 MYT
+- Updated: 2026-07-29 14:07 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -262,6 +262,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 22:57 MYT - Completed PCF-002's required second-phase closeout after implementation head `83a7d191` passed all four required checks and received a clean current-head Codex review. Restored synchronized completion markers in both plans, returned the parent row and completed history to `done`, and made PCF-003 dependency-eligible without claiming it. This parent remains `in_progress`.
 - 2026-07-29 01:57 MYT - Claimed dependency-eligible PCF-003 from merged `main` (`7a390eb3`) on branch `codex/pcf-003-runtime-indexing` in `.worktrees/pcf-003-runtime-indexing`. The child and parent row are synchronized to `in_progress`; the isolated focused backend, desktop build, and Tauri host baselines are clean.
 - 2026-07-29 13:49 MYT - PCF-003 completed its machine-local relocation and unlock-scoped indexing foundation: safe Runtime schema/migration head `033`, HKDF sealing and blind-index subkeys, atomic token generations, progressive/degraded readiness, and session/logout/expiry/shutdown purge integration. The focused relocation/privacy/index/API/session/runtime band passed `121` tests with `8` environment-dependent embedded-PostgreSQL skips; the child and parent remain `in_progress` for the operable rotation/progress API and desktop surface.
+- 2026-07-29 14:07 MYT - PCF-003 added authenticated reconciliation plus its operable progress and FRK-rotation surfaces. Pending root material is wrapped under independently verified password/recovery paths, native CoreFS performs the crash-recoverable catalog rotation, the active unlock token and blind-index generation switch only after cutover, and the desktop shows readiness/rotation state without private content. Focused server, complete keyslot, desktop contract/build, Python-enabled binding, and Tauri compile gates pass; the child and parent remain `in_progress` for final privacy/relocation integration and closeout validation.
 
 ## Validation
 

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, setUnlockToken } from "../../lib/api";
+import { useCoreFSReadiness } from "../../context/CoreFSReadinessContext";
 import {
   beginRecoveryPhraseReview,
   completeRecoveryPhraseReview,
@@ -12,6 +13,12 @@ const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0
 const INPUT_CLASS = "w-full bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-foreground/[0.18] transition-colors font-mono";
 
 export default function SecuritySettings() {
+  const {
+    status: coreFSStatus,
+    loading: coreFSLoading,
+    error: coreFSError,
+    refresh: refreshCoreFS,
+  } = useCoreFSReadiness();
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -26,6 +33,11 @@ export default function SecuritySettings() {
   const [recoveryStatus, setRecoveryStatus] = useState("");
   const [recoveryError, setRecoveryError] = useState("");
   const [canReplacePendingRecovery, setCanReplacePendingRecovery] = useState(false);
+  const [rotationPassword, setRotationPassword] = useState("");
+  const [rotationRecoveryPhrase, setRotationRecoveryPhrase] = useState("");
+  const [rotating, setRotating] = useState(false);
+  const [rotationStatus, setRotationStatus] = useState("");
+  const [rotationError, setRotationError] = useState("");
 
   const handleChangePassword = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -44,6 +56,38 @@ export default function SecuritySettings() {
       setChangeError(err instanceof Error ? err.message : "Password change failed.");
     } finally {
       setChanging(false);
+    }
+  };
+
+  const handleRotateFilesystemKey = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setRotationStatus("");
+    setRotationError("");
+    if (!rotationPassword || !rotationRecoveryPhrase.trim()) {
+      setRotationError("Current password and recovery phrase are required.");
+      return;
+    }
+    setRotating(true);
+    try {
+      const result = await api.corefs.rotateRootKey(
+        rotationPassword,
+        rotationRecoveryPhrase,
+      );
+      setUnlockToken(result.unlockToken);
+      setRotationPassword("");
+      setRotationRecoveryPhrase("");
+      setRotationStatus(
+        `${result.resumed ? "Resumed" : "Completed"} FRK v${result.activeFrkVersion} at catalog generation ${result.committedCatalogGeneration}.`,
+      );
+      await refreshCoreFS();
+    } catch (reason) {
+      setRotationError(
+        reason instanceof Error
+          ? reason.message
+          : "Filesystem key rotation failed.",
+      );
+    } finally {
+      setRotating(false);
     }
   };
 
@@ -132,6 +176,107 @@ export default function SecuritySettings() {
 
   return (
     <div className={`${glass} p-6 space-y-5`}>
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+            Portable Core
+          </h2>
+          <button
+            type="button"
+            onClick={() => void refreshCoreFS()}
+            disabled={coreFSLoading}
+            className="font-mono text-[8px] tracking-[0.16em] uppercase text-foreground/35 hover:text-foreground/70 disabled:opacity-30 transition-colors"
+          >
+            {coreFSLoading ? "Checking..." : "Refresh"}
+          </button>
+        </div>
+        {coreFSStatus ? (
+          <div className="grid grid-cols-2 gap-3 font-mono text-[9px] tracking-wide">
+            <StatusCell
+              label="Index"
+              value={coreFSStatus.readiness.state.replace(/_/g, " ")}
+            />
+            <StatusCell
+              label="Catalog"
+              value={
+                coreFSStatus.readiness.catalogGeneration === null
+                  ? "waiting"
+                  : `generation ${coreFSStatus.readiness.catalogGeneration}`
+              }
+            />
+            <StatusCell
+              label="Filesystem Key"
+              value={`FRK v${coreFSStatus.rotation.activeFrkVersion}`}
+            />
+            <StatusCell
+              label="Blind Index"
+              value={
+                coreFSStatus.rotation.blindIndexGeneration === null
+                  ? "rebuilding"
+                  : `generation ${coreFSStatus.rotation.blindIndexGeneration}`
+              }
+            />
+          </div>
+        ) : (
+          <p className="font-mono text-[9px] text-foreground/30 tracking-wide">
+            {coreFSError ?? "CoreFS status is not available while locked."}
+          </p>
+        )}
+      </section>
+
+      <div className="h-px bg-foreground/[0.06]" />
+
+      <section className="space-y-4">
+        <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+          Filesystem Root Key
+        </h2>
+        <p className="font-mono text-[10px] text-foreground/30 tracking-wide leading-relaxed">
+          Rewraps the committed Core catalog under a new filesystem root. Both
+          credential paths are verified before the new generation is activated.
+        </p>
+        <form onSubmit={handleRotateFilesystemKey} className="space-y-4">
+          <Field label="Current Password">
+            <input
+              type="password"
+              value={rotationPassword}
+              onChange={(event) => setRotationPassword(event.target.value)}
+              className={INPUT_CLASS}
+              autoComplete="current-password"
+            />
+          </Field>
+          <Field label="Recovery Phrase">
+            <input
+              type="password"
+              value={rotationRecoveryPhrase}
+              onChange={(event) =>
+                setRotationRecoveryPhrase(event.target.value)
+              }
+              className={INPUT_CLASS}
+              autoComplete="off"
+            />
+          </Field>
+          <button
+            type="submit"
+            disabled={rotating}
+            className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
+          >
+            {rotating ? "Rotating..." : "Rotate Filesystem Key"}
+          </button>
+        </form>
+        {rotationStatus && (
+          <span className="block font-mono text-[9px] text-accent/60 tracking-wide">
+            {rotationStatus}
+          </span>
+        )}
+        {rotationError && (
+          <span className="block font-mono text-[9px] text-destructive/70 tracking-wide">
+            {rotationError}
+          </span>
+        )}
+      </section>
+
+      <div className="h-px bg-foreground/[0.06]" />
+
       <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
         Master Password
       </h2>
@@ -266,6 +411,17 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="space-y-1.5">
       <h3 className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/30">{label}</h3>
       {children}
+    </div>
+  );
+}
+
+function StatusCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5">
+      <p className="text-[8px] uppercase tracking-[0.18em] text-foreground/25">
+        {label}
+      </p>
+      <p className="mt-1 capitalize text-foreground/60">{value}</p>
     </div>
   );
 }
