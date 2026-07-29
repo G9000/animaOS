@@ -1,0 +1,74 @@
+# IL-011 - Return acknowledgment: grounded held-thought greeting + reconnect energy texture
+
+- Status: in-progress
+- Priority: P2
+- Scope: `apps/server`
+- Parent: `IL-000`
+- Depends on: IL-002, IL-003
+- Owner: unassigned
+- PRD: `docs/prd/inner-life-v1.md`
+- Spec: none
+- Plan: none
+- Created: 2026-07-29 14:14 MYT
+- Updated: 2026-07-29 14:14 MYT
+- Started: 2026-07-29 14:14 MYT
+- Completed:
+
+## Goal
+
+Make returning after a real absence feel different from returning after an
+hour — in two small, strictly grounded ways:
+
+1. **Held thought in the greeting.** When the user comes back after a gap and
+   an open foresight thread genuinely accumulated `unresolved_thread` pressure
+   while they were away, the greeting context may carry that one thread as a
+   "held thought" — "this stayed on my mind" — grounded in the actual
+   persisted ForesightSignal and the actual accumulated pressure. Never
+   confabulated: no pressure or no open signal → no held thought. This is the
+   greeting-context sibling of IL-003's initiative material rule (every
+   sentence traces to specific material).
+2. **Subdued reconnect energy.** A long gap (≥ 48h) leaves the IL1 energy
+   component slightly lowered at catch-up time — a bounded "quiet after long
+   silence" texture. Deliberately energy-only: valence is untouched, because a
+   sadness/guilt reading ("I was sad you left") is a manipulative texture we
+   explicitly do not want; "subdued" is not "hurt". The dip is small, capped,
+   and relaxes away through the normal IL1 dynamics.
+
+## Deliverables
+
+- `services/agent/proactive.py`: `GreetingContext.held_thought` — populated
+  only when (a) `home_greeting_context_enabled` is on, (b) the absence gap is
+  at least `greeting_held_thought_min_gap_hours`, (c) the runtime
+  `unresolved_thread` pressure is at or above a floor, and (d) an open
+  in-horizon ForesightSignal exists (its decrypted content is the thought).
+  Wired into the greeting prompt and the static fallback.
+- `services/agent/inner_life/catchup.py`: gaps ≥ 48h apply
+  `energy -= min(gap_days * reconnect_energy_dip_per_day, reconnect_energy_dip_cap)`
+  (defaults 0.01/day, cap 0.06), floor-clamped, recorded in the audit row's
+  `components`. Valence and arousal untouched.
+- Config knobs with defaults; tests for both mechanisms including the
+  never-confabulate and consent-gate negatives.
+
+## Acceptance
+
+- Greeting context contains the held thought exactly when all four conditions
+  hold; flipping any single one off yields no held thought.
+- The held thought is verbatim-traceable to a persisted ForesightSignal row
+  (decrypted via the standard field-crypto path), never synthesized.
+- A 72h gap lowers energy by a bounded amount; a 4h gap doesn't; valence is
+  bit-identical before/after the dip is applied.
+- Full suite green.
+
+## Activity Log
+
+- 2026-07-29 14:14 MYT - Ticket created; implementation started on branch
+  `il-011-013-inner-life-texture`.
+
+## Validation
+
+- Commands:
+  - `not run yet`
+- Changed paths:
+  - none
+- Notes:
+  - none
