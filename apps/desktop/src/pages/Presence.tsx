@@ -52,7 +52,10 @@ const SIGNAL_OPTIONS = [
 const DREAM_SHARING_OPTIONS = [
   { value: "off", label: "Off" },
   { value: "on_ask", label: "On Ask" },
-  { value: "ambient", label: "Ambient" },
+  // "ambient" (weave dreams into greetings) is accepted by the backend
+  // contract but has no server-side consumer yet — dream_sharing consumers
+  // only distinguish "off" from non-off. Not offered until IL-010 wires the
+  // greeting path; a stored "ambient" value still round-trips unchanged.
 ] as const;
 
 export default function Presence() {
