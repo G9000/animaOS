@@ -1,7 +1,6 @@
 # CoreFS Object Validation Lease Design
 
-**Status:** User-approved; Windows implementation and the exact reference gate are
-accepted; native macOS/APFS characterization and implementation remain pending
+**Status:** Implemented; Windows lease accepted, macOS safe-open fallback retained
 
 **Ticket:** PCF-002 catalog-performance architecture revision
 
@@ -19,8 +18,10 @@ requires bounded `O(1)` Windows event publication, and corrects the Windows moni
 resource reservation to three. The written correction passed independent review at
 `6a230eaf` and its plan revision passed at `0a409ea7`. The Windows implementation,
 production diagnostic, and unchanged exact 30/200 reference are accepted from source
-`370ba5cc` on 2026-07-27. The Apple-inclusive design is still in progress because
-native macOS/APFS Tasks 2 and 5 have not run.
+`370ba5cc` on 2026-07-27. PR #124 subsequently proved the complete macOS/APFS
+namespace boundary, but its single evidence-only performance run did not establish
+the required repeatability. On 2026-07-28 the user selected the approved
+`macOS=safe-open fallback`; the production macOS backend therefore remains disabled.
 
 **Independent review:** The user-approved Windows baseline passed four review/revision
 rounds covering notification-name ambiguity, production link-count behavior,

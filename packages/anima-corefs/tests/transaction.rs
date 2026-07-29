@@ -1582,7 +1582,7 @@ fn prepared_object_validation_tolerates_a_crash_stale_immutable_stage_link() {
         .objects_path()
         .join(prepared.physical_name().as_str());
     let stale_stage = coordinator.objects_path().join(".object.17.tmp");
-    fs::hard_link(&object_path, &stale_stage).unwrap();
+    fs::hard_link(object_path, &stale_stage).unwrap();
 
     let snapshot = coordinator
         .initialize_validation_snapshot(&keys, std::slice::from_ref(&prepared), |generation| {

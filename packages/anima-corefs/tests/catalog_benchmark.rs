@@ -4,9 +4,13 @@ use std::time::Duration;
 use anima_corefs::benchmark::{
     build_fixture, build_fixture_matrix, derive_fixture_lifecycle_counts,
     expected_reference_fixture_manifest_fingerprint, needs_serialized_limit_fixture,
-    percentile_nearest_rank, run_fixture_benchmark, run_object_lease_diagnostic,
-    BenchmarkRunConfig, CatalogFixtureSpec, FixtureKind, ObjectLeaseDiagnosticConfig,
-    ObjectLeaseDiagnosticEvent, ObjectLeaseDiagnosticMutationCase, MAX_CATALOG_PLAINTEXT_BYTES,
+    percentile_nearest_rank, run_fixture_benchmark, BenchmarkRunConfig, CatalogFixtureSpec,
+    FixtureKind, MAX_CATALOG_PLAINTEXT_BYTES,
+};
+#[cfg(windows)]
+use anima_corefs::benchmark::{
+    run_object_lease_diagnostic, ObjectLeaseDiagnosticConfig, ObjectLeaseDiagnosticEvent,
+    ObjectLeaseDiagnosticMutationCase,
 };
 use anima_corefs::catalog::{
     CatalogEntryCommon, CatalogGeneration, CatalogGenerationEntry, FolderLifecycle,

@@ -138,42 +138,13 @@ jobs:
       - name: Checkout animaOS
         uses: actions/checkout@v4
 
+      - name: Install PyO3-compatible Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Install Rust 1.75
         run: rustup toolchain install 1.75.0 --profile minimal --component clippy
-
-      - name: Prove macOS characterization starts RED
-        shell: bash
-        run: |
-          cargo +1.75.0 build --release --locked -p anima-corefs \
-            --bin object_lease_macos_spike
-
-          set +e
-          diagnostic="$(
-            ./target/release/object_lease_macos_spike \
-              --objects 2500 \
-              --warmups 30 \
-              --samples 200 \
-              --output /tmp/corefs-object-lease-macos.json 2>&1
-          )"
-          status=$?
-          set -e
-          printf '%s\n' "$diagnostic"
-          test "$status" -eq 1
-          printf '%s\n' "$diagnostic" | python3 -c '
-          import json
-          import sys
-
-          diagnostic = json.load(sys.stdin)
-          expected = {
-              "error": "backendUnavailable",
-              "message": (
-                  "the native macOS FSEvents/kqueue characterization backend "
-                  "is not implemented"
-              ),
-          }
-          assert diagnostic == expected, diagnostic
-          '
-          test ! -e /tmp/corefs-object-lease-macos.json
 
       - name: Detect enabled macOS native backend
         id: macos-backend
@@ -198,11 +169,9 @@ jobs:
           macos_object_lease -- --nocapture
 
       - name: Test all CoreFS paths on macOS
-        if: steps.macos-backend.outputs.enabled == 'true'
         run: cargo +1.75.0 test --locked -p anima-corefs
 
       - name: Enforce strict native Clippy
-        if: steps.macos-backend.outputs.enabled == 'true'
         run: >-
           cargo +1.75.0 clippy --locked -p anima-corefs -p anima-core
           --all-targets --all-features -- -D warnings
