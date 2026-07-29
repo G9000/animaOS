@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-28 20:04 MYT
+- Updated: 2026-07-29 11:44 MYT
 - Started: 2026-07-15 16:55 MYT
-- Completed: 2026-07-28 20:04 MYT
+- Completed: 2026-07-29 11:36 MYT
 
 ## Goal
 
@@ -46,6 +46,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-28 15:17 MYT - `IL-008` done: push-initiative client wiring (branch feature/il-008-initiative-client-wiring, PR to follow). Poll/display path chosen over an `OSNotificationDelivery` adapter — no Tauri notification bridge exists in the repo. One task-review fix round each on the poller's concurrent ack-vs-poll race (generation-token fix) and the `stop()` staleness leak (in-flight poll invalidation on stop), both with regression tests. Last child ticket; Inner Life v1 scope is now complete end-to-end pending this PR's merge.
 - 2026-07-29 02:39 MYT - `IL-008` completion re-stamped after PR #123 review rounds 7-8 landed acceptance-affecting consent fixes (fresh revalidation, then a per-user consent lock closing the opt-out/delivery TOCTOU — first server-route change on the branch: `services/presence_config.py`, `api/routes/presence.py`). Child validation and changed paths refreshed; see IL-008 log.
 - 2026-07-29 11:36 MYT - `IL-008` completion re-stamped again after PR #123 round 9 (ack-after-stop isolation leak in the desktop poller; regression-tested). See IL-008 log.
+- 2026-07-29 11:44 MYT - Parent closeout synchronized with the round-9 child state: `Completed` re-stamped to the child's final completion (11:36 MYT), validation summary refreshed to the current 15/15 poller / 90 server results.
 
 ## Deliverables
 
@@ -85,4 +86,4 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
   - `tickets/inner-life-v1/IL-005-forgetting-as-distillation.md`
   - `tickets/inner-life-v1/IL-006-recall-reconsolidation.md`
   - `tickets/inner-life-v1/IL-007-dream-cycle.md`
-  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 14/14, `tsc --noEmit` 0 errors, server consent-gate change validated with `tests/test_inner_life_initiative.py` 88 passed)
+  - `tickets/inner-life-v1/IL-008-initiative-delivery-client-wiring.md` (most recent: api-client 26/26, desktop suite clean of new failures with `initiativePoller.test.ts` 15/15, `tsc --noEmit` 0 errors, server consent changes validated with `tests/test_inner_life_initiative.py` 90 passed (e2e env-failure deselected per child log))
