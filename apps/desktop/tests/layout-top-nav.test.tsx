@@ -1,46 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 
-import { TopNavAgentButton } from "../src/components/layout/LayoutTopNav";
+import { TOP_NAV_ITEMS } from "../src/components/layout/nav-items";
+import { TopNav } from "../src/features/hud/TopNav";
 
-describe("TopNavAgentButton", () => {
-  test("shows the agent name and mood beside the avatar when expanded", () => {
+describe("TopNav", () => {
+  test("renders the current compact navigation contract", () => {
     const html = renderToStaticMarkup(
-      <TopNavAgentButton
-        agentName="ANIMA"
-        avatarUrl="/avatar.png"
-        dominantEmotion="calm"
-        stateThought="quietly present"
-        expanded
-        onClick={() => {}}
-        onThoughtClick={() => {}}
-      />,
+      <MemoryRouter initialEntries={["/journal"]}>
+        <TopNav />
+      </MemoryRouter>,
     );
 
-    expect(html).toContain('alt="ANIMA"');
-    expect(html).toContain('title="ANIMA - calm - quietly present"');
-    expect(html).toContain("ANIMA");
-    expect(html).toContain(">calm<");
-    expect(html).toContain(">quietly present<");
-  });
-
-  test("keeps the mood visible on the collapsed avatar", () => {
-    const html = renderToStaticMarkup(
-      <TopNavAgentButton
-        agentName="ANIMA"
-        avatarUrl="/avatar.png"
-        dominantEmotion="calm"
-        stateThought="quietly present"
-        expanded={false}
-        onClick={() => {}}
-        onThoughtClick={() => {}}
-      />,
-    );
-
-    expect(html).toContain('title="ANIMA - calm - quietly present"');
-    expect(html).toContain("rounded-full");
-    expect(html).not.toContain(">ANIMA<");
-    expect(html).not.toContain(">calm<");
-    expect(html).not.toContain(">quietly present<");
+    for (const item of TOP_NAV_ITEMS) {
+      expect(html).toContain(`href="${item.to}"`);
+    }
+    expect(html.match(/<a /g)).toHaveLength(TOP_NAV_ITEMS.length);
+    expect(html).toContain('href="/journal"');
+    expect(html).toContain("bg-accent text-accent-foreground");
   });
 });

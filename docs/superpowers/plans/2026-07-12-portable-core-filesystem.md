@@ -414,49 +414,49 @@ git -c commit.gpgsign=false commit -m "core: add Core Filesystem"
 - Test: `apps/desktop/tests/corefs-readiness.test.ts`
 - Test: `apps/desktop/tests/corefs-key-rotation.test.ts`
 
-- [ ] **Step 1: Write failing runtime-location tests**
+- [x] **Step 1: Write failing runtime-location tests**
 
 Assert PostgreSQL paths resolve under platform app data as `cores/<core-id>/instances/<local-instance-id>/runtime/pg_data`, never under `.anima/`, and copied Core manifests contain no machine path. A machine-local registry/lease binds `core_id` plus canonical resolved Core path and filesystem identity to one local instance. A moved (same filesystem identity) Core rebinds safely; a divergent copy with the same `core_id` receives a new local instance/runtime or is refused while the source lease is live, never shares PostgreSQL/index state. Cover same-machine transfer destination, stale lease, moved path, simultaneous clones, and explicit fork/rebuild.
 
-- [ ] **Step 2: Write failing readiness/index privacy tests**
+- [x] **Step 2: Write failing readiness/index privacy tests**
 
 Cover locked/opening/catalog-loading/catalog-ready-degraded/text-indexing/semantic-indexing/ready states, per-family failures, resume/cancel semantics, blind-token lookup, raw fresh-target PostgreSQL/runtime-disk scans for seeded message/chunk/OCR/source/candidate/pending-op plaintext, and teardown that clears plaintext indexes, semantic vectors, search subkeys, runtime-sealing keys, and query state on lock/logout/process shutdown. The quarantined legacy source may contain old plaintext until PCF-008, but it is never reused as the fresh target and is deleted after the forward-only marker.
 
-- [ ] **Step 3: Relocate active and legacy runtime paths**
+- [x] **Step 3: Relocate active and legacy runtime paths**
 
 Keep explicit `ANIMA_RUNTIME_DATABASE_URL` override behavior. Resolve the machine-local instance lease before opening PostgreSQL. With PostgreSQL stopped, move or copy-verify-delete an existing `.anima/runtime/pg_data` into platform app data under the bound local instance at `cores/<core-id>/instances/<local-instance-id>/legacy-runtime-source/pg_data`, record the source in migration state, and never include it in Core copy/export. Continue using it only as the legacy source until cutover; do not discard messages/assets before their converters pass.
 
 Also move derived `.anima/indices` into `cores/<core-id>/instances/<local-instance-id>/cache/indices`, health `.anima/logs` into that instance's `health-logs`, and Tauri `.anima/runtime-daemon*` files into the machine-wide platform app-data daemon directory. All blind tokens, index checkpoints, caches, runtime logs, and migration journals are instance-scoped. For explicit `ANIMA_RUNTIME_DATABASE_URL`, atomically claim/verify an instance-binding row before migrations or queries and reject a URL already bound to another live/divergent Core instance. Add a static/path-contract test that only manifest/lock, `soul/`, `fs/`, `objects/`, and approved recovery material may be written under the Core root after cutover.
 
-- [ ] **Step 4: Add runtime catalog/checkpoint/blind-token models**
+- [x] **Step 4: Add runtime catalog/checkpoint/blind-token models**
 
 Persist only opaque IDs, hashes, revisions, statuses, index versions, progress, HMAC tokens, and a durable `CoreFSMigrationJournal` containing converter/source IDs, batch cursors, status, checksums, and errors without plaintext bodies. Add an application-layer runtime sealing service using `HKDF-SHA256(SQLCipher Soul key, salt=local-instance-id, info="anima-runtime-seal-v1")`; the key exists only after unlock and is never persisted. Crash-durable sensitive operational payloads such as memory candidates/pending Soul operations use authenticated sealed ciphertext with row type/ID/owner AAD plus minimal routing metadata. Rebuildable document chunks, OCR, source spans, knowledge bodies, previews, and vectors are process-memory only. Do not add plaintext body/title/preview/chunk/vector columns for Core content, and add schema/inventory tests that force every existing sensitive Runtime column to be removed, nulled and scrubbed in the fresh cutover database, or explicitly sealed with a documented retention need.
 
-- [ ] **Step 5: Implement staged reconciliation**
+- [x] **Step 5: Implement staged reconciliation**
 
 Follow `fs/HEAD`; authenticate the named catalog; publish catalog readiness first; reuse safe catalog/blind tokens; rebuild decrypted text and semantic structures in memory after every unlock.
 
-- [ ] **Step 6: Complete FRK/blind-index rotation**
+- [x] **Step 6: Complete FRK/blind-index rotation**
 
 Switch blind-token generations only after new tokens are complete, reject mixed generations, verify pending-FRK `fs/HEAD` recovery, and enforce old-root retirement criteria across retained catalogs and verified backups.
 
-- [ ] **Step 7: Add the operable key-rotation API and Security UI**
+- [x] **Step 7: Add the operable key-rotation API and Security UI**
 
 Create authenticated status/rotate/resume endpoints under `corefs_security`. Rotation accepts the recovery phrase only in the request body of the active unlock session, never persists/logs it, and verifies both recovery/password wrappers before `fs/HEAD`. Return active/pending/decrypt-only FRK versions, committed catalog generation, blind-index generation/progress, passphrase/recovery reopen results, errors, and old-key retirement safety. Wire `packages/api-client` and `SecuritySettings.tsx`; add API/UI tests for wrong recovery phrase, interrupted resume, mixed-token prevention, and retirement gating.
 
-- [ ] **Step 8: Implement lock/session teardown**
+- [x] **Step 8: Implement lock/session teardown**
 
 Wire logout, explicit Core lock, unlock-session expiry, and FastAPI shutdown to one `clear_unlocked_state(core_id)` path. Clear in-memory plaintext documents, ranks, vectors, blind-search subkeys, runtime-sealing keys, decrypted FRKs/Object DEKs, and outstanding query state; subsequent search/read or sealed operational-payload access must return locked until re-unlock.
 
-- [ ] **Step 9: Add progress and degraded readiness APIs/events**
+- [x] **Step 9: Add progress and degraded readiness APIs/events**
 
 Expose counts, phase, family, capabilities, retryability, and error summaries without private text.
 
-- [ ] **Step 10: Wire desktop readiness context and test runner**
+- [x] **Step 10: Wire desktop readiness context and test runner**
 
 Allow navigation at catalog readiness; show partial/degraded search state without blocking the entire app. Add root `test:desktop` script as `bun test apps/desktop/tests`.
 
-- [ ] **Step 11: Verify runtime relocation, deletion/rebuild, rotation UI, lock purge, and privacy**
+- [x] **Step 11: Verify runtime relocation, deletion/rebuild, rotation UI, lock purge, and privacy**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_indexer.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_corefs_path_inventory.py apps/server/tests/test_corefs_instance_registry.py apps/server/tests/test_corefs_runtime_privacy.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_runtime_db.py apps/server/tests/test_health_startup.py -q
@@ -467,7 +467,7 @@ cargo check -p desktop
 
 Expected: backend PASS and desktop build succeeds.
 
-- [ ] **Step 12: Commit runtime/indexing/security UI**
+- [x] **Step 12: Commit runtime/indexing/security UI**
 
 ```powershell
 git add apps/server/src/anima_server/models/corefs_runtime.py apps/server/src/anima_server/models/runtime.py apps/server/src/anima_server/models/runtime_memory.py apps/server/src/anima_server/models/pending_memory_op.py apps/server/src/anima_server/services/corefs/indexer.py apps/server/src/anima_server/services/corefs/migration.py apps/server/src/anima_server/services/corefs/legacy_runtime.py apps/server/src/anima_server/services/corefs/instance_registry.py apps/server/src/anima_server/services/agent/candidate_ops.py apps/server/src/anima_server/services/agent/pending_ops.py apps/server/src/anima_server/services/agent/consolidation.py apps/server/src/anima_server/services/agent/soul_writer.py apps/server/src/anima_server/schemas/corefs_security.py apps/server/src/anima_server/api/routes/corefs_security.py apps/server/alembic_runtime/versions/20260712_0001_add_corefs_index.py apps/server/src/anima_server/config.py apps/server/src/anima_server/db/runtime.py apps/server/src/anima_server/db/pg_lifecycle.py apps/server/src/anima_server/main.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/auth.py apps/server/src/anima_server/services/health/checks.py apps/server/src/anima_server/services/health/event_logger.py apps/server/src/anima_server/services/anima_core_retrieval.py apps/server/src/anima_server/api/routes/corefs.py apps/desktop/src-tauri/src/lib.rs packages/api-client/src/client.ts packages/api-client/src/types.ts apps/desktop/src/context/CoreFSReadinessContext.tsx apps/desktop/src/pages/settings/SecuritySettings.tsx apps/desktop/src/App.tsx apps/desktop/src/lib/api.ts package.json apps/server/tests/test_corefs_indexer.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_corefs_path_inventory.py apps/server/tests/test_corefs_instance_registry.py apps/server/tests/test_corefs_runtime_privacy.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_runtime_db.py apps/server/tests/test_health_startup.py apps/desktop/tests/corefs-readiness.test.ts apps/desktop/tests/corefs-key-rotation.test.ts
