@@ -19,6 +19,7 @@ from anima_server.services.agent.inner_life.delivery import (
 from anima_server.services.presence_config import (
     PresenceConfigValues,
     get_presence_config_values,
+    presence_consent_lock,
     update_presence_config,
 )
 
@@ -43,12 +44,17 @@ def put_config(
     db: Session = Depends(get_db),
 ) -> PresenceConfigResponse:
     require_unlocked_user(request, user_id)
-    values = update_presence_config(
-        db,
-        user_id,
-        payload.model_dump(exclude_unset=True),
-    )
-    db.commit()
+    # Hold the per-user consent lock through the COMMIT: initiative delivery
+    # holds the same lock from its consent check through its delivered side
+    # effect, so an opt-out can never commit inside a poll's decision window
+    # (PR #123 review, P1 — see presence_consent_lock).
+    with presence_consent_lock(user_id):
+        values = update_presence_config(
+            db,
+            user_id,
+            payload.model_dump(exclude_unset=True),
+        )
+        db.commit()
     return _serialize(values)
 
 

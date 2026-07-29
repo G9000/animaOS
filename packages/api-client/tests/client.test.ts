@@ -980,4 +980,103 @@ describe("createApiClient error handling", () => {
       },
     ]);
   });
+
+  describe("presence initiatives", () => {
+    test("fetches pending initiatives and acknowledges by id", async () => {
+      const calls: { url: string; method: string }[] = [];
+      const api = createApiClient({
+        baseUrl: "https://api.test/api",
+        getUnlockToken: () => "unlock-token",
+        fetchImpl: async (input, init) => {
+          calls.push({ url: String(input), method: init?.method ?? "GET" });
+          if (String(input).endsWith("/ack")) {
+            return new Response(
+              JSON.stringify({
+                id: 7,
+                drive: "closeness",
+                text: "I kept thinking about the harbor photos.",
+                createdAt: "2026-07-28T02:00:00+00:00",
+                delivered: true,
+                acknowledged: true,
+              }),
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              userId: 42,
+              initiatives: [
+                {
+                  id: 7,
+                  drive: "closeness",
+                  text: "I kept thinking about the harbor photos.",
+                  createdAt: "2026-07-28T02:00:00+00:00",
+                  delivered: true,
+                  acknowledged: false,
+                },
+              ],
+            }),
+          );
+        },
+      });
+
+      const list = await api.presence.initiatives(42);
+      expect(list.userId).toBe(42);
+      expect(list.initiatives).toHaveLength(1);
+      expect(list.initiatives[0].id).toBe(7);
+      expect(calls[0]).toEqual({
+        url: "https://api.test/api/presence/42/initiatives",
+        method: "GET",
+      });
+
+      const acked = await api.presence.ackInitiative(42, 7);
+      expect(acked.acknowledged).toBe(true);
+      expect(calls[1]).toEqual({
+        url: "https://api.test/api/presence/42/initiatives/7/ack",
+        method: "POST",
+      });
+    });
+
+    test("sends the four inner-life presence-config fields on update", async () => {
+      let requestBody: unknown = null;
+      const api = createApiClient({
+        baseUrl: "https://api.test/api",
+        getUnlockToken: () => "unlock-token",
+        fetchImpl: async (_input, init) => {
+          requestBody = JSON.parse(String(init?.body));
+          return new Response(
+            JSON.stringify({
+              userId: 42,
+              enabled: true,
+              mainChatEnabled: true,
+              homeGreetingContextEnabled: true,
+              taskNudgesEnabled: true,
+              memoryNudgesEnabled: true,
+              checkInNudgesEnabled: true,
+              customInstruction: null,
+              initiativeEnabled: true,
+              quietHoursStart: 22,
+              quietHoursEnd: 7,
+              dreamSharing: "ambient",
+            }),
+          );
+        },
+      });
+
+      const config = await api.presence.update(42, {
+        initiativeEnabled: true,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+        dreamSharing: "ambient",
+      });
+
+      expect(requestBody).toEqual({
+        initiativeEnabled: true,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+        dreamSharing: "ambient",
+      });
+      expect(config.initiativeEnabled).toBe(true);
+      expect(config.dreamSharing).toBe("ambient");
+    });
+  });
 });
