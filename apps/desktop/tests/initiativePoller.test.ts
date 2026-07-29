@@ -1,0 +1,331 @@
+import { describe, expect, test } from "bun:test";
+import type { PendingInitiative } from "@anima/api-client";
+
+import {
+  createGatedInitiativeFetch,
+  createInitiativePoller,
+} from "../src/lib/initiativePoller";
+
+function row(id: number, overrides: Partial<PendingInitiative> = {}): PendingInitiative {
+  return {
+    id,
+    drive: "closeness",
+    text: `initiative ${id}`,
+    createdAt: "2026-07-28T02:00:00+00:00",
+    delivered: true,
+    acknowledged: false,
+    ...overrides,
+  };
+}
+
+describe("createInitiativePoller", () => {
+  test("pollNow replaces the pending list from the server and reports it", async () => {
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => [row(1), row(2)],
+      ackInitiative: async () => ({}),
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  test("a failed poll is swallowed and does not call onChange", async () => {
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        throw new Error("locked");
+      },
+      ackInitiative: async () => ({}),
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    expect(seen).toHaveLength(0);
+  });
+
+  test("overlapping polls do not double-fetch", async () => {
+    let fetches = 0;
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        fetches += 1;
+        await gate;
+        return [row(1)];
+      },
+      ackInitiative: async () => ({}),
+      onChange: () => {},
+    });
+    const first = poller.pollNow();
+    const second = poller.pollNow(); // must no-op while the first is in flight
+    release?.();
+    await Promise.all([first, second]);
+    expect(fetches).toBe(1);
+  });
+
+  test("ack calls the API, removes the row locally, and reports the remainder", async () => {
+    const ackedIds: number[] = [];
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => [row(1), row(2)],
+      ackInitiative: async (id) => {
+        ackedIds.push(id);
+        return {};
+      },
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    await poller.ack(1);
+    expect(ackedIds).toEqual([1]);
+    expect(seen.at(-1)?.map((r) => r.id)).toEqual([2]);
+  });
+
+  test("a failed ack still removes the row locally (next poll re-serves it if unacked)", async () => {
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => [row(1)],
+      ackInitiative: async () => {
+        throw new Error("offline");
+      },
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    await poller.ack(1);
+    expect(seen.at(-1)).toEqual([]);
+  });
+
+  test("start polls immediately, schedules the interval, and stop clears it", async () => {
+    let scheduled: (() => void) | null = null;
+    let intervalMsSeen = 0;
+    let cleared = false;
+    let fetches = 0;
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        fetches += 1;
+        return [];
+      },
+      ackInitiative: async () => ({}),
+      onChange: () => {},
+      intervalMs: 60_000,
+      setIntervalFn: ((fn: () => void, ms: number) => {
+        scheduled = fn;
+        intervalMsSeen = ms;
+        return 123 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval,
+      clearIntervalFn: (() => {
+        cleared = true;
+      }) as typeof clearInterval,
+    });
+    poller.start();
+    poller.start(); // idempotent — must not double-schedule
+    await Promise.resolve();
+    expect(fetches).toBe(1);
+    expect(intervalMsSeen).toBe(60_000);
+    scheduled?.();
+    // let the scheduled async poll settle
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetches).toBe(2);
+    poller.stop();
+    expect(cleared).toBe(true);
+  });
+
+  test("an ack during an in-flight poll wins over the stale poll result", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    let pollCount = 0;
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        pollCount += 1;
+        if (pollCount === 1) {
+          // First poll: populate the list
+          return [row(1), row(2)];
+        }
+        // Second poll: gated, will return the same data
+        await gate;
+        return [row(1), row(2)];
+      },
+      ackInitiative: async () => ({}),
+      onChange: (pending) => seen.push(pending),
+    });
+    // First poll populates state
+    await poller.pollNow();
+    // Start second poll which is gated
+    const pollPromise = poller.pollNow();
+    // poll is now in flight, ack the row while it's gated
+    await poller.ack(1);
+    // release the gate so the poll completes
+    release?.();
+    await pollPromise;
+    // the final state should not have row 1 (acked row won)
+    expect(seen.at(-1)?.map((r) => r.id)).toEqual([2]);
+  });
+
+  test("a poll resolving after stop() does not report its result", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => {
+        await gate;
+        return [row(1)];
+      },
+      ackInitiative: async () => ({}),
+      onChange: (pending) => seen.push(pending),
+    });
+    const pollPromise = poller.pollNow();
+    // poll is in flight (gated); stop while it's still pending — e.g. user
+    // switch or component unmount racing the in-flight fetch.
+    poller.stop();
+    release?.();
+    await pollPromise;
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a poll started during a slow ack does not restore the acked row", async () => {
+    let releaseAck: (() => void) | null = null;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      // The server keeps returning row 1 until the ack POST commits.
+      fetchInitiatives: async () => [row(1), row(2)],
+      ackInitiative: async () => {
+        await ackGate;
+        return {};
+      },
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    // Ack is in flight (POST gated); an interval/focus/remount poll starts
+    // now, reads the row pre-commit, and resolves before the ack finishes.
+    const acking = poller.ack(1);
+    await poller.pollNow();
+    releaseAck?.();
+    await acking;
+    expect(seen.at(-1)?.map((r) => r.id)).toEqual([2]);
+    // No report after the initial poll may resurrect the acked row.
+    expect(seen.slice(1).every((list) => list.every((r) => r.id !== 1))).toBe(
+      true,
+    );
+  });
+
+  test("an ack resolving after stop() does not invoke onChange", async () => {
+    let releaseAck: (() => void) | null = null;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => [row(1)],
+      ackInitiative: async () => {
+        await ackGate;
+        return {};
+      },
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    const reportsBeforeStop = seen.length;
+    // Ack is awaiting its POST when the poller stops (logout, user switch,
+    // unmount). The replacement poller shares the same React setter, so a
+    // late onChange from this instance could erase the new user's
+    // initiatives or expose the old user's rows.
+    const acking = poller.ack(1);
+    poller.stop();
+    releaseAck?.();
+    await acking;
+    expect(seen).toHaveLength(reportsBeforeStop); // no notification after stop()
+  });
+});
+
+describe("createGatedInitiativeFetch", () => {
+  test("returns [] without hitting the initiatives endpoint when initiative is disabled", async () => {
+    let fetched = 0;
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: false,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      }),
+      fetchInitiatives: async () => {
+        fetched += 1;
+        return [row(1)];
+      },
+    });
+    expect(await gated()).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
+  test("returns [] when the presence master switch is off", async () => {
+    let fetched = 0;
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: false,
+        initiativeEnabled: true,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      }),
+      fetchInitiatives: async () => {
+        fetched += 1;
+        return [row(1)];
+      },
+    });
+    expect(await gated()).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
+  test("returns [] inside the quiet-hours window without fetching (midnight wrap)", async () => {
+    let fetched = 0;
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: true,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+      }),
+      fetchInitiatives: async () => {
+        fetched += 1;
+        return [row(1)];
+      },
+      getCurrentHour: () => 23,
+    });
+    expect(await gated()).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
+  test("serves normally outside the quiet-hours window", async () => {
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: true,
+        quietHoursStart: 22,
+        quietHoursEnd: 7,
+      }),
+      fetchInitiatives: async () => [row(1)],
+      getCurrentHour: () => 12,
+    });
+    expect((await gated()).map((r) => r.id)).toEqual([1]);
+  });
+
+  test("passes through when presence and initiative are both enabled", async () => {
+    const gated = createGatedInitiativeFetch({
+      getPresenceGate: async () => ({
+        enabled: true,
+        initiativeEnabled: true,
+        quietHoursStart: null,
+        quietHoursEnd: null,
+      }),
+      fetchInitiatives: async () => [row(1)],
+    });
+    expect((await gated()).map((r) => r.id)).toEqual([1]);
+  });
+});

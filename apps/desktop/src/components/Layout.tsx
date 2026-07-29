@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { LayoutHUD } from "../features/hud";
 import BackgroundLayer from "./BackgroundLayer";
+import InitiativeOverlay from "./InitiativeOverlay";
 import { LayoutActionsProvider } from "../context/LayoutActionsContext";
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -14,6 +15,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
         {/* Content fills full height */}
         <main className="h-full overflow-hidden min-w-0">{children}</main>
+        <InitiativeOverlay />
       </div>
     </LayoutActionsProvider>
   );

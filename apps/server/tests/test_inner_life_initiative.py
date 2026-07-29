@@ -1376,6 +1376,11 @@ def test_poll_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     )
     db.add(log_row)
     db.commit()
+    # The poll path is consent-gated when soul_db is supplied; opt in first.
+    from anima_server.services.presence_config import update_presence_config
+
+    update_presence_config(db, 1, {"initiativeEnabled": True})
+    db.commit()
 
     with runtime_factory() as rdb:
         rdb.add(
@@ -1393,6 +1398,270 @@ def test_poll_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     assert refreshed.delivered is True  # reconciled by the poll, before any ack
     assert refreshed.answered is False  # poll is delivery, not acknowledgement
     assert count_recent_fires(db, user_id=1, now=now) == (1, 1)
+
+    runtime_engine.dispose()
+
+
+def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> None:
+    """Regression (PR #123 review, P1): the consent check and the delivered
+    side effect must be atomic in the server operation. With ``soul_db``
+    supplied and no active opt-in, ``list_and_mark_delivered`` returns []
+    and leaves rows undelivered — a client racing its own config check can
+    no longer get rows displayed/marked delivered after consent was
+    withdrawn."""
+    from anima_server.services.presence_config import update_presence_config
+
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    db.commit()
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+
+        # No presence config row at all -> default initiative_enabled=False.
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        assert fetched == []
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False  # nothing marked delivered while gated
+
+        # Initiative opted in but the presence master switch is off -> still gated.
+        update_presence_config(db, 1, {"initiativeEnabled": True, "enabled": False})
+        db.commit()
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        assert fetched == []
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False
+
+        # Full opt-in -> served and marked delivered.
+        update_presence_config(db, 1, {"enabled": True})
+        db.commit()
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        db.commit()
+        assert len(fetched) == 1
+        assert fetched[0].delivered is True
+
+    refreshed = db.get(InitiativeLog, log_row.id)
+    assert refreshed.delivered is True  # reconciled only once actually served
+
+    runtime_engine.dispose()
+
+
+def test_opt_out_committed_mid_poll_serves_and_marks_nothing(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #123 review round 7, P1): the config and pending rows
+    live in separate stores/sessions, so a single up-front consent check is
+    check-then-act — an opt-out committing between it and the runtime read
+    could still get rows served and marked delivered. Consent is now
+    revalidated on a fresh read AFTER the runtime rows are read and BEFORE
+    anything is marked. This test commits the opt-out exactly in that window
+    (via a side-effecting config read) and asserts the poll serves nothing
+    and marks nothing."""
+    from anima_server.services import presence_config as presence_config_module
+    from anima_server.services.presence_config import update_presence_config
+
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    update_presence_config(db, 1, {"enabled": True, "initiativeEnabled": True})
+    db.commit()
+
+    real_get_values = presence_config_module.get_presence_config_values
+    calls = {"n": 0}
+
+    def get_values_with_midpoll_optout(soul_db, user_id):
+        calls["n"] += 1
+        values = real_get_values(soul_db, user_id)
+        if calls["n"] == 1:
+            # Simulate another session committing the opt-out right after the
+            # first (passing) consent check — i.e. inside the race window.
+            update_presence_config(db, 1, {"initiativeEnabled": False})
+            db.commit()
+        return values
+
+    monkeypatch.setattr(
+        presence_config_module,
+        "get_presence_config_values",
+        get_values_with_midpoll_optout,
+    )
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+        rdb.commit()
+        assert fetched == []  # the mid-poll opt-out won
+        assert calls["n"] == 2  # consent was revalidated after the runtime read
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False  # nothing marked delivered
+
+    refreshed = db.get(InitiativeLog, log_row.id)
+    assert refreshed.delivered is False  # no soul reconcile either
+
+    runtime_engine.dispose()
+
+
+def test_consent_lock_serializes_delivery_against_config_updates(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #123 review round 8, P1): the freshness re-read only
+    narrowed the consent TOCTOU — an opt-out could still commit between the
+    re-check and the delivered side effect. Delivery now holds the per-user
+    consent lock from the authoritative check through the flush, and the
+    config PUT holds the same lock through its commit. This test parks a
+    poll inside its critical section and proves the lock cannot be acquired
+    (i.e. an opt-out PUT would block) until the delivery decision is done."""
+    import threading
+
+    from anima_server.services.agent.inner_life import delivery as delivery_module
+    from anima_server.services.presence_config import (
+        presence_consent_lock,
+        update_presence_config,
+    )
+
+    # Same-object guarantee: route and delivery serialize on one lock.
+    assert presence_consent_lock(1) is presence_consent_lock(1)
+
+    now = datetime(2026, 1, 5, tzinfo=UTC)
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
+        pressure_snapshot={}, gate_states={}, generated_text="hi",
+        delivered=False, answered=False,
+    )
+    db.add(log_row)
+    update_presence_config(db, 1, {"enabled": True, "initiativeEnabled": True})
+    db.commit()
+
+    in_critical = threading.Event()
+    proceed = threading.Event()
+    real_mark = delivery_module._mark_rows_delivered
+
+    def parked_mark(runtime_db, soul_db, *, user_id, rows):
+        in_critical.set()
+        assert proceed.wait(timeout=5.0)  # hold the critical section open
+        real_mark(runtime_db, soul_db, user_id=user_id, rows=rows)
+
+    monkeypatch.setattr(delivery_module, "_mark_rows_delivered", parked_mark)
+
+    results: list[int] = []
+
+    def poll() -> None:
+        with runtime_factory() as rdb:
+            rdb.add(
+                PendingInitiative(
+                    user_id=1, initiative_log_id=log_row.id,
+                    drive=DRIVE_RELATIONAL, text="hi",
+                )
+            )
+            rdb.commit()
+            fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
+            rdb.commit()
+            results.append(len(fetched))
+
+    t = threading.Thread(target=poll)
+    t.start()
+    try:
+        assert in_critical.wait(timeout=5.0)  # poll is inside the locked section
+        # An opt-out PUT would block here: the lock is not acquirable.
+        assert presence_consent_lock(1).acquire(timeout=0.3) is False
+    finally:
+        proceed.set()
+        t.join(timeout=5.0)
+
+    assert results == [1]  # the delivery decision completed under the lock
+    # And the lock is free again afterwards.
+    assert presence_consent_lock(1).acquire(timeout=1.0) is True
+    presence_consent_lock(1).release()
+
+    runtime_engine.dispose()
+
+
+def test_poll_during_quiet_hours_lists_nothing_and_marks_nothing(db: Session) -> None:
+    """Regression (PR #123 review, P1): quiet hours must be re-evaluated at
+    delivery time, not only at fire time — an initiative fired just before
+    the window would otherwise be served inside it, breaking the Presence UI
+    promise. Inside the window the poll returns [] and marks nothing
+    delivered; after the window the row is served normally."""
+    from anima_server.services.presence_config import update_presence_config
+
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+
+    log_row = InitiativeLog(
+        user_id=1, fired_at=datetime(2026, 1, 5, 21, 55, tzinfo=UTC),
+        drive=DRIVE_RELATIONAL, pressure_snapshot={}, gate_states={},
+        generated_text="hi", delivered=False, answered=False,
+    )
+    db.add(log_row)
+    db.commit()
+    update_presence_config(
+        db, 1, {"initiativeEnabled": True, "quietHoursStart": 22, "quietHoursEnd": 7}
+    )
+    db.commit()
+
+    with runtime_factory() as rdb:
+        rdb.add(
+            PendingInitiative(
+                user_id=1, initiative_log_id=log_row.id, drive=DRIVE_RELATIONAL, text="hi"
+            )
+        )
+        rdb.commit()
+
+        # 23:30 aware-UTC `now` keeps its own zone in resolve_local_now ->
+        # hour 23, inside the 22..7 wrap-around window.
+        inside = datetime(2026, 1, 5, 23, 30, tzinfo=UTC)
+        fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db, now=inside)
+        rdb.commit()
+        assert fetched == []
+        row = rdb.scalars(select(PendingInitiative)).one()
+        assert row.delivered is False  # held, not delivered, during the window
+
+        # 03:00 is still inside the wrapped window.
+        fetched = list_and_mark_delivered(
+            rdb, user_id=1, soul_db=db, now=datetime(2026, 1, 6, 3, 0, tzinfo=UTC)
+        )
+        rdb.commit()
+        assert fetched == []
+
+        # 12:00 is outside -> served and marked delivered.
+        fetched = list_and_mark_delivered(
+            rdb, user_id=1, soul_db=db, now=datetime(2026, 1, 6, 12, 0, tzinfo=UTC)
+        )
+        rdb.commit()
+        db.commit()
+        assert len(fetched) == 1
+        assert fetched[0].delivered is True
 
     runtime_engine.dispose()
 
@@ -1489,6 +1758,17 @@ def test_fetch_ack_route_end_to_end() -> None:
         reg = resp.json()
         user_id = reg["id"]
         headers = {"x-anima-unlock": reg["unlockToken"]}
+
+        # The list path is consent-gated server-side (PR #123 review): without
+        # an active opt-in it returns [] and marks nothing delivered. Opt in
+        # before exercising the delivery flow.
+        resp = client.put(
+            f"/api/presence/{user_id}",
+            json={"initiativeEnabled": True},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["initiativeEnabled"] is True
 
         # No pending initiatives yet.
         resp = client.get(f"/api/presence/{user_id}/initiatives", headers=headers)
