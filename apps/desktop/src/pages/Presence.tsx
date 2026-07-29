@@ -12,6 +12,10 @@ const DEFAULT_CONFIG: PresenceConfig = {
   memoryNudgesEnabled: true,
   checkInNudgesEnabled: true,
   customInstruction: null,
+  initiativeEnabled: false,
+  quietHoursStart: null,
+  quietHoursEnd: null,
+  dreamSharing: "on_ask",
 };
 
 const SURFACE_OPTIONS = [
@@ -45,6 +49,15 @@ const SIGNAL_OPTIONS = [
   },
 ] as const;
 
+const DREAM_SHARING_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "on_ask", label: "On Ask" },
+  // "ambient" (weave dreams into greetings) is accepted by the backend
+  // contract but has no server-side consumer yet — dream_sharing consumers
+  // only distinguish "off" from non-off. Not offered until IL-010 wires the
+  // greeting path; a stored "ambient" value still round-trips unchanged.
+] as const;
+
 export default function Presence() {
   const { user } = useAuth();
   const [draft, setDraft] = useState<PresenceConfig | null>(null);
@@ -66,7 +79,9 @@ export default function Presence() {
       })
       .catch((err) => {
         if (!active) return;
-        setDraft({ ...DEFAULT_CONFIG, userId: user.id });
+        // Leave `draft` null: seeding defaults here would let a Save after a
+        // transient load failure overwrite the user's stored settings.
+        // Everything stays disabled until a real config loads.
         setError(err instanceof Error ? err.message : "Failed to load presence.");
       })
       .finally(() => {
@@ -82,6 +97,9 @@ export default function Presence() {
     return null;
   }
 
+  // Defaults are display-only fallback; `notLoaded` keeps every control and
+  // Save disabled until the stored config actually arrived.
+  const notLoaded = draft === null;
   const config = draft ?? { ...DEFAULT_CONFIG, userId: user.id };
   const activeCount = [
     config.mainChatEnabled,
@@ -89,6 +107,7 @@ export default function Presence() {
     config.taskNudgesEnabled,
     config.memoryNudgesEnabled,
     config.checkInNudgesEnabled,
+    config.initiativeEnabled,
   ].filter(Boolean).length;
 
   const updateDraft = (updates: Partial<PresenceConfig>) => {
@@ -112,6 +131,10 @@ export default function Presence() {
         memoryNudgesEnabled: config.memoryNudgesEnabled,
         checkInNudgesEnabled: config.checkInNudgesEnabled,
         customInstruction: config.customInstruction || null,
+        initiativeEnabled: config.initiativeEnabled,
+        quietHoursStart: config.quietHoursStart,
+        quietHoursEnd: config.quietHoursEnd,
+        dreamSharing: config.dreamSharing,
       });
       setDraft(next);
       setSaved(true);
@@ -137,12 +160,12 @@ export default function Presence() {
           </div>
           <div className="flex items-center gap-3">
             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/55">
-              {loading ? "Syncing" : `${activeCount}/5 Active`}
+              {loading ? "Syncing" : `${activeCount}/6 Active`}
             </span>
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || loading}
+              disabled={saving || loading || notLoaded}
               className="border border-primary bg-input px-5 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-foreground transition-colors hover:bg-background disabled:opacity-45"
             >
               {saving ? "Saving" : saved ? "Saved" : "Save"}
@@ -154,6 +177,7 @@ export default function Presence() {
           <aside className="space-y-4 border-b border-border pb-6 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-6">
             <button
               type="button"
+              disabled={notLoaded}
               onClick={() => updateDraft({ enabled: !config.enabled })}
               className={`group flex w-full items-center justify-between border px-4 py-4 text-left transition-colors ${
                 config.enabled
@@ -184,6 +208,10 @@ export default function Presence() {
                 label="Check-in signal"
                 enabled={config.enabled && config.checkInNudgesEnabled}
               />
+              <StatusLine
+                label="Initiative"
+                enabled={config.enabled && config.initiativeEnabled}
+              />
             </div>
           </aside>
 
@@ -195,7 +223,7 @@ export default function Presence() {
                   label={option.label}
                   detail={option.detail}
                   checked={config[option.key]}
-                  disabled={!config.enabled}
+                  disabled={notLoaded || !config.enabled}
                   onChange={(checked) => updateDraft({ [option.key]: checked })}
                 />
               ))}
@@ -208,10 +236,68 @@ export default function Presence() {
                   label={option.label}
                   detail={option.detail}
                   checked={config[option.key]}
-                  disabled={!config.enabled}
+                  disabled={notLoaded || !config.enabled}
                   onChange={(checked) => updateDraft({ [option.key]: checked })}
                 />
               ))}
+            </ControlGroup>
+
+            <ControlGroup title="Initiative">
+              <SwitchRow
+                label="Unprompted Messages"
+                detail="May reach out when a drive crosses its threshold"
+                checked={config.initiativeEnabled}
+                disabled={notLoaded || !config.enabled}
+                onChange={(checked) => updateDraft({ initiativeEnabled: checked })}
+              />
+              <div className="flex items-center justify-between gap-4 px-1 py-4">
+                <span className="min-w-0 space-y-1">
+                  <span className="block text-sm text-foreground">Quiet Hours</span>
+                  <span className="block text-xs text-muted-foreground">
+                    No messages inside this window — set both, to different hours, to enable
+                  </span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <HourSelect
+                    value={config.quietHoursStart}
+                    disabled={notLoaded || !config.enabled || !config.initiativeEnabled}
+                    onChange={(value) => updateDraft({ quietHoursStart: value })}
+                  />
+                  <span className="font-mono text-[10px] text-muted-foreground/40">
+                    TO
+                  </span>
+                  <HourSelect
+                    value={config.quietHoursEnd}
+                    disabled={notLoaded || !config.enabled || !config.initiativeEnabled}
+                    onChange={(value) => updateDraft({ quietHoursEnd: value })}
+                  />
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4 px-1 py-4">
+                <span className="min-w-0 space-y-1">
+                  <span className="block text-sm text-foreground">Dream Sharing</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Whether night reflections may surface
+                  </span>
+                </span>
+                <span className="flex border border-border">
+                  {DREAM_SHARING_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={notLoaded || !config.enabled}
+                      onClick={() => updateDraft({ dreamSharing: option.value })}
+                      className={`px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors disabled:opacity-45 ${
+                        config.dreamSharing === option.value
+                          ? "bg-primary/15 text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </span>
+              </div>
             </ControlGroup>
 
             <section className="space-y-3">
@@ -225,6 +311,7 @@ export default function Presence() {
               </div>
               <textarea
                 value={config.customInstruction ?? ""}
+                disabled={notLoaded}
                 onChange={(event) =>
                   updateDraft({ customInstruction: event.currentTarget.value })
                 }
@@ -320,5 +407,34 @@ function SwitchVisual({ enabled }: { enabled: boolean }) {
         }`}
       />
     </span>
+  );
+}
+
+function HourSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: number | null;
+  disabled: boolean;
+  onChange: (value: number | null) => void;
+}) {
+  return (
+    <select
+      value={value == null ? "" : String(value)}
+      disabled={disabled}
+      onChange={(event) => {
+        const raw = event.currentTarget.value;
+        onChange(raw === "" ? null : Number(raw));
+      }}
+      className="border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-primary disabled:opacity-45"
+    >
+      <option value="">—</option>
+      {Array.from({ length: 24 }, (_, hour) => (
+        <option key={hour} value={hour}>
+          {String(hour).padStart(2, "0")}:00
+        </option>
+      ))}
+    </select>
   );
 }
