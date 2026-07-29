@@ -82,6 +82,32 @@ def test_registry_refuses_a_live_divergent_clone_and_rebuilds_after_stale_lease(
     assert clone_binding.pg_data_dir != source_binding.pg_data_dir
 
 
+def test_registry_never_expires_a_same_machine_lease_while_its_process_is_alive(
+    managed_tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    app_data = managed_tmp_path / "app-data"
+    source = _make_core(managed_tmp_path / "source" / ".anima")
+    clone = managed_tmp_path / "clone" / ".anima"
+    shutil.copytree(source, clone)
+    RuntimeInstanceRegistry(
+        app_data,
+        pid_is_alive=lambda pid: pid == 100,
+        process_id=100,
+        now=lambda: now,
+    ).resolve(source)
+
+    long_running_machine = RuntimeInstanceRegistry(
+        app_data,
+        pid_is_alive=lambda pid: pid == 100,
+        process_id=200,
+        now=lambda: now + timedelta(days=7),
+    )
+
+    with pytest.raises(InstanceBindingCollision, match="live divergent copy"):
+        long_running_machine.resolve(clone)
+
+
 def test_registry_explicit_fork_never_reuses_source_runtime(
     managed_tmp_path: Path,
 ) -> None:

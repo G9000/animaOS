@@ -229,11 +229,9 @@ class RuntimeInstanceRegistry:
             return False
         if updated.tzinfo is None:
             updated = updated.replace(tzinfo=UTC)
-        if now - updated > _LEASE_TTL:
-            return False
-        if record.get("hostname") != self._hostname:
-            return True
-        return self._pid_is_alive(pid)
+        if record.get("hostname") == self._hostname:
+            return self._pid_is_alive(pid)
+        return now - updated <= _LEASE_TTL
 
     def _reject_runtime_url_collision(
         self,
