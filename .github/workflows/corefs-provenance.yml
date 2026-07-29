@@ -78,7 +78,7 @@ jobs:
       - name: Validate staged release notices
         run: >-
           python3 scripts/check_corefs_release_notices.py
-          --release-root apps/desktop/src-tauri/resources/.anima
+          --release-root apps/desktop/src-tauri/resources/runtime
 
   windows-native-lease:
     runs-on: windows-latest

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-29 14:55 MYT
+- Updated: 2026-07-29 15:37 MYT
 - Started: 2026-07-29 01:57 MYT
 - Completed:
 
@@ -43,6 +43,7 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 - 2026-07-29 13:49 MYT - Completed the machine-local relocation and unlock-scoped indexing foundation. The Runtime now has instance-bound opaque catalog/checkpoint/blind-token/migration/sealed-payload models at migration head `033_corefs_runtime_index`, HKDF-derived sealing and blind-index subkeys, atomic blind-token generations, progressive/degraded readiness state, and one teardown path attached to unlock sessions. Focused relocation/privacy/index/API/session/runtime validation passed `121` tests with `8` environment-dependent embedded-PostgreSQL skips.
 - 2026-07-29 14:07 MYT - Added authenticated catalog reconciliation, private-text-free progress/rotation status, resumable two-credential FRK rotation through the native CoreFS catalog transaction, unlock-token replacement after cutover, atomic blind-index generation reset, the desktop readiness provider and Security UI, and the root `test:desktop` command. Server status/index/API reconciliation passed `52` focused tests, the complete existing keyslot band plus new API coverage passed `55`, desktop readiness/rotation passed `3`, the desktop production build passed, and both the Python-enabled `anima-core` binding and Tauri host compile.
 - 2026-07-29 14:55 MYT - Completed PCF-003 implementation validation on current `main`. The fresh server integration and credential bands passed `162` tests with `8` environment-dependent embedded-PostgreSQL skips; the complete desktop suite passed `77/77`; the desktop production build, Tauri host, Python-enabled `anima-core`, focused native CoreFS binding tests, scoped Ruff, Rust formatting, and diff hygiene passed. The root desktop runner also exposed and repaired three stale mainline test contracts for the current HUD navigation and recovery replacement payload. The child and parent remain `in_progress` pending a clean current-head review and the required second-phase metadata closeout.
+- 2026-07-29 15:37 MYT - Fixed PR #127's failed standalone release-notice gate test-first. Release staging already wrote to `resources/runtime`, but the provenance workflow, notice validator default/resource-map contract, and Tauri resource ignore still named obsolete `resources/.anima` paths. The new static contract failed RED, then the complete `77/77` desktop suite, exact legal-only staging plus notice validation, scoped Ruff, and diff hygiene passed GREEN. PCF-003 and its parent remain `in_progress` pending refreshed CI/current-head review and second-phase closeout.
 
 ## Validation
 
@@ -61,6 +62,7 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
   - `apps/server/alembic_runtime/`, `apps/server/src/anima_server/{api,models,schemas,services}/`, and focused server tests
   - `packages/anima-core/`, `packages/api-client/`, and `package.json`
   - `apps/desktop/src/`, `apps/desktop/src-tauri/`, `apps/desktop/tests/`, and `scripts/prepare-desktop-release.ts`
+  - `.github/workflows/corefs-provenance.yml` and `scripts/check_corefs_release_notices.py`
   - `tickets/portable-core-filesystem/` and `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Notes:
   - Implementation is validated but remains open until the implementation head and subsequent metadata closeout head each satisfy the repository current-head review stopping rule.
