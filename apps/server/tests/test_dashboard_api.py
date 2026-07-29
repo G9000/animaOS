@@ -10,6 +10,10 @@ from conftest import managed_test_client
 from fastapi.testclient import TestClient
 
 
+async def _async_unlocked_ok(request: object, user_id: object) -> None:
+    return None
+
+
 def _register_user(client: TestClient) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
@@ -404,7 +408,7 @@ async def test_config_update_validates_ollama_completion_targets_once(monkeypatc
     )
     monkeypatch.setattr(config_route.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
-    monkeypatch.setattr(config_route, "require_unlocked_user", lambda request, user_id: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", _async_unlocked_ok)
 
     try:
         settings.agent_extraction_provider = ""
@@ -474,7 +478,7 @@ async def test_config_update_validates_cleared_ollama_url_against_default(
     )
     monkeypatch.setattr(config_route.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
-    monkeypatch.setattr(config_route, "require_unlocked_user", lambda request, user_id: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", _async_unlocked_ok)
 
     try:
         settings.agent_provider = "ollama"
@@ -542,7 +546,7 @@ async def test_config_update_rejects_embedding_only_ollama_without_mutation(monk
     )
     monkeypatch.setattr(config_route.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
-    monkeypatch.setattr(config_route, "require_unlocked_user", lambda request, user_id: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", _async_unlocked_ok)
 
     try:
         with pytest.raises(HTTPException) as rejected:

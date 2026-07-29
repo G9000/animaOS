@@ -257,7 +257,10 @@ def assert_object_lease_diagnostic_semantics(report: dict[str, object]) -> None:
         without_extended_prefix = (
             value[4:] if value.startswith("\\\\?\\") else value
         )
-        return os.path.normcase(os.path.normpath(without_extended_prefix))
+        # The fixture fabricates Windows paths; on a POSIX host normpath
+        # treats backslashes as ordinary characters, so unify separators
+        # first to keep the comparison platform-agnostic.
+        return os.path.normcase(os.path.normpath(without_extended_prefix.replace("\\", "/")))
 
     def is_hex(value: str, length: int) -> bool:
         return len(value) == length and all(

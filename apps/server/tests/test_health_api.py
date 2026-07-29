@@ -42,7 +42,8 @@ def test_health_detailed_returns_report_structure() -> None:
 
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.health.require_unlocked_session",
+            "anima_server.api.routes.health.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.health.get_default_registry"
@@ -76,7 +77,8 @@ def test_health_check_one_returns_single_check() -> None:
 
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.health.require_unlocked_session",
+            "anima_server.api.routes.health.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.health.get_default_registry"
@@ -107,7 +109,8 @@ def test_health_logs_summary_returns_counts(managed_tmp_path: Path) -> None:
         el.flush()
 
         with patch(
-            "anima_server.api.routes.health.require_unlocked_session",
+            "anima_server.api.routes.health.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.health.get_event_logger", return_value=el
@@ -132,7 +135,8 @@ def test_health_logs_returns_event_list(managed_tmp_path: Path) -> None:
         el.flush()
 
         with patch(
-            "anima_server.api.routes.health.require_unlocked_session",
+            "anima_server.api.routes.health.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.health.get_event_logger", return_value=el
@@ -159,7 +163,8 @@ def test_health_detailed_with_degraded_status() -> None:
 
     with managed_test_client("anima-health-api-", invalidate_agent=False) as client:
         with patch(
-            "anima_server.api.routes.health.require_unlocked_session",
+            "anima_server.api.routes.health.require_unlocked_session_async",
+            new_callable=AsyncMock,
             return_value=_mock_session(),
         ), patch(
             "anima_server.api.routes.health.get_default_registry"
