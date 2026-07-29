@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from anima_server.config import settings
+from anima_server.config import get_runtime_settings_path, settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db import runtime as runtime_module
 from anima_server.db.pg_lifecycle import EmbeddedPG
@@ -49,10 +50,13 @@ requires_runtime_backend = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_engine_state() -> None:
+def _reset_runtime_engine_state(managed_tmp_path: Path) -> None:
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
     dispose_runtime_engine()
     yield
     dispose_runtime_engine()
+    settings.runtime_app_data_dir = original_runtime_app_data_dir
 
 
 @pytest.fixture
@@ -1023,12 +1027,95 @@ def test_config_auto_derives_url_from_embedded_pg(
         sys.modules.pop("anima_server.main", None)
 
 
+def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    app_data = managed_tmp_path / "machine-app-data"
+    observed: list[tuple[str, Path]] = []
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    original_health_log_dir = settings.health_log_dir
+
+    class FakeEmbeddedPG:
+        def __init__(self, data_dir: Path) -> None:
+            self.data_dir = data_dir
+
+        def start(self) -> None:
+            registry_path = app_data / "core-instance-registry.json"
+            assert registry_path.is_file()
+            observed.append(("start", self.data_dir))
+
+        def stop(self) -> None:
+            return None
+
+    try:
+        settings.data_dir = managed_tmp_path / "portable" / ".anima"
+        settings.runtime_database_url = ""
+        settings.runtime_pg_data_dir = ""
+        settings.runtime_app_data_dir = str(app_data)
+        dispose_cached_engines()
+        main_module = _reload_main_module()
+        monkeypatch.setattr(main_module, "EmbeddedPG", FakeEmbeddedPG)
+
+        pg = main_module._start_embedded_pg()
+
+        assert pg is not None
+        registry = json.loads(
+            (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
+        )
+        local_instance_id = registry["instances"][0]["local_instance_id"]
+        assert observed == [
+            (
+                "start",
+                app_data
+                / "cores"
+                / registry["instances"][0]["core_id"]
+                / "instances"
+                / local_instance_id
+                / "runtime"
+                / "pg_data",
+            )
+        ]
+        assert not observed[0][1].is_relative_to(settings.data_dir)
+        assert Path(settings.runtime_instance_data_dir) == (
+            app_data
+            / "cores"
+            / registry["instances"][0]["core_id"]
+            / "instances"
+            / local_instance_id
+        )
+        assert Path(settings.health_log_dir) == (
+            Path(settings.runtime_instance_data_dir) / "health-logs"
+        )
+        assert get_runtime_settings_path() == (
+            Path(settings.runtime_instance_data_dir)
+            / "config"
+            / "runtime-config.json"
+        )
+        assert not get_runtime_settings_path().is_relative_to(settings.data_dir)
+        main_module._release_runtime_instance_claim()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+        settings.health_log_dir = original_health_log_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
 def test_explicit_runtime_url_skips_embedded_pg(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
 ) -> None:
     explicit_url = "postgresql://anima:test@localhost:5432/anima_runtime"
     init_calls: list[tuple[str, bool]] = []
+    startup_order: list[str] = []
     cancel_pending_reflection = AsyncMock()
     drain_background_memory_tasks = AsyncMock()
     dispose_runtime_engine_mock = MagicMock()
@@ -1046,11 +1133,22 @@ def test_explicit_runtime_url_skips_embedded_pg(
 
         assert main_module._start_embedded_pg() is None
 
+        real_claim_runtime_instance = main_module._claim_runtime_instance
+        monkeypatch.setattr(
+            main_module,
+            "_claim_runtime_instance",
+            lambda *, runtime_url=None: (
+                startup_order.append(f"claim:{runtime_url}"),
+                real_claim_runtime_instance(runtime_url=runtime_url),
+            )[1],
+        )
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False, **kw: init_calls.append(
-                (database_url, echo)),
+            lambda database_url, *, echo=False, **kw: (
+                startup_order.append(f"init:{database_url}"),
+                init_calls.append((database_url, echo)),
+            ),
         )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
@@ -1070,6 +1168,10 @@ def test_explicit_runtime_url_skips_embedded_pg(
 
         _run_app_lifespan(app)
         assert init_calls == [(explicit_url, settings.database_echo)]
+        assert startup_order[:2] == [
+            f"claim:{explicit_url}",
+            f"init:{explicit_url}",
+        ]
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()

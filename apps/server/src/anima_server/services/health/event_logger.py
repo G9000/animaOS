@@ -160,9 +160,20 @@ def get_event_logger() -> EventLogger:
     with _instance_lock:
         if _instance is not None:
             return _instance
-        from anima_server.config import settings
 
-        log_dir = Path(settings.health_log_dir) if settings.health_log_dir else settings.data_dir / "logs"
+        from anima_server.config import default_runtime_app_data_root, settings
+
+        log_dir = (
+            Path(settings.health_log_dir)
+            if settings.health_log_dir
+            else (
+                Path(settings.runtime_app_data_dir)
+                if settings.runtime_app_data_dir
+                else default_runtime_app_data_root()
+            )
+            / "unbound"
+            / "health-logs"
+        )
         _instance = EventLogger(
             log_dir=log_dir,
             min_level=settings.health_log_level,  # type: ignore[arg-type]

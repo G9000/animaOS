@@ -39,7 +39,11 @@ from .api.routes.threads import router as threads_router
 from .api.routes.users import router as users_router
 from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
-from .config import load_persisted_runtime_settings, settings
+from .config import (
+    default_runtime_app_data_root,
+    load_persisted_runtime_settings,
+    settings,
+)
 from .db.pg_lifecycle import EmbeddedPG
 from .db.runtime import (
     dispose_runtime_engine,
@@ -50,6 +54,11 @@ from .db.runtime import (
 )
 from .db.user_store import ensure_per_user_databases_ready
 from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
+from .services.corefs.instance_registry import (
+    RuntimeInstanceBinding,
+    RuntimeInstanceRegistry,
+)
+from .services.corefs.legacy_runtime import relocate_legacy_runtime
 from .services.health.event_logger import emit as health_emit
 
 
@@ -74,23 +83,93 @@ _NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed
                                 "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
 _NONCE_EXEMPT_PREFIXES = ("/api/health/",)
 logger = logging.getLogger(__name__)
+_active_runtime_registry: RuntimeInstanceRegistry | None = None
+_active_runtime_binding: RuntimeInstanceBinding | None = None
+_active_runtime_default_health_log = False
+
+
+def _claim_runtime_instance(
+    *,
+    runtime_url: str | None = None,
+) -> RuntimeInstanceBinding:
+    global _active_runtime_binding, _active_runtime_default_health_log
+    global _active_runtime_registry
+
+    if _active_runtime_binding is not None:
+        if runtime_url:
+            assert _active_runtime_registry is not None
+            _active_runtime_registry.verify_runtime_url_claim(
+                _active_runtime_binding,
+                runtime_url,
+            )
+        return _active_runtime_binding
+
+    app_data_root = (
+        Path(settings.runtime_app_data_dir)
+        if settings.runtime_app_data_dir
+        else default_runtime_app_data_root()
+    )
+    registry = RuntimeInstanceRegistry(app_data_root)
+    binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
+    try:
+        relocate_legacy_runtime(
+            settings.data_dir,
+            binding,
+            postgres_running=False,
+        )
+    except BaseException:
+        registry.release(binding)
+        raise
+    settings.runtime_instance_data_dir = str(binding.instance_root)
+    if settings.health_log_dir:
+        configured_health_logs = Path(settings.health_log_dir).expanduser().resolve()
+        if configured_health_logs.is_relative_to(settings.data_dir.resolve()):
+            registry.release(binding)
+            settings.runtime_instance_data_dir = ""
+            raise RuntimeError(
+                "ANIMA_HEALTH_LOG_DIR must not resolve inside the portable Core"
+            )
+    else:
+        settings.health_log_dir = str(binding.health_log_dir)
+        _active_runtime_default_health_log = True
+    _active_runtime_registry = registry
+    _active_runtime_binding = binding
+    return binding
+
+
+def _release_runtime_instance_claim() -> None:
+    global _active_runtime_binding, _active_runtime_default_health_log
+    global _active_runtime_registry
+
+    if _active_runtime_binding is not None and _active_runtime_registry is not None:
+        _active_runtime_registry.release(_active_runtime_binding)
+    if _active_runtime_default_health_log:
+        settings.health_log_dir = ""
+    settings.runtime_instance_data_dir = ""
+    _active_runtime_binding = None
+    _active_runtime_registry = None
+    _active_runtime_default_health_log = False
 
 
 def _start_embedded_pg() -> EmbeddedPG | None:
     """Start embedded PostgreSQL unless an explicit runtime URL is configured."""
     if settings.runtime_database_url:
         return None
+    binding = _claim_runtime_instance()
     if importlib.util.find_spec("pgserver") is None:
         logger.warning(
             "pgserver is not installed; skipping embedded runtime PostgreSQL startup."
         )
         return None
 
-    pg_data_dir = (
-        Path(settings.runtime_pg_data_dir)
-        if settings.runtime_pg_data_dir
-        else settings.data_dir / "runtime" / "pg_data"
-    )
+    if settings.runtime_pg_data_dir:
+        configured_pg_data = Path(settings.runtime_pg_data_dir).expanduser().resolve()
+        if configured_pg_data != binding.pg_data_dir:
+            raise RuntimeError(
+                "ANIMA_RUNTIME_PG_DATA_DIR must match the claimed machine-local "
+                "Core instance path; configure ANIMA_RUNTIME_APP_DATA_DIR instead"
+            )
+    pg_data_dir = binding.pg_data_dir
 
     pg = EmbeddedPG(data_dir=pg_data_dir)
     pg.start()
@@ -106,7 +185,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
+        if settings.runtime_database_url:
+            _claim_runtime_instance(runtime_url=settings.runtime_database_url)
         embedded_pg = _start_embedded_pg()
+        load_persisted_runtime_settings()
         runtime_url = (
             embedded_pg.database_url
             if embedded_pg is not None
@@ -144,6 +226,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             finally:
                 if embedded_pg is not None:
                     embedded_pg.stop()
+                _release_runtime_instance_claim()
         raise
 
     from .services.health.event_logger import (
@@ -276,6 +359,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 dispose_runtime_engine()
                 if embedded_pg is not None:
                     embedded_pg.stop()
+                _release_runtime_instance_claim()
 
 
 class SidecarNonceMiddleware(BaseHTTPMiddleware):
@@ -326,7 +410,6 @@ def create_app() -> FastAPI:
     if not acquire_core_lock():
         raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
-    load_persisted_runtime_settings()
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

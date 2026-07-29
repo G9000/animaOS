@@ -257,7 +257,15 @@ fn daemon_data_dir() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(default_daemon_data_dir)
-        .unwrap_or_else(|| PathBuf::from(".").join(".anima").join("runtime-daemon"))
+        .or_else(|| {
+            dirs::home_dir().map(|dir| {
+                dir.join(".local")
+                    .join("share")
+                    .join("anima")
+                    .join("runtime-daemon")
+            })
+        })
+        .unwrap_or_else(|| env::temp_dir().join("anima").join("runtime-daemon"))
 }
 
 fn daemon_control_token_path() -> PathBuf {

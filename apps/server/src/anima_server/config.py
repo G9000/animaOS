@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +27,8 @@ class Settings(BaseSettings):
     data_dir: Path = DEFAULT_DATA_DIR
     runtime_database_url: str = ""
     runtime_pg_data_dir: str = ""
+    runtime_app_data_dir: str = ""
+    runtime_instance_data_dir: str = ""
     runtime_pool_size: int = 5
     runtime_pool_max_overflow: int = 10
     agent_provider: str = "ollama"
@@ -299,7 +303,31 @@ _PERSISTED_RUNTIME_SETTING_FIELDS: tuple[str, ...] = (
 
 def get_runtime_settings_path() -> Path:
     """Return the local runtime settings file path."""
-    return settings.data_dir / RUNTIME_SETTINGS_FILENAME
+    if settings.runtime_instance_data_dir:
+        return (
+            Path(settings.runtime_instance_data_dir)
+            / "config"
+            / RUNTIME_SETTINGS_FILENAME
+        )
+    app_data_root = (
+        Path(settings.runtime_app_data_dir)
+        if settings.runtime_app_data_dir
+        else default_runtime_app_data_root()
+    )
+    return app_data_root / "unbound" / "config" / RUNTIME_SETTINGS_FILENAME
+
+
+def default_runtime_app_data_root() -> Path:
+    """Return the machine-local application-data root without touching CoreFS."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Local"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        configured = os.environ.get("XDG_DATA_HOME")
+        root = Path(configured) if configured else Path.home() / ".local" / "share"
+    return (root / "anima").expanduser().resolve()
 
 
 def load_persisted_runtime_settings() -> None:
