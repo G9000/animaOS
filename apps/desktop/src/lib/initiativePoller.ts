@@ -33,6 +33,7 @@ export function createInitiativePoller(
   const clearIntervalFn = deps.clearIntervalFn ?? clearInterval;
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
+  let stopped = false;
   let pending: PendingInitiative[] = [];
   let generation = 0;
   // Tombstones for acked rows: a poll that starts DURING a slow ack captures
@@ -63,6 +64,7 @@ export function createInitiativePoller(
   return {
     start() {
       if (timer !== null) return;
+      stopped = false;
       timer = setIntervalFn(() => {
         void pollNow();
       }, intervalMs);
@@ -72,6 +74,12 @@ export function createInitiativePoller(
       // Invalidate any in-flight poll (same mechanism `ack()` uses) so a
       // fetch started before `stop()` never reports stale/foreign data via
       // `onChange` after the caller has walked away (user switch, unmount).
+      // `stopped` additionally suppresses the CONTINUATION of an ack that
+      // was already awaiting its POST when we stopped — the replacement
+      // poller shares the same React setter, so a late onChange from the old
+      // instance could erase the new user's initiatives or expose the old
+      // user's rows.
+      stopped = true;
       generation += 1;
       if (timer !== null) {
         clearIntervalFn(timer);
@@ -89,6 +97,7 @@ export function createInitiativePoller(
         // poll re-serves it.
         acked.delete(id);
       }
+      if (stopped) return; // stopped mid-POST: never notify a walked-away caller
       pending = pending.filter((rowItem) => rowItem.id !== id);
       deps.onChange(pending);
     },

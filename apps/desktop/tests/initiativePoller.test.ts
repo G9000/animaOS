@@ -217,6 +217,33 @@ describe("createInitiativePoller", () => {
       true,
     );
   });
+
+  test("an ack resolving after stop() does not invoke onChange", async () => {
+    let releaseAck: (() => void) | null = null;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    const seen: PendingInitiative[][] = [];
+    const poller = createInitiativePoller({
+      fetchInitiatives: async () => [row(1)],
+      ackInitiative: async () => {
+        await ackGate;
+        return {};
+      },
+      onChange: (pending) => seen.push(pending),
+    });
+    await poller.pollNow();
+    const reportsBeforeStop = seen.length;
+    // Ack is awaiting its POST when the poller stops (logout, user switch,
+    // unmount). The replacement poller shares the same React setter, so a
+    // late onChange from this instance could erase the new user's
+    // initiatives or expose the old user's rows.
+    const acking = poller.ack(1);
+    poller.stop();
+    releaseAck?.();
+    await acking;
+    expect(seen).toHaveLength(reportsBeforeStop); // no notification after stop()
+  });
 });
 
 describe("createGatedInitiativeFetch", () => {

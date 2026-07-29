@@ -45,6 +45,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-23 02:16 MYT - `IL-007` done: dream cycle (branch feature/il-007-dream-cycle, squash-merged main as `bc7363c`, PR #116). Many PR review rounds hardened right-to-forget dream scrubbing, field-encrypted dream source_refs, bounded dream attempts, and dream-sharing gating. Client-side dream surfacing folded into `IL-008` scope notes.
 - 2026-07-28 15:17 MYT - `IL-008` done: push-initiative client wiring (branch feature/il-008-initiative-client-wiring, PR to follow). Poll/display path chosen over an `OSNotificationDelivery` adapter — no Tauri notification bridge exists in the repo. One task-review fix round each on the poller's concurrent ack-vs-poll race (generation-token fix) and the `stop()` staleness leak (in-flight poll invalidation on stop), both with regression tests. Last child ticket; Inner Life v1 scope is now complete end-to-end pending this PR's merge.
 - 2026-07-29 02:39 MYT - `IL-008` completion re-stamped after PR #123 review rounds 7-8 landed acceptance-affecting consent fixes (fresh revalidation, then a per-user consent lock closing the opt-out/delivery TOCTOU — first server-route change on the branch: `services/presence_config.py`, `api/routes/presence.py`). Child validation and changed paths refreshed; see IL-008 log.
+- 2026-07-29 11:36 MYT - `IL-008` completion re-stamped again after PR #123 round 9 (ack-after-stop isolation leak in the desktop poller; regression-tested). See IL-008 log.
 
 ## Deliverables
 
