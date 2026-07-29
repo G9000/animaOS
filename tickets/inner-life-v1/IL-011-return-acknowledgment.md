@@ -1,18 +1,22 @@
 # IL-011 - Return acknowledgment: grounded held-thought greeting + reconnect energy texture
 
-- Status: in-progress
+- Status: done
 - Priority: P2
 - Scope: `apps/server`
-- Parent: `IL-000`
+- Parent: none
 - Depends on: IL-002, IL-003
-- Owner: unassigned
-- PRD: `docs/prd/inner-life-v1.md`
+- Owner: Claude
+- PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 15:16 MYT
+- Updated: 2026-07-29 15:58 MYT
 - Started: 2026-07-29 14:14 MYT
-- Completed:
+- Completed: 2026-07-29 15:58 MYT
+
+Standalone follow-up beyond the closed Inner Life v1 scope — tracked in
+`IL-000`'s "Follow-ups Beyond v1 Scope" section, not as a child of that
+`done` parent (v1 acceptance is judged over its original child table).
 
 ## Goal
 
@@ -72,6 +76,11 @@ hour — in two small, strictly grounded ways:
   after closed-form relaxation, energy-only, audit `components` records
   `reconnect_energy`. Equivalence tests updated to assert the dip as an
   explicit divergence.
+
+- 2026-07-29 15:58 MYT - PR #128 review round 1: status normalized to the
+  legal lifecycle (done, Owner: Claude, Completed stamped), reparented as a
+  standalone follow-up per the IL-009 precedent, PRD link corrected to the
+  canonical docs/prds/presence/inner-life-v1.md.
 
 ## Validation
 

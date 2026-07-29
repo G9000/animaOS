@@ -1,18 +1,22 @@
 # IL-013 - Drive starvation carryover in initiative selection
 
-- Status: in-progress
+- Status: done
 - Priority: P3
 - Scope: `apps/server`
-- Parent: `IL-000`
+- Parent: none
 - Depends on: IL-003
-- Owner: unassigned
-- PRD: `docs/prd/inner-life-v1.md`
+- Owner: Claude
+- PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 15:16 MYT
+- Updated: 2026-07-29 15:58 MYT
 - Started: 2026-07-29 14:14 MYT
-- Completed:
+- Completed: 2026-07-29 15:58 MYT
+
+Standalone follow-up beyond the closed Inner Life v1 scope — tracked in
+`IL-000`'s "Follow-ups Beyond v1 Scope" section, not as a child of that
+`done` parent (v1 acceptance is judged over its original child table).
 
 ## Goal
 
@@ -68,6 +72,16 @@ every fire decision remains fully explainable.
   pressure_snapshot, edge bookkeeping (losers increment on DELIVERED fires
   only; winner and hard-reset drives clear), migration 033 smoke-tested
   up/down/up on SQLite with single-head verification.
+
+- 2026-07-29 15:58 MYT - PR #128 review round 1: status normalized to the
+  legal lifecycle (done, Owner: Claude, Completed stamped), reparented as a
+  standalone follow-up per the IL-009 precedent, PRD link corrected to the
+  canonical docs/prds/presence/inner-life-v1.md. P2 fix: signal-driven hard
+  resets (user turn / thread resolved / novel topic) now clear the reset
+  drive's loss counter too, including on the initiative-disabled path —
+  `drives.signal_reset_drives` is the single signal->reset mapping shared by
+  `advance_drives` and the edge bookkeeping. Two regression tests added
+  (100 passed in `test_inner_life_initiative.py`).
 
 ## Validation
 

@@ -3213,3 +3213,95 @@ def test_material_less_hard_reset_clears_starvation_history(
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+
+
+def test_signal_reset_drives_is_the_single_reset_mapping() -> None:
+    """The pure signal->reset mapping matches advance_drives exactly: every
+    drive it names is hard-zeroed, every drive it omits survives."""
+    from anima_server.services.agent.inner_life.drives import signal_reset_drives
+
+    full = DriveState(
+        unresolved_thread=0.9, pattern_insight=0.9, relational=0.9,
+        novelty=0.9, dream_residue=0.9,
+    )
+    cases = [
+        DriveSignals(user_turn_occurred=True),
+        DriveSignals(unresolved_thread_resolved=True),
+        DriveSignals(novel_topic_discussed=True),
+        DriveSignals(user_turn_occurred=True, novel_topic_discussed=True),
+        DriveSignals(),
+    ]
+    for signals in cases:
+        resets = set(signal_reset_drives(signals))
+        advanced = advance_drives(full, signals, 0.001)
+        for name in DRIVE_NAMES:
+            if name in resets:
+                assert getattr(advanced, name) == 0.0, (signals, name)
+            else:
+                assert getattr(advanced, name) > 0.0, (signals, name)
+    # The surface-reset drives never appear in any signal mapping.
+    assert DRIVE_PATTERN_INSIGHT not in set(signal_reset_drives(cases[3]))
+    assert "dream_residue" not in set(signal_reset_drives(cases[3]))
+
+
+def test_signal_driven_reset_clears_starvation_losses_even_while_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR #128 review): a user turn hard-resets unresolved_thread
+    and relational, so their loss counters must clear too — INCLUDING on the
+    initiative-disabled path, which commits before the selection loop. A
+    stale boost must never survive to jump-start an unrelated later
+    accumulation after the user opts in."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    user_id = 1
+    with soul_factory() as db_:
+        get_or_create_presence_config(db_, user_id)  # initiative stays OFF
+        db_.commit()
+    seeded_at = datetime(2026, 1, 2, 11, 0, tzinfo=UTC)
+    with runtime_factory() as db_:
+        db_.add(
+            DriveStateRow(
+                user_id=user_id,
+                updated_at=seeded_at,
+                unresolved_thread=0.9,
+                relational=0.6,
+                pattern_insight=0.5,
+                starvation_losses={
+                    "unresolved_thread": 4,
+                    "relational": 2,
+                    "pattern_insight": 3,
+                },
+            )
+        )
+        # A NEW user turn since the last tick -> user_turn_occurred.
+        db_.add(
+            RuntimeThread(
+                user_id=user_id,
+                status="active",
+                last_message_at=seeded_at + timedelta(minutes=30),
+            )
+        )
+        db_.commit()
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=user_id, local_now=now)
+    assert ok is True
+
+    with soul_factory() as db_:
+        assert db_.scalars(select(InitiativeLog)).all() == []  # disabled: no fire
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == user_id)).one()
+        assert row.unresolved_thread == 0.0  # reset by the user turn
+        assert row.relational == 0.0
+        # The reset drives' loss history went with their pressure; the
+        # surface-reset drive keeps both its pressure and its history.
+        assert row.starvation_losses == {"pattern_insight": 3}
+
+    soul_engine.dispose()
+    runtime_engine.dispose()

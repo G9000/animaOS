@@ -64,6 +64,7 @@ from anima_server.services.agent.inner_life.drives import (
     DriveState,
     advance_drives,
     reset_drive,
+    signal_reset_drives,
 )
 from anima_server.services.data_crypto import DOMAIN_MEMORIES, df, ef
 from anima_server.services.sessions import get_active_dek
@@ -1093,6 +1094,21 @@ def tick_initiative_for_user(
                 drive_config or get_drive_config(),
             )
             _apply_pressures(row, updated_pressures, now=local_now)
+            # IL-013 bookkeeping (PR #128 review): mutable copy of the
+            # persisted per-drive loss counters; written back as a fresh dict
+            # (JSON columns don't track in-place mutation) wherever this tick
+            # changes them. A signal-driven hard reset just zeroed the drive's
+            # pressure via advance_drives, so its loss history goes with it —
+            # this runs BEFORE the initiative-disabled early return below,
+            # which commits without ever reaching the selection loop, so a
+            # disabled user's stale boost can't survive to a later opt-in.
+            starvation_losses: dict[str, int] = dict(row.starvation_losses or {})
+            reset_cleared = False
+            for name in signal_reset_drives(signals):
+                if starvation_losses.pop(name, None) is not None:
+                    reset_cleared = True
+            if reset_cleared:
+                row.starvation_losses = dict(starvation_losses)
             if latest_message_at is not None and (
                 row.last_user_turn_at is None
                 or latest_message_at > _as_utc(row.last_user_turn_at)
@@ -1122,10 +1138,6 @@ def tick_initiative_for_user(
             # material. So reset any material-less dominant drive and re-select,
             # bounded by the drive count. The reset is persisted so the stale
             # pressure doesn't just reappear next tick.
-            # IL-013: mutable copy of the persisted per-drive loss counters;
-            # written back (as a fresh dict — JSON columns don't track
-            # in-place mutation) wherever this tick changes them.
-            starvation_losses: dict[str, int] = dict(row.starvation_losses or {})
             decision = None
             for _ in range(len(DRIVE_NAMES)):
                 record = DriveRecord(
