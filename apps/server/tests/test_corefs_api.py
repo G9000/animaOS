@@ -430,6 +430,42 @@ def test_search_readiness_uses_server_runtime_state(
     assert calls[0]["index_generation"] == 8
 
 
+def test_search_readiness_maps_progressive_index_state_without_private_data() -> None:
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    context = corefs_route.CoreFsRequestContext(
+        corefs_session=object(),
+        keys=object(),
+        runtime_index=index,
+    )
+    selected = logical.CoreFsValidationSnapshot(
+        generation=9,
+        catalog_hash="catalog-hash",
+    )
+
+    building = corefs_route._resolve_search_runtime_state(
+        context=context,
+        selected=selected,
+    )
+    assert building.state == "building"
+    assert building.index_generation is None
+
+    index.begin_catalog()
+    index.publish_catalog(
+        catalog_generation=9,
+        families={"notes": 2},
+        degraded={"notes": ("object-hash",)},
+    )
+    degraded = corefs_route._resolve_search_runtime_state(
+        context=context,
+        selected=selected,
+    )
+    assert degraded.state == "degraded"
+    assert degraded.index_generation == 9
+
+
 def test_cursor_requires_generation(corefs_client: TestClient) -> None:
     response = corefs_client.post(
         "/api/corefs/operation",

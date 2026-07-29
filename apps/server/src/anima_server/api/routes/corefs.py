@@ -14,6 +14,10 @@ from anima_server.schemas.corefs import (
     CoreFsSelectedSnapshotResponse,
 )
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.indexer import (
+    CoreFSProgressiveIndex,
+    ReadinessState,
+)
 from anima_server.services.sessions import UnlockSession
 
 router = APIRouter(prefix="/api/corefs", tags=["corefs"])
@@ -58,6 +62,7 @@ class CoreFsPrincipal:
 class CoreFsRequestContext:
     corefs_session: object
     keys: object
+    runtime_index: CoreFSProgressiveIndex | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +83,7 @@ def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
     return CoreFsRequestContext(
         corefs_session=session.corefs_session,
         keys=session.corefs_keys,
+        runtime_index=getattr(session, "runtime_index", None),
     )
 
 
@@ -137,10 +143,31 @@ def _resolve_search_runtime_state(
     context: CoreFsRequestContext,
     selected: logical.CoreFsValidationSnapshot,
 ) -> CoreFsSearchRuntimeState:
-    del context, selected
-    # CoreFS runtime indexing is introduced by a later migration slice. Until
-    # that server-owned index exists, the truthful state is always missing.
-    return CoreFsSearchRuntimeState(state="missing")
+    index = context.runtime_index
+    if index is None:
+        return CoreFsSearchRuntimeState(state="missing")
+    snapshot = index.snapshot()
+    if snapshot.state is ReadinessState.LOCKED:
+        return CoreFsSearchRuntimeState(state="missing")
+    if snapshot.catalog_generation is None:
+        return CoreFsSearchRuntimeState(state="building")
+    if snapshot.catalog_generation != selected.generation:
+        return CoreFsSearchRuntimeState(
+            state="building",
+            index_generation=snapshot.catalog_generation,
+        )
+    if snapshot.state is ReadinessState.CATALOG_READY_DEGRADED or any(
+        family.degraded for family in snapshot.families.values()
+    ):
+        state: logical.CoreFsSearchState = "degraded"
+    elif snapshot.state is ReadinessState.READY:
+        state = "ready"
+    else:
+        state = "building"
+    return CoreFsSearchRuntimeState(
+        state=state,
+        index_generation=snapshot.catalog_generation,
+    )
 
 
 def _require_path(payload: CoreFsOperationRequest, *, field: str = "path") -> str:

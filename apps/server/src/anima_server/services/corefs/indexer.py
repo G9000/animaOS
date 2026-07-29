@@ -1,0 +1,432 @@
+from __future__ import annotations
+
+import hmac
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from threading import RLock
+from types import MappingProxyType
+from uuid import uuid4
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+from anima_server.services.corefs.runtime_sealing import RuntimePayloadSealer
+
+_BLIND_INDEX_INFO = b"anima-blind-index-v1"
+
+
+class CoreFSRuntimeLocked(RuntimeError):
+    """Raised when unlocked Runtime index state is unavailable."""
+
+
+class ReadinessState(StrEnum):
+    LOCKED = "locked"
+    OPENING_CORE = "opening_core"
+    VALIDATING_CORE = "validating_core"
+    CATALOG_LOADING = "catalog_loading"
+    CATALOG_READY = "catalog_ready"
+    CATALOG_READY_DEGRADED = "catalog_ready_degraded"
+    TEXT_INDEXING = "text_indexing"
+    SEMANTIC_INDEXING = "semantic_indexing"
+    READY = "ready"
+
+
+class IndexCapability(StrEnum):
+    NAVIGATION = "navigation"
+    EXACT_SEARCH = "exact_search"
+    TEXT_SEARCH = "text_search"
+    SEMANTIC_SEARCH = "semantic_search"
+
+
+@dataclass(frozen=True, slots=True)
+class FamilyReadiness:
+    total: int
+    processed: int
+    failed: int
+    degraded: bool
+    unavailable_object_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessSnapshot:
+    core_id: str
+    state: ReadinessState
+    catalog_generation: int | None
+    processed_objects: int
+    capabilities: frozenset[IndexCapability]
+    families: Mapping[str, FamilyReadiness]
+
+
+@dataclass(frozen=True, slots=True)
+class IndexCheckpoint:
+    core_id: str
+    catalog_generation: int
+    state: ReadinessState
+    cursor: str | None
+    processed_objects: int
+
+
+class CoreFSProgressiveIndex:
+    """Unlock-scoped progressive text and semantic index for one Core."""
+
+    def __init__(self, core_id: str) -> None:
+        if not core_id:
+            raise ValueError("core_id must be non-empty")
+        self.core_id = core_id
+        self._lock = RLock()
+        self._state = ReadinessState.LOCKED
+        self._catalog_generation: int | None = None
+        self._families: dict[str, FamilyReadiness] = {}
+        self._documents: dict[str, tuple[str, str, str]] = {}
+        self._vectors: dict[str, tuple[float, ...]] = {}
+        self._processed_revisions: set[tuple[str, str]] = set()
+        self._queries: set[str] = set()
+        self._search_key: bytearray | None = None
+        self._blind_generations: dict[int, dict[bytes, set[str]]] = {}
+        self._active_blind_generation: int | None = None
+        self._pending_blind_generation: int | None = None
+        self._pending_blind_expected_count: int | None = None
+        self._sealer = RuntimePayloadSealer()
+        self._last_cursor: str | None = None
+
+    def unlock(self, *, sqlcipher_key: bytes, local_instance_id: str) -> None:
+        if not sqlcipher_key:
+            raise ValueError("SQLCipher key must be non-empty")
+        with self._lock:
+            self.clear_unlocked_state()
+            self._state = ReadinessState.OPENING_CORE
+            self._search_key = bytearray(
+                HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=local_instance_id.encode("utf-8"),
+                    info=_BLIND_INDEX_INFO,
+                ).derive(sqlcipher_key)
+            )
+            self._sealer.install(
+                sqlcipher_key=sqlcipher_key,
+                local_instance_id=local_instance_id,
+            )
+            self._state = ReadinessState.VALIDATING_CORE
+
+    def begin_catalog(self) -> None:
+        with self._lock:
+            self._require_unlocked()
+            self._state = ReadinessState.CATALOG_LOADING
+
+    def publish_catalog(
+        self,
+        *,
+        catalog_generation: int,
+        families: Mapping[str, int],
+        degraded: Mapping[str, tuple[str, ...]] | None = None,
+    ) -> None:
+        if catalog_generation < 0:
+            raise ValueError("catalog generation must be non-negative")
+        degraded = degraded or {}
+        with self._lock:
+            self._require_state(ReadinessState.CATALOG_LOADING)
+            self._catalog_generation = catalog_generation
+            self._families = {
+                family: FamilyReadiness(
+                    total=total,
+                    processed=0,
+                    failed=len(degraded.get(family, ())),
+                    degraded=bool(degraded.get(family)),
+                    unavailable_object_ids=tuple(degraded.get(family, ())),
+                )
+                for family, total in sorted(families.items())
+            }
+            self._state = (
+                ReadinessState.CATALOG_READY_DEGRADED
+                if any(item.degraded for item in self._families.values())
+                else ReadinessState.CATALOG_READY
+            )
+
+    def begin_text_indexing(self) -> None:
+        with self._lock:
+            self._require_catalog()
+            self._state = ReadinessState.TEXT_INDEXING
+
+    def index_text(
+        self,
+        *,
+        family: str,
+        object_id: str,
+        revision: str,
+        text: str,
+    ) -> None:
+        with self._lock:
+            self._require_state(ReadinessState.TEXT_INDEXING)
+            pair = (object_id, revision)
+            is_new_revision = pair not in self._processed_revisions
+            self._documents[object_id] = (revision, family, text)
+            if is_new_revision:
+                self._processed_revisions.add(pair)
+                self._increment_family_processed(family)
+            self._last_cursor = f"{object_id}:{revision}"
+
+    def search_text(self, query: str) -> tuple[str, ...]:
+        normalized = query.casefold().strip()
+        with self._lock:
+            self._require_unlocked()
+            if not normalized:
+                return ()
+            return tuple(
+                sorted(
+                    object_id
+                    for object_id, (_, _, text) in self._documents.items()
+                    if normalized in text.casefold()
+                )
+            )
+
+    def begin_semantic_indexing(self) -> None:
+        with self._lock:
+            self._require_catalog()
+            self._state = ReadinessState.SEMANTIC_INDEXING
+
+    def index_vector(self, *, object_id: str, vector: tuple[float, ...]) -> None:
+        if not vector:
+            raise ValueError("semantic vector must be non-empty")
+        with self._lock:
+            self._require_state(ReadinessState.SEMANTIC_INDEXING)
+            if object_id not in self._documents:
+                raise ValueError("semantic vector requires indexed text")
+            self._vectors[object_id] = tuple(float(value) for value in vector)
+
+    def finish(self) -> None:
+        with self._lock:
+            self._require_catalog()
+            self._state = ReadinessState.READY
+
+    def cancel(self) -> IndexCheckpoint:
+        with self._lock:
+            self._require_unlocked()
+            if self._catalog_generation is None:
+                raise ValueError("catalog is not published")
+            return IndexCheckpoint(
+                core_id=self.core_id,
+                catalog_generation=self._catalog_generation,
+                state=self._state,
+                cursor=self._last_cursor,
+                processed_objects=len(self._processed_revisions),
+            )
+
+    def resume(self, checkpoint: IndexCheckpoint) -> None:
+        with self._lock:
+            self._require_unlocked()
+            if checkpoint.core_id != self.core_id:
+                raise ValueError("checkpoint belongs to another Core")
+            if checkpoint.catalog_generation != self._catalog_generation:
+                raise ValueError("checkpoint catalog generation is stale")
+            if checkpoint.processed_objects != len(self._processed_revisions):
+                raise ValueError("checkpoint progress does not match in-memory state")
+            self._state = checkpoint.state
+            self._last_cursor = checkpoint.cursor
+
+    def begin_query(self) -> str:
+        with self._lock:
+            self._require_unlocked()
+            query_id = uuid4().hex
+            self._queries.add(query_id)
+            return query_id
+
+    def finish_query(self, query_id: str) -> None:
+        with self._lock:
+            self._require_unlocked()
+            self._queries.discard(query_id)
+
+    def blind_token(self, value: str) -> bytes:
+        normalized = value.casefold().strip()
+        if not normalized:
+            raise ValueError("blind index value must be non-empty")
+        with self._lock:
+            key = self._require_search_key_locked()
+            return hmac.digest(key, normalized.encode("utf-8"), "sha256")
+
+    def begin_blind_generation(
+        self,
+        *,
+        generation: int,
+        expected_count: int,
+    ) -> None:
+        if generation <= 0:
+            raise ValueError("blind generation must be positive")
+        if expected_count < 0:
+            raise ValueError("blind generation count must be non-negative")
+        with self._lock:
+            self._require_unlocked()
+            if (
+                self._active_blind_generation is not None
+                and generation <= self._active_blind_generation
+            ):
+                raise ValueError("blind generation must be newer than active")
+            if (
+                self._pending_blind_generation is not None
+                and self._pending_blind_generation != generation
+            ):
+                raise ValueError("another blind generation is already pending")
+            self._blind_generations[generation] = {}
+            self._pending_blind_generation = generation
+            self._pending_blind_expected_count = expected_count
+
+    def add_blind_token(
+        self,
+        *,
+        generation: int,
+        value: str,
+        object_id: str,
+    ) -> None:
+        if not object_id:
+            raise ValueError("blind token object ID must be non-empty")
+        with self._lock:
+            self._require_unlocked()
+            if generation != self._pending_blind_generation:
+                raise ValueError("blind token generation is not pending")
+            token = self.blind_token(value)
+            generation_entries = self._blind_generations[generation]
+            generation_entries.setdefault(token, set()).add(object_id)
+
+    def commit_blind_generation(self, generation: int) -> None:
+        with self._lock:
+            self._require_unlocked()
+            if generation != self._pending_blind_generation:
+                raise ValueError("blind token generation is not pending")
+            entries = self._blind_generations[generation]
+            actual_count = sum(len(object_ids) for object_ids in entries.values())
+            if actual_count != self._pending_blind_expected_count:
+                raise ValueError("blind token generation is incomplete")
+            self._active_blind_generation = generation
+            self._pending_blind_generation = None
+            self._pending_blind_expected_count = None
+            self._blind_generations = {generation: entries}
+
+    def load_blind_generation(
+        self,
+        *,
+        generation: int,
+        entries: tuple[tuple[bytes, str], ...],
+    ) -> None:
+        if generation <= 0:
+            raise ValueError("blind generation must be positive")
+        with self._lock:
+            self._require_unlocked()
+            loaded: dict[bytes, set[str]] = {}
+            for token, object_id in entries:
+                if len(token) != 32 or not object_id:
+                    raise ValueError("invalid persisted blind token")
+                loaded.setdefault(bytes(token), set()).add(object_id)
+            self._blind_generations = {generation: loaded}
+            self._active_blind_generation = generation
+            self._pending_blind_generation = None
+            self._pending_blind_expected_count = None
+
+    def lookup_exact(self, value: str) -> tuple[str, ...]:
+        with self._lock:
+            self._require_unlocked()
+            if self._active_blind_generation is None:
+                return ()
+            token = self.blind_token(value)
+            return tuple(
+                sorted(
+                    self._blind_generations[self._active_blind_generation].get(
+                        token,
+                        (),
+                    )
+                )
+            )
+
+    def snapshot(self) -> ReadinessSnapshot:
+        with self._lock:
+            return ReadinessSnapshot(
+                core_id=self.core_id,
+                state=self._state,
+                catalog_generation=self._catalog_generation,
+                processed_objects=len(self._processed_revisions),
+                capabilities=self._capabilities_locked(),
+                families=MappingProxyType(dict(self._families)),
+            )
+
+    def sensitive_buffer_counts(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "documents": len(self._documents),
+                "vectors": len(self._vectors),
+                "queries": len(self._queries),
+                "blind_tokens": sum(
+                    len(object_ids)
+                    for entries in self._blind_generations.values()
+                    for object_ids in entries.values()
+                ),
+                "search_keys": int(self._search_key is not None),
+                "sealing_keys": int(self._sealer.installed),
+            }
+
+    def clear_unlocked_state(self) -> None:
+        with self._lock:
+            for object_id, (revision, family, text) in tuple(self._documents.items()):
+                del revision, family, text
+                self._documents.pop(object_id, None)
+            self._vectors.clear()
+            self._processed_revisions.clear()
+            self._queries.clear()
+            self._blind_generations.clear()
+            self._active_blind_generation = None
+            self._pending_blind_generation = None
+            self._pending_blind_expected_count = None
+            self._families.clear()
+            self._catalog_generation = None
+            self._last_cursor = None
+            if self._search_key is not None:
+                self._search_key[:] = b"\0" * len(self._search_key)
+                self._search_key = None
+            self._sealer.clear()
+            self._state = ReadinessState.LOCKED
+
+    def _increment_family_processed(self, family: str) -> None:
+        current = self._families.get(family)
+        if current is None:
+            raise ValueError(f"family is absent from catalog: {family}")
+        self._families[family] = FamilyReadiness(
+            total=current.total,
+            processed=min(current.processed + 1, current.total),
+            failed=current.failed,
+            degraded=current.degraded,
+            unavailable_object_ids=current.unavailable_object_ids,
+        )
+
+    def _capabilities_locked(self) -> frozenset[IndexCapability]:
+        capabilities: set[IndexCapability] = set()
+        if self._catalog_generation is not None:
+            capabilities.update(
+                {
+                    IndexCapability.NAVIGATION,
+                    IndexCapability.EXACT_SEARCH,
+                }
+            )
+        if self._documents:
+            capabilities.add(IndexCapability.TEXT_SEARCH)
+        if self._vectors:
+            capabilities.add(IndexCapability.SEMANTIC_SEARCH)
+        return frozenset(capabilities)
+
+    def _require_catalog(self) -> None:
+        self._require_unlocked()
+        if self._catalog_generation is None:
+            raise ValueError("catalog is not published")
+
+    def _require_unlocked(self) -> None:
+        if self._state is ReadinessState.LOCKED:
+            raise CoreFSRuntimeLocked("CoreFS Runtime index is locked")
+
+    def _require_search_key_locked(self) -> bytes:
+        self._require_unlocked()
+        if self._search_key is None:
+            raise CoreFSRuntimeLocked("CoreFS blind-index key is unavailable")
+        return bytes(self._search_key)
+
+    def _require_state(self, state: ReadinessState) -> None:
+        self._require_unlocked()
+        if self._state is not state:
+            raise ValueError(f"invalid readiness transition: expected {state}, got {self._state}")

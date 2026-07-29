@@ -10,12 +10,14 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Condition, Event, RLock
 from typing import Any
 
 import anima_core
 
 from anima_server.services.core import get_core_dir, get_core_id
+from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
 from anima_server.services.dev_session_snapshot import DevSessionSnapshot
 
 SESSION_TTL = timedelta(hours=24)
@@ -29,6 +31,23 @@ def _create_native_corefs_session() -> object:
     return anima_core.CorefsSession(str(get_core_dir()), get_core_id())
 
 
+def _create_runtime_index(corefs_keys: object) -> CoreFSProgressiveIndex | None:
+    sqlcipher_key = getattr(corefs_keys, "sqlcipher_key", None)
+    if not isinstance(sqlcipher_key, bytes):
+        return None
+    from anima_server.config import settings
+
+    if not settings.runtime_instance_data_dir:
+        raise RuntimeError("CoreFS Runtime instance binding is unavailable")
+    local_instance_id = Path(settings.runtime_instance_data_dir).name
+    index = CoreFSProgressiveIndex(get_core_id())
+    index.unlock(
+        sqlcipher_key=sqlcipher_key,
+        local_instance_id=local_instance_id,
+    )
+    return index
+
+
 @dataclass(frozen=True, slots=True)
 class UnlockSession:
     user_id: int
@@ -36,6 +55,11 @@ class UnlockSession:
     expires_at: datetime
     corefs_keys: object | None = field(default=None, repr=False, compare=False)
     corefs_session: object | None = field(default=None, repr=False, compare=False)
+    runtime_index: CoreFSProgressiveIndex | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(slots=True)
@@ -61,6 +85,9 @@ class UnlockSessionStore:
         *,
         snapshot: Any | None = None,
         corefs_session_factory: Callable[[], object] | None = None,
+        runtime_index_factory: (
+            Callable[[object], CoreFSProgressiveIndex | None] | None
+        ) = None,
     ) -> None:
         self._lock = RLock()
         self._construction_condition = Condition(self._lock)
@@ -68,6 +95,7 @@ class UnlockSessionStore:
         self._corefs_session_factory = (
             corefs_session_factory or _create_native_corefs_session
         )
+        self._runtime_index_factory = runtime_index_factory or _create_runtime_index
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
         self._db_viewer_verified_at: dict[str, float] = {}
@@ -400,6 +428,7 @@ class UnlockSessionStore:
             for domain, dek in deks.items()
         }
         corefs_session: object | None = None
+        runtime_index: CoreFSProgressiveIndex | None = None
         try:
             corefs_session = (
                 None
@@ -412,7 +441,11 @@ class UnlockSessionStore:
                 raise RuntimeError(
                     "CoreFS native session does not implement begin_close"
                 )
+            if corefs_keys is not None:
+                runtime_index = self._runtime_index_factory(corefs_keys)
         except Exception:
+            if runtime_index is not None:
+                runtime_index.clear_unlocked_state()
             if corefs_session is not None:
                 try:
                     corefs_session.close()
@@ -429,6 +462,7 @@ class UnlockSessionStore:
             expires_at=self._now() + SESSION_TTL,
             corefs_keys=corefs_keys,
             corefs_session=corefs_session,
+            runtime_index=runtime_index,
         )
 
     def _ensure_running_locked(self) -> None:
@@ -453,6 +487,9 @@ class UnlockSessionStore:
 
     def _destroy_unpublished_session(self, session: UnlockSession) -> None:
         try:
+            runtime_index = getattr(session, "runtime_index", None)
+            if runtime_index is not None:
+                runtime_index.clear_unlocked_state()
             if session.corefs_session is not None:
                 session.corefs_session.close()
         except Exception:
@@ -465,6 +502,9 @@ class UnlockSessionStore:
 
     def _finish_close_record(self, record: _SessionCloseRecord) -> None:
         try:
+            runtime_index = getattr(record.session, "runtime_index", None)
+            if runtime_index is not None:
+                runtime_index.clear_unlocked_state()
             if record.session.corefs_session is not None:
                 record.session.corefs_session.close()
         except Exception as exc:

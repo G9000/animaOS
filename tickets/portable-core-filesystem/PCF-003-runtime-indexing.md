@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-29 01:57 MYT
+- Updated: 2026-07-29 13:49 MYT
 - Started: 2026-07-29 01:57 MYT
 - Completed:
 
@@ -40,6 +40,7 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 
 - 2026-07-12 06:07 MYT - Ticket created.
 - 2026-07-29 01:57 MYT - Claimed PCF-003 from merged `main` (`7a390eb3`) on branch `codex/pcf-003-runtime-indexing` in `.worktrees/pcf-003-runtime-indexing`. The isolated baseline passed `35` focused backend tests, the desktop production build, and `cargo check -p desktop`; implementation will follow the approved Task 3 plan test-first.
+- 2026-07-29 13:49 MYT - Completed the machine-local relocation and unlock-scoped indexing foundation. The Runtime now has instance-bound opaque catalog/checkpoint/blind-token/migration/sealed-payload models at migration head `033_corefs_runtime_index`, HKDF-derived sealing and blind-index subkeys, atomic blind-token generations, progressive/degraded readiness state, and one teardown path attached to unlock sessions. Focused relocation/privacy/index/API/session/runtime validation passed `121` tests with `8` environment-dependent embedded-PostgreSQL skips.
 
 ## Validation
 
