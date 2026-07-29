@@ -9,9 +9,9 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-21 MYT
-- Updated: 2026-07-29 11:36 MYT
+- Updated: 2026-07-29 12:35 MYT
 - Started: 2026-07-28 14:20 MYT
-- Completed: 2026-07-29 11:36 MYT
+- Completed: 2026-07-29 12:35 MYT
 
 ## Goal
 
@@ -74,10 +74,14 @@ here so it is tracked rather than lost.
 - 2026-07-28 20:50 MYT - Codex review round 7 on PR #123, fix by Claude (`2554429`): P1 consent check-then-act — the round-5 gate read config (soul session) then marked rows (runtime session) with no revalidation; an opt-out committing between them still got rows served. `list_and_mark_delivered` now revalidates consent on an expired (fresh) config read AFTER the runtime rows are read and BEFORE anything is marked. Regression test `test_opt_out_committed_mid_poll_serves_and_marks_nothing`.
 - 2026-07-29 02:39 MYT - Codex review round 8 on PR #123, fix by Claude (`c39200f`): P1 residual TOCTOU — the freshness re-read only narrowed the window. Added `presence_consent_lock(user_id)` (`services/presence_config.py`): the config PUT (`api/routes/presence.py`) holds it through its commit; delivery holds it from the authoritative fresh check through the delivered side effect. Single-process server, so the in-process per-user lock closes the race rather than narrowing it. Regression test `test_consent_lock_serializes_delivery_against_config_updates` proves mutual exclusion. Completion re-stamped to this final acceptance-affecting fix; parent synchronized.
 - 2026-07-29 11:36 MYT - Codex review round 9 on PR #123, fix by Claude: P1 ack-after-stop leak — `ack()`'s continuation invoked `onChange` unconditionally after its POST, so a poller stopped mid-ack (logout, user switch, unmount) could still mutate the replacement poller's shared React setter (erasing the new user's initiatives or exposing the old user's rows). `stop()` now sets an explicit `stopped` flag (cleared by `start()`), and the ack continuation returns without notifying when stopped — the generation mechanism stays dedicated to poll/ack-ordering so rapid double-acks keep working. Regression test `an ack resolving after stop() does not invoke onChange`; poller suite 15/15. Completion re-stamped (isolation-affecting fix); parent synchronized.
+- 2026-07-29 12:35 MYT - Codex review round 10 on PR #123, fixes by Claude (`9ba5924` + validation): (1) P2 Ambient no-op — `dream_sharing="ambient"` has no server-side consumer distinct from `on_ask` (consumers only distinguish `off` from non-off), so the option was withdrawn from the Presence selector (stored values still round-trip); follow-up `IL-010` filed for the greeting-weave consumer. (2) P1 validation gate — the AGENTS.md-required checks were run and recorded (see Validation): `bun run build` pass; live smoke against an isolated server instance (temp data dir, scaffold provider) covering `GET /health`, auth register, chat, memory add/list, presence settings GET/PUT (incl. the new IL-008 fields), and the initiatives route — all pass; full `bun run test` recorded with its failures cross-referenced to PR #126's tracked pre-existing set (zero attributable to this branch). Completion re-stamped to this validated state; parent synchronized.
 
 ## Validation
 
 - Commands:
+  - `bun run build` -> pass (server + desktop builds, cargo check clean)
+  - Live smoke (isolated instance: temp ANIMA_DATA_DIR, scaffold provider, :8899): `GET /health` -> {"status":"ok"}; `POST /api/auth/register` -> 201 + unlock token; `POST /api/chat` -> 200 (scaffold); `POST/GET /api/memory/{id}/items` -> 201/200; `GET/PUT /api/presence/{id}` -> 200/200 (initiativeEnabled, quiet hours, dreamSharing round-trip); `GET /api/presence/{id}/initiatives` -> 200
+  - `bun run test` (full backend suite, this branch) -> 38 failed / 3090 passed / 10 skipped; the 38 are exactly PR #126's tracked pre-existing test-infrastructure set (file+count match: recovery 12, vault 7, health_api 5, dashboard 3, chat 3, capabilities 3, user_profile 2, encrypted_core 2, catalog_benchmark 1) — zero failures attributable to this branch; goes green once #126 merges (its branch: 3124 passed / 0 failed)
   - `cd packages/api-client && bun test` -> 26 pass, 0 fail (68 expect() calls)
   - `cd apps/desktop && bun test` -> 62 pass, 3 fail, 1 error across 65 tests in 16 files. All failures are pre-existing and unrelated to this branch (confirmed via `git diff origin/main...HEAD -- apps/desktop/tests/layout-nav.test.ts apps/desktop/tests/layout-top-nav.test.tsx apps/desktop/tests/recovery-credential-replacement.test.ts apps/desktop/src/components/layout/LayoutTopNav.tsx`, which is empty): `layout-nav.test.ts` (nav-order assertion drifted from current `TOP_NAV_ITEMS`), `layout-top-nav.test.tsx` (missing module `../src/components/layout/LayoutTopNav` — component was never added/renamed), `recovery-credential-replacement.test.ts` (request body now includes a `replacePending` field the test doesn't expect). This branch's own suite, `tests/initiativePoller.test.ts`, is 15/15 pass (includes the ack-vs-poll, stop-vs-poll, and poll-during-slow-ack race regression tests plus the opt-out gate tests). No new failures introduced.
   - `cd apps/desktop && bunx tsc --noEmit` -> 0 errors
