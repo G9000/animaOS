@@ -22,13 +22,14 @@ use super::cache::{
     AuthenticatedCommitSnapshot, CacheLookupKey, CommitCache, PointerSet, ValidatedObjectBinding,
     ValidatedObjectState,
 };
+#[cfg(windows)]
+use super::object_lease::ObjectLeaseDiagnosticObserver;
 use super::object_lease::{
     global_lease_budget, DirectoryIdentity, FenceOutcome, LeaseAttemptDecision, LeaseAttemptPolicy,
     LeaseBudget, LeaseBudgetUsage, LeaseMonitorResource, LeaseResourceFactory, LeaseResourcePlan,
-    MonitorState, MonitorStateCell, MonotonicClock, ObjectLeaseDiagnosticObserver,
-    ObjectSetFingerprint, ObjectValidationLease, OptimizationMiss, ValidationAnchor,
-    MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES, MAX_PROCESS_OBJECT_LEASE_ENTRIES,
-    MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
+    MonitorState, MonitorStateCell, MonotonicClock, ObjectSetFingerprint, ObjectValidationLease,
+    OptimizationMiss, ValidationAnchor, MAX_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASES,
+    MAX_PROCESS_OBJECT_LEASE_ENTRIES, MAX_PROCESS_OBJECT_LEASE_MONITOR_RESOURCES,
 };
 use super::{CommitError, CoreCommitLock};
 
