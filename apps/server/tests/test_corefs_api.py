@@ -466,6 +466,94 @@ def test_search_readiness_maps_progressive_index_state_without_private_data() ->
     assert degraded.index_generation == 9
 
 
+def test_search_operation_queries_unlock_scoped_text_and_semantic_index(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=9, families={"notes": 2})
+    index.begin_text_indexing()
+    index.index_text(
+        family="notes",
+        object_id="note-1",
+        revision="rev-1",
+        text="alpha private note",
+    )
+    index.index_text(
+        family="notes",
+        object_id="note-2",
+        revision="rev-1",
+        text="beta private note",
+    )
+    index.begin_semantic_indexing()
+    index.index_vector(object_id="note-1", vector=(1.0, 0.0))
+    index.index_vector(object_id="note-2", vector=(0.0, 1.0))
+    index.finish()
+
+    selected = logical.CoreFsValidationSnapshot(
+        generation=9,
+        catalog_hash="catalog-hash",
+    )
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "select_validation_snapshot",
+        lambda **_: selected,
+    )
+    monkeypatch.setattr(
+        corefs_route,
+        "_resolve_request_context",
+        lambda _session: corefs_route.CoreFsRequestContext(
+            corefs_session=object(),
+            keys=object(),
+            runtime_index=index,
+        ),
+    )
+    monkeypatch.setattr(
+        corefs_route,
+        "embed_configured_query",
+        lambda query: (1.0, 0.0),
+        raising=False,
+    )
+
+    text_response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "search",
+            "query": "alpha",
+            "searchMode": "text",
+            "maxResults": 1,
+        },
+    )
+    semantic_response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "search",
+            "query": "related concept",
+            "searchMode": "semantic",
+            "maxResults": 1,
+        },
+    )
+
+    assert text_response.status_code == 200
+    assert text_response.json()["result"] == {
+        "generation": 9,
+        "mode": "text",
+        "objectIds": ["note-1"],
+    }
+    assert semantic_response.status_code == 200
+    assert semantic_response.json()["result"] == {
+        "generation": 9,
+        "mode": "semantic",
+        "objectIds": ["note-1"],
+    }
+
+
 def test_cursor_requires_generation(corefs_client: TestClient) -> None:
     response = corefs_client.post(
         "/api/corefs/operation",

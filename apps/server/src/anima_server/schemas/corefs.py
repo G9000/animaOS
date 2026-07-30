@@ -13,6 +13,7 @@ CoreFsOperation = Literal[
     "glob",
     "grep",
     "read",
+    "search",
     "search_readiness",
     "mkdir",
     "create_file",
@@ -24,6 +25,7 @@ CoreFsOperation = Literal[
 ]
 
 CoreFsPrincipalKind = Literal["user", "anima", "client"]
+CoreFsSearchMode = Literal["text", "semantic"]
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MAX_LOGICAL_PATH_BYTES = 32 * 1024
@@ -115,6 +117,7 @@ class CoreFsOperationRequest(BaseModel):
     root: str | None = None
     pattern: str | None = None
     query: str | None = None
+    searchMode: CoreFsSearchMode = "text"
     cursorAfter: str | None = None
     globCursorAfter: str | None = None
     grepCursorPath: str | None = None
@@ -147,6 +150,8 @@ class CoreFsOperationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_cursor_generation(self) -> CoreFsOperationRequest:
+        if self.operation == "search" and not (self.query or "").strip():
+            raise ValueError("query is required for search.")
         if self.grepCursorPath is None and (
             self.grepCursorByteOffset is not None or self.grepCursorWalkAfter is not None
         ):

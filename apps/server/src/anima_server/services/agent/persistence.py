@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.models.runtime import (
     RuntimeImageMessageLink,
@@ -26,6 +27,10 @@ from anima_server.services.agent.state import (
     attach_serialized_retrieval,
     deserialize_stored_attachments,
     serialize_agent_retrieval,
+)
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_index_for_sensitive_write,
+    seal_runtime_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -533,6 +538,10 @@ def append_message(
     is_archived_history: bool = False,
 ) -> RuntimeMessage:
     timestamp = datetime.now(UTC)
+    runtime_index = runtime_index_for_sensitive_write(
+        db,
+        user_id=int(thread.user_id),
+    )
     message = RuntimeMessage(
         thread_id=thread.id,
         user_id=thread.user_id,
@@ -540,11 +549,11 @@ def append_message(
         step_id=step_id,
         sequence_id=sequence_id,
         role=role,
-        content_text=content_text,
-        content_json=content_json,
+        content_text=None if runtime_index is not None else content_text,
+        content_json=None if runtime_index is not None else content_json,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
-        tool_args_json=tool_args_json,
+        tool_args_json=None if runtime_index is not None else tool_args_json,
         is_in_context=True,
         is_archived_history=is_archived_history,
         token_estimate=estimate_message_tokens(
@@ -560,6 +569,22 @@ def append_message(
     thread.last_message_at = timestamp
     db.add(thread)
     db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            db,
+            index=runtime_index,
+            row_type="runtime_message",
+            row_id=int(message.id),
+            owner_id=int(thread.user_id),
+            payload={
+                "content_text": content_text,
+                "content_json": content_json,
+                "tool_args_json": tool_args_json,
+            },
+        )
+        set_committed_value(message, "content_text", content_text)
+        set_committed_value(message, "content_json", content_json)
+        set_committed_value(message, "tool_args_json", tool_args_json)
     return message
 
 

@@ -29,6 +29,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -38,7 +39,8 @@ from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 # TIMESTAMPTZ shorthand — ``TIMESTAMP(timezone=True)`` is the portable
 # spelling that works across all SQLAlchemy versions & PG backends.
 TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, object_session, relationship
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.db.runtime_base import RuntimeBase
 
@@ -998,6 +1000,38 @@ class RuntimeMessage(RuntimeBase):
             and self.tool_name is not None
             and self.tool_name != "send_message"
         )
+
+
+@event.listens_for(RuntimeMessage, "load")
+def _hydrate_sealed_runtime_message(
+    message: RuntimeMessage,
+    _context: object,
+) -> None:
+    runtime_db = object_session(message)
+    if runtime_db is None or message.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="runtime_message",
+        row_id=int(message.id),
+        owner_id=int(message.user_id),
+    )
+    if payload is None:
+        return
+    content_text = payload.get("content_text")
+    content_json = payload.get("content_json")
+    tool_args_json = payload.get("tool_args_json")
+    if content_text is not None and not isinstance(content_text, str):
+        raise ValueError("sealed Runtime message text is invalid")
+    if content_json is not None and not isinstance(content_json, dict):
+        raise ValueError("sealed Runtime message content JSON is invalid")
+    if tool_args_json is not None and not isinstance(tool_args_json, dict):
+        raise ValueError("sealed Runtime message tool arguments are invalid")
+    set_committed_value(message, "content_text", content_text)
+    set_committed_value(message, "content_json", content_json)
+    set_committed_value(message, "tool_args_json", tool_args_json)
 
 
 class RuntimeImageMessageLink(RuntimeBase):

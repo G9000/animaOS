@@ -307,6 +307,77 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
             runtime_db.scalar(select(PendingMemoryOp).where(PendingMemoryOp.id == pending.id))
 
 
+def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.services.agent.persistence import (
+        append_message,
+        get_or_create_thread,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        message = append_message(
+            runtime_db,
+            thread=thread,
+            run_id=None,
+            step_id=None,
+            sequence_id=1,
+            role="tool",
+            content_text="seeded message plaintext",
+            content_json={"private": "seeded message json"},
+            tool_name="private-tool",
+            tool_call_id="call-1",
+            tool_args_json={"secret": "seeded tool arguments"},
+        )
+        runtime_db.flush()
+
+        stored = runtime_db.execute(
+            text(
+                "SELECT content_text, content_json, tool_args_json "
+                "FROM runtime_messages WHERE id = :id"
+            ),
+            {"id": message.id},
+        ).one()
+        assert stored == (None, "null", "null")
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "runtime_message"
+                )
+            )
+            is not None
+        )
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalar(
+            select(RuntimeMessage).where(RuntimeMessage.id == message.id)
+        )
+        assert loaded is not None
+        assert loaded.content_text == "seeded message plaintext"
+        assert loaded.content_json == {"private": "seeded message json"}
+        assert loaded.tool_args_json == {"secret": "seeded tool arguments"}
+
+        index.clear_unlocked_state()
+        runtime_db.expunge_all()
+        with pytest.raises(RuntimeSealingLocked):
+            runtime_db.scalar(
+                select(RuntimeMessage).where(RuntimeMessage.id == message.id)
+            )
+
+
 def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
     monkeypatch,
 ) -> None:

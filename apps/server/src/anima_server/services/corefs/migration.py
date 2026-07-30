@@ -263,13 +263,13 @@ def _run_scheduled_rebuild(
         except RuntimeError:
             rebuild_unlocked_search(
                 session,
-                embedder=_configured_embedder,
+                embedder=embed_configured_query,
             )
         else:
             with runtime_db_factory() as runtime_db:
                 rebuild_unlocked_search(
                     session,
-                    embedder=_configured_embedder,
+                    embedder=embed_configured_query,
                     runtime_db=runtime_db,
                 )
     except Exception:
@@ -280,7 +280,7 @@ def _run_scheduled_rebuild(
                 _rebuild_workers.pop(index, None)
 
 
-def _configured_embedder(text: str) -> tuple[float, ...]:
+def embed_configured_query(text: str) -> tuple[float, ...]:
     from anima_server.services.agent.embeddings import generate_embedding
 
     vector = asyncio.run(generate_embedding(text))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -228,6 +229,36 @@ class CoreFSProgressiveIndex:
                     if normalized in text.casefold()
                 )
             )
+
+    def search_semantic(
+        self,
+        vector: tuple[float, ...],
+        *,
+        limit: int,
+    ) -> tuple[str, ...]:
+        if not vector:
+            raise ValueError("semantic query vector must be non-empty")
+        if limit <= 0:
+            raise ValueError("semantic query limit must be positive")
+        query = tuple(float(value) for value in vector)
+        query_norm = math.sqrt(sum(value * value for value in query))
+        if query_norm == 0:
+            raise ValueError("semantic query vector must have non-zero magnitude")
+        with self._lock:
+            self._require_unlocked()
+            ranked: list[tuple[float, str]] = []
+            for object_id, stored in self._vectors.items():
+                if len(stored) != len(query):
+                    raise ValueError("semantic query vector dimension does not match index")
+                stored_norm = math.sqrt(sum(value * value for value in stored))
+                if stored_norm == 0:
+                    continue
+                score = sum(
+                    left * right for left, right in zip(query, stored, strict=True)
+                ) / (query_norm * stored_norm)
+                ranked.append((score, object_id))
+            ranked.sort(key=lambda item: (-item[0], item[1]))
+            return tuple(object_id for _score, object_id in ranked[:limit])
 
     def indexed_texts(self) -> tuple[tuple[str, str, str, str], ...]:
         """Return unlock-scoped text needed to resume an interrupted rebuild."""

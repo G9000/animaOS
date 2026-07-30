@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,8 +17,11 @@ from anima_server.schemas.corefs import (
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
+    CoreFSRuntimeLocked,
+    IndexCapability,
     ReadinessState,
 )
+from anima_server.services.corefs.migration import embed_configured_query
 from anima_server.services.sessions import UnlockSession
 
 router = APIRouter(prefix="/api/corefs", tags=["corefs"])
@@ -29,6 +33,7 @@ _READ_OPERATIONS = {
     "glob",
     "grep",
     "read",
+    "search",
     "search_readiness",
 }
 _WRITE_OPERATIONS = {
@@ -376,6 +381,71 @@ def _dispatch_read(
                 response_bytes=payload.responseBytes,
             )
         )
+    if payload.operation == "search":
+        index = context.runtime_index
+        if index is None or index.snapshot().state is ReadinessState.LOCKED:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail={"code": "corefs_search_locked"},
+            )
+        snapshot = index.snapshot()
+        if snapshot.catalog_generation != selected.generation:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_search_generation_stale",
+                    "indexGeneration": snapshot.catalog_generation,
+                    "selectedGeneration": selected.generation,
+                },
+            )
+        mode = payload.searchMode
+        capability = (
+            IndexCapability.TEXT_SEARCH
+            if mode == "text"
+            else IndexCapability.SEMANTIC_SEARCH
+        )
+        if capability not in snapshot.capabilities:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_search_not_ready",
+                    "mode": mode,
+                    "state": snapshot.state.value,
+                },
+            )
+        query_id = index.begin_query()
+        try:
+            if mode == "text":
+                object_ids = index.search_text(payload.query or "")[: payload.maxResults]
+            else:
+                vector = embed_configured_query(payload.query or "")
+                object_ids = index.search_semantic(
+                    vector,
+                    limit=payload.maxResults,
+                )
+        except CoreFSRuntimeLocked as exc:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail={"code": "corefs_search_locked"},
+            ) from exc
+        except (RuntimeError, TypeError, ValueError) as exc:
+            if mode != "semantic":
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "corefs_semantic_query_unavailable",
+                    "message": str(exc),
+                },
+            ) from exc
+        finally:
+            with suppress(CoreFSRuntimeLocked):
+                index.finish_query(query_id)
+        return {
+            "generation": selected.generation,
+            "mode": mode,
+            "objectIds": list(object_ids),
+        }
     if payload.operation == "search_readiness":
         runtime_state = _resolve_search_runtime_state(context=context, selected=selected)
         return _decode_logical_response(

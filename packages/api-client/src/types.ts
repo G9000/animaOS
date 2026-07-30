@@ -71,6 +71,7 @@ export type CoreFsOperation =
   | "glob"
   | "grep"
   | "read"
+  | "search"
   | "search_readiness"
   | "mkdir"
   | "create_file"
@@ -86,6 +87,7 @@ export interface CoreFsOperationRequest {
   root?: string | null;
   pattern?: string | null;
   query?: string | null;
+  searchMode?: "text" | "semantic";
   cursorAfter?: string | null;
   globCursorAfter?: string | null;
   grepCursorPath?: string | null;
