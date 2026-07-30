@@ -243,6 +243,22 @@ class UnlockSessionStore:
             cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
         self._run_cleanup(cleanup)
 
+    def revoke_and_clear_sqlcipher_key_if_idle(self, token: str | None) -> bool:
+        """Revoke one token and release the database key only after the last session."""
+        cleanup = _CleanupBatch()
+        with self._lock:
+            now = self._now()
+            next_sessions = {
+                current_token: session
+                for current_token, session in self._sessions.items()
+                if current_token != token and session.expires_at > now
+            }
+            became_idle = not next_sessions
+            next_key = None if became_idle else self._sqlcipher_key
+            cleanup.extend(self._commit_locked(next_sessions, next_key))
+        self._run_cleanup(cleanup)
+        return became_idle
+
     async def revoke_async(self, token: str | None) -> None:
         await self._to_thread(self.revoke, token)
 

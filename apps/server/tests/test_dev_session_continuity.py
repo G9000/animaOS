@@ -710,7 +710,6 @@ async def test_native_close_does_not_block_store_or_async_event_loop(
     native_session = _BlockingNativeSession()
     _attach_native_session(store, token, native_session)
     monkeypatch.setattr(auth_route, "unlock_session_store", store)
-    monkeypatch.setattr(auth_route, "clear_sqlcipher_key", lambda: None)
     monkeypatch.setattr(auth_route, "dispose_all_user_engines", lambda: None)
     request = SimpleNamespace(headers={"x-anima-unlock": token})
 
@@ -745,6 +744,39 @@ async def test_native_close_does_not_block_store_or_async_event_loop(
         await asyncio.wait_for(logout_task, timeout=3)
 
     assert native_session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_logout_rotation_alias_keeps_sqlcipher_key_and_user_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.api.routes import auth as auth_route
+
+    store = UnlockSessionStore()
+    old_token = store.create(44, {"memories": b"m" * 32})
+    replacement_token = store.replace_user(
+        44,
+        {"memories": b"n" * 32},
+        preserve_existing_tokens=True,
+    )
+    store.set_sqlcipher_key(b"sqlcipher-key")
+    dispose_calls: list[bool] = []
+    monkeypatch.setattr(auth_route, "unlock_session_store", store)
+    monkeypatch.setattr(
+        auth_route,
+        "dispose_all_user_engines",
+        lambda: dispose_calls.append(True),
+    )
+
+    response = await auth_route.logout(  # type: ignore[arg-type]
+        SimpleNamespace(headers={"x-anima-unlock": old_token})
+    )
+
+    assert response == {"success": True}
+    assert store.resolve(old_token) is None
+    assert store.resolve(replacement_token) is not None
+    assert store.get_sqlcipher_key() == b"sqlcipher-key"
+    assert dispose_calls == []
 
 
 @pytest.mark.asyncio
@@ -855,7 +887,6 @@ async def test_cancelled_logout_still_finishes_native_close_and_zeroes_deks(
     native_session = _BlockingNativeSession()
     attached = _attach_native_session(store, token, native_session)
     monkeypatch.setattr(auth_route, "unlock_session_store", store)
-    monkeypatch.setattr(auth_route, "clear_sqlcipher_key", lambda: None)
     monkeypatch.setattr(auth_route, "dispose_all_user_engines", lambda: None)
     request = SimpleNamespace(headers={"x-anima-unlock": token})
 

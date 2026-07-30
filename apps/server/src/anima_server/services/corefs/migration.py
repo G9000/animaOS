@@ -425,10 +425,14 @@ def configured_embedding_fingerprint() -> str:
         resolve_embedding_model,
         resolve_embedding_provider,
     )
+    from anima_server.services.agent.embeddings import (
+        _resolve_embedding_base_url,
+    )
 
     provider = resolve_embedding_provider()
     payload = json.dumps(
         {
+            "endpoint": _resolve_embedding_base_url(),
             "provider": provider,
             "model": resolve_embedding_model(provider),
         },

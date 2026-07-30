@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from threading import Lock
 from typing import Any
 
 import anima_core
@@ -16,6 +17,8 @@ from anima_server.services.corefs.types import (
     WrappingPath,
 )
 from anima_server.services.sessions import UnlockSession
+
+_rotation_operation_lock = Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +294,25 @@ def rotate_or_resume_frk(
     current_password: str,
     recovery_phrase: str,
     before_activate: Callable[[CoreFSRotationResult], None] | None = None,
+    require_pending: bool = False,
+) -> CoreFSRotationResult:
+    with _rotation_operation_lock:
+        return _rotate_or_resume_frk_locked(
+            session,
+            current_password=current_password,
+            recovery_phrase=recovery_phrase,
+            before_activate=before_activate,
+            require_pending=require_pending,
+        )
+
+
+def _rotate_or_resume_frk_locked(
+    session: UnlockSession,
+    *,
+    current_password: str,
+    recovery_phrase: str,
+    before_activate: Callable[[CoreFSRotationResult], None] | None = None,
+    require_pending: bool = False,
 ) -> CoreFSRotationResult:
     if (
         session.corefs_session is None
@@ -302,6 +324,8 @@ def rotate_or_resume_frk(
     manifest = _manifest()
     rotation = _rotation_state(manifest)
     resumed = rotation.get("pending_version") is not None
+    if require_pending and not resumed:
+        raise ValueError("no FRK rotation is pending")
 
     if resumed:
         pending_version, pending_root = _resume_material(

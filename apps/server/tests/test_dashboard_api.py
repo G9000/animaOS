@@ -581,6 +581,82 @@ async def test_config_update_refreshes_unlocked_corefs_semantic_search(
 
 
 @pytest.mark.asyncio
+async def test_config_update_refreshes_embeddings_when_ollama_endpoint_changes(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    session = object()
+    refresh_calls: list[object] = []
+
+    async def unlocked(_request: object, _user_id: object) -> object:
+        return session
+
+    async def validate(_payload: object) -> None:
+        return None
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_base_url,
+        settings.agent_embedding_provider,
+        settings.agent_embedding_model,
+        settings.agent_embedding_api_key,
+        settings.agent_embedding_base_url,
+    )
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", unlocked)
+    monkeypatch.setattr(config_route, "_validate_prospective_ollama_targets", validate)
+    monkeypatch.setattr(
+        config_route,
+        "active_unlock_sessions",
+        lambda _user_id: (session,),
+    )
+    monkeypatch.setattr(
+        config_route,
+        "refresh_unlocked_semantic_search",
+        lambda current: refresh_calls.append(current),
+    )
+
+    try:
+        settings.agent_provider = "ollama"
+        settings.agent_model = "chat-model"
+        settings.agent_base_url = "http://127.0.0.1:11434"
+        settings.agent_embedding_provider = "ollama"
+        settings.agent_embedding_model = "nomic-embed-text"
+        settings.agent_embedding_api_key = ""
+        settings.agent_embedding_base_url = ""
+
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="ollama",
+                model="chat-model",
+                ollamaUrl="http://127.0.0.1:22434",
+                embeddingProvider="ollama",
+                embeddingModel="nomic-embed-text",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert refresh_calls == [session]
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_base_url,
+            settings.agent_embedding_provider,
+            settings.agent_embedding_model,
+            settings.agent_embedding_api_key,
+            settings.agent_embedding_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_config_update_rejects_embedding_only_ollama_without_mutation(monkeypatch) -> None:
     from anima_server.api.routes import config as config_route
     from fastapi import HTTPException

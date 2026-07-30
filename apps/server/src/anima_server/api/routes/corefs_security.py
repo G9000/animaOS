@@ -138,6 +138,8 @@ def get_corefs_security_status(request: Request) -> CoreFSSecurityStatusResponse
 def _rotate_corefs_root_key(
     payload: CoreFSRotateRequest,
     request: Request,
+    *,
+    require_pending: bool = False,
 ) -> CoreFSRotateResponse:
     session = require_unlocked_session(request)
     new_token: str | None = None
@@ -164,12 +166,21 @@ def _rotate_corefs_root_key(
         )
 
     try:
-        result = rotate_or_resume_frk(
-            session,
-            current_password=payload.currentPassword,
-            recovery_phrase=payload.recoveryPhrase,
-            before_activate=prepare_replacement,
-        )
+        if require_pending:
+            result = rotate_or_resume_frk(
+                session,
+                current_password=payload.currentPassword,
+                recovery_phrase=payload.recoveryPhrase,
+                before_activate=prepare_replacement,
+                require_pending=True,
+            )
+        else:
+            result = rotate_or_resume_frk(
+                session,
+                current_password=payload.currentPassword,
+                recovery_phrase=payload.recoveryPhrase,
+                before_activate=prepare_replacement,
+            )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -199,4 +210,4 @@ def resume_corefs_root_key_rotation(
     payload: CoreFSRotateRequest,
     request: Request,
 ) -> CoreFSRotateResponse:
-    return _rotate_corefs_root_key(payload, request)
+    return _rotate_corefs_root_key(payload, request, require_pending=True)

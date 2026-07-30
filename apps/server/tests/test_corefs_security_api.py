@@ -456,7 +456,15 @@ def test_corefs_rotation_resume_uses_the_same_fail_closed_operation(
         def resolve(self, _token):
             return replacement
 
-    def rotate(_session, *, current_password, recovery_phrase, before_activate):
+    def rotate(
+        _session,
+        *,
+        current_password,
+        recovery_phrase,
+        before_activate,
+        require_pending,
+    ):
+        assert require_pending is True
         paths.append((current_password, recovery_phrase))
         result = CoreFSRotationResult(
             active_subkeys=object(),

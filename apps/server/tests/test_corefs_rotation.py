@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from types import SimpleNamespace
 
+import pytest
 from anima_server.services.corefs import rotation
 from anima_server.services.corefs.types import (
     KeyPurpose,
@@ -95,3 +98,84 @@ def test_preparing_a_later_rotation_resets_reopen_verification(
     assert state["phase"] == "prepared"
     assert state["password_reopen_verified"] is False
     assert state["recovery_reopen_verified"] is False
+
+
+def test_rotation_operations_are_serialized(monkeypatch) -> None:
+    first_entered = Event()
+    second_entered = Event()
+    release_first = Event()
+    second_started = Event()
+    counter_lock = Lock()
+    active = 0
+    max_active = 0
+    calls = 0
+
+    def rotate_locked(*_args, **_kwargs) -> rotation.CoreFSRotationResult:
+        nonlocal active, calls, max_active
+        with counter_lock:
+            calls += 1
+            active += 1
+            max_active = max(max_active, active)
+            current_call = calls
+        if current_call == 1:
+            first_entered.set()
+            assert release_first.wait(2)
+        else:
+            second_entered.set()
+        with counter_lock:
+            active -= 1
+        return rotation.CoreFSRotationResult(
+            active_subkeys=object(),
+            active_version=2,
+            committed_catalog_generation=4,
+            resumed=True,
+        )
+
+    monkeypatch.setattr(rotation, "_rotate_or_resume_frk_locked", rotate_locked)
+    session = SimpleNamespace()
+
+    def invoke() -> rotation.CoreFSRotationResult:
+        return rotation.rotate_or_resume_frk(
+            session,
+            current_password="password",
+            recovery_phrase="recovery words",
+        )
+
+    def invoke_second() -> rotation.CoreFSRotationResult:
+        second_started.set()
+        return invoke()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(invoke)
+        assert first_entered.wait(1)
+        second = executor.submit(invoke_second)
+        assert second_started.wait(1)
+        assert not second_entered.wait(0.2)
+        release_first.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    assert calls == 2
+    assert max_active == 1
+
+
+def test_resume_only_rejects_when_no_rotation_is_pending(monkeypatch) -> None:
+    manifest = {
+        "frk_rotation": {
+            "active_version": 2,
+            "pending_version": None,
+        }
+    }
+    monkeypatch.setattr(rotation, "_manifest", lambda: manifest)
+    session = SimpleNamespace(
+        corefs_session=object(),
+        corefs_keys=object(),
+    )
+
+    with pytest.raises(ValueError, match="no FRK rotation is pending"):
+        rotation.rotate_or_resume_frk(
+            session,
+            current_password="password",
+            recovery_phrase="recovery words",
+            require_pending=True,
+        )

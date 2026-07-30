@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-31 00:02 MYT
+- Updated: 2026-07-31 00:28 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -295,10 +295,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-30 23:28 MYT - Addressed PR #127's two exact-head privacy/lifecycle findings on `30808a8e` with three RED/GREEN regressions. Agent-run error text now remains unlock-sealed across current writes, hydration, and legacy conversion, and PDF checkpoint rewinds remove their sealed payloads with the source row instead of leaving orphaned extracted pages. The expanded affected band passed `190`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-30 23:49 MYT - Addressed PR #127's exact-head concept-slug privacy finding on `5177a795` with three RED/GREEN raw-storage/reuse/conversion regressions. Compiler and OKF concepts now persist only keyed opaque slug projections, hydrate their canonical slugs from unlock-sealed payloads, query merges and links through the projection, and convert existing plaintext rows on unlock. The expanded affected band passed `168`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-31 00:02 MYT - Addressed PR #127's two exact-head indexing-lifecycle findings on `a7949b79` with RED/GREEN coverage. Deferred Runtime vectors now publish only into the embedding generation captured with their work, while fresh unlocks restore and retain the committed exact-search generation before the authenticated catalog walk rather than clearing it during rebuild initialization. The expanded affected band passed `186`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
+- 2026-07-31 00:28 MYT - Addressed PR #127's three exact-head session/configuration/rotation findings on `40f8e266` with four RED/GREEN regressions. Logout retains the shared SQLCipher key and cached user engines while any replacement alias remains live, embedding generation identity now changes with its resolved endpoint, and serialized resume-only FRK operations fail cleanly once no rotation remains instead of racing into a post-handoff 500. The expanded affected band passed `128`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 
 ## Validation
 
 - Commands:
+  - PR #127 session-key/embedding-endpoint/rotation-serialization follow-up: four regressions failed RED and passed GREEN; expanded coverage passed `128`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 embedding-generation/exact-restore follow-up: two lifecycle regressions failed RED and passed GREEN; expanded coverage passed `186`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 concept-slug privacy follow-up: three raw-storage/reuse/conversion regressions failed RED and passed GREEN; expanded coverage passed `168`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 agent-run-error/checkpoint-orphan follow-up: three focused regressions failed RED and passed GREEN; expanded coverage passed `190`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
