@@ -28,3 +28,28 @@ export function initiativeReplyState(
     ],
   };
 }
+
+/**
+ * How an already-mounted Chat should treat a navigation (PR #131 review).
+ *
+ * Mount-time refs capture `location.state` exactly once, so a seedThread
+ * navigation that lands while Chat is already on-screen (the initiative
+ * overlay is global) must be applied explicitly — and exactly once per
+ * navigation (`location.key`). Mid-stream arrivals are deferred rather than
+ * applied (swapping the thread under an active stream corrupts the view) or
+ * dropped (the ack already happened; dropping loses the text — the original
+ * bug wearing a new face).
+ */
+export type SeedNavigationAction = "ignore" | "apply" | "defer";
+
+export function classifySeedNavigation(options: {
+  handledKey: string;
+  key: string;
+  seedThread: boolean;
+  contextCount: number;
+  streaming: boolean;
+}): SeedNavigationAction {
+  if (options.key === options.handledKey) return "ignore"; // mount path owns it
+  if (!options.seedThread || options.contextCount === 0) return "ignore";
+  return options.streaming ? "defer" : "apply";
+}

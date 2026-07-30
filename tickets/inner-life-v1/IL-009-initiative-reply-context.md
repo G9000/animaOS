@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-30 17:23 MYT
+- Updated: 2026-07-30 18:39 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-30 17:23 MYT
+- Completed: 2026-07-30 18:39 MYT
 
 ## Goal
 
@@ -69,8 +69,34 @@ rather than blocking IL-008 on it.
   overlay advancing to the next pending row mid-flight can't swap the
   seeded text. 3 tests.
 
+- 2026-07-30 18:39 MYT - PR #131 review round 1 (two P1s). (1) Reopened:
+  the 17:23 MYT completion had recorded validation via a scripted edit
+  whose pattern missed this file's single-line Validation format, so the
+  ticket was certified done with `not run yet` on disk — prior completion
+  timestamp preserved here per the reopen routine; re-closed at this
+  entry's timestamp with the evidence actually recorded below. (2) Fixed
+  the in-place navigation gap: Reply while Chat is ALREADY mounted only
+  updated location.state, which mount-time refs never re-read — the ack
+  succeeded and the text vanished. Chat now classifies each navigation
+  (`classifySeedNavigation`, pure + tested) and applies seed state once
+  per location.key, deferring mid-stream arrivals until the stream
+  settles rather than dropping them or swapping the thread live.
+
 ## Validation
 
-- Commands: not run yet.
-- Changed paths: none.
-- Notes: none.
+- Commands:
+  - `bun test tests/initiativeReply.test.ts tests/initiativePoller.test.ts` —
+    22 pass (7 IL-009 tests + the 15 poller regressions)
+  - `bunx tsc --noEmit` — clean
+  - `bun run build` (Nx server + desktop, cargo check) — pass on the
+    round-1 head, 2026-07-30 18:47 MYT
+- Changed paths:
+  - `apps/desktop/src/lib/initiativeReply.ts` (new)
+  - `apps/desktop/src/components/InitiativeOverlay.tsx`
+  - `apps/desktop/src/pages/chat/Chat.tsx`
+  - `apps/desktop/tests/initiativeReply.test.ts` (new)
+- Notes:
+  - Server suite untouched (no server files in this branch's diff).
+  - Residual risk: a seed navigation arriving mid-stream is deferred, not
+    applied instantly — deliberate (applying would swap the thread under a
+    live stream; dropping would lose the acked text).

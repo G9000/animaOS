@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { initiativeReplyState } from "../src/lib/initiativeReply";
+import {
+  classifySeedNavigation,
+  initiativeReplyState,
+} from "../src/lib/initiativeReply";
 
 describe("initiativeReplyState (IL-009)", () => {
   test("builds a seeded-thread state carrying the initiative text verbatim", () => {
@@ -32,5 +35,34 @@ describe("initiativeReplyState (IL-009)", () => {
     expect(asLocationState.seedThread).toBe(true);
     expect(Array.isArray(asLocationState.contextMessages)).toBe(true);
     expect(state.contextMessages[0].role).toBe("assistant");
+  });
+});
+
+describe("classifySeedNavigation (PR #131 review)", () => {
+  const base = {
+    handledKey: "k0",
+    key: "k1",
+    seedThread: true,
+    contextCount: 1,
+    streaming: false,
+  };
+
+  test("applies a fresh seed navigation on a mounted Chat", () => {
+    expect(classifySeedNavigation(base)).toBe("apply");
+  });
+
+  test("ignores the mount navigation (owned by the useRef init path)", () => {
+    expect(classifySeedNavigation({ ...base, key: "k0" })).toBe("ignore");
+  });
+
+  test("ignores non-seed navigations and empty context", () => {
+    expect(classifySeedNavigation({ ...base, seedThread: false })).toBe("ignore");
+    expect(classifySeedNavigation({ ...base, contextCount: 0 })).toBe("ignore");
+  });
+
+  test("defers instead of dropping when a stream is active", () => {
+    // Dropping would re-create the original bug (acked, text lost); applying
+    // would swap the thread under the live stream.
+    expect(classifySeedNavigation({ ...base, streaming: true })).toBe("defer");
   });
 });

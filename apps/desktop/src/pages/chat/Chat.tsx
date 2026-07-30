@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { classifySeedNavigation } from "../../lib/initiativeReply";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type {
@@ -479,6 +480,12 @@ export default function Chat() {
   // "ask"/"start chat" actions). Cleared once the user sends or switches threads.
   const seedActiveRef = useRef(locationState?.seedThread === true);
   const resumeThreadIdRef = useRef<number | null>(locationState?.resumeThreadId ?? null);
+  // The navigation this component has already applied seed state for. The
+  // refs above only capture location.state at MOUNT; a seedThread navigation
+  // that lands while Chat is already mounted (IL-009: Reply on an initiative
+  // while on /chat) must re-seed explicitly — see the location.key effect
+  // below. The initial key counts as handled by the useRef initializers.
+  const handledSeedKeyRef = useRef(location.key);
 
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -536,6 +543,52 @@ export default function Chat() {
       objectUrlsRef.current.delete(image.previewUrl);
     }
   }, []);
+
+  // ===== IL-009: seed navigations onto an already-mounted Chat =====
+  // The initiative overlay is global, so Reply can navigate to /chat while
+  // Chat is already the active route. Same-route navigation updates
+  // location.state but none of the mount-time refs above — without this
+  // effect the initiative is acked and its text silently vanishes. Each
+  // navigation applies exactly once (location.key); the initial key is
+  // owned by the mount path. Arrivals mid-stream are deferred until the
+  // stream settles instead of swapping the thread under it.
+  const pendingSeedNavRef = useRef<ChatContextMessage[] | null>(null);
+  const applySeedNavigation = (context: ChatContextMessage[]) => {
+    if (user?.id == null) return;
+    pendingContextRef.current = context;
+    seedActiveRef.current = true;
+    resumeThreadIdRef.current = null;
+    currentThreadIdRef.current = null;
+    setCurrentThreadId(null);
+    setMessages(contextToSeedMessages(context, user.id));
+    setError("");
+  };
+  useEffect(() => {
+    const state = location.state as ChatLocationState | null;
+    const action = classifySeedNavigation({
+      handledKey: handledSeedKeyRef.current,
+      key: location.key,
+      seedThread: state?.seedThread === true,
+      contextCount: state?.contextMessages?.length ?? 0,
+      streaming: streamingRef.current,
+    });
+    if (action === "ignore") return;
+    handledSeedKeyRef.current = location.key;
+    const context = state?.contextMessages ?? [];
+    if (action === "defer") {
+      pendingSeedNavRef.current = context;
+      return;
+    }
+    applySeedNavigation(context);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, location.state, user?.id]);
+  useEffect(() => {
+    if (streaming || pendingSeedNavRef.current == null) return;
+    const context = pendingSeedNavRef.current;
+    pendingSeedNavRef.current = null;
+    applySeedNavigation(context);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming]);
 
   // ===== Initial data loading =====
   // One coherent landing flow. The chat always shows a single thread:
