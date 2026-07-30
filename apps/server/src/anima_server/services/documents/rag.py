@@ -4,7 +4,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
@@ -18,7 +18,10 @@ from anima_server.services.agent.embeddings import (
 )
 from anima_server.services.agent.pgvec_store import PgVecStore
 from anima_server.services.agent.vector_store import VectorSearchResult
-from anima_server.services.corefs.sealed_runtime import delete_runtime_embedding_records
+from anima_server.services.corefs.sealed_runtime import (
+    active_runtime_index,
+    delete_runtime_embedding_records,
+)
 from anima_server.services.documents.indexing import (
     EmbeddingFn,
     _run_embedding,
@@ -287,17 +290,20 @@ def _repair_documents_missing_vectors_after_reset(
         user_id=user_id,
         document_ids=document_ids,
     ):
-        embed_document_chunks(
+        missing_count = len(
+            get_unembedded_chunks(
+                runtime_db,
+                user_id=user_id,
+                document_id=document_id,
+            )
+        )
+        indexed_count = embed_document_chunks(
             runtime_db,
             user_id=user_id,
             document_id=document_id,
             embedding_fn=embedding_fn,
         )
-        if get_unembedded_chunks(
-            runtime_db,
-            user_id=user_id,
-            document_id=document_id,
-        ):
+        if indexed_count != missing_count:
             _delete_document_chunk_vectors(
                 runtime_db,
                 user_id=user_id,
@@ -311,6 +317,7 @@ def _indexed_documents_without_current_vectors(
     user_id: int,
     document_ids: set[int] | None,
 ) -> list[int]:
+    runtime_index = active_runtime_index(user_id)
     chunk_exists = (
         select(RuntimeDocumentChunk.id)
         .where(
@@ -319,6 +326,57 @@ def _indexed_documents_without_current_vectors(
         )
         .exists()
     )
+    if runtime_index is not None:
+        stmt = (
+            select(
+                RuntimeDocument.id,
+                RuntimeDocumentChunk.id,
+                RuntimeEmbedding.id,
+            )
+            .join(
+                RuntimeDocumentChunk,
+                RuntimeDocumentChunk.document_id == RuntimeDocument.id,
+            )
+            .outerjoin(
+                RuntimeEmbedding,
+                and_(
+                    RuntimeEmbedding.user_id == RuntimeDocument.user_id,
+                    RuntimeEmbedding.source_type == "document_chunk",
+                    RuntimeEmbedding.source_id == RuntimeDocumentChunk.id,
+                    RuntimeEmbedding.content_hash
+                    == RuntimeDocumentChunk.content_hash,
+                ),
+            )
+            .where(
+                RuntimeDocument.user_id == user_id,
+                RuntimeDocument.status == "indexed",
+                RuntimeDocumentChunk.user_id == user_id,
+            )
+            .order_by(RuntimeDocument.id, RuntimeDocumentChunk.chunk_index)
+        )
+        if document_ids is not None:
+            stmt = stmt.where(RuntimeDocument.id.in_(document_ids))
+
+        current_documents: set[int] = set()
+        candidate_documents: list[int] = []
+        for document_id, chunk_id, embedding_id in runtime_db.execute(stmt):
+            if not candidate_documents or candidate_documents[-1] != document_id:
+                candidate_documents.append(document_id)
+            if (
+                embedding_id is not None
+                and runtime_index.runtime_embedding_vector(
+                    source_type="document_chunk",
+                    source_id=chunk_id,
+                )
+                is not None
+            ):
+                current_documents.add(document_id)
+        return [
+            document_id
+            for document_id in candidate_documents
+            if document_id not in current_documents
+        ]
+
     current_vector_exists = (
         select(RuntimeEmbedding.id)
         .join(

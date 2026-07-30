@@ -5,13 +5,16 @@ import inspect
 import threading
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.agent.pgvec_store import PgVecStore
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_index_for_sensitive_write,
+)
 from anima_server.services.documents.store import (
     get_document_for_user,
     set_document_status,
@@ -38,29 +41,47 @@ def get_unembedded_chunks(
     if document is None:
         return []
 
-    matching_embedding = (
-        select(RuntimeEmbedding.id)
-        .where(
-            RuntimeEmbedding.user_id == user_id,
-            RuntimeEmbedding.source_type == "document_chunk",
-            RuntimeEmbedding.source_id == RuntimeDocumentChunk.id,
-            RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash,
-            RuntimeEmbedding.embedding.isnot(None),
+    rows = runtime_db.execute(
+        select(
+            RuntimeDocumentChunk,
+            RuntimeEmbedding.id,
+            RuntimeEmbedding.embedding,
         )
-        .exists()
+        .outerjoin(
+            RuntimeEmbedding,
+            and_(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == "document_chunk",
+                RuntimeEmbedding.source_id == RuntimeDocumentChunk.id,
+                RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash,
+            ),
+        )
+        .where(
+            RuntimeDocumentChunk.document_id == document_id,
+            RuntimeDocumentChunk.user_id == user_id,
+        )
+        .order_by(RuntimeDocumentChunk.chunk_index)
+    ).all()
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=user_id,
     )
-
-    return list(
-        runtime_db.scalars(
-            select(RuntimeDocumentChunk)
-            .where(
-                RuntimeDocumentChunk.document_id == document_id,
-                RuntimeDocumentChunk.user_id == user_id,
-                ~matching_embedding,
+    missing: list[RuntimeDocumentChunk] = []
+    for chunk, embedding_id, persisted_embedding in rows:
+        if runtime_index is None:
+            has_current_vector = persisted_embedding is not None
+        else:
+            has_current_vector = (
+                embedding_id is not None
+                and runtime_index.runtime_embedding_vector(
+                    source_type="document_chunk",
+                    source_id=chunk.id,
+                )
+                is not None
             )
-            .order_by(RuntimeDocumentChunk.chunk_index)
-        ).all()
-    )
+        if not has_current_vector:
+            missing.append(chunk)
+    return missing
 
 
 def embed_document_chunks(
@@ -123,11 +144,7 @@ def embed_document_chunks(
     if (
         has_current_chunks
         and not skipped_missing_embedding
-        and not get_unembedded_chunks(
-            runtime_db,
-            user_id=user_id,
-            document_id=document_id,
-        )
+        and indexed_count == len(chunks)
     ):
         set_document_status(
             runtime_db,

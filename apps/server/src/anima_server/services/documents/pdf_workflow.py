@@ -760,19 +760,14 @@ def _ensure_approval_document_indexed(
         document_id=document_id,
     )
     if document.status != "indexed" or missing_chunks:
-        embed_document_chunks(
+        indexed_count = embed_document_chunks(
             db,
             user_id=run.user_id,
             document_id=document_id,
             embedding_fn=embedding_fn,
         )
         db.refresh(document)
-        missing_chunks = get_unembedded_chunks(
-            db,
-            user_id=run.user_id,
-            document_id=document_id,
-        )
-        if missing_chunks:
+        if indexed_count != len(missing_chunks) or document.status != "indexed":
             _delete_document_chunk_vectors(
                 db,
                 user_id=run.user_id,

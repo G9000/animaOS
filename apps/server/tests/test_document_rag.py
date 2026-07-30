@@ -275,6 +275,271 @@ def test_embed_document_chunks_skips_matching_existing_embeddings(
     assert get_unembedded_chunks(runtime_db, user_id=1, document_id=document.id) == []
 
 
+def test_embed_document_chunks_tracks_bound_corefs_vectors_after_commit(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.commit()
+    document, chunks = _document_with_chunks(runtime_db)
+    calls: list[str] = []
+
+    def embedding_fn(text: str) -> list[float]:
+        calls.append(text)
+        return _embedding(float(len(calls)), 1.0)
+
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=embedding_fn,
+    ) == 2
+    assert document.status == "indexed"
+    assert all(
+        row.embedding is None and row.embedding_checksum is None
+        for row in _embedding_rows(runtime_db)
+    )
+
+    runtime_db.commit()
+
+    assert all(
+        index.runtime_embedding_vector(
+            source_type="document_chunk",
+            source_id=chunk.id,
+        )
+        is not None
+        for chunk in chunks
+    )
+    assert get_unembedded_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+    ) == []
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=embedding_fn,
+    ) == 0
+    assert calls == ["alpha notes", "beta notes"]
+
+
+def test_search_document_chunks_repairs_cleared_bound_corefs_vectors_once(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents import rag as rag_module
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    monkeypatch.setattr(
+        rag_module,
+        "_lexical_document_chunk_ranking",
+        lambda *_args, **_kwargs: [],
+    )
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.commit()
+    document, chunks = _document_with_chunks(runtime_db)
+
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=lambda _text: _embedding(1.0, 1.0),
+    ) == 2
+    runtime_db.commit()
+    calls: list[str] = []
+
+    def embedding_fn(text: str) -> list[float]:
+        calls.append(text)
+        return _embedding(1.0, 1.0)
+
+    assert search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="alpha",
+        embedding_fn=embedding_fn,
+    )
+    assert calls == ["alpha"]
+
+    index.request_runtime_embedding_refresh(embedding_fingerprint="new-space")
+    index.begin_runtime_embedding_rebuild(embedding_fingerprint="new-space")
+    calls.clear()
+
+    assert search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="alpha",
+        embedding_fn=embedding_fn,
+    ) == []
+    assert calls == ["alpha", "alpha notes", "beta notes"]
+    runtime_db.commit()
+    assert all(
+        index.runtime_embedding_vector(
+            source_type="document_chunk",
+            source_id=chunk.id,
+        )
+        is not None
+        for chunk in chunks
+    )
+    calls.clear()
+
+    assert search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="alpha",
+        embedding_fn=embedding_fn,
+    )
+    assert calls == ["alpha"]
+
+
+def test_bound_corefs_vector_repair_candidate_scan_uses_one_query(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents.rag import (
+        _indexed_documents_without_current_vectors,
+    )
+    from sqlalchemy import event
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.commit()
+    for number in range(3):
+        document, _chunks = _document_with_extracted_chunks(
+            runtime_db,
+            filename=f"notes-{number}.md",
+            sha256=str(number) * 64,
+            chunks=[
+                ExtractedDocumentChunk(
+                    chunk_index=0,
+                    content_text=f"document {number}",
+                )
+            ],
+        )
+        assert embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=lambda _text: _embedding(1.0, 1.0),
+        ) == 1
+    runtime_db.commit()
+    statements: list[str] = []
+    bind = runtime_db.get_bind()
+
+    def record_statement(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(bind, "before_cursor_execute", record_statement)
+    try:
+        assert _indexed_documents_without_current_vectors(
+            runtime_db,
+            user_id=1,
+            document_ids=None,
+        ) == []
+    finally:
+        event.remove(bind, "before_cursor_execute", record_statement)
+
+    assert len(statements) == 1
+
+
+def test_bound_corefs_partial_vector_repair_discards_deferred_writes(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents import rag as rag_module
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    monkeypatch.setattr(
+        rag_module,
+        "_lexical_document_chunk_ranking",
+        lambda *_args, **_kwargs: [],
+    )
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.commit()
+    document, chunks = _document_with_chunks(runtime_db)
+    _mark_document_indexed(runtime_db, document)
+    calls: list[str] = []
+
+    def embedding_fn(text: str) -> list[float] | None:
+        calls.append(text)
+        if len(calls) == 3:
+            return None
+        return _embedding(1.0, 1.0)
+
+    assert search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="alpha",
+        embedding_fn=embedding_fn,
+    ) == []
+    assert calls == ["alpha", "alpha notes", "beta notes"]
+    assert _embedding_rows(runtime_db) == []
+
+    runtime_db.commit()
+
+    assert all(
+        index.runtime_embedding_vector(
+            source_type="document_chunk",
+            source_id=chunk.id,
+        )
+        is None
+        for chunk in chunks
+    )
+
+
 def test_embed_document_chunks_reindexes_changed_chunk_content(
     runtime_db: Session,
     monkeypatch: Any,
