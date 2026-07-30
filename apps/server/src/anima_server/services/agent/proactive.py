@@ -372,8 +372,16 @@ def _resolve_held_thought(
         return None
     # Gap-spanning check (condition 4 above), in Python rather than SQL so
     # SQLite's string-typed datetime comparison can't mis-order aware vs
-    # naive values.
-    if row.created_at is None or _normalize_utc(row.created_at) > last_message_utc:
+    # naive values. Compared on ``observed_at`` — the source MESSAGE's
+    # timestamp, recorded by the consolidation write path — not the row's
+    # insertion time (PR #128 review round 5): extraction runs after the
+    # conversation, so a thread from the user's final pre-gap turn gets
+    # ``created_at`` minutes INTO the gap and an insertion-time check would
+    # reject the primary held-thought scenario. ``created_at`` remains the
+    # conservative fallback for provenance-less rows; no timestamp at all
+    # means no grounding, so silence.
+    anchored_at = row.observed_at or row.created_at
+    if anchored_at is None or _normalize_utc(anchored_at) > last_message_utc:
         return None
     content = df(user_id, row.content, table="foresight_signals", field="content")
     content = (content or "").strip()

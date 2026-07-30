@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-30 12:21 MYT
+- Updated: 2026-07-30 12:50 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed: 2026-07-29 15:58 MYT
 
@@ -96,13 +96,20 @@ hour — in two small, strictly grounded ways:
   voiced on pressure a since-resolved thread earned; now the row IL3 would
   voice must have been an open contributor across the whole gap, else the
   greeting stays silent. Regression test added.
+- 2026-07-30 12:50 MYT - PR #128 review round 5, P1 fix on the round-4
+  check: anchor gap-spanning on `observed_at` (the source MESSAGE's
+  timestamp recorded by the consolidation write path), falling back to
+  `created_at` for provenance-less rows. Insertion time alone rejected
+  the PRIMARY scenario — a thread from the user's final pre-gap message
+  is extracted minutes after they leave, so its created_at is mid-gap.
+  Two regression tests (primary scenario + observed-mid-gap/fallback).
 
 ## Validation
 
 - Commands:
   - Full suite (`bun run test`) on `43698cb` — **3163 passed, 0 failed,
     10 skipped**
-  - `uv run pytest tests/test_inner_life_held_thought.py` — 13 passed
+  - `uv run pytest tests/test_inner_life_held_thought.py` — 14 passed
   - `uv run pytest tests/test_inner_life_presence.py` — 28 passed
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`

@@ -301,16 +301,17 @@ def test_foresight_horizon_uses_the_local_calendar_date(soul_db, runtime_db) -> 
     assert thought == "the gallery opening they were nervous about"
 
 
-def test_no_held_thought_for_a_signal_created_mid_gap(soul_db, runtime_db) -> None:
-    """Regression (PR #128 review round 4): the drive's grow condition is
+def test_no_held_thought_for_a_signal_observed_mid_gap(soul_db, runtime_db) -> None:
+    """Regression (PR #128 review rounds 4-5): the drive's grow condition is
     aggregate, so pressure can outlive the signal that earned it. A signal
-    that only came into existence DURING the absence was not what "stayed
+    whose source was only OBSERVED during the absence was not what "stayed
     with me" over the gap — voicing it on inherited pressure would bind the
-    claim to the wrong thread. The voiced row must predate the last user
-    message."""
+    claim to the wrong thread. Provenance-less rows (no observed_at) fall
+    back to insertion time, conservatively."""
     user_id = _seed_all_conditions(soul_db, runtime_db)
     fs = soul_db.query(ForesightSignal).one()
-    fs.created_at = NOW - timedelta(hours=1)  # appeared mid-gap
+    fs.observed_at = NOW - timedelta(hours=1)  # source observed mid-gap
+    fs.created_at = NOW - timedelta(hours=1)
     soul_db.commit()
     assert (
         _resolve_held_thought(
@@ -318,3 +319,30 @@ def test_no_held_thought_for_a_signal_created_mid_gap(soul_db, runtime_db) -> No
         )
         is None
     )
+    # Fallback path: no observed_at provenance, mid-gap insertion -> reject.
+    fs.observed_at = None
+    soul_db.commit()
+    assert (
+        _resolve_held_thought(
+            soul_db, runtime_db, user_id=user_id, last_message_at=LONG_AGO, now=NOW
+        )
+        is None
+    )
+
+
+def test_held_thought_from_the_users_final_pre_gap_message(soul_db, runtime_db) -> None:
+    """Regression (PR #128 review round 5): the PRIMARY scenario — the user
+    mentions a thread in their final message and leaves; consolidation
+    extracts the foresight signal minutes later (created_at is mid-gap, but
+    observed_at is the source message's own timestamp). The gap-spanning
+    check must anchor on observation provenance, not insertion time, or
+    this scenario can never surface a held thought."""
+    user_id = _seed_all_conditions(soul_db, runtime_db)
+    fs = soul_db.query(ForesightSignal).one()
+    fs.observed_at = LONG_AGO                        # the final message itself
+    fs.created_at = LONG_AGO + timedelta(minutes=7)  # extracted after they left
+    soul_db.commit()
+    thought = _resolve_held_thought(
+        soul_db, runtime_db, user_id=user_id, last_message_at=LONG_AGO, now=NOW
+    )
+    assert thought == "the gallery opening they were nervous about"
