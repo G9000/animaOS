@@ -20,6 +20,7 @@ from anima_server.models.runtime import (
 from anima_server.services.agent.json_utils import parse_json_object
 from anima_server.services.corefs.sealed_runtime import (
     delete_sealed_runtime_records,
+    runtime_private_lookup_value,
     seal_runtime_fields,
 )
 from anima_server.services.ingestion.retrieval import (
@@ -151,6 +152,11 @@ def _merge_concepts(
             raise ValueError("Compiler concept entries must be objects.")
         concept_type = _required_str(payload, "type")
         slug = _required_okf_slug(payload, "slug")
+        slug_lookup = runtime_private_lookup_value(
+            db,
+            owner_id=user_id,
+            value=slug,
+        )
         title = _required_str(payload, "title")
         body_markdown = _required_str(payload, "body_markdown")
         description = _optional_str(payload, "description")
@@ -159,15 +165,16 @@ def _merge_concepts(
             db,
             user_id=user_id,
             concept_type=concept_type,
-            slug=slug,
+            slug=slug_lookup,
             title=title,
             merge_confidence=_optional_float(payload, "merge_confidence"),
         )
         if concept is None:
+            persisted_slug = slug
             concept = RuntimeKnowledgeConcept(
                 user_id=user_id,
                 concept_type=concept_type,
-                slug=slug,
+                slug=slug_lookup,
                 title="",
                 description=None,
                 body_markdown="",
@@ -175,6 +182,13 @@ def _merge_concepts(
                 content_hash=_content_hash(body_markdown),
                 status="active",
             )
+        else:
+            persisted_slug = concept.slug
+        persisted_slug_lookup = runtime_private_lookup_value(
+            db,
+            owner_id=user_id,
+            value=persisted_slug,
+        )
         frontmatter = {
             "type": concept_type,
             "title": title,
@@ -198,12 +212,14 @@ def _merge_concepts(
             row_type="runtime_knowledge_concept",
             owner_id=user_id,
             payload={
+                "slug": persisted_slug,
                 "title": title,
                 "description": description,
                 "body_markdown": body_markdown,
                 "frontmatter_json": frontmatter,
             },
             placeholders={
+                "slug": persisted_slug_lookup,
                 "title": "",
                 "description": None,
                 "body_markdown": "",
@@ -353,10 +369,18 @@ def _concepts_by_payload_and_merged_slug(
     }
     missing_slugs = referenced_slugs - concepts_by_slug.keys()
     if missing_slugs:
+        missing_slug_lookups = [
+            runtime_private_lookup_value(
+                db,
+                owner_id=user_id,
+                value=slug,
+            )
+            for slug in missing_slugs
+        ]
         existing_concepts = db.scalars(
             select(RuntimeKnowledgeConcept).where(
                 RuntimeKnowledgeConcept.user_id == user_id,
-                RuntimeKnowledgeConcept.slug.in_(missing_slugs),
+                RuntimeKnowledgeConcept.slug.in_(missing_slug_lookups),
             )
         ).all()
         for concept in existing_concepts:

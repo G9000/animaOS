@@ -2415,6 +2415,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         ).one()
         raw_concept = runtime_db.execute(
             select(
+                RuntimeKnowledgeConcept.__table__.c.slug,
                 RuntimeKnowledgeConcept.__table__.c.title,
                 RuntimeKnowledgeConcept.__table__.c.description,
                 RuntimeKnowledgeConcept.__table__.c.body_markdown,
@@ -2471,7 +2472,13 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert raw_chunk[0:3] == ("", len(legacy_document_text), None)
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
-        assert raw_concept == ("", None, "", {})
+        assert raw_concept == (
+            f"sealed:{index.blind_token('legacy-private-concept').hex()}",
+            "",
+            None,
+            "",
+            {},
+        )
         assert raw_document == ("", "", "", None)
         assert raw_image_asset == (None, "", "", None)
         assert raw_source[0] != "https://private.example.test/legacy"
@@ -2512,6 +2519,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert loaded_pending.content == "legacy pending plaintext"
         assert loaded_pending.old_content == "older plaintext"
         assert loaded_concept is not None
+        assert loaded_concept.slug == "legacy-private-concept"
         assert loaded_concept.title == "Legacy private title"
         assert loaded_concept.description == "Legacy private description"
         assert loaded_concept.body_markdown == "Legacy private concept body"
@@ -3297,6 +3305,7 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
         ).one()
         raw_concept = runtime_db.execute(
             select(
+                RuntimeKnowledgeConcept.__table__.c.slug,
                 RuntimeKnowledgeConcept.__table__.c.title,
                 RuntimeKnowledgeConcept.__table__.c.description,
                 RuntimeKnowledgeConcept.__table__.c.body_markdown,
@@ -3314,7 +3323,13 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
 
     assert raw_checkpoint == (None, None)
     assert raw_result == (None, None)
-    assert raw_concept == ("", None, "", {})
+    assert raw_concept == (
+        f"sealed:{index.blind_token('private-claim').hex()}",
+        "",
+        None,
+        "",
+        {},
+    )
     assert raw_quote is None
     assert hydrated_run is not None
     assert hydrated_run.input_json == {
@@ -3328,6 +3343,7 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
     }
     assert hydrated_checkpoint.output_json == {"summary": "private workflow checkpoint"}
     assert hydrated_concept is not None
+    assert hydrated_concept.slug == "private-claim"
     assert hydrated_concept.title == "Private claim"
     assert hydrated_concept.description == "private concept description"
     assert hydrated_concept.body_markdown == "private compiled body"

@@ -17,7 +17,10 @@ from anima_server.models.runtime import (
     RuntimeSource,
     RuntimeSourceSpan,
 )
-from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_private_lookup_value,
+    seal_runtime_fields,
+)
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _OKF_IMPORT_SOURCE = "okf_import"
@@ -123,17 +126,22 @@ def _upsert_concept(
     body_markdown: str,
     frontmatter_json: dict[str, object],
 ) -> RuntimeKnowledgeConcept:
+    slug_lookup = runtime_private_lookup_value(
+        db,
+        owner_id=user_id,
+        value=slug,
+    )
     concept = db.scalar(
         select(RuntimeKnowledgeConcept).where(
             RuntimeKnowledgeConcept.user_id == user_id,
-            RuntimeKnowledgeConcept.slug == slug,
+            RuntimeKnowledgeConcept.slug == slug_lookup,
         )
     )
     if concept is None:
         concept = RuntimeKnowledgeConcept(
             user_id=user_id,
             concept_type=concept_type,
-            slug=slug,
+            slug=slug_lookup,
             title="",
             description=None,
             body_markdown="",
@@ -152,12 +160,14 @@ def _upsert_concept(
         row_type="runtime_knowledge_concept",
         owner_id=user_id,
         payload={
+            "slug": slug,
             "title": title,
             "description": description,
             "body_markdown": body_markdown,
             "frontmatter_json": dict(frontmatter_json),
         },
         placeholders={
+            "slug": slug_lookup,
             "title": "",
             "description": None,
             "body_markdown": "",

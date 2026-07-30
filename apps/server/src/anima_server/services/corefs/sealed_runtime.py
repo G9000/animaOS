@@ -512,12 +512,14 @@ def convert_legacy_runtime_rows(
             RuntimeKnowledgeConcept.__table__,
             "runtime_knowledge_concept",
             {
+                "slug": "slug",
                 "title": "title",
                 "description": "description",
                 "body_markdown": "body_markdown",
                 "frontmatter_json": "frontmatter_json",
             },
             {
+                "slug": "",
                 "title": "",
                 "description": None,
                 "body_markdown": "",
@@ -935,6 +937,11 @@ def _convert_legacy_statement(
             if not isinstance(source_uri, str):
                 raise ValueError("legacy Runtime source URI is invalid")
             scrubbed["source_uri"] = _sealed_lookup_value(index, source_uri)
+        elif row_type == "runtime_knowledge_concept":
+            slug = payload["slug"]
+            if not isinstance(slug, str):
+                raise ValueError("legacy Runtime knowledge concept slug is invalid")
+            scrubbed["slug"] = _sealed_lookup_value(index, slug)
         runtime_db.execute(table.update().where(table.c.id == row_id).values(**scrubbed))
         converted += 1
     return converted
@@ -1259,7 +1266,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeThread: ("runtime_thread", ("title",)),
         RuntimeKnowledgeConcept: (
             "runtime_knowledge_concept",
-            ("title", "description", "body_markdown", "frontmatter_json"),
+            ("slug", "title", "description", "body_markdown", "frontmatter_json"),
         ),
         RuntimeKnowledgeConceptSource: (
             "runtime_knowledge_concept_source",
