@@ -1014,6 +1014,18 @@ def restore_database_snapshot(
     *,
     scope: str = "full",
 ) -> None:
+    # MIH-001: the restore inserts whole-table payloads in snapshot order,
+    # not FK-dependency order (e.g. agent_experiences lands before its users
+    # parent). With per-connection FK enforcement now live, defer constraint
+    # checking to COMMIT for this transaction: insertion order stops
+    # mattering, while a genuinely inconsistent snapshot still fails loudly
+    # at commit instead of silently importing orphans. Transaction-scoped by
+    # SQLite semantics — resets automatically at commit/rollback. The caller
+    # commits (no commit happens inside this function), so deferral covers
+    # the entire restore.
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("PRAGMA defer_foreign_keys = ON"))
+
     users_payload = snapshot.get("users")
     user_keys_payload = snapshot.get("userKeys")
     if not isinstance(users_payload, list) or not isinstance(user_keys_payload, list):

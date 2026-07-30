@@ -295,6 +295,11 @@ def _make_engine(database_url: str | None = None) -> Engine:
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA journal_mode = WAL")
                 cursor.execute("PRAGMA busy_timeout = 30000")
+                # MIH-001: SQLite leaves FK constraints unenforced unless this
+                # is issued per connection — without it every ondelete=CASCADE
+                # in the schema is decorative (orphaned evidence/contributions,
+                # see PR #112's findings).
+                cursor.execute("PRAGMA foreign_keys = ON")
                 cursor.close()
 
             return eng
@@ -349,6 +354,10 @@ def _make_engine(database_url: str | None = None) -> Engine:
                 cursor.execute("PRAGMA cipher_memory_security = ON")
             cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute("PRAGMA busy_timeout = 30000")
+            # MIH-001: enforce FK constraints (see the plain-SQLite listener).
+            # Must run after PRAGMA key — statements before the key fail on an
+            # encrypted database.
+            cursor.execute("PRAGMA foreign_keys = ON")
             cursor.close()
 
         logger.info("Database encryption enabled (SQLCipher).")
@@ -384,6 +393,10 @@ def _make_engine(database_url: str | None = None) -> Engine:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode = WAL")
         cursor.execute("PRAGMA busy_timeout = 30000")
+        # MIH-001: SQLite leaves FK constraints unenforced unless this is
+        # issued per connection — without it every ondelete=CASCADE in the
+        # schema is decorative (orphaned evidence/contributions, see PR #112).
+        cursor.execute("PRAGMA foreign_keys = ON")
         cursor.close()
 
     return eng
