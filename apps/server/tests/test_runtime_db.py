@@ -1252,7 +1252,7 @@ def test_runtime_app_data_root_rejects_portable_core_paths(
 
         with pytest.raises(
             RuntimeError,
-            match="ANIMA_RUNTIME_APP_DATA_DIR must not resolve inside the portable Core",
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
         ):
             main_module._claim_runtime_instance()
 
@@ -1260,6 +1260,45 @@ def test_runtime_app_data_root_rejects_portable_core_paths(
     finally:
         settings.data_dir = original_data_dir
         settings.runtime_app_data_dir = original_runtime_app_data_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
+def test_runtime_app_data_root_rejects_portable_core_nested_within_it(
+    managed_tmp_path: Path,
+) -> None:
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    original_health_log_dir = settings.health_log_dir
+    app_data_root = managed_tmp_path / "machine-app-data"
+    core = app_data_root / "cores" / "core-overlap"
+    core.mkdir(parents=True)
+    (core / "manifest.json").write_text(
+        json.dumps({"core_id": "core-overlap"}),
+        encoding="utf-8",
+    )
+    main_module = None
+
+    try:
+        settings.data_dir = core
+        settings.runtime_app_data_dir = str(app_data_root)
+        main_module = _reload_main_module()
+
+        with pytest.raises(
+            RuntimeError,
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+        ):
+            main_module._claim_runtime_instance()
+
+        assert not (app_data_root / "core-instance-registry.json").exists()
+    finally:
+        if main_module is not None:
+            main_module._release_runtime_instance_claim()
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+        settings.health_log_dir = original_health_log_dir
         dispose_cached_engines()
         sys.modules.pop("anima_server.main", None)
 

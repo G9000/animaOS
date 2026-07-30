@@ -111,9 +111,12 @@ def _claim_runtime_instance(
         if settings.runtime_app_data_dir
         else default_runtime_app_data_root()
     ).expanduser().resolve()
-    if app_data_root.is_relative_to(settings.data_dir.expanduser().resolve()):
+    portable_core = settings.data_dir.expanduser().resolve()
+    if app_data_root.is_relative_to(portable_core) or portable_core.is_relative_to(
+        app_data_root
+    ):
         raise RuntimeError(
-            "ANIMA_RUNTIME_APP_DATA_DIR must not resolve inside the portable Core"
+            "ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core"
         )
     registry = RuntimeInstanceRegistry(app_data_root)
     binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
