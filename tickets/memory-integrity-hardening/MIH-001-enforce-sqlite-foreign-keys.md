@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-30 20:29 MYT
+- Updated: 2026-07-30 21:43 MYT
 - Started: 2026-07-30 17:40 MYT
-- Completed: 2026-07-30 20:29 MYT
+- Completed: 2026-07-30 21:43 MYT
 
 ## Goal
 
@@ -65,17 +65,32 @@ Each was patched individually. Enabling FK enforcement would collapse this entir
   semantics (test_memory_writes_update_rust_index now asserts index
   deletes for the whole supersede chain, documented in-test).
 
+- 2026-07-30 21:43 MYT - PR #132 review round 1 (2 P1s — both real
+  data-loss holes in the enforcement rollout), completion re-stamped:
+  (1) a memories-scope vault restore bulk-deleted users, whose ON DELETE
+  CASCADE now executes immediately (defer_foreign_keys defers checks,
+  not actions) and destroyed the preserved tables — scoped restores now
+  upsert user rows field-wise with no delete; (2) Alembic batch_alter
+  rebuilds (copy-create-DROP-rename) fired the old parent's cascades
+  into child tables mid-upgrade — the migration runner now disables FKs
+  via the raw DBAPI cursor (a SQLAlchemy-level pragma would autobegin a
+  transaction and silently no-op) and restores enforcement in a finally.
+  Regression tests: an intermediate-revision (20260316_0001) seeded
+  upgrade preserving agent_steps/agent_messages through the 0002 batch
+  rebuild, and a memories-scope restore preserving threads/tasks while
+  merging the user row. Suite evidence refreshed below.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 4 passed
+  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 6 passed
+  - `uv run pytest tests/test_vault.py` — 25 passed
   - Full-suite audit (enforcement on, pre-fix): 2 failed / 3167 passed —
     both failures triaged as latent non-enforcement reliances (see log)
-  - Full suite (post-fix, incl. the chain-delete index-event test
-    update): **3170 passed, 0 failed, 10 skipped**, run 2026-07-30
-    20:29 MYT
+  - Full suite on the round-1 head — **3172 passed, 0 failed, 10
+    skipped**, run 2026-07-30 22:18 MYT
 - Changed paths:
-  - `apps/server/src/anima_server/db/session.py`
+  - `apps/server/src/anima_server/db/session.py` (pragmas + FK-off migration runner)
   - `apps/server/src/anima_server/api/routes/memory.py`
   - `apps/server/src/anima_server/services/vault.py`
   - `apps/server/tests/test_sqlite_fk_enforcement.py` (new)

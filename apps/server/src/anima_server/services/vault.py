@@ -1108,24 +1108,50 @@ def restore_database_snapshot(
         if restores_soul_keyslots:
             db.query(SoulKeyslot).delete()
         db.query(UserKey).delete()
-        db.query(User).delete()
+        # MIH-001 (PR #132 review): only a FULL restore may bulk-delete users.
+        # With FK enforcement live, deleting a users row executes its ON
+        # DELETE CASCADE actions IMMEDIATELY (defer_foreign_keys defers
+        # constraint checks, not referential actions), which would destroy
+        # exactly the user-owned tables a scoped restore promises to preserve
+        # (threads, tasks, diaries, presence config, ...). Scoped restores
+        # merge the snapshot's user rows in place instead.
+        if is_full:
+            db.query(User).delete()
 
         for record in users_payload:
             if not isinstance(record, dict):
                 raise ValueError("Vault user record is invalid.")
-            db.add(
-                User(
-                    id=int(record["id"]),
-                    username=str(record["username"]),
-                    password_hash=str(record["password_hash"]),
-                    display_name=str(record["display_name"]),
-                    gender=coerce_optional_str(record.get("gender")),
-                    age=coerce_optional_int(record.get("age")),
-                    birthday=coerce_optional_str(record.get("birthday")),
-                    created_at=parse_optional_datetime(record.get("created_at")),
-                    updated_at=parse_optional_datetime(record.get("updated_at")),
-                )
+            restored_user = User(
+                id=int(record["id"]),
+                username=str(record["username"]),
+                password_hash=str(record["password_hash"]),
+                display_name=str(record["display_name"]),
+                gender=coerce_optional_str(record.get("gender")),
+                age=coerce_optional_int(record.get("age")),
+                birthday=coerce_optional_str(record.get("birthday")),
+                created_at=parse_optional_datetime(record.get("created_at")),
+                updated_at=parse_optional_datetime(record.get("updated_at")),
             )
+            if is_full:
+                db.add(restored_user)
+            else:
+                # Update-or-insert by pk with NO delete (so no cascade). A
+                # plain merge would clobber NOT NULL timestamps with None
+                # when a snapshot omits them, so update field-wise.
+                existing_user = db.get(User, restored_user.id)
+                if existing_user is None:
+                    db.add(restored_user)
+                else:
+                    existing_user.username = restored_user.username
+                    existing_user.password_hash = restored_user.password_hash
+                    existing_user.display_name = restored_user.display_name
+                    existing_user.gender = restored_user.gender
+                    existing_user.age = restored_user.age
+                    existing_user.birthday = restored_user.birthday
+                    if restored_user.created_at is not None:
+                        existing_user.created_at = restored_user.created_at
+                    if restored_user.updated_at is not None:
+                        existing_user.updated_at = restored_user.updated_at
 
         for record in user_keys_payload:
             if not isinstance(record, dict):

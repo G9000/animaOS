@@ -474,7 +474,6 @@ def ensure_user_database(user_id: int) -> sessionmaker[Session]:
 
 def _run_alembic_upgrade(engine_instance: Engine) -> None:
     """Run Alembic migrations against a per-user engine."""
-    from alembic import command
     from alembic.config import Config
     from sqlalchemy import inspect as sa_inspect
 
@@ -484,7 +483,34 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
     has_alembic = insp.has_table("alembic_version")
     has_app_tables = insp.has_table("users")
 
-    with engine_instance.begin() as connection:
+    with engine_instance.connect() as connection:
+        # MIH-001: FK enforcement must be OFF for the migration transaction.
+        # Alembic's batch_alter rebuilds a table by copy-create-DROP-rename;
+        # with foreign_keys ON, the DROP of the old parent fires ON DELETE
+        # CASCADE into its children and destroys their rows mid-upgrade
+        # (SQLite's own batch-migration guidance requires FKs off). The
+        # pragma is a no-op inside a transaction, so it goes through the raw
+        # DBAPI cursor (pysqlite runs PRAGMAs outside its implicit
+        # transactions — same channel the connect listeners use); issuing it
+        # via the SQLAlchemy connection would autobegin a transaction and
+        # silently neuter it. The finally re-enables enforcement because the
+        # pooled connection outlives this block.
+        raw = connection.connection.dbapi_connection
+        cursor = raw.cursor()
+        cursor.execute("PRAGMA foreign_keys = OFF")
+        cursor.close()
+        try:
+            _run_alembic_upgrade_on(connection, cfg, has_alembic, has_app_tables)
+        finally:
+            cursor = raw.cursor()
+            cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.close()
+
+
+def _run_alembic_upgrade_on(connection, cfg, has_alembic: bool, has_app_tables: bool) -> None:
+    from alembic import command
+
+    with connection.begin():
         cfg.attributes["connection"] = connection
 
         if has_app_tables and not has_alembic:
