@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-30 18:47 MYT
+- Updated: 2026-07-30 20:55 MYT
 - Started: 2026-07-30 16:27 MYT
-- Completed: 2026-07-30 18:47 MYT
+- Completed: 2026-07-30 20:55 MYT
 
 ## Goal
 
@@ -75,6 +75,16 @@ backend contract still accepts and round-trips the value).
   rival claiming between select and update leaves the loser silent.
   Three regression tests incl. an interleaved-rival race.
 
+- 2026-07-30 20:55 MYT - PR #130 review round 2 (2 P2s), completion
+  re-stamped — durable client handoff: the greeting response now carries
+  `ambientDream: true` when it voices a consumed dream, and the
+  Dashboard treats such greetings as ONE-SHOT: (1) never cached, so the
+  5-minute session cache can't replay the same surfaced dream on every
+  remount; (2) a fetch that resolves after the Dashboard unmounted
+  stashes the dream-bearing message in a one-shot slot the next mount
+  takes exactly once — the consumed dream is displayed, not discarded.
+  Cache helpers extracted to `lib/greetingCache.ts` with 5 bun tests.
+
 ## Validation
 
 - Commands:
@@ -83,6 +93,11 @@ backend contract still accepts and round-trips the value).
     0 failed, 10 skipped**, run 2026-07-30 20:14 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/server/src/anima_server/api/routes/chat.py`
+  - `packages/api-client/src/types.ts`
+  - `apps/desktop/src/lib/greetingCache.ts` (new)
+  - `apps/desktop/src/pages/dashboard/Dashboard.tsx`
+  - `apps/desktop/tests/greetingCache.test.ts` (new)
   - `apps/server/tests/test_inner_life_ambient_dream.py` (new)
   - `apps/desktop/src/pages/Presence.tsx`
 - Notes:

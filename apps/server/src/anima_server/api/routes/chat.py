@@ -340,6 +340,10 @@ async def get_greeting(
     return {
         "message": result.message,
         "llmGenerated": result.llm_generated,
+        # IL-010: True when this message voices a CONSUMED ambient dream
+        # (already marked surfaced). The client must treat such a greeting as
+        # one-shot: display it now, never cache/replay it (PR #130 review).
+        "ambientDream": result.context.ambient_dream is not None,
         "pills": result.pills,
         "context": {
             "currentFocus": result.context.current_focus,

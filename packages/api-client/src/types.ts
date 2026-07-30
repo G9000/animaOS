@@ -696,6 +696,9 @@ export interface Reflection {
 export interface Greeting {
   message: string;
   llmGenerated: boolean;
+  // IL-010: this greeting voices a consumed (surfaced) ambient dream — it is
+  // one-shot: display once, never cache or replay it.
+  ambientDream?: boolean;
   pills?: MessagePill[];
   context: {
     currentFocus: string | null;
