@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifySeedNavigation,
   initiativeReplyState,
+  mergeSeedContexts,
 } from "../src/lib/initiativeReply";
 
 describe("initiativeReplyState (IL-009)", () => {
@@ -64,5 +65,30 @@ describe("classifySeedNavigation (PR #131 review)", () => {
     // Dropping would re-create the original bug (acked, text lost); applying
     // would swap the thread under the live stream.
     expect(classifySeedNavigation({ ...base, streaming: true })).toBe("defer");
+  });
+});
+
+describe("mergeSeedContexts (PR #131 round 2)", () => {
+  const msg = (content: string) =>
+    ({ role: "assistant", content, source: "initiative" }) as const;
+
+  test("a second Reply adds its text instead of overwriting the first", () => {
+    const first = mergeSeedContexts(null, [msg("first initiative")]);
+    const both = mergeSeedContexts(first, [msg("second initiative")]);
+    expect(both.map((m) => m.content)).toEqual([
+      "first initiative",
+      "second initiative",
+    ]);
+  });
+
+  test("null existing behaves as an empty queue", () => {
+    expect(mergeSeedContexts(null, [msg("only")])).toEqual([msg("only")]);
+  });
+
+  test("does not mutate the existing queue", () => {
+    const existing = [msg("a")];
+    const merged = mergeSeedContexts(existing, [msg("b")]);
+    expect(existing).toHaveLength(1);
+    expect(merged).toHaveLength(2);
   });
 });

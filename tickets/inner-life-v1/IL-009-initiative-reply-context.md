@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-30 18:39 MYT
+- Updated: 2026-07-30 19:38 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-30 18:39 MYT
+- Completed: 2026-07-30 19:38 MYT
 
 ## Goal
 
@@ -82,14 +82,24 @@ rather than blocking IL-008 on it.
   per location.key, deferring mid-stream arrivals until the stream
   settles rather than dropping them or swapping the thread live.
 
+- 2026-07-30 19:38 MYT - PR #131 review round 2 (P1 + P2), completion
+  re-stamped: (1) an in-place seed navigation now CLOSES the active
+  server-side thread first (mirrors handleNewThread) — clearing only the
+  client refs let the first reply's get_or_create_thread land in the
+  still-active old conversation; the fresh thread is created on first
+  send. (2) Seed contexts ACCUMULATE (`mergeSeedContexts`, pure +
+  tested): a second Reply during the same stream, or while the first
+  seeded thread is still unsent, adds its message instead of discarding
+  the previously acked initiative's text. 25 desktop tests green.
+
 ## Validation
 
 - Commands:
   - `bun test tests/initiativeReply.test.ts tests/initiativePoller.test.ts` —
-    22 pass (7 IL-009 tests + the 15 poller regressions)
+    25 pass (10 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    round-1 head, 2026-07-30 18:47 MYT
+    round-2 head, 2026-07-30 19:38 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

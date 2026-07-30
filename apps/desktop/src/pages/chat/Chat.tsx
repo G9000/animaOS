@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { classifySeedNavigation } from "../../lib/initiativeReply";
+import { classifySeedNavigation, mergeSeedContexts } from "../../lib/initiativeReply";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type {
@@ -555,13 +555,32 @@ export default function Chat() {
   const pendingSeedNavRef = useRef<ChatContextMessage[] | null>(null);
   const applySeedNavigation = (context: ChatContextMessage[]) => {
     if (user?.id == null) return;
-    pendingContextRef.current = context;
+    // A prior seed still unsent (mount seed or an earlier Reply)? Every
+    // acked initiative's text must survive — merge, never overwrite
+    // (PR #131 round 2).
+    const merged =
+      seedActiveRef.current && currentThreadIdRef.current == null
+        ? mergeSeedContexts(pendingContextRef.current, context)
+        : context;
+    // Close the active server-side thread first (mirrors handleNewThread):
+    // clearing only the client refs would let the first reply's
+    // get_or_create_thread land in the still-active old conversation
+    // (PR #131 round 2). The new thread is created on first send.
+    const threadToClose = currentThreadIdRef.current;
+    pendingContextRef.current = merged;
     seedActiveRef.current = true;
     resumeThreadIdRef.current = null;
     currentThreadIdRef.current = null;
     setCurrentThreadId(null);
-    setMessages(contextToSeedMessages(context, user.id));
+    setMessages(contextToSeedMessages(merged, user.id));
     setError("");
+    if (threadToClose != null) {
+      void api.threads
+        .close(threadToClose)
+        .then(() => api.threads.list())
+        .then((list) => setThreads(dedupeThreads(list.threads)))
+        .catch(() => {});
+    }
   };
   useEffect(() => {
     const state = location.state as ChatLocationState | null;
@@ -576,7 +595,12 @@ export default function Chat() {
     handledSeedKeyRef.current = location.key;
     const context = state?.contextMessages ?? [];
     if (action === "defer") {
-      pendingSeedNavRef.current = context;
+      // Queue EVERY deferred seed — a second Reply during the same stream
+      // must not discard the first acked initiative (PR #131 round 2).
+      pendingSeedNavRef.current = mergeSeedContexts(
+        pendingSeedNavRef.current,
+        context,
+      );
       return;
     }
     applySeedNavigation(context);

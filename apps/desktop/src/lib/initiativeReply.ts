@@ -53,3 +53,18 @@ export function classifySeedNavigation(options: {
   if (!options.seedThread || options.contextCount === 0) return "ignore";
   return options.streaming ? "defer" : "apply";
 }
+
+/**
+ * Accumulate seed contexts instead of replacing them (PR #131 review round
+ * 2). Every acked initiative's text must survive: the overlay supports
+ * multiple pending rows, so a second Reply — while a stream defers the
+ * first, or while the first seeded thread is still unsent — must ADD its
+ * message, not overwrite the previous one. Each context renders as its own
+ * assistant bubble in the seeded thread.
+ */
+export function mergeSeedContexts(
+  existing: ChatContextMessage[] | null,
+  next: ChatContextMessage[],
+): ChatContextMessage[] {
+  return [...(existing ?? []), ...next];
+}
