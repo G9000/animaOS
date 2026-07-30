@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-30 21:43 MYT
+- Updated: 2026-07-31 00:47 MYT
 - Started: 2026-07-30 17:40 MYT
-- Completed: 2026-07-30 21:43 MYT
+- Completed: 2026-07-31 00:47 MYT
 
 ## Goal
 
@@ -80,15 +80,26 @@ Each was patched individually. Enabling FK enforcement would collapse this entir
   rebuild, and a memories-scope restore preserving threads/tasks while
   merging the user row. Suite evidence refreshed below.
 
+- 2026-07-31 00:47 MYT - PR #132 review round 2 (P1 + P2), completion
+  re-stamped: (1) even a FULL restore no longer bulk-deletes users — the
+  cascade reaches user-owned tables the snapshot never exports (diaries,
+  presence config), so a normal backup/restore silently destroyed data
+  it could not recreate; users are upserted for every scope and a full
+  restore prunes only snapshot-ABSENT users (intended account removal).
+  (2) memory_item_tags now export and restore — the junction rows
+  cascade with the MemoryItem bulk delete and every restore silently
+  dropped the user's tag filters. Regression tests for both. Suite
+  evidence refreshed below.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 6 passed
+  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 8 passed
   - `uv run pytest tests/test_vault.py` — 25 passed
   - Full-suite audit (enforcement on, pre-fix): 2 failed / 3167 passed —
     both failures triaged as latent non-enforcement reliances (see log)
-  - Full suite on the round-1 head — **3172 passed, 0 failed, 10
-    skipped**, run 2026-07-30 22:18 MYT
+  - Full suite on the round-2 head — **3174 passed, 0 failed, 10
+    skipped**, run 2026-07-31 01:20 MYT
 - Changed paths:
   - `apps/server/src/anima_server/db/session.py` (pragmas + FK-off migration runner)
   - `apps/server/src/anima_server/api/routes/memory.py`

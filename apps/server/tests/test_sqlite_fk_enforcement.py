@@ -232,3 +232,81 @@ def test_memories_scope_restore_preserves_user_owned_rows(fk_engine) -> None:
         restored = db.get(User, user_id)
         assert restored is not None
         assert restored.display_name == "Scoped (restored)"  # merged in place
+
+
+def test_full_restore_preserves_unexported_user_owned_rows(fk_engine) -> None:
+    """Regression (PR #132 review round 2): even a FULL restore must never
+    bulk-delete users — the cascade reaches user-owned tables the snapshot
+    never exports (presence config, diaries, ...), so a normal
+    backup/restore silently destroyed durable data it could not recreate.
+    Users present in the snapshot are upserted; only users ABSENT from it
+    are pruned (their cascade is the intended account removal)."""
+    from anima_server.models import PresenceConfig
+    from anima_server.services.vault import restore_database_snapshot
+
+    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
+    with factory() as db:
+        keep = User(username="kept", password_hash="x", display_name="Kept")
+        gone = User(username="gone", password_hash="x", display_name="Gone")
+        db.add_all([keep, gone])
+        db.flush()
+        db.add(PresenceConfig(user_id=keep.id, initiative_enabled=True))
+        db.add(PresenceConfig(user_id=gone.id))
+        db.commit()
+        keep_id, gone_id = keep.id, gone.id
+
+    snapshot = {
+        "users": [
+            {"id": keep_id, "username": "kept", "password_hash": "x", "display_name": "Kept v2"}
+        ],
+        "userKeys": [],
+    }
+    with factory() as db:
+        restore_database_snapshot(db, snapshot, scope="full")
+        db.commit()
+
+    with factory() as db:
+        assert db.get(User, keep_id).display_name == "Kept v2"  # upserted
+        assert db.get(User, gone_id) is None  # absent from snapshot: pruned
+        configs = db.scalars(select(PresenceConfig)).all()
+        # The kept user's unexported presence config SURVIVES the full
+        # restore; the pruned user's cascaded away with the intended removal.
+        assert [c.user_id for c in configs] == [keep_id]
+        assert configs[0].initiative_enabled is True
+
+
+def test_restore_round_trips_memory_item_tags(fk_engine) -> None:
+    """Regression (PR #132 review round 2): tag junction rows cascade away
+    with the MemoryItem bulk delete and were never exported — every restore
+    silently dropped the user's tag filters."""
+    from anima_server.models import MemoryItem, MemoryItemTag
+    from anima_server.services.vault import (
+        export_database_snapshot,
+        restore_database_snapshot,
+    )
+
+    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
+    with factory() as db:
+        user = User(username="tagger", password_hash="x", display_name="Tagger")
+        db.add(user)
+        db.flush()
+        item = MemoryItem(
+            user_id=user.id, content="tagged memory", category="fact", importance=3
+        )
+        db.add(item)
+        db.flush()
+        db.add(MemoryItemTag(user_id=user.id, item_id=item.id, tag="sailing"))
+        db.commit()
+        snapshot = export_database_snapshot(db, user_id=user.id)
+
+    assert snapshot["memoryItemTags"], "export must include the tag rows"
+
+    with factory() as db:
+        restore_database_snapshot(db, snapshot, scope="memories")
+        db.commit()
+
+    with factory() as db:
+        tag = db.scalars(select(MemoryItemTag)).one()
+        assert tag.tag == "sailing"
+        item = db.scalars(select(MemoryItem)).one()
+        assert tag.item_id == item.id  # FK intact under enforcement

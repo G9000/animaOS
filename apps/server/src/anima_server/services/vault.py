@@ -861,6 +861,21 @@ def export_database_snapshot(
         serialize_memory_item_evidence_record(row, deks=deks)
         for row in db.scalars(_scoped(select(MemoryItemEvidence), MemoryItemEvidence)).all()
     ]
+    # MIH-001 (PR #132 review): the tag junction rows cascade away with their
+    # MemoryItem under FK enforcement and were never exported — a restore
+    # silently lost every tag filter. Plaintext metadata; no deks involved.
+    from anima_server.models import MemoryItemTag
+
+    memory_item_tags = [
+        {
+            "id": row.id,
+            "tag": row.tag,
+            "item_id": row.item_id,
+            "user_id": row.user_id,
+            "created_at": serialize_optional_datetime(row.created_at),
+        }
+        for row in db.scalars(_scoped(select(MemoryItemTag), MemoryItemTag)).all()
+    ]
     user_profile_fields = [
         serialize_user_profile_field_record(field, deks=deks)
         for field in db.scalars(_scoped(select(UserProfileField), UserProfileField)).all()
@@ -983,6 +998,7 @@ def export_database_snapshot(
         "soulKeyslots": soul_keyslots,
         "memoryItems": memory_items,
         "memoryItemEvidence": memory_item_evidence,
+        "memoryItemTags": memory_item_tags,
         "userProfileFields": user_profile_fields,
         "userProfileFieldEvidence": user_profile_field_evidence,
         "memoryEpisodes": memory_episodes,
@@ -1037,6 +1053,7 @@ def restore_database_snapshot(
 
     memory_items_payload = snapshot.get("memoryItems", [])
     memory_item_evidence_payload = snapshot.get("memoryItemEvidence", [])
+    memory_item_tags_payload = snapshot.get("memoryItemTags", [])
     user_profile_fields_payload = snapshot.get("userProfileFields", [])
     user_profile_field_evidence_payload = snapshot.get("userProfileFieldEvidence", [])
     memory_episodes_payload = snapshot.get("memoryEpisodes", [])
@@ -1108,15 +1125,25 @@ def restore_database_snapshot(
         if restores_soul_keyslots:
             db.query(SoulKeyslot).delete()
         db.query(UserKey).delete()
-        # MIH-001 (PR #132 review): only a FULL restore may bulk-delete users.
+        # MIH-001 (PR #132 review, rounds 1-2): NEVER bulk-delete users.
         # With FK enforcement live, deleting a users row executes its ON
         # DELETE CASCADE actions IMMEDIATELY (defer_foreign_keys defers
-        # constraint checks, not referential actions), which would destroy
-        # exactly the user-owned tables a scoped restore promises to preserve
-        # (threads, tasks, diaries, presence config, ...). Scoped restores
-        # merge the snapshot's user rows in place instead.
+        # constraint checks, not referential actions) — and that cascade
+        # reaches user-owned tables the snapshot never exports (diaries,
+        # diary folders, presence config, ...), so even a FULL restore was
+        # silently destroying durable data it could not recreate. Users are
+        # upserted in place for every scope; a full restore additionally
+        # prunes users ABSENT from the snapshot — for them the cascade is
+        # the intended semantics (the whole account is being removed).
         if is_full:
-            db.query(User).delete()
+            snapshot_user_ids = {
+                int(record["id"])
+                for record in users_payload
+                if isinstance(record, dict) and "id" in record
+            }
+            for stale in db.scalars(select(User)).all():
+                if stale.id not in snapshot_user_ids:
+                    db.delete(stale)
 
         for record in users_payload:
             if not isinstance(record, dict):
@@ -1132,26 +1159,23 @@ def restore_database_snapshot(
                 created_at=parse_optional_datetime(record.get("created_at")),
                 updated_at=parse_optional_datetime(record.get("updated_at")),
             )
-            if is_full:
+            # Update-or-insert by pk with NO delete (so no cascade), for
+            # EVERY scope. A plain merge would clobber NOT NULL timestamps
+            # with None when a snapshot omits them, so update field-wise.
+            existing_user = db.get(User, restored_user.id)
+            if existing_user is None:
                 db.add(restored_user)
             else:
-                # Update-or-insert by pk with NO delete (so no cascade). A
-                # plain merge would clobber NOT NULL timestamps with None
-                # when a snapshot omits them, so update field-wise.
-                existing_user = db.get(User, restored_user.id)
-                if existing_user is None:
-                    db.add(restored_user)
-                else:
-                    existing_user.username = restored_user.username
-                    existing_user.password_hash = restored_user.password_hash
-                    existing_user.display_name = restored_user.display_name
-                    existing_user.gender = restored_user.gender
-                    existing_user.age = restored_user.age
-                    existing_user.birthday = restored_user.birthday
-                    if restored_user.created_at is not None:
-                        existing_user.created_at = restored_user.created_at
-                    if restored_user.updated_at is not None:
-                        existing_user.updated_at = restored_user.updated_at
+                existing_user.username = restored_user.username
+                existing_user.password_hash = restored_user.password_hash
+                existing_user.display_name = restored_user.display_name
+                existing_user.gender = restored_user.gender
+                existing_user.age = restored_user.age
+                existing_user.birthday = restored_user.birthday
+                if restored_user.created_at is not None:
+                    existing_user.created_at = restored_user.created_at
+                if restored_user.updated_at is not None:
+                    existing_user.updated_at = restored_user.updated_at
 
         for record in user_keys_payload:
             if not isinstance(record, dict):
@@ -1388,6 +1412,25 @@ def restore_database_snapshot(
                     extractor=coerce_optional_str(record.get("extractor")),
                     evidence_text=str(record.get("evidence_text", "")),
                     metadata_json=record.get("metadata_json"),
+                    created_at=parse_optional_datetime(record.get("created_at")),
+                )
+            )
+
+        # MIH-001 (PR #132 review): rebuild the tag junction rows. Their old
+        # rows are already gone — they cascade with the MemoryItem bulk
+        # delete under FK enforcement — and they were never exported before,
+        # so every restore silently dropped the user's tag filters.
+        from anima_server.models import MemoryItemTag
+
+        for record in memory_item_tags_payload:
+            if not isinstance(record, dict):
+                continue
+            db.add(
+                MemoryItemTag(
+                    id=int(record["id"]),
+                    tag=str(record["tag"]),
+                    item_id=int(record["item_id"]),
+                    user_id=int(record["user_id"]),
                     created_at=parse_optional_datetime(record.get("created_at")),
                 )
             )
