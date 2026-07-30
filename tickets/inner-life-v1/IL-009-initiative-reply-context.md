@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-30 19:38 MYT
+- Updated: 2026-07-30 20:43 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-30 19:38 MYT
+- Completed: 2026-07-30 20:43 MYT
 
 ## Goal
 
@@ -91,6 +91,13 @@ rather than blocking IL-008 on it.
   tested): a second Reply during the same stream, or while the first
   seeded thread is still unsent, adds its message instead of discarding
   the previously acked initiative's text. 25 desktop tests green.
+
+- 2026-07-30 20:43 MYT - PR #131 review round 3 (P1), completion
+  re-stamped: the in-place seed's thread closure was fire-and-forget, so
+  a fast submit (e.g. an existing draft) could still reach the server
+  while the old thread was active. Sends are now gated on the in-flight
+  closure (ref-guarded, with a one-moment notice) until the close
+  settles.
 
 ## Validation
 

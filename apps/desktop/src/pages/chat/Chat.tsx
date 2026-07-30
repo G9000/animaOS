@@ -553,6 +553,12 @@ export default function Chat() {
   // owned by the mount path. Arrivals mid-stream are deferred until the
   // stream settles instead of swapping the thread under it.
   const pendingSeedNavRef = useRef<ChatContextMessage[] | null>(null);
+  // True while an in-place seed's server-side thread closure is in flight.
+  // Sending during that window would let get_or_create_thread select the
+  // still-active OLD thread and append the seeded reply to the previous
+  // conversation (PR #131 round 3) — the send guard blocks until the close
+  // settles (and surfaces a one-moment notice if the user submits early).
+  const seedRotatingRef = useRef(false);
   const applySeedNavigation = (context: ChatContextMessage[]) => {
     if (user?.id == null) return;
     // A prior seed still unsent (mount seed or an earlier Reply)? Every
@@ -575,11 +581,15 @@ export default function Chat() {
     setMessages(contextToSeedMessages(merged, user.id));
     setError("");
     if (threadToClose != null) {
+      seedRotatingRef.current = true;
       void api.threads
         .close(threadToClose)
         .then(() => api.threads.list())
         .then((list) => setThreads(dedupeThreads(list.threads)))
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          seedRotatingRef.current = false;
+        });
     }
   };
   useEffect(() => {
@@ -1088,8 +1098,12 @@ export default function Chat() {
     if (
       (!text.trim() && selectedImages.length === 0 && documentsForTurn.length === 0) ||
       user?.id == null ||
-      streaming
+      streaming ||
+      seedRotatingRef.current
     ) {
+      if (seedRotatingRef.current) {
+        setError("Starting the reply thread - one moment.");
+      }
       return;
     }
 
