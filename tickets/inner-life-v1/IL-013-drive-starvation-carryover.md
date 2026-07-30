@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 15:58 MYT
+- Updated: 2026-07-30 12:10 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed: 2026-07-29 15:58 MYT
 
@@ -83,13 +83,21 @@ every fire decision remains fully explainable.
   `advance_drives` and the edge bookkeeping. Two regression tests added
   (100 passed in `test_inner_life_initiative.py`).
 
+- 2026-07-30 12:10 MYT - PR #128 review round 3: acceptance evidence completed in Validation — full-suite result (3163 passed / 0 failed on 43698cb) recorded; PostgreSQL migration cycle run on the app's embedded pgserver (full-chain upgrade incl. pgvector, downgrade, re-upgrade — clean).
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_initiative.py` — 98 passed (the one
-    failure, `test_fetch_ack_route_end_to_end`, fails identically on
-    unmodified main when the file runs standalone; it passes in-suite)
-  - alembic 033 upgrade/downgrade/upgrade smoke on temp SQLite — clean
+  - Full suite (`bun run test`) on `43698cb` — **3163 passed, 0 failed,
+    10 skipped** (includes `test_fetch_ack_route_end_to_end`, which passes
+    in-suite; its standalone-run failure reproduces identically on
+    unmodified main and predates this work)
+  - `uv run pytest tests/test_inner_life_initiative.py` — 100 passed focused
+  - alembic 033 upgrade/downgrade/upgrade on temp SQLite — clean
+  - alembic on real PostgreSQL (embedded `pgserver`, the engine the app
+    ships): FULL chain `upgrade head` from scratch (incl. pgvector) →
+    `downgrade -1` (column dropped) → `upgrade head` (column restored),
+    single head `033_drive_state_starvation` — clean, 2026-07-30 12:10 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/initiative.py`
   - `apps/server/src/anima_server/models/runtime_consciousness.py`
