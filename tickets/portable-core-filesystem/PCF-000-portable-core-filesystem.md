@@ -32,6 +32,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
+| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | backlog | none |
 
 ## Deliverables
 
@@ -296,6 +297,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-30 23:49 MYT - Addressed PR #127's exact-head concept-slug privacy finding on `5177a795` with three RED/GREEN raw-storage/reuse/conversion regressions. Compiler and OKF concepts now persist only keyed opaque slug projections, hydrate their canonical slugs from unlock-sealed payloads, query merges and links through the projection, and convert existing plaintext rows on unlock. The expanded affected band passed `168`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-31 00:02 MYT - Addressed PR #127's two exact-head indexing-lifecycle findings on `a7949b79` with RED/GREEN coverage. Deferred Runtime vectors now publish only into the embedding generation captured with their work, while fresh unlocks restore and retain the committed exact-search generation before the authenticated catalog walk rather than clearing it during rebuild initialization. The expanded affected band passed `186`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-31 00:28 MYT - Addressed PR #127's three exact-head session/configuration/rotation findings on `40f8e266` with four RED/GREEN regressions. Logout retains the shared SQLCipher key and cached user engines while any replacement alias remains live, embedding generation identity now changes with its resolved endpoint, and serialized resume-only FRK operations fail cleanly once no rotation remains instead of racing into a post-handoff 500. The expanded affected band passed `128`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
+
+- 2026-07-30 15:50 MYT - Planning only: filed `PCF-011` (backlog, unassigned) documenting the windows-native-lease CI flake observed on PR #128 (`object_lease_diagnostic_records_ordered_boundaries_and_required_mutations`, DiagnosticInvariant on a docs-only commit, green on unmodified re-run). No ownership or state changes to any existing child.
 
 ## Validation
 
