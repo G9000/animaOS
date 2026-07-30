@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-30 20:55 MYT
+- Updated: 2026-07-30 23:53 MYT
 - Started: 2026-07-30 16:27 MYT
-- Completed: 2026-07-30 20:55 MYT
+- Completed: 2026-07-30 23:53 MYT
 
 ## Goal
 
@@ -85,12 +85,24 @@ backend contract still accepts and round-trips the value).
   takes exactly once — the consumed dream is displayed, not discarded.
   Cache helpers extracted to `lib/greetingCache.ts` with 5 bun tests.
 
+- 2026-07-30 23:53 MYT - PR #130 review round 3 (P1 + 2 P2), completion
+  re-stamped: (1) the one-shot replay now re-checks consent against a
+  FRESH presence config before displaying — an opt-out between the stash
+  and the next mount wins and the stash is discarded (unknown consent
+  prefers silence); (2) ambient surfacing drains the runtime
+  dream_residue pressure and its starvation history exactly like the
+  initiative fire path, so voiced-dream pressure can't transfer to the
+  next unrelated dream; (3) the one-shot slot became a FIFO QUEUE —
+  concurrent in-flight consumptions each survive to a later mount
+  instead of the second overwriting the first. Tests: 14 server + 8
+  cache (queue FIFO, peek-without-consume, consent gate).
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 13 passed
-  - Full suite (`bun run test`) on the round-1 head — **3179 passed,
-    0 failed, 10 skipped**, run 2026-07-30 20:14 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 14 passed
+  - Full suite on the round-3 head — **3180 passed, 0 failed, 10
+    skipped**, run 2026-07-31 00:34 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/api/routes/chat.py`

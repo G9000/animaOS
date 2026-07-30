@@ -250,3 +250,56 @@ def test_concurrent_claim_returns_the_dream_to_exactly_one_caller(
         loser.close()
     with soul_factory() as db:
         assert db.scalars(select(DreamJournal)).one().surfaced is True
+
+
+def test_ambient_surfacing_resets_dream_residue_pressure(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 3): surfacing a dream through the ambient
+    greeting must drain the runtime dream_residue pressure (and its
+    starvation history) exactly like the initiative fire path — otherwise
+    pressure accumulated FOR the voiced dream lingers and transfers to the
+    next unrelated dream, firing it prematurely."""
+    import asyncio
+    from datetime import UTC, datetime
+
+    from anima_server.config import settings
+    from anima_server.db.runtime_base import RuntimeBase
+    from anima_server.models.runtime_consciousness import DriveStateRow
+    from anima_server.services.agent.proactive import generate_greeting
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+
+    rt_engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    RuntimeBase.metadata.create_all(bind=rt_engine)
+    rt_factory = sessionmaker(bind=rt_engine, autoflush=False, expire_on_commit=False)
+    with rt_factory() as rt:
+        rt.add(
+            DriveStateRow(
+                user_id=user_id,
+                dream_residue=0.55,
+                updated_at=datetime(2026, 7, 30, tzinfo=UTC),
+                starvation_losses={"dream_residue": 3, "relational": 1},
+            )
+        )
+        rt.commit()
+
+    with rt_factory() as rt:
+        result = asyncio.run(
+            generate_greeting(soul_db, user_id=user_id, runtime_db=rt)
+        )
+    assert "I dreamt about something recently" in result.message
+
+    with rt_factory() as rt:
+        row = rt.scalars(
+            select(DriveStateRow).where(DriveStateRow.user_id == user_id)
+        ).one()
+        assert row.dream_residue == 0.0  # drained like the fire path
+        assert row.starvation_losses == {"relational": 1}  # history cleared
+    rt_engine.dispose()

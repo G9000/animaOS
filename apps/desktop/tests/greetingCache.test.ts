@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { Greeting } from "@anima/api-client";
 
 import {
+  ambientConsentAllows,
   getCachedGreeting,
+  peekOneShotGreeting,
   setCachedGreeting,
   stashOneShotGreeting,
   takeOneShotGreeting,
@@ -64,5 +66,32 @@ describe("one-shot handoff slot (IL-010 / PR #130)", () => {
   test("a different user's mount never takes the stash", () => {
     stashOneShotGreeting(7, greeting({ ambientDream: true }));
     expect(takeOneShotGreeting(8)).toBeNull();
+  });
+});
+
+describe("one-shot queue + consent (PR #130 round 3)", () => {
+  test("two in-flight consumptions both survive — FIFO, nothing overwritten", () => {
+    stashOneShotGreeting(7, greeting({ ambientDream: true, message: "first dream" }));
+    stashOneShotGreeting(7, greeting({ ambientDream: true, message: "second dream" }));
+    expect(takeOneShotGreeting(7)?.message).toBe("first dream");
+    expect(takeOneShotGreeting(7)?.message).toBe("second dream");
+    expect(takeOneShotGreeting(7)).toBeNull();
+  });
+
+  test("peek reports presence without consuming", () => {
+    expect(peekOneShotGreeting(7)).toBe(false);
+    stashOneShotGreeting(7, greeting({ ambientDream: true }));
+    expect(peekOneShotGreeting(7)).toBe(true);
+    expect(peekOneShotGreeting(7)).toBe(true); // still there
+    expect(takeOneShotGreeting(7)).not.toBeNull();
+    expect(peekOneShotGreeting(7)).toBe(false);
+  });
+
+  test("consent gate: ambient required, opt-out and master-off win", () => {
+    expect(ambientConsentAllows({ enabled: true, dreamSharing: "ambient" })).toBe(true);
+    expect(ambientConsentAllows({ dreamSharing: "ambient" })).toBe(true);
+    expect(ambientConsentAllows({ enabled: false, dreamSharing: "ambient" })).toBe(false);
+    expect(ambientConsentAllows({ enabled: true, dreamSharing: "on_ask" })).toBe(false);
+    expect(ambientConsentAllows({ enabled: true, dreamSharing: "off" })).toBe(false);
   });
 });

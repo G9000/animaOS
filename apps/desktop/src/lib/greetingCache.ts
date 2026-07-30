@@ -71,27 +71,62 @@ export function setCachedGreeting(userId: number, greeting: Greeting): void {
 // it exactly once.
 export const GREETING_ONESHOT_KEY = "anima_dashboard_greeting_oneshot";
 
-export function stashOneShotGreeting(userId: number, greeting: Greeting): void {
+type OneShotEntry = { greeting: Greeting; userId: number };
+
+function readOneShotQueue(): OneShotEntry[] {
   try {
-    sessionStorage.setItem(
-      GREETING_ONESHOT_KEY,
-      JSON.stringify({ greeting, userId }),
-    );
+    const raw = sessionStorage.getItem(GREETING_ONESHOT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as OneShotEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOneShotQueue(queue: OneShotEntry[]): void {
+  try {
+    if (queue.length === 0) sessionStorage.removeItem(GREETING_ONESHOT_KEY);
+    else sessionStorage.setItem(GREETING_ONESHOT_KEY, JSON.stringify(queue));
   } catch {
     /* ignore */
   }
 }
 
+// A QUEUE, not a slot (PR #130 review): rapid mount/unmount cycles can leave
+// several greeting requests in flight, each having claimed a different dream
+// server-side — a single slot let the second stash overwrite (and silence
+// forever) the first consumed narrative.
+export function stashOneShotGreeting(userId: number, greeting: Greeting): void {
+  writeOneShotQueue([...readOneShotQueue(), { greeting, userId }]);
+}
+
+/** Whether a stashed greeting exists for `userId` — without consuming it
+ * (the caller may need to verify consent before taking). */
+export function peekOneShotGreeting(userId: number): boolean {
+  return readOneShotQueue().some((entry) => entry.userId === userId);
+}
+
 export function takeOneShotGreeting(userId: number): Greeting | null {
-  try {
-    const raw = sessionStorage.getItem(GREETING_ONESHOT_KEY);
-    if (!raw) return null;
-    sessionStorage.removeItem(GREETING_ONESHOT_KEY);
-    const parsed = JSON.parse(raw) as { greeting?: Greeting; userId?: number };
-    if (parsed?.userId === userId && parsed.greeting) return parsed.greeting;
-  } catch {
-    /* ignore */
-  }
-  return null;
+  const queue = readOneShotQueue();
+  const index = queue.findIndex((entry) => entry.userId === userId);
+  if (index === -1) return null;
+  const [entry] = queue.splice(index, 1);
+  writeOneShotQueue(queue);
+  return entry.greeting;
+}
+
+export function clearOneShotGreetings(userId: number): void {
+  writeOneShotQueue(readOneShotQueue().filter((e) => e.userId !== userId));
+}
+
+/** IL-010 consent gate for replaying a stashed dream-bearing greeting: the
+ * dream was consumed server-side, but an opt-out between the stash and the
+ * next mount must win — the user asked for silence. */
+export function ambientConsentAllows(config: {
+  enabled?: boolean;
+  dreamSharing?: string;
+}): boolean {
+  return config.enabled !== false && config.dreamSharing === "ambient";
 }
 

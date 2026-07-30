@@ -359,6 +359,39 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
     return narrative[:240]
 
 
+def _reset_dream_residue_after_surfacing(
+    runtime_db: Session | None, *, user_id: int
+) -> None:
+    """IL-010 (PR #130 review): surfacing a dream through the ambient
+    greeting must drain the runtime ``dream_residue`` pressure exactly like
+    the initiative-delivery path does (``reset_drive`` + starvation-history
+    clear at fire time). Otherwise pressure accumulated FOR the voiced dream
+    lingers, leaks for days, and transfers to the next unrelated dream —
+    letting it hit the initiative threshold prematurely. Best-effort: the
+    greeting must never fail on runtime-store trouble."""
+    if runtime_db is None:
+        return
+    try:
+        from anima_server.models.runtime_consciousness import DriveStateRow
+
+        row = runtime_db.scalar(
+            select(DriveStateRow).where(DriveStateRow.user_id == user_id)
+        )
+        if row is None:
+            return
+        row.dream_residue = 0.0
+        losses = dict(row.starvation_losses or {})
+        if losses.pop("dream_residue", None) is not None:
+            row.starvation_losses = losses
+        runtime_db.commit()
+    except Exception:
+        logger.warning(
+            "Failed to reset dream_residue after ambient surfacing for user %s",
+            user_id,
+            exc_info=True,
+        )
+
+
 def _resolve_held_thought(
     db: Session,
     runtime_db: Session | None,
@@ -931,6 +964,7 @@ async def generate_greeting(
     ambient_dream = _resolve_ambient_dream(db, user_id=user_id)
     if ambient_dream:
         ctx = dataclasses.replace(ctx, ambient_dream=ambient_dream)
+        _reset_dream_residue_after_surfacing(runtime_db, user_id=user_id)
 
     if settings.agent_provider == "scaffold":
         return GreetingResult(message=build_static_greeting(ctx), context=ctx)

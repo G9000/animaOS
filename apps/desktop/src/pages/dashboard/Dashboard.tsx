@@ -26,7 +26,9 @@ import type {
 import type { GalleryImage } from "./nodes/node-types";
 import { api } from "../../lib/api";
 import {
+  ambientConsentAllows,
   getCachedGreeting,
+  peekOneShotGreeting,
   setCachedGreeting,
   stashOneShotGreeting,
   takeOneShotGreeting,
@@ -117,10 +119,23 @@ export default function Dashboard() {
     if (user?.id == null || needsSetup !== false) return;
     let active = true;
     // A dream-bearing greeting stashed by an unmounted fetch (below) is
-    // displayed exactly once before consulting the cache or refetching.
-    const oneShot = takeOneShotGreeting(user.id);
-    if (oneShot) {
-      setBrief(oneShot);
+    // displayed exactly once — but ONLY after re-checking consent against
+    // the freshly loaded presence config (PR #130 review): an opt-out
+    // between the stash and this mount must win, so the stash is discarded
+    // (the dream was consumed server-side; the user asked for silence).
+    if (peekOneShotGreeting(user.id)) {
+      void api.presence
+        .get(user.id)
+        .then((cfg) => {
+          const oneShot = takeOneShotGreeting(user.id);
+          if (!active) return;
+          setPresenceConfig(cfg);
+          if (oneShot && ambientConsentAllows(cfg)) setBrief(oneShot);
+        })
+        .catch(() => {
+          // Unknown consent -> prefer silence; drop the stash.
+          takeOneShotGreeting(user.id);
+        });
       return () => {
         active = false;
       };
