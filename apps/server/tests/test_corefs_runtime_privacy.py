@@ -2788,6 +2788,104 @@ def test_runtime_embedding_cache_changes_only_after_commit_and_fans_out(
         )
 
 
+def test_runtime_embedding_cache_waits_for_outer_transaction_after_savepoint(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    indexes = (
+        CoreFSProgressiveIndex("core-a"),
+        CoreFSProgressiveIndex("core-a"),
+    )
+    for index in indexes:
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: indexes[0])
+    monkeypatch.setattr(sealed_runtime, "active_runtime_indexes", lambda _user_id: indexes)
+    vector = (1.0, 0.0)
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.commit()
+
+        with runtime_db.begin_nested():
+            rolled_back = RuntimeEmbedding(
+                user_id=7,
+                source_type="memory_item",
+                source_id=96,
+                content_hash=RuntimeEmbedding.compute_content_hash("savepoint upsert"),
+                content_preview="",
+                category="fact",
+                importance=5,
+            )
+            sealed_runtime.persist_runtime_embedding(
+                runtime_db,
+                row=rolled_back,
+                owner_id=7,
+                embedding=vector,
+                content="savepoint upsert",
+            )
+            runtime_db.flush()
+
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=96) is None
+            for index in indexes
+        )
+        runtime_db.rollback()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=96) is None
+            for index in indexes
+        )
+
+        committed = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=97,
+            content_hash=RuntimeEmbedding.compute_content_hash("savepoint delete"),
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        sealed_runtime.persist_runtime_embedding(
+            runtime_db,
+            row=committed,
+            owner_id=7,
+            embedding=vector,
+            content="savepoint delete",
+        )
+        runtime_db.flush()
+        runtime_db.commit()
+
+        with runtime_db.begin_nested():
+            assert (
+                sealed_runtime.delete_runtime_embedding_records(
+                    runtime_db,
+                    owner_id=7,
+                    source_type="memory_item",
+                    source_ids=[97],
+                )
+                == 1
+            )
+
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=97) == vector
+            for index in indexes
+        )
+        runtime_db.rollback()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=97) == vector
+            for index in indexes
+        )
+
+
 def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(
     monkeypatch,
 ) -> None:

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 
 _UNCHANGED = object()
+_PENDING_RUNTIME_INDEX_WRITES = "corefs_pending_runtime_index_writes"
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +82,61 @@ def runtime_index_for_sensitive_write(
             "sensitive Runtime writes are unavailable while CoreFS is locked"
         )
     return None
+
+
+def _current_session_transaction(runtime_db: Session) -> Any:
+    return runtime_db.get_nested_transaction() or runtime_db.get_transaction()
+
+
+def _publish_committed_runtime_index_writes(runtime_db: Session) -> None:
+    transaction = _current_session_transaction(runtime_db)
+    if transaction is None:
+        return
+    pending = runtime_db.info.get(_PENDING_RUNTIME_INDEX_WRITES, [])
+    for item in tuple(pending):
+        if item["transaction"] is not transaction:
+            continue
+        parent = transaction.parent
+        if parent is not None:
+            item["transaction"] = parent
+            continue
+        pending.remove(item)
+        item["publish"]()
+
+
+def _discard_rolled_back_runtime_index_writes(runtime_db: Session) -> None:
+    transaction = _current_session_transaction(runtime_db)
+    if transaction is None:
+        return
+    pending = runtime_db.info.get(_PENDING_RUNTIME_INDEX_WRITES, [])
+    pending[:] = [item for item in pending if item["transaction"] is not transaction]
+
+
+def _defer_runtime_index_write_until_root_commit(
+    runtime_db: Session,
+    publish: Callable[[], None],
+) -> None:
+    transaction = _current_session_transaction(runtime_db)
+    if transaction is None:
+        raise RuntimeError("Runtime index publication requires an active transaction")
+    if _PENDING_RUNTIME_INDEX_WRITES not in runtime_db.info:
+        runtime_db.info[_PENDING_RUNTIME_INDEX_WRITES] = []
+        event.listen(
+            runtime_db,
+            "after_commit",
+            _publish_committed_runtime_index_writes,
+        )
+        event.listen(
+            runtime_db,
+            "after_rollback",
+            _discard_rolled_back_runtime_index_writes,
+        )
+    runtime_db.info[_PENDING_RUNTIME_INDEX_WRITES].append(
+        {
+            "transaction": transaction,
+            "publish": publish,
+        }
+    )
 
 
 def seal_runtime_record(
@@ -238,9 +294,7 @@ def persist_runtime_embedding(
         category = str(row.category)
         importance = int(row.importance)
 
-        def publish(_session: Session) -> None:
-            with suppress(Exception):
-                event.remove(runtime_db, "after_rollback", discard)
+        def publish() -> None:
             for live_index in active_runtime_indexes(owner_id):
                 with suppress(CoreFSRuntimeLocked, ValueError):
                     live_index.upsert_runtime_embedding(
@@ -252,12 +306,7 @@ def persist_runtime_embedding(
                         importance=importance,
                     )
 
-        def discard(_session: Session) -> None:
-            with suppress(Exception):
-                event.remove(runtime_db, "after_commit", publish)
-
-        event.listen(runtime_db, "after_commit", publish, once=True)
-        event.listen(runtime_db, "after_rollback", discard, once=True)
+        _defer_runtime_index_write_until_root_commit(runtime_db, publish)
 
 
 def load_runtime_embedding_vector(
@@ -1016,9 +1065,7 @@ def delete_runtime_embedding_records(
         )
     )
 
-    def publish(_session: Session) -> None:
-        with suppress(Exception):
-            event.remove(runtime_db, "after_rollback", discard)
+    def publish() -> None:
         for row_owner_id, sources in deleted_sources_by_owner.items():
             for live_index in active_runtime_indexes(row_owner_id):
                 for deleted_source_type, deleted_source_ids in sources.items():
@@ -1028,12 +1075,7 @@ def delete_runtime_embedding_records(
                             source_ids=frozenset(deleted_source_ids),
                         )
 
-    def discard(_session: Session) -> None:
-        with suppress(Exception):
-            event.remove(runtime_db, "after_commit", publish)
-
-    event.listen(runtime_db, "after_commit", publish, once=True)
-    event.listen(runtime_db, "after_rollback", discard, once=True)
+    _defer_runtime_index_write_until_root_commit(runtime_db, publish)
     return len(rows)
 
 
