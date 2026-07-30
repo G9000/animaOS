@@ -304,7 +304,7 @@ def _upsert_runtime_embedding(
         row=existing,
         owner_id=user_id,
         embedding=embedding,
-        content_preview=annotation.content_text[:200],
+        content=annotation.content_text,
     )
 
 

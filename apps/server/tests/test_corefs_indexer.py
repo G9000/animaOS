@@ -241,6 +241,25 @@ def test_blind_tokens_and_generation_state_are_purged_on_lock() -> None:
     assert index.sensitive_buffer_counts()["blind_tokens"] == 0
 
 
+def test_catalog_refresh_preserves_independent_runtime_embeddings() -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.upsert_runtime_embedding(
+        source_type="memory_item",
+        source_id=91,
+        vector=(1.0, 0.0),
+        content="private Runtime memory",
+        category="fact",
+        importance=4,
+    )
+
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=1, families={"notes": 0})
+
+    hits = index.search_runtime_embeddings((1.0, 0.0), limit=5)
+    assert [(hit.source_type, hit.source_id) for hit in hits] == [("memory_item", 91)]
+
+
 def test_unlock_session_revocation_clears_the_attached_runtime_index() -> None:
     class NativeSession:
         def begin_close(self) -> None:
@@ -299,14 +318,30 @@ def test_unlock_session_factory_receives_process_sqlcipher_key() -> None:
         store.clear_sqlcipher_key()
 
 
+def test_unlock_session_publish_callback_receives_new_session() -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    published = []
+    store = UnlockSessionStore(
+        runtime_index_factory=lambda _keys, _key: index,
+        on_session_published=published.append,
+    )
+
+    token = store.create(8, {"memories": b"m" * 32})
+    try:
+        session = store.resolve(token)
+        assert session is not None
+        assert published == [session]
+    finally:
+        store.revoke(token)
+
+
 def test_legacy_unlock_session_still_creates_runtime_sealing_index() -> None:
     index = CoreFSProgressiveIndex("core-index")
     index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
     seen: list[tuple[object | None, bytes | None]] = []
     store = UnlockSessionStore(
-        runtime_index_factory=lambda keys, key: (
-            seen.append((keys, key)) or index
-        ),
+        runtime_index_factory=lambda keys, key: seen.append((keys, key)) or index,
     )
     store.set_sqlcipher_key(b"k" * 32)
 

@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-30 21:16 MYT
+- Updated: 2026-07-30 21:40 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -286,10 +286,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-30 20:53 MYT - Addressed PR #127's three P1 findings on `691ae6a6`: shared token aliases now retain their exact unlock session until the last alias disappears, workflow inputs join results/outputs in unlock-sealed Runtime payloads, and conversation-derived thread titles use mapped placeholders with legacy hydration and deletion cleanup. Five focused regressions failed RED and six passed GREEN; the expanded PCF/session/thread/workflow band passed `250`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 
 - 2026-07-30 21:16 MYT - Addressed PR #127's two exact-head P1 findings on `a601afa3` with RED/GREEN raw-storage coverage. CoreFS-bound vectors/checksums now live only in unlock memory, while document/image/source parent descriptors use sealed Runtime payloads plus a keyed opaque source-URI projection; legacy conversion and image deletion preserve the same privacy lifecycle. The expanded affected band passed `200`, Runtime Alembic reports only `034_corefs_runtime_index`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
+- 2026-07-30 21:40 MYT - Addressed PR #127's three exact-head P1 findings on `63bdb443` with four RED/GREEN regressions. Catalog refreshes preserve the separate unlock-only Runtime embedding map, published/restored unlock sessions schedule regeneration from encrypted full-content payloads, and legacy PostgreSQL vectors/checksums/previews are loaded into the active unlock then scrubbed transactionally. The expanded affected band passed `228`, Runtime Alembic reports only `034_corefs_runtime_index`, and scoped Ruff/format, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout, while PCF-004 remains dependency-ineligible.
 
 ## Validation
 
 - Commands:
+  - PR #127 Runtime-vector lifecycle follow-up: four focused regressions failed RED and passed GREEN; affected coverage passed `228`; Runtime Alembic reports only `034_corefs_runtime_index`; scoped Ruff/format, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 vector/descriptor privacy follow-up: three raw-storage regressions failed RED and passed GREEN; affected coverage passed `200`; Runtime Alembic reports only `034_corefs_runtime_index`; scoped Ruff, repository organization, workspace build, and diff hygiene passed.
   - `cargo +1.75.0 test --locked -p anima-corefs` (23 tests)
   - `cargo test --locked -p anima-corefs -p anima-core` (241 tests)

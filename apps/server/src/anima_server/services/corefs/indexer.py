@@ -169,7 +169,6 @@ class CoreFSProgressiveIndex:
             self._require_unlocked()
             self._documents.clear()
             self._vectors.clear()
-            self._runtime_embeddings.clear()
             self._semantic_fingerprint = None
             self._pending_semantic_fingerprint = None
             self._processed_revisions.clear()
@@ -272,9 +271,9 @@ class CoreFSProgressiveIndex:
                 stored_norm = math.sqrt(sum(value * value for value in stored))
                 if stored_norm == 0:
                     continue
-                score = sum(
-                    left * right for left, right in zip(query, stored, strict=True)
-                ) / (query_norm * stored_norm)
+                score = sum(left * right for left, right in zip(query, stored, strict=True)) / (
+                    query_norm * stored_norm
+                )
                 ranked.append((score, object_id))
             ranked.sort(key=lambda item: (-item[0], item[1]))
             return tuple(object_id for _score, object_id in ranked[:limit])
@@ -459,9 +458,7 @@ class CoreFSProgressiveIndex:
             if current is None:
                 raise ValueError(f"family is absent from catalog: {family}")
             unavailable = tuple(
-                value
-                for value in current.unavailable_object_ids
-                if value != object_id
+                value for value in current.unavailable_object_ids if value != object_id
             )
             self._families[family] = FamilyReadiness(
                 total=current.total,

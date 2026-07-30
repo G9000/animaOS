@@ -111,7 +111,7 @@ class PgVecStore(VectorStore):
                 row=stored,
                 owner_id=user_id,
                 embedding=runtime_embedding,
-                content_preview=content[:200],
+                content=content,
             )
             self._db.flush()
             return

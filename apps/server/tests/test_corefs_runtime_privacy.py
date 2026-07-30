@@ -600,9 +600,7 @@ def test_production_asset_and_source_writers_seal_private_descriptors(
     assert hydrated_document.filename == document_filename
     assert hydrated_document.mime_type == "application/pdf"
     assert hydrated_document.storage_path == document_path
-    assert hydrated_document.metadata_json == {
-        "private_note": "document descriptor metadata"
-    }
+    assert hydrated_document.metadata_json == {"private_note": "document descriptor metadata"}
     assert hydrated_image is not None
     assert hydrated_image.filename == image_filename
     assert hydrated_image.mime_type == "image/png"
@@ -1720,6 +1718,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         RuntimeWorkflowCheckpoint,
         RuntimeWorkflowRun,
     )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.documents.models import (
@@ -1836,6 +1835,20 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 local_instance_id="instance-a",
             )
         )
+        vector = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
+        vector[0] = 1.0
+        runtime_embedding = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=91,
+            content_hash="e" * 64,
+            embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(vector),
+            embedding=vector,
+            content_preview="legacy embedding plaintext",
+            category="fact",
+            importance=4,
+        )
+        runtime_db.add(runtime_embedding)
         runtime_db.flush()
 
         index = CoreFSProgressiveIndex("core-a")
@@ -1908,7 +1921,14 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 RuntimeWorkflowCheckpoint.__table__.c.output_json,
             ).where(RuntimeWorkflowCheckpoint.__table__.c.id == workflow_checkpoint.id)
         ).one()
-        assert converted == 9
+        raw_embedding = runtime_db.execute(
+            select(
+                RuntimeEmbedding.__table__.c.content_preview,
+                RuntimeEmbedding.__table__.c.embedding,
+                RuntimeEmbedding.__table__.c.embedding_checksum,
+            ).where(RuntimeEmbedding.__table__.c.id == runtime_embedding.id)
+        ).one()
+        assert converted == 10
         assert raw_chunk[0:3] == ("", len("legacy document plaintext"), None)
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
@@ -1920,6 +1940,9 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert raw_thread is None
         assert raw_workflow_run == (None, None)
         assert raw_workflow_checkpoint == (None, None)
+        assert raw_embedding == ("", None, None)
+        hits = index.search_runtime_embeddings(tuple(vector), limit=5)
+        assert [(hit.source_type, hit.source_id) for hit in hits] == [("memory_item", 91)]
         assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
 
         monkeypatch.setattr(
@@ -1956,25 +1979,17 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert loaded_document.filename == "legacy.pdf"
         assert loaded_document.mime_type == "application/pdf"
         assert loaded_document.storage_path == ".anima/documents/7/legacy.pdf"
-        assert loaded_document.metadata_json == {
-            "private_note": "legacy document metadata"
-        }
+        assert loaded_document.metadata_json == {"private_note": "legacy document metadata"}
         assert loaded_image_asset is not None
         assert loaded_image_asset.filename == "legacy-private.png"
         assert loaded_image_asset.mime_type == "image/png"
-        assert loaded_image_asset.storage_path == (
-            "users/7/media/images/legacy-private.png"
-        )
-        assert loaded_image_asset.metadata_json == {
-            "private_note": "legacy image metadata"
-        }
+        assert loaded_image_asset.storage_path == ("users/7/media/images/legacy-private.png")
+        assert loaded_image_asset.metadata_json == {"private_note": "legacy image metadata"}
         assert loaded_source is not None
         assert loaded_source.source_uri == "https://private.example.test/legacy"
         assert loaded_source.title == "Legacy private source title"
         assert loaded_source.media_type == "text/html"
-        assert loaded_source.metadata_json == {
-            "private_note": "legacy source metadata"
-        }
+        assert loaded_source.metadata_json == {"private_note": "legacy source metadata"}
         assert loaded_thread is not None
         assert loaded_thread.title == "Legacy private thread title"
         assert loaded_workflow_run is not None
@@ -1993,6 +2008,81 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             )
             == 0
         )
+
+
+def test_runtime_embedding_rebuild_restores_vectors_for_a_new_unlock(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    content = ("full private embedding content " * 10) + "trailing regeneration marker"
+    dimension = RuntimeEmbedding.__table__.c.embedding.type.dim
+    vector = [0.0] * dimension
+    vector[0] = 1.0
+    first_index = CoreFSProgressiveIndex("core-a")
+    first_index.unlock(
+        sqlcipher_key=b"k" * 32,
+        local_instance_id="instance-a",
+    )
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: first_index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        row = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=92,
+            content_hash=RuntimeEmbedding.compute_content_hash(content),
+            embedding_checksum=None,
+            embedding=None,
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        sealed_runtime.persist_runtime_embedding(
+            runtime_db,
+            row=row,
+            owner_id=7,
+            embedding=vector,
+            content=content,
+        )
+        runtime_db.flush()
+
+        second_index = CoreFSProgressiveIndex("core-a")
+        second_index.unlock(
+            sqlcipher_key=b"k" * 32,
+            local_instance_id="instance-a",
+        )
+        embedded_texts = []
+
+        def embed(text_value: str) -> tuple[float, ...]:
+            embedded_texts.append(text_value)
+            return tuple(vector)
+
+        rebuilt = sealed_runtime.rebuild_runtime_embeddings(
+            runtime_db,
+            index=second_index,
+            user_id=7,
+            embedder=embed,
+        )
+
+        assert rebuilt == 1
+        assert embedded_texts == [content]
+        hits = second_index.search_runtime_embeddings(tuple(vector), limit=5)
+        assert [(hit.source_type, hit.source_id) for hit in hits] == [("memory_item", 92)]
 
 
 def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(

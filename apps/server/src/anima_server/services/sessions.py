@@ -90,12 +90,14 @@ class UnlockSessionStore:
         runtime_index_factory: (
             Callable[[object | None, bytes | None], CoreFSProgressiveIndex | None] | None
         ) = None,
+        on_session_published: Callable[[UnlockSession], None] | None = None,
     ) -> None:
         self._lock = RLock()
         self._construction_condition = Condition(self._lock)
         self._snapshot = snapshot
         self._corefs_session_factory = corefs_session_factory or _create_native_corefs_session
         self._runtime_index_factory = runtime_index_factory or _create_runtime_index
+        self._on_session_published = on_session_published
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
         self._db_viewer_verified_at: dict[str, float] = {}
@@ -126,6 +128,7 @@ class UnlockSessionStore:
                 next_sessions[token] = session
                 cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
             self._run_cleanup(cleanup)
+            self._notify_session_published(session)
             return token
         except Exception:
             self._run_cleanup(cleanup)
@@ -183,6 +186,7 @@ class UnlockSessionStore:
                 next_sessions[token] = replacement
                 cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
             self._run_cleanup(cleanup)
+            self._notify_session_published(replacement)
             return token
         except Exception:
             self._run_cleanup(cleanup)
@@ -543,6 +547,22 @@ class UnlockSessionStore:
         with self._lock:
             self._sessions = replacements
             self._rebuild_latest_deks_locked()
+        notified_indexes: set[int] = set()
+        for session in replacements.values():
+            index_identity = id(session.runtime_index)
+            if index_identity in notified_indexes:
+                continue
+            notified_indexes.add(index_identity)
+            self._notify_session_published(session)
+
+    def _notify_session_published(self, session: UnlockSession) -> None:
+        callback = self._on_session_published
+        if callback is None or session.runtime_index is None:
+            return
+        try:
+            callback(session)
+        except Exception:
+            logger.exception("Failed to schedule unlocked Runtime index rebuild")
 
     def _ensure_running_locked(self) -> None:
         if self._shut_down:
@@ -848,7 +868,16 @@ def _zero_dek(dek: bytes) -> None:
 
 # Initialize the process-global store only after every restore helper above is
 # defined. Dev reloads import this module with a snapshot already present.
-unlock_session_store = UnlockSessionStore(snapshot=DevSessionSnapshot.from_environment())
+def _schedule_published_session_rebuild(session: UnlockSession) -> None:
+    from anima_server.services.corefs.migration import schedule_unlocked_rebuild
+
+    schedule_unlocked_rebuild(session)
+
+
+unlock_session_store = UnlockSessionStore(
+    snapshot=DevSessionSnapshot.from_environment(),
+    on_session_published=_schedule_published_session_rebuild,
+)
 
 
 def get_active_dek(user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:

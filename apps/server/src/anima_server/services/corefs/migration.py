@@ -88,6 +88,18 @@ def rebuild_unlocked_search(
         keys=session.corefs_keys,
     )
     index = session.runtime_index
+    user_id = getattr(session, "user_id", None)
+    if runtime_db is not None and embedder is not None and isinstance(user_id, int):
+        from anima_server.services.corefs.sealed_runtime import (
+            rebuild_runtime_embeddings,
+        )
+
+        rebuild_runtime_embeddings(
+            runtime_db,
+            index=index,
+            user_id=user_id,
+            embedder=embedder,
+        )
     prior = index.snapshot()
     if (
         runtime_db is not None
@@ -368,11 +380,26 @@ def _run_scheduled_rebuild(
             )
         else:
             with runtime_db_factory() as runtime_db:
-                rebuild_unlocked_search(
-                    session,
-                    embedder=configured_embedder,
-                    runtime_db=runtime_db,
-                )
+                user_id = getattr(session, "user_id", None)
+                has_native_session = getattr(session, "corefs_session", None) is not None
+                has_native_keys = getattr(session, "corefs_keys", None) is not None
+                if isinstance(user_id, int) and not (has_native_session and has_native_keys):
+                    from anima_server.services.corefs.sealed_runtime import (
+                        rebuild_runtime_embeddings,
+                    )
+
+                    rebuild_runtime_embeddings(
+                        runtime_db,
+                        index=index,
+                        user_id=user_id,
+                        embedder=configured_embedder,
+                    )
+                else:
+                    rebuild_unlocked_search(
+                        session,
+                        embedder=configured_embedder,
+                        runtime_db=runtime_db,
+                    )
     except Exception:
         logger.exception("CoreFS background rebuild failed")
     finally:
