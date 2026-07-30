@@ -211,9 +211,11 @@ def test_corefs_rotation_replaces_unlock_session_and_returns_no_credentials(
             *,
             corefs_keys,
             preserve_existing_tokens,
+            before_publish,
         ):
             assert preserve_existing_tokens is True
             seen["replacement"] = (user_id, deks, corefs_keys)
+            before_publish(replacement)
             return "replacement-token"
 
         def resolve(self, token):
@@ -259,6 +261,78 @@ def test_corefs_rotation_replaces_unlock_session_and_returns_no_credentials(
     assert seen["credentials"] == ("password", "recovery words")
     assert "password" not in response.text
     assert "recovery words" not in response.text
+
+
+def test_corefs_rotation_initializes_blind_generation_before_publication(
+    monkeypatch,
+) -> None:
+    session = SimpleNamespace(user_id=7, deks={"memories": b"m" * 32})
+    order: list[str] = []
+
+    class RuntimeIndex:
+        def begin_blind_generation(self, *, generation, expected_count):
+            assert generation == 3
+            assert expected_count == 0
+            order.append("begin")
+
+        def commit_blind_generation(self, generation):
+            assert generation == 3
+            order.append("commit")
+
+    replacement = SimpleNamespace(runtime_index=RuntimeIndex())
+
+    class Store:
+        def replace_user(
+            self,
+            _user_id,
+            _deks,
+            *,
+            corefs_keys,
+            preserve_existing_tokens,
+            before_publish=None,
+        ):
+            assert corefs_keys is active_subkeys
+            assert preserve_existing_tokens is True
+            if before_publish is not None:
+                before_publish(replacement)
+            order.append("publish")
+            return "replacement-token"
+
+        def resolve(self, _token):
+            return replacement
+
+    active_subkeys = object()
+
+    def rotate(_session, *, current_password, recovery_phrase, before_activate):
+        assert (current_password, recovery_phrase) == ("password", "recovery words")
+        result = CoreFSRotationResult(
+            active_subkeys=active_subkeys,
+            active_version=3,
+            committed_catalog_generation=14,
+            resumed=False,
+        )
+        before_activate(result)
+        return result
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: session,
+    )
+    monkeypatch.setattr(corefs_security, "rotate_or_resume_frk", rotate)
+    monkeypatch.setattr(corefs_security, "unlock_session_store", Store())
+
+    with TestClient(_app()) as client:
+        response = client.post(
+            "/api/corefs/security/rotate",
+            json={
+                "currentPassword": "password",
+                "recoveryPhrase": "recovery words",
+            },
+        )
+
+    assert response.status_code == 200
+    assert order == ["begin", "commit", "publish"]
 
 
 def test_corefs_rotation_rejects_wrong_recovery_without_replacing_session(
@@ -308,9 +382,11 @@ def test_corefs_rotation_prepares_replacement_before_activation(
             *,
             corefs_keys,
             preserve_existing_tokens,
+            before_publish,
         ):
             assert corefs_keys is active_subkeys
             assert preserve_existing_tokens is True
+            before_publish(SimpleNamespace(runtime_index=None))
             order.append("replace")
             raise RuntimeError("snapshot persistence failed")
 
@@ -370,8 +446,10 @@ def test_corefs_rotation_resume_uses_the_same_fail_closed_operation(
             *,
             corefs_keys,
             preserve_existing_tokens,
+            before_publish,
         ):
             assert preserve_existing_tokens is True
+            before_publish(replacement)
             paths.append(("replace", str(user_id)))
             return "replacement-token"
 

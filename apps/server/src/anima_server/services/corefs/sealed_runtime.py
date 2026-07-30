@@ -429,8 +429,12 @@ def convert_legacy_runtime_rows(
         (
             RuntimeWorkflowRun.__table__,
             "runtime_workflow_run",
-            {"input_json": "input_json", "result_json": "result_json"},
-            {"input_json": None, "result_json": None},
+            {
+                "input_json": "input_json",
+                "result_json": "result_json",
+                "error_json": "error_json",
+            },
+            {"input_json": None, "result_json": None, "error_json": None},
         ),
         (
             RuntimeKnowledgeBundleRun.__table__,
@@ -536,6 +540,7 @@ def convert_legacy_runtime_rows(
                 workflow_table.c.user_id.label("_owner_id"),
                 checkpoint_table.c.input_json,
                 checkpoint_table.c.output_json,
+                checkpoint_table.c.error_json,
             )
             .join(
                 workflow_table,
@@ -543,8 +548,12 @@ def convert_legacy_runtime_rows(
             )
             .where(workflow_table.c.user_id == user_id)
         ),
-        payload_columns={"input_json": "input_json", "output_json": "output_json"},
-        placeholders={"input_json": None, "output_json": None},
+        payload_columns={
+            "input_json": "input_json",
+            "output_json": "output_json",
+            "error_json": "error_json",
+        },
+        placeholders={"input_json": None, "output_json": None, "error_json": None},
     )
     runtime_db.flush()
     return converted
@@ -825,11 +834,32 @@ def _convert_legacy_statement(
                 CoreFSSealedPayload.row_id_hash == _digest(str(row_id)),
             )
         )
-        if already_sealed is not None:
-            continue
-        payload = {
-            payload_name: row[column_name] for payload_name, column_name in payload_columns.items()
+        row_payload = {
+            payload_name: row[column_name]
+            for payload_name, column_name in payload_columns.items()
         }
+        if already_sealed is not None:
+            existing_payload = _load_runtime_record_with_index(
+                runtime_db,
+                index=index,
+                row_type=row_type,
+                row_id=row_id,
+                owner_id=owner_id,
+            )
+            if existing_payload is None:
+                raise ValueError("sealed Runtime payload is missing")
+            missing_fields = row_payload.keys() - existing_payload.keys()
+            if not missing_fields:
+                continue
+            payload = dict(existing_payload)
+            payload.update(
+                {
+                    field: row_payload[field]
+                    for field in missing_fields
+                }
+            )
+        else:
+            payload = row_payload
         seal_runtime_record(
             runtime_db,
             index=index,
@@ -1165,7 +1195,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeEmbedding: ("runtime_embedding", ("content_preview",)),
         RuntimeWorkflowRun: (
             "runtime_workflow_run",
-            ("input_json", "result_json"),
+            ("input_json", "result_json", "error_json"),
         ),
         RuntimeKnowledgeBundleRun: (
             "runtime_knowledge_bundle_run",
@@ -1173,7 +1203,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         ),
         RuntimeWorkflowCheckpoint: (
             "runtime_workflow_checkpoint",
-            ("input_json", "output_json"),
+            ("input_json", "output_json", "error_json"),
         ),
         RuntimeThread: ("runtime_thread", ("title",)),
         RuntimeKnowledgeConcept: (

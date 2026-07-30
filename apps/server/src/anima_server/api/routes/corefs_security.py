@@ -144,19 +144,24 @@ def _rotate_corefs_root_key(
 
     def prepare_replacement(result: CoreFSRotationResult) -> None:
         nonlocal new_token
+
+        def initialize_blind_generation(replacement: object) -> None:
+            runtime_index = getattr(replacement, "runtime_index", None)
+            if runtime_index is None:
+                return
+            runtime_index.begin_blind_generation(
+                generation=result.active_version,
+                expected_count=0,
+            )
+            runtime_index.commit_blind_generation(result.active_version)
+
         new_token = unlock_session_store.replace_user(
             session.user_id,
             session.deks,
             corefs_keys=result.active_subkeys,
             preserve_existing_tokens=True,
+            before_publish=initialize_blind_generation,
         )
-        replacement = unlock_session_store.resolve(new_token)
-        if replacement is not None and replacement.runtime_index is not None:
-            replacement.runtime_index.begin_blind_generation(
-                generation=result.active_version,
-                expected_count=0,
-            )
-            replacement.runtime_index.commit_blind_generation(result.active_version)
 
     try:
         result = rotate_or_resume_frk(

@@ -840,6 +840,223 @@ def test_unlock_converter_seals_legacy_knowledge_bundle_runs(
     assert hydrated.error_json == {"message": "private legacy failure"}
 
 
+def test_workflow_error_writers_reseal_run_and_checkpoint_payloads(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import (
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.workflows.checkpoints import (
+        append_checkpoint,
+        mark_workflow_failed,
+        start_workflow,
+    )
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        checkpoint_run = start_workflow(
+            runtime_db,
+            user_id=7,
+            workflow_type="checkpoint_rag",
+            input_json={"filename": "private-checkpoint-input.pdf"},
+        )
+        checkpoint = append_checkpoint(
+            runtime_db,
+            workflow_run_id=checkpoint_run.id,
+            state_name="extract",
+            status="failed",
+            idempotency_key="private-checkpoint-error",
+            error_json={"message": "private checkpoint failure.pdf"},
+        )
+        direct_run = start_workflow(
+            runtime_db,
+            user_id=7,
+            workflow_type="checkpoint_rag",
+            input_json={"filename": "private-direct-input.pdf"},
+        )
+        mark_workflow_failed(
+            runtime_db,
+            direct_run,
+            error_json={"message": "private direct workflow failure.pdf"},
+        )
+
+        raw_runs = runtime_db.execute(
+            select(
+                RuntimeWorkflowRun.__table__.c.input_json,
+                RuntimeWorkflowRun.__table__.c.result_json,
+                RuntimeWorkflowRun.__table__.c.error_json,
+            ).order_by(RuntimeWorkflowRun.__table__.c.id)
+        ).all()
+        raw_checkpoint = runtime_db.execute(
+            select(
+                RuntimeWorkflowCheckpoint.__table__.c.input_json,
+                RuntimeWorkflowCheckpoint.__table__.c.output_json,
+                RuntimeWorkflowCheckpoint.__table__.c.error_json,
+            ).where(RuntimeWorkflowCheckpoint.__table__.c.id == checkpoint.id)
+        ).one()
+        runtime_db.expunge_all()
+        hydrated_checkpoint_run = runtime_db.get(
+            RuntimeWorkflowRun,
+            checkpoint_run.id,
+        )
+        hydrated_direct_run = runtime_db.get(RuntimeWorkflowRun, direct_run.id)
+        hydrated_checkpoint = runtime_db.get(
+            RuntimeWorkflowCheckpoint,
+            checkpoint.id,
+        )
+
+    assert raw_runs == [(None, None, None), (None, None, None)]
+    assert raw_checkpoint == (None, None, None)
+    assert hydrated_checkpoint_run is not None
+    assert hydrated_checkpoint_run.error_json == {
+        "message": "private checkpoint failure.pdf"
+    }
+    assert hydrated_direct_run is not None
+    assert hydrated_direct_run.error_json == {
+        "message": "private direct workflow failure.pdf"
+    }
+    assert hydrated_checkpoint is not None
+    assert hydrated_checkpoint.error_json == {
+        "message": "private checkpoint failure.pdf"
+    }
+
+
+def test_unlock_converter_seals_legacy_workflow_errors(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import (
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    with runtime_db_session() as runtime_db:
+        legacy_run = RuntimeWorkflowRun(
+            user_id=7,
+            workflow_type="checkpoint_rag",
+            status="failed",
+            current_state="extract",
+            input_json={"filename": "private-legacy-input.pdf"},
+            result_json={"partial": "private legacy result"},
+            error_json={"message": "private legacy workflow failure.pdf"},
+        )
+        runtime_db.add(legacy_run)
+        runtime_db.flush()
+        legacy_checkpoint = RuntimeWorkflowCheckpoint(
+            workflow_run_id=legacy_run.id,
+            checkpoint_index=1,
+            state_name="extract",
+            status="failed",
+            input_json={"path": "private/legacy/input.pdf"},
+            output_json={"partial": "private checkpoint result"},
+            error_json={"message": "private legacy checkpoint failure.pdf"},
+            idempotency_key="private-legacy-error",
+        )
+        runtime_db.add(legacy_checkpoint)
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.flush()
+
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+        sealed_runtime.seal_runtime_record(
+            runtime_db,
+            index=index,
+            row_type="runtime_workflow_run",
+            row_id=legacy_run.id,
+            owner_id=7,
+            payload={
+                "input_json": legacy_run.input_json,
+                "result_json": legacy_run.result_json,
+            },
+        )
+        sealed_runtime.seal_runtime_record(
+            runtime_db,
+            index=index,
+            row_type="runtime_workflow_checkpoint",
+            row_id=legacy_checkpoint.id,
+            owner_id=7,
+            payload={
+                "input_json": legacy_checkpoint.input_json,
+                "output_json": legacy_checkpoint.output_json,
+            },
+        )
+        runtime_db.execute(
+            RuntimeWorkflowRun.__table__.update()
+            .where(RuntimeWorkflowRun.__table__.c.id == legacy_run.id)
+            .values(input_json=None, result_json=None)
+        )
+        runtime_db.execute(
+            RuntimeWorkflowCheckpoint.__table__.update()
+            .where(
+                RuntimeWorkflowCheckpoint.__table__.c.id
+                == legacy_checkpoint.id
+            )
+            .values(input_json=None, output_json=None)
+        )
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        raw_run = runtime_db.execute(
+            select(
+                RuntimeWorkflowRun.__table__.c.input_json,
+                RuntimeWorkflowRun.__table__.c.result_json,
+                RuntimeWorkflowRun.__table__.c.error_json,
+            ).where(RuntimeWorkflowRun.__table__.c.id == legacy_run.id)
+        ).one()
+        raw_checkpoint = runtime_db.execute(
+            select(
+                RuntimeWorkflowCheckpoint.__table__.c.input_json,
+                RuntimeWorkflowCheckpoint.__table__.c.output_json,
+                RuntimeWorkflowCheckpoint.__table__.c.error_json,
+            ).where(RuntimeWorkflowCheckpoint.__table__.c.id == legacy_checkpoint.id)
+        ).one()
+
+        monkeypatch.setattr(
+            sealed_runtime,
+            "_active_runtime_index",
+            lambda _user_id: index,
+        )
+        runtime_db.expunge_all()
+        hydrated_run = runtime_db.get(RuntimeWorkflowRun, legacy_run.id)
+        hydrated_checkpoint = runtime_db.get(
+            RuntimeWorkflowCheckpoint,
+            legacy_checkpoint.id,
+        )
+
+    assert converted == 2
+    assert raw_run == (None, None, None)
+    assert raw_checkpoint == (None, None, None)
+    assert hydrated_run is not None
+    assert hydrated_run.error_json == {
+        "message": "private legacy workflow failure.pdf"
+    }
+    assert hydrated_checkpoint is not None
+    assert hydrated_checkpoint.error_json == {
+        "message": "private legacy checkpoint failure.pdf"
+    }
+
+
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
     monkeypatch,
 ) -> None:

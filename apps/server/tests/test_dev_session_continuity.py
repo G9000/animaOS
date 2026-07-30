@@ -526,6 +526,28 @@ def test_revoking_rotated_token_alias_keeps_shared_session_open() -> None:
     assert native_sessions[1].close_calls == 1
 
 
+def test_replace_user_prepares_replacement_before_publication() -> None:
+    order: list[str] = []
+    store = UnlockSessionStore()
+    old_token = store.create(31, {"memories": b"a" * 32})
+    original = store.resolve(old_token)
+
+    def prepare(_session) -> None:
+        order.append("prepared")
+        assert store.resolve(old_token) is original
+
+    token = store.replace_user(
+        31,
+        {"memories": b"b" * 32},
+        before_publish=prepare,
+    )
+    order.append("returned")
+
+    assert store.resolve(token) is not None
+    assert store.resolve(old_token) is None
+    assert order == ["prepared", "returned"]
+
+
 def test_native_session_without_begin_close_is_rejected_before_publication() -> None:
     class LegacyNativeSession:
         def __init__(self) -> None:

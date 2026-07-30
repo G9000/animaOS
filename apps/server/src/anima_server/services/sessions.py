@@ -160,6 +160,7 @@ class UnlockSessionStore:
         *,
         corefs_keys: object | None = None,
         preserve_existing_tokens: bool = False,
+        before_publish: Callable[[UnlockSession], None] | None = None,
     ) -> str:
         self._begin_construction()
         replacement: UnlockSession | None = None
@@ -167,6 +168,8 @@ class UnlockSessionStore:
         try:
             token = secrets.token_urlsafe(32)
             replacement = self._new_session(user_id, deks, corefs_keys)
+            if before_publish is not None:
+                before_publish(replacement)
             with self._lock:
                 self._ensure_running_locked()
                 cleanup.extend(self._purge_expired_locked())
