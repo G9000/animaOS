@@ -146,6 +146,7 @@ def upgrade() -> None:
             sa.Column("family", sa.String(32), nullable=False),
             sa.Column("generation", sa.Integer(), nullable=False),
             sa.Column("token", sa.LargeBinary(32), nullable=False),
+            sa.Column("object_id", sa.String(255), nullable=False),
             sa.Column("object_id_hash", sa.String(64), nullable=False),
             sa.Column("revision_hash", sa.String(64), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

@@ -123,6 +123,7 @@ class CoreFSBlindToken(RuntimeBase):
     family: Mapped[str] = mapped_column(String(32), nullable=False)
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     token: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False, index=True)
+    object_id: Mapped[str] = mapped_column(String(255), nullable=False)
     object_id_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     revision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

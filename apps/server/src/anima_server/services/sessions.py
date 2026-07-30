@@ -156,6 +156,7 @@ class UnlockSessionStore:
         deks: dict[str, bytes],
         *,
         corefs_keys: object | None = None,
+        preserve_existing_tokens: bool = False,
     ) -> str:
         self._begin_construction()
         replacement: UnlockSession | None = None
@@ -171,6 +172,14 @@ class UnlockSessionStore:
                     for current_token, session in self._sessions.items()
                     if session.user_id != user_id
                 }
+                if preserve_existing_tokens:
+                    next_sessions.update(
+                        {
+                            current_token: replacement
+                            for current_token, session in self._sessions.items()
+                            if session.user_id == user_id
+                        }
+                    )
                 next_sessions[token] = replacement
                 cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
             self._run_cleanup(cleanup)

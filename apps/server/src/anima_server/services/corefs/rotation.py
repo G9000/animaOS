@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -289,6 +290,7 @@ def rotate_or_resume_frk(
     *,
     current_password: str,
     recovery_phrase: str,
+    before_activate: Callable[[CoreFSRotationResult], None] | None = None,
 ) -> CoreFSRotationResult:
     if (
         session.corefs_session is None
@@ -376,13 +378,16 @@ def rotate_or_resume_frk(
         if bool(outcome.get("recoveryPending", False)):
             raise ValueError("CoreFS FRK rotation recovery is still pending")
 
-    _activate_rotation(
-        pending_version=pending_version,
-        committed_generation=committed_generation,
-    )
-    return CoreFSRotationResult(
+    result = CoreFSRotationResult(
         active_subkeys=pending_subkeys,
         active_version=pending_version,
         committed_catalog_generation=committed_generation,
         resumed=resumed,
     )
+    if before_activate is not None:
+        before_activate(result)
+    _activate_rotation(
+        pending_version=pending_version,
+        committed_generation=committed_generation,
+    )
+    return result

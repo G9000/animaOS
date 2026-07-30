@@ -9,7 +9,11 @@ from types import SimpleNamespace
 import pytest
 from alembic import command
 from alembic.config import Config
-from anima_server.models.corefs_runtime import CoreFSIndexCheckpoint, CoreFSIndexEntry
+from anima_server.models.corefs_runtime import (
+    CoreFSBlindToken,
+    CoreFSIndexCheckpoint,
+    CoreFSIndexEntry,
+)
 from anima_server.services.corefs import migration as corefs_migration
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
@@ -237,6 +241,57 @@ def test_progressive_rebuild_reads_authenticated_catalog_only_into_memory() -> N
     rebuilt = build()
     assert rebuilt.search_text("seeded message") == ("note-1",)
     assert rebuilt.snapshot().processed_objects == 2
+
+
+def test_blind_generation_persists_and_restores_exact_candidates() -> None:
+    from conftest_runtime import runtime_db_session
+
+    entries = [
+        {
+            "family": "note",
+            "path": "Notes/one.md",
+            "stable_id": "note-1",
+            "revision": "3",
+        },
+        {
+            "family": "document",
+            "path": "Documents/scan.txt",
+            "stable_id": "document-1",
+            "revision": "4",
+        },
+    ]
+    first = CoreFSProgressiveIndex("core-index")
+    first.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    first.begin_catalog()
+    first.publish_catalog(catalog_generation=9, families={"note": 1, "document": 1})
+
+    with runtime_db_session() as runtime_db:
+        corefs_migration._persist_blind_generation(
+            runtime_db,
+            index=first,
+            generation=9,
+            entries=entries,
+        )
+        assert runtime_db.scalar(select(CoreFSBlindToken.id).limit(1)) is not None
+
+        restored = CoreFSProgressiveIndex("core-index")
+        restored.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+        restored.begin_catalog()
+        restored.publish_catalog(
+            catalog_generation=9,
+            families={"note": 1, "document": 1},
+        )
+        assert (
+            corefs_migration._restore_blind_generation(
+                runtime_db,
+                index=restored,
+                generation=9,
+            )
+            is True
+        )
+
+    assert restored.lookup_exact("Notes/one.md") == ("note-1",)
+    assert restored.lookup_exact("Documents/scan.txt") == ("document-1",)
 
 
 def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> None:

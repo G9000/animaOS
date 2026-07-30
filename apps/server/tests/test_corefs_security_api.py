@@ -204,7 +204,15 @@ def test_corefs_rotation_replaces_unlock_session_and_returns_no_credentials(
     seen: dict[str, object] = {}
 
     class Store:
-        def replace_user(self, user_id, deks, *, corefs_keys):
+        def replace_user(
+            self,
+            user_id,
+            deks,
+            *,
+            corefs_keys,
+            preserve_existing_tokens,
+        ):
+            assert preserve_existing_tokens is True
             seen["replacement"] = (user_id, deks, corefs_keys)
             return "replacement-token"
 
@@ -212,14 +220,16 @@ def test_corefs_rotation_replaces_unlock_session_and_returns_no_credentials(
             assert token == "replacement-token"
             return replacement
 
-    def rotate(_session, *, current_password, recovery_phrase):
+    def rotate(_session, *, current_password, recovery_phrase, before_activate):
         seen["credentials"] = (current_password, recovery_phrase)
-        return CoreFSRotationResult(
+        result = CoreFSRotationResult(
             active_subkeys=object(),
             active_version=3,
             committed_catalog_generation=14,
             resumed=True,
         )
+        before_activate(result)
+        return result
 
     monkeypatch.setattr(
         corefs_security,
@@ -284,6 +294,67 @@ def test_corefs_rotation_rejects_wrong_recovery_without_replacing_session(
     assert response.json()["detail"]["code"] == "corefs_rotation_failed"
 
 
+def test_corefs_rotation_prepares_replacement_before_activation(
+    monkeypatch,
+) -> None:
+    session = SimpleNamespace(user_id=7, deks={"memories": b"m" * 32})
+    order: list[str] = []
+
+    class Store:
+        def replace_user(
+            self,
+            _user_id,
+            _deks,
+            *,
+            corefs_keys,
+            preserve_existing_tokens,
+        ):
+            assert corefs_keys is active_subkeys
+            assert preserve_existing_tokens is True
+            order.append("replace")
+            raise RuntimeError("snapshot persistence failed")
+
+    active_subkeys = object()
+
+    def rotate(
+        _session,
+        *,
+        current_password,
+        recovery_phrase,
+        before_activate,
+    ):
+        assert (current_password, recovery_phrase) == ("password", "recovery words")
+        result = CoreFSRotationResult(
+            active_subkeys=active_subkeys,
+            active_version=3,
+            committed_catalog_generation=14,
+            resumed=False,
+        )
+        before_activate(result)
+        order.append("activate")
+        return result
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: session,
+    )
+    monkeypatch.setattr(corefs_security, "rotate_or_resume_frk", rotate)
+    monkeypatch.setattr(corefs_security, "unlock_session_store", Store())
+
+    with TestClient(_app(), raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/corefs/security/rotate",
+            json={
+                "currentPassword": "password",
+                "recoveryPhrase": "recovery words",
+            },
+        )
+
+    assert response.status_code == 500
+    assert order == ["replace"]
+
+
 def test_corefs_rotation_resume_uses_the_same_fail_closed_operation(
     monkeypatch,
 ) -> None:
@@ -292,21 +363,31 @@ def test_corefs_rotation_resume_uses_the_same_fail_closed_operation(
     paths: list[tuple[str, str]] = []
 
     class Store:
-        def replace_user(self, user_id, deks, *, corefs_keys):
+        def replace_user(
+            self,
+            user_id,
+            deks,
+            *,
+            corefs_keys,
+            preserve_existing_tokens,
+        ):
+            assert preserve_existing_tokens is True
             paths.append(("replace", str(user_id)))
             return "replacement-token"
 
         def resolve(self, _token):
             return replacement
 
-    def rotate(_session, *, current_password, recovery_phrase):
+    def rotate(_session, *, current_password, recovery_phrase, before_activate):
         paths.append((current_password, recovery_phrase))
-        return CoreFSRotationResult(
+        result = CoreFSRotationResult(
             active_subkeys=object(),
             active_version=4,
             committed_catalog_generation=22,
             resumed=True,
         )
+        before_activate(result)
+        return result
 
     monkeypatch.setattr(
         corefs_security,

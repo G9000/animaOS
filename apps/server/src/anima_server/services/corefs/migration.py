@@ -11,10 +11,11 @@ from threading import Lock, Thread, current_thread
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.corefs_runtime import (
+    CoreFSBlindToken,
     CoreFSIndexCheckpoint,
     CoreFSIndexEntry,
 )
@@ -25,6 +26,7 @@ from anima_server.services.sessions import UnlockSession
 _INDEX_READ_CHUNK_BYTES = 64 * 1024
 _MAX_INDEXABLE_OBJECT_BYTES = 16 * 1024 * 1024
 _INDEX_VERSION = 1
+_BLIND_CHECKPOINT_FAMILY = "__blind__"
 logger = logging.getLogger(__name__)
 
 _rebuild_workers_lock = Lock()
@@ -85,6 +87,18 @@ def rebuild_unlocked_search(
         corefs_session=session.corefs_session,
         keys=session.corefs_keys,
     )
+    index = session.runtime_index
+    prior = index.snapshot()
+    if (
+        runtime_db is not None
+        and prior.catalog_generation == selected.generation
+        and prior.blind_index_generation is None
+    ):
+        _restore_blind_generation(
+            runtime_db,
+            index=index,
+            generation=selected.generation,
+        )
     entries, walk_failures = _walk_authenticated_files(
         corefs_session=session.corefs_session,
         keys=session.corefs_keys,
@@ -99,7 +113,6 @@ def rebuild_unlocked_search(
     for family, object_ids in degraded.items():
         family_counts[family] += len(object_ids)
 
-    index = session.runtime_index
     prior = index.snapshot()
     # Same-unlock retries can retain already decrypted text in memory and
     # resume from the durable opaque rows below. A new process deliberately
@@ -140,6 +153,13 @@ def rebuild_unlocked_search(
                 generation=selected.generation,
                 value=entry["path"],
                 object_id=entry["stable_id"],
+            )
+        if runtime_db is not None:
+            _persist_blind_generation(
+                runtime_db,
+                index=index,
+                generation=selected.generation,
+                entries=entries,
             )
         index.commit_blind_generation(selected.generation)
         index.begin_text_indexing()
@@ -411,6 +431,94 @@ def embed_configured_query(text: str) -> tuple[float, ...]:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _persist_blind_generation(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    generation: int,
+    entries: list[dict[str, str]],
+) -> None:
+    """Atomically replace the committed opaque exact-search generation."""
+    runtime_db.execute(
+        delete(CoreFSBlindToken).where(
+            CoreFSBlindToken.core_id == index.core_id,
+            CoreFSBlindToken.local_instance_id == index.local_instance_id,
+        )
+    )
+    runtime_db.execute(
+        delete(CoreFSIndexCheckpoint).where(
+            CoreFSIndexCheckpoint.core_id == index.core_id,
+            CoreFSIndexCheckpoint.local_instance_id == index.local_instance_id,
+            CoreFSIndexCheckpoint.family == _BLIND_CHECKPOINT_FAMILY,
+        )
+    )
+    unique_entries: dict[tuple[str, bytes, str], CoreFSBlindToken] = {}
+    for entry in entries:
+        token = index.blind_token(entry["path"])
+        key = (entry["family"], token, entry["stable_id"])
+        unique_entries[key] = CoreFSBlindToken(
+            core_id=index.core_id,
+            local_instance_id=index.local_instance_id,
+            family=entry["family"],
+            generation=generation,
+            token=token,
+            object_id=entry["stable_id"],
+            object_id_hash=_digest(entry["stable_id"]),
+            revision_hash=_digest(entry["revision"]),
+        )
+    runtime_db.add_all(unique_entries.values())
+    runtime_db.add(
+        CoreFSIndexCheckpoint(
+            core_id=index.core_id,
+            local_instance_id=index.local_instance_id,
+            family=_BLIND_CHECKPOINT_FAMILY,
+            catalog_generation=generation,
+            index_version=_INDEX_VERSION,
+            cursor_hash=None,
+            completed_count=len(unique_entries),
+            total_count=len(unique_entries),
+            status="ready",
+        )
+    )
+    runtime_db.commit()
+
+
+def _restore_blind_generation(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    generation: int,
+) -> bool:
+    """Restore one atomically committed exact-search generation after unlock."""
+    checkpoint = runtime_db.scalar(
+        select(CoreFSIndexCheckpoint).where(
+            CoreFSIndexCheckpoint.core_id == index.core_id,
+            CoreFSIndexCheckpoint.local_instance_id == index.local_instance_id,
+            CoreFSIndexCheckpoint.family == _BLIND_CHECKPOINT_FAMILY,
+            CoreFSIndexCheckpoint.catalog_generation == generation,
+            CoreFSIndexCheckpoint.index_version == _INDEX_VERSION,
+            CoreFSIndexCheckpoint.status == "ready",
+        )
+    )
+    if checkpoint is None:
+        return False
+    stored = runtime_db.scalars(
+        select(CoreFSBlindToken).where(
+            CoreFSBlindToken.core_id == index.core_id,
+            CoreFSBlindToken.local_instance_id == index.local_instance_id,
+            CoreFSBlindToken.generation == generation,
+        )
+    ).all()
+    expected = checkpoint.total_count
+    if expected is None or len(stored) != expected:
+        return False
+    index.load_blind_generation(
+        generation=generation,
+        entries=tuple((bytes(row.token), row.object_id) for row in stored),
+    )
+    return True
 
 
 def _durable_entry_key(entry: dict[str, str]) -> tuple[str, str, str]:

@@ -20,7 +20,10 @@ from anima_server.services.corefs.migration import (
     reconcile_catalog_if_idle,
     schedule_unlocked_rebuild,
 )
-from anima_server.services.corefs.rotation import rotate_or_resume_frk
+from anima_server.services.corefs.rotation import (
+    CoreFSRotationResult,
+    rotate_or_resume_frk,
+)
 from anima_server.services.sessions import UnlockSession, unlock_session_store
 
 router = APIRouter(prefix="/api/corefs/security", tags=["corefs-security"])
@@ -137,29 +140,38 @@ def _rotate_corefs_root_key(
     request: Request,
 ) -> CoreFSRotateResponse:
     session = require_unlocked_session(request)
+    new_token: str | None = None
+
+    def prepare_replacement(result: CoreFSRotationResult) -> None:
+        nonlocal new_token
+        new_token = unlock_session_store.replace_user(
+            session.user_id,
+            session.deks,
+            corefs_keys=result.active_subkeys,
+            preserve_existing_tokens=True,
+        )
+        replacement = unlock_session_store.resolve(new_token)
+        if replacement is not None and replacement.runtime_index is not None:
+            replacement.runtime_index.begin_blind_generation(
+                generation=result.active_version,
+                expected_count=0,
+            )
+            replacement.runtime_index.commit_blind_generation(result.active_version)
+
     try:
         result = rotate_or_resume_frk(
             session,
             current_password=payload.currentPassword,
             recovery_phrase=payload.recoveryPhrase,
+            before_activate=prepare_replacement,
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": "corefs_rotation_failed", "message": str(exc)},
         ) from None
-    new_token = unlock_session_store.replace_user(
-        session.user_id,
-        session.deks,
-        corefs_keys=result.active_subkeys,
-    )
-    replacement = unlock_session_store.resolve(new_token)
-    if replacement is not None and replacement.runtime_index is not None:
-        replacement.runtime_index.begin_blind_generation(
-            generation=result.active_version,
-            expected_count=0,
-        )
-        replacement.runtime_index.commit_blind_generation(result.active_version)
+    if new_token is None:
+        raise RuntimeError("CoreFS rotation did not prepare a replacement session")
     return CoreFSRotateResponse(
         success=True,
         unlockToken=new_token,

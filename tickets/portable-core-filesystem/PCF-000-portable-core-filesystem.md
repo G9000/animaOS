@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-30 19:05 MYT
+- Updated: 2026-07-30 19:22 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -280,6 +280,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-30 18:30 MYT - Addressed PR #127's three findings on `374101c2` with RED/GREEN coverage for the portable-Core Runtime-root boundary, exact-search readiness, and the shared `"exact"` API-client type. Broader validation linearized the unmerged PCF Runtime migration after merged-main `033_drive_state_starvation` as single head `034_corefs_runtime_index` and replaced Windows `os.kill(pid, 0)` liveness probing after its process-group interruption was reproduced. The complete PCF-003 server band passed `148`, the API-client suite passed `26`, and scoped Ruff, Runtime-head validation, server build, fresh desktop typecheck, repository organization, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-30 18:50 MYT - Addressed PR #127's three exact-head findings with an unlock-time, transaction-bound legacy Runtime converter; restored development-session sealer reconstruction and post-migration startup handoff; and a non-sensitive document chunk character-count projection that preserves the cheap oversized-selection guard after plaintext columns are scrubbed. The focused regressions and expanded CoreFS/Runtime/document/session band passed `232`; Runtime Alembic has the single `034_corefs_runtime_index` head, and Server Ruff, server build, repository organization, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-30 19:05 MYT - Addressed PR #127's four exact-head findings with pre-flush placeholder writes for document/image/source projections; sealed document section/context and source metadata with reseal and legacy hydration; serialized search-readiness initialization behind the rebuild-worker guard; and made the legacy-converter regression independently runnable. Four focused regressions passed, the affected bands passed `198` plus `131` additional tests, and scoped Ruff, format, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
+- 2026-07-30 19:22 MYT - Addressed PR #127's two exact-head P2 findings with atomically persisted/restored blind-index generations and a pre-activation FRK replacement-session handoff that preserves existing-token recovery and leaves failures resumable. Both regressions failed RED and passed GREEN; the affected migration/index/rotation/security/session/privacy band passed `98`, and scoped Ruff plus diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 
 ## Validation
 
