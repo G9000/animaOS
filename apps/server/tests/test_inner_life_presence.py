@@ -23,6 +23,7 @@ from anima_server.services.agent.inner_life.affect import (
 from anima_server.services.agent.inner_life.catchup import (
     apply_offline_catchup,
     has_eligible_night_window,
+    reconnect_energy_dip,
 )
 from anima_server.services.agent.inner_life.presence import (
     run_presence_tick,
@@ -357,7 +358,11 @@ def test_catchup_equivalence_over_three_weeks(tmp_path: Path) -> None:
 
     assert abs(state.valence - composed.valence) < 1e-6
     assert abs(state.arousal - composed.arousal) < 1e-6
-    assert abs(state.energy - composed.energy) < 1e-6
+    # Energy: closed-form relaxation matches composition exactly, then the
+    # IL-011 reconnect dip (capped 0.06 for a 21-day gap) is applied on top —
+    # a deliberate, catch-up-only divergence from tick replay (see
+    # reconnect_energy_dip).
+    assert abs(state.energy - (composed.energy - 0.06)) < 1e-6
     assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
     assert abs(state.arousal_baseline_shift - composed.arousal_baseline_shift) < 1e-6
 
@@ -385,7 +390,8 @@ def test_catchup_equivalence_below_threshold_regime(tmp_path: Path) -> None:
 
     assert abs(state.valence - composed.valence) < 1e-6
     assert abs(state.arousal - composed.arousal) < 1e-6
-    assert abs(state.energy - composed.energy) < 1e-6
+    # 21-day gap: exact relaxation minus the capped IL-011 reconnect dip.
+    assert abs(state.energy - (composed.energy - 0.06)) < 1e-6
     assert abs(state.high_arousal_hours - composed.high_arousal_hours) < 1e-6
     assert abs(state.arousal_baseline_shift - composed.arousal_baseline_shift) < 1e-6
 
@@ -465,7 +471,8 @@ def test_catchup_decays_baseline_shift_over_gap(tmp_path: Path) -> None:
     assert state.arousal_baseline_shift == pytest.approx(0.0, abs=1e-4)  # decayed away
     assert abs(state.high_arousal_hours - composed.high_arousal_hours) <= _TICK_QUANTUM_HOURS
     assert abs(state.valence - composed.valence) < 1e-6
-    assert abs(state.energy - composed.energy) < 1e-6
+    # 21-day gap: exact relaxation minus the capped IL-011 reconnect dip.
+    assert abs(state.energy - (composed.energy - 0.06)) < 1e-6
 
 
 def test_crossing_solver_uses_segment_consistent_shift_dynamics(
@@ -595,7 +602,8 @@ def test_catchup_writes_one_audit_row_with_correct_gap_and_dream_deferred(
     assert len(rows) == 1
     assert rows[0].gap_seconds == pytest.approx(expected_gap)
     assert rows[0].dream_deferred is True
-    assert rows[0].components == "affect,allostatic"
+    # 10-day gap: the IL-011 reconnect dip applied, and the audit row says so.
+    assert rows[0].components == "affect,allostatic,reconnect_energy"
 
 
 def test_catchup_gap_with_no_night_window_sets_dream_deferred_false(tmp_path: Path) -> None:
@@ -827,3 +835,69 @@ def test_eval_reset_clears_presence_catchup_rows(tmp_path: Path) -> None:
 
     assert len(remaining) == 1
     assert remaining[0].user_id == 2
+
+
+# ---------------------------------------------------------------------------
+# IL-011 — reconnect energy dip (subdued, never sad)
+# ---------------------------------------------------------------------------
+
+
+def test_reconnect_energy_dip_thresholds_and_cap() -> None:
+    """Pure dip math: zero below the 48h threshold, dip_per_day per day of
+    absence above it, hard-capped."""
+    assert reconnect_energy_dip(4 * 3600.0) == 0.0
+    assert reconnect_energy_dip(47.9 * 3600.0) == 0.0
+    assert reconnect_energy_dip(3 * 86400.0) == pytest.approx(0.03)
+    assert reconnect_energy_dip(10 * 86400.0) == pytest.approx(0.06)  # capped
+    assert reconnect_energy_dip(365 * 86400.0) == pytest.approx(0.06)
+
+
+def test_catchup_long_gap_dips_energy_only_valence_untouched(tmp_path: Path) -> None:
+    """A 72h absence lands slightly subdued: energy is exactly the relaxed
+    value minus the dip, while valence is BIT-IDENTICAL to pure relaxation —
+    the dip must never read as sadness/guilt."""
+    factory = _factory(tmp_path)
+    start_updated_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    now = start_updated_at + timedelta(hours=72)
+    start = AffectState(valence=0.3, arousal=0.4, energy=0.5, updated_at=start_updated_at)
+
+    with factory() as db:
+        save_affect_state(db, user_id=1, state=start)
+        db.commit()
+
+    apply_offline_catchup(factory, now=now, min_gap_seconds=600)
+
+    relaxed = relax(start, now, DEFAULT_AFFECT_CONFIG)
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+
+    assert state.valence == pytest.approx(relaxed.valence, abs=1e-9)
+    assert state.arousal == pytest.approx(relaxed.arousal, abs=1e-9)
+    assert state.energy == pytest.approx(relaxed.energy - 0.03, abs=1e-9)
+
+    with factory() as db:
+        row = db.scalars(select(PresenceCatchup).where(PresenceCatchup.user_id == 1)).one()
+    assert "reconnect_energy" in row.components
+
+
+def test_catchup_short_gap_applies_no_dip(tmp_path: Path) -> None:
+    """A same-day absence is not "long silence": no dip, and the audit row's
+    components don't claim one."""
+    factory = _factory(tmp_path)
+    start_updated_at = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    now = start_updated_at + timedelta(hours=6)
+    start = AffectState(valence=0.0, arousal=0.4, energy=0.5, updated_at=start_updated_at)
+
+    with factory() as db:
+        save_affect_state(db, user_id=1, state=start)
+        db.commit()
+
+    apply_offline_catchup(factory, now=now, min_gap_seconds=600)
+
+    relaxed = relax(start, now, DEFAULT_AFFECT_CONFIG)
+    with factory() as db:
+        state = get_affect_state(db, user_id=1)
+        row = db.scalars(select(PresenceCatchup).where(PresenceCatchup.user_id == 1)).one()
+
+    assert state.energy == pytest.approx(relaxed.energy, abs=1e-9)
+    assert row.components == "affect,allostatic"

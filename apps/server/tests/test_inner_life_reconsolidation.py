@@ -896,3 +896,84 @@ def test_apply_reconsolidation_refreshes_identity_confidence_and_logs(db: Sessio
     reconstructed = original_salience_from_log(db, item_id=item.id)
     assert reconstructed is not None
     assert reconstructed["evidence_strength"] == pytest.approx(0.6)
+
+
+# ---------------------------------------------------------------------------
+# 10. Mood-congruent target (IL-012)
+# ---------------------------------------------------------------------------
+
+
+def test_mood_congruent_target_positive_valence_contributes_nothing() -> None:
+    """For equal arousal, a positive state's target is never higher than the
+    matching negative state's — the sign matters, not just the magnitude."""
+    from anima_server.services.agent.reconsolidation import mood_congruent_magnitude
+
+    assert mood_congruent_magnitude(0.6, 0.1) == pytest.approx(0.05)
+    assert mood_congruent_magnitude(-0.6, 0.1) == pytest.approx(0.35)
+    for arousal in (0.0, 0.3, 0.9):
+        for v in (0.2, 0.5, 1.0):
+            assert mood_congruent_magnitude(v, arousal) <= mood_congruent_magnitude(
+                -v, arousal
+            )
+
+
+def test_mood_congruent_target_joyful_recall_softens_charged_memory() -> None:
+    """Flagship IL-012 regression: recalling a charged memory during a
+    joyful, excited state must SOFTEN it. Under the old symmetric
+    |valence| target this state produced a 0.9 target that amplified the
+    trace toward the ceiling."""
+    from anima_server.services.agent.reconsolidation import mood_congruent_magnitude
+
+    target = mood_congruent_magnitude(0.9, 0.9)
+    assert target == pytest.approx(0.45)
+
+    state = ReconsolidationState(emotional_salience=0.8, stability_class="stable")
+    result = reconsolidate_salience(
+        state, target, eta=0.05, lifetime_drift_so_far=0.0, is_identity=False
+    )
+    assert result.emotional_salience_delta < 0
+    assert result.emotional_salience == pytest.approx(0.8 + 0.05 * (0.45 - 0.8))
+
+
+def test_mood_congruent_target_distressed_recall_still_amplifies() -> None:
+    """Negative-aroused recall keeps sensitizing a lighter trace — the
+    one-sided valence term only removes the positive contribution, it does
+    not blunt distress."""
+    from anima_server.services.agent.reconsolidation import mood_congruent_magnitude
+
+    target = mood_congruent_magnitude(-0.8, 0.6)
+    assert target == pytest.approx(0.7)
+
+    state = ReconsolidationState(emotional_salience=0.2, stability_class="stable")
+    result = reconsolidate_salience(
+        state, target, eta=0.05, lifetime_drift_so_far=0.0, is_identity=False
+    )
+    assert result.emotional_salience_delta > 0
+
+
+def test_mood_congruent_target_high_arousal_charges_regardless_of_sign() -> None:
+    """Arousal is real signal either way: only the valence contribution is
+    one-sided, activation still raises the target symmetrically."""
+    from anima_server.services.agent.reconsolidation import mood_congruent_magnitude
+
+    assert mood_congruent_magnitude(0.0, 0.8) == pytest.approx(0.4)
+    assert mood_congruent_magnitude(0.5, 0.8) == pytest.approx(0.4)
+    assert mood_congruent_magnitude(-0.5, 0.8) == pytest.approx(0.65)
+
+
+def test_resolve_current_affect_magnitude_uses_mood_congruent_target() -> None:
+    """The resolver feeds the mood-congruent target (not the symmetric
+    magnitude) to reconsolidation: a strongly positive persisted state
+    yields a LOW target."""
+    runtime_engine = _create_runtime_engine()
+    runtime_factory = _make_factory(runtime_engine)
+    with runtime_factory() as runtime_db:
+        runtime_db.add(
+            AffectStateRow(
+                user_id=77, valence=0.9, arousal=0.1, updated_at=datetime.now(UTC)
+            )
+        )
+        runtime_db.commit()
+        resolved = resolve_current_affect_magnitude(runtime_db, user_id=77)
+    runtime_engine.dispose()
+    assert resolved == pytest.approx(0.05)

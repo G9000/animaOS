@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -64,6 +64,7 @@ from anima_server.services.agent.inner_life.drives import (
     DriveState,
     advance_drives,
     reset_drive,
+    signal_reset_drives,
 )
 from anima_server.services.data_crypto import DOMAIN_MEMORIES, df, ef
 from anima_server.services.sessions import get_active_dek
@@ -127,6 +128,10 @@ class GateConfig:
     max_per_day: int = 1
     max_per_week: int = 3
     thetas: dict[str, float] | None = None
+    # IL-013: per-loss ranking boost for above-theta drives that lost a
+    # selection, and its hard cap. Ranking only — never qualification.
+    starvation_boost_per_loss: float = 0.03
+    starvation_boost_cap: float = 0.15
 
     def theta(self, drive: str) -> float:
         if self.thetas and drive in self.thetas:
@@ -174,6 +179,10 @@ class DriveRecord:
     last_fired_at: datetime | None = None
     last_user_turn_at: datetime | None = None
     unanswered_initiatives: int = 0
+    # IL-013: per-drive count of selections this drive lost while above its
+    # theta. Missing drives count as 0. None means "no bookkeeping" (older
+    # callers/tests) and behaves exactly like an all-zero map.
+    starvation_losses: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +191,11 @@ class DriveDecision:
     pressure: float
     pressure_snapshot: dict[str, float]
     gate_states: dict[str, bool]
+    # IL-013 provenance: the ranking boost each QUALIFYING drive carried into
+    # this selection (only non-zero entries). Raw pressures above stay
+    # untouched; `_fire` folds this under a dedicated "starvation" key in the
+    # logged pressure_snapshot JSON so every decision remains explainable.
+    starvation_snapshot: dict[str, float] = field(default_factory=dict)
 
 
 def _in_quiet_hours(hour: int, start: int | None, end: int | None) -> bool:
@@ -206,11 +220,31 @@ def effective_cooldown_hours(
     return min(config.cooldown_max_hours, base * backoff)
 
 
+def starvation_boost(losses: int, config: GateConfig) -> float:
+    """IL-013: the ranking boost a drive carries after ``losses`` lost
+    selections — ``min(losses * per_loss, cap)``, never negative. The cap
+    bounds how much fairness can override raw pressure: a pressure gap wider
+    than the cap is never overcome, by design."""
+    return min(max(0, losses) * config.starvation_boost_per_loss,
+               config.starvation_boost_cap)
+
+
 def dominant_drive(
-    pressures: DriveState, config: GateConfig
+    pressures: DriveState,
+    config: GateConfig,
+    starvation_losses: Mapping[str, int] | None = None,
 ) -> tuple[str, float] | None:
-    """The highest-pressure drive that meets or exceeds its own theta, or
-    ``None`` if no drive qualifies. Ties break by ``DRIVE_NAMES`` order."""
+    """The winning drive among those at/above their own theta, or ``None``
+    if no drive qualifies. Ties break by ``DRIVE_NAMES`` order.
+
+    Qualification is by RAW pressure vs theta. Ranking adds each qualifying
+    drive's starvation boost (IL-013), so a chronically outranked drive that
+    keeps qualifying eventually wins — a pure argmax would let a perennially
+    high-pressure drive win every fire forever (scheduler starvation; the
+    surface-reset drives ``pattern_insight``/``dream_residue`` are the likely
+    victims). The boost can never pull a sub-theta drive into candidacy.
+    Returns the winner with its RAW pressure (provenance stays truthful)."""
+    losses = starvation_losses or {}
     candidates = [
         (name, getattr(pressures, name))
         for name in DRIVE_NAMES
@@ -218,7 +252,10 @@ def dominant_drive(
     ]
     if not candidates:
         return None
-    return max(candidates, key=lambda pair: pair[1])
+    return max(
+        candidates,
+        key=lambda pair: pair[1] + starvation_boost(losses.get(pair[0], 0), config),
+    )
 
 
 def compute_gate_states(
@@ -281,15 +318,23 @@ def should_fire(
         fires_today=fires_today,
         fires_this_week=fires_this_week,
     )
-    dominant = dominant_drive(record.pressures, config)
+    dominant = dominant_drive(record.pressures, config, record.starvation_losses)
     if dominant is None or not gates.all_pass:
         return None
     drive, pressure = dominant
+    losses = record.starvation_losses or {}
+    snapshot = {
+        name: boost
+        for name in DRIVE_NAMES
+        if getattr(record.pressures, name) >= config.theta(name)
+        and (boost := starvation_boost(losses.get(name, 0), config)) > 0.0
+    }
     return DriveDecision(
         drive=drive,
         pressure=pressure,
         pressure_snapshot=record.pressures.as_dict(),
         gate_states=gates.as_dict(),
+        starvation_snapshot=snapshot,
     )
 
 
@@ -328,6 +373,8 @@ def get_gate_config(presence_values: object) -> GateConfig:
         cooldown_max_hours=settings.initiative_cooldown_max_hours,
         max_per_day=settings.initiative_max_per_day,
         max_per_week=settings.initiative_max_per_week,
+        starvation_boost_per_loss=settings.initiative_starvation_boost_per_loss,
+        starvation_boost_cap=settings.initiative_starvation_boost_cap,
         thetas={
             DRIVE_UNRESOLVED_THREAD: settings.initiative_theta_unresolved_thread,
             DRIVE_PATTERN_INSIGHT: settings.initiative_theta_pattern_insight,
@@ -939,7 +986,16 @@ def _fire(
                 # the server's UTC offset in any non-UTC deployment.
                 fired_at=now.astimezone(UTC),
                 drive=decision.drive,
-                pressure_snapshot=decision.pressure_snapshot,
+                # IL-013: the starvation boosts that influenced this selection
+                # ride along under a dedicated key — raw per-drive pressures
+                # stay exactly as accumulated, so provenance never lies about
+                # pressure, and the fairness override is visible when it acted.
+                pressure_snapshot=(
+                    {**decision.pressure_snapshot,
+                     "starvation": decision.starvation_snapshot}
+                    if decision.starvation_snapshot
+                    else decision.pressure_snapshot
+                ),
                 gate_states=decision.gate_states,
                 generated_text=(
                     ef(user_id, text, table="initiative_log", field="generated_text")
@@ -1038,6 +1094,21 @@ def tick_initiative_for_user(
                 drive_config or get_drive_config(),
             )
             _apply_pressures(row, updated_pressures, now=local_now)
+            # IL-013 bookkeeping (PR #128 review): mutable copy of the
+            # persisted per-drive loss counters; written back as a fresh dict
+            # (JSON columns don't track in-place mutation) wherever this tick
+            # changes them. A signal-driven hard reset just zeroed the drive's
+            # pressure via advance_drives, so its loss history goes with it —
+            # this runs BEFORE the initiative-disabled early return below,
+            # which commits without ever reaching the selection loop, so a
+            # disabled user's stale boost can't survive to a later opt-in.
+            starvation_losses: dict[str, int] = dict(row.starvation_losses or {})
+            reset_cleared = False
+            for name in signal_reset_drives(signals):
+                if starvation_losses.pop(name, None) is not None:
+                    reset_cleared = True
+            if reset_cleared:
+                row.starvation_losses = dict(starvation_losses)
             if latest_message_at is not None and (
                 row.last_user_turn_at is None
                 or latest_message_at > _as_utc(row.last_user_turn_at)
@@ -1074,6 +1145,7 @@ def tick_initiative_for_user(
                     last_fired_at=row.last_fired_at,
                     last_user_turn_at=row.last_user_turn_at,
                     unanswered_initiatives=row.unanswered_initiatives,
+                    starvation_losses=starvation_losses,
                 )
                 candidate = should_fire(
                     record,
@@ -1095,6 +1167,11 @@ def tick_initiative_for_user(
                     break
                 updated_pressures = reset_drive(updated_pressures, candidate.drive)
                 _apply_pressures(row, updated_pressures, now=local_now)
+                # Hard reset means the material is gone — its starvation
+                # history goes with it (a boost earned on vanished material
+                # must not jump-start the drive's next accumulation).
+                if starvation_losses.pop(candidate.drive, None) is not None:
+                    row.starvation_losses = dict(starvation_losses)
 
             if decision is None:
                 runtime_db.commit()
@@ -1169,6 +1246,17 @@ def tick_initiative_for_user(
                     )
                     if dream_row is not None:
                         dream_row.surfaced = True
+                # IL-013: every drive that qualified (raw pressure >= theta)
+                # but lost this DELIVERED fire accrues one loss toward its
+                # future ranking boost; the winner's history clears. Gate
+                # failures and undelivered generations count for nobody —
+                # nothing was actually chosen over anything.
+                for name in DRIVE_NAMES:
+                    if name == decision.drive:
+                        starvation_losses.pop(name, None)
+                    elif getattr(updated_pressures, name) >= gate_config.theta(name):
+                        starvation_losses[name] = starvation_losses.get(name, 0) + 1
+                row.starvation_losses = dict(starvation_losses)
                 _apply_pressures(
                     row, reset_drive(updated_pressures, decision.drive), now=local_now
                 )

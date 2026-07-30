@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-29 12:35 MYT
+- Updated: 2026-07-29 15:58 MYT
 - Started: 2026-07-15 16:55 MYT
 - Completed: 2026-07-29 12:35 MYT
 
@@ -33,6 +33,10 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 ## Follow-ups Beyond v1 Scope
 
 - `IL-009` - Initiative reply context carry-over (`backlog`, depends on `IL-008`): optional polish filed from the IL-008 final review. Tracked as a standalone follow-up, not a child of this closed v1 parent — the v1 acceptance ("all child tickets done") is judged over the child table above.
+- `IL-010` - Ambient dream-sharing consumer (`backlog`, depends on `IL-007`, `IL-008`): filed from IL-008 review round 10 when the Ambient option was withdrawn pending a real consumer.
+- `IL-011` - Return acknowledgment: grounded held-thought greeting + reconnect energy texture (`done` 2026-07-29, PR #128, depends on `IL-002`, `IL-003`).
+- `IL-012` - Mood-congruent reconsolidation target (`done` 2026-07-29, PR #128, depends on `IL-006`).
+- `IL-013` - Drive starvation carryover in initiative selection (`done` 2026-07-29, PR #128, depends on `IL-003`).
 
 ## Completed Ticket History
 
@@ -48,6 +52,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-29 11:36 MYT - `IL-008` completion re-stamped again after PR #123 round 9 (ack-after-stop isolation leak in the desktop poller; regression-tested). See IL-008 log.
 - 2026-07-29 11:44 MYT - Parent closeout synchronized with the round-9 child state: `Completed` re-stamped to the child's final completion (11:36 MYT), validation summary refreshed to the current 15/15 poller / 90 server results.
 - 2026-07-29 12:35 MYT - `IL-008` round 10: Ambient option withdrawn pending `IL-010` (no-op consumer); AGENTS.md validation gate run and recorded on the child (build pass, live smoke pass, full suite cross-referenced to PR #126's tracked set). Completion re-stamped; this parent's metadata synchronized.
+- 2026-07-29 15:58 MYT - Standalone follow-ups `IL-011`/`IL-012`/`IL-013` implemented and recorded in the Follow-ups section (PR #128); `IL-010` back-filled into the same section for registry completeness. This parent stays `done` — v1 acceptance is unchanged and judged over the child table.
 
 ## Deliverables
 

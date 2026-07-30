@@ -12,7 +12,7 @@ Zero LLM calls anywhere in this module (PRD §5 Architecture Rules) — every
 function here is plain arithmetic over already-persisted salience fields.
 
 House style mirrors ``distillation.py``: pure math (``reconsolidate_salience``,
-``affect_magnitude``) with DB writes confined to the edge functions
+``mood_congruent_magnitude``) with DB writes confined to the edge functions
 (``apply_reconsolidation``, ``original_salience_from_log``).
 
 Design decisions (documented up front since they're not fully pinned down
@@ -49,7 +49,9 @@ by the PRD prose):
   runs asynchronously from the turn that produced the feedback rows, so a
   "per-turn" emotion value would need to be threaded through the runtime
   feedback log — extra surface for no benefit, since IL1 affect already
-  reflects the user's current emotional footing. See ``affect_magnitude``.
+  reflects the user's current emotional footing. See
+  ``mood_congruent_magnitude`` (IL-012: the target is mood-congruent —
+  positive valence never raises a memory's charge).
 """
 
 from __future__ import annotations
@@ -204,16 +206,23 @@ def reconsolidate_salience(
     )
 
 
-def affect_magnitude(valence: float, arousal: float) -> float:
-    """Turn-affect intensity in [0, 1] from the IL1 vector.
+def mood_congruent_magnitude(valence: float, arousal: float) -> float:
+    """The reconsolidation TARGET charge in [0, 1] from the IL1 vector —
+    mood-congruent, not symmetric (IL-012).
 
-    Combines valence magnitude (``|valence|``, bounded [-1, 1] -> [0, 1])
-    and arousal (already [0, 1]) as their mean — a simple, symmetric
-    "how far from neutral, how activated" reading of the persisted IL1
-    state. Deterministic function of already-computed state; no new
-    signal source, no LLM.
+    Negative valence and arousal contribute to the target; positive valence
+    contributes nothing: ``(max(0, -valence) + arousal) / 2``. The original
+    IL-006 target used ``|valence|``, which was sign-blind — recalling a
+    charged memory during a strongly *positive* settled state pulled its
+    ``emotional_salience`` UP exactly as distress would, inverting the
+    dynamic reconsolidation is meant to model: retrieval in a safe, settled
+    state is what softens a charged trace; retrieval under distress is what
+    sensitizes it. With this target, positive-calm recall drifts charged
+    memories down (they get lighter) and negative-aroused recall still
+    drifts them up. Deterministic function of already-computed state; no
+    new signal source, no LLM.
     """
-    return _clamp01((abs(valence) + arousal) / 2.0)
+    return _clamp01((max(0.0, -valence) + arousal) / 2.0)
 
 
 def resolve_current_affect_magnitude(
@@ -244,7 +253,7 @@ def resolve_current_affect_magnitude(
         return None
 
     state = get_affect_state(runtime_db, user_id=user_id)
-    return affect_magnitude(state.valence, state.arousal)
+    return mood_congruent_magnitude(state.valence, state.arousal)
 
 
 def apply_reconsolidation(
