@@ -296,6 +296,26 @@ class CoreFSProgressiveIndex:
                 unavailable_object_ids=unavailable,
             )
 
+    def clear_family_failure(self, *, family: str, object_id: str) -> None:
+        """Clear a transient object failure after a successful retry."""
+        with self._lock:
+            self._require_catalog()
+            current = self._families.get(family)
+            if current is None:
+                raise ValueError(f"family is absent from catalog: {family}")
+            unavailable = tuple(
+                value
+                for value in current.unavailable_object_ids
+                if value != object_id
+            )
+            self._families[family] = FamilyReadiness(
+                total=current.total,
+                processed=current.processed,
+                failed=len(unavailable),
+                degraded=bool(unavailable),
+                unavailable_object_ids=unavailable,
+            )
+
     def index_vector(self, *, object_id: str, vector: tuple[float, ...]) -> None:
         if not vector:
             raise ValueError("semantic vector must be non-empty")

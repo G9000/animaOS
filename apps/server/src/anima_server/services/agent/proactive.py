@@ -205,15 +205,21 @@ def _latest_runtime_user_message(runtime_db: Session, user_id: int) -> object | 
     try:
         from anima_server.models.runtime import RuntimeMessage
 
-        return runtime_db.scalar(
+        messages = runtime_db.scalars(
             select(RuntimeMessage)
             .where(
                 RuntimeMessage.user_id == user_id,
                 RuntimeMessage.role == "user",
-                RuntimeMessage.content_text.is_not(None),
-                RuntimeMessage.content_text != "",
             )
             .order_by(RuntimeMessage.created_at.desc())
+        )
+        return next(
+            (
+                message
+                for message in messages
+                if message.content_text not in (None, "")
+            ),
+            None,
         )
     except Exception as exc:
         logger.debug("Runtime greeting history lookup failed: %s", exc)

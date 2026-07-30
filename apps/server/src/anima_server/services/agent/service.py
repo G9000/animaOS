@@ -132,6 +132,7 @@ from anima_server.services.agent.tool_context import (
 )
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
+from anima_server.services.corefs.sealed_runtime import reseal_runtime_message
 from anima_server.services.data_crypto import df
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.documents.store import get_document_for_user, list_document_chunks
@@ -2890,6 +2891,7 @@ def _remove_failed_turn_image_links(
         return
 
     _remove_failed_turn_attachment_metadata(
+        runtime_db,
         user_msg,
         attachment_ids={attachment_id for attachment_id, _image_asset_id in link_rows},
         image_asset_ids=image_asset_ids,
@@ -2913,6 +2915,7 @@ def _remove_failed_turn_image_links(
 
 
 def _remove_failed_turn_attachment_metadata(
+    runtime_db: Session,
     user_msg: RuntimeMessage,
     *,
     attachment_ids: set[str],
@@ -2942,7 +2945,11 @@ def _remove_failed_turn_attachment_metadata(
         next_content_json[ATTACHMENTS_CONTENT_KEY] = filtered_attachments
     else:
         next_content_json.pop(ATTACHMENTS_CONTENT_KEY, None)
-    user_msg.content_json = next_content_json or None
+    reseal_runtime_message(
+        runtime_db,
+        user_msg,
+        content_json=next_content_json or None,
+    )
 
 
 def _is_failed_turn_attachment(

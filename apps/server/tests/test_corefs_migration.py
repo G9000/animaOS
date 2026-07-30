@@ -241,6 +241,97 @@ def test_progressive_rebuild_reads_authenticated_catalog_only_into_memory() -> N
     assert rebuilt.snapshot().processed_objects == 2
 
 
+def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> None:
+    corefs_keys = object()
+    embedding_attempts = 0
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 10, "catalogHash": "catalog-hash"}
+
+        def walk_v1(self, *_args, **_kwargs):
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 10,
+                        "entries": [
+                            {
+                                "path": "Notes/retry.md",
+                                "stableId": "note-retry",
+                                "revision": 1,
+                                "contentHash": "d" * 64,
+                                "kind": "file",
+                                "objectKind": "note",
+                                "depth": 2,
+                            }
+                        ],
+                        "errors": [],
+                        "nextCursor": None,
+                        "truncated": False,
+                        "limitReached": False,
+                    },
+                }
+            ).encode()
+
+        def read_chunk_v1(
+            self,
+            _keys,
+            _generation,
+            _catalog_hash,
+            _path,
+            offset,
+            _max_bytes,
+            **_kwargs,
+        ):
+            if offset:
+                return None
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 10,
+                        "path": "Notes/retry.md",
+                        "stableId": "note-retry",
+                        "revision": 1,
+                        "contentHash": "d" * 64,
+                        "offset": 0,
+                        "bytesBase64": base64.b64encode(
+                            b"semantic retry marker"
+                        ).decode(),
+                    },
+                }
+            ).encode()
+
+    def flaky_embedder(_text: str) -> tuple[float, ...]:
+        nonlocal embedding_attempts
+        embedding_attempts += 1
+        if embedding_attempts == 1:
+            raise ValueError("temporary embedding outage")
+        return (1.0, 0.0)
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    rebuild_unlocked_search(session, embedder=flaky_embedder)
+
+    assert index.snapshot().state is ReadinessState.SEMANTIC_INDEXING
+    assert IndexCapability.SEMANTIC_SEARCH not in index.snapshot().capabilities
+
+    rebuild_unlocked_search(session, embedder=flaky_embedder)
+
+    assert embedding_attempts == 2
+    assert index.snapshot().state is ReadinessState.READY
+    assert IndexCapability.SEMANTIC_SEARCH in index.snapshot().capabilities
+    assert index.snapshot().families["note"].degraded is False
+
+
 def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
     monkeypatch,
 ) -> None:

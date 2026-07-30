@@ -19,7 +19,10 @@ from anima_server.models.runtime import (
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
-from anima_server.services.corefs.sealed_runtime import delete_sealed_runtime_records
+from anima_server.services.corefs.sealed_runtime import (
+    delete_sealed_runtime_records,
+    reseal_runtime_message,
+)
 from anima_server.services.data_crypto import get_active_dek
 from anima_server.services.images.store import delete_image_asset_file_if_safe
 
@@ -82,6 +85,7 @@ def forget_image_asset(
     }
     for link, message in linked_messages:
         _remove_image_asset_metadata(
+            runtime_db,
             message,
             image_asset_id=image_asset_id,
             attachment_id=link.attachment_id,
@@ -147,7 +151,7 @@ def remove_message_image_link(
         return RemoveImageLinkResult(removed=False)
 
     image_asset_id = link.image_asset_id
-    _remove_attachment_metadata(message, attachment_id)
+    _remove_attachment_metadata(runtime_db, message, attachment_id)
     _remove_image_source_pills(
         runtime_db,
         user_id=user_id,
@@ -513,8 +517,13 @@ def _archived_transcript_thread_id(path: Path) -> int | None:
     return _coerce_positive_int(match.group(1))
 
 
-def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> None:
+def _remove_attachment_metadata(
+    runtime_db: Session,
+    message: RuntimeMessage,
+    attachment_id: str,
+) -> None:
     _remove_image_asset_metadata(
+        runtime_db,
         message,
         image_asset_id=None,
         attachment_id=attachment_id,
@@ -522,6 +531,7 @@ def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> 
 
 
 def _remove_image_asset_metadata(
+    runtime_db: Session,
     message: RuntimeMessage,
     *,
     image_asset_id: int | None,
@@ -545,7 +555,11 @@ def _remove_image_asset_metadata(
             )
         )
     ]
-    message.content_json = payload
+    reseal_runtime_message(
+        runtime_db,
+        message,
+        content_json=payload,
+    )
 
 
 def _remove_image_source_pills(
@@ -559,7 +573,6 @@ def _remove_image_source_pills(
         runtime_db.scalars(
             select(RuntimeMessage).where(
                 RuntimeMessage.user_id == user_id,
-                RuntimeMessage.content_json.is_not(None),
             )
         ).all()
     )
@@ -580,7 +593,11 @@ def _remove_image_source_pills(
         if len(next_pills) == len(raw_pills):
             continue
         payload[PILLS_CONTENT_KEY] = next_pills
-        message.content_json = payload
+        reseal_runtime_message(
+            runtime_db,
+            message,
+            content_json=payload,
+        )
 
 
 def _is_matching_image_source_pill(

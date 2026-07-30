@@ -136,17 +136,22 @@ def collect_feedback_signals(
 
         if thread_id is not None and rt is not None:
             recent = rt.scalars(
-                select(RuntimeMessage.content_text)
+                select(RuntimeMessage)
                 .where(
                     RuntimeMessage.thread_id == thread_id,
                     RuntimeMessage.role == "user",
                     RuntimeMessage.is_in_context.is_(True),
                 )
                 .order_by(RuntimeMessage.sequence_id.desc())
-                .limit(5)
-            ).all()
+            )
 
-            recent_texts = [t for t in recent if t and t != user_message]
+            recent_texts: list[str] = []
+            for message in recent:
+                if not message.content_text or message.content_text == user_message:
+                    continue
+                recent_texts.append(message.content_text)
+                if len(recent_texts) == 5:
+                    break
             reask = detect_reask(user_message, recent_texts)
             if reask is not None:
                 signals.append(reask)

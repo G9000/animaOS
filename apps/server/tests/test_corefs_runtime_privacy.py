@@ -378,6 +378,138 @@ def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
             )
 
 
+def test_sealed_runtime_messages_remain_queryable_and_reseal_mutations(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.services.agent.conversation_search import _search_messages
+    from anima_server.services.agent.persistence import (
+        append_message,
+        get_or_create_thread,
+        list_transcript_messages,
+    )
+    from anima_server.services.agent.service import (
+        _remove_failed_turn_attachment_metadata,
+    )
+    from anima_server.services.agent.tools import _latest_user_source_message_ids
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.images.deletion import _remove_image_source_pills
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        message = append_message(
+            runtime_db,
+            thread=thread,
+            run_id=None,
+            step_id=None,
+            sequence_id=1,
+            role="user",
+            content_text="sealed searchable message",
+            content_json={
+                "attachments": [
+                    {
+                        "id": "attachment-1",
+                        "assetId": 11,
+                        "kind": "image",
+                    }
+                ],
+                "pills": [
+                    {
+                        "kind": "image_source",
+                        "ref": "attachment-1",
+                    }
+                ],
+                "private": "preserved",
+            },
+        )
+
+        transcript = list_transcript_messages(
+            runtime_db,
+            user_id=7,
+            limit=10,
+        )
+        assert [item.id for item in transcript] == [message.id]
+        hits = _search_messages(
+            runtime_db,
+            user_id=7,
+            query_lower="sealed searchable",
+            role_filter="user",
+            parsed_start=None,
+            parsed_end=None,
+        )
+        assert [hit.content for hit in hits] == ["sealed searchable message"]
+        assert _latest_user_source_message_ids(
+            SimpleNamespace(
+                runtime_db=runtime_db,
+                thread_id=thread.id,
+                user_id=7,
+            )
+        ) == [message.id]
+
+        sealed_before = runtime_db.scalar(
+            select(CoreFSSealedPayload).where(
+                CoreFSSealedPayload.row_type == "runtime_message"
+            )
+        )
+        assert sealed_before is not None
+        ciphertext_before = bytes(sealed_before.ciphertext)
+
+        _remove_failed_turn_attachment_metadata(
+            runtime_db,
+            message,
+            attachment_ids={"attachment-1"},
+            image_asset_ids={11},
+        )
+        _remove_image_source_pills(
+            runtime_db,
+            user_id=7,
+            image_asset_id=None,
+            attachment_ids={"attachment-1"},
+        )
+        runtime_db.flush()
+
+        stored = runtime_db.execute(
+            text(
+                "SELECT content_text, content_json, tool_args_json "
+                "FROM runtime_messages WHERE id = :id"
+            ),
+            {"id": message.id},
+        ).one()
+        assert stored == (None, "null", "null")
+
+        runtime_db.expunge_all()
+        sealed_after = runtime_db.scalar(
+            select(CoreFSSealedPayload).where(
+                CoreFSSealedPayload.row_type == "runtime_message"
+            )
+        )
+        assert sealed_after is not None
+        assert bytes(sealed_after.ciphertext) != ciphertext_before
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalar(
+            select(RuntimeMessage).where(RuntimeMessage.id == message.id)
+        )
+        assert loaded is not None
+        assert loaded.content_text == "sealed searchable message"
+        assert loaded.content_json == {
+            "pills": [],
+            "private": "preserved",
+        }
+
+
 def test_runtime_step_writer_seals_duplicate_trace_payloads(
     monkeypatch,
 ) -> None:

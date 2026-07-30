@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.models.corefs_runtime import (
     CoreFSRuntimeBinding,
@@ -20,6 +21,12 @@ from anima_server.services.corefs.runtime_sealing import (
     RuntimeSealingLocked,
     SealedRuntimePayload,
 )
+
+if TYPE_CHECKING:
+    from anima_server.models.runtime import RuntimeMessage
+
+
+_UNCHANGED = object()
 
 
 def _digest(value: str) -> str:
@@ -104,6 +111,58 @@ def seal_runtime_record(
         stored.ciphertext = sealed.ciphertext
         stored.aad_digest = hashlib.sha256(aad.encode()).hexdigest()
     runtime_db.flush()
+
+
+def reseal_runtime_message(
+    runtime_db: Session,
+    message: RuntimeMessage,
+    *,
+    content_text: str | None | object = _UNCHANGED,
+    content_json: dict[str, object] | None | object = _UNCHANGED,
+    tool_args_json: dict[str, object] | None | object = _UNCHANGED,
+) -> None:
+    """Persist a Runtime message mutation without exposing its private fields."""
+    next_content_text = (
+        message.content_text if content_text is _UNCHANGED else content_text
+    )
+    next_content_json = (
+        message.content_json if content_json is _UNCHANGED else content_json
+    )
+    next_tool_args_json = (
+        message.tool_args_json if tool_args_json is _UNCHANGED else tool_args_json
+    )
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=int(message.user_id),
+    )
+    if runtime_index is None:
+        message.content_text = next_content_text
+        message.content_json = next_content_json
+        message.tool_args_json = next_tool_args_json
+        return
+
+    # These assignments happen before any sealing query can autoflush. Existing
+    # sealed rows already contain these placeholders; legacy plaintext rows are
+    # scrubbed as they are first mutated under an active CoreFS binding.
+    message.content_text = None
+    message.content_json = None
+    message.tool_args_json = None
+    runtime_db.flush([message])
+    seal_runtime_record(
+        runtime_db,
+        index=runtime_index,
+        row_type="runtime_message",
+        row_id=int(message.id),
+        owner_id=int(message.user_id),
+        payload={
+            "content_text": next_content_text,
+            "content_json": next_content_json,
+            "tool_args_json": next_tool_args_json,
+        },
+    )
+    set_committed_value(message, "content_text", next_content_text)
+    set_committed_value(message, "content_json", next_content_json)
+    set_committed_value(message, "tool_args_json", next_tool_args_json)
 
 
 def delete_sealed_runtime_records(

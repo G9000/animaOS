@@ -191,6 +191,10 @@ def rebuild_unlocked_search(
             revision=entry["revision"],
             text=text,
         )
+        index.clear_family_failure(
+            family=entry["family"],
+            object_id=entry["stable_id"],
+        )
         indexed.append((entry["stable_id"], text))
         indexed_by_revision[(entry["stable_id"], entry["revision"])] = (
             entry["stable_id"],
@@ -207,6 +211,7 @@ def rebuild_unlocked_search(
             )
             completed_entries.add(durable_key)
 
+    semantic_failed = False
     if embedder is not None:
         if index.snapshot().state is not ReadinessState.SEMANTIC_INDEXING:
             index.begin_semantic_indexing()
@@ -216,13 +221,24 @@ def rebuild_unlocked_search(
             try:
                 vector = embedder(text)
                 index.index_vector(object_id=object_id, vector=vector)
+                family = next(
+                    entry["family"]
+                    for entry in entries
+                    if entry["stable_id"] == object_id
+                )
+                index.clear_family_failure(
+                    family=family,
+                    object_id=object_id,
+                )
             except (TypeError, ValueError):
+                semantic_failed = True
                 family = next(
                     entry["family"] for entry in entries if entry["stable_id"] == object_id
                 )
                 index.mark_family_failure(family=family, object_id=object_id)
-    index.finish()
-    if runtime_db is not None:
+    if not semantic_failed:
+        index.finish()
+    if runtime_db is not None and not semantic_failed:
         _finish_durable_index_state(
             runtime_db,
             index=index,

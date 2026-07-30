@@ -4,7 +4,7 @@ import logging
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, delete, desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -101,24 +101,21 @@ def list_transcript_messages(
     limit: int | None = None,
 ) -> list[RuntimeMessage]:
     if thread_id is not None:
-        has_content = and_(
-            RuntimeMessage.content_text.is_not(None),
-            RuntimeMessage.content_text != "",
-        )
-        return list(
+        rows = list(
             db.scalars(
                 select(RuntimeMessage)
                 .where(
                     RuntimeMessage.thread_id == thread_id,
                     RuntimeMessage.role.notin_(("system", "approval")),
-                    or_(
-                        RuntimeMessage.is_in_context.is_(True),
-                        has_content,
-                    ),
                 )
                 .order_by(RuntimeMessage.sequence_id)
             ).all()
         )
+        return [
+            row
+            for row in rows
+            if row.is_in_context or row.content_text not in (None, "")
+        ]
 
     if user_id is None or limit is None:
         raise TypeError(
@@ -139,16 +136,20 @@ def list_transcript_messages(
         .where(
             RuntimeMessage.thread_id == thread.id,
             RuntimeMessage.role.in_(("user", "assistant", "system", "tool")),
-            RuntimeMessage.content_text.is_not(None),
-            RuntimeMessage.content_text != "",
             or_(RuntimeMessage.run_id.is_(None),
                 RuntimeRun.status.notin_(("failed", "cancelled"))),
         )
         .order_by(desc(RuntimeMessage.sequence_id))
-        .limit(limit)
-    ).all()
-    rows.reverse()
-    return [row for row in rows if not row.is_internal]
+    )
+    visible: list[RuntimeMessage] = []
+    for row in rows:
+        if row.content_text in (None, "") or row.is_internal:
+            continue
+        visible.append(row)
+        if len(visible) == limit:
+            break
+    visible.reverse()
+    return visible
 
 
 def close_thread(db: Session, *, thread_id: int) -> bool:
