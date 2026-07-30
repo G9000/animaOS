@@ -21,7 +21,10 @@ from anima_server.services.corefs.indexer import (
     IndexCapability,
     ReadinessState,
 )
-from anima_server.services.corefs.migration import embed_configured_query
+from anima_server.services.corefs.migration import (
+    embed_configured_query,
+    initialize_catalog_if_idle,
+)
 from anima_server.services.sessions import UnlockSession
 
 router = APIRouter(prefix="/api/corefs", tags=["corefs"])
@@ -153,11 +156,7 @@ def _resolve_search_runtime_state(
         return CoreFsSearchRuntimeState(state="missing")
     snapshot = index.snapshot()
     if snapshot.catalog_generation is None:
-        index.begin_catalog()
-        index.publish_catalog(
-            catalog_generation=selected.generation,
-            families={},
-        )
+        initialize_catalog_if_idle(index, selected.generation)
         snapshot = index.snapshot()
     if snapshot.state is ReadinessState.LOCKED:
         return CoreFsSearchRuntimeState(state="missing")

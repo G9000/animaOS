@@ -291,17 +291,43 @@ def schedule_unlocked_rebuild(
     return True
 
 
+def initialize_catalog_if_idle(
+    index: CoreFSProgressiveIndex,
+    generation: int,
+) -> bool:
+    """Publish an empty catalog only when no rebuild can overwrite it."""
+
+    def initialize() -> None:
+        if index.snapshot().catalog_generation is not None:
+            return
+        index.begin_catalog()
+        index.publish_catalog(catalog_generation=generation, families={})
+
+    return _run_when_rebuild_idle(index, initialize)
+
+
 def reconcile_catalog_if_idle(session: UnlockSession) -> bool:
     """Reconcile only when no rebuild can publish an older catalog afterward."""
     index = session.runtime_index
     if index is None:
         raise ValueError("CoreFS reconciliation requires an unlocked Runtime index")
+
+    return _run_when_rebuild_idle(
+        index,
+        lambda: reconcile_authenticated_catalog(session),
+    )
+
+
+def _run_when_rebuild_idle(
+    index: CoreFSProgressiveIndex,
+    action: Callable[[], object],
+) -> bool:
     with _rebuild_workers_lock:
         current = _rebuild_workers.get(index)
         if current is not None and current.is_alive():
             _rebuild_pending[index] = True
             return False
-        reconcile_authenticated_catalog(session)
+        action()
     return True
 
 

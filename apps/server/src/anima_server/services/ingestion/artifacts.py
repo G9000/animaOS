@@ -62,21 +62,20 @@ def replace_source_artifacts_and_spans(
                 artifact_kind=artifact_input.artifact_kind,
                 content_hash=artifact_input.content_hash,
             )
-        artifact.content_text = artifact_input.content_text
-        artifact.metadata_json = _copy_metadata(artifact_input.metadata_json)
         artifact.updated_at = now
-        db.add(artifact)
-        stored_artifacts.append(artifact)
-    db.flush()
-    for artifact, artifact_input in zip(stored_artifacts, artifacts, strict=True):
+        metadata_json = _copy_metadata(artifact_input.metadata_json)
         seal_runtime_fields(
             db,
             row=artifact,
             row_type="runtime_source_artifact",
             owner_id=int(source.user_id),
-            payload={"content_text": artifact_input.content_text},
-            placeholders={"content_text": None},
+            payload={
+                "content_text": artifact_input.content_text,
+                "metadata_json": metadata_json,
+            },
+            placeholders={"content_text": None, "metadata_json": None},
         )
+        stored_artifacts.append(artifact)
 
     artifacts_by_kind = {artifact.artifact_kind: artifact for artifact in stored_artifacts}
     artifact_kind_by_id = {artifact.id: artifact.artifact_kind for artifact in existing_artifacts}
@@ -121,21 +120,20 @@ def replace_source_artifacts_and_spans(
         span.artifact_id = artifact.id
         span.span_kind = span_input.span_kind
         span.locator_json = dict(span_input.locator_json)
-        span.content_text = span_input.content_text
-        span.metadata_json = _copy_metadata(span_input.metadata_json)
         span.updated_at = now
-        db.add(span)
-        stored_spans.append(span)
-    db.flush()
-    for span, span_input in zip(stored_spans, spans, strict=True):
+        metadata_json = _copy_metadata(span_input.metadata_json)
         seal_runtime_fields(
             db,
             row=span,
             row_type="runtime_source_span",
             owner_id=int(source.user_id),
-            payload={"content_text": span_input.content_text},
-            placeholders={"content_text": ""},
+            payload={
+                "content_text": span_input.content_text,
+                "metadata_json": metadata_json,
+            },
+            placeholders={"content_text": "", "metadata_json": None},
         )
+        stored_spans.append(span)
 
     stored_span_ids = {span.id for span in stored_spans}
     stale_span_ids = [

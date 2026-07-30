@@ -19,7 +19,7 @@ from anima_server.services.corefs.runtime_sealing import (
     RuntimeSealingLocked,
 )
 from cryptography.exceptions import InvalidTag
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.orm import Session
 
 
@@ -233,6 +233,7 @@ def test_production_document_image_and_source_writers_seal_private_text(
     )
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents import contextual
     from anima_server.services.documents.models import (
         DocumentRegistration,
         ExtractedDocumentChunk,
@@ -260,11 +261,29 @@ def test_production_document_image_and_source_writers_seal_private_text(
     )
 
     document_marker = "production document chunk marker"
+    document_section_marker = "production private section marker"
+    document_metadata_marker = "production document metadata marker"
+    contextual_marker = "production contextual blurb marker"
     image_marker = "production OCR annotation marker"
     artifact_marker = "production source artifact marker"
+    artifact_metadata_marker = "production artifact metadata marker"
     span_marker = "production source span marker"
+    span_metadata_marker = "production span metadata marker"
 
     with runtime_db_session() as runtime_db:
+        executed_parameters: list[object] = []
+
+        def capture_parameters(
+            _connection,
+            _cursor,
+            _statement,
+            parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            executed_parameters.append(parameters)
+
+        event.listen(runtime_db.bind, "before_cursor_execute", capture_parameters)
         document = register_document(
             runtime_db,
             DocumentRegistration(
@@ -276,7 +295,7 @@ def test_production_document_image_and_source_writers_seal_private_text(
                 size_bytes=128,
             ),
         )
-        replace_document_chunks(
+        document_chunks = replace_document_chunks(
             runtime_db,
             document_id=document.id,
             chunks=[
@@ -285,11 +304,26 @@ def test_production_document_image_and_source_writers_seal_private_text(
                     content_text=document_marker,
                     page_start=1,
                     page_end=1,
-                    section_title="Private section",
+                    section_title=document_section_marker,
                     token_count=4,
+                    metadata_json={"outline": document_metadata_marker},
                 )
             ],
             parse_quality="native",
+        )
+
+        async def generate_blurb(**_kwargs):
+            return [(document_chunks[0].id, contextual_marker)]
+
+        monkeypatch.setattr(contextual.settings, "contextual_chunks", "on")
+        monkeypatch.setattr(contextual, "_generate_blurbs", generate_blurb)
+        assert (
+            contextual.generate_document_chunk_blurbs(
+                runtime_db,
+                user_id=1,
+                document_id=document.id,
+            )
+            == 1
         )
 
         image = RuntimeImageAsset(
@@ -329,6 +363,7 @@ def test_production_document_image_and_source_writers_seal_private_text(
                     artifact_kind="plain_text",
                     content_text=artifact_marker,
                     content_hash="d" * 64,
+                    metadata_json={"outline": artifact_metadata_marker},
                 )
             ],
             spans=[
@@ -338,38 +373,67 @@ def test_production_document_image_and_source_writers_seal_private_text(
                     locator_json={"paragraph_index": 0},
                     content_text=span_marker,
                     content_hash="e" * 64,
+                    metadata_json={"section_path": span_metadata_marker},
                 )
             ],
         )
+        event.remove(runtime_db.bind, "before_cursor_execute", capture_parameters)
 
-        raw_values = [
-            runtime_db.execute(text(f"SELECT content_text FROM {table_name}")).scalar_one()
-            for table_name in (
-                RuntimeDocumentChunk.__tablename__,
-                RuntimeImageAnnotation.__tablename__,
-                RuntimeSourceArtifact.__tablename__,
-                RuntimeSourceSpan.__tablename__,
-            )
-        ]
+        raw_document = runtime_db.execute(
+            text("SELECT content_text, section_title, metadata_json FROM runtime_document_chunks")
+        ).one()
+        raw_image = runtime_db.execute(
+            text("SELECT content_text FROM runtime_image_annotations")
+        ).scalar_one()
+        raw_artifact = runtime_db.execute(
+            text("SELECT content_text, metadata_json FROM runtime_source_artifacts")
+        ).one()
+        raw_span = runtime_db.execute(
+            text("SELECT content_text, metadata_json FROM runtime_source_spans")
+        ).one()
         row_types = set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all())
         runtime_db.expunge_all()
-        hydrated_values = [
-            runtime_db.scalar(select(model)).content_text
-            for model in (
-                RuntimeDocumentChunk,
-                RuntimeImageAnnotation,
-                RuntimeSourceArtifact,
-                RuntimeSourceSpan,
-            )
-        ]
+        hydrated_document = runtime_db.scalar(select(RuntimeDocumentChunk))
+        hydrated_image = runtime_db.scalar(select(RuntimeImageAnnotation))
+        hydrated_artifact = runtime_db.scalar(select(RuntimeSourceArtifact))
+        hydrated_span = runtime_db.scalar(select(RuntimeSourceSpan))
 
-    assert all(value in ("", None) for value in raw_values)
-    assert hydrated_values == [
+    captured = repr(executed_parameters)
+    for marker in (
         document_marker,
+        document_section_marker,
+        document_metadata_marker,
+        contextual_marker,
         image_marker,
         artifact_marker,
+        artifact_metadata_marker,
         span_marker,
-    ]
+        span_metadata_marker,
+    ):
+        assert marker not in captured
+    assert raw_document[0] == ""
+    assert raw_document[1] is None
+    assert raw_document[2] in (None, "null")
+    assert raw_image == ""
+    assert raw_artifact[0] is None
+    assert raw_artifact[1] in (None, "null")
+    assert raw_span[0] == ""
+    assert raw_span[1] in (None, "null")
+    assert hydrated_document is not None
+    assert hydrated_document.content_text == document_marker
+    assert hydrated_document.section_title == document_section_marker
+    assert hydrated_document.metadata_json == {
+        "outline": document_metadata_marker,
+        contextual.CONTEXT_BLURB_METADATA_KEY: contextual_marker,
+    }
+    assert hydrated_image is not None
+    assert hydrated_image.content_text == image_marker
+    assert hydrated_artifact is not None
+    assert hydrated_artifact.content_text == artifact_marker
+    assert hydrated_artifact.metadata_json == {"outline": artifact_metadata_marker}
+    assert hydrated_span is not None
+    assert hydrated_span.content_text == span_marker
+    assert hydrated_span.metadata_json == {"section_path": span_metadata_marker}
     assert {
         "runtime_document_chunk",
         "runtime_image_annotation",
@@ -1431,7 +1495,6 @@ def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
 
 def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
     monkeypatch,
-    runtime_db: Session,
 ) -> None:
     from anima_server.models.pending_memory_op import PendingMemoryOp
     from anima_server.models.runtime import RuntimeDocumentChunk
@@ -1445,94 +1508,103 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         register_document,
         replace_document_chunks,
     )
+    from conftest_runtime import runtime_db_session
 
-    document = register_document(
-        runtime_db,
-        DocumentRegistration(
-            user_id=7,
-            filename="legacy.pdf",
-            mime_type="application/pdf",
-            storage_path=".anima/documents/7/legacy.pdf",
-            sha256="7" * 64,
-            size_bytes=128,
-        ),
-    )
-    chunks = replace_document_chunks(
-        runtime_db,
-        document_id=document.id,
-        chunks=[
-            ExtractedDocumentChunk(
-                chunk_index=0,
-                content_text="legacy document plaintext",
-            )
-        ],
-        parse_quality="legacy",
-    )
-    pending = PendingMemoryOp(
-        user_id=7,
-        op_type="append",
-        target_block="human",
-        content="legacy pending plaintext",
-        old_content="older plaintext",
-    )
-    runtime_db.add(pending)
-    runtime_db.flush()
-    runtime_db.add(
-        CoreFSRuntimeBinding(
-            binding_slot=1,
-            core_id="core-a",
-            local_instance_id="instance-a",
+    with runtime_db_session() as runtime_db:
+        document = register_document(
+            runtime_db,
+            DocumentRegistration(
+                user_id=7,
+                filename="legacy.pdf",
+                mime_type="application/pdf",
+                storage_path=".anima/documents/7/legacy.pdf",
+                sha256="7" * 64,
+                size_bytes=128,
+            ),
         )
-    )
-    runtime_db.flush()
+        chunks = replace_document_chunks(
+            runtime_db,
+            document_id=document.id,
+            chunks=[
+                ExtractedDocumentChunk(
+                    chunk_index=0,
+                    content_text="legacy document plaintext",
+                    section_title="legacy private section",
+                    metadata_json={"outline": "legacy private outline"},
+                )
+            ],
+            parse_quality="legacy",
+        )
+        pending = PendingMemoryOp(
+            user_id=7,
+            op_type="append",
+            target_block="human",
+            content="legacy pending plaintext",
+            old_content="older plaintext",
+        )
+        runtime_db.add(pending)
+        runtime_db.flush()
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.flush()
 
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    converted = sealed_runtime.convert_legacy_runtime_rows(
-        runtime_db,
-        index=index,
-        user_id=7,
-    )
-    runtime_db.flush()
-
-    raw_chunk = runtime_db.execute(
-        select(
-            RuntimeDocumentChunk.__table__.c.content_text,
-            RuntimeDocumentChunk.__table__.c.content_char_count,
-        ).where(RuntimeDocumentChunk.__table__.c.id == chunks[0].id)
-    ).one()
-    raw_pending = runtime_db.execute(
-        select(
-            PendingMemoryOp.__table__.c.content,
-            PendingMemoryOp.__table__.c.old_content,
-        ).where(PendingMemoryOp.__table__.c.id == pending.id)
-    ).one()
-    assert converted == 2
-    assert raw_chunk == ("", len("legacy document plaintext"))
-    assert raw_pending == ("", None)
-    assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
-
-    monkeypatch.setattr(
-        sealed_runtime,
-        "_active_runtime_index",
-        lambda _user_id: index,
-    )
-    runtime_db.expunge_all()
-    loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
-    loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
-    assert loaded_chunk is not None
-    assert loaded_chunk.content_text == "legacy document plaintext"
-    assert loaded_pending is not None
-    assert loaded_pending.content == "legacy pending plaintext"
-    assert loaded_pending.old_content == "older plaintext"
-    assert (
-        sealed_runtime.convert_legacy_runtime_rows(
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+        converted = sealed_runtime.convert_legacy_runtime_rows(
             runtime_db,
             index=index,
             user_id=7,
         )
-        == 0
-    )
+        runtime_db.flush()
+
+        raw_chunk = runtime_db.execute(
+            select(
+                RuntimeDocumentChunk.__table__.c.content_text,
+                RuntimeDocumentChunk.__table__.c.content_char_count,
+                RuntimeDocumentChunk.__table__.c.section_title,
+                RuntimeDocumentChunk.__table__.c.metadata_json,
+            ).where(RuntimeDocumentChunk.__table__.c.id == chunks[0].id)
+        ).one()
+        raw_pending = runtime_db.execute(
+            select(
+                PendingMemoryOp.__table__.c.content,
+                PendingMemoryOp.__table__.c.old_content,
+            ).where(PendingMemoryOp.__table__.c.id == pending.id)
+        ).one()
+        assert converted == 2
+        assert raw_chunk[0:3] == ("", len("legacy document plaintext"), None)
+        assert raw_chunk[3] is None
+        assert raw_pending == ("", None)
+        assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
+
+        monkeypatch.setattr(
+            sealed_runtime,
+            "_active_runtime_index",
+            lambda _user_id: index,
+        )
+        runtime_db.expunge_all()
+        loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
+        loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
+        assert loaded_chunk is not None
+        assert loaded_chunk.content_text == "legacy document plaintext"
+        assert loaded_chunk.section_title == "legacy private section"
+        assert loaded_chunk.metadata_json == {"outline": "legacy private outline"}
+        assert loaded_pending is not None
+        assert loaded_pending.content == "legacy pending plaintext"
+        assert loaded_pending.old_content == "older plaintext"
+        assert (
+            sealed_runtime.convert_legacy_runtime_rows(
+                runtime_db,
+                index=index,
+                user_id=7,
+            )
+            == 0
+        )
 
 
 def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(

@@ -126,8 +126,18 @@ def seal_runtime_fields(
         user_id=owner_id,
     )
     if index is None:
+        for field, value in payload.items():
+            setattr(row, field, value)
+        runtime_db.add(row)
+        runtime_db.flush([row])
         return
+    runtime_db.add(row)
     row_id = getattr(row, "id", None)
+    if not isinstance(row_id, int):
+        for field, placeholder in placeholders.items():
+            setattr(row, field, placeholder)
+        runtime_db.flush([row])
+        row_id = getattr(row, "id", None)
     if not isinstance(row_id, int):
         raise ValueError("sealed Runtime row requires an integer primary key")
     for field, placeholder in placeholders.items():
@@ -188,8 +198,12 @@ def convert_legacy_runtime_rows(
         (
             RuntimeDocumentChunk.__table__,
             "runtime_document_chunk",
-            {"content_text": "content_text"},
-            {"content_text": ""},
+            {
+                "content_text": "content_text",
+                "section_title": "section_title",
+                "metadata_json": "metadata_json",
+            },
+            {"content_text": "", "section_title": None, "metadata_json": None},
         ),
         (
             RuntimeImageAnnotation.__table__,
@@ -200,14 +214,14 @@ def convert_legacy_runtime_rows(
         (
             RuntimeSourceArtifact.__table__,
             "runtime_source_artifact",
-            {"content_text": "content_text"},
-            {"content_text": None},
+            {"content_text": "content_text", "metadata_json": "metadata_json"},
+            {"content_text": None, "metadata_json": None},
         ),
         (
             RuntimeSourceSpan.__table__,
             "runtime_source_span",
-            {"content_text": "content_text"},
-            {"content_text": ""},
+            {"content_text": "content_text", "metadata_json": "metadata_json"},
+            {"content_text": "", "metadata_json": None},
         ),
         (
             MemoryCandidate.__table__,
@@ -485,10 +499,19 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
     )
 
     specifications = {
-        RuntimeDocumentChunk: ("runtime_document_chunk", ("content_text",)),
+        RuntimeDocumentChunk: (
+            "runtime_document_chunk",
+            ("content_text", "section_title", "metadata_json"),
+        ),
         RuntimeImageAnnotation: ("runtime_image_annotation", ("content_text",)),
-        RuntimeSourceArtifact: ("runtime_source_artifact", ("content_text",)),
-        RuntimeSourceSpan: ("runtime_source_span", ("content_text",)),
+        RuntimeSourceArtifact: (
+            "runtime_source_artifact",
+            ("content_text", "metadata_json"),
+        ),
+        RuntimeSourceSpan: (
+            "runtime_source_span",
+            ("content_text", "metadata_json"),
+        ),
     }
     for model in specifications:
         event.listen(

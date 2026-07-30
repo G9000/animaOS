@@ -172,31 +172,39 @@ def replace_document_chunks(
             document_id=document.id,
             user_id=document.user_id,
             chunk_index=chunk.chunk_index,
-            content_text=chunk.content_text,
+            content_text="",
             content_char_count=len(chunk.content_text),
             content_hash=_content_hash(chunk.content_text),
             page_start=chunk.page_start,
             page_end=chunk.page_end,
-            section_title=_bounded_section_title(chunk.section_title),
+            section_title=None,
             token_count=chunk.token_count,
             parse_quality=parse_quality,
-            metadata_json=_copy_metadata(chunk.metadata_json),
+            metadata_json=None,
         )
         for chunk in chunks
     ]
     if not inserted:
         return []
 
-    db.add_all(inserted)
-    db.flush()
     for row, chunk in zip(inserted, chunks, strict=True):
+        section_title = _bounded_section_title(chunk.section_title)
+        metadata_json = _copy_metadata(chunk.metadata_json)
         seal_runtime_fields(
             db,
             row=row,
             row_type="runtime_document_chunk",
             owner_id=int(document.user_id),
-            payload={"content_text": chunk.content_text},
-            placeholders={"content_text": ""},
+            payload={
+                "content_text": chunk.content_text,
+                "section_title": section_title,
+                "metadata_json": metadata_json,
+            },
+            placeholders={
+                "content_text": "",
+                "section_title": None,
+                "metadata_json": None,
+            },
         )
     return sorted(inserted, key=lambda chunk: chunk.chunk_index)
 

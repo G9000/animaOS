@@ -435,7 +435,9 @@ def test_search_readiness_uses_server_runtime_state(
     assert calls[0]["index_generation"] == 8
 
 
-def test_search_readiness_maps_progressive_index_state_without_private_data() -> None:
+def test_search_readiness_maps_progressive_index_state_without_private_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
 
     index = CoreFSProgressiveIndex("core-index")
@@ -449,6 +451,20 @@ def test_search_readiness_maps_progressive_index_state_without_private_data() ->
         generation=9,
         catalog_hash="catalog-hash",
     )
+    initialized: list[tuple[CoreFSProgressiveIndex, int]] = []
+    monkeypatch.setattr(
+        corefs_route,
+        "initialize_catalog_if_idle",
+        lambda candidate, generation: (
+            initialized.append((candidate, generation))
+            or candidate.begin_catalog()
+            or candidate.publish_catalog(
+                catalog_generation=generation,
+                families={},
+            )
+            or True
+        ),
+    )
 
     building = corefs_route._resolve_search_runtime_state(
         context=context,
@@ -456,6 +472,7 @@ def test_search_readiness_maps_progressive_index_state_without_private_data() ->
     )
     assert building.state == "building"
     assert building.index_generation == 9
+    assert initialized == [(index, 9)]
 
     index.begin_catalog()
     index.publish_catalog(

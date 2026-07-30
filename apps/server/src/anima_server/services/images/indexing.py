@@ -250,13 +250,11 @@ def _upsert_active_annotation(
         user_id=user_id,
         image_asset_id=image_asset_id,
         annotation_kind=annotation_kind,
-        content_text=content_text,
+        content_text="",
         content_hash=content_hash,
         source_model=source_model,
         status="active",
     )
-    runtime_db.add(annotation)
-    runtime_db.flush()
     seal_runtime_fields(
         runtime_db,
         row=annotation,
