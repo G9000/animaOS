@@ -277,9 +277,7 @@ async def _issue_background_task(
             if run is not None:
                 run.status = status
                 run.completed_at = datetime.now(UTC)
-                if result_json is not None:
-                    run.result_json = result_json
-                if error_message is not None:
+                if result_json is not None or error_message is not None:
                     from anima_server.services.corefs.sealed_runtime import (
                         seal_runtime_fields,
                     )
@@ -289,8 +287,14 @@ async def _issue_background_task(
                         row=run,
                         row_type="runtime_background_task_run",
                         owner_id=user_id,
-                        payload={"error_message": error_message},
-                        placeholders={"error_message": None},
+                        payload={
+                            "result_json": result_json,
+                            "error_message": error_message,
+                        },
+                        placeholders={
+                            "result_json": None,
+                            "error_message": None,
+                        },
                     )
                 rt_db.commit()
     except Exception:

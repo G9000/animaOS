@@ -543,6 +543,9 @@ def _retry_memory_extraction_failures(
     from anima_server.services.agent.user_profile import (
         create_profile_update_candidates_from_payload,
     )
+    from anima_server.services.corefs.sealed_runtime import (
+        reseal_memory_extraction_failure,
+    )
 
     # Retry genuine failures immediately, plus "pending" guards that have gone
     # stale — a still-pending row past the staleness window means the process
@@ -604,14 +607,22 @@ def _retry_memory_extraction_failures(
             # Normalize a recovered stale "pending" guard to "failed" so it is
             # a plain retryable row from here on.
             failure.status = "failed"
-            failure.failure_reason = str(exc)[:2000]
+            reseal_memory_extraction_failure(
+                runtime_db,
+                failure,
+                failure_reason=str(exc),
+            )
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {exc}")
             continue
 
         if llm_result.failed:
             failure.status = "failed"
-            failure.failure_reason = (llm_result.error or "LLM memory extraction failed")[:2000]
+            reseal_memory_extraction_failure(
+                runtime_db,
+                failure,
+                failure_reason=llm_result.error or "LLM memory extraction failed",
+            )
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {failure.failure_reason}")
             continue

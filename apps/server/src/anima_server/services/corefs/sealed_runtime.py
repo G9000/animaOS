@@ -429,8 +429,11 @@ def convert_legacy_runtime_rows(
         (
             RuntimeBackgroundTaskRun.__table__,
             "runtime_background_task_run",
-            {"error_message": "error_message"},
-            {"error_message": None},
+            {
+                "result_json": "result_json",
+                "error_message": "error_message",
+            },
+            {"result_json": None, "error_message": None},
         ),
         (
             RuntimeDocumentChunk.__table__,
@@ -472,8 +475,13 @@ def convert_legacy_runtime_rows(
             {
                 "user_message_preview": "user_message_preview",
                 "assistant_response_preview": "assistant_response_preview",
+                "failure_reason": "failure_reason",
             },
-            {"user_message_preview": None, "assistant_response_preview": None},
+            {
+                "user_message_preview": None,
+                "assistant_response_preview": None,
+                "failure_reason": "",
+            },
         ),
         (
             ProfileUpdateCandidate.__table__,
@@ -1004,6 +1012,49 @@ def reseal_runtime_message(
     set_committed_value(message, "tool_args_json", next_tool_args_json)
 
 
+def reseal_memory_extraction_failure(
+    runtime_db: Session,
+    failure: Any,
+    *,
+    failure_reason: str,
+) -> None:
+    """Replace a retry failure reason without exposing its sealed previews."""
+    next_reason = failure_reason[:2000]
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=int(failure.user_id),
+    )
+    if runtime_index is None:
+        failure.failure_reason = next_reason
+        return
+
+    user_preview = failure.user_message_preview
+    assistant_preview = failure.assistant_response_preview
+    failure.user_message_preview = None
+    failure.assistant_response_preview = None
+    failure.failure_reason = ""
+    runtime_db.flush([failure])
+    seal_runtime_record(
+        runtime_db,
+        index=runtime_index,
+        row_type="memory_extraction_failure",
+        row_id=int(failure.id),
+        owner_id=int(failure.user_id),
+        payload={
+            "user_message_preview": user_preview,
+            "assistant_response_preview": assistant_preview,
+            "failure_reason": next_reason,
+        },
+    )
+    set_committed_value(failure, "user_message_preview", user_preview)
+    set_committed_value(
+        failure,
+        "assistant_response_preview",
+        assistant_preview,
+    )
+    set_committed_value(failure, "failure_reason", next_reason)
+
+
 def delete_sealed_runtime_records(
     runtime_db: Session,
     *,
@@ -1265,7 +1316,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeRun: ("runtime_run", ("error_text",)),
         RuntimeBackgroundTaskRun: (
             "runtime_background_task_run",
-            ("error_message",),
+            ("result_json", "error_message"),
         ),
         RuntimeWorkflowRun: (
             "runtime_workflow_run",

@@ -505,8 +505,16 @@ async def run_background_extraction(
                     if intent is not None:
                         # Promote the in-flight guard to a retryable failure so
                         # the Soul Writer sweep picks it up.
+                        from anima_server.services.corefs.sealed_runtime import (
+                            reseal_memory_extraction_failure,
+                        )
+
                         intent.status = "failed"
-                        intent.failure_reason = reason[:2000]
+                        reseal_memory_extraction_failure(
+                            rt_db,
+                            intent,
+                            failure_reason=reason,
+                        )
                         intent.last_attempt_at = now
                         intent.updated_at = now
                     health_emit(
@@ -735,7 +743,7 @@ def record_memory_extraction_failure(
         assistant_response_preview=None
         if runtime_index is not None
         else assistant_response_preview,
-        failure_reason=failure_reason[:2000],
+        failure_reason="" if runtime_index is not None else failure_reason[:2000],
         extraction_model=extraction_model,
         status=status,
         last_attempt_at=datetime.now(UTC),
@@ -752,6 +760,7 @@ def record_memory_extraction_failure(
             payload={
                 "user_message_preview": user_message_preview,
                 "assistant_response_preview": assistant_response_preview,
+                "failure_reason": failure_reason[:2000],
             },
         )
         set_committed_value(
@@ -763,6 +772,11 @@ def record_memory_extraction_failure(
             failure,
             "assistant_response_preview",
             assistant_response_preview,
+        )
+        set_committed_value(
+            failure,
+            "failure_reason",
+            failure_reason[:2000],
         )
     return failure
 

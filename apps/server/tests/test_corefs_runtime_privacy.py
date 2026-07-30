@@ -1166,12 +1166,16 @@ def test_unlock_converter_seals_legacy_background_task_error_message(
     index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
     monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
     private_error = "Legacy background failure from /private/logical/archive.pdf"
+    private_result = {
+        "errors": ["Legacy provider leak from /private/logical/result.pdf"]
+    }
 
     with runtime_db_session() as runtime_db:
         run = RuntimeBackgroundTaskRun(
             user_id=7,
             task_type="consolidation",
             status="failed",
+            result_json=private_result,
             error_message=private_error,
         )
         runtime_db.add(run)
@@ -1183,17 +1187,21 @@ def test_unlock_converter_seals_legacy_background_task_error_message(
             index=index,
             user_id=7,
         )
-        raw_error = runtime_db.scalar(
-            select(RuntimeBackgroundTaskRun.__table__.c.error_message).where(
+        raw_fields = runtime_db.execute(
+            select(
+                RuntimeBackgroundTaskRun.__table__.c.result_json,
+                RuntimeBackgroundTaskRun.__table__.c.error_message,
+            ).where(
                 RuntimeBackgroundTaskRun.__table__.c.id == run_id
             )
-        )
+        ).one()
         runtime_db.expunge_all()
         hydrated = runtime_db.get(RuntimeBackgroundTaskRun, run_id)
 
     assert converted >= 1
-    assert raw_error is None
+    assert raw_fields == (None, None)
     assert hydrated is not None
+    assert hydrated.result_json == private_result
     assert hydrated.error_message == private_error
 
 
@@ -1610,12 +1618,12 @@ def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
 
         stored = runtime_db.execute(
             text(
-                "SELECT user_message_preview, assistant_response_preview "
+                "SELECT user_message_preview, assistant_response_preview, failure_reason "
                 "FROM memory_extraction_failures WHERE id = :id"
             ),
             {"id": failure.id},
         ).one()
-        assert stored == (None, None)
+        assert stored == (None, None, "")
         assert (
             runtime_db.scalar(
                 select(CoreFSSealedPayload).where(
@@ -1632,6 +1640,7 @@ def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
         assert loaded is not None
         assert loaded.user_message_preview == "seeded extraction user preview"
         assert loaded.assistant_response_preview == "seeded extraction assistant preview"
+        assert loaded.failure_reason == "temporary provider failure"
 
         index.clear_unlocked_state()
         runtime_db.expunge_all()
@@ -1639,6 +1648,55 @@ def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
             runtime_db.scalar(
                 select(MemoryExtractionFailure).where(MemoryExtractionFailure.id == failure.id)
             )
+
+
+def test_unlock_converter_seals_legacy_memory_extraction_failure_reason(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    private_reason = "Provider leaked /private/logical/extraction-retry.pdf"
+
+    with runtime_db_session() as runtime_db:
+        failure = MemoryExtractionFailure(
+            user_id=7,
+            source_message_ids=[101, 102],
+            user_message_preview="legacy private user preview",
+            assistant_response_preview="legacy private assistant preview",
+            failure_reason=private_reason,
+            status="failed",
+        )
+        runtime_db.add(failure)
+        runtime_db.flush()
+        failure_id = int(failure.id)
+
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        raw_fields = runtime_db.execute(
+            select(
+                MemoryExtractionFailure.__table__.c.user_message_preview,
+                MemoryExtractionFailure.__table__.c.assistant_response_preview,
+                MemoryExtractionFailure.__table__.c.failure_reason,
+            ).where(MemoryExtractionFailure.__table__.c.id == failure_id)
+        ).one()
+        runtime_db.expunge_all()
+        hydrated = runtime_db.get(MemoryExtractionFailure, failure_id)
+
+    assert converted >= 1
+    assert raw_fields == (None, None, "")
+    assert hydrated is not None
+    assert hydrated.user_message_preview == "legacy private user preview"
+    assert hydrated.assistant_response_preview == "legacy private assistant preview"
+    assert hydrated.failure_reason == private_reason
 
 
 def test_profile_update_candidates_use_sealed_runtime_rows(

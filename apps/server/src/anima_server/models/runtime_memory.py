@@ -157,16 +157,21 @@ def _hydrate_sealed_memory_extraction_failure(
         return
     user_preview = payload.get("user_message_preview")
     assistant_preview = payload.get("assistant_response_preview")
+    failure_reason = payload.get("failure_reason")
     if user_preview is not None and not isinstance(user_preview, str):
         raise ValueError("sealed extraction user preview is invalid")
     if assistant_preview is not None and not isinstance(assistant_preview, str):
         raise ValueError("sealed extraction assistant preview is invalid")
+    if failure_reason is not None and not isinstance(failure_reason, str):
+        raise ValueError("sealed extraction failure reason is invalid")
     set_committed_value(failure, "user_message_preview", user_preview)
     set_committed_value(
         failure,
         "assistant_response_preview",
         assistant_preview,
     )
+    if failure_reason is not None:
+        set_committed_value(failure, "failure_reason", failure_reason)
 
 
 class ProfileUpdateCandidate(RuntimeBase):
