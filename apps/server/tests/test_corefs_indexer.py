@@ -142,6 +142,34 @@ def test_clear_unlocked_state_revokes_search_keys_vectors_and_queries() -> None:
         index.finish_query(query_id)
 
 
+def test_semantic_refresh_does_not_interrupt_active_text_indexing() -> None:
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=1, families={"note": 2})
+    index.begin_text_indexing()
+
+    index.request_semantic_refresh(embedding_fingerprint="provider-b:model-b")
+
+    assert index.snapshot().state is ReadinessState.TEXT_INDEXING
+    index.index_text(
+        family="note",
+        object_id="note-1",
+        revision="1",
+        text="first note",
+    )
+    with pytest.raises(ValueError, match="configuration changed"):
+        index.begin_semantic_indexing(
+            embedding_fingerprint="provider-a:model-a",
+        )
+
+    assert index.snapshot().state is ReadinessState.TEXT_INDEXING
+    index.begin_semantic_indexing(
+        embedding_fingerprint="provider-b:model-b",
+    )
+    assert index.snapshot().state is ReadinessState.SEMANTIC_INDEXING
+
+
 def test_blind_token_generation_switch_is_atomic_and_instance_bound() -> None:
     index = CoreFSProgressiveIndex("core-index")
     index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")

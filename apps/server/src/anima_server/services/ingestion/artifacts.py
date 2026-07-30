@@ -11,6 +11,7 @@ from anima_server.models.runtime import (
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
 )
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.ingestion.models import (
     SourceArtifactInput,
     SourceSpanInput,
@@ -65,6 +66,15 @@ def replace_source_artifacts_and_spans(
         db.add(artifact)
         stored_artifacts.append(artifact)
     db.flush()
+    for artifact, artifact_input in zip(stored_artifacts, artifacts, strict=True):
+        seal_runtime_fields(
+            db,
+            row=artifact,
+            row_type="runtime_source_artifact",
+            owner_id=int(source.user_id),
+            payload={"content_text": artifact_input.content_text},
+            placeholders={"content_text": None},
+        )
 
     artifacts_by_kind = {
         artifact.artifact_kind: artifact for artifact in stored_artifacts
@@ -122,6 +132,15 @@ def replace_source_artifacts_and_spans(
         db.add(span)
         stored_spans.append(span)
     db.flush()
+    for span, span_input in zip(stored_spans, spans, strict=True):
+        seal_runtime_fields(
+            db,
+            row=span,
+            row_type="runtime_source_span",
+            owner_id=int(source.user_id),
+            payload={"content_text": span_input.content_text},
+            placeholders={"content_text": ""},
+        )
 
     stored_span_ids = {span.id for span in stored_spans}
     for stale_span in existing_spans:

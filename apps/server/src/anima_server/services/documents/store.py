@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
@@ -178,6 +179,15 @@ def replace_document_chunks(
 
     db.add_all(inserted)
     db.flush()
+    for row, chunk in zip(inserted, chunks, strict=True):
+        seal_runtime_fields(
+            db,
+            row=row,
+            row_type="runtime_document_chunk",
+            owner_id=int(document.user_id),
+            payload={"content_text": chunk.content_text},
+            placeholders={"content_text": ""},
+        )
     return sorted(inserted, key=lambda chunk: chunk.chunk_index)
 
 

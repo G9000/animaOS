@@ -220,6 +220,168 @@ def test_fresh_runtime_disk_contains_none_of_the_seeded_private_markers(
         assert marker not in raw_runtime
 
 
+def test_production_document_image_and_source_writers_seal_private_text(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import (
+        RuntimeDocumentChunk,
+        RuntimeImageAnnotation,
+        RuntimeImageAsset,
+        RuntimeSource,
+        RuntimeSourceArtifact,
+        RuntimeSourceSpan,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents.models import (
+        DocumentRegistration,
+        ExtractedDocumentChunk,
+    )
+    from anima_server.services.documents.store import (
+        register_document,
+        replace_document_chunks,
+    )
+    from anima_server.services.images.indexing import _upsert_active_annotation
+    from anima_server.services.ingestion.artifacts import (
+        replace_source_artifacts_and_spans,
+    )
+    from anima_server.services.ingestion.models import (
+        SourceArtifactInput,
+        SourceSpanInput,
+    )
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    document_marker = "production document chunk marker"
+    image_marker = "production OCR annotation marker"
+    artifact_marker = "production source artifact marker"
+    span_marker = "production source span marker"
+
+    with runtime_db_session() as runtime_db:
+        document = register_document(
+            runtime_db,
+            DocumentRegistration(
+                user_id=1,
+                filename="private.pdf",
+                mime_type="application/pdf",
+                storage_path="corefs://private.pdf",
+                sha256="a" * 64,
+                size_bytes=128,
+            ),
+        )
+        replace_document_chunks(
+            runtime_db,
+            document_id=document.id,
+            chunks=[
+                ExtractedDocumentChunk(
+                    chunk_index=0,
+                    content_text=document_marker,
+                    page_start=1,
+                    page_end=1,
+                    section_title="Private section",
+                    token_count=4,
+                )
+            ],
+            parse_quality="native",
+        )
+
+        image = RuntimeImageAsset(
+            user_id=1,
+            filename="private.png",
+            mime_type="image/png",
+            storage_path="corefs://private.png",
+            sha256="b" * 64,
+            size_bytes=64,
+        )
+        runtime_db.add(image)
+        runtime_db.flush()
+        _upsert_active_annotation(
+            runtime_db,
+            user_id=1,
+            image_asset_id=image.id,
+            annotation_kind="ocr_text",
+            content_text=image_marker,
+            source_model=None,
+        )
+
+        source = RuntimeSource(
+            user_id=1,
+            kind="document",
+            source_uri="corefs://private-source",
+            content_hash="c" * 64,
+            title="Private source",
+            status="registered",
+        )
+        runtime_db.add(source)
+        runtime_db.flush()
+        replace_source_artifacts_and_spans(
+            runtime_db,
+            source=source,
+            artifacts=[
+                SourceArtifactInput(
+                    artifact_kind="plain_text",
+                    content_text=artifact_marker,
+                    content_hash="d" * 64,
+                )
+            ],
+            spans=[
+                SourceSpanInput(
+                    artifact_kind="plain_text",
+                    span_kind="paragraph",
+                    locator_json={"paragraph_index": 0},
+                    content_text=span_marker,
+                    content_hash="e" * 64,
+                )
+            ],
+        )
+
+        raw_values = [
+            runtime_db.execute(
+                text(f"SELECT content_text FROM {table_name}")
+            ).scalar_one()
+            for table_name in (
+                RuntimeDocumentChunk.__tablename__,
+                RuntimeImageAnnotation.__tablename__,
+                RuntimeSourceArtifact.__tablename__,
+                RuntimeSourceSpan.__tablename__,
+            )
+        ]
+        row_types = set(
+            runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()
+        )
+        runtime_db.expunge_all()
+        hydrated_values = [
+            runtime_db.scalar(select(model)).content_text
+            for model in (
+                RuntimeDocumentChunk,
+                RuntimeImageAnnotation,
+                RuntimeSourceArtifact,
+                RuntimeSourceSpan,
+            )
+        ]
+
+    assert all(value in ("", None) for value in raw_values)
+    assert hydrated_values == [
+        document_marker,
+        image_marker,
+        artifact_marker,
+        span_marker,
+    ]
+    assert {
+        "runtime_document_chunk",
+        "runtime_image_annotation",
+        "runtime_source_artifact",
+        "runtime_source_span",
+    }.issubset(row_types)
+
+
 def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
     monkeypatch,
 ) -> None:

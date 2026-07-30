@@ -370,7 +370,7 @@ def refresh_unlocked_semantic_search(session: UnlockSession) -> bool:
         return False
     fingerprint = configured_embedding_fingerprint()
     if index.snapshot().catalog_generation is not None:
-        index.invalidate_semantic_index(
+        index.request_semantic_refresh(
             embedding_fingerprint=fingerprint,
         )
     return schedule_unlocked_rebuild(

@@ -314,6 +314,18 @@ class UnlockSessionStore:
         self._run_cleanup(cleanup)
         return index
 
+    def get_active_sessions(self, user_id: int) -> tuple[UnlockSession, ...]:
+        cleanup = _CleanupBatch()
+        with self._lock:
+            cleanup.extend(self._purge_expired_locked())
+            sessions = tuple(
+                session
+                for session in self._sessions.values()
+                if session.user_id == user_id
+            )
+        self._run_cleanup(cleanup)
+        return sessions
+
     def set_db_viewer_verified_at(
         self,
         token: str | None,
@@ -819,6 +831,10 @@ async def get_active_dek_async(
 
 def get_active_deks(user_id: int) -> dict[str, bytes] | None:
     return unlock_session_store.get_active_deks(user_id)
+
+
+def active_unlock_sessions(user_id: int) -> tuple[UnlockSession, ...]:
+    return unlock_session_store.get_active_sessions(user_id)
 
 
 def set_sqlcipher_key(key: bytes) -> None:

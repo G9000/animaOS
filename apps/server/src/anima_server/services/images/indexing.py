@@ -11,6 +11,7 @@ from anima_server.models.runtime import RuntimeImageAnnotation, RuntimeImageAsse
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.extractors import ImageCaptioner, ImageTextExtractor
@@ -219,6 +220,14 @@ def _upsert_active_annotation(
             existing.updated_at = now
             runtime_db.add(existing)
             runtime_db.flush()
+        seal_runtime_fields(
+            runtime_db,
+            row=existing,
+            row_type="runtime_image_annotation",
+            owner_id=user_id,
+            payload={"content_text": content_text},
+            placeholders={"content_text": ""},
+        )
         return existing
 
     stale = list(
@@ -248,6 +257,14 @@ def _upsert_active_annotation(
     )
     runtime_db.add(annotation)
     runtime_db.flush()
+    seal_runtime_fields(
+        runtime_db,
+        row=annotation,
+        row_type="runtime_image_annotation",
+        owner_id=user_id,
+        payload={"content_text": content_text},
+        placeholders={"content_text": ""},
+    )
     return annotation
 
 

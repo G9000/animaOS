@@ -4,8 +4,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, event, select
+from sqlalchemy.orm import Session, object_session
 from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.models.corefs_runtime import (
@@ -111,6 +111,40 @@ def seal_runtime_record(
         stored.ciphertext = sealed.ciphertext
         stored.aad_digest = hashlib.sha256(aad.encode()).hexdigest()
     runtime_db.flush()
+
+
+def seal_runtime_fields(
+    runtime_db: Session,
+    *,
+    row: Any,
+    row_type: str,
+    owner_id: int,
+    payload: dict[str, object],
+    placeholders: dict[str, object],
+) -> None:
+    """Persist private ORM fields as placeholders plus an unlock-sealed payload."""
+    index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=owner_id,
+    )
+    if index is None:
+        return
+    row_id = getattr(row, "id", None)
+    if not isinstance(row_id, int):
+        raise ValueError("sealed Runtime row requires an integer primary key")
+    for field, placeholder in placeholders.items():
+        setattr(row, field, placeholder)
+    runtime_db.flush([row])
+    seal_runtime_record(
+        runtime_db,
+        index=index,
+        row_type=row_type,
+        row_id=row_id,
+        owner_id=owner_id,
+        payload=payload,
+    )
+    for field, value in payload.items():
+        set_committed_value(row, field, value)
 
 
 def reseal_runtime_message(
@@ -232,3 +266,51 @@ def load_runtime_record(
     if not isinstance(value, dict):
         raise ValueError("sealed Runtime payload is invalid")
     return value
+
+
+def _hydrate_private_runtime_fields(target: Any, _context: Any) -> None:
+    specification = _PRIVATE_RUNTIME_FIELD_SPECS.get(type(target))
+    if specification is None:
+        return
+    runtime_db = object_session(target)
+    if runtime_db is None:
+        return
+    row_type, fields = specification
+    payload = load_runtime_record(
+        runtime_db,
+        row_type=row_type,
+        row_id=int(target.id),
+        owner_id=int(target.user_id),
+    )
+    if payload is None:
+        return
+    for field in fields:
+        if field in payload:
+            set_committed_value(target, field, payload[field])
+
+
+def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str, ...]]]:
+    from anima_server.models.runtime import (
+        RuntimeDocumentChunk,
+        RuntimeImageAnnotation,
+        RuntimeSourceArtifact,
+        RuntimeSourceSpan,
+    )
+
+    specifications = {
+        RuntimeDocumentChunk: ("runtime_document_chunk", ("content_text",)),
+        RuntimeImageAnnotation: ("runtime_image_annotation", ("content_text",)),
+        RuntimeSourceArtifact: ("runtime_source_artifact", ("content_text",)),
+        RuntimeSourceSpan: ("runtime_source_span", ("content_text",)),
+    }
+    for model in specifications:
+        event.listen(
+            model,
+            "load",
+            _hydrate_private_runtime_fields,
+            restore_load_context=True,
+        )
+    return specifications
+
+
+_PRIVATE_RUNTIME_FIELD_SPECS = _install_private_runtime_hydration()

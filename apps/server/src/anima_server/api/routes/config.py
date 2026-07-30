@@ -32,6 +32,7 @@ from anima_server.services.corefs.migration import (
     configured_embedding_fingerprint,
     refresh_unlocked_semantic_search,
 )
+from anima_server.services.sessions import active_unlock_sessions
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -418,7 +419,7 @@ async def update_config(
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Update and persist the active agent config."""
-    unlock_session = await require_unlocked_user_async(request, user_id)
+    await require_unlocked_user_async(request, user_id)
 
     if payload.provider not in VALID_PROVIDERS:
         raise HTTPException(
@@ -571,10 +572,8 @@ async def update_config(
     # change also invalidates and rebuilds that generation below.
     clear_embedding_cache()
     invalidate_agent_runtime_cache()
-    if (
-        unlock_session is not None
-        and configured_embedding_fingerprint() != old_embedding_fingerprint
-    ):
-        refresh_unlocked_semantic_search(unlock_session)
+    if configured_embedding_fingerprint() != old_embedding_fingerprint:
+        for unlock_session in active_unlock_sessions(user_id):
+            refresh_unlocked_semantic_search(unlock_session)
 
     return {"status": "updated"}

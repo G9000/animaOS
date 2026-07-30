@@ -517,6 +517,7 @@ async def test_config_update_refreshes_unlocked_corefs_semantic_search(
     from starlette.requests import Request
 
     session = object()
+    sibling_session = object()
     refresh_calls: list[object] = []
 
     async def unlocked(_request: object, _user_id: object) -> object:
@@ -532,6 +533,12 @@ async def test_config_update_refreshes_unlocked_corefs_semantic_search(
     )
     monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
     monkeypatch.setattr(config_route, "require_unlocked_user_async", unlocked)
+    monkeypatch.setattr(
+        config_route,
+        "active_unlock_sessions",
+        lambda _user_id: (session, sibling_session),
+        raising=False,
+    )
     monkeypatch.setattr(
         config_route,
         "refresh_unlocked_semantic_search",
@@ -561,7 +568,7 @@ async def test_config_update_refreshes_unlocked_corefs_semantic_search(
         )
 
         assert result == {"status": "updated"}
-        assert refresh_calls == [session]
+        assert refresh_calls == [session, sibling_session]
     finally:
         (
             settings.agent_provider,
