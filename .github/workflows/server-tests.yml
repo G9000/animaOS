@@ -16,6 +16,10 @@ on:
       - "Cargo.lock"
       - "pyproject.toml"
       - "uv.lock"
+      # uv resolves the test interpreter from the root .python-version pin
+      # (discovered by walking up from apps/server), so an interpreter change
+      # must run the suite too.
+      - ".python-version"
       - ".github/workflows/server-tests.yml"
   workflow_dispatch:
 
