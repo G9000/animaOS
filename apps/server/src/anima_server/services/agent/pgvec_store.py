@@ -23,16 +23,14 @@ from anima_server.services.agent.embedding_integrity import (
     compute_embedding_checksum,
 )
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 
 logger = logging.getLogger(__name__)
 
 
 def _canonicalize_runtime_embedding(embedding: Sequence[float]) -> list[float]:
     """Match pgvector's float4 storage before hashing or persisting values."""
-    return [
-        struct.unpack("!f", struct.pack("!f", float(value)))[0]
-        for value in embedding
-    ]
+    return [struct.unpack("!f", struct.pack("!f", float(value)))[0] for value in embedding]
 
 
 class PgVecStore(VectorStore):
@@ -82,7 +80,7 @@ class PgVecStore(VectorStore):
             content_hash=content_hash,
             embedding_checksum=embedding_checksum,
             embedding=runtime_embedding,
-            content_preview=content[:200],
+            content_preview="",
             category=category,
             importance=importance,
         )
@@ -92,7 +90,7 @@ class PgVecStore(VectorStore):
                 "embedding": stmt.excluded.embedding,
                 "content_hash": stmt.excluded.content_hash,
                 "embedding_checksum": stmt.excluded.embedding_checksum,
-                "content_preview": stmt.excluded.content_preview,
+                "content_preview": "",
                 "category": stmt.excluded.category,
                 "importance": stmt.excluded.importance,
                 "updated_at": func.now(),
@@ -100,6 +98,23 @@ class PgVecStore(VectorStore):
         )
         self._db.execute(stmt)
         self._db.flush()
+        stored = self._db.scalar(
+            select(RuntimeEmbedding).where(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == source_type,
+                RuntimeEmbedding.source_id == source_id,
+            )
+        )
+        if stored is None:
+            raise RuntimeError("Runtime embedding upsert did not return a stored row")
+        seal_runtime_fields(
+            self._db,
+            row=stored,
+            row_type="runtime_embedding",
+            owner_id=user_id,
+            payload={"content_preview": content[:200]},
+            placeholders={"content_preview": ""},
+        )
 
     def delete(self, user_id: int, *, item_id: int) -> None:
         self.delete_source(user_id, source_type="memory_item", source_id=item_id)
@@ -239,18 +254,24 @@ class PgVecStore(VectorStore):
         for item_id, content, embedding, category, importance in items:
             content_hash = hashlib.sha256(content.encode()).hexdigest()
             runtime_embedding = _canonicalize_runtime_embedding(embedding)
-            self._db.add(
-                RuntimeEmbedding(
-                    user_id=user_id,
-                    source_type="memory_item",
-                    source_id=item_id,
-                    content_hash=content_hash,
-                    embedding_checksum=compute_embedding_checksum(runtime_embedding),
-                    embedding=runtime_embedding,
-                    content_preview=content[:200],
-                    category=category,
-                    importance=importance,
-                )
+            stored = RuntimeEmbedding(
+                user_id=user_id,
+                source_type="memory_item",
+                source_id=item_id,
+                content_hash=content_hash,
+                embedding_checksum=compute_embedding_checksum(runtime_embedding),
+                embedding=runtime_embedding,
+                content_preview="",
+                category=category,
+                importance=importance,
+            )
+            seal_runtime_fields(
+                self._db,
+                row=stored,
+                row_type="runtime_embedding",
+                owner_id=user_id,
+                payload={"content_preview": content[:200]},
+                placeholders={"content_preview": ""},
             )
         self._db.flush()
         return len(items)

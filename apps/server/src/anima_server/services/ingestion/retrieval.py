@@ -25,6 +25,7 @@ from anima_server.services.agent.embeddings import (
     _reciprocal_rank_fusion,
     generate_embedding,
 )
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 
 EmbeddingFn = Callable[[str], list[float] | None | Awaitable[list[float] | None]]
 
@@ -216,7 +217,7 @@ def _upsert_embedding(
             content_hash=content_hash,
             embedding_checksum=compute_embedding_checksum(embedding),
             embedding=embedding,
-            content_preview=text[:200],
+            content_preview="",
             category=category,
             importance=importance,
         )
@@ -224,12 +225,17 @@ def _upsert_embedding(
         existing.content_hash = content_hash
         existing.embedding_checksum = compute_embedding_checksum(embedding)
         existing.embedding = embedding
-        existing.content_preview = text[:200]
         existing.category = category
         existing.importance = importance
         existing.updated_at = now
-    db.add(existing)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=existing,
+        row_type="runtime_embedding",
+        owner_id=user_id,
+        payload={"content_preview": text[:200]},
+        placeholders={"content_preview": ""},
+    )
     return existing
 
 
@@ -317,17 +323,12 @@ def _concept_hits(
     dense_ranked = [(item_id, score) for item_id, score in dense_ranked if score > 0]
     dense_scores = dict(dense_ranked)
     lexical_ranked = _lexical_ranking(
-        [
-            (concept.id, _concept_embedding_text(concept))
-            for concept in all_concepts
-        ],
+        [(concept.id, _concept_embedding_text(concept)) for concept in all_concepts],
         query=query,
         limit=limit * 4,
     )
     fused = (
-        _reciprocal_rank_fusion(dense_ranked, lexical_ranked)
-        if lexical_ranked
-        else dense_ranked
+        _reciprocal_rank_fusion(dense_ranked, lexical_ranked) if lexical_ranked else dense_ranked
     )
     hits: list[KnowledgeConceptHit] = []
     for concept_id, _fused_score in fused[:limit]:
@@ -407,9 +408,7 @@ def _span_hits(
         limit=limit * 4,
     )
     fused = (
-        _reciprocal_rank_fusion(dense_ranked, lexical_ranked)
-        if lexical_ranked
-        else dense_ranked
+        _reciprocal_rank_fusion(dense_ranked, lexical_ranked) if lexical_ranked else dense_ranked
     )
     hits: list[KnowledgeEvidenceSpanHit] = []
     for span_id, _fused_score in fused[:limit]:

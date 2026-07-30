@@ -171,12 +171,17 @@ def convert_legacy_runtime_rows(
     from anima_server.models.runtime import (
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
+        RuntimeKnowledgeConcept,
+        RuntimeKnowledgeConceptSource,
         RuntimeMessage,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
         RuntimeStep,
         RuntimeThread,
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
     )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
     from anima_server.models.runtime_memory import (
         MemoryCandidate,
         MemoryExtractionFailure,
@@ -256,6 +261,30 @@ def convert_legacy_runtime_rows(
             {"content": "content", "old_content": "old_content"},
             {"content": "", "old_content": None},
         ),
+        (
+            RuntimeEmbedding.__table__,
+            "runtime_embedding",
+            {"content_preview": "content_preview"},
+            {"content_preview": ""},
+        ),
+        (
+            RuntimeWorkflowRun.__table__,
+            "runtime_workflow_run",
+            {"result_json": "result_json"},
+            {"result_json": None},
+        ),
+        (
+            RuntimeKnowledgeConcept.__table__,
+            "runtime_knowledge_concept",
+            {"body_markdown": "body_markdown"},
+            {"body_markdown": ""},
+        ),
+        (
+            RuntimeKnowledgeConceptSource.__table__,
+            "runtime_knowledge_concept_source",
+            {"quote_text": "quote_text"},
+            {"quote_text": None},
+        ),
     )
 
     converted = 0
@@ -303,6 +332,28 @@ def convert_legacy_runtime_rows(
             "response_json": {},
             "tool_calls_json": None,
         },
+    )
+    checkpoint_table = RuntimeWorkflowCheckpoint.__table__
+    workflow_table = RuntimeWorkflowRun.__table__
+    converted += _convert_legacy_statement(
+        runtime_db,
+        index=index,
+        table=checkpoint_table,
+        row_type="runtime_workflow_checkpoint",
+        statement=(
+            select(
+                checkpoint_table.c.id.label("_row_id"),
+                workflow_table.c.user_id.label("_owner_id"),
+                checkpoint_table.c.output_json,
+            )
+            .join(
+                workflow_table,
+                workflow_table.c.id == checkpoint_table.c.workflow_run_id,
+            )
+            .where(workflow_table.c.user_id == user_id)
+        ),
+        payload_columns={"output_json": "output_json"},
+        placeholders={"output_json": None},
     )
     runtime_db.flush()
     return converted
@@ -420,6 +471,19 @@ def delete_sealed_runtime_records(
     )
 
 
+def delete_all_sealed_runtime_records_for_owner(
+    runtime_db: Session,
+    *,
+    owner_id: int,
+) -> None:
+    """Delete every sealed Runtime payload owned by one reset/forgotten user."""
+    runtime_db.execute(
+        delete(CoreFSSealedPayload).where(
+            CoreFSSealedPayload.owner_id_hash == _digest(str(owner_id))
+        )
+    )
+
+
 def load_runtime_record(
     runtime_db: Session,
     *,
@@ -477,11 +541,26 @@ def _hydrate_private_runtime_fields(target: Any, _context: Any) -> None:
     if runtime_db is None:
         return
     row_type, fields = specification
+    owner_id = getattr(target, "user_id", None)
+    if owner_id is None:
+        from anima_server.models.runtime import (
+            RuntimeWorkflowCheckpoint,
+            RuntimeWorkflowRun,
+        )
+
+        if isinstance(target, RuntimeWorkflowCheckpoint):
+            owner_id = runtime_db.scalar(
+                select(RuntimeWorkflowRun.user_id).where(
+                    RuntimeWorkflowRun.id == target.workflow_run_id
+                )
+            )
+    if not isinstance(owner_id, int):
+        return
     payload = load_runtime_record(
         runtime_db,
         row_type=row_type,
         row_id=int(target.id),
-        owner_id=int(target.user_id),
+        owner_id=owner_id,
     )
     if payload is None:
         return
@@ -494,9 +573,14 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
     from anima_server.models.runtime import (
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
+        RuntimeKnowledgeConcept,
+        RuntimeKnowledgeConceptSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
     )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
 
     specifications = {
         RuntimeDocumentChunk: (
@@ -511,6 +595,20 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeSourceSpan: (
             "runtime_source_span",
             ("content_text", "metadata_json"),
+        ),
+        RuntimeEmbedding: ("runtime_embedding", ("content_preview",)),
+        RuntimeWorkflowRun: ("runtime_workflow_run", ("result_json",)),
+        RuntimeWorkflowCheckpoint: (
+            "runtime_workflow_checkpoint",
+            ("output_json",),
+        ),
+        RuntimeKnowledgeConcept: (
+            "runtime_knowledge_concept",
+            ("body_markdown",),
+        ),
+        RuntimeKnowledgeConceptSource: (
+            "runtime_knowledge_concept_source",
+            ("quote_text",),
         ),
     }
     for model in specifications:

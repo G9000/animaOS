@@ -17,6 +17,7 @@ from anima_server.models.runtime import (
     RuntimeSource,
     RuntimeSourceSpan,
 )
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _OKF_IMPORT_SOURCE = "okf_import"
@@ -135,7 +136,7 @@ def _upsert_concept(
             slug=slug,
             title=title,
             description=description,
-            body_markdown=body_markdown,
+            body_markdown="",
             frontmatter_json=dict(frontmatter_json),
             content_hash=_content_hash(body_markdown),
             status="active",
@@ -144,13 +145,18 @@ def _upsert_concept(
         concept.concept_type = concept_type
         concept.title = title
         concept.description = description
-        concept.body_markdown = body_markdown
         concept.frontmatter_json = dict(frontmatter_json)
         concept.content_hash = _content_hash(body_markdown)
         concept.status = "active"
         concept.updated_at = datetime.now(UTC)
-    db.add(concept)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=concept,
+        row_type="runtime_knowledge_concept",
+        owner_id=user_id,
+        payload={"body_markdown": body_markdown},
+        placeholders={"body_markdown": ""},
+    )
     return concept
 
 
@@ -166,8 +172,7 @@ def _replace_imported_links(
             delete(RuntimeKnowledgeLink).where(
                 RuntimeKnowledgeLink.user_id == user_id,
                 RuntimeKnowledgeLink.source_concept_id.in_(concept_ids),
-                RuntimeKnowledgeLink.metadata_json["source"].as_string()
-                == _OKF_IMPORT_SOURCE,
+                RuntimeKnowledgeLink.metadata_json["source"].as_string() == _OKF_IMPORT_SOURCE,
             )
         )
         db.flush()
@@ -362,10 +367,7 @@ def _parse_markdown(path: Path) -> tuple[dict[str, object], str]:
 def _json_safe_frontmatter(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
-    return {
-        str(key): _json_safe_value(nested_value)
-        for key, nested_value in value.items()
-    }
+    return {str(key): _json_safe_value(nested_value) for key, nested_value in value.items()}
 
 
 def _json_safe_value(value: object) -> object:
@@ -374,10 +376,7 @@ def _json_safe_value(value: object) -> object:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, dict):
-        return {
-            str(key): _json_safe_value(nested_value)
-            for key, nested_value in value.items()
-        }
+        return {str(key): _json_safe_value(nested_value) for key, nested_value in value.items()}
     if isinstance(value, list):
         return [_json_safe_value(item) for item in value]
     if isinstance(value, tuple):
@@ -387,18 +386,13 @@ def _json_safe_value(value: object) -> object:
 
 def _render_index(concepts: list[RuntimeKnowledgeConcept]) -> str:
     lines = ["# Index", ""]
-    lines.extend(
-        f"- [{concept.title}](concepts/{concept.slug}.md)" for concept in concepts
-    )
+    lines.extend(f"- [{concept.title}](concepts/{concept.slug}.md)" for concept in concepts)
     return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_log(concepts: list[RuntimeKnowledgeConcept]) -> str:
     timestamp = datetime.now(UTC).isoformat()
-    return (
-        "# Log\n\n"
-        f"- {timestamp} - Exported {len(concepts)} OKF concept page(s).\n"
-    )
+    return f"# Log\n\n- {timestamp} - Exported {len(concepts)} OKF concept page(s).\n"
 
 
 def _title_from_slug(slug: str) -> str:

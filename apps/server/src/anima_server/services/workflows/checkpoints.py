@@ -7,6 +7,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeWorkflowCheckpoint, RuntimeWorkflowRun
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.workflows.state import (
     CheckpointStatus,
     WorkflowResumePoint,
@@ -83,12 +84,19 @@ def append_checkpoint(
         state_name=state_name,
         status=status,
         input_json=input_json,
-        output_json=output_json,
+        output_json=None,
         artifact_refs_json=artifact_refs_json,
         idempotency_key=idempotency_key,
         error_json=error_json,
     )
-    db.add(checkpoint)
+    seal_runtime_fields(
+        db,
+        row=checkpoint,
+        row_type="runtime_workflow_checkpoint",
+        owner_id=int(run.user_id),
+        payload={"output_json": output_json},
+        placeholders={"output_json": None},
+    )
 
     _apply_checkpoint_status(
         run,
@@ -138,7 +146,14 @@ def mark_workflow_awaiting_input(
     if state_name is not None:
         run.current_state = state_name
     if result_json is not None:
-        run.result_json = result_json
+        seal_runtime_fields(
+            db,
+            row=run,
+            row_type="runtime_workflow_run",
+            owner_id=int(run.user_id),
+            payload={"result_json": result_json},
+            placeholders={"result_json": None},
+        )
     run.updated_at = datetime.now(UTC)
     db.add(run)
     db.flush()
@@ -154,7 +169,14 @@ def mark_workflow_completed(
     now = datetime.now(UTC)
     run.status = "completed"
     if result_json is not None:
-        run.result_json = result_json
+        seal_runtime_fields(
+            db,
+            row=run,
+            row_type="runtime_workflow_run",
+            owner_id=int(run.user_id),
+            payload={"result_json": result_json},
+            placeholders={"result_json": None},
+        )
     run.completed_at = now
     run.updated_at = now
     db.add(run)

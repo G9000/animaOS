@@ -18,6 +18,10 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.services.agent.json_utils import parse_json_object
+from anima_server.services.corefs.sealed_runtime import (
+    delete_sealed_runtime_records,
+    seal_runtime_fields,
+)
 from anima_server.services.ingestion.retrieval import (
     EmbeddingFn,
     upsert_concept_embedding,
@@ -166,7 +170,7 @@ def _merge_concepts(
                 slug=slug,
                 title=title,
                 description=description,
-                body_markdown=body_markdown,
+                body_markdown="",
                 frontmatter_json={},
                 content_hash=_content_hash(body_markdown),
                 status="active",
@@ -174,7 +178,6 @@ def _merge_concepts(
         concept.concept_type = concept_type
         concept.title = title
         concept.description = description
-        concept.body_markdown = body_markdown
         concept.frontmatter_json = {
             "type": concept_type,
             "title": title,
@@ -191,8 +194,14 @@ def _merge_concepts(
         concept.status = "active"
         concept.compiled_at = now
         concept.updated_at = now
-        db.add(concept)
-        db.flush()
+        seal_runtime_fields(
+            db,
+            row=concept,
+            row_type="runtime_knowledge_concept",
+            owner_id=user_id,
+            payload={"body_markdown": body_markdown},
+            placeholders={"body_markdown": ""},
+        )
         _replace_concept_sources(
             db,
             user_id=user_id,
@@ -213,21 +222,16 @@ def _retire_stale_source_concepts(
     active_concepts: Sequence[RuntimeKnowledgeConcept],
 ) -> list[RuntimeKnowledgeConcept]:
     active_ids = {concept.id for concept in active_concepts}
-    source_citation_concept_ids = select(
-        RuntimeKnowledgeConceptSource.concept_id
-    ).where(
+    source_citation_concept_ids = select(RuntimeKnowledgeConceptSource.concept_id).where(
         RuntimeKnowledgeConceptSource.user_id == user_id,
         RuntimeKnowledgeConceptSource.source_id == source.id,
-        RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string()
-        == "llm_wiki",
+        RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string() == "llm_wiki",
     )
     stmt = select(RuntimeKnowledgeConcept).where(
         RuntimeKnowledgeConcept.user_id == user_id,
         RuntimeKnowledgeConcept.status == "active",
         or_(
-            RuntimeKnowledgeConcept.metadata_json[
-                "compiled_from_source_id"
-            ].as_integer()
+            RuntimeKnowledgeConcept.metadata_json["compiled_from_source_id"].as_integer()
             == source.id,
             RuntimeKnowledgeConcept.id.in_(source_citation_concept_ids),
         ),
@@ -237,15 +241,29 @@ def _retire_stale_source_concepts(
     stale_concepts = list(db.scalars(stmt).all())
     now = datetime.now(UTC)
     for concept in stale_concepts:
+        stale_citation_ids = list(
+            db.scalars(
+                select(RuntimeKnowledgeConceptSource.id).where(
+                    RuntimeKnowledgeConceptSource.user_id == user_id,
+                    RuntimeKnowledgeConceptSource.concept_id == concept.id,
+                    RuntimeKnowledgeConceptSource.source_id == source.id,
+                    RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string()
+                    == "llm_wiki",
+                )
+            ).all()
+        )
+        delete_sealed_runtime_records(
+            db,
+            row_type="runtime_knowledge_concept_source",
+            row_ids=stale_citation_ids,
+            owner_id=user_id,
+        )
         db.execute(
             delete(RuntimeKnowledgeConceptSource).where(
                 RuntimeKnowledgeConceptSource.user_id == user_id,
                 RuntimeKnowledgeConceptSource.concept_id == concept.id,
                 RuntimeKnowledgeConceptSource.source_id == source.id,
-                RuntimeKnowledgeConceptSource.metadata_json[
-                    "compiler"
-                ].as_string()
-                == "llm_wiki",
+                RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string() == "llm_wiki",
             )
         )
         remaining_source_id = db.scalar(
@@ -347,6 +365,21 @@ def _replace_concept_sources(
     span_ids: list[int],
     spans_by_id: dict[int, RuntimeSourceSpan],
 ) -> None:
+    previous_citation_ids = list(
+        db.scalars(
+            select(RuntimeKnowledgeConceptSource.id).where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept.id,
+                RuntimeKnowledgeConceptSource.source_id == source.id,
+            )
+        ).all()
+    )
+    delete_sealed_runtime_records(
+        db,
+        row_type="runtime_knowledge_concept_source",
+        row_ids=previous_citation_ids,
+        owner_id=user_id,
+    )
     db.execute(
         delete(RuntimeKnowledgeConceptSource).where(
             RuntimeKnowledgeConceptSource.user_id == user_id,
@@ -354,24 +387,27 @@ def _replace_concept_sources(
             RuntimeKnowledgeConceptSource.source_id == source.id,
         )
     )
-    citations: list[RuntimeKnowledgeConceptSource] = []
     for index, span_id in enumerate(span_ids, start=1):
         span = spans_by_id.get(span_id)
         if span is None:
             raise ValueError(f"Compiler referenced unknown span id {span_id}.")
-        citations.append(
-            RuntimeKnowledgeConceptSource(
-                user_id=user_id,
-                concept_id=concept.id,
-                source_id=source.id,
-                span_id=span.id,
-                citation_label=f"S{index}",
-                quote_text=span.content_text,
-                metadata_json={"compiler": "llm_wiki"},
-            )
+        citation = RuntimeKnowledgeConceptSource(
+            user_id=user_id,
+            concept_id=concept.id,
+            source_id=source.id,
+            span_id=span.id,
+            citation_label=f"S{index}",
+            quote_text=None,
+            metadata_json={"compiler": "llm_wiki"},
         )
-    db.add_all(citations)
-    db.flush()
+        seal_runtime_fields(
+            db,
+            row=citation,
+            row_type="runtime_knowledge_concept_source",
+            owner_id=user_id,
+            payload={"quote_text": span.content_text},
+            placeholders={"quote_text": None},
+        )
 
 
 def _merge_links(

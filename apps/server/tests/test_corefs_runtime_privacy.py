@@ -1654,3 +1654,304 @@ def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(
 
         assert runtime_db.scalar(select(MemoryCandidate.id)) is None
         assert runtime_db.scalar(select(PendingMemoryOp.id)) is None
+
+
+def test_managed_test_client_provisions_core_before_runtime_claim() -> None:
+    from conftest import managed_test_client
+
+    with managed_test_client(
+        "anima-corefs-runtime-registry-",
+        invalidate_agent=False,
+    ) as client:
+        assert client.get("/health").status_code == 200
+
+
+def test_production_embedding_writers_seal_content_previews(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeImageAsset
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.images.indexing import (
+        _upsert_active_annotation,
+    )
+    from anima_server.services.images.indexing import (
+        _upsert_runtime_embedding as upsert_image_embedding,
+    )
+    from anima_server.services.ingestion.retrieval import (
+        _upsert_embedding as upsert_source_embedding,
+    )
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    embedding = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
+
+    with runtime_db_session() as runtime_db:
+        image = RuntimeImageAsset(
+            user_id=7,
+            filename="private.png",
+            mime_type="image/png",
+            storage_path="corefs://private.png",
+            sha256="a" * 64,
+            size_bytes=64,
+        )
+        runtime_db.add(image)
+        runtime_db.flush()
+        annotation = _upsert_active_annotation(
+            runtime_db,
+            user_id=7,
+            image_asset_id=image.id,
+            annotation_kind="ocr_text",
+            content_text="private image embedding preview",
+            source_model=None,
+        )
+        upsert_image_embedding(
+            runtime_db,
+            user_id=7,
+            annotation=annotation,
+            embedding=embedding,
+        )
+        source_embedding = upsert_source_embedding(
+            runtime_db,
+            user_id=7,
+            source_type="source_span",
+            source_id=99,
+            text="private source embedding preview",
+            category="source",
+            importance=3,
+            embedding_fn=lambda _text: embedding,
+        )
+        runtime_db.flush()
+
+        raw_previews = (
+            runtime_db.execute(
+                select(RuntimeEmbedding.__table__.c.content_preview).order_by(
+                    RuntimeEmbedding.__table__.c.source_type
+                )
+            )
+            .scalars()
+            .all()
+        )
+        sealed_count = len(
+            runtime_db.scalars(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "runtime_embedding"
+                )
+            ).all()
+        )
+        runtime_db.expunge_all()
+        hydrated = {
+            row.source_type: row.content_preview
+            for row in runtime_db.scalars(select(RuntimeEmbedding)).all()
+        }
+
+    assert source_embedding is not None
+    assert raw_previews == ["", ""]
+    assert sealed_count == 2
+    assert hydrated == {
+        "image_annotation": "private image embedding preview",
+        "source_span": "private source embedding preview",
+    }
+
+
+def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
+    monkeypatch,
+) -> None:
+    import json
+
+    from anima_server.models.runtime import (
+        RuntimeKnowledgeConcept,
+        RuntimeKnowledgeConceptSource,
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.ingestion.artifacts import (
+        replace_source_artifacts_and_spans,
+    )
+    from anima_server.services.ingestion.compiler import compile_source_to_concepts
+    from anima_server.services.ingestion.models import (
+        SourceArtifactInput,
+        SourceIdentity,
+        SourceSpanInput,
+    )
+    from anima_server.services.ingestion.sources import register_source
+    from anima_server.services.workflows.checkpoints import (
+        append_checkpoint,
+        mark_workflow_awaiting_input,
+        start_workflow,
+    )
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        run = start_workflow(
+            runtime_db,
+            user_id=7,
+            workflow_type="pdf_ingestion",
+        )
+        checkpoint = append_checkpoint(
+            runtime_db,
+            workflow_run_id=run.id,
+            state_name="summarized",
+            status="completed",
+            idempotency_key="summary-1",
+            output_json={"summary": "private workflow checkpoint"},
+        )
+        mark_workflow_awaiting_input(
+            runtime_db,
+            run,
+            state_name="awaiting_approval",
+            result_json={"proposed_facts": ["private workflow result"]},
+        )
+
+        source = register_source(
+            runtime_db,
+            SourceIdentity(
+                user_id=7,
+                kind="markdown",
+                source_uri="file://private.md",
+                content_hash="b" * 64,
+                title="Private source",
+                media_type="text/markdown",
+            ),
+        )
+        _, spans = replace_source_artifacts_and_spans(
+            runtime_db,
+            source=source,
+            artifacts=[
+                SourceArtifactInput(
+                    artifact_kind="plain_text",
+                    content_text="private compiler evidence",
+                    content_hash="c" * 64,
+                )
+            ],
+            spans=[
+                SourceSpanInput(
+                    artifact_kind="plain_text",
+                    span_kind="paragraph",
+                    locator_json={"paragraph_index": 0},
+                    content_text="private compiler evidence",
+                    content_hash="d" * 64,
+                )
+            ],
+        )
+        compile_source_to_concepts(
+            runtime_db,
+            user_id=7,
+            source_id=source.id,
+            span_ids=[spans[0].id],
+            model=lambda _request: json.dumps(
+                {
+                    "concepts": [
+                        {
+                            "type": "claim",
+                            "slug": "private-claim",
+                            "title": "Private claim",
+                            "body_markdown": "private compiled body",
+                            "source_span_ids": [spans[0].id],
+                        }
+                    ],
+                    "links": [],
+                }
+            ),
+        )
+        runtime_db.flush()
+
+        raw_checkpoint = runtime_db.execute(
+            select(RuntimeWorkflowCheckpoint.__table__.c.output_json).where(
+                RuntimeWorkflowCheckpoint.__table__.c.id == checkpoint.id
+            )
+        ).scalar_one()
+        raw_result = runtime_db.execute(
+            select(RuntimeWorkflowRun.__table__.c.result_json).where(
+                RuntimeWorkflowRun.__table__.c.id == run.id
+            )
+        ).scalar_one()
+        raw_body = runtime_db.execute(
+            select(RuntimeKnowledgeConcept.__table__.c.body_markdown)
+        ).scalar_one()
+        raw_quote = runtime_db.execute(
+            select(RuntimeKnowledgeConceptSource.__table__.c.quote_text)
+        ).scalar_one()
+        runtime_db.expunge_all()
+        hydrated_run = runtime_db.get(RuntimeWorkflowRun, run.id)
+        hydrated_checkpoint = runtime_db.get(RuntimeWorkflowCheckpoint, checkpoint.id)
+        hydrated_concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
+        hydrated_citation = runtime_db.scalar(select(RuntimeKnowledgeConceptSource))
+
+    assert raw_checkpoint is None
+    assert raw_result is None
+    assert raw_body == ""
+    assert raw_quote is None
+    assert hydrated_run is not None
+    assert hydrated_run.result_json == {"proposed_facts": ["private workflow result"]}
+    assert hydrated_checkpoint is not None
+    assert hydrated_checkpoint.output_json == {"summary": "private workflow checkpoint"}
+    assert hydrated_concept is not None
+    assert hydrated_concept.body_markdown == "private compiled body"
+    assert hydrated_citation is not None
+    assert hydrated_citation.quote_text == "private compiler evidence"
+
+
+def test_eval_reset_purges_all_owner_bound_sealed_rows(
+    monkeypatch,
+) -> None:
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.eval_reset import _reset_runtime_state
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        sealed_runtime.seal_runtime_record(
+            runtime_db,
+            index=index,
+            row_type="runtime_message",
+            row_id=101,
+            owner_id=7,
+            payload={"content_text": "eval private"},
+        )
+        sealed_runtime.seal_runtime_record(
+            runtime_db,
+            index=index,
+            row_type="runtime_message",
+            row_id=202,
+            owner_id=8,
+            payload={"content_text": "other private"},
+        )
+
+        _reset_runtime_state(runtime_db, user_id=7, deleted={})
+
+        remaining = runtime_db.scalars(select(CoreFSSealedPayload)).all()
+        other_payload = sealed_runtime.load_runtime_record(
+            runtime_db,
+            row_type="runtime_message",
+            row_id=202,
+            owner_id=8,
+        )
+
+    assert len(remaining) == 1
+    assert other_payload == {"content_text": "other private"}

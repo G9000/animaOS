@@ -282,29 +282,32 @@ def _upsert_runtime_embedding(
     )
     checksum = compute_embedding_checksum(embedding)
     if existing is None:
-        runtime_db.add(
-            RuntimeEmbedding(
-                user_id=user_id,
-                source_type="image_annotation",
-                source_id=annotation.id,
-                content_hash=annotation.content_hash,
-                embedding_checksum=checksum,
-                embedding=embedding,
-                content_preview=annotation.content_text[:200],
-                category="image",
-                importance=3,
-            )
+        existing = RuntimeEmbedding(
+            user_id=user_id,
+            source_type="image_annotation",
+            source_id=annotation.id,
+            content_hash=annotation.content_hash,
+            embedding_checksum=checksum,
+            embedding=embedding,
+            content_preview="",
+            category="image",
+            importance=3,
         )
-        return
-
-    existing.content_hash = annotation.content_hash
-    existing.embedding_checksum = checksum
-    existing.embedding = embedding
-    existing.content_preview = annotation.content_text[:200]
-    existing.category = "image"
-    existing.importance = 3
-    existing.updated_at = datetime.now(UTC)
-    runtime_db.add(existing)
+    else:
+        existing.content_hash = annotation.content_hash
+        existing.embedding_checksum = checksum
+        existing.embedding = embedding
+        existing.category = "image"
+        existing.importance = 3
+        existing.updated_at = datetime.now(UTC)
+    seal_runtime_fields(
+        runtime_db,
+        row=existing,
+        row_type="runtime_embedding",
+        owner_id=user_id,
+        payload={"content_preview": annotation.content_text[:200]},
+        placeholders={"content_preview": ""},
+    )
 
 
 def _all_active_annotations_embedded(
