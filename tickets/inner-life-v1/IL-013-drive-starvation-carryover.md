@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-30 12:10 MYT
+- Updated: 2026-07-30 14:40 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed: 2026-07-29 15:58 MYT
 
@@ -88,10 +88,12 @@ every fire decision remains fully explainable.
 ## Validation
 
 - Commands:
-  - Full suite (`bun run test`) on `43698cb` — **3163 passed, 0 failed,
-    10 skipped** (includes `test_fetch_ack_route_end_to_end`, which passes
-    in-suite; its standalone-run failure reproduces identically on
-    unmodified main and predates this work)
+  - Full suite (`bun run test`) on the FINAL implementation `2d56c87`
+    (includes every review-round fix through round 6) — **3166 passed,
+    0 failed, 10 skipped**, run 2026-07-30 14:40 MYT
+    (`test_fetch_ack_route_end_to_end` passes in-suite; its
+    standalone-run failure reproduces identically on unmodified main
+    and predates this work)
   - `uv run pytest tests/test_inner_life_initiative.py` — 100 passed focused
   - alembic 033 upgrade/downgrade/upgrade on temp SQLite — clean
   - alembic on real PostgreSQL (embedded `pgserver`, the engine the app

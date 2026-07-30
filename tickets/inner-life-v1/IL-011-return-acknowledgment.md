@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-30 12:50 MYT
+- Updated: 2026-07-30 14:40 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed: 2026-07-29 15:58 MYT
 
@@ -104,12 +104,21 @@ hour — in two small, strictly grounded ways:
   is extracted minutes after they leave, so its created_at is mid-gap.
   Two regression tests (primary scenario + observed-mid-gap/fallback).
 
+- 2026-07-30 14:40 MYT - PR #128 review round 6, P2 fix: the voiced signal
+  must also have been IN HORIZON on the last-message local date — offline
+  gaps are backfilled against the current horizon, so a signal sliding
+  into the window mid-gap could inherit the whole gap's pressure.
+  Regression test added; the round-2 tz test re-scoped to a 9h gap.
+  Full suite re-run on the final head (P1: evidence must match the
+  certified code) and recorded below.
+
 ## Validation
 
 - Commands:
-  - Full suite (`bun run test`) on `43698cb` — **3163 passed, 0 failed,
-    10 skipped**
-  - `uv run pytest tests/test_inner_life_held_thought.py` — 14 passed
+  - Full suite (`bun run test`) on the FINAL implementation `2d56c87`
+    (includes every review-round fix through round 6) — **3166 passed,
+    0 failed, 10 skipped**, run 2026-07-30 14:40 MYT
+  - `uv run pytest tests/test_inner_life_held_thought.py` — 15 passed
   - `uv run pytest tests/test_inner_life_presence.py` — 28 passed
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
