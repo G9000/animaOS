@@ -183,6 +183,8 @@ def _prepare_rotation(
                 "phase": "prepared",
                 "source_catalog_generation": source_generation,
                 "source_catalog_hash": source_catalog_hash,
+                "password_reopen_verified": False,
+                "recovery_reopen_verified": False,
             }
         )
 

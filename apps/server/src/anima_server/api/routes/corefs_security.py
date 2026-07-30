@@ -57,8 +57,11 @@ def _security_status(session: UnlockSession) -> CoreFSSecurityStatusResponse:
         reconcile_authenticated_catalog(session)
         reconciled = index.snapshot()
         if reconciled.state in {
+            ReadinessState.CATALOG_LOADING,
             ReadinessState.CATALOG_READY,
             ReadinessState.CATALOG_READY_DEGRADED,
+            ReadinessState.TEXT_INDEXING,
+            ReadinessState.SEMANTIC_INDEXING,
         } and callable(getattr(session.corefs_session, "walk_v1", None)):
             schedule_unlocked_rebuild(session)
     snapshot = index.snapshot()

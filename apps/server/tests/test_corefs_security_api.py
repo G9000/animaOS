@@ -75,6 +75,55 @@ def test_corefs_security_status_schedules_unlocked_rebuild_after_catalog(
     assert calls == ["catalog", "schedule"]
 
 
+def test_corefs_security_status_retries_a_stranded_rebuild(
+    monkeypatch,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=1, families={"notes": 1})
+    index.begin_text_indexing()
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=SimpleNamespace(walk_v1=lambda *_args, **_kwargs: b""),
+        corefs_keys=object(),
+    )
+    scheduled: list[object] = []
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: session,
+    )
+    monkeypatch.setattr(
+        corefs_security,
+        "reconcile_authenticated_catalog",
+        lambda current: current,
+    )
+    monkeypatch.setattr(
+        corefs_security,
+        "schedule_unlocked_rebuild",
+        lambda current: scheduled.append(current) or True,
+    )
+    monkeypatch.setattr(
+        corefs_security,
+        "_rotation_manifest_state",
+        lambda: {
+            "active_version": 1,
+            "pending_version": None,
+            "decrypt_only_versions": [],
+            "phase": "idle",
+        },
+    )
+
+    with TestClient(_app()) as client:
+        response = client.get("/api/corefs/security/status")
+
+    assert response.status_code == 200
+    assert response.json()["readiness"]["state"] == "text_indexing"
+    assert scheduled == [session]
+
+
 def test_corefs_security_status_exposes_only_progress_and_rotation_metadata(
     monkeypatch,
 ) -> None:
