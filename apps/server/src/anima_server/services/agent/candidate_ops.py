@@ -103,7 +103,7 @@ def create_memory_candidate(
             prior_repeats = int(
                 (existing.salience_json or {}).get("repeat_count", 1) or 1
             )
-            existing.salience_json = _merge_candidate_salience(
+            merged_salience = _merge_candidate_salience(
                 existing.salience_json,
                 salience_json,
             )
@@ -126,9 +126,27 @@ def create_memory_candidate(
                 # Weak-signal lane (IL4): an active repeat must still count
                 # toward latent accumulation — record it so the fold applies
                 # once per repeat.
-                merged_salience = dict(existing.salience_json or {})
+                merged_salience = dict(merged_salience)
                 merged_salience["repeat_count"] = prior_repeats + 1
+            runtime_index = active_runtime_index(user_id)
+            if runtime_index is None:
                 existing.salience_json = merged_salience
+            else:
+                seal_runtime_record(
+                    runtime_db,
+                    index=runtime_index,
+                    row_type="memory_candidate",
+                    row_id=int(existing.id),
+                    owner_id=user_id,
+                    payload={
+                        "content": existing.content,
+                        "tags": existing.tags_json,
+                        "salience": merged_salience,
+                    },
+                )
+                from sqlalchemy.orm.attributes import set_committed_value
+
+                set_committed_value(existing, "salience_json", merged_salience)
             runtime_db.flush()
             return None
 

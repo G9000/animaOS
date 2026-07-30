@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
+from anima_server.services.corefs import migration as corefs_migration
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
     IndexCapability,
@@ -15,6 +17,7 @@ from anima_server.services.corefs.indexer import (
 from anima_server.services.corefs.migration import (
     rebuild_unlocked_search,
     reconcile_authenticated_catalog,
+    schedule_unlocked_rebuild,
 )
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
@@ -234,3 +237,84 @@ def test_progressive_rebuild_reads_authenticated_catalog_only_into_memory() -> N
     rebuilt = build()
     assert rebuilt.search_text("seeded message") == ("note-1",)
     assert rebuilt.snapshot().processed_objects == 2
+
+
+def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
+    monkeypatch,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=1, families={})
+    session = SimpleNamespace(runtime_index=index)
+    started = Event()
+    release = Event()
+    completed = Event()
+    calls: list[object] = []
+
+    def blocking_rebuild(current) -> None:
+        calls.append(current)
+        started.set()
+        assert release.wait(timeout=2)
+        completed.set()
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "rebuild_unlocked_search",
+        blocking_rebuild,
+    )
+
+    assert schedule_unlocked_rebuild(session) is True
+    assert started.wait(timeout=2)
+    assert schedule_unlocked_rebuild(session) is False
+    release.set()
+    assert completed.wait(timeout=2)
+    assert calls == [session]
+
+
+def test_walk_failures_publish_an_observable_degraded_family() -> None:
+    corefs_keys = object()
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 3, "catalogHash": "catalog-hash"}
+
+        def walk_v1(self, *_args, **_kwargs):
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 3,
+                        "entries": [],
+                        "errors": [
+                            {
+                                "path": "Notes/corrupt.md",
+                                "code": "authentication_failed",
+                            }
+                        ],
+                        "nextCursor": None,
+                        "truncated": False,
+                        "limitReached": False,
+                    },
+                }
+            ).encode()
+
+        def read_chunk_v1(self, *_args, **_kwargs):
+            raise AssertionError("failed walk entries must not be read")
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    rebuild_unlocked_search(session)
+
+    unknown = index.snapshot().families["unknown"]
+    assert unknown.total == 1
+    assert unknown.failed == 1
+    assert unknown.degraded is True
+    assert unknown.unavailable_object_ids == ("Notes/corrupt.md",)

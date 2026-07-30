@@ -22,7 +22,7 @@ def test_corefs_security_status_requires_unlock() -> None:
     assert response.status_code == 401
 
 
-def test_corefs_security_status_starts_unlocked_rebuild_after_catalog(
+def test_corefs_security_status_schedules_unlocked_rebuild_after_catalog(
     monkeypatch,
 ) -> None:
     index = CoreFSProgressiveIndex("core-index")
@@ -40,10 +40,10 @@ def test_corefs_security_status_starts_unlocked_rebuild_after_catalog(
         current.runtime_index.publish_catalog(catalog_generation=1, families={})
         calls.append("catalog")
 
-    def rebuild(current):
+    def schedule_rebuild(current):
         assert current is session
-        current.runtime_index.finish()
-        calls.append("rebuild")
+        calls.append("schedule")
+        return True
 
     monkeypatch.setattr(
         corefs_security,
@@ -51,7 +51,11 @@ def test_corefs_security_status_starts_unlocked_rebuild_after_catalog(
         lambda _request: session,
     )
     monkeypatch.setattr(corefs_security, "reconcile_authenticated_catalog", reconcile)
-    monkeypatch.setattr(corefs_security, "rebuild_unlocked_search", rebuild)
+    monkeypatch.setattr(
+        corefs_security,
+        "schedule_unlocked_rebuild",
+        schedule_rebuild,
+    )
     monkeypatch.setattr(
         corefs_security,
         "_rotation_manifest_state",
@@ -67,8 +71,8 @@ def test_corefs_security_status_starts_unlocked_rebuild_after_catalog(
         response = client.get("/api/corefs/security/status")
 
     assert response.status_code == 200
-    assert response.json()["readiness"]["state"] == "ready"
-    assert calls == ["catalog", "rebuild"]
+    assert response.json()["readiness"]["state"] == "catalog_ready"
+    assert calls == ["catalog", "schedule"]
 
 
 def test_corefs_security_status_exposes_only_progress_and_rotation_metadata(

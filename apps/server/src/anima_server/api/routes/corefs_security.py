@@ -17,8 +17,8 @@ from anima_server.schemas.corefs_security import (
 from anima_server.services.core import get_core_id, get_manifest_path
 from anima_server.services.corefs.indexer import ReadinessState
 from anima_server.services.corefs.migration import (
-    rebuild_unlocked_search,
     reconcile_authenticated_catalog,
+    schedule_unlocked_rebuild,
 )
 from anima_server.services.corefs.rotation import rotate_or_resume_frk
 from anima_server.services.sessions import UnlockSession, unlock_session_store
@@ -60,7 +60,7 @@ def _security_status(session: UnlockSession) -> CoreFSSecurityStatusResponse:
             ReadinessState.CATALOG_READY,
             ReadinessState.CATALOG_READY_DEGRADED,
         } and callable(getattr(session.corefs_session, "walk_v1", None)):
-            rebuild_unlocked_search(session)
+            schedule_unlocked_rebuild(session)
     snapshot = index.snapshot()
     rotation = _rotation_manifest_state()
     try:

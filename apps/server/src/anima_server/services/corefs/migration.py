@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections import Counter
 from collections.abc import Callable
+from threading import Lock, Thread, current_thread
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from anima_server.services.corefs import logical
-from anima_server.services.corefs.indexer import ReadinessState
+from anima_server.services.corefs.indexer import CoreFSProgressiveIndex, ReadinessState
 from anima_server.services.sessions import UnlockSession
 
 _INDEX_READ_CHUNK_BYTES = 64 * 1024
 _MAX_INDEXABLE_OBJECT_BYTES = 16 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+_rebuild_workers_lock = Lock()
+_rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = (
+    WeakKeyDictionary()
+)
 
 
 def reconcile_authenticated_catalog(
@@ -64,18 +73,24 @@ def rebuild_unlocked_search(
         selected=selected,
     )
     family_counts = Counter(entry["family"] for entry in entries)
+    degraded: dict[str, set[str]] = {}
+    for failure in walk_failures:
+        family = failure["family"]
+        object_id = failure["object_id"]
+        degraded.setdefault(family, set()).add(object_id)
+    for family, object_ids in degraded.items():
+        family_counts[family] += len(object_ids)
 
     index = session.runtime_index
     index.begin_catalog()
     index.publish_catalog(
         catalog_generation=selected.generation,
         families=dict(family_counts),
+        degraded={
+            family: tuple(sorted(object_ids))
+            for family, object_ids in degraded.items()
+        },
     )
-    for failure in walk_failures:
-        family = failure.get("family")
-        object_id = failure.get("object_id")
-        if isinstance(family, str) and family in family_counts and isinstance(object_id, str):
-            index.mark_family_failure(family=family, object_id=object_id)
 
     index.begin_blind_generation(
         generation=selected.generation,
@@ -126,6 +141,40 @@ def rebuild_unlocked_search(
                 index.mark_family_failure(family=family, object_id=object_id)
     index.finish()
     return selected
+
+
+def schedule_unlocked_rebuild(session: UnlockSession) -> bool:
+    """Start at most one background rebuild for an unlocked Runtime index."""
+    index = session.runtime_index
+    if index is None:
+        raise ValueError("CoreFS rebuild requires an unlocked Runtime index")
+    with _rebuild_workers_lock:
+        current = _rebuild_workers.get(index)
+        if current is not None and current.is_alive():
+            return False
+        worker = Thread(
+            target=_run_scheduled_rebuild,
+            args=(session, index),
+            name=f"corefs-rebuild-{index.core_id}",
+            daemon=True,
+        )
+        _rebuild_workers[index] = worker
+        worker.start()
+    return True
+
+
+def _run_scheduled_rebuild(
+    session: UnlockSession,
+    index: CoreFSProgressiveIndex,
+) -> None:
+    try:
+        rebuild_unlocked_search(session)
+    except Exception:
+        logger.exception("CoreFS background rebuild failed")
+    finally:
+        with _rebuild_workers_lock:
+            if _rebuild_workers.get(index) is current_thread():
+                _rebuild_workers.pop(index, None)
 
 
 def _walk_authenticated_files(

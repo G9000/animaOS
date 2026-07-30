@@ -305,3 +305,81 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
         runtime_db.expunge_all()
         with pytest.raises(RuntimeSealingLocked):
             runtime_db.scalar(select(PendingMemoryOp).where(PendingMemoryOp.id == pending.id))
+
+
+def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_memory import MemoryCandidate
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        candidate = create_memory_candidate(
+            runtime_db,
+            user_id=7,
+            content="repeat candidate plaintext",
+            category="fact",
+            importance=1,
+            source_message_ids=[10],
+            tags=["private-tag"],
+        )
+        assert candidate is not None
+        sealed_before = runtime_db.scalar(
+            select(CoreFSSealedPayload).where(
+                CoreFSSealedPayload.row_type == "memory_candidate"
+            )
+        )
+        assert sealed_before is not None
+        ciphertext_before = bytes(sealed_before.ciphertext)
+
+        runtime_db.expunge_all()
+        duplicate = create_memory_candidate(
+            runtime_db,
+            user_id=7,
+            content="repeat candidate plaintext",
+            category="fact",
+            importance=1,
+            source_message_ids=[20],
+            tags=["private-tag"],
+        )
+
+        assert duplicate is None
+        stored = runtime_db.execute(
+            text(
+                "SELECT content, tags_json, salience_json "
+                "FROM memory_candidates WHERE id = :id"
+            ),
+            {"id": candidate.id},
+        ).one()
+        assert stored == ("", "null", "null")
+
+        runtime_db.expunge_all()
+        sealed_after = runtime_db.scalar(
+            select(CoreFSSealedPayload).where(
+                CoreFSSealedPayload.row_type == "memory_candidate"
+            )
+        )
+        assert sealed_after is not None
+        assert bytes(sealed_after.ciphertext) != ciphertext_before
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalar(
+            select(MemoryCandidate).where(MemoryCandidate.id == candidate.id)
+        )
+        assert loaded is not None
+        assert loaded.content == "repeat candidate plaintext"
+        assert loaded.tags_json == ["private-tag"]
+        assert loaded.salience_json is not None
+        assert loaded.salience_json["repeat_count"] == 2
+        assert loaded.source_message_ids == [10, 20]

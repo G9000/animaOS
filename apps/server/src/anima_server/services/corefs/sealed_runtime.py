@@ -53,19 +53,34 @@ def seal_runtime_record(
         separators=(",", ":"),
     ).encode("utf-8")
     sealed = index.seal_runtime_payload(plaintext, aad=aad)
-    runtime_db.add(
-        CoreFSSealedPayload(
+    row_id_hash = _digest(str(row_id))
+    stored = runtime_db.scalar(
+        select(CoreFSSealedPayload).where(
+            CoreFSSealedPayload.core_id == index.core_id,
+            CoreFSSealedPayload.local_instance_id == index.local_instance_id,
+            CoreFSSealedPayload.row_type == row_type,
+            CoreFSSealedPayload.row_id_hash == row_id_hash,
+        )
+    )
+    if stored is None:
+        stored = CoreFSSealedPayload(
             core_id=index.core_id,
             local_instance_id=index.local_instance_id,
             row_type=row_type,
-            row_id_hash=_digest(str(row_id)),
+            row_id_hash=row_id_hash,
             owner_id_hash=_digest(str(owner_id)),
             key_version=sealed.version,
             nonce=sealed.nonce,
             ciphertext=sealed.ciphertext,
             aad_digest=hashlib.sha256(aad.encode()).hexdigest(),
         )
-    )
+        runtime_db.add(stored)
+    else:
+        stored.owner_id_hash = _digest(str(owner_id))
+        stored.key_version = sealed.version
+        stored.nonce = sealed.nonce
+        stored.ciphertext = sealed.ciphertext
+        stored.aad_digest = hashlib.sha256(aad.encode()).hexdigest()
     runtime_db.flush()
 
 

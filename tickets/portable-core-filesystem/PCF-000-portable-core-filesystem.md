@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-29 15:56 MYT
+- Updated: 2026-07-30 11:44 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -266,6 +266,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-29 14:55 MYT - PCF-003 completed its current-main implementation validation: `162` server tests passed with `8` environment-dependent embedded-PostgreSQL skips, all `77` desktop tests passed, and the desktop build, Tauri host, Python-enabled native binding, focused native CoreFS binding tests, scoped Ruff, Rust formatting, and diff hygiene passed. The implementation also repaired three stale mainline desktop test contracts exposed by the new complete runner. PCF-003 and this parent remain `in_progress` pending clean current-head review and synchronized second-phase metadata closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-29 15:37 MYT - PR #127's failed standalone release-notice check exposed remaining workflow, validator, and ignore references to the retired `resources/.anima` staging tree. A static path contract failed RED before the focused correction; the complete desktop suite, exact legal staging/notice check, scoped Ruff, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-29 15:56 MYT - Addressed PR #127's four current-head P1 findings with five RED/GREEN regressions. PCF-003 now keeps instance binding through catalog refresh, runs a relocated legacy PostgreSQL store until converter cutover, migrates persisted Runtime config without journal secrets, and claims explicit Runtime databases inside the target before other database work. The full PCF-003 server band passed `108` with `8` environment-dependent embedded-PostgreSQL skips; scoped Ruff, repository organization, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
+- 2026-07-30 11:44 MYT - Addressed PR #127's three new current-head findings with four RED/GREEN regressions. Sealed candidate repeats now reseal without persisting hydrated plaintext, status polling uses one background rebuild worker per Runtime index, and native walk failures remain observable as counted degraded `unknown` entries. The related band passed `43`; the full PCF-003 server band passed `111` with `8` environment-dependent embedded-PostgreSQL skips; scoped Ruff and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 
 ## Validation
 
