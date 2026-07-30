@@ -299,12 +299,21 @@ def _resolve_held_thought(
        review): a user turn hard-resets this drive, so pressure whose
        ``last_user_turn_at`` predates ``last_message_at`` is a pre-turn
        leftover the reset simply hasn't reached yet — never ground on it.
-    4. The material exists: an open, in-horizon ForesightSignal — the SAME
-       definition IL3 uses for the drive's grow signal, so the thought voiced
-       is the thread that actually accumulated the pressure. The horizon is
-       evaluated on the LOCAL calendar date (PR #128 review), matching the
-       tick's local-time discipline — a UTC date would disagree with the
-       query that accumulated the pressure for part of every local day.
+    4. The material exists AND spans the gap: an open, in-horizon
+       ForesightSignal — the SAME definition (and same soonest-first pick)
+       IL3 uses for the drive's grow signal — that was ALREADY PERSISTED
+       before the user's last message (PR #128 review). The drive's grow
+       condition is aggregate ("any open in-horizon signal"), so a signal
+       created mid-gap could otherwise be voiced on pressure a different,
+       since-resolved thread accumulated; requiring the voiced row to
+       predate the absence means it was itself an open contributor for the
+       whole gap, making "this stayed with me while you were away" true of
+       exactly this thread. If the row IL3 would voice fails that check, we
+       stay silent rather than voice a different row than IL3's own
+       material query would pick. The horizon is evaluated on the LOCAL
+       calendar date (PR #128 review), matching the tick's local-time
+       discipline — a UTC date would disagree with the query that
+       accumulated the pressure for part of every local day.
 
     Requires an active memories DEK (``df`` fails open, so without one the
     decrypted read would return ciphertext into the greeting prompt).
@@ -360,6 +369,11 @@ def _resolve_held_thought(
         ).limit(1)
     )
     if row is None:
+        return None
+    # Gap-spanning check (condition 4 above), in Python rather than SQL so
+    # SQLite's string-typed datetime comparison can't mis-order aware vs
+    # naive values.
+    if row.created_at is None or _normalize_utc(row.created_at) > last_message_utc:
         return None
     content = df(user_id, row.content, table="foresight_signals", field="content")
     content = (content or "").strip()

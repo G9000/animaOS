@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-30 12:10 MYT
+- Updated: 2026-07-30 12:21 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed: 2026-07-29 15:58 MYT
 
@@ -90,13 +90,19 @@ hour — in two small, strictly grounded ways:
   matching the tick's local-time discipline. Two regression tests.
 
 - 2026-07-30 12:10 MYT - PR #128 review round 3: acceptance evidence completed in Validation — full-suite result (3163 passed / 0 failed on 43698cb) recorded.
+- 2026-07-30 12:21 MYT - PR #128 review round 4, P2 grounding fix: the voiced
+  foresight row must PREDATE the last user message (gap-spanning check). The
+  drive's grow condition is aggregate, so a signal created mid-gap could be
+  voiced on pressure a since-resolved thread earned; now the row IL3 would
+  voice must have been an open contributor across the whole gap, else the
+  greeting stays silent. Regression test added.
 
 ## Validation
 
 - Commands:
   - Full suite (`bun run test`) on `43698cb` — **3163 passed, 0 failed,
     10 skipped**
-  - `uv run pytest tests/test_inner_life_held_thought.py` — 12 passed
+  - `uv run pytest tests/test_inner_life_held_thought.py` — 13 passed
   - `uv run pytest tests/test_inner_life_presence.py` — 28 passed
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`

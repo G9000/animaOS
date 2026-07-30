@@ -87,6 +87,9 @@ def _seed_all_conditions(
             status="due",
             start_date=NOW.date() + timedelta(days=1),
             confidence=0.9,
+            # Persisted BEFORE the absence began: the signal was an open
+            # contributor for the whole gap (gap-spanning check).
+            created_at=LONG_AGO - timedelta(days=1),
         )
     )
     soul_db.commit()
@@ -296,3 +299,22 @@ def test_foresight_horizon_uses_the_local_calendar_date(soul_db, runtime_db) -> 
     # In-horizon on the local calendar (boundary == local_today + horizon);
     # the UTC date (still 07-29) would wrongly exclude it.
     assert thought == "the gallery opening they were nervous about"
+
+
+def test_no_held_thought_for_a_signal_created_mid_gap(soul_db, runtime_db) -> None:
+    """Regression (PR #128 review round 4): the drive's grow condition is
+    aggregate, so pressure can outlive the signal that earned it. A signal
+    that only came into existence DURING the absence was not what "stayed
+    with me" over the gap — voicing it on inherited pressure would bind the
+    claim to the wrong thread. The voiced row must predate the last user
+    message."""
+    user_id = _seed_all_conditions(soul_db, runtime_db)
+    fs = soul_db.query(ForesightSignal).one()
+    fs.created_at = NOW - timedelta(hours=1)  # appeared mid-gap
+    soul_db.commit()
+    assert (
+        _resolve_held_thought(
+            soul_db, runtime_db, user_id=user_id, last_message_at=LONG_AGO, now=NOW
+        )
+        is None
+    )
