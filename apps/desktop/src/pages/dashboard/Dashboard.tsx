@@ -27,6 +27,7 @@ import type { GalleryImage } from "./nodes/node-types";
 import { api } from "../../lib/api";
 import {
   ambientConsentAllows,
+  clearOneShotGreetings,
   getCachedGreeting,
   peekOneShotGreeting,
   setCachedGreeting,
@@ -127,14 +128,22 @@ export default function Dashboard() {
       void api.presence
         .get(user.id)
         .then((cfg) => {
-          const oneShot = takeOneShotGreeting(user.id);
+          // Unmounted before the consent check resolved? LEAVE the queue
+          // intact (PR #130 round 4) — this is the only durable copy of an
+          // already-consumed dream, and the next mount can still render it.
           if (!active) return;
           setPresenceConfig(cfg);
-          if (oneShot && ambientConsentAllows(cfg)) setBrief(oneShot);
+          if (ambientConsentAllows(cfg)) {
+            const oneShot = takeOneShotGreeting(user.id);
+            if (oneShot) setBrief(oneShot);
+          } else {
+            // Consent withdrawn: the user asked for silence — discard.
+            clearOneShotGreetings(user.id);
+          }
         })
         .catch(() => {
-          // Unknown consent -> prefer silence; drop the stash.
-          takeOneShotGreeting(user.id);
+          // Unknown consent: prefer silence THIS mount, but keep the queue
+          // for a mount that can actually verify consent.
         });
       return () => {
         active = false;

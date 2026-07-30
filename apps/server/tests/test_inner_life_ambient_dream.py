@@ -233,17 +233,19 @@ def test_concurrent_claim_returns_the_dream_to_exactly_one_caller(
 
     loser = soul_factory()
     rival_ran = {"done": False}
+    real_values = proactive.get_presence_config_values
 
-    def df_with_rival(uid, v, **kw):
-        # Fires between the loser's SELECT and its conditional UPDATE:
-        # a rival session claims the dream first.
+    def consent_with_rival(db_, uid):
+        # Fires between the loser's consent read and its single-statement
+        # conditional claim: a rival session claims the dream first.
+        out = real_values(db_, uid)
         if not rival_ran["done"]:
             rival_ran["done"] = True
             with soul_factory() as rival:
                 assert _resolve_ambient_dream(rival, user_id=user_id) is not None
-        return v
+        return out
 
-    monkeypatch.setattr(proactive, "df", df_with_rival)
+    monkeypatch.setattr(proactive, "get_presence_config_values", consent_with_rival)
     try:
         assert _resolve_ambient_dream(loser, user_id=user_id) is None
     finally:

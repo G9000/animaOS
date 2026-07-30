@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-30 23:53 MYT
+- Updated: 2026-07-31 03:52 MYT
 - Started: 2026-07-30 16:27 MYT
-- Completed: 2026-07-30 23:53 MYT
+- Completed: 2026-07-31 03:52 MYT
 
 ## Goal
 
@@ -97,12 +97,23 @@ backend contract still accepts and round-trips the value).
   instead of the second overwriting the first. Tests: 14 server + 8
   cache (queue FIFO, peek-without-consume, consent gate).
 
+- 2026-07-31 03:52 MYT - PR #130 review round 4 (2 P2s), completion re-stamped:
+  (1) the claim is now a SINGLE conditional UPDATE (candidate folded in
+  as a scalar subquery, RETURNING the narrative) issued after ending the
+  consent read's transaction — under WAL, the old select-then-update
+  raised SQLITE_BUSY_SNAPSHOT on the losing connection instead of
+  rowcount 0; a residual lock race maps to silence via OperationalError.
+  (2) the Dashboard dequeues a stashed greeting only while MOUNTED and
+  after consent verifies — an unmount mid-check leaves the queue intact
+  (it holds the only durable copy), withdrawn consent clears it, and
+  unknown consent keeps it for a mount that can verify.
+
 ## Validation
 
 - Commands:
   - `uv run pytest tests/test_inner_life_ambient_dream.py` — 14 passed
-  - Full suite on the round-3 head — **3180 passed, 0 failed, 10
-    skipped**, run 2026-07-31 00:34 MYT
+  - Full suite on the round-4 head — **3180 passed, 0 failed, 10
+    skipped**, run 2026-07-31 11:58 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/api/routes/chat.py`

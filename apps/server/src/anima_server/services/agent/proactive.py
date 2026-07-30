@@ -318,6 +318,7 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
     LLM output rather than entrusted to the model's discretion.
     """
     from sqlalchemy import update
+    from sqlalchemy.exc import OperationalError
 
     from anima_server.models import DreamJournal
     from anima_server.services.data_crypto import DOMAIN_MEMORIES
@@ -329,8 +330,17 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
     if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
         return None
 
-    row = db.scalar(
-        select(DreamJournal)
+    # End the read transaction the consent check opened (PR #130 review):
+    # under WAL, two real connections that both read before one commits a
+    # write leave the loser unable to upgrade its stale snapshot — its
+    # UPDATE raises SQLITE_BUSY_SNAPSHOT instead of reporting rowcount 0.
+    # Greeting sessions are read-only apart from this claim, so ending the
+    # transaction here loses nothing; the claim below is then a SINGLE
+    # statement (candidate selection folded in as a scalar subquery) that
+    # begins directly as a write.
+    db.rollback()
+    candidate_id = (
+        select(DreamJournal.id)
         .where(
             DreamJournal.user_id == user_id,
             DreamJournal.share_worthy.is_(True),
@@ -338,25 +348,33 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
         )
         .order_by(DreamJournal.dreamt_at.desc())
         .limit(1)
+        .scalar_subquery()
     )
-    if row is None:
-        return None
-    narrative = (
-        df(user_id, row.narrative, table="dream_journal", field="narrative") or ""
-    ).strip()
-    if not narrative:
+    try:
+        claimed = db.execute(
+            update(DreamJournal)
+            .where(
+                DreamJournal.id == candidate_id,
+                DreamJournal.surfaced.is_(False),
+            )
+            .values(surfaced=True)
+            .returning(DreamJournal.narrative)
+        ).first()
+        if claimed is None:
+            db.rollback()
+            return None
+        db.commit()
+    except OperationalError:
+        # Lost a genuine lock race despite the busy timeout: prefer silence.
+        db.rollback()
         return None
 
-    claimed = db.execute(
-        update(DreamJournal)
-        .where(DreamJournal.id == row.id, DreamJournal.surfaced.is_(False))
-        .values(surfaced=True)
-    )
-    if claimed.rowcount != 1:
-        db.rollback()  # someone else claimed it between the select and now
-        return None
-    db.commit()
-    return narrative[:240]
+    narrative = (
+        df(user_id, claimed.narrative, table="dream_journal", field="narrative") or ""
+    ).strip()
+    # A whitespace-only narrative burns its claim — acceptable: a content-
+    # less dream was never shareable, and un-claiming would reopen the race.
+    return narrative[:240] or None
 
 
 def _reset_dream_residue_after_surfacing(
