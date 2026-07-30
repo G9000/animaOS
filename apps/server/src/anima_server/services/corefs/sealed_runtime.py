@@ -272,8 +272,14 @@ def convert_legacy_runtime_rows(
         (
             RuntimeWorkflowRun.__table__,
             "runtime_workflow_run",
-            {"result_json": "result_json"},
-            {"result_json": None},
+            {"input_json": "input_json", "result_json": "result_json"},
+            {"input_json": None, "result_json": None},
+        ),
+        (
+            RuntimeThread.__table__,
+            "runtime_thread",
+            {"title": "title"},
+            {"title": None},
         ),
         (
             RuntimeKnowledgeConcept.__table__,
@@ -356,6 +362,7 @@ def convert_legacy_runtime_rows(
             select(
                 checkpoint_table.c.id.label("_row_id"),
                 workflow_table.c.user_id.label("_owner_id"),
+                checkpoint_table.c.input_json,
                 checkpoint_table.c.output_json,
             )
             .join(
@@ -364,8 +371,8 @@ def convert_legacy_runtime_rows(
             )
             .where(workflow_table.c.user_id == user_id)
         ),
-        payload_columns={"output_json": "output_json"},
-        placeholders={"output_json": None},
+        payload_columns={"input_json": "input_json", "output_json": "output_json"},
+        placeholders={"input_json": None, "output_json": None},
     )
     runtime_db.flush()
     return converted
@@ -635,6 +642,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeKnowledgeConceptSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
+        RuntimeThread,
         RuntimeWorkflowCheckpoint,
         RuntimeWorkflowRun,
     )
@@ -655,11 +663,15 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
             ("content_text", "metadata_json"),
         ),
         RuntimeEmbedding: ("runtime_embedding", ("content_preview",)),
-        RuntimeWorkflowRun: ("runtime_workflow_run", ("result_json",)),
+        RuntimeWorkflowRun: (
+            "runtime_workflow_run",
+            ("input_json", "result_json"),
+        ),
         RuntimeWorkflowCheckpoint: (
             "runtime_workflow_checkpoint",
-            ("output_json",),
+            ("input_json", "output_json"),
         ),
+        RuntimeThread: ("runtime_thread", ("title",)),
         RuntimeKnowledgeConcept: (
             "runtime_knowledge_concept",
             ("title", "description", "body_markdown", "frontmatter_json"),

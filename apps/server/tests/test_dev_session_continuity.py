@@ -482,6 +482,50 @@ def test_corefs_keys_create_one_server_owned_native_session(
     ]
 
 
+def test_revoking_rotated_token_alias_keeps_shared_session_open() -> None:
+    native_sessions: list[SimpleNamespace] = []
+
+    def factory() -> SimpleNamespace:
+        native_session = SimpleNamespace(begin_calls=0, close_calls=0)
+
+        def begin_close() -> None:
+            native_session.begin_calls += 1
+
+        def close() -> None:
+            native_session.close_calls += 1
+
+        native_session.begin_close = begin_close
+        native_session.close = close
+        native_sessions.append(native_session)
+        return native_session
+
+    store = UnlockSessionStore(corefs_session_factory=factory)
+    old_token = store.create(31, {"memories": b"a" * 32}, corefs_keys=object())
+    new_token = store.replace_user(
+        31,
+        {"memories": b"b" * 32},
+        corefs_keys=object(),
+        preserve_existing_tokens=True,
+    )
+    replacement = store.resolve(new_token)
+
+    assert replacement is not None
+    assert store.resolve(old_token) is replacement
+    assert native_sessions[0].begin_calls == 1
+    assert native_sessions[0].close_calls == 1
+
+    store.revoke(old_token)
+
+    assert store.resolve(new_token) is replacement
+    assert native_sessions[1].begin_calls == 0
+    assert native_sessions[1].close_calls == 0
+
+    store.revoke(new_token)
+
+    assert native_sessions[1].begin_calls == 1
+    assert native_sessions[1].close_calls == 1
+
+
 def test_native_session_without_begin_close_is_rejected_before_publication() -> None:
     class LegacyNativeSession:
         def __init__(self) -> None:

@@ -1406,6 +1406,7 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
         get_or_create_thread,
     )
     from anima_server.services.agent.session_memory import write_session_note
+    from anima_server.services.agent.thread_manager import maybe_set_thread_title
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.images.deletion import delete_thread_with_image_cleanup
@@ -1421,6 +1422,11 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
 
     with runtime_db_session() as runtime_db:
         thread = get_or_create_thread(runtime_db, user_id=7)
+        maybe_set_thread_title(
+            runtime_db,
+            thread,
+            "Please permanently delete this private conversation",
+        )
         append_message(
             runtime_db,
             thread=thread,
@@ -1440,6 +1446,7 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
         assert set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()) == {
             "runtime_message",
             "runtime_session_note",
+            "runtime_thread",
         }
 
         result = delete_thread_with_image_cleanup(
@@ -1527,7 +1534,13 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
     monkeypatch,
 ) -> None:
     from anima_server.models.pending_memory_op import PendingMemoryOp
-    from anima_server.models.runtime import RuntimeDocumentChunk, RuntimeKnowledgeConcept
+    from anima_server.models.runtime import (
+        RuntimeDocumentChunk,
+        RuntimeKnowledgeConcept,
+        RuntimeThread,
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
+    )
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.documents.models import (
@@ -1586,6 +1599,35 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         )
         runtime_db.add(concept)
         runtime_db.flush()
+        thread = RuntimeThread(
+            user_id=7,
+            status="active",
+            title="Legacy private thread title",
+        )
+        runtime_db.add(thread)
+        runtime_db.flush()
+        workflow_run = RuntimeWorkflowRun(
+            user_id=7,
+            thread_id=thread.id,
+            workflow_type="pdf_ingestion",
+            status="awaiting_input",
+            current_state="awaiting_approval",
+            input_json={"filename": "legacy-private.pdf"},
+            result_json={"proposed_facts": ["legacy private fact"]},
+        )
+        runtime_db.add(workflow_run)
+        runtime_db.flush()
+        workflow_checkpoint = RuntimeWorkflowCheckpoint(
+            workflow_run_id=workflow_run.id,
+            checkpoint_index=1,
+            state_name="summarized",
+            status="completed",
+            input_json={"storage_path": ".anima/documents/7/legacy-private.pdf"},
+            output_json={"summary": "legacy private summary"},
+            idempotency_key="legacy-summary-1",
+        )
+        runtime_db.add(workflow_checkpoint)
+        runtime_db.flush()
         runtime_db.add(
             CoreFSRuntimeBinding(
                 binding_slot=1,
@@ -1626,11 +1668,29 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 RuntimeKnowledgeConcept.__table__.c.frontmatter_json,
             ).where(RuntimeKnowledgeConcept.__table__.c.id == concept.id)
         ).one()
-        assert converted == 3
+        raw_thread = runtime_db.execute(
+            select(RuntimeThread.__table__.c.title).where(RuntimeThread.__table__.c.id == thread.id)
+        ).scalar_one()
+        raw_workflow_run = runtime_db.execute(
+            select(
+                RuntimeWorkflowRun.__table__.c.input_json,
+                RuntimeWorkflowRun.__table__.c.result_json,
+            ).where(RuntimeWorkflowRun.__table__.c.id == workflow_run.id)
+        ).one()
+        raw_workflow_checkpoint = runtime_db.execute(
+            select(
+                RuntimeWorkflowCheckpoint.__table__.c.input_json,
+                RuntimeWorkflowCheckpoint.__table__.c.output_json,
+            ).where(RuntimeWorkflowCheckpoint.__table__.c.id == workflow_checkpoint.id)
+        ).one()
+        assert converted == 6
         assert raw_chunk[0:3] == ("", len("legacy document plaintext"), None)
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
         assert raw_concept == ("", None, "", {})
+        assert raw_thread is None
+        assert raw_workflow_run == (None, None)
+        assert raw_workflow_checkpoint == (None, None)
         assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
 
         monkeypatch.setattr(
@@ -1642,6 +1702,12 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
         loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
         loaded_concept = runtime_db.get(RuntimeKnowledgeConcept, concept.id)
+        loaded_thread = runtime_db.get(RuntimeThread, thread.id)
+        loaded_workflow_run = runtime_db.get(RuntimeWorkflowRun, workflow_run.id)
+        loaded_workflow_checkpoint = runtime_db.get(
+            RuntimeWorkflowCheckpoint,
+            workflow_checkpoint.id,
+        )
         assert loaded_chunk is not None
         assert loaded_chunk.content_text == "legacy document plaintext"
         assert loaded_chunk.section_title == "legacy private section"
@@ -1654,6 +1720,16 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert loaded_concept.description == "Legacy private description"
         assert loaded_concept.body_markdown == "Legacy private concept body"
         assert loaded_concept.frontmatter_json == {"tags": ["legacy-private-tag"]}
+        assert loaded_thread is not None
+        assert loaded_thread.title == "Legacy private thread title"
+        assert loaded_workflow_run is not None
+        assert loaded_workflow_run.input_json == {"filename": "legacy-private.pdf"}
+        assert loaded_workflow_run.result_json == {"proposed_facts": ["legacy private fact"]}
+        assert loaded_workflow_checkpoint is not None
+        assert loaded_workflow_checkpoint.input_json == {
+            "storage_path": ".anima/documents/7/legacy-private.pdf"
+        }
+        assert loaded_workflow_checkpoint.output_json == {"summary": "legacy private summary"}
         assert (
             sealed_runtime.convert_legacy_runtime_rows(
                 runtime_db,
@@ -1861,6 +1937,10 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
             runtime_db,
             user_id=7,
             workflow_type="pdf_ingestion",
+            input_json={
+                "filename": "private.pdf",
+                "storage_path": ".anima/documents/7/private.pdf",
+            },
         )
         checkpoint = append_checkpoint(
             runtime_db,
@@ -1868,6 +1948,7 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
             state_name="summarized",
             status="completed",
             idempotency_key="summary-1",
+            input_json={"rejection_reason": "private workflow rejection reason"},
             output_json={"summary": "private workflow checkpoint"},
         )
         mark_workflow_awaiting_input(
@@ -1933,15 +2014,17 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
         runtime_db.flush()
 
         raw_checkpoint = runtime_db.execute(
-            select(RuntimeWorkflowCheckpoint.__table__.c.output_json).where(
-                RuntimeWorkflowCheckpoint.__table__.c.id == checkpoint.id
-            )
-        ).scalar_one()
+            select(
+                RuntimeWorkflowCheckpoint.__table__.c.input_json,
+                RuntimeWorkflowCheckpoint.__table__.c.output_json,
+            ).where(RuntimeWorkflowCheckpoint.__table__.c.id == checkpoint.id)
+        ).one()
         raw_result = runtime_db.execute(
-            select(RuntimeWorkflowRun.__table__.c.result_json).where(
-                RuntimeWorkflowRun.__table__.c.id == run.id
-            )
-        ).scalar_one()
+            select(
+                RuntimeWorkflowRun.__table__.c.input_json,
+                RuntimeWorkflowRun.__table__.c.result_json,
+            ).where(RuntimeWorkflowRun.__table__.c.id == run.id)
+        ).one()
         raw_concept = runtime_db.execute(
             select(
                 RuntimeKnowledgeConcept.__table__.c.title,
@@ -1959,13 +2042,20 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
         hydrated_concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
         hydrated_citation = runtime_db.scalar(select(RuntimeKnowledgeConceptSource))
 
-    assert raw_checkpoint is None
-    assert raw_result is None
+    assert raw_checkpoint == (None, None)
+    assert raw_result == (None, None)
     assert raw_concept == ("", None, "", {})
     assert raw_quote is None
     assert hydrated_run is not None
+    assert hydrated_run.input_json == {
+        "filename": "private.pdf",
+        "storage_path": ".anima/documents/7/private.pdf",
+    }
     assert hydrated_run.result_json == {"proposed_facts": ["private workflow result"]}
     assert hydrated_checkpoint is not None
+    assert hydrated_checkpoint.input_json == {
+        "rejection_reason": "private workflow rejection reason"
+    }
     assert hydrated_checkpoint.output_json == {"summary": "private workflow checkpoint"}
     assert hydrated_concept is not None
     assert hydrated_concept.title == "Private claim"
@@ -1974,6 +2064,44 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
     assert hydrated_concept.frontmatter_json["tags"] == ["private-tag"]
     assert hydrated_citation is not None
     assert hydrated_citation.quote_text == "private compiler evidence"
+
+
+def test_conversation_derived_thread_title_uses_sealed_runtime_row(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeThread
+    from anima_server.services.agent.thread_manager import maybe_set_thread_title
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = RuntimeThread(user_id=7, status="active")
+        runtime_db.add(thread)
+        runtime_db.flush()
+
+        maybe_set_thread_title(
+            runtime_db,
+            thread,
+            "Can you help me diagnose the private memory retrieval issue?",
+        )
+        raw_title = runtime_db.execute(
+            select(RuntimeThread.__table__.c.title).where(RuntimeThread.__table__.c.id == thread.id)
+        ).scalar_one()
+        runtime_db.expunge_all()
+        hydrated_thread = runtime_db.get(RuntimeThread, thread.id)
+
+    assert raw_title is None
+    assert hydrated_thread is not None
+    assert hydrated_thread.title == "Diagnose the private memory retrieval issue"
 
 
 def test_embedding_deletion_and_rebuild_remove_sealed_previews(

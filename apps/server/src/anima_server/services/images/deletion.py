@@ -247,6 +247,12 @@ def delete_thread_with_image_cleanup(
             row_ids=session_note_ids,
             owner_id=user_id,
         )
+    delete_sealed_runtime_records(
+        runtime_db,
+        row_type="runtime_thread",
+        row_ids=[thread_id],
+        owner_id=user_id,
+    )
     runtime_db.execute(delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id))
     runtime_db.delete(thread)
     runtime_db.flush()

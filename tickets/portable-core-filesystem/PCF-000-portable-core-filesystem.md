@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-30 20:35 MYT
+- Updated: 2026-07-30 20:53 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -283,6 +283,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-30 19:22 MYT - Addressed PR #127's two exact-head P2 findings with atomically persisted/restored blind-index generations and a pre-activation FRK replacement-session handoff that preserves existing-token recovery and leaves failures resumable. Both regressions failed RED and passed GREEN; the affected migration/index/rotation/security/session/privacy band passed `98`, and scoped Ruff plus diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed CI/current-head review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-30 20:16 MYT - Addressed PR #127's four exact-head findings with RED/GREEN coverage for strict test-Core provisioning, sealed embedding previews, sealed workflow/compiler payloads, and owner-wide evaluation-reset ciphertext cleanup. The related band passed `131`, the canonical PCF-003 band passed `156`, the credential band passed `58`, and the full server command reached `3239` passes with one expected skip before seven repaired fixture/unit failures plus one known OneDrive relocation collision passed together `8/8` in isolation. Scoped Ruff/format, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-30 20:35 MYT - Addressed PR #127's two new exact-head findings with sealed knowledge concept title/description/body/frontmatter plus legacy hydration, and one owner-aware Runtime embedding cleanup boundary used by memory, document, image, reindex, reset, and sweep paths. Four regressions failed RED and passed GREEN; the affected behavior band passed `183`, the canonical PCF-003 band passed `157`, and scoped Ruff/format, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
+- 2026-07-30 20:53 MYT - Addressed PR #127's three P1 findings on `691ae6a6`: shared token aliases now retain their exact unlock session until the last alias disappears, workflow inputs join results/outputs in unlock-sealed Runtime payloads, and conversation-derived thread titles use mapped placeholders with legacy hydration and deletion cleanup. Five focused regressions failed RED and six passed GREEN; the expanded PCF/session/thread/workflow band passed `250`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 
 ## Validation
 

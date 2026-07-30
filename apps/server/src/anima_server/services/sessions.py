@@ -404,11 +404,12 @@ class UnlockSessionStore:
         next_sessions: dict[str, UnlockSession],
         next_sqlcipher_key: bytes | None,
     ) -> _CleanupBatch:
-        removed_sessions = [
-            session
-            for token, session in self._sessions.items()
-            if next_sessions.get(token) is not session
-        ]
+        retained_session_ids = {id(session) for session in next_sessions.values()}
+        removed_sessions = {
+            id(session): session
+            for session in self._sessions.values()
+            if id(session) not in retained_session_ids
+        }.values()
         previous_sqlcipher_key = self._sqlcipher_key
         cleanup = _CleanupBatch()
 

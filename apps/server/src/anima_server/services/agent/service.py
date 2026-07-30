@@ -1058,7 +1058,7 @@ async def _prepare_turn_context(
     else:
         thread = get_or_create_thread(runtime_db, user_id)
 
-    maybe_set_thread_title(thread, user_message)
+    maybe_set_thread_title(runtime_db, thread, user_message)
     prev_thread_id = companion.thread_id
     companion.thread_id = thread.id
     if prev_thread_id != thread.id:

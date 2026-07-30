@@ -32,12 +32,19 @@ def start_workflow(
         workflow_type=workflow_type,
         status="created",
         current_state="created",
-        input_json=input_json,
+        input_json=None,
+        result_json=None,
         retry_count=0,
         max_retries=max_retries,
     )
-    db.add(run)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_workflow_run",
+        owner_id=user_id,
+        payload={"input_json": input_json, "result_json": None},
+        placeholders={"input_json": None, "result_json": None},
+    )
     return run
 
 
@@ -83,7 +90,7 @@ def append_checkpoint(
         checkpoint_index=int(latest_index or 0) + 1,
         state_name=state_name,
         status=status,
-        input_json=input_json,
+        input_json=None,
         output_json=None,
         artifact_refs_json=artifact_refs_json,
         idempotency_key=idempotency_key,
@@ -94,8 +101,8 @@ def append_checkpoint(
         row=checkpoint,
         row_type="runtime_workflow_checkpoint",
         owner_id=int(run.user_id),
-        payload={"output_json": output_json},
-        placeholders={"output_json": None},
+        payload={"input_json": input_json, "output_json": output_json},
+        placeholders={"input_json": None, "output_json": None},
     )
 
     _apply_checkpoint_status(
@@ -151,8 +158,8 @@ def mark_workflow_awaiting_input(
             row=run,
             row_type="runtime_workflow_run",
             owner_id=int(run.user_id),
-            payload={"result_json": result_json},
-            placeholders={"result_json": None},
+            payload={"input_json": run.input_json, "result_json": result_json},
+            placeholders={"input_json": None, "result_json": None},
         )
     run.updated_at = datetime.now(UTC)
     db.add(run)
@@ -174,8 +181,8 @@ def mark_workflow_completed(
             row=run,
             row_type="runtime_workflow_run",
             owner_id=int(run.user_id),
-            payload={"result_json": result_json},
-            placeholders={"result_json": None},
+            payload={"input_json": run.input_json, "result_json": result_json},
+            placeholders={"input_json": None, "result_json": None},
         )
     run.completed_at = now
     run.updated_at = now

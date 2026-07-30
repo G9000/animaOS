@@ -25,6 +25,7 @@ from anima_server.services.agent.state import (
     extract_stored_retrieval,
     serialize_public_attachments,
 )
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 
 logger = logging.getLogger(__name__)
 
@@ -498,11 +499,22 @@ def _display_role(msg: RuntimeMessage) -> str:
     return msg.role
 
 
-def maybe_set_thread_title(thread: RuntimeThread, user_message: str) -> None:
+def maybe_set_thread_title(
+    db: Session,
+    thread: RuntimeThread,
+    user_message: str,
+) -> None:
     """Set thread.title from the first substantive user message if not already set."""
     if thread.title is not None:
         return
 
     title = _derive_thread_title(user_message)
     if title is not None:
-        thread.title = title
+        seal_runtime_fields(
+            db,
+            row=thread,
+            row_type="runtime_thread",
+            owner_id=int(thread.user_id),
+            payload={"title": title},
+            placeholders={"title": None},
+        )
