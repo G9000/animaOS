@@ -200,6 +200,34 @@ class ProfileUpdateCandidate(RuntimeBase):
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
 
 
+@event.listens_for(ProfileUpdateCandidate, "load")
+def _hydrate_sealed_profile_update_candidate(
+    candidate: ProfileUpdateCandidate,
+    _context: object,
+) -> None:
+    runtime_db = object_session(candidate)
+    if runtime_db is None or candidate.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="profile_update_candidate",
+        row_id=int(candidate.id),
+        owner_id=int(candidate.user_id),
+    )
+    if payload is None:
+        return
+    value = payload.get("value")
+    evidence_text = payload.get("evidence_text")
+    if not isinstance(value, str):
+        raise ValueError("sealed profile-update candidate value is invalid")
+    if evidence_text is not None and not isinstance(evidence_text, str):
+        raise ValueError("sealed profile-update candidate evidence is invalid")
+    set_committed_value(candidate, "value", value)
+    set_committed_value(candidate, "evidence_text", evidence_text)
+
+
 class PromotionJournal(RuntimeBase):
     """Audit trail for Soul Writer promotion decisions."""
 
@@ -251,6 +279,34 @@ class RuntimeSessionNote(RuntimeBase):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
+
+
+@event.listens_for(RuntimeSessionNote, "load")
+def _hydrate_sealed_runtime_session_note(
+    note: RuntimeSessionNote,
+    _context: object,
+) -> None:
+    runtime_db = object_session(note)
+    if runtime_db is None or note.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="runtime_session_note",
+        row_id=int(note.id),
+        owner_id=int(note.user_id),
+    )
+    if payload is None:
+        return
+    key = payload.get("key")
+    value = payload.get("value")
+    if not isinstance(key, str):
+        raise ValueError("sealed Runtime session-note key is invalid")
+    if not isinstance(value, str):
+        raise ValueError("sealed Runtime session-note value is invalid")
+    set_committed_value(note, "key", key)
+    set_committed_value(note, "value", value)
 
 
 class MemoryAccessLog(RuntimeBase):

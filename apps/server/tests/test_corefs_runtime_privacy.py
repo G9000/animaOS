@@ -377,6 +377,248 @@ def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
             )
 
 
+def test_profile_update_candidates_use_sealed_runtime_rows(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_memory import ProfileUpdateCandidate
+    from anima_server.services.agent.user_profile import (
+        create_profile_update_candidate,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        candidate = create_profile_update_candidate(
+            runtime_db,
+            user_id=7,
+            category="identity",
+            key="favorite_project",
+            value="seeded private profile value",
+            evidence_text="seeded private profile evidence",
+            source_message_ids=[101],
+        )
+
+        assert candidate is not None
+        stored = runtime_db.execute(
+            text(
+                "SELECT value, evidence_text "
+                "FROM profile_update_candidates WHERE id = :id"
+            ),
+            {"id": candidate.id},
+        ).one()
+        assert stored == ("", None)
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "profile_update_candidate"
+                )
+            )
+            is not None
+        )
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalar(
+            select(ProfileUpdateCandidate).where(
+                ProfileUpdateCandidate.id == candidate.id
+            )
+        )
+        assert loaded is not None
+        assert loaded.value == "seeded private profile value"
+        assert loaded.evidence_text == "seeded private profile evidence"
+
+        index.clear_unlocked_state()
+        runtime_db.expunge_all()
+        with pytest.raises(RuntimeSealingLocked):
+            runtime_db.scalar(
+                select(ProfileUpdateCandidate).where(
+                    ProfileUpdateCandidate.id == candidate.id
+                )
+            )
+
+
+def test_runtime_session_notes_use_sealed_rows_and_reseal_updates(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_memory import RuntimeSessionNote
+    from anima_server.services.agent.persistence import get_or_create_thread
+    from anima_server.services.agent.session_memory import (
+        get_session_notes,
+        write_session_note,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        note = write_session_note(
+            runtime_db,
+            thread_id=thread.id,
+            user_id=7,
+            key="seeded private session key",
+            value="seeded private session value",
+            note_type="context",
+        )
+        updated = write_session_note(
+            runtime_db,
+            thread_id=thread.id,
+            user_id=7,
+            key="seeded private session key",
+            value="seeded updated session value",
+            note_type="plan",
+        )
+
+        assert updated.id == note.id
+        stored = runtime_db.execute(
+            text(
+                "SELECT key, value FROM runtime_session_notes "
+                "WHERE id = :id"
+            ),
+            {"id": note.id},
+        ).one()
+        assert stored == ("", "")
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "runtime_session_note"
+                )
+            )
+            is not None
+        )
+
+        runtime_db.expunge_all()
+        loaded = get_session_notes(
+            runtime_db,
+            thread_id=thread.id,
+        )
+        assert len(loaded) == 1
+        assert loaded[0].key == "seeded private session key"
+        assert loaded[0].value == "seeded updated session value"
+        assert loaded[0].note_type == "plan"
+
+        index.clear_unlocked_state()
+        runtime_db.expunge_all()
+        with pytest.raises(RuntimeSealingLocked):
+            runtime_db.scalar(
+                select(RuntimeSessionNote).where(
+                    RuntimeSessionNote.id == note.id
+                )
+            )
+
+
+def test_compaction_and_archive_runtime_message_writers_are_sealed(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.services.agent.compaction import compact_thread_context
+    from anima_server.services.agent.persistence import (
+        append_message,
+        get_or_create_thread,
+    )
+    from anima_server.services.agent.sequencing import reserve_message_sequences
+    from anima_server.services.agent.thread_manager import (
+        _bulk_insert_archived_history,
+        _insert_summary_message,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        for role, content in (
+            ("user", "seeded compacted user plaintext"),
+            ("assistant", "seeded compacted assistant plaintext"),
+            ("user", "seeded retained user plaintext"),
+        ):
+            sequence_id = reserve_message_sequences(
+                runtime_db,
+                thread_id=thread.id,
+                count=1,
+            )
+            append_message(
+                runtime_db,
+                thread=thread,
+                run_id=None,
+                step_id=None,
+                sequence_id=sequence_id,
+                role=role,
+                content_text=content,
+            )
+
+        result = compact_thread_context(
+            runtime_db,
+            thread=thread,
+            run_id=None,
+            trigger_token_limit=1,
+            keep_last_messages=1,
+        )
+        assert result is not None
+        _bulk_insert_archived_history(
+            runtime_db,
+            thread=thread,
+            user_id=7,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "seeded archived message plaintext",
+                }
+            ],
+        )
+        _insert_summary_message(
+            runtime_db,
+            thread=thread,
+            user_id=7,
+            summary="seeded archived summary plaintext",
+        )
+
+        stored = runtime_db.execute(
+            text(
+                "SELECT content_text, content_json, tool_args_json "
+                "FROM runtime_messages"
+            )
+        ).all()
+        raw = " ".join(str(value) for row in stored for value in row)
+        assert "seeded compacted user plaintext" not in raw
+        assert "seeded compacted assistant plaintext" not in raw
+        assert "seeded archived message plaintext" not in raw
+        assert "seeded archived summary plaintext" not in raw
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalars(
+            select(RuntimeMessage).where(RuntimeMessage.thread_id == thread.id)
+        ).all()
+        loaded_text = "\n".join(message.content_text or "" for message in loaded)
+        assert "seeded compacted user plaintext" in loaded_text
+        assert "seeded archived message plaintext" in loaded_text
+        assert "seeded archived summary plaintext" in loaded_text
+
+
 def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
     monkeypatch,
 ) -> None:

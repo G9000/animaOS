@@ -475,13 +475,25 @@ def create_profile_update_candidate(
     if existing is not None:
         return None
 
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    from anima_server.services.corefs.sealed_runtime import (
+        runtime_index_for_sensitive_write,
+        seal_runtime_record,
+    )
+
+    clean_evidence = (evidence_text or clean_value).strip()
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=user_id,
+    )
     candidate = ProfileUpdateCandidate(
         user_id=user_id,
         category=normalized_category,
         key=normalized_key,
-        value=clean_value,
+        value="" if runtime_index is not None else clean_value,
         confidence=confidence,
-        evidence_text=(evidence_text or clean_value).strip(),
+        evidence_text=None if runtime_index is not None else clean_evidence,
         source=source,
         source_message_ids=[int(message_id) for message_id in source_message_ids or []],
         extraction_model=extraction_model,
@@ -490,6 +502,20 @@ def create_profile_update_candidate(
     )
     runtime_db.add(candidate)
     runtime_db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            runtime_db,
+            index=runtime_index,
+            row_type="profile_update_candidate",
+            row_id=int(candidate.id),
+            owner_id=user_id,
+            payload={
+                "value": clean_value,
+                "evidence_text": clean_evidence,
+            },
+        )
+        set_committed_value(candidate, "value", clean_value)
+        set_committed_value(candidate, "evidence_text", clean_evidence)
     return candidate
 
 

@@ -284,6 +284,8 @@ def _bulk_insert_archived_history(
     messages: list[dict],
 ) -> None:
     """Insert JSONL messages into runtime_messages with is_archived_history=True."""
+    from anima_server.services.agent.persistence import append_message
+
     max_seq = thread.next_message_sequence
     inserted_count = 0
     for msg in messages:
@@ -305,9 +307,11 @@ def _bulk_insert_archived_history(
             role == "assistant" or (role == "user" and not attachments)
         ):
             continue
-        message = RuntimeMessage(
-            thread_id=thread.id,
-            user_id=user_id,
+        message = append_message(
+            db,
+            thread=thread,
+            run_id=None,
+            step_id=None,
             sequence_id=max_seq + inserted_count,
             role=role,
             content_text=content,
@@ -321,8 +325,6 @@ def _bulk_insert_archived_history(
             is_in_context=False,
             is_archived_history=True,
         )
-        db.add(message)
-        db.flush()
         _link_archived_image_attachments(
             db,
             user_id=user_id,
@@ -409,17 +411,19 @@ def _insert_summary_message(
     summary: str,
 ) -> None:
     """Insert a system message summarizing the previous conversation."""
+    from anima_server.services.agent.persistence import append_message
+
     seq = thread.next_message_sequence
-    db.add(
-        RuntimeMessage(
-            thread_id=thread.id,
-            user_id=user_id,
-            sequence_id=seq,
-            role="system",
-            content_text=f"[Previous conversation summary]: {summary}",
-            is_in_context=True,
-            is_archived_history=False,
-        )
+    append_message(
+        db,
+        thread=thread,
+        run_id=None,
+        step_id=None,
+        sequence_id=seq,
+        role="system",
+        content_text=f"[Previous conversation summary]: {summary}",
+        is_in_context=True,
+        is_archived_history=False,
     )
     thread.next_message_sequence = seq + 1
     db.flush()

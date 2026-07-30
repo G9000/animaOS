@@ -536,6 +536,7 @@ def append_message(
     tool_call_id: str | None = None,
     tool_args_json: dict[str, object] | None = None,
     source: str | None = None,
+    is_in_context: bool = True,
     is_archived_history: bool = False,
 ) -> RuntimeMessage:
     timestamp = datetime.now(UTC)
@@ -555,7 +556,7 @@ def append_message(
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         tool_args_json=None if runtime_index is not None else tool_args_json,
-        is_in_context=True,
+        is_in_context=is_in_context,
         is_archived_history=is_archived_history,
         token_estimate=estimate_message_tokens(
             content_text=content_text,
