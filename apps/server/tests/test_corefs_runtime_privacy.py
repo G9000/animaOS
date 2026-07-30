@@ -1154,6 +1154,49 @@ def test_unlock_converter_seals_legacy_agent_run_error_text(monkeypatch) -> None
     assert hydrated.error_text == private_error
 
 
+def test_unlock_converter_seals_legacy_background_task_error_message(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    private_error = "Legacy background failure from /private/logical/archive.pdf"
+
+    with runtime_db_session() as runtime_db:
+        run = RuntimeBackgroundTaskRun(
+            user_id=7,
+            task_type="consolidation",
+            status="failed",
+            error_message=private_error,
+        )
+        runtime_db.add(run)
+        runtime_db.flush()
+        run_id = int(run.id)
+
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        raw_error = runtime_db.scalar(
+            select(RuntimeBackgroundTaskRun.__table__.c.error_message).where(
+                RuntimeBackgroundTaskRun.__table__.c.id == run_id
+            )
+        )
+        runtime_db.expunge_all()
+        hydrated = runtime_db.get(RuntimeBackgroundTaskRun, run_id)
+
+    assert converted >= 1
+    assert raw_error is None
+    assert hydrated is not None
+    assert hydrated.error_message == private_error
+
+
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
     monkeypatch,
 ) -> None:

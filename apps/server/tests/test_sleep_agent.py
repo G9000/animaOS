@@ -140,6 +140,66 @@ class TestIssueBackgroundTask:
             assert run.completed_at is not None
 
     @pytest.mark.asyncio()
+    async def test_failed_task_seals_private_error_message(
+        self,
+        monkeypatch,
+        db_factory,
+        rt_factory,
+    ):
+        from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+        from anima_server.services.corefs import sealed_runtime
+        from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+        from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
+
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+        monkeypatch.setattr(
+            sealed_runtime,
+            "_active_runtime_index",
+            lambda _user_id: index,
+        )
+        private_error = "Provider leaked /private/logical/background-source.pdf"
+
+        with rt_factory() as db:
+            db.add(
+                CoreFSRuntimeBinding(
+                    binding_slot=1,
+                    core_id="core-a",
+                    local_instance_id="instance-a",
+                )
+            )
+            db.commit()
+
+        async def _failing_task(*, user_id, db_factory=None):
+            raise ValueError(private_error)
+
+        run_id = await _issue_background_task(
+            user_id=1,
+            task_type="fail_task",
+            task_fn=_failing_task,
+            db_factory=db_factory,
+            runtime_db_factory=rt_factory,
+        )
+
+        task_id = int(run_id.split(":")[1])
+        with rt_factory() as db:
+            raw_error = db.scalar(
+                select(RuntimeBackgroundTaskRun.__table__.c.error_message).where(
+                    RuntimeBackgroundTaskRun.__table__.c.id == task_id
+                )
+            )
+            db.expunge_all()
+            run = db.get(RuntimeBackgroundTaskRun, task_id)
+
+        assert raw_error is None
+        assert run is not None
+        assert run.error_message == private_error
+
+        index.clear_unlocked_state()
+        with rt_factory() as db, pytest.raises(RuntimeSealingLocked):
+            db.get(RuntimeBackgroundTaskRun, task_id)
+
+    @pytest.mark.asyncio()
     async def test_non_dict_result(self, db_factory, rt_factory):
         """When task_fn returns a non-dict, result_json should be None."""
 

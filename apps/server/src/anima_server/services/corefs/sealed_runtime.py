@@ -351,6 +351,7 @@ def convert_legacy_runtime_rows(
     """
     from anima_server.models.pending_memory_op import PendingMemoryOp
     from anima_server.models.runtime import (
+        RuntimeBackgroundTaskRun,
         RuntimeDocument,
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
@@ -424,6 +425,12 @@ def convert_legacy_runtime_rows(
             "runtime_run",
             {"error_text": "error_text"},
             {"error_text": None},
+        ),
+        (
+            RuntimeBackgroundTaskRun.__table__,
+            "runtime_background_task_run",
+            {"error_message": "error_message"},
+            {"error_message": None},
         ),
         (
             RuntimeDocumentChunk.__table__,
@@ -1210,6 +1217,7 @@ def _hydrate_private_runtime_fields(target: Any, _context: Any) -> None:
 
 def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str, ...]]]:
     from anima_server.models.runtime import (
+        RuntimeBackgroundTaskRun,
         RuntimeDocument,
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
@@ -1255,6 +1263,10 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         ),
         RuntimeEmbedding: ("runtime_embedding", ("content_preview",)),
         RuntimeRun: ("runtime_run", ("error_text",)),
+        RuntimeBackgroundTaskRun: (
+            "runtime_background_task_run",
+            ("error_message",),
+        ),
         RuntimeWorkflowRun: (
             "runtime_workflow_run",
             ("input_json", "result_json", "error_json"),

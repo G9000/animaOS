@@ -280,7 +280,18 @@ async def _issue_background_task(
                 if result_json is not None:
                     run.result_json = result_json
                 if error_message is not None:
-                    run.error_message = error_message
+                    from anima_server.services.corefs.sealed_runtime import (
+                        seal_runtime_fields,
+                    )
+
+                    seal_runtime_fields(
+                        rt_db,
+                        row=run,
+                        row_type="runtime_background_task_run",
+                        owner_id=user_id,
+                        payload={"error_message": error_message},
+                        placeholders={"error_message": None},
+                    )
                 rt_db.commit()
     except Exception:
         logger.exception("Failed to update task run %s status", run_id)
