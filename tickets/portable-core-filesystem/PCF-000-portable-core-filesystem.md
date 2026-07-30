@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-31 04:15 MYT
+- Updated: 2026-07-31 04:20 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -310,10 +310,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 
 - 2026-07-30 15:50 MYT - Planning only: filed `PCF-011` (backlog, unassigned) documenting the windows-native-lease CI flake observed on PR #128 (`object_lease_diagnostic_records_ordered_boundaries_and_required_mutations`, DiagnosticInvariant on a docs-only commit, green on unmodified re-run). No ownership or state changes to any existing child.
 - 2026-07-31 04:15 MYT - Addressed PR #127's bound-document vector-currentness finding and the independent review's approval and hot-path follow-ups. Content-hash-matched document vectors now resolve from persisted storage when unbound and the active CoreFS index when bound; completion and approval use initial missing counts instead of pre-commit reads of deferred vectors, while bound lazy-repair candidates are classified in one batch and partial cleanup preserves publication ordering. The initial production regression failed RED; five bound regressions pass, the document/PDF/privacy band passed `120`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed. Final independent review found no remaining actionable issue. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head review and second-phase closeout.
+- 2026-07-31 04:20 MYT - Addressed PR #127's newly surfaced non-text CoreFS retry finding. Authenticated binary and over-limit objects now complete as durable `text_skipped` entries, advance family/checkpoint progress without joining text or semantic search, and allow readiness to reach `READY`, while transient read failures remain retryable. The focused binary/oversize and transient-retry cases pass, the complete migration/indexer band passed `29`, and scoped Ruff plus diff hygiene pass. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head review and second-phase closeout.
 
 ## Validation
 
 - Commands:
+  - PR #127 terminal non-text indexing follow-up: authenticated binary/oversize completion and transient-read retry coverage passed; the complete CoreFS migration/indexer band passed `29`; scoped Ruff and diff hygiene passed.
   - PR #127 bound-document vector-currentness follow-up: the production regression failed RED and five bound CoreFS lifecycle/approval/query regressions pass; document RAG, PDF checkpoint, and Runtime privacy coverage passed `120`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed; final independent review reported no remaining actionable findings.
   - PR #127 post-unlock-generation/foreign-host-lock/startup-cycle follow-up: the two review regressions and configured-runtime-directory snapshot-import regression failed RED and pass GREEN; embedding-resolution coverage passed `28`; session, Runtime privacy, registry, indexer, and development-session continuity coverage passed `120`; expanded Runtime, document, embedding-contract, privacy, migration, security, and registry coverage passed `173`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 independent-review follow-up: retained-null-vector RAG repair and spawned-process stale-lock reclamation both failed RED and passed GREEN; complete document RAG and registry modules passed `44`; expanded Runtime, document, embedding-contract, privacy, migration, security, and registry coverage passed `171`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.

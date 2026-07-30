@@ -501,6 +501,101 @@ def test_text_read_failure_stays_retryable_until_document_succeeds(
     assert index.search_text("retry marker") == ("note-retry",)
 
 
+def test_valid_non_text_objects_complete_without_rebuild_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from conftest_runtime import runtime_db_session
+
+    corefs_keys = object()
+    contents = {
+        "Attachments/image.bin": b"\xff\x00",
+        "Notes/oversized.md": b"12345",
+    }
+    entries = [
+        {
+            "family": "attachment",
+            "path": "Attachments/image.bin",
+            "stable_id": "attachment-binary",
+            "revision": "1",
+        },
+        {
+            "family": "note",
+            "path": "Notes/oversized.md",
+            "stable_id": "note-oversized",
+            "revision": "1",
+        },
+    ]
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 10, "catalogHash": "catalog-hash"}
+
+        def read_chunk_v1(
+            self,
+            keys,
+            generation,
+            catalog_hash,
+            path,
+            offset,
+            max_bytes,
+            **_kwargs,
+        ):
+            assert (keys, generation, catalog_hash) == (
+                corefs_keys,
+                10,
+                "catalog-hash",
+            )
+            body = contents[path]
+            if offset >= len(body):
+                return None
+            chunk = body[offset : offset + max_bytes]
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 10,
+                        "path": path,
+                        "stableId": "opaque",
+                        "revision": 1,
+                        "contentHash": "c" * 64,
+                        "offset": offset,
+                        "bytesBase64": base64.b64encode(chunk).decode(),
+                    },
+                }
+            ).encode()
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "_walk_authenticated_files",
+        lambda **_kwargs: (entries, []),
+    )
+    monkeypatch.setattr(corefs_migration, "_MAX_INDEXABLE_OBJECT_BYTES", 4)
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    with runtime_db_session() as runtime_db:
+        rebuild_unlocked_search(session, runtime_db=runtime_db)
+
+        snapshot = index.snapshot()
+        assert snapshot.state is ReadinessState.READY
+        assert snapshot.processed_objects == 2
+        assert snapshot.families["attachment"].processed == 1
+        assert snapshot.families["attachment"].failed == 0
+        assert snapshot.families["note"].processed == 1
+        assert snapshot.families["note"].failed == 0
+        assert index.search_text("12345") == ()
+        assert {
+            entry.status
+            for entry in runtime_db.scalars(select(CoreFSIndexEntry)).all()
+        } == {"text_skipped"}
+
+
 def test_semantic_retry_rebuilds_all_vectors_after_embedding_config_changes() -> None:
     from conftest_runtime import runtime_db_session
 

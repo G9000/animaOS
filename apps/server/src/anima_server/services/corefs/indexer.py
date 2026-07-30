@@ -243,6 +243,22 @@ class CoreFSProgressiveIndex:
                 self._increment_family_processed(family)
             self._last_cursor = f"{object_id}:{revision}"
 
+    def skip_text(
+        self,
+        *,
+        family: str,
+        object_id: str,
+        revision: str,
+    ) -> None:
+        """Complete one catalog object that cannot participate in text search."""
+        with self._lock:
+            self._require_state(ReadinessState.TEXT_INDEXING)
+            pair = (object_id, revision)
+            if pair not in self._processed_revisions:
+                self._processed_revisions.add(pair)
+                self._increment_family_processed(family)
+            self._last_cursor = f"{object_id}:{revision}"
+
     def search_text(self, query: str) -> tuple[str, ...]:
         normalized = query.casefold().strip()
         with self._lock:

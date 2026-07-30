@@ -37,6 +37,10 @@ _rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = WeakKeyDic
 _rebuild_pending: WeakKeyDictionary[CoreFSProgressiveIndex, bool] = WeakKeyDictionary()
 
 
+class _NonIndexableCoreFSObject(ValueError):
+    """An authenticated object that is valid but cannot participate in text search."""
+
+
 class _ConfiguredEmbeddingQuery:
     def __init__(self, fingerprint: str) -> None:
         self.corefs_embedding_fingerprint = fingerprint
@@ -221,6 +225,8 @@ def rebuild_unlocked_search(
                 )
                 completed_entries.add(durable_key)
             continue
+        if durable_key in completed_entries:
+            continue
         try:
             text = _read_authenticated_text(
                 corefs_session=session.corefs_session,
@@ -228,6 +234,23 @@ def rebuild_unlocked_search(
                 selected=selected,
                 path=entry["path"],
             )
+        except _NonIndexableCoreFSObject:
+            index.skip_text(
+                family=entry["family"],
+                object_id=entry["stable_id"],
+                revision=entry["revision"],
+            )
+            if runtime_db is not None:
+                _record_text_progress(
+                    runtime_db,
+                    index=index,
+                    generation=selected.generation,
+                    entry=entry,
+                    total=family_counts[entry["family"]],
+                    status="text_skipped",
+                )
+                completed_entries.add(durable_key)
+            continue
         except (UnicodeDecodeError, ValueError) as exc:
             text_failed = True
             index.mark_family_failure(
@@ -617,7 +640,7 @@ def _prepare_durable_index_state(
             stored.checksum = checksum
             if reset:
                 stored.status = "pending"
-            elif stored.status == "text_indexed":
+            elif stored.status in {"text_indexed", "text_skipped"}:
                 completed.add((family, object_hash, revision_hash))
 
     for family, total in totals.items():
@@ -679,7 +702,8 @@ def _record_text_progress(
     )
     if stored is None:
         raise ValueError("durable CoreFS index entry is missing")
-    was_completed = stored.status == "text_indexed"
+    completed_statuses = {"text_indexed", "text_skipped"}
+    was_completed = stored.status in completed_statuses
     stored.status = status
     checkpoint = runtime_db.scalar(
         select(CoreFSIndexCheckpoint).where(
@@ -692,7 +716,7 @@ def _record_text_progress(
     )
     if checkpoint is None:
         raise ValueError("durable CoreFS index checkpoint is missing")
-    if status == "text_indexed" and not was_completed:
+    if status in completed_statuses and not was_completed:
         checkpoint.completed_count = min(checkpoint.completed_count + 1, total)
     checkpoint.total_count = total
     checkpoint.cursor_hash = object_hash
@@ -834,8 +858,15 @@ def _read_authenticated_text(
         chunks.append(chunk)
         offset += len(chunk)
     if offset > _MAX_INDEXABLE_OBJECT_BYTES:
-        raise ValueError("CoreFS object exceeds the in-memory indexing limit")
-    return b"".join(chunks).decode("utf-8")
+        raise _NonIndexableCoreFSObject(
+            "CoreFS object exceeds the in-memory indexing limit"
+        )
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _NonIndexableCoreFSObject(
+            "CoreFS object is not UTF-8 text"
+        ) from exc
 
 
 def _wire_result(raw: bytes, generation: int) -> dict[str, object]:
