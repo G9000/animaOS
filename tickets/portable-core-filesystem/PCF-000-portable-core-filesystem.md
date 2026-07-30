@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-28 22:57 MYT
+- Updated: 2026-07-30 15:50 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -32,6 +32,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
+| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | backlog | none |
 
 ## Deliverables
 
@@ -260,6 +261,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-28 22:34 MYT - The next native macOS strict-Clippy failure was a Windows-only cache lease replacement seam compiled but unused when the cross-platform test feature is enabled. Added a RED/GREEN cfg contract and gated the method on both the feature and Windows; all `129` benchmark/workflow contracts, Rust 1.75 strict combined Clippy, scoped rustfmt, and diff hygiene pass locally. PCF-002 and its parent row remain `in_progress` pending refreshed native CI and review.
 - 2026-07-28 22:39 MYT - Codex review found stale completion markers in the object-lease and umbrella implementation plans despite PCF-002's synchronized reopen. Added a RED/GREEN plan-state contract, returned the lease plan's final-state step to pending, and replaced the umbrella Task 2 completion marker with the current PR #125 validation state. PCF-002 and its parent row remain `in_progress`; PCF-003 remains dependency-ineligible pending clean current-head validation and second-phase closeout.
 - 2026-07-28 22:57 MYT - Completed PCF-002's required second-phase closeout after implementation head `83a7d191` passed all four required checks and received a clean current-head Codex review. Restored synchronized completion markers in both plans, returned the parent row and completed history to `done`, and made PCF-003 dependency-eligible without claiming it. This parent remains `in_progress`.
+
+- 2026-07-30 15:50 MYT - Planning only: filed `PCF-011` (backlog, unassigned) documenting the windows-native-lease CI flake observed on PR #128 (`object_lease_diagnostic_records_ordered_boundaries_and_required_mutations`, DiagnosticInvariant on a docs-only commit, green on unmodified re-run). No ownership or state changes to any existing child.
 
 ## Validation
 

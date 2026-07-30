@@ -1,0 +1,46 @@
+name: Server Tests
+
+on:
+  pull_request:
+    paths:
+      - "apps/server/**"
+      - "packages/anima-core/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/server-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # The suite is ~3200 tests and anima-core is a maturin (Rust) workspace
+    # member built by uv on first sync; a cold cache needs the headroom.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # anima-core is a maturin workspace member; uv builds it from source,
+      # and tests/conftest.py fails fast if the native module is stale.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Run pytest
+        working-directory: apps/server
+        # Mirrors the repo's `bun run test` (scripts/run-uv.cjs). The suite
+        # is hermetic by construction (tests/conftest.py pins the passphrase,
+        # embedding, and reranker seams), so no secrets or model downloads.
+        run: uv run --locked pytest -q

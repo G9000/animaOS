@@ -37,6 +37,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - `IL-011` - Return acknowledgment: grounded held-thought greeting + reconnect energy texture (`done` 2026-07-29, PR #128, depends on `IL-002`, `IL-003`).
 - `IL-012` - Mood-congruent reconsolidation target (`done` 2026-07-29, PR #128, depends on `IL-006`).
 - `IL-013` - Drive starvation carryover in initiative selection (`done` 2026-07-29, PR #128, depends on `IL-003`).
+- `IL-014` - Sub-threshold moment crystallization (`backlog` design ticket, depends on `IL-004`, `IL-005`): filed 2026-07-30 from the v1.1 comparative analysis; gated on a design review of its right-to-forget and encryption tensions before any code.
 
 ## Completed Ticket History
 

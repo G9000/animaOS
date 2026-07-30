@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-16 00:59 MYT
+- Updated: 2026-07-30 15:50 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed: 2026-07-16 00:44 MYT
 
@@ -28,6 +28,10 @@ This table is the execution order; dependency eligibility still controls when ea
 | `RWF-003` | Add ticket metadata validation | `done` | `RWF-001` |
 | `RWF-004` | Reconcile repository documentation and hygiene | `done` | `RWF-002` |
 | `RWF-006` | Validate, publish, and complete PR review | `done` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
+
+## Follow-ups Beyond Initial Scope
+
+- `RWF-007` - CI gate for the server test suite + enforced Inner Life lifecycle test (`done` 2026-07-30): standalone follow-up, not a child of this closed parent — the initiative's acceptance is judged over the child table above.
 
 ## Deliverables
 
