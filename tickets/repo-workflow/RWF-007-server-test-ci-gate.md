@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-07-30 15:50 MYT
+- Updated: 2026-07-30 16:42 MYT
 - Started: 2026-07-30 15:50 MYT
 - Completed: 2026-07-30 15:50 MYT
 
@@ -50,6 +50,14 @@ therefore a snapshot, not a guarantee, and this is exactly how the previous
 
 - 2026-07-30 15:50 MYT - Ticket created; workflow + promoted e2e test
   implemented on branch `rwf-007-server-test-gate`.
+
+- 2026-07-30 16:42 MYT - PR #129 review round 1: path filter extended to
+  every native build input (anima-corefs, anima-file-tools, workspace
+  Cargo.toml/Cargo.lock — anima-core path-depends on both crates and the
+  Rust-only CoreFS workflow never runs pytest), and the job now syncs
+  `--all-packages --all-extras` per AGENTS.md before running pytest with
+  `--no-sync` (a plain run pruned the docling extra, gating on a degraded
+  no-parser environment).
 
 ## Validation
 

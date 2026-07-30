@@ -4,7 +4,16 @@ on:
   pull_request:
     paths:
       - "apps/server/**"
+      # Every native build input: anima-core is the maturin wheel the server
+      # imports, and it path-depends on anima-corefs and anima-file-tools;
+      # the workspace Cargo manifests pin all of their dependencies. A change
+      # to any of these can break CorefsSession/Python bindings while the
+      # Rust-only CoreFS workflow stays green (it never runs pytest).
       - "packages/anima-core/**"
+      - "packages/anima-corefs/**"
+      - "packages/anima-file-tools/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/server-tests.yml"
@@ -38,9 +47,17 @@ jobs:
         with:
           enable-cache: true
 
+      # AGENTS.md's prescribed environment: --all-extras is required — it
+      # pulls the docling extra (the only durable PDF parser), and a plain
+      # sync/run would prune it, gating the suite on a degraded no-parser
+      # environment instead of the supported one.
+      - name: Sync workspace (all packages, all extras)
+        run: uv sync --locked --all-packages --all-extras
+
       - name: Run pytest
         working-directory: apps/server
-        # Mirrors the repo's `bun run test` (scripts/run-uv.cjs). The suite
-        # is hermetic by construction (tests/conftest.py pins the passphrase,
-        # embedding, and reranker seams), so no secrets or model downloads.
-        run: uv run --locked pytest -q
+        # --no-sync: `uv run` would otherwise re-sync default-only deps and
+        # prune the docling extra installed above. The suite is hermetic by
+        # construction (tests/conftest.py pins the passphrase, embedding,
+        # and reranker seams), so no secrets or model downloads.
+        run: uv run --locked --no-sync pytest -q
