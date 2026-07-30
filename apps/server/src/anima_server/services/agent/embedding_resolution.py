@@ -28,6 +28,8 @@ continue to be honored exactly as before the move.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 # Default embedding model per provider, consulted only when neither an
@@ -44,6 +46,16 @@ DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "vllm": "text-embedding-3-small",
     "doubleword": "Qwen/Qwen3-Embedding-8B",
     "fastembed": "BAAI/bge-small-en-v1.5",
+}
+
+DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
+    "ollama": "http://127.0.0.1:11434",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
+    "vllm": "http://127.0.0.1:8000/v1",
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
+    "doubleword": "https://api.doubleword.ai/v1",
 }
 # openrouter intentionally has no entry here: it always has a real
 # `_embedding_skip_reason` (no supported embeddings endpoint), so it is
@@ -151,9 +163,57 @@ def resolve_embedding_model(provider: str, settings: Any = None) -> str:
     return DEFAULT_EMBEDDING_MODELS.get(provider, "")
 
 
+def resolve_embedding_base_url(settings: Any = None) -> str:
+    """Resolve the endpoint identity for the active embedding provider."""
+    if settings is None:
+        settings = _default_settings()
+
+    provider = resolve_embedding_provider(settings)
+    if provider == "fastembed":
+        return ""
+
+    configured = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
+    if configured:
+        return configured.removesuffix("/v1") if provider == "ollama" else configured
+
+    configured_agent = _setting_text(getattr(settings, "agent_base_url", ""))
+    chat_provider = _setting_text(getattr(settings, "agent_provider", ""))
+    if configured_agent and provider == chat_provider:
+        if provider == "openrouter":
+            return DEFAULT_EMBEDDING_BASE_URLS[provider]
+        return (
+            configured_agent.removesuffix("/v1")
+            if provider == "ollama"
+            else configured_agent
+        )
+
+    return DEFAULT_EMBEDDING_BASE_URLS[provider]
+
+
+def configured_embedding_fingerprint(settings: Any = None) -> str:
+    """Identify the effective embedding space without provider secrets."""
+    if settings is None:
+        settings = _default_settings()
+
+    provider = resolve_embedding_provider(settings)
+    payload = json.dumps(
+        {
+            "endpoint": resolve_embedding_base_url(settings),
+            "provider": provider,
+            "model": resolve_embedding_model(provider, settings),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 __all__ = [
+    "DEFAULT_EMBEDDING_BASE_URLS",
     "DEFAULT_EMBEDDING_MODELS",
+    "configured_embedding_fingerprint",
     "has_embedding_piggyback_intent",
+    "resolve_embedding_base_url",
     "resolve_embedding_model",
     "resolve_embedding_provider",
 ]

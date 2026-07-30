@@ -3380,6 +3380,75 @@ def test_runtime_embedding_commit_rejects_stale_generation(
     )
 
 
+def test_runtime_embedding_commit_after_unlock_uses_configured_generation(
+    managed_tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services import sessions
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.migration import (
+        configured_embedding_fingerprint,
+    )
+    from conftest_runtime import runtime_db_session
+
+    monkeypatch.setattr(
+        settings,
+        "runtime_instance_data_dir",
+        str(managed_tmp_path / "runtime" / "instance-a"),
+    )
+    monkeypatch.setattr(sessions, "get_core_id", lambda: "core-a")
+    index = sessions._create_runtime_index(None, b"k" * 32)
+    assert index is not None
+    configured_fingerprint = configured_embedding_fingerprint()
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    monkeypatch.setattr(
+        sealed_runtime,
+        "active_runtime_indexes",
+        lambda _user_id: (index,),
+    )
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.commit()
+        row = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=99,
+            content_hash=RuntimeEmbedding.compute_content_hash("post-unlock write"),
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        sealed_runtime.persist_runtime_embedding(
+            runtime_db,
+            row=row,
+            owner_id=7,
+            embedding=(1.0, 0.0),
+            content="post-unlock write",
+        )
+        runtime_db.flush()
+
+        index.begin_runtime_embedding_rebuild(
+            embedding_fingerprint=configured_fingerprint,
+            expected_count=0,
+        )
+        runtime_db.commit()
+
+    assert index.runtime_embedding_fingerprint() == configured_fingerprint
+    assert index.runtime_embedding_vector(
+        source_type="memory_item",
+        source_id=99,
+    ) == (1.0, 0.0)
+
+
 def test_runtime_embedding_cache_waits_for_outer_transaction_after_savepoint(
     monkeypatch,
 ) -> None:

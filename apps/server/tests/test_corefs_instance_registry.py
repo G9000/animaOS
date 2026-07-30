@@ -278,6 +278,44 @@ def test_registry_reclaims_malformed_lock_after_bounded_freshness_window(
     assert not lock_path.exists()
 
 
+def test_registry_reclaims_foreign_host_lock_after_bounded_freshness_window(
+    managed_tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    app_data = managed_tmp_path / "app-data"
+    core = _make_core(managed_tmp_path / "portable" / ".anima")
+    lock_path = app_data / ".core-instance-registry.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 100,
+                "hostname": "old-hostname",
+                "process_start_identity": "process-100",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = RuntimeInstanceRegistry(
+        app_data,
+        process_start_identity=lambda pid: f"process-{pid}",
+        process_id=200,
+        now=lambda: now,
+        hostname="new-hostname",
+    )
+
+    with pytest.raises(InstanceBindingCollision, match="being updated"):
+        registry.resolve(core)
+
+    stale_timestamp = (now - timedelta(minutes=2)).timestamp()
+    os.utime(lock_path, (stale_timestamp, stale_timestamp))
+
+    binding = registry.resolve(core)
+
+    assert binding.core_path == core.resolve()
+    assert not lock_path.exists()
+
+
 def test_registry_stale_lock_reclamation_is_atomic_across_processes(
     managed_tmp_path: Path,
 ) -> None:

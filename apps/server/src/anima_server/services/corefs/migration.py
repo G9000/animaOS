@@ -19,6 +19,9 @@ from anima_server.models.corefs_runtime import (
     CoreFSIndexCheckpoint,
     CoreFSIndexEntry,
 )
+from anima_server.services.agent.embedding_resolution import (
+    configured_embedding_fingerprint,
+)
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.indexer import CoreFSProgressiveIndex, ReadinessState
 from anima_server.services.sessions import UnlockSession
@@ -439,29 +442,6 @@ def _run_scheduled_rebuild(
                 rerun = bool(_rebuild_pending.pop(index, False))
         if rerun:
             schedule_unlocked_rebuild(session)
-
-
-def configured_embedding_fingerprint() -> str:
-    """Identify the effective embedding space without persisting provider secrets."""
-    from anima_server.services.agent.embedding_resolution import (
-        resolve_embedding_model,
-        resolve_embedding_provider,
-    )
-    from anima_server.services.agent.embeddings import (
-        _resolve_embedding_base_url,
-    )
-
-    provider = resolve_embedding_provider()
-    payload = json.dumps(
-        {
-            "endpoint": _resolve_embedding_base_url(),
-            "provider": provider,
-            "model": resolve_embedding_model(provider),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def refresh_unlocked_semantic_search(session: UnlockSession) -> bool:

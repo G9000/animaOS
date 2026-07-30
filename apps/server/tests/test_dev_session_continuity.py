@@ -412,6 +412,10 @@ def test_global_store_restores_snapshot_during_module_import(tmp_path: Path) -> 
     environment = os.environ.copy()
     environment[DEV_SESSION_STATE_PATH_ENV] = str(snapshot.path)
     environment[DEV_SESSION_KEY_ENV] = base64.b64encode(b"s" * 32).decode("ascii")
+    environment["ANIMA_DATA_DIR"] = str(tmp_path / "portable" / ".anima")
+    environment["ANIMA_RUNTIME_INSTANCE_DATA_DIR"] = str(
+        tmp_path / "runtime" / "instance-a"
+    )
 
     result = subprocess.run(
         [

@@ -406,7 +406,11 @@ class RuntimeInstanceRegistry:
                 if not lock_metadata_valid:
                     lock_is_live = self._legacy_lock_is_fresh(lock_path)
                 elif lock_host != self._hostname:
-                    lock_is_live = True
+                    # A PID and process identity from another host cannot be
+                    # verified locally. Keep a fresh foreign-host claim live,
+                    # but bound that uncertainty so a hostname change after a
+                    # crash cannot block this machine forever.
+                    lock_is_live = self._legacy_lock_is_fresh(lock_path)
                 elif self._pid_is_alive(lock_pid):
                     if (
                         isinstance(lock_process_identity, str)

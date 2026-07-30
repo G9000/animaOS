@@ -16,6 +16,9 @@ from typing import Any
 
 import anima_core
 
+from anima_server.services.agent.embedding_resolution import (
+    configured_embedding_fingerprint,
+)
 from anima_server.services.core import get_core_dir, get_core_id
 from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
 from anima_server.services.dev_session_snapshot import DevSessionSnapshot
@@ -46,6 +49,13 @@ def _create_runtime_index(
     index.unlock(
         sqlcipher_key=sqlcipher_key,
         local_instance_id=local_instance_id,
+    )
+    # Claim the active embedding generation before this index can be
+    # published through an unlock session. Resolve it through a dependency
+    # leaf so process-global snapshot restoration does not import the CoreFS
+    # rebuild stack while this sessions module is still initializing.
+    index.begin_runtime_embedding_rebuild(
+        embedding_fingerprint=configured_embedding_fingerprint(settings),
     )
     return index
 
