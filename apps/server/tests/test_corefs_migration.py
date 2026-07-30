@@ -6,8 +6,10 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+import pytest
 from alembic import command
 from alembic.config import Config
+from anima_server.models.corefs_runtime import CoreFSIndexCheckpoint, CoreFSIndexEntry
 from anima_server.services.corefs import migration as corefs_migration
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
@@ -19,7 +21,7 @@ from anima_server.services.corefs.migration import (
     reconcile_authenticated_catalog,
     schedule_unlocked_rebuild,
 )
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
@@ -252,8 +254,8 @@ def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
     completed = Event()
     calls: list[object] = []
 
-    def blocking_rebuild(current) -> None:
-        calls.append(current)
+    def blocking_rebuild(current, *, embedder=None, runtime_db=None) -> None:
+        calls.append((current, embedder, runtime_db))
         started.set()
         assert release.wait(timeout=2)
         completed.set()
@@ -269,7 +271,9 @@ def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
     assert schedule_unlocked_rebuild(session) is False
     release.set()
     assert completed.wait(timeout=2)
-    assert calls == [session]
+    assert len(calls) == 1
+    assert calls[0][0] is session
+    assert callable(calls[0][1])
 
 
 def test_walk_failures_publish_an_observable_degraded_family() -> None:
@@ -318,3 +322,112 @@ def test_walk_failures_publish_an_observable_degraded_family() -> None:
     assert unknown.failed == 1
     assert unknown.degraded is True
     assert unknown.unavailable_object_ids == ("Notes/corrupt.md",)
+
+
+def test_rebuild_retry_uses_durable_progress_without_rereading_completed_text() -> None:
+    from conftest_runtime import runtime_db_session
+
+    corefs_keys = object()
+    texts = {
+        "Notes/one.md": b"first durable marker",
+        "Notes/two.md": b"second durable marker",
+    }
+    reads = {path: 0 for path in texts}
+    fail_second = True
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 5, "catalogHash": "catalog-hash"}
+
+        def walk_v1(self, *_args, **_kwargs):
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 5,
+                        "entries": [
+                            {
+                                "path": path,
+                                "stableId": f"note-{index}",
+                                "revision": 1,
+                                "contentHash": str(index) * 64,
+                                "kind": "file",
+                                "objectKind": "note",
+                                "depth": 2,
+                            }
+                            for index, path in enumerate(texts, start=1)
+                        ],
+                        "errors": [],
+                        "nextCursor": None,
+                        "truncated": False,
+                        "limitReached": False,
+                    },
+                }
+            ).encode()
+
+        def read_chunk_v1(
+            self,
+            _keys,
+            _generation,
+            _catalog_hash,
+            path,
+            offset,
+            _max_bytes,
+            **_kwargs,
+        ):
+            nonlocal fail_second
+            if offset == 0:
+                reads[path] += 1
+            if path == "Notes/two.md" and offset == 0 and fail_second:
+                fail_second = False
+                raise RuntimeError("transient native read failure")
+            if offset:
+                return None
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 5,
+                        "path": path,
+                        "stableId": "opaque",
+                        "revision": 1,
+                        "contentHash": "c" * 64,
+                        "offset": 0,
+                        "bytesBase64": base64.b64encode(texts[path]).decode(),
+                    },
+                }
+            ).encode()
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    with runtime_db_session() as runtime_db:
+        with pytest.raises(RuntimeError, match="transient native read failure"):
+            rebuild_unlocked_search(session, runtime_db=runtime_db)
+
+        entry = runtime_db.scalar(
+            select(CoreFSIndexEntry).where(CoreFSIndexEntry.status == "text_indexed")
+        )
+        checkpoint = runtime_db.scalar(
+            select(CoreFSIndexCheckpoint).where(
+                CoreFSIndexCheckpoint.family == "note"
+            )
+        )
+        assert entry is not None
+        assert checkpoint is not None
+        assert checkpoint.completed_count == 1
+
+        rebuild_unlocked_search(session, runtime_db=runtime_db)
+
+    assert reads == {
+        "Notes/one.md": 1,
+        "Notes/two.md": 2,
+    }
+    assert index.search_text("first durable") == ("note-1",)
+    assert index.search_text("second durable") == ("note-2",)

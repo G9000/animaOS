@@ -15,7 +15,7 @@ from anima_server.services.agent.memory_salience import (
     serialize_memory_salience,
 )
 from anima_server.services.corefs.sealed_runtime import (
-    active_runtime_index,
+    runtime_index_for_sensitive_write,
     seal_runtime_record,
 )
 
@@ -83,6 +83,10 @@ def create_memory_candidate(
         category=category,
         importance=importance,
     )
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=user_id,
+    )
 
     # Explicit dedup check — works on both PG (with partial unique index) and SQLite.
     existing = runtime_db.scalar(
@@ -128,7 +132,6 @@ def create_memory_candidate(
                 # once per repeat.
                 merged_salience = dict(merged_salience)
                 merged_salience["repeat_count"] = prior_repeats + 1
-            runtime_index = active_runtime_index(user_id)
             if runtime_index is None:
                 existing.salience_json = merged_salience
             else:
@@ -150,7 +153,6 @@ def create_memory_candidate(
             runtime_db.flush()
             return None
 
-    runtime_index = active_runtime_index(user_id)
     stored_content = "" if runtime_index is not None else content.strip()
     stored_tags = None if runtime_index is not None else tags
     stored_salience = None if runtime_index is not None else salience_json

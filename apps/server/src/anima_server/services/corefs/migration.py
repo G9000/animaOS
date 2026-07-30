@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import json
 import logging
 from collections import Counter
@@ -9,12 +11,20 @@ from threading import Lock, Thread, current_thread
 from typing import Any
 from weakref import WeakKeyDictionary
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from anima_server.models.corefs_runtime import (
+    CoreFSIndexCheckpoint,
+    CoreFSIndexEntry,
+)
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.indexer import CoreFSProgressiveIndex, ReadinessState
 from anima_server.services.sessions import UnlockSession
 
 _INDEX_READ_CHUNK_BYTES = 64 * 1024
 _MAX_INDEXABLE_OBJECT_BYTES = 16 * 1024 * 1024
+_INDEX_VERSION = 1
 logger = logging.getLogger(__name__)
 
 _rebuild_workers_lock = Lock()
@@ -54,6 +64,7 @@ def rebuild_unlocked_search(
     session: UnlockSession,
     *,
     embedder: Callable[[str], tuple[float, ...]] | None = None,
+    runtime_db: Session | None = None,
 ) -> logical.CoreFsValidationSnapshot:
     """Rebuild unlock-scoped search state from one authenticated catalog snapshot."""
     if (
@@ -82,31 +93,75 @@ def rebuild_unlocked_search(
         family_counts[family] += len(object_ids)
 
     index = session.runtime_index
-    index.begin_catalog()
-    index.publish_catalog(
-        catalog_generation=selected.generation,
-        families=dict(family_counts),
-        degraded={
-            family: tuple(sorted(object_ids))
-            for family, object_ids in degraded.items()
-        },
+    prior = index.snapshot()
+    # Same-unlock retries can retain already decrypted text in memory and
+    # resume from the durable opaque rows below. A new process deliberately
+    # rehydrates every plaintext document because PCF-003 forbids persisting
+    # decrypted search text or semantic vectors to Runtime storage.
+    resuming = (
+        runtime_db is not None
+        and prior.catalog_generation == selected.generation
+        and prior.state
+        in {
+            ReadinessState.TEXT_INDEXING,
+            ReadinessState.SEMANTIC_INDEXING,
+        }
     )
-
-    index.begin_blind_generation(
-        generation=selected.generation,
-        expected_count=len(entries),
-    )
-    for entry in entries:
-        index.add_blind_token(
+    completed_entries: set[tuple[str, str, str]] = set()
+    if runtime_db is not None:
+        completed_entries = _prepare_durable_index_state(
+            runtime_db,
+            index=index,
             generation=selected.generation,
-            value=entry["path"],
-            object_id=entry["stable_id"],
+            entries=entries,
+            reset=not resuming,
         )
-    index.commit_blind_generation(selected.generation)
 
-    index.begin_text_indexing()
-    indexed: list[tuple[str, str]] = []
+    if not resuming:
+        index.begin_catalog()
+        index.publish_catalog(
+            catalog_generation=selected.generation,
+            families=dict(family_counts),
+            degraded={
+                family: tuple(sorted(object_ids))
+                for family, object_ids in degraded.items()
+            },
+        )
+        index.begin_blind_generation(
+            generation=selected.generation,
+            expected_count=len(entries),
+        )
+        for entry in entries:
+            index.add_blind_token(
+                generation=selected.generation,
+                value=entry["path"],
+                object_id=entry["stable_id"],
+            )
+        index.commit_blind_generation(selected.generation)
+        index.begin_text_indexing()
+
+    indexed_by_revision = {
+        (object_id, revision): (object_id, text)
+        for object_id, revision, _family, text in index.indexed_texts()
+    }
+    indexed: list[tuple[str, str]] = list(indexed_by_revision.values())
     for entry in entries:
+        durable_key = _durable_entry_key(entry)
+        in_memory = indexed_by_revision.get(
+            (entry["stable_id"], entry["revision"])
+        )
+        if in_memory is not None:
+            if runtime_db is not None and durable_key not in completed_entries:
+                _record_text_progress(
+                    runtime_db,
+                    index=index,
+                    generation=selected.generation,
+                    entry=entry,
+                    total=family_counts[entry["family"]],
+                    status="text_indexed",
+                )
+                completed_entries.add(durable_key)
+            continue
         try:
             text = _read_authenticated_text(
                 corefs_session=session.corefs_session,
@@ -114,11 +169,21 @@ def rebuild_unlocked_search(
                 selected=selected,
                 path=entry["path"],
             )
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError) as exc:
             index.mark_family_failure(
                 family=entry["family"],
                 object_id=entry["stable_id"],
             )
+            if runtime_db is not None:
+                _record_text_progress(
+                    runtime_db,
+                    index=index,
+                    generation=selected.generation,
+                    entry=entry,
+                    total=family_counts[entry["family"]],
+                    status="text_failed",
+                    error=exc,
+                )
             continue
         index.index_text(
             family=entry["family"],
@@ -127,10 +192,27 @@ def rebuild_unlocked_search(
             text=text,
         )
         indexed.append((entry["stable_id"], text))
+        indexed_by_revision[(entry["stable_id"], entry["revision"])] = (
+            entry["stable_id"],
+            text,
+        )
+        if runtime_db is not None:
+            _record_text_progress(
+                runtime_db,
+                index=index,
+                generation=selected.generation,
+                entry=entry,
+                total=family_counts[entry["family"]],
+                status="text_indexed",
+            )
+            completed_entries.add(durable_key)
 
     if embedder is not None:
-        index.begin_semantic_indexing()
+        if index.snapshot().state is not ReadinessState.SEMANTIC_INDEXING:
+            index.begin_semantic_indexing()
         for object_id, text in indexed:
+            if index.has_vector(object_id):
+                continue
             try:
                 vector = embedder(text)
                 index.index_vector(object_id=object_id, vector=vector)
@@ -140,6 +222,12 @@ def rebuild_unlocked_search(
                 )
                 index.mark_family_failure(family=family, object_id=object_id)
     index.finish()
+    if runtime_db is not None:
+        _finish_durable_index_state(
+            runtime_db,
+            index=index,
+            generation=selected.generation,
+        )
     return selected
 
 
@@ -168,13 +256,205 @@ def _run_scheduled_rebuild(
     index: CoreFSProgressiveIndex,
 ) -> None:
     try:
-        rebuild_unlocked_search(session)
+        from anima_server.db.runtime import get_runtime_session_factory
+
+        try:
+            runtime_db_factory = get_runtime_session_factory()
+        except RuntimeError:
+            rebuild_unlocked_search(
+                session,
+                embedder=_configured_embedder,
+            )
+        else:
+            with runtime_db_factory() as runtime_db:
+                rebuild_unlocked_search(
+                    session,
+                    embedder=_configured_embedder,
+                    runtime_db=runtime_db,
+                )
     except Exception:
         logger.exception("CoreFS background rebuild failed")
     finally:
         with _rebuild_workers_lock:
             if _rebuild_workers.get(index) is current_thread():
                 _rebuild_workers.pop(index, None)
+
+
+def _configured_embedder(text: str) -> tuple[float, ...]:
+    from anima_server.services.agent.embeddings import generate_embedding
+
+    vector = asyncio.run(generate_embedding(text))
+    if not vector:
+        raise ValueError("configured embedding provider returned no vector")
+    return tuple(float(value) for value in vector)
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _durable_entry_key(entry: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        entry["family"],
+        _digest(entry["stable_id"]),
+        _digest(entry["revision"]),
+    )
+
+
+def _prepare_durable_index_state(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    generation: int,
+    entries: list[dict[str, str]],
+    reset: bool,
+) -> set[tuple[str, str, str]]:
+    completed: set[tuple[str, str, str]] = set()
+    totals = Counter(entry["family"] for entry in entries)
+    for entry in entries:
+        family, object_hash, revision_hash = _durable_entry_key(entry)
+        stored = runtime_db.scalar(
+            select(CoreFSIndexEntry).where(
+                CoreFSIndexEntry.core_id == index.core_id,
+                CoreFSIndexEntry.local_instance_id == index.local_instance_id,
+                CoreFSIndexEntry.family == family,
+                CoreFSIndexEntry.object_id_hash == object_hash,
+                CoreFSIndexEntry.revision_hash == revision_hash,
+            )
+        )
+        checksum = _digest(
+            f"{family}:{entry['path']}:{entry['stable_id']}:{entry['revision']}"
+        )
+        if stored is None:
+            stored = CoreFSIndexEntry(
+                core_id=index.core_id,
+                local_instance_id=index.local_instance_id,
+                family=family,
+                object_id_hash=object_hash,
+                revision_hash=revision_hash,
+                catalog_generation=generation,
+                index_version=_INDEX_VERSION,
+                status="pending",
+                checksum=checksum,
+            )
+            runtime_db.add(stored)
+        else:
+            stored.catalog_generation = generation
+            stored.index_version = _INDEX_VERSION
+            stored.checksum = checksum
+            if reset:
+                stored.status = "pending"
+            elif stored.status == "text_indexed":
+                completed.add((family, object_hash, revision_hash))
+
+    for family, total in totals.items():
+        checkpoint = runtime_db.scalar(
+            select(CoreFSIndexCheckpoint).where(
+                CoreFSIndexCheckpoint.core_id == index.core_id,
+                CoreFSIndexCheckpoint.local_instance_id == index.local_instance_id,
+                CoreFSIndexCheckpoint.family == family,
+                CoreFSIndexCheckpoint.catalog_generation == generation,
+                CoreFSIndexCheckpoint.index_version == _INDEX_VERSION,
+            )
+        )
+        completed_count = sum(1 for key in completed if key[0] == family)
+        if checkpoint is None:
+            runtime_db.add(
+                CoreFSIndexCheckpoint(
+                    core_id=index.core_id,
+                    local_instance_id=index.local_instance_id,
+                    family=family,
+                    catalog_generation=generation,
+                    index_version=_INDEX_VERSION,
+                    cursor_hash=None,
+                    completed_count=completed_count,
+                    total_count=total,
+                    status="text_indexing",
+                )
+            )
+        else:
+            checkpoint.completed_count = 0 if reset else completed_count
+            checkpoint.total_count = total
+            checkpoint.status = "text_indexing"
+            checkpoint.error_code = None
+            checkpoint.error_digest = None
+            if reset:
+                checkpoint.cursor_hash = None
+    runtime_db.commit()
+    return completed
+
+
+def _record_text_progress(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    generation: int,
+    entry: dict[str, str],
+    total: int,
+    status: str,
+    error: Exception | None = None,
+) -> None:
+    family, object_hash, revision_hash = _durable_entry_key(entry)
+    stored = runtime_db.scalar(
+        select(CoreFSIndexEntry).where(
+            CoreFSIndexEntry.core_id == index.core_id,
+            CoreFSIndexEntry.local_instance_id == index.local_instance_id,
+            CoreFSIndexEntry.family == family,
+            CoreFSIndexEntry.object_id_hash == object_hash,
+            CoreFSIndexEntry.revision_hash == revision_hash,
+        )
+    )
+    if stored is None:
+        raise ValueError("durable CoreFS index entry is missing")
+    was_completed = stored.status == "text_indexed"
+    stored.status = status
+    checkpoint = runtime_db.scalar(
+        select(CoreFSIndexCheckpoint).where(
+            CoreFSIndexCheckpoint.core_id == index.core_id,
+            CoreFSIndexCheckpoint.local_instance_id == index.local_instance_id,
+            CoreFSIndexCheckpoint.family == family,
+            CoreFSIndexCheckpoint.catalog_generation == generation,
+            CoreFSIndexCheckpoint.index_version == _INDEX_VERSION,
+        )
+    )
+    if checkpoint is None:
+        raise ValueError("durable CoreFS index checkpoint is missing")
+    if status == "text_indexed" and not was_completed:
+        checkpoint.completed_count = min(checkpoint.completed_count + 1, total)
+    checkpoint.total_count = total
+    checkpoint.cursor_hash = object_hash
+    checkpoint.status = "text_indexing" if error is None else "ready_degraded"
+    checkpoint.error_code = None if error is None else type(error).__name__
+    checkpoint.error_digest = None if error is None else _digest(str(error))
+    runtime_db.commit()
+
+
+def _finish_durable_index_state(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    generation: int,
+) -> None:
+    degraded = {
+        family
+        for family, value in index.snapshot().families.items()
+        if value.degraded
+    }
+    checkpoints = runtime_db.scalars(
+        select(CoreFSIndexCheckpoint).where(
+            CoreFSIndexCheckpoint.core_id == index.core_id,
+            CoreFSIndexCheckpoint.local_instance_id == index.local_instance_id,
+            CoreFSIndexCheckpoint.catalog_generation == generation,
+            CoreFSIndexCheckpoint.index_version == _INDEX_VERSION,
+        )
+    ).all()
+    for checkpoint in checkpoints:
+        checkpoint.status = (
+            "ready_degraded"
+            if checkpoint.family in degraded
+            else "ready"
+        )
+    runtime_db.commit()
 
 
 def _walk_authenticated_files(

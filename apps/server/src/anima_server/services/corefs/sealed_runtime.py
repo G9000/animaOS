@@ -7,7 +7,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models.corefs_runtime import CoreFSSealedPayload
+from anima_server.models.corefs_runtime import (
+    CoreFSRuntimeBinding,
+    CoreFSSealedPayload,
+)
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
     CoreFSRuntimeLocked,
@@ -31,6 +34,25 @@ def _active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
 
 def active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
     return _active_runtime_index(user_id)
+
+
+def runtime_index_for_sensitive_write(
+    runtime_db: Session,
+    *,
+    user_id: int,
+) -> CoreFSProgressiveIndex | None:
+    """Return the active sealer, failing closed for a locked CoreFS Runtime."""
+    index = active_runtime_index(user_id)
+    if index is not None:
+        return index
+    binding = runtime_db.scalar(
+        select(CoreFSRuntimeBinding.binding_slot).limit(1)
+    )
+    if binding is not None:
+        raise RuntimeSealingLocked(
+            "sensitive Runtime writes are unavailable while CoreFS is locked"
+        )
+    return None
 
 
 def seal_runtime_record(

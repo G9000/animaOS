@@ -383,3 +383,52 @@ def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
         assert loaded.salience_json is not None
         assert loaded.salience_json["repeat_count"] == 2
         assert loaded.source_message_ids == [10, 20]
+
+
+def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(
+    monkeypatch,
+) -> None:
+    from anima_server.models.pending_memory_op import PendingMemoryOp
+    from anima_server.models.runtime_memory import MemoryCandidate
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+    from anima_server.services.agent.pending_ops import create_pending_op
+    from anima_server.services.corefs import sealed_runtime
+    from conftest_runtime import runtime_db_session
+
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: None,
+    )
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.flush()
+
+        with pytest.raises(RuntimeSealingLocked):
+            create_memory_candidate(
+                runtime_db,
+                user_id=7,
+                content="must not reach plaintext candidate storage",
+                category="fact",
+            )
+        with pytest.raises(RuntimeSealingLocked):
+            create_pending_op(
+                runtime_db,
+                user_id=7,
+                op_type="append",
+                target_block="human",
+                content="must not reach plaintext pending storage",
+                old_content=None,
+                source_run_id=None,
+                source_tool_call_id=None,
+            )
+
+        assert runtime_db.scalar(select(MemoryCandidate.id)) is None
+        assert runtime_db.scalar(select(PendingMemoryOp.id)) is None

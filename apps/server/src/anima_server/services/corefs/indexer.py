@@ -229,6 +229,20 @@ class CoreFSProgressiveIndex:
                 )
             )
 
+    def indexed_texts(self) -> tuple[tuple[str, str, str, str], ...]:
+        """Return unlock-scoped text needed to resume an interrupted rebuild."""
+        with self._lock:
+            self._require_unlocked()
+            return tuple(
+                (object_id, revision, family, text)
+                for object_id, (revision, family, text) in self._documents.items()
+            )
+
+    def has_vector(self, object_id: str) -> bool:
+        with self._lock:
+            self._require_unlocked()
+            return object_id in self._vectors
+
     def begin_semantic_indexing(self) -> None:
         with self._lock:
             self._require_catalog()

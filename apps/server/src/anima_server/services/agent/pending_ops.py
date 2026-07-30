@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.models import PendingMemoryOp
 from anima_server.services.corefs.sealed_runtime import (
-    active_runtime_index,
+    runtime_index_for_sensitive_write,
     seal_runtime_record,
 )
 
@@ -35,7 +35,10 @@ def create_pending_op(
         f"{user_id}:{target_block.strip()}:{normalized_type}:{content.strip()}".encode()
     ).hexdigest()
 
-    runtime_index = active_runtime_index(user_id)
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=user_id,
+    )
     op = PendingMemoryOp(
         user_id=user_id,
         op_type=normalized_type,
