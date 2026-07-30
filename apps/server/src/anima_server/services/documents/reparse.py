@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeDocument
 from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import EmbeddingFn, embed_document_chunks
 from anima_server.services.documents.parsing import (
@@ -206,9 +207,24 @@ def mark_docling_reparse_failed(
         return
     metadata = dict(document.metadata_json or {})
     metadata[_DOCLING_REPARSE_FAILED_AT_KEY] = datetime.now(UTC).isoformat()
-    document.metadata_json = metadata
-    runtime_db.add(document)
-    runtime_db.flush()
+    seal_runtime_fields(
+        runtime_db,
+        row=document,
+        row_type="runtime_document",
+        owner_id=user_id,
+        payload={
+            "filename": document.filename,
+            "mime_type": document.mime_type,
+            "storage_path": document.storage_path,
+            "metadata_json": metadata,
+        },
+        placeholders={
+            "filename": "",
+            "mime_type": "",
+            "storage_path": "",
+            "metadata_json": None,
+        },
+    )
 
 
 def _parse_failed_at(value: object) -> datetime | None:

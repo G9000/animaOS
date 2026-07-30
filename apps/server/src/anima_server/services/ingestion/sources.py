@@ -95,11 +95,27 @@ def start_bundle_run(
         run_type=run_type,
         status="running",
         source_id=source_id,
-        input_json=_copy_metadata(input_json),
+        input_json=None,
+        result_json=None,
+        error_json=None,
         started_at=now,
     )
-    db.add(run)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_knowledge_bundle_run",
+        owner_id=user_id,
+        payload={
+            "input_json": _copy_metadata(input_json),
+            "result_json": None,
+            "error_json": None,
+        },
+        placeholders={
+            "input_json": None,
+            "result_json": None,
+            "error_json": None,
+        },
+    )
     return run
 
 
@@ -111,9 +127,22 @@ def complete_bundle_run(
 ) -> RuntimeKnowledgeBundleRun:
     run.status = "completed"
     run.completed_at = datetime.now(UTC)
-    run.result_json = _copy_metadata(result_json)
-    db.add(run)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_knowledge_bundle_run",
+        owner_id=run.user_id,
+        payload={
+            "input_json": run.input_json,
+            "result_json": _copy_metadata(result_json),
+            "error_json": run.error_json,
+        },
+        placeholders={
+            "input_json": None,
+            "result_json": None,
+            "error_json": None,
+        },
+    )
     return run
 
 
@@ -125,12 +154,25 @@ def fail_bundle_run(
 ) -> RuntimeKnowledgeBundleRun:
     run.status = "failed"
     run.completed_at = datetime.now(UTC)
-    run.error_json = {
-        "message": str(exc),
-        "type": type(exc).__name__,
-    }
-    db.add(run)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_knowledge_bundle_run",
+        owner_id=run.user_id,
+        payload={
+            "input_json": run.input_json,
+            "result_json": run.result_json,
+            "error_json": {
+                "message": str(exc),
+                "type": type(exc).__name__,
+            },
+        },
+        placeholders={
+            "input_json": None,
+            "result_json": None,
+            "error_json": None,
+        },
+    )
     return run
 
 

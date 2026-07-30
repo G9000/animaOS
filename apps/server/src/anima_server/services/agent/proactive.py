@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.data_crypto import df
 from anima_server.services.presence_config import (
     PresenceConfigValues,
@@ -739,8 +740,24 @@ def mark_proactive_image_prompted(
         return
     metadata = dict(asset.metadata_json) if isinstance(asset.metadata_json, dict) else {}
     metadata["proactivePromptedAt"] = (now or datetime.now(UTC)).isoformat()
-    asset.metadata_json = metadata
-    runtime_db.flush()
+    seal_runtime_fields(
+        runtime_db,
+        row=asset,
+        row_type="runtime_image_asset",
+        owner_id=user_id,
+        payload={
+            "filename": asset.filename,
+            "mime_type": asset.mime_type,
+            "storage_path": asset.storage_path,
+            "metadata_json": metadata,
+        },
+        placeholders={
+            "filename": None,
+            "mime_type": "",
+            "storage_path": "",
+            "metadata_json": None,
+        },
+    )
 
 
 def _compact_notice_snippet(text: str, *, limit: int = 120) -> str:

@@ -302,6 +302,7 @@ def convert_legacy_runtime_rows(
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
         RuntimeImageAsset,
+        RuntimeKnowledgeBundleRun,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
         RuntimeMessage,
@@ -430,6 +431,16 @@ def convert_legacy_runtime_rows(
             "runtime_workflow_run",
             {"input_json": "input_json", "result_json": "result_json"},
             {"input_json": None, "result_json": None},
+        ),
+        (
+            RuntimeKnowledgeBundleRun.__table__,
+            "runtime_knowledge_bundle_run",
+            {
+                "input_json": "input_json",
+                "result_json": "result_json",
+                "error_json": "error_json",
+            },
+            {"input_json": None, "result_json": None, "error_json": None},
         ),
         (
             RuntimeThread.__table__,
@@ -1113,6 +1124,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
         RuntimeImageAsset,
+        RuntimeKnowledgeBundleRun,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
         RuntimeSource,
@@ -1154,6 +1166,10 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeWorkflowRun: (
             "runtime_workflow_run",
             ("input_json", "result_json"),
+        ),
+        RuntimeKnowledgeBundleRun: (
+            "runtime_knowledge_bundle_run",
+            ("input_json", "result_json", "error_json"),
         ),
         RuntimeWorkflowCheckpoint: (
             "runtime_workflow_checkpoint",

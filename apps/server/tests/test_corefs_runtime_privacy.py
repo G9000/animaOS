@@ -616,6 +616,230 @@ def test_production_asset_and_source_writers_seal_private_descriptors(
     }.issubset(row_types)
 
 
+def test_document_and_image_metadata_mutations_reseal_private_descriptors(
+    monkeypatch,
+    managed_tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime
+
+    from anima_server.config import settings
+    from anima_server.models.runtime import RuntimeDocument, RuntimeImageAsset
+    from anima_server.services.agent.proactive import mark_proactive_image_prompted
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.reparse import mark_docling_reparse_failed
+    from anima_server.services.documents.store import register_document
+    from anima_server.services.images.store import register_image_asset
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    monkeypatch.setattr(settings, "data_dir", managed_tmp_path)
+
+    prompted_at = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    with runtime_db_session() as runtime_db:
+        document = register_document(
+            runtime_db,
+            DocumentRegistration(
+                user_id=7,
+                filename="private-document.pdf",
+                mime_type="application/pdf",
+                storage_path=".anima/documents/7/private-document.pdf",
+                sha256="7" * 64,
+                size_bytes=128,
+                metadata_json={"private_note": "document metadata"},
+            ),
+        )
+        image = register_image_asset(
+            runtime_db,
+            user_id=7,
+            data=b"\x89PNG\r\n\x1a\n",
+            mime_type="image/png",
+            filename="private-image.png",
+            metadata_json={"private_note": "image metadata"},
+        ).asset
+
+        mark_docling_reparse_failed(
+            runtime_db,
+            user_id=7,
+            document_id=document.id,
+        )
+        mark_proactive_image_prompted(
+            runtime_db,
+            user_id=7,
+            image_asset_id=image.id,
+            now=prompted_at,
+        )
+
+        raw_document_metadata = runtime_db.execute(
+            select(RuntimeDocument.__table__.c.metadata_json).where(
+                RuntimeDocument.__table__.c.id == document.id
+            )
+        ).scalar_one()
+        raw_image_metadata = runtime_db.execute(
+            select(RuntimeImageAsset.__table__.c.metadata_json).where(
+                RuntimeImageAsset.__table__.c.id == image.id
+            )
+        ).scalar_one()
+        runtime_db.expunge_all()
+        hydrated_document = runtime_db.get(RuntimeDocument, document.id)
+        hydrated_image = runtime_db.get(RuntimeImageAsset, image.id)
+
+    assert raw_document_metadata is None
+    assert raw_image_metadata is None
+    assert hydrated_document is not None
+    assert hydrated_document.metadata_json is not None
+    assert hydrated_document.metadata_json["private_note"] == "document metadata"
+    assert "docling_reparse_failed_at" in hydrated_document.metadata_json
+    assert hydrated_image is not None
+    assert hydrated_image.metadata_json == {
+        "private_note": "image metadata",
+        "proactivePromptedAt": prompted_at.isoformat(),
+    }
+
+
+def test_knowledge_bundle_run_writers_seal_private_payloads(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeKnowledgeBundleRun
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.ingestion.sources import (
+        complete_bundle_run,
+        fail_bundle_run,
+        start_bundle_run,
+    )
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        completed = start_bundle_run(
+            runtime_db,
+            user_id=7,
+            run_type="adapter:test",
+            input_json={"source_uri": "https://private.example.test/input"},
+        )
+        complete_bundle_run(
+            runtime_db,
+            run=completed,
+            result_json={"summary": "private successful result"},
+        )
+        failed = start_bundle_run(
+            runtime_db,
+            user_id=7,
+            run_type="adapter:test",
+            input_json={"source_uri": "https://private.example.test/failure"},
+        )
+        fail_bundle_run(
+            runtime_db,
+            run=failed,
+            exc=RuntimeError("private adapter failure"),
+        )
+
+        raw_rows = runtime_db.execute(
+            select(
+                RuntimeKnowledgeBundleRun.__table__.c.input_json,
+                RuntimeKnowledgeBundleRun.__table__.c.result_json,
+                RuntimeKnowledgeBundleRun.__table__.c.error_json,
+            ).order_by(RuntimeKnowledgeBundleRun.__table__.c.id)
+        ).all()
+        runtime_db.expunge_all()
+        hydrated_completed = runtime_db.get(RuntimeKnowledgeBundleRun, completed.id)
+        hydrated_failed = runtime_db.get(RuntimeKnowledgeBundleRun, failed.id)
+
+    assert raw_rows == [(None, None, None), (None, None, None)]
+    assert hydrated_completed is not None
+    assert hydrated_completed.input_json == {
+        "source_uri": "https://private.example.test/input"
+    }
+    assert hydrated_completed.result_json == {
+        "summary": "private successful result"
+    }
+    assert hydrated_completed.error_json is None
+    assert hydrated_failed is not None
+    assert hydrated_failed.input_json == {
+        "source_uri": "https://private.example.test/failure"
+    }
+    assert hydrated_failed.result_json is None
+    assert hydrated_failed.error_json == {
+        "message": "private adapter failure",
+        "type": "RuntimeError",
+    }
+
+
+def test_unlock_converter_seals_legacy_knowledge_bundle_runs(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeKnowledgeBundleRun
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    with runtime_db_session() as runtime_db:
+        legacy_run = RuntimeKnowledgeBundleRun(
+            user_id=7,
+            run_type="adapter:legacy",
+            status="failed",
+            input_json={"source_uri": "https://private.example.test/legacy"},
+            result_json={"partial": "private partial result"},
+            error_json={"message": "private legacy failure"},
+        )
+        runtime_db.add(legacy_run)
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.flush()
+
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        raw_payloads = runtime_db.execute(
+            select(
+                RuntimeKnowledgeBundleRun.__table__.c.input_json,
+                RuntimeKnowledgeBundleRun.__table__.c.result_json,
+                RuntimeKnowledgeBundleRun.__table__.c.error_json,
+            ).where(RuntimeKnowledgeBundleRun.__table__.c.id == legacy_run.id)
+        ).one()
+
+        monkeypatch.setattr(
+            sealed_runtime,
+            "_active_runtime_index",
+            lambda _user_id: index,
+        )
+        runtime_db.expunge_all()
+        hydrated = runtime_db.get(RuntimeKnowledgeBundleRun, legacy_run.id)
+
+    assert converted == 1
+    assert raw_payloads == (None, None, None)
+    assert hydrated is not None
+    assert hydrated.input_json == {
+        "source_uri": "https://private.example.test/legacy"
+    }
+    assert hydrated.result_json == {"partial": "private partial result"}
+    assert hydrated.error_json == {"message": "private legacy failure"}
+
+
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
     monkeypatch,
 ) -> None:

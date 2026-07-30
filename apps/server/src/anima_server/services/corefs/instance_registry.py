@@ -349,6 +349,7 @@ class RuntimeInstanceRegistry:
             except FileExistsError:
                 # A process-local RLock already covers threads. A surviving
                 # lock file is treated as stale only when its owner is dead.
+                lock_metadata_valid = True
                 try:
                     lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
                     lock_pid = int(lock_payload.get("pid", 0))
@@ -357,11 +358,15 @@ class RuntimeInstanceRegistry:
                         "process_start_identity"
                     )
                 except (OSError, ValueError, json.JSONDecodeError):
+                    lock_metadata_valid = False
                     lock_pid = 0
                     lock_host = ""
                     lock_process_identity = None
-                lock_is_live = lock_host != self._hostname
-                if lock_host == self._hostname and self._pid_is_alive(lock_pid):
+                if not lock_metadata_valid:
+                    lock_is_live = self._legacy_lock_is_fresh(lock_path)
+                elif lock_host != self._hostname:
+                    lock_is_live = True
+                elif self._pid_is_alive(lock_pid):
                     if (
                         isinstance(lock_process_identity, str)
                         and lock_process_identity
@@ -372,6 +377,8 @@ class RuntimeInstanceRegistry:
                         )
                     else:
                         lock_is_live = self._legacy_lock_is_fresh(lock_path)
+                else:
+                    lock_is_live = False
                 if not lock_is_live:
                     lock_path.unlink(missing_ok=True)
                     descriptor = os.open(
