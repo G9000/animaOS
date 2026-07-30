@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-07-30 16:42 MYT
+- Updated: 2026-07-30 19:54 MYT
 - Started: 2026-07-30 15:50 MYT
-- Completed: 2026-07-30 15:50 MYT
+- Completed: 2026-07-30 19:54 MYT
 
 Standalone follow-up beyond the closed repo-workflow initiative — registered
 in `RWF-000`'s follow-ups, not as a child of that `done` parent.
@@ -59,15 +59,33 @@ therefore a snapshot, not a guarantee, and this is exactly how the previous
   `--no-sync` (a plain run pruned the docling extra, gating on a degraded
   no-parser environment).
 
+- 2026-07-30 19:54 MYT - PR #129 review round 2 (P1 + P2), REOPENED and
+  re-closed per the workflow's reopen routine (the round-1 fixes at
+  16:42 were acceptance-affecting — they changed which PRs are gated and
+  which environment is tested — but were recorded onto a ticket still
+  completed at 15:50; prior completion timestamps 15:50 and the round-1
+  edit are preserved above). Round-2 fixes: the e2e lifecycle test now
+  builds unresolved_thread pressure through PRODUCTION ticks from a
+  sub-theta seed (0.3 + real foresight growth), and dream_residue is not
+  seeded at all — which immediately exposed a REAL bug the preloaded
+  values had masked: drive_states.updated_at carried onupdate=func.now(),
+  so the IL7 dream-attempt marker re-stamped the drive Δt reference with
+  the wall clock, silently erasing the accumulated growth window since
+  the last tick. onupdate removed (client-side; no migration) with a
+  regression test. Revalidated on this corrected head: full suite 3168
+  passed / 0 failed / 10 skipped at 19:54 MYT.
+
 ## Validation
 
 - Commands:
   - `uv run pytest tests/test_inner_life_e2e.py` — 1 passed (standalone)
-  - Full suite (`bun run test`) with the new e2e test included — **3167
-    passed, 0 failed, 10 skipped**, run 2026-07-30 16:25 MYT
+  - Full suite (`bun run test`) on the round-2 head — **3168 passed,
+    0 failed, 10 skipped**, run 2026-07-30 19:54 MYT
 - Changed paths:
   - `.github/workflows/server-tests.yml`
   - `apps/server/tests/test_inner_life_e2e.py`
+  - `apps/server/src/anima_server/models/runtime_consciousness.py` (Δt fix)
+  - `apps/server/tests/test_inner_life_initiative.py` (Δt regression test)
 - Notes:
   - The workflow itself is exercised for the first time by this ticket's own
     PR (it triggers on `.github/workflows/server-tests.yml`).
