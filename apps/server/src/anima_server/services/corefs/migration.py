@@ -31,6 +31,17 @@ _rebuild_workers_lock = Lock()
 _rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = (
     WeakKeyDictionary()
 )
+_rebuild_pending: WeakKeyDictionary[CoreFSProgressiveIndex, bool] = (
+    WeakKeyDictionary()
+)
+
+
+class _ConfiguredEmbeddingQuery:
+    def __init__(self, fingerprint: str) -> None:
+        self.corefs_embedding_fingerprint = fingerprint
+
+    def __call__(self, text: str) -> tuple[float, ...]:
+        return embed_configured_query(text)
 
 
 def reconcile_authenticated_catalog(
@@ -213,14 +224,33 @@ def rebuild_unlocked_search(
 
     semantic_failed = False
     if embedder is not None:
-        if index.snapshot().state is not ReadinessState.SEMANTIC_INDEXING:
-            index.begin_semantic_indexing()
+        fingerprint_value = getattr(
+            embedder,
+            "corefs_embedding_fingerprint",
+            None,
+        )
+        embedding_fingerprint = (
+            fingerprint_value
+            if isinstance(fingerprint_value, str) and fingerprint_value
+            else None
+        )
+        if (
+            index.snapshot().state is not ReadinessState.SEMANTIC_INDEXING
+            or embedding_fingerprint is not None
+        ):
+            index.begin_semantic_indexing(
+                embedding_fingerprint=embedding_fingerprint,
+            )
         for object_id, text in indexed:
             if index.has_vector(object_id):
                 continue
             try:
                 vector = embedder(text)
-                index.index_vector(object_id=object_id, vector=vector)
+                index.index_vector(
+                    object_id=object_id,
+                    vector=vector,
+                    embedding_fingerprint=embedding_fingerprint,
+                )
                 family = next(
                     entry["family"]
                     for entry in entries
@@ -247,7 +277,11 @@ def rebuild_unlocked_search(
     return selected
 
 
-def schedule_unlocked_rebuild(session: UnlockSession) -> bool:
+def schedule_unlocked_rebuild(
+    session: UnlockSession,
+    *,
+    rerun_if_active: bool = False,
+) -> bool:
     """Start at most one background rebuild for an unlocked Runtime index."""
     index = session.runtime_index
     if index is None:
@@ -255,7 +289,10 @@ def schedule_unlocked_rebuild(session: UnlockSession) -> bool:
     with _rebuild_workers_lock:
         current = _rebuild_workers.get(index)
         if current is not None and current.is_alive():
+            if rerun_if_active:
+                _rebuild_pending[index] = True
             return False
+        _rebuild_pending.pop(index, None)
         worker = Thread(
             target=_run_scheduled_rebuild,
             args=(session, index),
@@ -274,26 +311,72 @@ def _run_scheduled_rebuild(
     try:
         from anima_server.db.runtime import get_runtime_session_factory
 
+        configured_embedder = _ConfiguredEmbeddingQuery(
+            configured_embedding_fingerprint()
+        )
         try:
             runtime_db_factory = get_runtime_session_factory()
         except RuntimeError:
             rebuild_unlocked_search(
                 session,
-                embedder=embed_configured_query,
+                embedder=configured_embedder,
             )
         else:
             with runtime_db_factory() as runtime_db:
                 rebuild_unlocked_search(
                     session,
-                    embedder=embed_configured_query,
+                    embedder=configured_embedder,
                     runtime_db=runtime_db,
                 )
     except Exception:
         logger.exception("CoreFS background rebuild failed")
     finally:
+        rerun = False
         with _rebuild_workers_lock:
             if _rebuild_workers.get(index) is current_thread():
                 _rebuild_workers.pop(index, None)
+                rerun = bool(_rebuild_pending.pop(index, False))
+        if rerun:
+            schedule_unlocked_rebuild(session)
+
+
+def configured_embedding_fingerprint() -> str:
+    """Identify the effective embedding space without persisting provider secrets."""
+    from anima_server.services.agent.embedding_resolution import (
+        resolve_embedding_model,
+        resolve_embedding_provider,
+    )
+
+    provider = resolve_embedding_provider()
+    payload = json.dumps(
+        {
+            "provider": provider,
+            "model": resolve_embedding_model(provider),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def refresh_unlocked_semantic_search(session: UnlockSession) -> bool:
+    """Invalidate and rebuild semantic vectors after embedding settings change."""
+    index = session.runtime_index
+    if (
+        index is None
+        or session.corefs_session is None
+        or session.corefs_keys is None
+    ):
+        return False
+    fingerprint = configured_embedding_fingerprint()
+    if index.snapshot().catalog_generation is not None:
+        index.invalidate_semantic_index(
+            embedding_fingerprint=fingerprint,
+        )
+    return schedule_unlocked_rebuild(
+        session,
+        rerun_if_active=True,
+    )
 
 
 def embed_configured_query(text: str) -> tuple[float, ...]:

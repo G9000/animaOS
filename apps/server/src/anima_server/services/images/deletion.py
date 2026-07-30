@@ -18,6 +18,7 @@ from anima_server.models.runtime import (
     RuntimeThread,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.models.runtime_memory import RuntimeSessionNote
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
 from anima_server.services.corefs.sealed_runtime import (
     delete_sealed_runtime_records,
@@ -201,6 +202,14 @@ def delete_thread_with_image_cleanup(
             select(RuntimeStep.id).where(RuntimeStep.thread_id == thread_id)
         ).all()
     )
+    session_note_ids = list(
+        runtime_db.scalars(
+            select(RuntimeSessionNote.id).where(
+                RuntimeSessionNote.user_id == user_id,
+                RuntimeSessionNote.thread_id == thread_id,
+            )
+        ).all()
+    )
     candidate_asset_ids = _candidate_thread_image_asset_ids(
         runtime_db,
         user_id=user_id,
@@ -226,6 +235,13 @@ def delete_thread_with_image_cleanup(
             runtime_db,
             row_type="runtime_step",
             row_ids=step_ids,
+            owner_id=user_id,
+        )
+    if session_note_ids:
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_session_note",
+            row_ids=session_note_ids,
             owner_id=user_id,
         )
     runtime_db.execute(delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id))

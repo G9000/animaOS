@@ -89,6 +89,7 @@ class CoreFSProgressiveIndex:
         self._families: dict[str, FamilyReadiness] = {}
         self._documents: dict[str, tuple[str, str, str]] = {}
         self._vectors: dict[str, tuple[float, ...]] = {}
+        self._semantic_fingerprint: str | None = None
         self._processed_revisions: set[tuple[str, str]] = set()
         self._queries: set[str] = set()
         self._search_key: bytearray | None = None
@@ -153,6 +154,7 @@ class CoreFSProgressiveIndex:
             self._require_unlocked()
             self._documents.clear()
             self._vectors.clear()
+            self._semantic_fingerprint = None
             self._processed_revisions.clear()
             self._queries.clear()
             self._families.clear()
@@ -274,9 +276,29 @@ class CoreFSProgressiveIndex:
             self._require_unlocked()
             return object_id in self._vectors
 
-    def begin_semantic_indexing(self) -> None:
+    def begin_semantic_indexing(
+        self,
+        *,
+        embedding_fingerprint: str | None = None,
+    ) -> None:
         with self._lock:
             self._require_catalog()
+            if (
+                embedding_fingerprint is not None
+                and embedding_fingerprint != self._semantic_fingerprint
+            ):
+                self._vectors.clear()
+                self._semantic_fingerprint = embedding_fingerprint
+            self._state = ReadinessState.SEMANTIC_INDEXING
+
+    def invalidate_semantic_index(self, *, embedding_fingerprint: str) -> None:
+        """Discard vectors produced by another effective embedding configuration."""
+        if not embedding_fingerprint:
+            raise ValueError("embedding fingerprint must be non-empty")
+        with self._lock:
+            self._require_catalog()
+            self._vectors.clear()
+            self._semantic_fingerprint = embedding_fingerprint
             self._state = ReadinessState.SEMANTIC_INDEXING
 
     def mark_family_failure(self, *, family: str, object_id: str) -> None:
@@ -316,11 +338,22 @@ class CoreFSProgressiveIndex:
                 unavailable_object_ids=unavailable,
             )
 
-    def index_vector(self, *, object_id: str, vector: tuple[float, ...]) -> None:
+    def index_vector(
+        self,
+        *,
+        object_id: str,
+        vector: tuple[float, ...],
+        embedding_fingerprint: str | None = None,
+    ) -> None:
         if not vector:
             raise ValueError("semantic vector must be non-empty")
         with self._lock:
             self._require_state(ReadinessState.SEMANTIC_INDEXING)
+            if (
+                embedding_fingerprint is not None
+                and embedding_fingerprint != self._semantic_fingerprint
+            ):
+                raise ValueError("semantic embedding configuration changed")
             if object_id not in self._documents:
                 raise ValueError("semantic vector requires indexed text")
             self._vectors[object_id] = tuple(float(value) for value in vector)
@@ -511,6 +544,7 @@ class CoreFSProgressiveIndex:
                 del revision, family, text
                 self._documents.pop(object_id, None)
             self._vectors.clear()
+            self._semantic_fingerprint = None
             self._processed_revisions.clear()
             self._queries.clear()
             self._blind_generations.clear()

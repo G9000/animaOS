@@ -510,6 +510,70 @@ async def test_config_update_validates_cleared_ollama_url_against_default(
 
 
 @pytest.mark.asyncio
+async def test_config_update_refreshes_unlocked_corefs_semantic_search(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    session = object()
+    refresh_calls: list[object] = []
+
+    async def unlocked(_request: object, _user_id: object) -> object:
+        return session
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_embedding_provider,
+        settings.agent_embedding_model,
+        settings.agent_embedding_api_key,
+        settings.agent_embedding_base_url,
+    )
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", unlocked)
+    monkeypatch.setattr(
+        config_route,
+        "refresh_unlocked_semantic_search",
+        lambda current: refresh_calls.append(current),
+        raising=False,
+    )
+
+    try:
+        settings.agent_provider = "openai"
+        settings.agent_model = "gpt-4o-mini"
+        settings.agent_embedding_provider = "openai"
+        settings.agent_embedding_model = "text-embedding-3-small"
+        settings.agent_embedding_api_key = ""
+        settings.agent_embedding_base_url = ""
+
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="openai",
+                model="gpt-4o-mini",
+                embeddingProvider="fastembed",
+                embeddingModel="BAAI/bge-small-en-v1.5",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert refresh_calls == [session]
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_embedding_provider,
+            settings.agent_embedding_model,
+            settings.agent_embedding_api_key,
+            settings.agent_embedding_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_config_update_rejects_embedding_only_ollama_without_mutation(monkeypatch) -> None:
     from anima_server.api.routes import config as config_route
     from fastapi import HTTPException

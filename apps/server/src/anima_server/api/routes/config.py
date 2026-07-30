@@ -28,6 +28,10 @@ from anima_server.services.agent.embeddings import (
     _resolve_embedding_api_key,
 )
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
+from anima_server.services.corefs.migration import (
+    configured_embedding_fingerprint,
+    refresh_unlocked_semantic_search,
+)
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -414,7 +418,7 @@ async def update_config(
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Update and persist the active agent config."""
-    await require_unlocked_user_async(request, user_id)
+    unlock_session = await require_unlocked_user_async(request, user_id)
 
     if payload.provider not in VALID_PROVIDERS:
         raise HTTPException(
@@ -466,6 +470,7 @@ async def update_config(
     # against the NEW chat provider and misdetect a switch, clearing the
     # piggyback credential on a save the user only meant as a chat change.
     old_effective_embedding_provider = resolve_embedding_provider()
+    old_embedding_fingerprint = configured_embedding_fingerprint()
 
     settings.agent_provider = payload.provider
     settings.agent_model = payload.model
@@ -561,14 +566,15 @@ async def update_config(
     from anima_server.services.agent import invalidate_agent_runtime_cache
     from anima_server.services.agent.embeddings import clear_embedding_cache
 
-    # A changed embedding provider/model/dim (including a reset back to the
-    # bundled default) is picked up on the next embedding call purely via
-    # clear_embedding_cache(): it re-arms the one-shot cold-start sync,
-    # resets the embedding-contract cache, and clears the detected-dim latch
-    # (see embeddings.clear_embedding_cache), so a dimension/model mismatch
-    # is caught by the existing contract-migration machinery instead of
-    # silently serving stale-model vectors. Nothing else to build here.
+    # Reset the shared embedding-contract caches first. CoreFS semantic vectors
+    # are unlock-scoped rather than stored in that cache, so a provider/model
+    # change also invalidates and rebuilds that generation below.
     clear_embedding_cache()
     invalidate_agent_runtime_cache()
+    if (
+        unlock_session is not None
+        and configured_embedding_fingerprint() != old_embedding_fingerprint
+    ):
+        refresh_unlocked_semantic_search(unlock_session)
 
     return {"status": "updated"}

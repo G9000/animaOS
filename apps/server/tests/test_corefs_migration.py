@@ -332,6 +332,124 @@ def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> N
     assert index.snapshot().families["note"].degraded is False
 
 
+def test_semantic_retry_rebuilds_all_vectors_after_embedding_config_changes() -> None:
+    from conftest_runtime import runtime_db_session
+
+    corefs_keys = object()
+    text_by_path = {
+        "Notes/one.md": b"first semantic marker",
+        "Notes/two.md": b"second semantic marker",
+    }
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 11, "catalogHash": "catalog-hash"}
+
+        def walk_v1(self, *_args, **_kwargs):
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 11,
+                        "entries": [
+                            {
+                                "path": path,
+                                "stableId": f"note-{index}",
+                                "revision": 1,
+                                "contentHash": str(index) * 64,
+                                "kind": "file",
+                                "objectKind": "note",
+                                "depth": 2,
+                            }
+                            for index, path in enumerate(text_by_path, start=1)
+                        ],
+                        "errors": [],
+                        "nextCursor": None,
+                        "truncated": False,
+                        "limitReached": False,
+                    },
+                }
+            ).encode()
+
+        def read_chunk_v1(
+            self,
+            _keys,
+            _generation,
+            _catalog_hash,
+            path,
+            offset,
+            _max_bytes,
+            **_kwargs,
+        ):
+            if offset:
+                return None
+            return json.dumps(
+                {
+                    "version": "corefs-logical-v1",
+                    "result": {
+                        "generation": 11,
+                        "path": path,
+                        "stableId": "opaque",
+                        "revision": 1,
+                        "contentHash": "c" * 64,
+                        "offset": 0,
+                        "bytesBase64": base64.b64encode(text_by_path[path]).decode(),
+                    },
+                }
+            ).encode()
+
+    old_calls: list[str] = []
+
+    class OldEmbedder:
+        corefs_embedding_fingerprint = "provider-a:model-a"
+
+        def __call__(self, text: str) -> tuple[float, ...]:
+            old_calls.append(text)
+            if text.startswith("second"):
+                raise ValueError("old provider failed the second object")
+            return (1.0, 0.0)
+
+    old_embedder = OldEmbedder()
+    new_calls: list[str] = []
+
+    class NewEmbedder:
+        corefs_embedding_fingerprint = "provider-b:model-b"
+
+        def __call__(self, text: str) -> tuple[float, ...]:
+            new_calls.append(text)
+            return (0.0, 1.0)
+
+    new_embedder = NewEmbedder()
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    with runtime_db_session() as runtime_db:
+        rebuild_unlocked_search(
+            session,
+            embedder=old_embedder,
+            runtime_db=runtime_db,
+        )
+        assert index.snapshot().state is ReadinessState.SEMANTIC_INDEXING
+        assert old_calls == ["first semantic marker", "second semantic marker"]
+
+        rebuild_unlocked_search(
+            session,
+            embedder=new_embedder,
+            runtime_db=runtime_db,
+        )
+
+    assert new_calls == ["first semantic marker", "second semantic marker"]
+    assert index.snapshot().state is ReadinessState.READY
+    assert index.search_semantic((0.0, 1.0), limit=2) == ("note-1", "note-2")
+
+
 def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
     monkeypatch,
 ) -> None:
@@ -365,6 +483,47 @@ def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
     assert len(calls) == 1
     assert calls[0][0] is session
     assert callable(calls[0][1])
+
+
+def test_unlocked_rebuild_scheduler_queues_forced_refresh_after_active_worker(
+    monkeypatch,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=1, families={})
+    session = SimpleNamespace(runtime_index=index)
+    first_started = Event()
+    release_first = Event()
+    second_completed = Event()
+    calls: list[object] = []
+
+    def blocking_rebuild(current, *, embedder=None, runtime_db=None) -> None:
+        calls.append((current, embedder, runtime_db))
+        if len(calls) == 1:
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_completed.set()
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "rebuild_unlocked_search",
+        blocking_rebuild,
+    )
+
+    assert schedule_unlocked_rebuild(session) is True
+    assert first_started.wait(timeout=2)
+    assert (
+        schedule_unlocked_rebuild(
+            session,
+            rerun_if_active=True,
+        )
+        is False
+    )
+    release_first.set()
+    assert second_completed.wait(timeout=2)
+    assert len(calls) == 2
 
 
 def test_walk_failures_publish_an_observable_degraded_family() -> None:

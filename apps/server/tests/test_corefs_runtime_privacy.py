@@ -935,6 +935,7 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
         append_message,
         get_or_create_thread,
     )
+    from anima_server.services.agent.session_memory import write_session_note
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.images.deletion import delete_thread_with_image_cleanup
@@ -959,7 +960,16 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
             role="user",
             content_text="delete me permanently",
         )
-        assert runtime_db.scalar(select(CoreFSSealedPayload.id)) is not None
+        write_session_note(
+            runtime_db,
+            thread_id=thread.id,
+            user_id=7,
+            key="delete-note-key",
+            value="delete-note-value",
+        )
+        assert set(
+            runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()
+        ) == {"runtime_message", "runtime_session_note"}
 
         result = delete_thread_with_image_cleanup(
             runtime_db,

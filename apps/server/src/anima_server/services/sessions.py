@@ -32,7 +32,7 @@ def _create_native_corefs_session() -> object:
 
 
 def _create_runtime_index(
-    _corefs_keys: object,
+    _corefs_keys: object | None,
     sqlcipher_key: bytes | None,
 ) -> CoreFSProgressiveIndex | None:
     if sqlcipher_key is None:
@@ -88,7 +88,7 @@ class UnlockSessionStore:
         snapshot: Any | None = None,
         corefs_session_factory: Callable[[], object] | None = None,
         runtime_index_factory: (
-            Callable[[object, bytes | None], CoreFSProgressiveIndex | None] | None
+            Callable[[object | None, bytes | None], CoreFSProgressiveIndex | None] | None
         ) = None,
     ) -> None:
         self._lock = RLock()
@@ -459,13 +459,12 @@ class UnlockSessionStore:
                 raise RuntimeError(
                     "CoreFS native session does not implement begin_close"
                 )
-            if corefs_keys is not None:
-                with self._lock:
-                    sqlcipher_key = self._sqlcipher_key
-                runtime_index = self._runtime_index_factory(
-                    corefs_keys,
-                    sqlcipher_key,
-                )
+            with self._lock:
+                sqlcipher_key = self._sqlcipher_key
+            runtime_index = self._runtime_index_factory(
+                corefs_keys,
+                sqlcipher_key,
+            )
         except Exception:
             if runtime_index is not None:
                 runtime_index.clear_unlocked_state()
