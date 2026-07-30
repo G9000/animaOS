@@ -594,12 +594,9 @@ class CoreFSProgressiveIndex:
     def _capabilities_locked(self) -> frozenset[IndexCapability]:
         capabilities: set[IndexCapability] = set()
         if self._catalog_generation is not None:
-            capabilities.update(
-                {
-                    IndexCapability.NAVIGATION,
-                    IndexCapability.EXACT_SEARCH,
-                }
-            )
+            capabilities.add(IndexCapability.NAVIGATION)
+            if self._active_blind_generation == self._catalog_generation:
+                capabilities.add(IndexCapability.EXACT_SEARCH)
         if self._documents:
             capabilities.add(IndexCapability.TEXT_SEARCH)
         if self._vectors:

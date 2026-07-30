@@ -87,7 +87,7 @@ export interface CoreFsOperationRequest {
   root?: string | null;
   pattern?: string | null;
   query?: string | null;
-  searchMode?: "text" | "semantic";
+  searchMode?: "exact" | "text" | "semantic";
   cursorAfter?: string | null;
   globCursorAfter?: string | null;
   grepCursorPath?: string | null;

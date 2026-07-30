@@ -448,13 +448,7 @@ def _runtime_url_fingerprint(runtime_url: str) -> str:
 
 
 def _pid_is_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
+    return _process_start_identity(pid) is not None
 
 
 def _process_start_identity(pid: int) -> str | None:

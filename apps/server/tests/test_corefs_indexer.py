@@ -30,7 +30,6 @@ def test_indexer_publishes_catalog_before_text_and_semantic_readiness() -> None:
     assert catalog.capabilities == frozenset(
         {
             IndexCapability.NAVIGATION,
-            IndexCapability.EXACT_SEARCH,
         }
     )
     assert catalog.families["notes"].failed == 0
@@ -199,6 +198,32 @@ def test_blind_token_generation_switch_is_atomic_and_instance_bound() -> None:
         entries=((index.blind_token("alpha"), "note-3"),),
     )
     assert another_instance.lookup_exact("alpha") == ()
+
+
+def test_exact_search_capability_requires_current_catalog_blind_generation() -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=4, families={"notes": 1})
+
+    assert IndexCapability.EXACT_SEARCH not in index.snapshot().capabilities
+
+    index.load_blind_generation(
+        generation=3,
+        entries=((index.blind_token("alpha"), "note-old"),),
+    )
+    assert IndexCapability.EXACT_SEARCH not in index.snapshot().capabilities
+
+    index.begin_blind_generation(generation=4, expected_count=1)
+    index.add_blind_token(
+        generation=4,
+        value="Alpha",
+        object_id="note-current",
+    )
+    assert IndexCapability.EXACT_SEARCH not in index.snapshot().capabilities
+
+    index.commit_blind_generation(4)
+    assert IndexCapability.EXACT_SEARCH in index.snapshot().capabilities
 
 
 def test_blind_tokens_and_generation_state_are_purged_on_lock() -> None:

@@ -1118,6 +1118,35 @@ def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
         sys.modules.pop("anima_server.main", None)
 
 
+@pytest.mark.parametrize("runtime_suffix", [(), ("runtime",)])
+def test_runtime_app_data_root_rejects_portable_core_paths(
+    managed_tmp_path: Path,
+    runtime_suffix: tuple[str, ...],
+) -> None:
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    core = managed_tmp_path / "portable" / ".anima"
+    runtime_root = core.joinpath(*runtime_suffix)
+
+    try:
+        settings.data_dir = core
+        settings.runtime_app_data_dir = str(runtime_root)
+        main_module = _reload_main_module()
+
+        with pytest.raises(
+            RuntimeError,
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not resolve inside the portable Core",
+        ):
+            main_module._claim_runtime_instance()
+
+        assert not (runtime_root / "core-instance-registry.json").exists()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
 def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,

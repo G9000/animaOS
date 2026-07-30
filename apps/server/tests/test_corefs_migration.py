@@ -110,9 +110,7 @@ def test_reconciliation_authenticates_catalog_before_publishing_navigation() -> 
     assert selected.generation == 7
     assert snapshot.state is ReadinessState.CATALOG_READY
     assert snapshot.catalog_generation == 7
-    assert snapshot.capabilities == frozenset(
-        {IndexCapability.NAVIGATION, IndexCapability.EXACT_SEARCH}
-    )
+    assert snapshot.capabilities == frozenset({IndexCapability.NAVIGATION})
 
 
 def test_progressive_rebuild_reads_authenticated_catalog_only_into_memory() -> None:

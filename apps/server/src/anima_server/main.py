@@ -110,7 +110,11 @@ def _claim_runtime_instance(
         Path(settings.runtime_app_data_dir)
         if settings.runtime_app_data_dir
         else default_runtime_app_data_root()
-    )
+    ).expanduser().resolve()
+    if app_data_root.is_relative_to(settings.data_dir.expanduser().resolve()):
+        raise RuntimeError(
+            "ANIMA_RUNTIME_APP_DATA_DIR must not resolve inside the portable Core"
+        )
     registry = RuntimeInstanceRegistry(app_data_root)
     binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
     try:

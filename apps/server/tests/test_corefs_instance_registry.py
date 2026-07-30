@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +21,26 @@ def _make_core(path: Path, *, core_id: str = "core-019f") -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def test_default_pid_probe_does_not_signal_current_process() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "from anima_server.services.corefs.instance_registry "
+                "import _pid_is_alive; "
+                "raise SystemExit(0 if _pid_is_alive(os.getpid()) else 1)"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_registry_places_runtime_outside_core_and_rebinds_a_moved_core(

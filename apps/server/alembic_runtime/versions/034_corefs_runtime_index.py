@@ -1,7 +1,7 @@
 """Add instance-scoped CoreFS Runtime index metadata.
 
-Revision ID: 033_corefs_runtime_index
-Revises: 032_drive_state_dream_attempt
+Revision ID: 034_corefs_runtime_index
+Revises: 033_drive_state_starvation
 Create Date: 2026-07-29
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "033_corefs_runtime_index"
-down_revision = "032_drive_state_dream_attempt"
+revision = "034_corefs_runtime_index"
+down_revision = "033_drive_state_starvation"
 branch_labels = None
 depends_on = None
 
