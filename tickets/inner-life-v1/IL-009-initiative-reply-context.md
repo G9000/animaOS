@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-30 20:43 MYT
+- Updated: 2026-07-30 21:59 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-30 20:43 MYT
+- Completed: 2026-07-30 21:59 MYT
 
 ## Goal
 
@@ -99,6 +99,21 @@ rather than blocking IL-008 on it.
   closure (ref-guarded, with a one-moment notice) until the close
   settles.
 
+- 2026-07-30 21:59 MYT - PR #131 review round 4 (3 P1s), completion
+  re-stamped: (1) handleSubmit consumed the seed refs BEFORE sendMessage
+  could reject — a guard rejection then retried on the non-seed path and
+  the model never saw the acked initiative; sendMessage now returns
+  whether the send actually proceeded and the refs are consumed only on
+  acceptance. (2) A FAILED thread close silently cleared the rotation
+  guard, so the next reply landed in the still-active old thread; the
+  guard is now a pending-close id that sendMessage itself re-settles
+  (retry-on-next-send) before any reply is routed — self-healing for
+  latency AND failure. (3) The AGENTS.md validation gate ran on an
+  isolated server (:8899, temp data dir): GET /health ok; critical-flow
+  smoke — auth register+login, memory item create/list, settings
+  (presence GET/PUT round-trip incl. initiativeEnabled), chat history +
+  brief greeting, initiatives poll — all pass, recorded below.
+
 ## Validation
 
 - Commands:
@@ -112,6 +127,12 @@ rather than blocking IL-008 on it.
   - `apps/desktop/src/components/InitiativeOverlay.tsx`
   - `apps/desktop/src/pages/chat/Chat.tsx`
   - `apps/desktop/tests/initiativeReply.test.ts` (new)
+  - Validation gate (2026-07-30 21:59 MYT, isolated server :8899):
+    `GET /health` -> status ok; smoke: auth (register + login), memory
+    (create + list), settings (presence GET/PUT), chat (history + brief),
+    initiatives poll — all green. Desktop suite: 25/25 owned tests (the
+    3 failing files — layout-nav, layout-top-nav, recovery-credential —
+    fail identically without this branch's changes; pre-existing drift).
 - Notes:
   - Server suite untouched (no server files in this branch's diff).
   - Residual risk: a seed navigation arriving mid-stream is deferred, not

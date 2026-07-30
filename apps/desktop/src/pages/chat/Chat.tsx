@@ -553,12 +553,29 @@ export default function Chat() {
   // owned by the mount path. Arrivals mid-stream are deferred until the
   // stream settles instead of swapping the thread under it.
   const pendingSeedNavRef = useRef<ChatContextMessage[] | null>(null);
-  // True while an in-place seed's server-side thread closure is in flight.
-  // Sending during that window would let get_or_create_thread select the
-  // still-active OLD thread and append the seeded reply to the previous
-  // conversation (PR #131 round 3) — the send guard blocks until the close
-  // settles (and surfaces a one-moment notice if the user submits early).
-  const seedRotatingRef = useRef(false);
+  // The old thread an in-place seed still owes a server-side close for.
+  // Sending before that close commits would let get_or_create_thread select
+  // the still-active OLD thread and append the seeded reply to the previous
+  // conversation — and a FAILED close must keep blocking (not silently
+  // unblock) or the same corruption happens one submit later (PR #131
+  // rounds 3-4). sendMessage retries the close itself before proceeding,
+  // so the state is self-healing rather than a one-shot guard.
+  const pendingSeedCloseRef = useRef<number | null>(null);
+  const settleSeedClose = async (): Promise<boolean> => {
+    const threadId = pendingSeedCloseRef.current;
+    if (threadId == null) return true;
+    try {
+      await api.threads.close(threadId);
+      pendingSeedCloseRef.current = null;
+      api.threads
+        .list()
+        .then((list) => setThreads(dedupeThreads(list.threads)))
+        .catch(() => {});
+      return true;
+    } catch {
+      return false; // stays pending; the next send retries
+    }
+  };
   const applySeedNavigation = (context: ChatContextMessage[]) => {
     if (user?.id == null) return;
     // A prior seed still unsent (mount seed or an earlier Reply)? Every
@@ -581,15 +598,8 @@ export default function Chat() {
     setMessages(contextToSeedMessages(merged, user.id));
     setError("");
     if (threadToClose != null) {
-      seedRotatingRef.current = true;
-      void api.threads
-        .close(threadToClose)
-        .then(() => api.threads.list())
-        .then((list) => setThreads(dedupeThreads(list.threads)))
-        .catch(() => {})
-        .finally(() => {
-          seedRotatingRef.current = false;
-        });
+      pendingSeedCloseRef.current = threadToClose;
+      void settleSeedClose();
     }
   };
   useEffect(() => {
@@ -1073,11 +1083,14 @@ export default function Chat() {
   }, []);
 
   // Send message
+  // Returns true only when the send actually proceeded — guard rejections
+  // and attachment failures return false so callers (handleSubmit) can keep
+  // un-consumed seed state for the retry (PR #131 round 4).
   const sendMessage = async (
     text: string,
     contextMessages: ChatContextMessage[] = [],
     opts: { skipContextDisplay?: boolean } = {},
-  ) => {
+  ): Promise<boolean> => {
     const documentsForTurn = selectedDocuments.filter(
       (document) => document.status === "indexed" && document.documentId != null,
     );
@@ -1089,22 +1102,25 @@ export default function Chat() {
     );
     if (hasIndexingDocuments) {
       setError("Wait for PDF indexing to finish before sending.");
-      return;
+      return false;
     }
     if (hasFailedDocuments) {
       setError("Remove failed PDFs before sending.");
-      return;
+      return false;
     }
     if (
       (!text.trim() && selectedImages.length === 0 && documentsForTurn.length === 0) ||
       user?.id == null ||
-      streaming ||
-      seedRotatingRef.current
+      streaming
     ) {
-      if (seedRotatingRef.current) {
-        setError("Starting the reply thread - one moment.");
-      }
-      return;
+      return false;
+    }
+    // An in-place seed still owes the old thread a close: settle it (with
+    // retry-on-next-send semantics) before this reply can be routed, or
+    // get_or_create_thread would append it to the old conversation.
+    if (pendingSeedCloseRef.current != null && !(await settleSeedClose())) {
+      setError("Couldn't start the reply thread - try sending again.");
+      return false;
     }
 
     const userMsg = text.trim() || "Summarize the selected document.";
@@ -1128,7 +1144,7 @@ export default function Chat() {
       );
     } catch {
       setError("Failed to read image attachment.");
-      return;
+      return false;
     }
 
     setInput("");
@@ -1264,20 +1280,27 @@ export default function Chat() {
       streamingRef.current = false;
       setReasoningBuffer("");
     }
+    return true;
   };
 
   // Submit handler — on the first reply to a seeded thread, carry the seeded
   // thought along as context (it's already shown, so don't re-render it).
   const handleSubmit = () => {
+    // Seed refs are consumed ONLY when the send actually proceeds — a
+    // guard rejection (pending thread close, indexing PDFs, ...) must leave
+    // the acked initiative's context intact for the retry, or the retry
+    // takes the non-seed path and the model never sees it (PR #131 round 4).
     const seedContext = pendingContextRef.current;
     const wasSeed = seedActiveRef.current && seedContext.length > 0;
-    pendingContextRef.current = [];
-    seedActiveRef.current = false;
-    if (wasSeed) {
-      void sendMessage(input, seedContext, { skipContextDisplay: true });
-    } else {
-      void sendMessage(input);
-    }
+    void (async () => {
+      const accepted = wasSeed
+        ? await sendMessage(input, seedContext, { skipContextDisplay: true })
+        : await sendMessage(input);
+      if (accepted && wasSeed) {
+        pendingContextRef.current = [];
+        seedActiveRef.current = false;
+      }
+    })();
   };
 
   // Message content renderer
