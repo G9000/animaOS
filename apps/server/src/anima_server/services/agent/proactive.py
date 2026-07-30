@@ -11,6 +11,7 @@ Generates personalized greetings when the user opens the app, drawing on:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 from dataclasses import dataclass, field
@@ -280,8 +281,15 @@ async def _invoke_ollama_native_chat(
     return stripped or None
 
 
+def _ambient_dream_sentence(dream: str) -> str:
+    """The ONE rendering of a consumed ambient dream — used verbatim by both
+    the static greeting and the LLM-greeting append, so a claimed dream is
+    always voiced identically and deterministically."""
+    return f'I dreamt about something recently — "{dream}".'
+
+
 def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
-    """IL-010: the dream reference an "ambient" greeting may weave, or None.
+    """IL-010: claim the dream an "ambient" greeting will voice, or None.
 
     Gives ``presence_config.dream_sharing == "ambient"`` its real behavior
     (the IL-007 PRD's "the companion may weave a dream into greetings").
@@ -291,20 +299,26 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
        exactly ``"ambient"`` — ``on_ask`` stays ask-or-IL3-fire only and
        ``off`` stays fully suppressed.
     2. An active memories DEK (``df`` fails open; without one the read
-       would hand ciphertext to the greeting prompt).
+       would hand ciphertext to the greeting).
     3. A real dream: the most recent share-worthy, not-yet-surfaced
        ``dream_journal`` row.
 
-    Consume-once: the returned dream is marked ``surfaced`` and COMMITTED
-    here, in the same operation that hands it to the greeting surface —
-    the greeting (LLM or static fallback) always includes it, and a dream
-    must never be voiced twice nor keep re-raising ``dream_residue`` after
-    it was woven. The commit lives in this helper because the greeting
-    routes' ``get_db`` session never commits otherwise, and every caller
-    of ``gather_greeting_context`` would have to remember the side effect.
-    Called before any other pending writes exist on the session (greeting
-    paths are read-only apart from this), so the commit is contained.
+    Consume-once, atomically (PR #130 review): the claim is a CONDITIONAL
+    update (``... WHERE surfaced = 0``) — under concurrent greeting
+    requests only the transaction whose update actually flips the flag
+    returns the dream; the loser sees rowcount 0 and stays silent. The
+    claim commits here because greeting sessions never commit otherwise.
+
+    Callers must GUARANTEE the claimed dream is voiced: this is called
+    ONLY from ``generate_greeting`` (never from the shared
+    ``gather_greeting_context``, which non-greeting paths like agent-state
+    and reflection also use — resolving there burned dreams invisibly),
+    and the greeting message always includes
+    ``_ambient_dream_sentence(dream)`` deterministically — appended to the
+    LLM output rather than entrusted to the model's discretion.
     """
+    from sqlalchemy import update
+
     from anima_server.models import DreamJournal
     from anima_server.services.data_crypto import DOMAIN_MEMORIES
     from anima_server.services.sessions import get_active_dek
@@ -333,7 +347,14 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
     if not narrative:
         return None
 
-    row.surfaced = True
+    claimed = db.execute(
+        update(DreamJournal)
+        .where(DreamJournal.id == row.id, DreamJournal.surfaced.is_(False))
+        .values(surfaced=True)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()  # someone else claimed it between the select and now
+        return None
     db.commit()
     return narrative[:240]
 
@@ -512,7 +533,10 @@ def gather_greeting_context(
         last_message_at=last_message.created_at if last_message else None,
         now=now,
     )
-    ambient_dream = _resolve_ambient_dream(db, user_id=user_id)
+    # NB: the ambient dream is deliberately NOT resolved here (PR #130
+    # review): this gatherer is shared with non-greeting paths (agent state,
+    # reflection) that never render it — resolving here would consume dreams
+    # invisibly. generate_greeting resolves it and guarantees the voicing.
 
     # Get recent episode summary
     recent_episode = db.scalar(
@@ -622,7 +646,6 @@ def gather_greeting_context(
         is_birthday=is_birthday,
         days_until_birthday=days_until_birthday,
         held_thought=held_thought,
-        ambient_dream=ambient_dream,
     )
 
 
@@ -646,7 +669,7 @@ def build_static_greeting(ctx: GreetingContext) -> str:
         parts.append(f'Something you mentioned stayed with me — "{ctx.held_thought}".')
 
     if ctx.ambient_dream:
-        parts.append(f'I dreamt about something recently — "{ctx.ambient_dream}".')
+        parts.append(_ambient_dream_sentence(ctx.ambient_dream))
 
     if ctx.overdue_task_count:
         s = "s" if ctx.overdue_task_count != 1 else ""
@@ -900,6 +923,14 @@ async def generate_greeting(
     prompt_loader = get_prompt_loader(db, user_id)
 
     ctx = gather_greeting_context(db, user_id=user_id, runtime_db=runtime_db)
+    # IL-010: claim the ambient dream HERE, in the one path that guarantees
+    # voicing (every return below renders it — static paths via
+    # build_static_greeting, the LLM path via the deterministic append).
+    # Never in gather_greeting_context: that gatherer is shared with
+    # non-greeting paths that would consume dreams invisibly (PR #130).
+    ambient_dream = _resolve_ambient_dream(db, user_id=user_id)
+    if ambient_dream:
+        ctx = dataclasses.replace(ctx, ambient_dream=ambient_dream)
 
     if settings.agent_provider == "scaffold":
         return GreetingResult(message=build_static_greeting(ctx), context=ctx)
@@ -981,16 +1012,11 @@ async def generate_greeting(
             + "details, outcomes, or feelings about it."
         ).strip()
 
-    if ctx.ambient_dream:
-        # IL-010: the user chose ambient dream-sharing; the dream text is a
-        # real dream_journal narrative — pin the model to it, framed AS a
-        # dream (never as a memory of something that happened).
-        memory_context = (
-            memory_context
-            + f'\n\nYou dreamt recently: "{ctx.ambient_dream}". You may weave '
-            + "a brief mention of it into the greeting, clearly as a dream — "
-            + "only what is stated here, no invented details or meanings."
-        ).strip()
+    # NB (PR #130 review): the ambient dream is deliberately NOT put in the
+    # LLM prompt. The claim already committed, so voicing must be guaranteed
+    # deterministically — the sentence is appended to whatever message this
+    # function returns (see the append below and the static fallback), never
+    # entrusted to the model's discretion.
 
     # Use templated greeting prompt
     prompt = prompt_loader.greeting(
@@ -1036,6 +1062,11 @@ async def generate_greeting(
             content = getattr(response, "content", "")
         if isinstance(content, str) and content.strip():
             message = content.strip()
+            if ctx.ambient_dream:
+                # IL-010: the claim already committed — voicing is OUR
+                # responsibility, not the model's. Same sentence the static
+                # greeting uses, so a claimed dream is always heard.
+                message = f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}"
             pills = await generate_thought_pills(
                 prompt_loader, greeting_message=message, ctx=ctx
             )

@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-30 16:44 MYT
+- Updated: 2026-07-30 18:47 MYT
 - Started: 2026-07-30 16:27 MYT
-- Completed: 2026-07-30 16:44 MYT
+- Completed: 2026-07-30 18:47 MYT
 
 ## Goal
 
@@ -62,12 +62,25 @@ backend contract still accepts and round-trips the value).
   desktop Presence selector. 10 tests in
   `tests/test_inner_life_ambient_dream.py`.
 
+- 2026-07-30 18:47 MYT - PR #130 review round 1 (P1 + 2 P2), completion
+  re-stamped after acceptance-affecting fixes: (1) consumption moved OUT
+  of gather_greeting_context — that gatherer is shared with agent-state
+  and reflection paths that never render the dream, so ambient dreams
+  were burned invisibly; generate_greeting is now the only consumer.
+  (2) Voicing is deterministic: the claimed dream's sentence (single
+  source, `_ambient_dream_sentence`) is appended to the LLM greeting and
+  rendered by the static paths — never entrusted to the model's
+  discretion (the old prompt said "may mention"). (3) The claim is an
+  atomic conditional update (WHERE surfaced = 0, rowcount checked) — a
+  rival claiming between select and update leaves the loser silent.
+  Three regression tests incl. an interleaved-rival race.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 10 passed
-  - Full suite (`bun run test`) — **3176 passed, 0 failed, 10 skipped**,
-    run 2026-07-30 17:11 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 13 passed
+  - Full suite (`bun run test`) on the round-1 head — **3179 passed,
+    0 failed, 10 skipped**, run 2026-07-30 20:14 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/tests/test_inner_life_ambient_dream.py` (new)

@@ -187,3 +187,66 @@ def test_static_greeting_renders_ambient_dream(soul_db) -> None:
     assert "the boat dream" in message
     assert "dreamt" in message
     assert "dreamt" not in build_static_greeting(GreetingContext(days_since_last_chat=1))
+
+
+def test_gather_greeting_context_never_consumes_the_dream(soul_db) -> None:
+    """Regression (PR #130 review, P1): gather_greeting_context is shared
+    with non-greeting paths (agent state, reflection) that never render the
+    dream — it must NOT resolve/claim. Only generate_greeting consumes."""
+    from anima_server.services.agent.proactive import gather_greeting_context
+
+    user_id = _seed(soul_db)
+    ctx = gather_greeting_context(soul_db, user_id=user_id, runtime_db=None)
+    assert ctx.ambient_dream is None
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is False
+
+
+def test_generate_greeting_voices_and_consumes_the_claimed_dream(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one consuming path guarantees voicing: the greeting message
+    always contains the dream sentence (static path here; the LLM path
+    appends the SAME sentence deterministically rather than trusting the
+    model), and only then is the dream consumed."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+    assert "a blurred dream about the boat you restored" in result.message
+    assert "I dreamt about something recently" in result.message
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is True
+
+
+def test_concurrent_claim_returns_the_dream_to_exactly_one_caller(
+    soul_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 review): the claim is a CONDITIONAL update. If a
+    rival claims the row between this session's select and its update (here:
+    interleaved via the df seam), the update's rowcount is 0 and the loser
+    returns None instead of double-voicing the same narrative."""
+    with soul_factory() as db:
+        user_id = _seed(db)
+
+    loser = soul_factory()
+    rival_ran = {"done": False}
+
+    def df_with_rival(uid, v, **kw):
+        # Fires between the loser's SELECT and its conditional UPDATE:
+        # a rival session claims the dream first.
+        if not rival_ran["done"]:
+            rival_ran["done"] = True
+            with soul_factory() as rival:
+                assert _resolve_ambient_dream(rival, user_id=user_id) is not None
+        return v
+
+    monkeypatch.setattr(proactive, "df", df_with_rival)
+    try:
+        assert _resolve_ambient_dream(loser, user_id=user_id) is None
+    finally:
+        loser.close()
+    with soul_factory() as db:
+        assert db.scalars(select(DreamJournal)).one().surfaced is True
