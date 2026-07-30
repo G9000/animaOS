@@ -136,17 +136,13 @@ def mark_user_reembed_complete(
             with factory() as rt_db:
                 row = rt_db.get(ReembedCompletion, int(user_id))
                 if row is None:
-                    rt_db.add(
-                        ReembedCompletion(user_id=int(user_id), completed=True)
-                    )
+                    rt_db.add(ReembedCompletion(user_id=int(user_id), completed=True))
                 else:
                     row.completed = True
                     row.updated_at = datetime.now(UTC)
                 rt_db.commit()
         except Exception:
-            logger.exception(
-                "Failed to record re-embed completion for user %s", user_id
-            )
+            logger.exception("Failed to record re-embed completion for user %s", user_id)
     if _completed_users is not None:
         _completed_users.add(int(user_id))
     if _reset_users is not None:
@@ -175,9 +171,7 @@ def check_embedding_contract(
 
     try:
         with factory() as rt_db:
-            row = rt_db.scalar(
-                select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
-            )
+            row = rt_db.scalar(select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1))
             if row is None:
                 rt_db.add(
                     EmbeddingConfig(
@@ -195,9 +189,7 @@ def check_embedding_contract(
                     # second contract row that unordered reads could later pick.
                     rt_db.rollback()
                     row = rt_db.scalar(
-                        select(EmbeddingConfig)
-                        .order_by(EmbeddingConfig.id)
-                        .limit(1)
+                        select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
                     )
                 else:
                     _reembed_required = False
@@ -275,9 +267,7 @@ def is_reembed_required(
                     row = rt_db.scalar(
                         select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
                     )
-                    _reembed_required = (
-                        bool(row.reembed_required) if row is not None else False
-                    )
+                    _reembed_required = bool(row.reembed_required) if row is not None else False
             except Exception:
                 _reembed_required = False
 
@@ -304,9 +294,7 @@ def complete_reembed(
         return
     try:
         with factory() as rt_db:
-            row = rt_db.scalar(
-                select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1)
-            )
+            row = rt_db.scalar(select(EmbeddingConfig).order_by(EmbeddingConfig.id).limit(1))
             if row is None:
                 row = EmbeddingConfig(
                     id=_CONTRACT_ROW_ID,
@@ -382,24 +370,17 @@ def ensure_pgvector_dimension(
             # vectors are only rebuilt on re-ingestion.
             dropped_non_memory = (
                 rt_db.execute(
-                    text(
-                        "SELECT count(*) FROM embeddings "
-                        "WHERE source_type <> 'memory_item'"
-                    )
+                    text("SELECT count(*) FROM embeddings WHERE source_type <> 'memory_item'")
                 ).scalar()
                 or 0
             )
             rt_db.execute(text("DELETE FROM embeddings"))
             rt_db.execute(
-                text(
-                    f"ALTER TABLE embeddings "
-                    f"ALTER COLUMN embedding TYPE vector({int(dim)})"
-                )
+                text(f"ALTER TABLE embeddings ALTER COLUMN embedding TYPE vector({int(dim)})")
             )
             rt_db.commit()
             logger.info(
-                "Recreated embeddings.embedding as vector(%d) for re-embed "
-                "(was %s)",
+                "Recreated embeddings.embedding as vector(%d) for re-embed (was %s)",
                 dim,
                 current_type,
             )
@@ -414,9 +395,7 @@ def ensure_pgvector_dimension(
                 )
             return True
     except Exception:
-        logger.exception(
-            "Failed to align pgvector column to dimension %d", dim
-        )
+        logger.exception("Failed to align pgvector column to dimension %d", dim)
         return False
 
 
@@ -457,7 +436,9 @@ def reset_derived_embedding_stores(
     factory = _runtime_factory(runtime_db_factory)
     if factory is not None:
         try:
-            from anima_server.models.runtime_embedding import RuntimeEmbedding
+            from anima_server.services.corefs.sealed_runtime import (
+                delete_runtime_embedding_records,
+            )
 
             with factory() as rt_db:
                 # Only ``memory_item`` vectors are cleared here: the re-embed
@@ -470,16 +451,16 @@ def reset_derived_embedding_stores(
                 # change.  Re-embedding non-memory sources is a separate follow
                 # up; dimension changes still wipe the whole column via
                 # ``ensure_pgvector_dimension`` (unavoidable there).
-                rt_db.execute(
-                    delete(RuntimeEmbedding).where(
-                        RuntimeEmbedding.user_id == user_id,
-                        RuntimeEmbedding.source_type == "memory_item",
-                    )
+                delete_runtime_embedding_records(
+                    rt_db,
+                    owner_id=user_id,
+                    source_type="memory_item",
                 )
                 rt_db.commit()
         except Exception:
             logger.debug(
-                "Failed to clear runtime embeddings for user %d", user_id,
+                "Failed to clear runtime embeddings for user %d",
+                user_id,
                 exc_info=True,
             )
 
@@ -527,6 +508,9 @@ def sweep_orphaned_runtime_embeddings(
 
     try:
         from anima_server.models.runtime_embedding import RuntimeEmbedding
+        from anima_server.services.corefs.sealed_runtime import (
+            delete_runtime_embedding_records,
+        )
 
         with factory() as rt_db:
             stored_ids = [
@@ -541,12 +525,11 @@ def sweep_orphaned_runtime_embeddings(
             orphaned = [sid for sid in stored_ids if sid not in live_ids]
             if not orphaned:
                 return 0
-            rt_db.execute(
-                delete(RuntimeEmbedding).where(
-                    RuntimeEmbedding.user_id == user_id,
-                    RuntimeEmbedding.source_type == "memory_item",
-                    RuntimeEmbedding.source_id.in_(orphaned),
-                )
+            delete_runtime_embedding_records(
+                rt_db,
+                owner_id=user_id,
+                source_type="memory_item",
+                source_ids=orphaned,
             )
             rt_db.commit()
             logger.info(
@@ -556,7 +539,5 @@ def sweep_orphaned_runtime_embeddings(
             )
             return len(orphaned)
     except Exception:
-        logger.debug(
-            "Orphaned-embedding sweep failed for user %d", user_id, exc_info=True
-        )
+        logger.debug("Orphaned-embedding sweep failed for user %d", user_id, exc_info=True)
         return 0

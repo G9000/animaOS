@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
-from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
     delete_sealed_runtime_records,
     seal_runtime_fields,
 )
@@ -145,12 +145,11 @@ def replace_document_chunks(
         ).all()
     )
     if old_chunk_ids:
-        db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == document.user_id,
-                RuntimeEmbedding.source_type == "document_chunk",
-                RuntimeEmbedding.source_id.in_(old_chunk_ids),
-            )
+        delete_runtime_embedding_records(
+            db,
+            owner_id=int(document.user_id),
+            source_type="document_chunk",
+            source_ids=old_chunk_ids,
         )
         delete_sealed_runtime_records(
             db,

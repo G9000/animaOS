@@ -19,7 +19,10 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocumentChunk
-from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
+    seal_runtime_fields,
+)
 from anima_server.services.documents.store import (
     get_document_for_user,
     list_document_chunks,
@@ -123,21 +126,26 @@ def generate_document_chunk_blurbs(
         # Embedding validity is keyed on the raw content hash, which a blurb
         # does not change — the old vectors must be dropped or the dense
         # index would never pick up the new contextual text.
-        _delete_chunk_embeddings(runtime_db, chunk_ids=blurbed_chunk_ids)
+        _delete_chunk_embeddings(
+            runtime_db,
+            user_id=user_id,
+            chunk_ids=blurbed_chunk_ids,
+        )
     runtime_db.flush()
     return written
 
 
-def _delete_chunk_embeddings(runtime_db: Session, *, chunk_ids: Sequence[int]) -> None:
-    from sqlalchemy import delete
-
-    from anima_server.models.runtime_embedding import RuntimeEmbedding
-
-    runtime_db.execute(
-        delete(RuntimeEmbedding).where(
-            RuntimeEmbedding.source_type == "document_chunk",
-            RuntimeEmbedding.source_id.in_(list(chunk_ids)),
-        )
+def _delete_chunk_embeddings(
+    runtime_db: Session,
+    *,
+    user_id: int,
+    chunk_ids: Sequence[int],
+) -> None:
+    delete_runtime_embedding_records(
+        runtime_db,
+        owner_id=user_id,
+        source_type="document_chunk",
+        source_ids=chunk_ids,
     )
 
 

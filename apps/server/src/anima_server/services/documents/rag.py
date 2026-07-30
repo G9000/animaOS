@@ -4,7 +4,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
@@ -18,6 +18,7 @@ from anima_server.services.agent.embeddings import (
 )
 from anima_server.services.agent.pgvec_store import PgVecStore
 from anima_server.services.agent.vector_store import VectorSearchResult
+from anima_server.services.corefs.sealed_runtime import delete_runtime_embedding_records
 from anima_server.services.documents.indexing import (
     EmbeddingFn,
     _run_embedding,
@@ -355,16 +356,19 @@ def _delete_document_chunk_vectors(
     user_id: int,
     document_id: int,
 ) -> None:
-    chunk_ids = select(RuntimeDocumentChunk.id).where(
-        RuntimeDocumentChunk.user_id == user_id,
-        RuntimeDocumentChunk.document_id == document_id,
+    chunk_ids = list(
+        runtime_db.scalars(
+            select(RuntimeDocumentChunk.id).where(
+                RuntimeDocumentChunk.user_id == user_id,
+                RuntimeDocumentChunk.document_id == document_id,
+            )
+        ).all()
     )
-    runtime_db.execute(
-        delete(RuntimeEmbedding).where(
-            RuntimeEmbedding.user_id == user_id,
-            RuntimeEmbedding.source_type == "document_chunk",
-            RuntimeEmbedding.source_id.in_(chunk_ids),
-        )
+    delete_runtime_embedding_records(
+        runtime_db,
+        owner_id=user_id,
+        source_type="document_chunk",
+        source_ids=chunk_ids,
     )
     runtime_db.flush()
 
@@ -454,7 +458,4 @@ def _load_document_chunks(
     if document_ids is not None:
         stmt = stmt.where(RuntimeDocumentChunk.document_id.in_(document_ids))
 
-    return {
-        chunk.id: (chunk, document)
-        for chunk, document in runtime_db.execute(stmt).all()
-    }
+    return {chunk.id: (chunk, document) for chunk, document in runtime_db.execute(stmt).all()}

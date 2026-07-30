@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, event, select
@@ -276,8 +278,18 @@ def convert_legacy_runtime_rows(
         (
             RuntimeKnowledgeConcept.__table__,
             "runtime_knowledge_concept",
-            {"body_markdown": "body_markdown"},
-            {"body_markdown": ""},
+            {
+                "title": "title",
+                "description": "description",
+                "body_markdown": "body_markdown",
+                "frontmatter_json": "frontmatter_json",
+            },
+            {
+                "title": "",
+                "description": None,
+                "body_markdown": "",
+                "frontmatter_json": {},
+            },
         ),
         (
             RuntimeKnowledgeConceptSource.__table__,
@@ -484,6 +496,52 @@ def delete_all_sealed_runtime_records_for_owner(
     )
 
 
+def delete_runtime_embedding_records(
+    runtime_db: Session,
+    *,
+    owner_id: int | None = None,
+    source_type: str | None = None,
+    source_ids: Sequence[int] | None = None,
+) -> int:
+    """Delete Runtime embeddings and their polymorphic sealed previews together."""
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+    if source_ids is not None and not source_ids:
+        return 0
+    conditions = []
+    if owner_id is not None:
+        conditions.append(RuntimeEmbedding.user_id == owner_id)
+    if source_type is not None:
+        conditions.append(RuntimeEmbedding.source_type == source_type)
+    if source_ids is not None:
+        conditions.append(RuntimeEmbedding.source_id.in_(list(source_ids)))
+
+    rows = list(
+        runtime_db.execute(
+            select(RuntimeEmbedding.id, RuntimeEmbedding.user_id).where(*conditions)
+        ).all()
+    )
+    if not rows:
+        return 0
+
+    row_ids_by_owner: defaultdict[int, list[int]] = defaultdict(list)
+    for row_id, row_owner_id in rows:
+        row_ids_by_owner[int(row_owner_id)].append(int(row_id))
+    for row_owner_id, row_ids in row_ids_by_owner.items():
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_embedding",
+            row_ids=row_ids,
+            owner_id=row_owner_id,
+        )
+    runtime_db.execute(
+        delete(RuntimeEmbedding).where(
+            RuntimeEmbedding.id.in_([int(row_id) for row_id, _owner_id in rows])
+        )
+    )
+    return len(rows)
+
+
 def load_runtime_record(
     runtime_db: Session,
     *,
@@ -604,7 +662,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         ),
         RuntimeKnowledgeConcept: (
             "runtime_knowledge_concept",
-            ("body_markdown",),
+            ("title", "description", "body_markdown", "frontmatter_json"),
         ),
         RuntimeKnowledgeConceptSource: (
             "runtime_knowledge_concept_source",

@@ -17,10 +17,10 @@ from anima_server.models.runtime import (
     RuntimeStep,
     RuntimeThread,
 )
-from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.models.runtime_memory import RuntimeSessionNote
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
 from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
     delete_sealed_runtime_records,
     reseal_runtime_message,
 )
@@ -107,12 +107,11 @@ def forget_image_asset(
         ).all()
     )
     if annotation_ids:
-        runtime_db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "image_annotation",
-                RuntimeEmbedding.source_id.in_(annotation_ids),
-            )
+        delete_runtime_embedding_records(
+            runtime_db,
+            owner_id=user_id,
+            source_type="image_annotation",
+            source_ids=annotation_ids,
         )
         delete_sealed_runtime_records(
             runtime_db,

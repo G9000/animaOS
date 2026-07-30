@@ -12,7 +12,7 @@ import logging
 import struct
 from collections.abc import Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -23,7 +23,10 @@ from anima_server.services.agent.embedding_integrity import (
     compute_embedding_checksum,
 )
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
-from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
+    seal_runtime_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +123,11 @@ class PgVecStore(VectorStore):
         self.delete_source(user_id, source_type="memory_item", source_id=item_id)
 
     def delete_source(self, user_id: int, *, source_type: str, source_id: int) -> None:
-        self._db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == source_type,
-                RuntimeEmbedding.source_id == source_id,
-            )
+        delete_runtime_embedding_records(
+            self._db,
+            owner_id=user_id,
+            source_type=source_type,
+            source_ids=[source_id],
         )
         self._db.flush()
 
@@ -245,11 +247,10 @@ class PgVecStore(VectorStore):
         user_id: int,
         items: list[tuple[int, str, list[float], str, int]],
     ) -> int:
-        self._db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "memory_item",
-            )
+        delete_runtime_embedding_records(
+            self._db,
+            owner_id=user_id,
+            source_type="memory_item",
         )
         for item_id, content, embedding, category, importance in items:
             content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -300,5 +301,5 @@ class PgVecStore(VectorStore):
         )
 
     def reset(self) -> None:
-        self._db.execute(delete(RuntimeEmbedding))
+        delete_runtime_embedding_records(self._db)
         self._db.flush()

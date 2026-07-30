@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
@@ -19,6 +19,7 @@ from anima_server.models.runtime import (
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.candidate_ops import create_memory_candidate
 from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.corefs.sealed_runtime import delete_runtime_embedding_records
 from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import (
     embed_document_chunks,
@@ -294,8 +295,7 @@ def run_pdf_ingestion_until_wait_or_done(
     run = resume_point.run
     if run.workflow_type != PDF_WORKFLOW_TYPE:
         raise ValueError(
-            f"Workflow run {workflow_run_id} is {run.workflow_type!r}, "
-            f"not {PDF_WORKFLOW_TYPE!r}."
+            f"Workflow run {workflow_run_id} is {run.workflow_type!r}, not {PDF_WORKFLOW_TYPE!r}."
         )
     if run.status in TERMINAL_WORKFLOW_STATUSES:
         return run
@@ -576,9 +576,7 @@ class _WorkflowContext:
     def require_proposed_facts(self) -> list[JsonObject]:
         checkpoint = self._checkpoint("facts_proposed")
         if checkpoint is None or checkpoint.output_json is None:
-            raise ValueError(
-                "Cannot await approval before facts_proposed checkpoint."
-            )
+            raise ValueError("Cannot await approval before facts_proposed checkpoint.")
         facts = checkpoint.output_json.get("proposed_facts")
         if not isinstance(facts, list):
             raise ValueError("Facts checkpoint does not contain proposed facts.")
@@ -669,9 +667,7 @@ def _document_source_needs_embeddings(
             select(RuntimeKnowledgeConcept.id).where(
                 RuntimeKnowledgeConcept.user_id == document.user_id,
                 RuntimeKnowledgeConcept.status == "active",
-                RuntimeKnowledgeConcept.metadata_json[
-                    "compiled_from_source_id"
-                ].as_integer()
+                RuntimeKnowledgeConcept.metadata_json["compiled_from_source_id"].as_integer()
                 == source.id,
             )
         ).all()
@@ -679,22 +675,17 @@ def _document_source_needs_embeddings(
     if not concept_ids:
         return True
 
-    return (
-        _embedding_row_count(
-            db,
-            user_id=document.user_id,
-            source_type="source_span",
-            source_ids=span_ids,
-        )
-        < len(span_ids)
-        or _embedding_row_count(
-            db,
-            user_id=document.user_id,
-            source_type="knowledge_concept",
-            source_ids=concept_ids,
-        )
-        < len(concept_ids)
-    )
+    return _embedding_row_count(
+        db,
+        user_id=document.user_id,
+        source_type="source_span",
+        source_ids=span_ids,
+    ) < len(span_ids) or _embedding_row_count(
+        db,
+        user_id=document.user_id,
+        source_type="knowledge_concept",
+        source_ids=concept_ids,
+    ) < len(concept_ids)
 
 
 def _embedding_row_count(
@@ -792,16 +783,19 @@ def _delete_document_chunk_vectors(
     user_id: int,
     document_id: int,
 ) -> None:
-    chunk_ids = select(RuntimeDocumentChunk.id).where(
-        RuntimeDocumentChunk.user_id == user_id,
-        RuntimeDocumentChunk.document_id == document_id,
+    chunk_ids = list(
+        db.scalars(
+            select(RuntimeDocumentChunk.id).where(
+                RuntimeDocumentChunk.user_id == user_id,
+                RuntimeDocumentChunk.document_id == document_id,
+            )
+        ).all()
     )
-    db.execute(
-        delete(RuntimeEmbedding).where(
-            RuntimeEmbedding.user_id == user_id,
-            RuntimeEmbedding.source_type == "document_chunk",
-            RuntimeEmbedding.source_id.in_(chunk_ids),
-        )
+    delete_runtime_embedding_records(
+        db,
+        owner_id=user_id,
+        source_type="document_chunk",
+        source_ids=chunk_ids,
     )
     db.flush()
 
@@ -860,8 +854,7 @@ def _load_pdf_approval_run(
         raise ValueError(f"Workflow run {workflow_run_id} does not exist.")
     if run.workflow_type != PDF_WORKFLOW_TYPE:
         raise ValueError(
-            f"Workflow run {workflow_run_id} is {run.workflow_type!r}, "
-            f"not {PDF_WORKFLOW_TYPE!r}."
+            f"Workflow run {workflow_run_id} is {run.workflow_type!r}, not {PDF_WORKFLOW_TYPE!r}."
         )
     return run
 
@@ -874,9 +867,7 @@ def _is_completed_pdf_memory_decision(run: RuntimeWorkflowRun) -> bool:
 
 def _require_awaiting_pdf_memory_approval(run: RuntimeWorkflowRun) -> None:
     if run.status != "awaiting_input" or run.current_state != "awaiting_approval":
-        raise ValueError(
-            f"Workflow run {run.id} is not awaiting PDF memory approval."
-        )
+        raise ValueError(f"Workflow run {run.id} is not awaiting PDF memory approval.")
 
 
 def _staged_approval_payload(run: RuntimeWorkflowRun) -> JsonObject:
@@ -974,9 +965,7 @@ def _select_staged_pdf_proposals_by_payload(
         try:
             index = available.index(normalized)
         except ValueError as exc:
-            raise ValueError(
-                "Approved PDF memory proposal is not staged."
-            ) from exc
+            raise ValueError("Approved PDF memory proposal is not staged.") from exc
         selected.append(available.pop(index))
     return selected
 
@@ -1011,9 +1000,7 @@ def _next_state_after(state_name: str) -> str | None:
     try:
         index = PDF_WORKFLOW_STATES.index(state_name)
     except ValueError as exc:
-        raise ValueError(
-            f"Unknown PDF workflow checkpoint state: {state_name!r}."
-        ) from exc
+        raise ValueError(f"Unknown PDF workflow checkpoint state: {state_name!r}.") from exc
     next_index = index + 1
     if next_index >= len(PDF_WORKFLOW_STATES):
         return None
@@ -1029,9 +1016,7 @@ def _request_from_input(input_json: JsonObject) -> PDFIngestionRequest:
         sha256=str(input_json["sha256"]),
         size_bytes=int(input_json["size_bytes"]),
         thread_id=(
-            int(input_json["thread_id"])
-            if input_json.get("thread_id") is not None
-            else None
+            int(input_json["thread_id"]) if input_json.get("thread_id") is not None else None
         ),
         metadata_json=(
             dict(input_json["metadata_json"])

@@ -168,17 +168,14 @@ def _merge_concepts(
                 user_id=user_id,
                 concept_type=concept_type,
                 slug=slug,
-                title=title,
-                description=description,
+                title="",
+                description=None,
                 body_markdown="",
                 frontmatter_json={},
                 content_hash=_content_hash(body_markdown),
                 status="active",
             )
-        concept.concept_type = concept_type
-        concept.title = title
-        concept.description = description
-        concept.frontmatter_json = {
+        frontmatter = {
             "type": concept_type,
             "title": title,
             "description": description,
@@ -189,6 +186,7 @@ def _merge_concepts(
                 "source_count": len(payload.get("source_span_ids", []) or []),
             },
         }
+        concept.concept_type = concept_type
         concept.metadata_json = {"compiled_from_source_id": source.id}
         concept.content_hash = _content_hash(body_markdown)
         concept.status = "active"
@@ -199,8 +197,18 @@ def _merge_concepts(
             row=concept,
             row_type="runtime_knowledge_concept",
             owner_id=user_id,
-            payload={"body_markdown": body_markdown},
-            placeholders={"body_markdown": ""},
+            payload={
+                "title": title,
+                "description": description,
+                "body_markdown": body_markdown,
+                "frontmatter_json": frontmatter,
+            },
+            placeholders={
+                "title": "",
+                "description": None,
+                "body_markdown": "",
+                "frontmatter_json": {},
+            },
         )
         _replace_concept_sources(
             db,

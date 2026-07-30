@@ -328,7 +328,7 @@ def test_get_collection_count_returns_only_memory_rows_when_documents_exist() ->
         reset_vector_store()
 
 
-def test_pgvec_delete_source_builds_source_specific_delete() -> None:
+def test_pgvec_delete_source_selects_exact_rows_for_lifecycle_cleanup() -> None:
     db = FakeSession()
 
     PgVecStore(db).delete_source(9, source_type="document_chunk", source_id=77)
@@ -337,7 +337,7 @@ def test_pgvec_delete_source_builds_source_specific_delete() -> None:
     sql = _compiled_sql(db.statements[0])
     assert "embeddings.user_id = 9" in sql
     assert "embeddings.source_type = 'document_chunk'" in sql
-    assert "embeddings.source_id = 77" in sql
+    assert "embeddings.source_id IN (77)" in sql
 
 
 def test_pgvec_count_source_filters_by_source_type() -> None:

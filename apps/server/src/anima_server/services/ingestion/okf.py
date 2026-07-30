@@ -134,18 +134,15 @@ def _upsert_concept(
             user_id=user_id,
             concept_type=concept_type,
             slug=slug,
-            title=title,
-            description=description,
+            title="",
+            description=None,
             body_markdown="",
-            frontmatter_json=dict(frontmatter_json),
+            frontmatter_json={},
             content_hash=_content_hash(body_markdown),
             status="active",
         )
     else:
         concept.concept_type = concept_type
-        concept.title = title
-        concept.description = description
-        concept.frontmatter_json = dict(frontmatter_json)
         concept.content_hash = _content_hash(body_markdown)
         concept.status = "active"
         concept.updated_at = datetime.now(UTC)
@@ -154,8 +151,18 @@ def _upsert_concept(
         row=concept,
         row_type="runtime_knowledge_concept",
         owner_id=user_id,
-        payload={"body_markdown": body_markdown},
-        placeholders={"body_markdown": ""},
+        payload={
+            "title": title,
+            "description": description,
+            "body_markdown": body_markdown,
+            "frontmatter_json": dict(frontmatter_json),
+        },
+        placeholders={
+            "title": "",
+            "description": None,
+            "body_markdown": "",
+            "frontmatter_json": {},
+        },
     )
     return concept
 

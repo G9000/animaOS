@@ -445,6 +445,7 @@ def test_production_document_image_and_source_writers_seal_private_text(
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
     monkeypatch,
 ) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.documents.models import (
@@ -455,6 +456,7 @@ def test_document_chunk_replacement_deletes_superseded_sealed_payload(
         register_document,
         replace_document_chunks,
     )
+    from anima_server.services.ingestion.retrieval import _upsert_embedding
     from conftest_runtime import runtime_db_session
     from sqlalchemy import func
 
@@ -478,11 +480,21 @@ def test_document_chunk_replacement_deletes_superseded_sealed_payload(
                 size_bytes=128,
             ),
         )
-        replace_document_chunks(
+        old_chunks = replace_document_chunks(
             runtime_db,
             document_id=document.id,
             chunks=[ExtractedDocumentChunk(chunk_index=0, content_text="old private")],
             parse_quality="native",
+        )
+        _upsert_embedding(
+            runtime_db,
+            user_id=1,
+            source_type="document_chunk",
+            source_id=old_chunks[0].id,
+            text="old private",
+            category="document",
+            importance=3,
+            embedding_fn=lambda _text: [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim,
         )
         sentinel = register_document(
             runtime_db,
@@ -513,8 +525,14 @@ def test_document_chunk_replacement_deletes_superseded_sealed_payload(
                 CoreFSSealedPayload.row_type == "runtime_document_chunk"
             )
         )
+        embedding_sealed_count = runtime_db.scalar(
+            select(func.count(CoreFSSealedPayload.id)).where(
+                CoreFSSealedPayload.row_type == "runtime_embedding"
+            )
+        )
 
     assert sealed_count == 2
+    assert embedding_sealed_count == 0
 
 
 def test_message_pruning_deletes_expired_sealed_payload(
@@ -583,10 +601,14 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
     monkeypatch,
 ) -> None:
     from anima_server.models.runtime import RuntimeImageAsset, RuntimeSource
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.images import deletion as image_deletion
-    from anima_server.services.images.indexing import _upsert_active_annotation
+    from anima_server.services.images.indexing import (
+        _upsert_active_annotation,
+        _upsert_runtime_embedding,
+    )
     from anima_server.services.ingestion.artifacts import (
         replace_source_artifacts_and_spans,
     )
@@ -672,13 +694,19 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
         )
         runtime_db.add(image)
         runtime_db.flush()
-        _upsert_active_annotation(
+        annotation = _upsert_active_annotation(
             runtime_db,
             user_id=1,
             image_asset_id=image.id,
             annotation_kind="ocr_text",
             content_text="private OCR",
             source_model=None,
+        )
+        _upsert_runtime_embedding(
+            runtime_db,
+            user_id=1,
+            annotation=annotation,
+            embedding=[0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim,
         )
         assert image_deletion.forget_image_asset(
             runtime_db,
@@ -696,6 +724,7 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
                 "runtime_source_artifact",
                 "runtime_source_span",
                 "runtime_image_annotation",
+                "runtime_embedding",
             )
         }
 
@@ -703,6 +732,7 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
         "runtime_source_artifact": 1,
         "runtime_source_span": 1,
         "runtime_image_annotation": 0,
+        "runtime_embedding": 0,
     }
 
 
@@ -1497,7 +1527,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
     monkeypatch,
 ) -> None:
     from anima_server.models.pending_memory_op import PendingMemoryOp
-    from anima_server.models.runtime import RuntimeDocumentChunk
+    from anima_server.models.runtime import RuntimeDocumentChunk, RuntimeKnowledgeConcept
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.documents.models import (
@@ -1543,6 +1573,18 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             old_content="older plaintext",
         )
         runtime_db.add(pending)
+        concept = RuntimeKnowledgeConcept(
+            user_id=7,
+            concept_type="claim",
+            slug="legacy-private-concept",
+            title="Legacy private title",
+            description="Legacy private description",
+            body_markdown="Legacy private concept body",
+            frontmatter_json={"tags": ["legacy-private-tag"]},
+            content_hash="c" * 64,
+            status="active",
+        )
+        runtime_db.add(concept)
         runtime_db.flush()
         runtime_db.add(
             CoreFSRuntimeBinding(
@@ -1576,10 +1618,19 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 PendingMemoryOp.__table__.c.old_content,
             ).where(PendingMemoryOp.__table__.c.id == pending.id)
         ).one()
-        assert converted == 2
+        raw_concept = runtime_db.execute(
+            select(
+                RuntimeKnowledgeConcept.__table__.c.title,
+                RuntimeKnowledgeConcept.__table__.c.description,
+                RuntimeKnowledgeConcept.__table__.c.body_markdown,
+                RuntimeKnowledgeConcept.__table__.c.frontmatter_json,
+            ).where(RuntimeKnowledgeConcept.__table__.c.id == concept.id)
+        ).one()
+        assert converted == 3
         assert raw_chunk[0:3] == ("", len("legacy document plaintext"), None)
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
+        assert raw_concept == ("", None, "", {})
         assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
 
         monkeypatch.setattr(
@@ -1590,6 +1641,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         runtime_db.expunge_all()
         loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
         loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
+        loaded_concept = runtime_db.get(RuntimeKnowledgeConcept, concept.id)
         assert loaded_chunk is not None
         assert loaded_chunk.content_text == "legacy document plaintext"
         assert loaded_chunk.section_title == "legacy private section"
@@ -1597,6 +1649,11 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert loaded_pending is not None
         assert loaded_pending.content == "legacy pending plaintext"
         assert loaded_pending.old_content == "older plaintext"
+        assert loaded_concept is not None
+        assert loaded_concept.title == "Legacy private title"
+        assert loaded_concept.description == "Legacy private description"
+        assert loaded_concept.body_markdown == "Legacy private concept body"
+        assert loaded_concept.frontmatter_json == {"tags": ["legacy-private-tag"]}
         assert (
             sealed_runtime.convert_legacy_runtime_rows(
                 runtime_db,
@@ -1863,7 +1920,9 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
                             "type": "claim",
                             "slug": "private-claim",
                             "title": "Private claim",
+                            "description": "private concept description",
                             "body_markdown": "private compiled body",
+                            "tags": ["private-tag"],
                             "source_span_ids": [spans[0].id],
                         }
                     ],
@@ -1883,9 +1942,14 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
                 RuntimeWorkflowRun.__table__.c.id == run.id
             )
         ).scalar_one()
-        raw_body = runtime_db.execute(
-            select(RuntimeKnowledgeConcept.__table__.c.body_markdown)
-        ).scalar_one()
+        raw_concept = runtime_db.execute(
+            select(
+                RuntimeKnowledgeConcept.__table__.c.title,
+                RuntimeKnowledgeConcept.__table__.c.description,
+                RuntimeKnowledgeConcept.__table__.c.body_markdown,
+                RuntimeKnowledgeConcept.__table__.c.frontmatter_json,
+            )
+        ).one()
         raw_quote = runtime_db.execute(
             select(RuntimeKnowledgeConceptSource.__table__.c.quote_text)
         ).scalar_one()
@@ -1897,16 +1961,84 @@ def test_workflow_and_compiler_payloads_use_sealed_runtime_rows(
 
     assert raw_checkpoint is None
     assert raw_result is None
-    assert raw_body == ""
+    assert raw_concept == ("", None, "", {})
     assert raw_quote is None
     assert hydrated_run is not None
     assert hydrated_run.result_json == {"proposed_facts": ["private workflow result"]}
     assert hydrated_checkpoint is not None
     assert hydrated_checkpoint.output_json == {"summary": "private workflow checkpoint"}
     assert hydrated_concept is not None
+    assert hydrated_concept.title == "Private claim"
+    assert hydrated_concept.description == "private concept description"
     assert hydrated_concept.body_markdown == "private compiled body"
+    assert hydrated_concept.frontmatter_json["tags"] == ["private-tag"]
     assert hydrated_citation is not None
     assert hydrated_citation.quote_text == "private compiler evidence"
+
+
+def test_embedding_deletion_and_rebuild_remove_sealed_previews(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent.pgvec_store import PgVecStore
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+    from sqlalchemy import func
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    embedding = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
+
+    with runtime_db_session() as runtime_db:
+        store = PgVecStore(runtime_db)
+        store.upsert_source(
+            7,
+            source_type="document_chunk",
+            source_id=11,
+            content="private document preview",
+            embedding=embedding,
+        )
+        store.upsert(
+            7,
+            item_id=12,
+            content="old private memory preview",
+            embedding=embedding,
+        )
+        store.delete_source(7, source_type="document_chunk", source_id=11)
+        after_delete = runtime_db.scalar(
+            select(func.count(CoreFSSealedPayload.id)).where(
+                CoreFSSealedPayload.row_type == "runtime_embedding"
+            )
+        )
+
+        store.rebuild(
+            7,
+            [(13, "new private memory preview", embedding, "fact", 3)],
+        )
+        after_rebuild = runtime_db.scalar(
+            select(func.count(CoreFSSealedPayload.id)).where(
+                CoreFSSealedPayload.row_type == "runtime_embedding"
+            )
+        )
+        runtime_db.expunge_all()
+        hydrated = runtime_db.scalar(
+            select(RuntimeEmbedding).where(
+                RuntimeEmbedding.user_id == 7,
+                RuntimeEmbedding.source_type == "memory_item",
+            )
+        )
+
+    assert after_delete == 1
+    assert after_rebuild == 1
+    assert hydrated is not None
+    assert hydrated.source_id == 13
+    assert hydrated.content_preview == "new private memory preview"
 
 
 def test_eval_reset_purges_all_owner_bound_sealed_rows(

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
@@ -122,26 +123,21 @@ def _duplicate_titles(
 ) -> list[KnowledgeLintFinding]:
     if not concept_ids:
         return []
-    duplicate_titles = {
-        title
-        for title, count in db.execute(
-            select(RuntimeKnowledgeConcept.title, func.count(RuntimeKnowledgeConcept.id))
-            .where(
+    active_concepts = list(
+        db.scalars(
+            select(RuntimeKnowledgeConcept).where(
                 RuntimeKnowledgeConcept.user_id == user_id,
                 RuntimeKnowledgeConcept.status == "active",
             )
-            .group_by(RuntimeKnowledgeConcept.title)
-            .having(func.count(RuntimeKnowledgeConcept.id) > 1)
         ).all()
-    }
-    if not duplicate_titles:
-        return []
-    concepts = db.scalars(
-        select(RuntimeKnowledgeConcept).where(
-            RuntimeKnowledgeConcept.id.in_(concept_ids),
-            RuntimeKnowledgeConcept.title.in_(duplicate_titles),
-        )
-    ).all()
+    )
+    title_counts = Counter(concept.title for concept in active_concepts)
+    concept_id_set = set(concept_ids)
+    concepts = [
+        concept
+        for concept in active_concepts
+        if concept.id in concept_id_set and title_counts[concept.title] > 1
+    ]
     return [
         KnowledgeLintFinding(
             code="duplicate_concept_title",
