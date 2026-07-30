@@ -166,7 +166,11 @@ class CoreFSProgressiveIndex:
             self._require_unlocked()
             return self._sealer.open(payload, aad=aad)
 
-    def begin_catalog(self) -> None:
+    def begin_catalog(
+        self,
+        *,
+        preserve_blind_generation: bool = False,
+    ) -> None:
         with self._lock:
             self._require_unlocked()
             self._documents.clear()
@@ -176,10 +180,11 @@ class CoreFSProgressiveIndex:
             self._processed_revisions.clear()
             self._queries.clear()
             self._families.clear()
-            self._blind_generations.clear()
-            self._active_blind_generation = None
-            self._pending_blind_generation = None
-            self._pending_blind_expected_count = None
+            if not preserve_blind_generation:
+                self._blind_generations.clear()
+                self._active_blind_generation = None
+                self._pending_blind_generation = None
+                self._pending_blind_expected_count = None
             self._catalog_generation = None
             self._last_cursor = None
             self._state = ReadinessState.CATALOG_LOADING
@@ -305,7 +310,7 @@ class CoreFSProgressiveIndex:
             ):
                 raise ValueError("Runtime embedding configuration changed")
             if (
-                embedding_fingerprint is not None
+                self._runtime_embedding_fingerprint is not None
                 and embedding_fingerprint != self._runtime_embedding_fingerprint
             ):
                 raise ValueError("Runtime embedding configuration changed")
@@ -315,6 +320,12 @@ class CoreFSProgressiveIndex:
                 category,
                 importance,
             )
+
+    def runtime_embedding_fingerprint(self) -> str | None:
+        """Return the active generation tag for newly produced Runtime vectors."""
+        with self._lock:
+            self._require_unlocked()
+            return self._runtime_embedding_fingerprint
 
     def request_runtime_embedding_refresh(self, *, embedding_fingerprint: str) -> None:
         """Invalidate Runtime vectors and reject work from the prior embedding space."""

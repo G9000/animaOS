@@ -2893,6 +2893,60 @@ def test_runtime_embedding_cache_changes_only_after_commit_and_fans_out(
         )
 
 
+def test_runtime_embedding_commit_rejects_stale_generation(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    index.begin_runtime_embedding_rebuild(embedding_fingerprint="old")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    monkeypatch.setattr(sealed_runtime, "active_runtime_indexes", lambda _user_id: (index,))
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.commit()
+        row = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=98,
+            content_hash=RuntimeEmbedding.compute_content_hash("stale generation"),
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        sealed_runtime.persist_runtime_embedding(
+            runtime_db,
+            row=row,
+            owner_id=7,
+            embedding=(1.0, 0.0),
+            content="stale generation",
+        )
+        runtime_db.flush()
+
+        index.request_runtime_embedding_refresh(embedding_fingerprint="new")
+        index.begin_runtime_embedding_rebuild(embedding_fingerprint="new")
+        runtime_db.commit()
+
+    assert (
+        index.runtime_embedding_vector(
+            source_type="memory_item",
+            source_id=98,
+        )
+        is None
+    )
+
+
 def test_runtime_embedding_cache_waits_for_outer_transaction_after_savepoint(
     monkeypatch,
 ) -> None:

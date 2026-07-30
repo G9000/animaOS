@@ -294,6 +294,72 @@ def test_blind_generation_persists_and_restores_exact_candidates() -> None:
     assert restored.lookup_exact("Documents/scan.txt") == ("document-1",)
 
 
+def test_rebuild_restores_exact_candidates_before_catalog_walk(
+    monkeypatch,
+) -> None:
+    from conftest_runtime import runtime_db_session
+
+    entries = [
+        {
+            "family": "note",
+            "path": "Notes/one.md",
+            "stable_id": "note-1",
+            "revision": "3",
+        }
+    ]
+    persisted = CoreFSProgressiveIndex("core-index")
+    persisted.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    persisted.begin_catalog()
+    persisted.publish_catalog(catalog_generation=9, families={"note": 1})
+    corefs_keys = object()
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 9, "catalogHash": "catalog-hash"}
+
+    restored = CoreFSProgressiveIndex("core-index")
+    restored.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=restored,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+    observed_exact_hits: list[tuple[str, ...]] = []
+    observed_exact_capabilities: list[bool] = []
+
+    def walk_before_text_rebuild(**_kwargs):
+        observed_exact_hits.append(restored.lookup_exact("Notes/one.md"))
+        observed_exact_capabilities.append(
+            IndexCapability.EXACT_SEARCH in restored.snapshot().capabilities
+        )
+        return entries, []
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "_walk_authenticated_files",
+        walk_before_text_rebuild,
+    )
+    monkeypatch.setattr(
+        corefs_migration,
+        "_read_authenticated_text",
+        lambda **_kwargs: "restored exact search content",
+    )
+
+    with runtime_db_session() as runtime_db:
+        corefs_migration._persist_blind_generation(
+            runtime_db,
+            index=persisted,
+            generation=9,
+            entries=entries,
+        )
+        rebuild_unlocked_search(session, runtime_db=runtime_db)
+
+    assert observed_exact_hits == [("note-1",)]
+    assert observed_exact_capabilities == [True]
+    assert restored.lookup_exact("Notes/one.md") == ("note-1",)
+
+
 def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> None:
     corefs_keys = object()
     embedding_attempts = 0

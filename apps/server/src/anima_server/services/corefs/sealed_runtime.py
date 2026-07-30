@@ -269,6 +269,9 @@ def persist_runtime_embedding(
         runtime_db,
         user_id=owner_id,
     )
+    embedding_fingerprint = (
+        None if index is None else index.runtime_embedding_fingerprint()
+    )
     content_preview = content[:200]
     if index is None:
         row.embedding = list(vector)
@@ -304,6 +307,7 @@ def persist_runtime_embedding(
                         content=content_preview,
                         category=category,
                         importance=importance,
+                        embedding_fingerprint=embedding_fingerprint,
                     )
 
         _defer_runtime_index_write_until_root_commit(runtime_db, publish)

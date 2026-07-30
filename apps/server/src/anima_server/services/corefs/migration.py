@@ -101,12 +101,16 @@ def rebuild_unlocked_search(
             embedder=embedder,
         )
     prior = index.snapshot()
-    if (
-        runtime_db is not None
-        and prior.catalog_generation == selected.generation
-        and prior.blind_index_generation is None
-    ):
-        _restore_blind_generation(
+    if prior.catalog_generation != selected.generation:
+        index.begin_catalog()
+        index.publish_catalog(
+            catalog_generation=selected.generation,
+            families={},
+        )
+        prior = index.snapshot()
+    reusable_blind_generation = prior.blind_index_generation == selected.generation
+    if runtime_db is not None and not reusable_blind_generation:
+        reusable_blind_generation = _restore_blind_generation(
             runtime_db,
             index=index,
             generation=selected.generation,
@@ -150,30 +154,33 @@ def rebuild_unlocked_search(
         )
 
     if not resuming:
-        index.begin_catalog()
+        index.begin_catalog(
+            preserve_blind_generation=reusable_blind_generation,
+        )
         index.publish_catalog(
             catalog_generation=selected.generation,
             families=dict(family_counts),
             degraded={family: tuple(sorted(object_ids)) for family, object_ids in degraded.items()},
         )
-        index.begin_blind_generation(
-            generation=selected.generation,
-            expected_count=len(entries),
-        )
-        for entry in entries:
-            index.add_blind_token(
+        if not reusable_blind_generation:
+            index.begin_blind_generation(
                 generation=selected.generation,
-                value=entry["path"],
-                object_id=entry["stable_id"],
+                expected_count=len(entries),
             )
-        if runtime_db is not None:
-            _persist_blind_generation(
-                runtime_db,
-                index=index,
-                generation=selected.generation,
-                entries=entries,
-            )
-        index.commit_blind_generation(selected.generation)
+            for entry in entries:
+                index.add_blind_token(
+                    generation=selected.generation,
+                    value=entry["path"],
+                    object_id=entry["stable_id"],
+                )
+            if runtime_db is not None:
+                _persist_blind_generation(
+                    runtime_db,
+                    index=index,
+                    generation=selected.generation,
+                    entries=entries,
+                )
+            index.commit_blind_generation(selected.generation)
         index.begin_text_indexing()
 
     indexed_by_revision = {
