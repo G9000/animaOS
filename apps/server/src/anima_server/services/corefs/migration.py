@@ -234,11 +234,15 @@ def rebuild_unlocked_search(
                 selected=selected,
                 path=entry["path"],
             )
-        except _NonIndexableCoreFSObject:
+        except _NonIndexableCoreFSObject as exc:
             index.skip_text(
                 family=entry["family"],
                 object_id=entry["stable_id"],
                 revision=entry["revision"],
+            )
+            index.mark_family_failure(
+                family=entry["family"],
+                object_id=entry["stable_id"],
             )
             if runtime_db is not None:
                 _record_text_progress(
@@ -248,6 +252,7 @@ def rebuild_unlocked_search(
                     entry=entry,
                     total=family_counts[entry["family"]],
                     status="text_skipped",
+                    error=exc,
                 )
                 completed_entries.add(durable_key)
             continue
@@ -295,7 +300,7 @@ def rebuild_unlocked_search(
             completed_entries.add(durable_key)
 
     semantic_failed = False
-    if embedder is not None:
+    if embedder is not None and not text_failed:
         fingerprint_value = getattr(
             embedder,
             "corefs_embedding_fingerprint",
@@ -672,10 +677,10 @@ def _prepare_durable_index_state(
             checkpoint.completed_count = 0 if reset else completed_count
             checkpoint.total_count = total
             checkpoint.status = "text_indexing"
-            checkpoint.error_code = None
-            checkpoint.error_digest = None
             if reset:
                 checkpoint.cursor_hash = None
+                checkpoint.error_code = None
+                checkpoint.error_digest = None
     runtime_db.commit()
     return completed
 
@@ -721,8 +726,28 @@ def _record_text_progress(
     checkpoint.total_count = total
     checkpoint.cursor_hash = object_hash
     checkpoint.status = "text_indexing" if error is None else "ready_degraded"
-    checkpoint.error_code = None if error is None else type(error).__name__
-    checkpoint.error_digest = None if error is None else _digest(str(error))
+    if error is not None:
+        terminal_failure_exists = status == "text_skipped" or (
+            runtime_db.scalar(
+                select(CoreFSIndexEntry.object_id_hash)
+                .where(
+                    CoreFSIndexEntry.core_id == index.core_id,
+                    CoreFSIndexEntry.local_instance_id == index.local_instance_id,
+                    CoreFSIndexEntry.family == family,
+                    CoreFSIndexEntry.catalog_generation == generation,
+                    CoreFSIndexEntry.index_version == _INDEX_VERSION,
+                    CoreFSIndexEntry.status == "text_skipped",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+        if status == "text_skipped" or not terminal_failure_exists:
+            checkpoint.error_code = type(error).__name__
+            checkpoint.error_digest = _digest(str(error))
+    elif not index.snapshot().families[family].degraded:
+        checkpoint.error_code = None
+        checkpoint.error_digest = None
     runtime_db.commit()
 
 

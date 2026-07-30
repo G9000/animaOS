@@ -488,28 +488,38 @@ def test_text_read_failure_stays_retryable_until_document_succeeds(
         corefs_keys=corefs_keys,
     )
 
-    rebuild_unlocked_search(session)
+    rebuild_unlocked_search(
+        session,
+        embedder=lambda _text: (1.0, 0.5),
+    )
 
     assert index.snapshot().state is ReadinessState.TEXT_INDEXING
     assert index.snapshot().families["note"].degraded is True
 
-    rebuild_unlocked_search(session)
+    rebuild_unlocked_search(
+        session,
+        embedder=lambda _text: (1.0, 0.5),
+    )
 
     assert read_attempts == 2
     assert index.snapshot().state is ReadinessState.READY
     assert index.snapshot().families["note"].degraded is False
     assert index.search_text("retry marker") == ("note-retry",)
+    assert IndexCapability.SEMANTIC_SEARCH in index.snapshot().capabilities
 
 
-def test_valid_non_text_objects_complete_without_rebuild_retry(
+def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from conftest_runtime import runtime_db_session
 
     corefs_keys = object()
+    transient_reads = 0
     contents = {
         "Attachments/image.bin": b"\xff\x00",
         "Notes/oversized.md": b"12345",
+        "Notes/searchable.md": b"okay",
+        "Notes/transient.md": b"go",
     }
     entries = [
         {
@@ -522,6 +532,18 @@ def test_valid_non_text_objects_complete_without_rebuild_retry(
             "family": "note",
             "path": "Notes/oversized.md",
             "stable_id": "note-oversized",
+            "revision": "1",
+        },
+        {
+            "family": "note",
+            "path": "Notes/searchable.md",
+            "stable_id": "note-searchable",
+            "revision": "1",
+        },
+        {
+            "family": "note",
+            "path": "Notes/transient.md",
+            "stable_id": "note-transient",
             "revision": "1",
         },
     ]
@@ -541,11 +563,16 @@ def test_valid_non_text_objects_complete_without_rebuild_retry(
             max_bytes,
             **_kwargs,
         ):
+            nonlocal transient_reads
             assert (keys, generation, catalog_hash) == (
                 corefs_keys,
                 10,
                 "catalog-hash",
             )
+            if path == "Notes/transient.md" and offset == 0:
+                transient_reads += 1
+                if transient_reads == 1:
+                    raise ValueError("temporary native read mismatch")
             body = contents[path]
             if offset >= len(body):
                 return None
@@ -582,18 +609,49 @@ def test_valid_non_text_objects_complete_without_rebuild_retry(
     with runtime_db_session() as runtime_db:
         rebuild_unlocked_search(session, runtime_db=runtime_db)
 
+        assert index.snapshot().state is ReadinessState.TEXT_INDEXING
+
+        rebuild_unlocked_search(session, runtime_db=runtime_db)
+
         snapshot = index.snapshot()
         assert snapshot.state is ReadinessState.READY
-        assert snapshot.processed_objects == 2
+        assert snapshot.processed_objects == 4
         assert snapshot.families["attachment"].processed == 1
-        assert snapshot.families["attachment"].failed == 0
-        assert snapshot.families["note"].processed == 1
-        assert snapshot.families["note"].failed == 0
+        assert snapshot.families["attachment"].failed == 1
+        assert snapshot.families["attachment"].degraded is True
+        assert snapshot.families["note"].processed == 3
+        assert snapshot.families["note"].failed == 1
+        assert snapshot.families["note"].degraded is True
+        assert snapshot.families["attachment"].unavailable_object_ids == (
+            "attachment-binary",
+        )
+        assert snapshot.families["note"].unavailable_object_ids == (
+            "note-oversized",
+        )
+        assert index.search_text("okay") == ("note-searchable",)
+        assert index.search_text("go") == ("note-transient",)
         assert index.search_text("12345") == ()
         assert {
             entry.status
             for entry in runtime_db.scalars(select(CoreFSIndexEntry)).all()
-        } == {"text_skipped"}
+        } == {"text_indexed", "text_skipped"}
+        checkpoints = runtime_db.scalars(
+            select(CoreFSIndexCheckpoint).where(
+                CoreFSIndexCheckpoint.family != corefs_migration._BLIND_CHECKPOINT_FAMILY
+            )
+        ).all()
+        assert {checkpoint.status for checkpoint in checkpoints} == {
+            "ready_degraded"
+        }
+        assert all(checkpoint.error_code is not None for checkpoint in checkpoints)
+        assert all(checkpoint.error_digest is not None for checkpoint in checkpoints)
+        note_checkpoint = next(
+            checkpoint for checkpoint in checkpoints if checkpoint.family == "note"
+        )
+        assert note_checkpoint.error_code == "_NonIndexableCoreFSObject"
+        assert note_checkpoint.error_digest == corefs_migration._digest(
+            "CoreFS object exceeds the in-memory indexing limit"
+        )
 
 
 def test_semantic_retry_rebuilds_all_vectors_after_embedding_config_changes() -> None:
