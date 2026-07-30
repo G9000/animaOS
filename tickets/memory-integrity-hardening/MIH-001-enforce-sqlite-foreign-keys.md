@@ -9,9 +9,9 @@
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-31 00:47 MYT
+- Updated: 2026-07-31 02:56 MYT
 - Started: 2026-07-30 17:40 MYT
-- Completed: 2026-07-31 00:47 MYT
+- Completed: 2026-07-31 02:56 MYT
 
 ## Goal
 
@@ -91,15 +91,23 @@ Each was patched individually. Enabling FK enforcement would collapse this entir
   dropped the user's tag filters. Regression tests for both. Suite
   evidence refreshed below.
 
+- 2026-07-31 02:56 MYT - PR #132 review round 3 (P2), completion
+  re-stamped: memoryItemTags added to the packaging allowlists
+  (_MEMORY_TABLES and _CAPSULE_CARD_TABLES) — the snapshot function
+  returned the key but memories-scope JSON exports and capsules filtered
+  it out, so imports of either artifact still restored an empty tag
+  payload. Packaging-level regression test added (9 total in the FK
+  test file).
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 8 passed
+  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 9 passed
   - `uv run pytest tests/test_vault.py` — 25 passed
   - Full-suite audit (enforcement on, pre-fix): 2 failed / 3167 passed —
     both failures triaged as latent non-enforcement reliances (see log)
-  - Full suite on the round-2 head — **3174 passed, 0 failed, 10
-    skipped**, run 2026-07-31 01:20 MYT
+  - Full suite on the round-3 head — **3175 passed, 0 failed, 10
+    skipped**, run 2026-07-31 12:24 MYT
 - Changed paths:
   - `apps/server/src/anima_server/db/session.py` (pragmas + FK-off migration runner)
   - `apps/server/src/anima_server/api/routes/memory.py`

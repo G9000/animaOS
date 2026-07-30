@@ -159,6 +159,7 @@ def _migrate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 _MEMORY_TABLES = frozenset(
     {
         "memoryItemEvidence",
+        "memoryItemTags",
         "memoryItems",
         "memoryEpisodes",
         "userProfileFields",
@@ -210,6 +211,7 @@ _CAPSULE_CARD_TABLES = frozenset(
         "userKeys",
         "memoryItems",
         "memoryItemEvidence",
+        "memoryItemTags",
         "userProfileFields",
         "userProfileFieldEvidence",
         "selfModelBlocks",

@@ -310,3 +310,34 @@ def test_restore_round_trips_memory_item_tags(fk_engine) -> None:
         assert tag.tag == "sailing"
         item = db.scalars(select(MemoryItem)).one()
         assert tag.item_id == item.id  # FK intact under enforcement
+
+
+def test_memory_item_tags_survive_vault_packaging(fk_engine) -> None:
+    """Regression (PR #132 review round 3): export_database_snapshot returns
+    memoryItemTags, but the packaging allowlists (_MEMORY_TABLES for
+    scope="memories" JSON exports, _CAPSULE_CARD_TABLES for capsules)
+    filtered it out — so importing either artifact restored an empty tag
+    payload after the enforced cascade had deleted the existing rows."""
+    from anima_server.models import MemoryItem, MemoryItemTag
+    from anima_server.services import vault as vault_module
+
+    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
+    with factory() as db:
+        user = User(username="pkg", password_hash="x", display_name="Pkg")
+        db.add(user)
+        db.flush()
+        item = MemoryItem(
+            user_id=user.id, content="tagged", category="fact", importance=3
+        )
+        db.add(item)
+        db.flush()
+        db.add(MemoryItemTag(user_id=user.id, item_id=item.id, tag="sailing"))
+        db.commit()
+
+        payload = vault_module._build_vault_payload(
+            db, user_id=user.id, scope="memories"
+        )
+    assert payload["database"]["memoryItemTags"], (
+        "memories-scope packaging dropped the tag rows"
+    )
+    assert "memoryItemTags" in vault_module._CAPSULE_CARD_TABLES
