@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-07-30 19:54 MYT
+- Updated: 2026-07-30 22:01 MYT
 - Started: 2026-07-30 15:50 MYT
-- Completed: 2026-07-30 19:54 MYT
+- Completed: 2026-07-30 22:01 MYT
 
 Standalone follow-up beyond the closed repo-workflow initiative — registered
 in `RWF-000`'s follow-ups, not as a child of that `done` parent.
@@ -74,6 +74,16 @@ therefore a snapshot, not a guarantee, and this is exactly how the previous
   the last tick. onupdate removed (client-side; no migration) with a
   regression test. Revalidated on this corrected head: full suite 3168
   passed / 0 failed / 10 skipped at 19:54 MYT.
+
+- 2026-07-30 22:01 MYT - PR #129 review round 3 (2 P2s), completion
+  re-stamped: the path filter gained `.python-version` (uv resolves the
+  interpreter from the root pin) and the suite's direct non-code inputs
+  (`corefs-provenance.yml`, `docs/superpowers/plans/**`,
+  `docs/benchmarks/**` — test_corefs_catalog_benchmark reads and asserts
+  them); RWF-000 gained the missing planning activity entry for this
+  ticket's registration. Filter changes are validated live by this PR's
+  own Server Tests check re-running on the push; the 19:54 MYT full-suite
+  evidence remains binding for the unchanged test content.
 
 ## Validation
 
