@@ -66,16 +66,32 @@ def register_document(
         user_id=registration.user_id,
         thread_id=registration.thread_id,
         workflow_run_id=registration.workflow_run_id,
-        filename=registration.filename,
-        mime_type=registration.mime_type,
-        storage_path=registration.storage_path,
+        filename="",
+        mime_type="",
+        storage_path="",
         sha256=registration.sha256,
         size_bytes=registration.size_bytes,
         status="registered",
-        metadata_json=_copy_metadata(registration.metadata_json),
+        metadata_json=None,
     )
-    db.add(document)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=document,
+        row_type="runtime_document",
+        owner_id=registration.user_id,
+        payload={
+            "filename": registration.filename,
+            "mime_type": registration.mime_type,
+            "storage_path": registration.storage_path,
+            "metadata_json": _copy_metadata(registration.metadata_json),
+        },
+        placeholders={
+            "filename": "",
+            "mime_type": "",
+            "storage_path": "",
+            "metadata_json": None,
+        },
+    )
     return document
 
 

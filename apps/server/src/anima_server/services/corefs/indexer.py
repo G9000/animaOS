@@ -75,6 +75,16 @@ class IndexCheckpoint:
     processed_objects: int
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeEmbeddingSearchHit:
+    source_type: str
+    source_id: int
+    content: str
+    category: str
+    importance: int
+    similarity: float
+
+
 class CoreFSProgressiveIndex:
     """Unlock-scoped progressive text and semantic index for one Core."""
 
@@ -89,6 +99,10 @@ class CoreFSProgressiveIndex:
         self._families: dict[str, FamilyReadiness] = {}
         self._documents: dict[str, tuple[str, str, str]] = {}
         self._vectors: dict[str, tuple[float, ...]] = {}
+        self._runtime_embeddings: dict[
+            tuple[str, int],
+            tuple[tuple[float, ...], str, str, int],
+        ] = {}
         self._semantic_fingerprint: str | None = None
         self._pending_semantic_fingerprint: str | None = None
         self._processed_revisions: set[tuple[str, str]] = set()
@@ -155,6 +169,7 @@ class CoreFSProgressiveIndex:
             self._require_unlocked()
             self._documents.clear()
             self._vectors.clear()
+            self._runtime_embeddings.clear()
             self._semantic_fingerprint = None
             self._pending_semantic_fingerprint = None
             self._processed_revisions.clear()
@@ -263,6 +278,107 @@ class CoreFSProgressiveIndex:
                 ranked.append((score, object_id))
             ranked.sort(key=lambda item: (-item[0], item[1]))
             return tuple(object_id for _score, object_id in ranked[:limit])
+
+    def upsert_runtime_embedding(
+        self,
+        *,
+        source_type: str,
+        source_id: int,
+        vector: tuple[float, ...],
+        content: str,
+        category: str,
+        importance: int,
+    ) -> None:
+        if not source_type:
+            raise ValueError("Runtime embedding source type must be non-empty")
+        if source_id <= 0:
+            raise ValueError("Runtime embedding source ID must be positive")
+        if not vector:
+            raise ValueError("Runtime embedding vector must be non-empty")
+        with self._lock:
+            self._require_unlocked()
+            self._runtime_embeddings[(source_type, source_id)] = (
+                tuple(float(value) for value in vector),
+                content,
+                category,
+                importance,
+            )
+
+    def runtime_embedding_vector(
+        self,
+        *,
+        source_type: str,
+        source_id: int,
+    ) -> tuple[float, ...] | None:
+        with self._lock:
+            self._require_unlocked()
+            stored = self._runtime_embeddings.get((source_type, source_id))
+            return None if stored is None else stored[0]
+
+    def search_runtime_embeddings(
+        self,
+        query_vector: tuple[float, ...],
+        *,
+        limit: int,
+        category: str | None = None,
+        source_types: frozenset[str] | None = None,
+        source_ids: frozenset[int] | None = None,
+    ) -> tuple[RuntimeEmbeddingSearchHit, ...]:
+        if not query_vector:
+            raise ValueError("Runtime embedding query vector must be non-empty")
+        if limit <= 0:
+            return ()
+        query = tuple(float(value) for value in query_vector)
+        query_norm = math.sqrt(sum(value * value for value in query))
+        if query_norm == 0:
+            return ()
+        with self._lock:
+            self._require_unlocked()
+            ranked: list[RuntimeEmbeddingSearchHit] = []
+            for (source_type, source_id), stored in self._runtime_embeddings.items():
+                vector, content, stored_category, importance = stored
+                if source_types is not None and source_type not in source_types:
+                    continue
+                if source_ids is not None and source_id not in source_ids:
+                    continue
+                if category is not None and stored_category != category:
+                    continue
+                if len(vector) != len(query):
+                    continue
+                stored_norm = math.sqrt(sum(value * value for value in vector))
+                if stored_norm == 0:
+                    continue
+                similarity = sum(
+                    left * right for left, right in zip(query, vector, strict=True)
+                ) / (query_norm * stored_norm)
+                ranked.append(
+                    RuntimeEmbeddingSearchHit(
+                        source_type=source_type,
+                        source_id=source_id,
+                        content=content,
+                        category=stored_category,
+                        importance=importance,
+                        similarity=similarity,
+                    )
+                )
+            ranked.sort(key=lambda hit: (-hit.similarity, hit.source_type, hit.source_id))
+            return tuple(ranked[:limit])
+
+    def delete_runtime_embeddings(
+        self,
+        *,
+        source_type: str | None = None,
+        source_ids: frozenset[int] | None = None,
+    ) -> None:
+        with self._lock:
+            self._require_unlocked()
+            for key in tuple(self._runtime_embeddings):
+                stored_source_type, stored_source_id = key
+                if source_type is not None and stored_source_type != source_type:
+                    continue
+                if source_ids is not None and stored_source_id not in source_ids:
+                    continue
+                self._runtime_embeddings.pop(key, None)
 
     def indexed_texts(self) -> tuple[tuple[str, str, str, str], ...]:
         """Return unlock-scoped text needed to resume an interrupted rebuild."""
@@ -544,7 +660,7 @@ class CoreFSProgressiveIndex:
         with self._lock:
             return {
                 "documents": len(self._documents),
-                "vectors": len(self._vectors),
+                "vectors": len(self._vectors) + len(self._runtime_embeddings),
                 "queries": len(self._queries),
                 "blind_tokens": sum(
                     len(object_ids)
@@ -561,6 +677,7 @@ class CoreFSProgressiveIndex:
                 del revision, family, text
                 self._documents.pop(object_id, None)
             self._vectors.clear()
+            self._runtime_embeddings.clear()
             self._semantic_fingerprint = None
             self._pending_semantic_fingerprint = None
             self._processed_revisions.clear()

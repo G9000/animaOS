@@ -35,6 +35,13 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _sealed_lookup_value(
+    index: CoreFSProgressiveIndex,
+    value: str,
+) -> str:
+    return f"sealed:{index.blind_token(value).hex()}"
+
+
 def _active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
     from anima_server.services.sessions import unlock_session_store
 
@@ -55,7 +62,7 @@ def runtime_index_for_sensitive_write(
     if index is not None:
         return index
     binding = runtime_db.scalar(select(CoreFSRuntimeBinding.binding_slot).limit(1))
-    if binding is not None:
+    if binding == 1:
         raise RuntimeSealingLocked(
             "sensitive Runtime writes are unavailable while CoreFS is locked"
         )
@@ -157,6 +164,85 @@ def seal_runtime_fields(
         set_committed_value(row, field, value)
 
 
+def runtime_private_lookup_value(
+    runtime_db: Session,
+    *,
+    owner_id: int,
+    value: str,
+) -> str:
+    """Return a queryable opaque projection for a private Runtime identifier."""
+    index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=owner_id,
+    )
+    return value if index is None else _sealed_lookup_value(index, value)
+
+
+def persist_runtime_embedding(
+    runtime_db: Session,
+    *,
+    row: Any,
+    owner_id: int,
+    embedding: Sequence[float],
+    content_preview: str,
+) -> None:
+    """Keep CoreFS-bound vectors in unlock memory while persisting safe metadata."""
+    from anima_server.services.agent.embedding_integrity import (
+        compute_embedding_checksum,
+    )
+
+    vector = tuple(float(value) for value in embedding)
+    row.embedding = None
+    row.embedding_checksum = None
+    index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=owner_id,
+    )
+    if index is None:
+        row.embedding = list(vector)
+        row.embedding_checksum = compute_embedding_checksum(vector)
+    seal_runtime_fields(
+        runtime_db,
+        row=row,
+        row_type="runtime_embedding",
+        owner_id=owner_id,
+        payload={"content_preview": content_preview},
+        placeholders={"content_preview": ""},
+    )
+    if index is not None:
+        index.upsert_runtime_embedding(
+            source_type=str(row.source_type),
+            source_id=int(row.source_id),
+            vector=vector,
+            content=content_preview,
+            category=str(row.category),
+            importance=int(row.importance),
+        )
+
+
+def load_runtime_embedding_vector(
+    runtime_db: Session,
+    *,
+    owner_id: int,
+    source_type: str,
+    source_id: int,
+    persisted_embedding: Sequence[float] | None,
+) -> tuple[float, ...] | None:
+    """Load an embedding from unlock memory, falling back only for unbound Runtime."""
+    index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=owner_id,
+    )
+    if index is not None:
+        return index.runtime_embedding_vector(
+            source_type=source_type,
+            source_id=source_id,
+        )
+    if persisted_embedding is None:
+        return None
+    return tuple(float(value) for value in persisted_embedding)
+
+
 def convert_legacy_runtime_rows(
     runtime_db: Session,
     *,
@@ -171,11 +257,14 @@ def convert_legacy_runtime_rows(
     """
     from anima_server.models.pending_memory_op import PendingMemoryOp
     from anima_server.models.runtime import (
+        RuntimeDocument,
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
+        RuntimeImageAsset,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
         RuntimeMessage,
+        RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
         RuntimeStep,
@@ -192,6 +281,39 @@ def convert_legacy_runtime_rows(
     )
 
     specifications = (
+        (
+            RuntimeDocument.__table__,
+            "runtime_document",
+            {
+                "filename": "filename",
+                "mime_type": "mime_type",
+                "storage_path": "storage_path",
+                "metadata_json": "metadata_json",
+            },
+            {"filename": "", "mime_type": "", "storage_path": "", "metadata_json": None},
+        ),
+        (
+            RuntimeImageAsset.__table__,
+            "runtime_image_asset",
+            {
+                "filename": "filename",
+                "mime_type": "mime_type",
+                "storage_path": "storage_path",
+                "metadata_json": "metadata_json",
+            },
+            {"filename": None, "mime_type": "", "storage_path": "", "metadata_json": None},
+        ),
+        (
+            RuntimeSource.__table__,
+            "runtime_source",
+            {
+                "source_uri": "source_uri",
+                "title": "title",
+                "media_type": "media_type",
+                "metadata_json": "metadata_json",
+            },
+            {"source_uri": "", "title": None, "media_type": None, "metadata_json": None},
+        ),
         (
             RuntimeMessage.__table__,
             "runtime_message",
@@ -419,6 +541,11 @@ def _convert_legacy_statement(
             if not isinstance(content_text, str):
                 raise ValueError("legacy Runtime document chunk text is invalid")
             scrubbed["content_char_count"] = len(content_text)
+        elif row_type == "runtime_source":
+            source_uri = payload["source_uri"]
+            if not isinstance(source_uri, str):
+                raise ValueError("legacy Runtime source URI is invalid")
+            scrubbed["source_uri"] = _sealed_lookup_value(index, source_uri)
         runtime_db.execute(table.update().where(table.c.id == row_id).values(**scrubbed))
         converted += 1
     return converted
@@ -515,6 +642,17 @@ def delete_runtime_embedding_records(
 
     if source_ids is not None and not source_ids:
         return 0
+    if owner_id is not None:
+        index = active_runtime_index(owner_id)
+        if index is not None:
+            index.delete_runtime_embeddings(
+                source_type=source_type,
+                source_ids=(
+                    None
+                    if source_ids is None
+                    else frozenset(int(source_id) for source_id in source_ids)
+                ),
+            )
     conditions = []
     if owner_id is not None:
         conditions.append(RuntimeEmbedding.user_id == owner_id)
@@ -636,10 +774,13 @@ def _hydrate_private_runtime_fields(target: Any, _context: Any) -> None:
 
 def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str, ...]]]:
     from anima_server.models.runtime import (
+        RuntimeDocument,
         RuntimeDocumentChunk,
         RuntimeImageAnnotation,
+        RuntimeImageAsset,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
+        RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
         RuntimeThread,
@@ -649,11 +790,23 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
     from anima_server.models.runtime_embedding import RuntimeEmbedding
 
     specifications = {
+        RuntimeDocument: (
+            "runtime_document",
+            ("filename", "mime_type", "storage_path", "metadata_json"),
+        ),
         RuntimeDocumentChunk: (
             "runtime_document_chunk",
             ("content_text", "section_title", "metadata_json"),
         ),
+        RuntimeImageAsset: (
+            "runtime_image_asset",
+            ("filename", "mime_type", "storage_path", "metadata_json"),
+        ),
         RuntimeImageAnnotation: ("runtime_image_annotation", ("content_text",)),
+        RuntimeSource: (
+            "runtime_source",
+            ("source_uri", "title", "media_type", "metadata_json"),
+        ),
         RuntimeSourceArtifact: (
             "runtime_source_artifact",
             ("content_text", "metadata_json"),

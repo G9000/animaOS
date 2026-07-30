@@ -51,6 +51,16 @@ def upgrade() -> None:
                 )
             )
 
+    if inspector.has_table("embeddings"):
+        embedding_columns = {
+            column["name"]: column for column in inspector.get_columns("embeddings")
+        }
+        with op.batch_alter_table("embeddings") as batch_op:
+            if not embedding_columns["embedding"]["nullable"]:
+                batch_op.alter_column("embedding", nullable=True)
+            if not embedding_columns["embedding_checksum"]["nullable"]:
+                batch_op.alter_column("embedding_checksum", nullable=True)
+
     if not inspector.has_table("corefs_runtime_binding"):
         op.create_table(
             "corefs_runtime_binding",
@@ -260,3 +270,9 @@ def downgrade() -> None:
         }
         if "content_char_count" in chunk_columns:
             op.drop_column("runtime_document_chunks", "content_char_count")
+    inspector = inspect(bind)
+    if inspector.has_table("embeddings"):
+        op.execute(sa.text("DELETE FROM embeddings WHERE embedding IS NULL"))
+        with op.batch_alter_table("embeddings") as batch_op:
+            batch_op.alter_column("embedding", nullable=False)
+            batch_op.alter_column("embedding_checksum", nullable=False)

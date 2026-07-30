@@ -442,6 +442,182 @@ def test_production_document_image_and_source_writers_seal_private_text(
     }.issubset(row_types)
 
 
+def test_production_asset_and_source_writers_seal_private_descriptors(
+    monkeypatch,
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.config import settings
+    from anima_server.models.runtime import (
+        RuntimeDocument,
+        RuntimeImageAsset,
+        RuntimeSource,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents.models import DocumentRegistration
+    from anima_server.services.documents.store import register_document
+    from anima_server.services.images.store import register_image_asset
+    from anima_server.services.ingestion.models import SourceIdentity
+    from anima_server.services.ingestion.sources import register_source
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    monkeypatch.setattr(settings, "data_dir", managed_tmp_path)
+
+    document_filename = "private-document-name.pdf"
+    document_path = ".anima/documents/7/private-document-name.pdf"
+    image_filename = "private-image-name.png"
+    source_uri = "https://private.example.test/users/7/captured"
+    source_title = "Private captured source title"
+
+    with runtime_db_session() as runtime_db:
+        executed_parameters: list[object] = []
+
+        def capture_parameters(
+            _connection,
+            _cursor,
+            _statement,
+            parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            executed_parameters.append(parameters)
+
+        event.listen(runtime_db.bind, "before_cursor_execute", capture_parameters)
+        document = register_document(
+            runtime_db,
+            DocumentRegistration(
+                user_id=7,
+                filename=document_filename,
+                mime_type="application/pdf",
+                storage_path=document_path,
+                sha256="7" * 64,
+                size_bytes=128,
+                metadata_json={"private_note": "document descriptor metadata"},
+            ),
+        )
+        image = register_image_asset(
+            runtime_db,
+            user_id=7,
+            data=b"\x89PNG\r\n\x1a\n",
+            mime_type="image/png",
+            filename=image_filename,
+            metadata_json={"private_note": "image descriptor metadata"},
+        ).asset
+        source = register_source(
+            runtime_db,
+            SourceIdentity(
+                user_id=7,
+                kind="web_capture",
+                source_uri=source_uri,
+                content_hash="8" * 64,
+                title=source_title,
+                media_type="text/html",
+                metadata_json={"private_note": "source descriptor metadata"},
+            ),
+        )
+        same_source = register_source(
+            runtime_db,
+            SourceIdentity(
+                user_id=7,
+                kind="web_capture",
+                source_uri=source_uri,
+                content_hash="8" * 64,
+                title=source_title,
+                media_type="text/html",
+                metadata_json={"private_note": "source descriptor metadata"},
+            ),
+        )
+        renamed_source = register_source(
+            runtime_db,
+            SourceIdentity(
+                user_id=7,
+                kind="web_capture",
+                source_uri=f"{source_uri}/renamed",
+                content_hash="8" * 64,
+                title=source_title,
+                media_type="text/html",
+                metadata_json={"private_note": "source descriptor metadata"},
+            ),
+        )
+        event.remove(runtime_db.bind, "before_cursor_execute", capture_parameters)
+
+        raw_document = runtime_db.execute(
+            select(
+                RuntimeDocument.__table__.c.filename,
+                RuntimeDocument.__table__.c.mime_type,
+                RuntimeDocument.__table__.c.storage_path,
+                RuntimeDocument.__table__.c.metadata_json,
+            ).where(RuntimeDocument.__table__.c.id == document.id)
+        ).one()
+        raw_image = runtime_db.execute(
+            select(
+                RuntimeImageAsset.__table__.c.filename,
+                RuntimeImageAsset.__table__.c.mime_type,
+                RuntimeImageAsset.__table__.c.storage_path,
+                RuntimeImageAsset.__table__.c.metadata_json,
+            ).where(RuntimeImageAsset.__table__.c.id == image.id)
+        ).one()
+        raw_source = runtime_db.execute(
+            select(
+                RuntimeSource.__table__.c.source_uri,
+                RuntimeSource.__table__.c.title,
+                RuntimeSource.__table__.c.media_type,
+                RuntimeSource.__table__.c.metadata_json,
+            ).where(RuntimeSource.__table__.c.id == source.id)
+        ).one()
+        row_types = set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all())
+        runtime_db.expunge_all()
+        hydrated_document = runtime_db.get(RuntimeDocument, document.id)
+        hydrated_image = runtime_db.get(RuntimeImageAsset, image.id)
+        hydrated_source = runtime_db.get(RuntimeSource, source.id)
+
+    captured = repr(executed_parameters)
+    for marker in (
+        document_filename,
+        document_path,
+        "document descriptor metadata",
+        image_filename,
+        "image descriptor metadata",
+        source_uri,
+        source_title,
+        "source descriptor metadata",
+    ):
+        assert marker not in captured
+    assert raw_document == ("", "", "", None)
+    assert raw_image == (None, "", "", None)
+    assert raw_source[0] != source_uri
+    assert raw_source[1:] == (None, None, None)
+    assert same_source.id == source.id
+    assert renamed_source.id != source.id
+    assert hydrated_document is not None
+    assert hydrated_document.filename == document_filename
+    assert hydrated_document.mime_type == "application/pdf"
+    assert hydrated_document.storage_path == document_path
+    assert hydrated_document.metadata_json == {
+        "private_note": "document descriptor metadata"
+    }
+    assert hydrated_image is not None
+    assert hydrated_image.filename == image_filename
+    assert hydrated_image.mime_type == "image/png"
+    assert hydrated_image.metadata_json == {"private_note": "image descriptor metadata"}
+    assert hydrated_source is not None
+    assert hydrated_source.source_uri == source_uri
+    assert hydrated_source.title == source_title
+    assert hydrated_source.metadata_json == {"private_note": "source descriptor metadata"}
+    assert {
+        "runtime_document",
+        "runtime_image_asset",
+        "runtime_source",
+    }.issubset(row_types)
+
+
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
     monkeypatch,
 ) -> None:
@@ -1535,8 +1711,11 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
 ) -> None:
     from anima_server.models.pending_memory_op import PendingMemoryOp
     from anima_server.models.runtime import (
+        RuntimeDocument,
         RuntimeDocumentChunk,
+        RuntimeImageAsset,
         RuntimeKnowledgeConcept,
+        RuntimeSource,
         RuntimeThread,
         RuntimeWorkflowCheckpoint,
         RuntimeWorkflowRun,
@@ -1563,6 +1742,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 storage_path=".anima/documents/7/legacy.pdf",
                 sha256="7" * 64,
                 size_bytes=128,
+                metadata_json={"private_note": "legacy document metadata"},
             ),
         )
         chunks = replace_document_chunks(
@@ -1598,6 +1778,27 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             status="active",
         )
         runtime_db.add(concept)
+        runtime_db.flush()
+        image_asset = RuntimeImageAsset(
+            user_id=7,
+            filename="legacy-private.png",
+            mime_type="image/png",
+            storage_path="users/7/media/images/legacy-private.png",
+            sha256="8" * 64,
+            size_bytes=64,
+            metadata_json={"private_note": "legacy image metadata"},
+        )
+        runtime_db.add(image_asset)
+        source = RuntimeSource(
+            user_id=7,
+            kind="web_capture",
+            source_uri="https://private.example.test/legacy",
+            content_hash="9" * 64,
+            title="Legacy private source title",
+            media_type="text/html",
+            metadata_json={"private_note": "legacy source metadata"},
+        )
+        runtime_db.add(source)
         runtime_db.flush()
         thread = RuntimeThread(
             user_id=7,
@@ -1668,6 +1869,30 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 RuntimeKnowledgeConcept.__table__.c.frontmatter_json,
             ).where(RuntimeKnowledgeConcept.__table__.c.id == concept.id)
         ).one()
+        raw_document = runtime_db.execute(
+            select(
+                RuntimeDocument.__table__.c.filename,
+                RuntimeDocument.__table__.c.mime_type,
+                RuntimeDocument.__table__.c.storage_path,
+                RuntimeDocument.__table__.c.metadata_json,
+            ).where(RuntimeDocument.__table__.c.id == document.id)
+        ).one()
+        raw_image_asset = runtime_db.execute(
+            select(
+                RuntimeImageAsset.__table__.c.filename,
+                RuntimeImageAsset.__table__.c.mime_type,
+                RuntimeImageAsset.__table__.c.storage_path,
+                RuntimeImageAsset.__table__.c.metadata_json,
+            ).where(RuntimeImageAsset.__table__.c.id == image_asset.id)
+        ).one()
+        raw_source = runtime_db.execute(
+            select(
+                RuntimeSource.__table__.c.source_uri,
+                RuntimeSource.__table__.c.title,
+                RuntimeSource.__table__.c.media_type,
+                RuntimeSource.__table__.c.metadata_json,
+            ).where(RuntimeSource.__table__.c.id == source.id)
+        ).one()
         raw_thread = runtime_db.execute(
             select(RuntimeThread.__table__.c.title).where(RuntimeThread.__table__.c.id == thread.id)
         ).scalar_one()
@@ -1683,11 +1908,15 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
                 RuntimeWorkflowCheckpoint.__table__.c.output_json,
             ).where(RuntimeWorkflowCheckpoint.__table__.c.id == workflow_checkpoint.id)
         ).one()
-        assert converted == 6
+        assert converted == 9
         assert raw_chunk[0:3] == ("", len("legacy document plaintext"), None)
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
         assert raw_concept == ("", None, "", {})
+        assert raw_document == ("", "", "", None)
+        assert raw_image_asset == (None, "", "", None)
+        assert raw_source[0] != "https://private.example.test/legacy"
+        assert raw_source[1:] == (None, None, None)
         assert raw_thread is None
         assert raw_workflow_run == (None, None)
         assert raw_workflow_checkpoint == (None, None)
@@ -1702,6 +1931,9 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
         loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
         loaded_concept = runtime_db.get(RuntimeKnowledgeConcept, concept.id)
+        loaded_document = runtime_db.get(RuntimeDocument, document.id)
+        loaded_image_asset = runtime_db.get(RuntimeImageAsset, image_asset.id)
+        loaded_source = runtime_db.get(RuntimeSource, source.id)
         loaded_thread = runtime_db.get(RuntimeThread, thread.id)
         loaded_workflow_run = runtime_db.get(RuntimeWorkflowRun, workflow_run.id)
         loaded_workflow_checkpoint = runtime_db.get(
@@ -1720,6 +1952,29 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert loaded_concept.description == "Legacy private description"
         assert loaded_concept.body_markdown == "Legacy private concept body"
         assert loaded_concept.frontmatter_json == {"tags": ["legacy-private-tag"]}
+        assert loaded_document is not None
+        assert loaded_document.filename == "legacy.pdf"
+        assert loaded_document.mime_type == "application/pdf"
+        assert loaded_document.storage_path == ".anima/documents/7/legacy.pdf"
+        assert loaded_document.metadata_json == {
+            "private_note": "legacy document metadata"
+        }
+        assert loaded_image_asset is not None
+        assert loaded_image_asset.filename == "legacy-private.png"
+        assert loaded_image_asset.mime_type == "image/png"
+        assert loaded_image_asset.storage_path == (
+            "users/7/media/images/legacy-private.png"
+        )
+        assert loaded_image_asset.metadata_json == {
+            "private_note": "legacy image metadata"
+        }
+        assert loaded_source is not None
+        assert loaded_source.source_uri == "https://private.example.test/legacy"
+        assert loaded_source.title == "Legacy private source title"
+        assert loaded_source.media_type == "text/html"
+        assert loaded_source.metadata_json == {
+            "private_note": "legacy source metadata"
+        }
         assert loaded_thread is not None
         assert loaded_thread.title == "Legacy private thread title"
         assert loaded_workflow_run is not None
@@ -1804,6 +2059,7 @@ def test_production_embedding_writers_seal_content_previews(
 ) -> None:
     from anima_server.models.runtime import RuntimeImageAsset
     from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.agent.pgvec_store import PgVecStore
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.images.indexing import (
@@ -1824,7 +2080,10 @@ def test_production_embedding_writers_seal_content_previews(
         "_active_runtime_index",
         lambda _user_id: index,
     )
-    embedding = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
+    dimension = RuntimeEmbedding.__table__.c.embedding.type.dim
+    image_embedding = [1.0, *([0.0] * (dimension - 1))]
+    source_embedding_vector = [0.0, 1.0, *([0.0] * (dimension - 2))]
+    document_embedding = [1.0, 1.0, *([0.0] * (dimension - 2))]
 
     with runtime_db_session() as runtime_db:
         image = RuntimeImageAsset(
@@ -1849,7 +2108,7 @@ def test_production_embedding_writers_seal_content_previews(
             runtime_db,
             user_id=7,
             annotation=annotation,
-            embedding=embedding,
+            embedding=image_embedding,
         )
         source_embedding = upsert_source_embedding(
             runtime_db,
@@ -1859,18 +2118,38 @@ def test_production_embedding_writers_seal_content_previews(
             text="private source embedding preview",
             category="source",
             importance=3,
-            embedding_fn=lambda _text: embedding,
+            embedding_fn=lambda _text: source_embedding_vector,
+        )
+        PgVecStore(runtime_db).upsert_source(
+            7,
+            source_type="document_chunk",
+            source_id=101,
+            content="private document embedding preview",
+            embedding=document_embedding,
         )
         runtime_db.flush()
 
-        raw_previews = (
-            runtime_db.execute(
-                select(RuntimeEmbedding.__table__.c.content_preview).order_by(
-                    RuntimeEmbedding.__table__.c.source_type
-                )
-            )
-            .scalars()
-            .all()
+        raw_rows = runtime_db.execute(
+            select(
+                RuntimeEmbedding.__table__.c.embedding,
+                RuntimeEmbedding.__table__.c.embedding_checksum,
+                RuntimeEmbedding.__table__.c.content_preview,
+            ).order_by(RuntimeEmbedding.__table__.c.source_type)
+        ).all()
+        assert all(row[0] is None for row in raw_rows)
+        assert all(row[1] is None for row in raw_rows)
+        assert [row[2] for row in raw_rows] == ["", "", ""]
+        image_hits = PgVecStore(runtime_db).search_by_vector(
+            7,
+            query_embedding=image_embedding,
+            source_types=["image_annotation"],
+            limit=1,
+        )
+        source_hits = PgVecStore(runtime_db).search_by_vector(
+            7,
+            query_embedding=source_embedding_vector,
+            source_types=["source_span"],
+            limit=1,
         )
         sealed_count = len(
             runtime_db.scalars(
@@ -1886,9 +2165,11 @@ def test_production_embedding_writers_seal_content_previews(
         }
 
     assert source_embedding is not None
-    assert raw_previews == ["", ""]
-    assert sealed_count == 2
+    assert sealed_count == 3
+    assert [hit.item_id for hit in image_hits] == [annotation.id]
+    assert [hit.item_id for hit in source_hits] == [99]
     assert hydrated == {
+        "document_chunk": "private document embedding preview",
         "image_annotation": "private image embedding preview",
         "source_span": "private source embedding preview",
     }

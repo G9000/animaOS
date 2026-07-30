@@ -132,7 +132,10 @@ from anima_server.services.agent.tool_context import (
 )
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
-from anima_server.services.corefs.sealed_runtime import reseal_runtime_message
+from anima_server.services.corefs.sealed_runtime import (
+    reseal_runtime_message,
+    runtime_private_lookup_value,
+)
 from anima_server.services.data_crypto import df
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.documents.store import get_document_for_user, list_document_chunks
@@ -2256,6 +2259,14 @@ def _document_source_ids(
     source_uris = [f"runtime-document://{document_id}" for document_id in document_ids]
     if not source_uris:
         return []
+    source_uris = [
+        runtime_private_lookup_value(
+            runtime_db,
+            owner_id=user_id,
+            value=source_uri,
+        )
+        for source_uri in source_uris
+    ]
     return list(
         runtime_db.scalars(
             select(RuntimeSource.id).where(

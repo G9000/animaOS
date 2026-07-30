@@ -24,7 +24,10 @@ from anima_server.services.agent.embedding_integrity import (
 )
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
 from anima_server.services.corefs.sealed_runtime import (
+    active_runtime_index,
     delete_runtime_embedding_records,
+    persist_runtime_embedding,
+    runtime_index_for_sensitive_write,
     seal_runtime_fields,
 )
 
@@ -75,6 +78,44 @@ class PgVecStore(VectorStore):
     ) -> None:
         runtime_embedding = _canonicalize_runtime_embedding(embedding)
         content_hash = hashlib.sha256(content.encode()).hexdigest()
+        runtime_index = runtime_index_for_sensitive_write(
+            self._db,
+            user_id=user_id,
+        )
+        if runtime_index is not None:
+            stored = self._db.scalar(
+                select(RuntimeEmbedding).where(
+                    RuntimeEmbedding.user_id == user_id,
+                    RuntimeEmbedding.source_type == source_type,
+                    RuntimeEmbedding.source_id == source_id,
+                )
+            )
+            if stored is None:
+                stored = RuntimeEmbedding(
+                    user_id=user_id,
+                    source_type=source_type,
+                    source_id=source_id,
+                    content_hash=content_hash,
+                    embedding_checksum=None,
+                    embedding=None,
+                    content_preview="",
+                    category=category,
+                    importance=importance,
+                )
+            else:
+                stored.content_hash = content_hash
+                stored.category = category
+                stored.importance = importance
+            persist_runtime_embedding(
+                self._db,
+                row=stored,
+                owner_id=user_id,
+                embedding=runtime_embedding,
+                content_preview=content[:200],
+            )
+            self._db.flush()
+            return
+
         embedding_checksum = compute_embedding_checksum(runtime_embedding)
         stmt = pg_insert(RuntimeEmbedding).values(
             user_id=user_id,
@@ -148,6 +189,37 @@ class PgVecStore(VectorStore):
             raise ValueError("source_ids and source_id_query are mutually exclusive")
         if source_ids is not None and not source_ids:
             return []
+
+        runtime_index = active_runtime_index(user_id)
+        if runtime_index is not None:
+            resolved_source_ids = (
+                None if source_ids is None else frozenset(int(value) for value in source_ids)
+            )
+            if source_id_query is not None:
+                resolved_source_ids = frozenset(
+                    int(value) for value in self._db.scalars(source_id_query).all()
+                )
+            return [
+                VectorSearchResult(
+                    item_id=hit.source_id,
+                    content=hit.content,
+                    category=hit.category,
+                    importance=hit.importance,
+                    similarity=round(hit.similarity, 4),
+                    source_type=hit.source_type,
+                )
+                for hit in runtime_index.search_runtime_embeddings(
+                    tuple(query_embedding),
+                    limit=limit,
+                    category=category,
+                    source_types=(
+                        None
+                        if source_types is None
+                        else frozenset(str(value) for value in source_types)
+                    ),
+                    source_ids=resolved_source_ids,
+                )
+            ]
 
         distance = RuntimeEmbedding.embedding.cosine_distance(query_embedding)
         base_stmt = (
@@ -253,26 +325,14 @@ class PgVecStore(VectorStore):
             source_type="memory_item",
         )
         for item_id, content, embedding, category, importance in items:
-            content_hash = hashlib.sha256(content.encode()).hexdigest()
-            runtime_embedding = _canonicalize_runtime_embedding(embedding)
-            stored = RuntimeEmbedding(
-                user_id=user_id,
+            self.upsert_source(
+                user_id,
                 source_type="memory_item",
                 source_id=item_id,
-                content_hash=content_hash,
-                embedding_checksum=compute_embedding_checksum(runtime_embedding),
-                embedding=runtime_embedding,
-                content_preview="",
+                content=content,
+                embedding=embedding,
                 category=category,
                 importance=importance,
-            )
-            seal_runtime_fields(
-                self._db,
-                row=stored,
-                row_type="runtime_embedding",
-                owner_id=user_id,
-                payload={"content_preview": content[:200]},
-                placeholders={"content_preview": ""},
             )
         self._db.flush()
         return len(items)

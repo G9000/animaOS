@@ -121,6 +121,12 @@ def forget_image_asset(
         )
 
     file_deleted = delete_image_asset_file_if_safe(asset)
+    delete_sealed_runtime_records(
+        runtime_db,
+        row_type="runtime_image_asset",
+        row_ids=[image_asset_id],
+        owner_id=user_id,
+    )
     runtime_db.delete(asset)
     runtime_db.flush()
     return ForgetImageResult(

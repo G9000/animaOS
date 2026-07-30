@@ -6,6 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeKnowledgeBundleRun, RuntimeSource
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_private_lookup_value,
+    seal_runtime_fields,
+)
 from anima_server.services.ingestion.adapters.base import IngestionAdapter
 from anima_server.services.ingestion.artifacts import replace_source_artifacts_and_spans
 from anima_server.services.ingestion.models import SourceIdentity
@@ -13,11 +17,16 @@ from anima_server.services.ingestion.retrieval import EmbeddingFn
 
 
 def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
+    source_uri = runtime_private_lookup_value(
+        db,
+        owner_id=identity.user_id,
+        value=identity.source_uri,
+    )
     existing = db.scalar(
         select(RuntimeSource).where(
             RuntimeSource.user_id == identity.user_id,
             RuntimeSource.kind == identity.kind,
-            RuntimeSource.source_uri == identity.source_uri,
+            RuntimeSource.source_uri == source_uri,
             RuntimeSource.content_hash == identity.content_hash,
         )
     )
@@ -27,15 +36,31 @@ def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
     source = RuntimeSource(
         user_id=identity.user_id,
         kind=identity.kind,
-        source_uri=identity.source_uri,
+        source_uri=source_uri,
         content_hash=identity.content_hash,
-        title=identity.title,
-        media_type=identity.media_type,
+        title=None,
+        media_type=None,
         status="registered",
-        metadata_json=_copy_metadata(identity.metadata_json),
+        metadata_json=None,
     )
-    db.add(source)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=source,
+        row_type="runtime_source",
+        owner_id=identity.user_id,
+        payload={
+            "source_uri": identity.source_uri,
+            "title": identity.title,
+            "media_type": identity.media_type,
+            "metadata_json": _copy_metadata(identity.metadata_json),
+        },
+        placeholders={
+            "source_uri": source_uri,
+            "title": None,
+            "media_type": None,
+            "metadata_json": None,
+        },
+    )
     return source
 
 

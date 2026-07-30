@@ -20,12 +20,14 @@ from anima_server.models.runtime import (
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.bm25_index import BM25Index
-from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import (
     _reciprocal_rank_fusion,
     generate_embedding,
 )
-from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+from anima_server.services.corefs.sealed_runtime import (
+    load_runtime_embedding_vector,
+    persist_runtime_embedding,
+)
 
 EmbeddingFn = Callable[[str], list[float] | None | Awaitable[list[float] | None]]
 
@@ -215,26 +217,23 @@ def _upsert_embedding(
             source_type=source_type,
             source_id=source_id,
             content_hash=content_hash,
-            embedding_checksum=compute_embedding_checksum(embedding),
-            embedding=embedding,
+            embedding_checksum=None,
+            embedding=None,
             content_preview="",
             category=category,
             importance=importance,
         )
     else:
         existing.content_hash = content_hash
-        existing.embedding_checksum = compute_embedding_checksum(embedding)
-        existing.embedding = embedding
         existing.category = category
         existing.importance = importance
         existing.updated_at = now
-    seal_runtime_fields(
+    persist_runtime_embedding(
         db,
         row=existing,
-        row_type="runtime_embedding",
         owner_id=user_id,
-        payload={"content_preview": text[:200]},
-        placeholders={"content_preview": ""},
+        embedding=embedding,
+        content_preview=text[:200],
     )
     return existing
 
@@ -311,11 +310,18 @@ def _concept_hits(
     concepts_by_id = {concept.id: concept for concept in all_concepts}
     dense_ranked = sorted(
         (
-            (
-                concept.id,
-                _cosine(query_embedding, _vector_to_list(embedding.embedding)),
-            )
+            (concept.id, _cosine(query_embedding, vector))
             for concept, embedding in rows
+            if (
+                vector := load_runtime_embedding_vector(
+                    db,
+                    owner_id=user_id,
+                    source_type="knowledge_concept",
+                    source_id=int(concept.id),
+                    persisted_embedding=embedding.embedding,
+                )
+            )
+            is not None
         ),
         key=lambda item: item[1],
         reverse=True,
@@ -391,11 +397,18 @@ def _span_hits(
     spans_by_id = {span.id: (span, source) for span, source in all_rows}
     dense_ranked = sorted(
         (
-            (
-                span.id,
-                _cosine(query_embedding, _vector_to_list(embedding.embedding)),
-            )
+            (span.id, _cosine(query_embedding, vector))
             for span, _source, embedding in rows
+            if (
+                vector := load_runtime_embedding_vector(
+                    db,
+                    owner_id=user_id,
+                    source_type="source_span",
+                    source_id=int(span.id),
+                    persisted_embedding=embedding.embedding,
+                )
+            )
+            is not None
         ),
         key=lambda item: item[1],
         reverse=True,

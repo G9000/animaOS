@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeImageAnnotation, RuntimeImageAsset
 from anima_server.models.runtime_embedding import RuntimeEmbedding
-from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import generate_embedding
-from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+from anima_server.services.corefs.sealed_runtime import (
+    persist_runtime_embedding,
+    seal_runtime_fields,
+)
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.extractors import ImageCaptioner, ImageTextExtractor
@@ -280,33 +282,29 @@ def _upsert_runtime_embedding(
             RuntimeEmbedding.source_id == annotation.id,
         )
     )
-    checksum = compute_embedding_checksum(embedding)
     if existing is None:
         existing = RuntimeEmbedding(
             user_id=user_id,
             source_type="image_annotation",
             source_id=annotation.id,
             content_hash=annotation.content_hash,
-            embedding_checksum=checksum,
-            embedding=embedding,
+            embedding_checksum=None,
+            embedding=None,
             content_preview="",
             category="image",
             importance=3,
         )
     else:
         existing.content_hash = annotation.content_hash
-        existing.embedding_checksum = checksum
-        existing.embedding = embedding
         existing.category = "image"
         existing.importance = 3
         existing.updated_at = datetime.now(UTC)
-    seal_runtime_fields(
+    persist_runtime_embedding(
         runtime_db,
         row=existing,
-        row_type="runtime_embedding",
         owner_id=user_id,
-        payload={"content_preview": annotation.content_text[:200]},
-        placeholders={"content_preview": ""},
+        embedding=embedding,
+        content_preview=annotation.content_text[:200],
     )
 
 
