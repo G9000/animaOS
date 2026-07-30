@@ -3005,3 +3005,303 @@ def test_only_generate_initiative_message_references_the_llm_seam() -> None:
         initiative._get_or_seed_drive_row,
     ):
         assert "llm" not in inspect.getsource(fn).lower()
+
+
+# ---------------------------------------------------------------------------
+# 12. IL-013 — starvation carryover in selection
+# ---------------------------------------------------------------------------
+
+
+def test_starvation_boost_is_capped_and_never_negative() -> None:
+    from anima_server.services.agent.inner_life.initiative import starvation_boost
+
+    config = _default_gate_config()
+    assert starvation_boost(0, config) == 0.0
+    assert starvation_boost(-3, config) == 0.0
+    assert starvation_boost(2, config) == pytest.approx(0.06)
+    assert starvation_boost(100, config) == pytest.approx(0.15)  # capped
+
+
+def test_starved_qualifying_drive_eventually_outranks_the_perennial_winner() -> None:
+    """Drive B (0.8) keeps losing to A (0.9); after enough losses its capped
+    boost closes the 0.10 gap and it wins — with its RAW pressure reported."""
+    pressures = DriveState(unresolved_thread=0.9, pattern_insight=0.8)
+    config = _default_gate_config()
+
+    # 3 losses -> boost 0.09 -> 0.89 < 0.90: still loses.
+    result = dominant_drive(pressures, config, {"pattern_insight": 3})
+    assert result == (DRIVE_UNRESOLVED_THREAD, pytest.approx(0.9))
+
+    # 4 losses -> boost 0.12 -> 0.92 > 0.90: finally wins; raw pressure kept.
+    result = dominant_drive(pressures, config, {"pattern_insight": 4})
+    assert result == (DRIVE_PATTERN_INSIGHT, pytest.approx(0.8))
+
+
+def test_starvation_boost_never_qualifies_a_sub_theta_drive() -> None:
+    """Ranking only, never qualification: theta stays the quality bar."""
+    config = _default_gate_config()
+    # Only sub-theta pressure: no candidate regardless of losses.
+    starved_only = DriveState(pattern_insight=0.65)
+    assert dominant_drive(starved_only, config, {"pattern_insight": 1000}) is None
+    # A qualifying rival never loses to a boosted sub-theta drive.
+    with_rival = DriveState(unresolved_thread=0.71, pattern_insight=0.65)
+    result = dominant_drive(with_rival, config, {"pattern_insight": 1000})
+    assert result == (DRIVE_UNRESOLVED_THREAD, pytest.approx(0.71))
+
+
+def test_pressure_gap_wider_than_the_cap_is_never_overcome() -> None:
+    """The cap bounds how much fairness can override pressure — intended."""
+    pressures = DriveState(unresolved_thread=1.0, pattern_insight=0.8)
+    config = _default_gate_config()
+    result = dominant_drive(pressures, config, {"pattern_insight": 10_000})
+    assert result == (DRIVE_UNRESOLVED_THREAD, pytest.approx(1.0))
+
+
+def test_should_fire_reports_boosts_in_starvation_snapshot_only() -> None:
+    """Provenance separation: raw pressures stay raw; the boosts that
+    influenced ranking ride in starvation_snapshot (qualifying drives with a
+    non-zero boost only)."""
+    record = DriveRecord(
+        pressures=DriveState(unresolved_thread=0.9, pattern_insight=0.8, novelty=0.5),
+        starvation_losses={"pattern_insight": 4, "novelty": 7, "relational": 2},
+    )
+    config = _default_gate_config()
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    decision = should_fire(record, config, now, 0.5, fires_today=0, fires_this_week=0)
+    assert decision is not None
+    assert decision.drive == DRIVE_PATTERN_INSIGHT  # 0.8 + 0.12 > 0.9
+    assert decision.pressure == pytest.approx(0.8)  # raw, not boosted
+    # novelty (sub-theta) and relational (zero pressure) don't qualify; the
+    # winner's own boost is reported too.
+    assert decision.starvation_snapshot == {"pattern_insight": pytest.approx(0.12)}
+    assert "starvation" not in decision.pressure_snapshot
+    assert decision.pressure_snapshot[DRIVE_PATTERN_INSIGHT] == pytest.approx(0.8)
+
+
+def test_fire_increments_qualifying_losers_and_clears_the_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Edge bookkeeping: a delivered fire adds one loss to every drive that
+    qualified but lost, clears the winner's counter, and persists the map."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    # Fresh updated_at so decay is negligible: both drives stay above theta.
+    _seed_enabled_user(
+        soul_factory,
+        runtime_factory,
+        pressures={"relational": 0.95, "novelty": 0.9},
+        updated_at=datetime(2026, 1, 2, 11, 59, tzinfo=UTC),
+    )
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return f"Message about {decision.drive}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
+    assert ok is True
+
+    with soul_factory() as db_:
+        logs = db_.scalars(select(InitiativeLog)).all()
+        assert len(logs) == 1
+        assert logs[0].drive == DRIVE_RELATIONAL
+        # No boosts influenced this first selection: no starvation key logged.
+        assert "starvation" not in logs[0].pressure_snapshot
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.starvation_losses == {"novelty": 1}
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_starvation_boost_flips_edge_selection_and_logs_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persisted loss history flips the edge-level winner, the logged
+    pressure_snapshot carries the boost under its dedicated key with raw
+    pressures untouched, and the winner's counter clears while the loser's
+    increments."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    _seed_enabled_user(
+        soul_factory,
+        runtime_factory,
+        pressures={
+            "relational": 0.9,
+            "novelty": 0.85,
+            "starvation_losses": {"novelty": 4},  # boost 0.12: 0.97 > 0.9
+        },
+        updated_at=datetime(2026, 1, 2, 11, 59, tzinfo=UTC),
+    )
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return f"Message about {decision.drive}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
+    assert ok is True
+
+    with soul_factory() as db_:
+        log = db_.scalars(select(InitiativeLog)).one()
+        assert log.drive == DRIVE_NOVELTY
+        snapshot = log.pressure_snapshot
+        assert snapshot["starvation"] == {"novelty": pytest.approx(0.12)}
+        # Raw per-drive pressures stay exactly as accumulated (decayed a
+        # minute, so just below the seeded values — and NOT boosted).
+        assert snapshot[DRIVE_NOVELTY] < 0.86
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert "novelty" not in (row.starvation_losses or {})  # winner cleared
+        assert row.starvation_losses == {"relational": 1}  # loser incremented
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+def test_material_less_hard_reset_clears_starvation_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a dominant drive is hard-reset because its material vanished, its
+    loss history goes with it — a boost earned on vanished material must not
+    jump-start the drive's next accumulation."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    # pattern_insight dominates (with boost) but has NO pattern MemoryItem ->
+    # no material -> hard reset; relational then fires on its fallback.
+    _seed_enabled_user(
+        soul_factory,
+        runtime_factory,
+        pressures={
+            "relational": 0.9,
+            "pattern_insight": 0.88,
+            "starvation_losses": {"pattern_insight": 4},
+        },
+        updated_at=datetime(2026, 1, 2, 11, 59, tzinfo=UTC),
+    )
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        return f"Message about {decision.drive}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
+    assert ok is True
+
+    with soul_factory() as db_:
+        log = db_.scalars(select(InitiativeLog)).one()
+        assert log.drive == DRIVE_RELATIONAL
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        assert row.pattern_insight == 0.0  # hard reset persisted
+        losses = row.starvation_losses or {}
+        assert "pattern_insight" not in losses  # history cleared, not boosted later
+        assert losses == {}  # reset drive is sub-theta at fire time: no loss
+
+    soul_engine.dispose()
+    runtime_engine.dispose()
+
+
+
+
+def test_signal_reset_drives_is_the_single_reset_mapping() -> None:
+    """The pure signal->reset mapping matches advance_drives exactly: every
+    drive it names is hard-zeroed, every drive it omits survives."""
+    from anima_server.services.agent.inner_life.drives import signal_reset_drives
+
+    full = DriveState(
+        unresolved_thread=0.9, pattern_insight=0.9, relational=0.9,
+        novelty=0.9, dream_residue=0.9,
+    )
+    cases = [
+        DriveSignals(user_turn_occurred=True),
+        DriveSignals(unresolved_thread_resolved=True),
+        DriveSignals(novel_topic_discussed=True),
+        DriveSignals(user_turn_occurred=True, novel_topic_discussed=True),
+        DriveSignals(),
+    ]
+    for signals in cases:
+        resets = set(signal_reset_drives(signals))
+        advanced = advance_drives(full, signals, 0.001)
+        for name in DRIVE_NAMES:
+            if name in resets:
+                assert getattr(advanced, name) == 0.0, (signals, name)
+            else:
+                assert getattr(advanced, name) > 0.0, (signals, name)
+    # The surface-reset drives never appear in any signal mapping.
+    assert DRIVE_PATTERN_INSIGHT not in set(signal_reset_drives(cases[3]))
+    assert "dream_residue" not in set(signal_reset_drives(cases[3]))
+
+
+def test_signal_driven_reset_clears_starvation_losses_even_while_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR #128 review): a user turn hard-resets unresolved_thread
+    and relational, so their loss counters must clear too — INCLUDING on the
+    initiative-disabled path, which commits before the selection loop. A
+    stale boost must never survive to jump-start an unrelated later
+    accumulation after the user opts in."""
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    user_id = 1
+    with soul_factory() as db_:
+        get_or_create_presence_config(db_, user_id)  # initiative stays OFF
+        db_.commit()
+    seeded_at = datetime(2026, 1, 2, 11, 0, tzinfo=UTC)
+    with runtime_factory() as db_:
+        db_.add(
+            DriveStateRow(
+                user_id=user_id,
+                updated_at=seeded_at,
+                unresolved_thread=0.9,
+                relational=0.6,
+                pattern_insight=0.5,
+                starvation_losses={
+                    "unresolved_thread": 4,
+                    "relational": 2,
+                    "pattern_insight": 3,
+                },
+            )
+        )
+        # A NEW user turn since the last tick -> user_turn_occurred.
+        db_.add(
+            RuntimeThread(
+                user_id=user_id,
+                status="active",
+                last_message_at=seeded_at + timedelta(minutes=30),
+            )
+        )
+        db_.commit()
+
+    now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=user_id, local_now=now)
+    assert ok is True
+
+    with soul_factory() as db_:
+        assert db_.scalars(select(InitiativeLog)).all() == []  # disabled: no fire
+    with runtime_factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == user_id)).one()
+        assert row.unresolved_thread == 0.0  # reset by the user turn
+        assert row.relational == 0.0
+        # The reset drives' loss history went with their pressure; the
+        # surface-reset drive keeps both its pressure and its history.
+        assert row.starvation_losses == {"pattern_insight": 3}
+
+    soul_engine.dispose()
+    runtime_engine.dispose()

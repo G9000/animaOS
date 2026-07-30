@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from datetime import tzinfo as _tzinfo
 
@@ -52,6 +52,26 @@ _CATCHUP_COMPONENTS = "affect,allostatic"
 # deferred dream once at least this many idle hours fall inside it.
 _NIGHT_WINDOW_HOURS = 6.0
 _NIGHT_ELIGIBLE_IDLE_HOURS = 4.0
+
+# IL-011: a long absence leaves the reconnect slightly SUBDUED — an energy
+# dip that scales with the gap and is hard-capped small. Deliberately
+# energy-only: valence is untouched, because a sadness reading ("I was sad
+# you left") is a guilt-trip texture we explicitly do not want; "quiet after
+# long silence" is not "hurt". The dip relaxes away through the normal IL1
+# energy dynamics (tau 18h), so it colors the first exchange, not the day.
+_RECONNECT_DIP_COMPONENT = "reconnect_energy"
+
+
+def reconnect_energy_dip(gap_seconds: float) -> float:
+    """The bounded energy dip for a gap: 0 below the threshold, then
+    ``dip_per_day`` per full day of absence up to ``dip_cap``. Pure."""
+    if gap_seconds < settings.presence_reconnect_dip_min_gap_hours * 3600.0:
+        return 0.0
+    gap_days = gap_seconds / 86400.0
+    return min(
+        gap_days * settings.presence_reconnect_dip_per_day,
+        settings.presence_reconnect_dip_cap,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,13 +152,21 @@ def _catchup_one_user(
             dream_deferred = has_eligible_night_window(local_start, local_now)
 
             updated = apply_idle_gap(state, local_now, config)
+            components = _CATCHUP_COMPONENTS
+            dip = reconnect_energy_dip(gap_seconds)
+            if dip > 0.0:
+                # Applied AFTER the closed-form relaxation so the dip lands
+                # below the settled baseline (relaxation would otherwise
+                # partially re-fill it), and clamped at the energy floor.
+                updated = replace(updated, energy=max(0.0, updated.energy - dip))
+                components = f"{_CATCHUP_COMPONENTS},{_RECONNECT_DIP_COMPONENT}"
             save_affect_state(db, user_id=user_id, state=updated)
 
             db.add(
                 PresenceCatchup(
                     user_id=user_id,
                     gap_seconds=gap_seconds,
-                    components=_CATCHUP_COMPONENTS,
+                    components=components,
                     dream_deferred=dream_deferred,
                 )
             )

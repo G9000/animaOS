@@ -134,6 +134,32 @@ def _advance_one(
     return _clamp01(value * math.exp(-delta_hours / leak_tau_hours))
 
 
+def signal_reset_drives(signals: DriveSignals) -> tuple[str, ...]:
+    """The drives a tick's signals hard-zero — the SINGLE definition of the
+    signal->reset mapping. ``advance_drives`` applies it to the pressures,
+    and the IL-013 edge bookkeeping applies it to the starvation-loss map:
+    a reset drive's loss history must be cleared along with its pressure,
+    so a ranking boost earned against old, now-addressed material can never
+    jump-start the drive's next, unrelated accumulation.
+
+    - ``unresolved_thread``: a user turn OR the source thread closing — the
+      latter guarantees the pressure can't linger and fire once its material
+      is gone (see ``DriveSignals.unresolved_thread_resolved``).
+    - ``relational``: a user turn (contact happened).
+    - ``novelty``: a genuinely new topic came up.
+    - ``pattern_insight``/``dream_residue``: never here — they reset only
+      when surfaced (``reset_drive`` at fire time; see module docstring).
+    """
+    resets: list[str] = []
+    if signals.user_turn_occurred or signals.unresolved_thread_resolved:
+        resets.append(DRIVE_UNRESOLVED_THREAD)
+    if signals.user_turn_occurred:
+        resets.append(DRIVE_RELATIONAL)
+    if signals.novel_topic_discussed:
+        resets.append(DRIVE_NOVELTY)
+    return tuple(resets)
+
+
 def advance_drives(
     state: DriveState,
     signals: DriveSignals,
@@ -145,17 +171,15 @@ def advance_drives(
     ``delta_hours`` is the elapsed time since the last tick for this user
     (negative values are clamped to 0 — a clock going backwards must never
     shrink a growing pressure or manufacture decay). Pure: no I/O, no clock
-    reads.
+    reads. Hard resets follow ``signal_reset_drives`` exactly.
     """
     delta_hours = max(0.0, delta_hours)
+    resets = frozenset(signal_reset_drives(signals))
     return DriveState(
         unresolved_thread=_advance_one(
             state.unresolved_thread,
             grow=signals.unresolved_thread_open,
-            # Reset on a user turn OR when the source thread has closed — the
-            # latter guarantees the pressure can't linger and fire once its
-            # material is gone (see DriveSignals.unresolved_thread_resolved).
-            reset=signals.user_turn_occurred or signals.unresolved_thread_resolved,
+            reset=DRIVE_UNRESOLVED_THREAD in resets,
             growth_rate=config.growth_unresolved_thread,
             leak_tau_hours=config.leak_tau_hours,
             delta_hours=delta_hours,
@@ -171,7 +195,7 @@ def advance_drives(
         relational=_advance_one(
             state.relational,
             grow=signals.relational_overdue,
-            reset=signals.user_turn_occurred,
+            reset=DRIVE_RELATIONAL in resets,
             growth_rate=config.growth_relational,
             leak_tau_hours=config.leak_tau_hours,
             delta_hours=delta_hours,
@@ -179,7 +203,7 @@ def advance_drives(
         novelty=_advance_one(
             state.novelty,
             grow=signals.novelty_repetitive,
-            reset=signals.novel_topic_discussed,
+            reset=DRIVE_NOVELTY in resets,
             growth_rate=config.growth_novelty,
             leak_tau_hours=config.leak_tau_hours,
             delta_hours=delta_hours,

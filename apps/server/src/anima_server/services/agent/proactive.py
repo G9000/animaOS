@@ -14,7 +14,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 import httpx
 from sqlalchemy import select
@@ -59,6 +59,11 @@ class GreetingContext:
     recent_episode_summary: str | None = None
     is_birthday: bool = False
     days_until_birthday: int | None = None
+    # IL-011: one open thread that GENUINELY stayed active while the user was
+    # away — verbatim-traceable to a persisted ForesightSignal whose
+    # unresolved_thread pressure actually accumulated over the gap. None
+    # whenever any grounding condition fails; never synthesized.
+    held_thought: str | None = None
 
 
 @dataclass(frozen=True)
@@ -276,6 +281,129 @@ async def _invoke_ollama_native_chat(
     return stripped or None
 
 
+def _resolve_held_thought(
+    db: Session,
+    runtime_db: Session | None,
+    *,
+    user_id: int,
+    last_message_at: datetime | None,
+    now: datetime,
+    tz: tzinfo | None = None,
+) -> str | None:
+    """IL-011: the one open thread that genuinely stayed with the agent over
+    the absence, or None. Grounded, never confabulated — every condition is a
+    real persisted signal, and if any fails there is no held thought:
+
+    1. Consent: the Presence master switch AND home-greeting context are on.
+    2. A real absence: the gap since the user's last message is at least
+       ``greeting_held_thought_min_gap_hours``.
+    3. Accumulated pressure: the runtime ``unresolved_thread`` drive is at or
+       above ``greeting_held_thought_min_pressure`` — i.e. the thread
+       measurably built up while they were away, we are not inventing
+       preoccupation after the fact. The stored pressure counts only if the
+       drive tick has already processed the user's latest message (PR #128
+       review): a user turn hard-resets this drive, so pressure whose
+       ``last_user_turn_at`` predates ``last_message_at`` is a pre-turn
+       leftover the reset simply hasn't reached yet — never ground on it.
+    4. The material exists AND spans the gap: an open, in-horizon
+       ForesightSignal — the SAME definition (and same soonest-first pick)
+       IL3 uses for the drive's grow signal — that was ALREADY PERSISTED
+       before the user's last message (PR #128 review). The drive's grow
+       condition is aggregate ("any open in-horizon signal"), so a signal
+       created mid-gap could otherwise be voiced on pressure a different,
+       since-resolved thread accumulated; requiring the voiced row to
+       predate the absence means it was itself an open contributor for the
+       whole gap, making "this stayed with me while you were away" true of
+       exactly this thread. If the row IL3 would voice fails that check, we
+       stay silent rather than voice a different row than IL3's own
+       material query would pick. The horizon is evaluated on the LOCAL
+       calendar date (PR #128 review), matching the tick's local-time
+       discipline — a UTC date would disagree with the query that
+       accumulated the pressure for part of every local day.
+
+    Requires an active memories DEK (``df`` fails open, so without one the
+    decrypted read would return ciphertext into the greeting prompt).
+    ``tz`` is a test seam for the local zone; it defaults to the real system
+    zone, same as the drive tick."""
+    from anima_server.services.presence_config import get_presence_config_values
+
+    values = get_presence_config_values(db, user_id)
+    if not (values.enabled and values.home_greeting_context_enabled):
+        return None
+
+    if last_message_at is None:
+        return None  # first meeting: nothing was ever left open
+    last_message_utc = _normalize_utc(last_message_at)
+    gap_hours = (now - last_message_utc).total_seconds() / 3600.0
+    if gap_hours < settings.greeting_held_thought_min_gap_hours:
+        return None
+
+    if runtime_db is None:
+        return None
+    from anima_server.models.runtime_consciousness import DriveStateRow
+
+    drive_row = runtime_db.scalar(
+        select(DriveStateRow).where(DriveStateRow.user_id == user_id)
+    )
+    if (
+        drive_row is None
+        or drive_row.unresolved_thread < settings.greeting_held_thought_min_pressure
+    ):
+        return None
+    # Stale-pressure guard (condition 3 above): the tick must have seen the
+    # latest user message, or the pressure predates a reset it still owes.
+    if drive_row.last_user_turn_at is None or (
+        _normalize_utc(drive_row.last_user_turn_at) < last_message_utc
+    ):
+        return None
+
+    from anima_server.services.agent.inner_life.initiative import (
+        _open_in_horizon_foresight,
+    )
+    from anima_server.services.agent.inner_life.presence import system_zoneinfo
+    from anima_server.services.data_crypto import DOMAIN_MEMORIES
+    from anima_server.services.sessions import get_active_dek
+
+    if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
+        return None
+    local_zone = tz or system_zoneinfo()
+    local_today = now.astimezone(local_zone).date()
+    horizon_days = settings.initiative_unresolved_thread_horizon_days
+    row = db.scalar(
+        _open_in_horizon_foresight(user_id, local_today, horizon_days).limit(1)
+    )
+    if row is None:
+        return None
+    # Gap-spanning check (condition 4 above), in Python rather than SQL so
+    # SQLite's string-typed datetime comparison can't mis-order aware vs
+    # naive values. Compared on ``observed_at`` — the source MESSAGE's
+    # timestamp, recorded by the consolidation write path — not the row's
+    # insertion time (PR #128 review round 5): extraction runs after the
+    # conversation, so a thread from the user's final pre-gap turn gets
+    # ``created_at`` minutes INTO the gap and an insertion-time check would
+    # reject the primary held-thought scenario. ``created_at`` remains the
+    # conservative fallback for provenance-less rows; no timestamp at all
+    # means no grounding, so silence.
+    anchored_at = row.observed_at or row.created_at
+    if anchored_at is None or _normalize_utc(anchored_at) > last_message_utc:
+        return None
+    # In-horizon at gap start too (PR #128 review round 6): offline gaps are
+    # backfilled by the first tick against the CURRENT horizon, so a signal
+    # whose start_date only entered the sliding window mid-gap can inherit
+    # the whole gap's aggregate growth despite being ineligible to grow it
+    # when the user left. Require eligibility on the last-message local date
+    # as well — the same `start_date <= date + horizon` predicate the query
+    # applies to the return date.
+    gap_start_local_date = last_message_utc.astimezone(local_zone).date()
+    if row.start_date is None or row.start_date > gap_start_local_date + timedelta(
+        days=horizon_days
+    ):
+        return None
+    content = df(user_id, row.content, table="foresight_signals", field="content")
+    content = (content or "").strip()
+    return content[:200] or None
+
+
 def gather_greeting_context(
     db: Session,
     user_id: int,
@@ -319,6 +447,14 @@ def gather_greeting_context(
     if last_message and last_message.created_at:
         delta = now - _normalize_utc(last_message.created_at)
         days_since = delta.days
+
+    held_thought = _resolve_held_thought(
+        db,
+        runtime_db,
+        user_id=user_id,
+        last_message_at=last_message.created_at if last_message else None,
+        now=now,
+    )
 
     # Get recent episode summary
     recent_episode = db.scalar(
@@ -427,6 +563,7 @@ def gather_greeting_context(
         recent_episode_summary=episode_summary,
         is_birthday=is_birthday,
         days_until_birthday=days_until_birthday,
+        held_thought=held_thought,
     )
 
 
@@ -445,6 +582,9 @@ def build_static_greeting(ctx: GreetingContext) -> str:
     else:
         parts.append(
             f"It's been {ctx.days_since_last_chat} days. Welcome back.")
+
+    if ctx.held_thought:
+        parts.append(f'Something you mentioned stayed with me — "{ctx.held_thought}".')
 
     if ctx.overdue_task_count:
         s = "s" if ctx.overdue_task_count != 1 else ""
@@ -766,6 +906,17 @@ async def generate_greeting(
         time_context = (
             time_context
             + f"\nThe user's birthday is in {days} day{'s' if days != 1 else ''}."
+        ).strip()
+
+    if ctx.held_thought:
+        # IL-011: grounded in a real open thread whose pressure accumulated
+        # over the gap — the instruction pins the model to that material.
+        time_context = (
+            time_context
+            + "\nWhile they were away, one open thread genuinely stayed with "
+            + f'you: "{ctx.held_thought}". You may mention it briefly and '
+            + "naturally, but only what is stated here — do not invent "
+            + "details, outcomes, or feelings about it."
         ).strip()
 
     # Use templated greeting prompt
