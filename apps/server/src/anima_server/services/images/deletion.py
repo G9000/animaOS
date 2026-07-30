@@ -14,6 +14,7 @@ from anima_server.models.runtime import (
     RuntimeImageAsset,
     RuntimeImageMessageLink,
     RuntimeMessage,
+    RuntimeRun,
     RuntimeStep,
     RuntimeThread,
 )
@@ -211,6 +212,14 @@ def delete_thread_with_image_cleanup(
     step_ids = list(
         runtime_db.scalars(select(RuntimeStep.id).where(RuntimeStep.thread_id == thread_id)).all()
     )
+    run_ids = list(
+        runtime_db.scalars(
+            select(RuntimeRun.id).where(
+                RuntimeRun.user_id == user_id,
+                RuntimeRun.thread_id == thread_id,
+            )
+        ).all()
+    )
     session_note_ids = list(
         runtime_db.scalars(
             select(RuntimeSessionNote.id).where(
@@ -244,6 +253,13 @@ def delete_thread_with_image_cleanup(
             runtime_db,
             row_type="runtime_step",
             row_ids=step_ids,
+            owner_id=user_id,
+        )
+    if run_ids:
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_run",
+            row_ids=run_ids,
             owner_id=user_id,
         )
     if session_note_ids:

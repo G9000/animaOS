@@ -349,10 +349,32 @@ async def prune_old_background_task_runs(
     cutoff = datetime.now(UTC) - timedelta(days=settings.background_task_run_retention_days)
     try:
         with session_scope(resolved_runtime_db_factory) as db:
-            result = db.execute(
-                delete(RuntimeBackgroundTaskRun).where(
+            expired_runs = db.execute(
+                select(
+                    RuntimeBackgroundTaskRun.id,
+                    RuntimeBackgroundTaskRun.user_id,
+                ).where(
                     RuntimeBackgroundTaskRun.status.in_(["completed", "failed"]),
                     RuntimeBackgroundTaskRun.created_at < cutoff,
+                )
+            ).all()
+            if not expired_runs:
+                return 0
+            ids_by_owner: dict[int, list[int]] = {}
+            for run_id, user_id in expired_runs:
+                ids_by_owner.setdefault(int(user_id), []).append(int(run_id))
+            for owner_id, run_ids in ids_by_owner.items():
+                delete_sealed_runtime_records(
+                    db,
+                    row_type="runtime_background_task_run",
+                    row_ids=run_ids,
+                    owner_id=owner_id,
+                )
+            result = db.execute(
+                delete(RuntimeBackgroundTaskRun).where(
+                    RuntimeBackgroundTaskRun.id.in_(
+                        [int(run_id) for run_id, _ in expired_runs]
+                    )
                 )
             )
             deleted = int(result.rowcount or 0)

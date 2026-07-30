@@ -1360,6 +1360,79 @@ def test_message_pruning_deletes_expired_sealed_payload(
     assert sealed_count == 0
 
 
+def test_background_task_pruning_deletes_expired_sealed_payload(
+    monkeypatch,
+) -> None:
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from anima_server.models.runtime import RuntimeBackgroundTaskRun
+    from anima_server.services.agent.eager_consolidation import (
+        prune_old_background_task_runs,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+    from conftest_runtime import runtime_db_session
+    from sqlalchemy import func
+    from sqlalchemy.orm import sessionmaker
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    private_result = {
+        "errors": ["Expired provider leak from /private/logical/task-result.pdf"]
+    }
+
+    with runtime_db_session() as runtime_db:
+        expired_at = datetime.now(UTC) - timedelta(days=60)
+        run = RuntimeBackgroundTaskRun(
+            user_id=7,
+            task_type="consolidation",
+            status="completed",
+            created_at=expired_at,
+            completed_at=expired_at,
+        )
+        seal_runtime_fields(
+            runtime_db,
+            row=run,
+            row_type="runtime_background_task_run",
+            owner_id=7,
+            payload={"result_json": private_result, "error_message": None},
+            placeholders={"result_json": None, "error_message": None},
+        )
+        runtime_db.commit()
+        factory = sessionmaker(
+            bind=runtime_db.get_bind(),
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.eager_consolidation.settings."
+            "background_task_run_retention_days",
+            30,
+        )
+
+        deleted = asyncio.run(prune_old_background_task_runs(runtime_db_factory=factory))
+        with factory() as verification_db:
+            run_count = verification_db.scalar(
+                select(func.count(RuntimeBackgroundTaskRun.id))
+            )
+            sealed_count = verification_db.scalar(
+                select(func.count(CoreFSSealedPayload.id)).where(
+                    CoreFSSealedPayload.row_type == "runtime_background_task_run"
+                )
+            )
+
+    assert deleted == 1
+    assert run_count == 0
+    assert sealed_count == 0
+
+
 def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
     monkeypatch,
 ) -> None:
@@ -2214,9 +2287,11 @@ def test_runtime_step_writer_seals_duplicate_trace_payloads(
 def test_thread_deletion_removes_its_sealed_runtime_payloads(
     monkeypatch,
 ) -> None:
+    from anima_server.models.runtime import RuntimeRun
     from anima_server.services.agent.persistence import (
         append_message,
         get_or_create_thread,
+        mark_run_failed,
     )
     from anima_server.services.agent.session_memory import write_session_note
     from anima_server.services.agent.thread_manager import maybe_set_thread_title
@@ -2240,6 +2315,21 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
             thread,
             "Please permanently delete this private conversation",
         )
+        run = RuntimeRun(
+            thread_id=thread.id,
+            user_id=7,
+            provider="test",
+            model="test",
+            mode="chat",
+            status="running",
+        )
+        runtime_db.add(run)
+        runtime_db.flush()
+        mark_run_failed(
+            runtime_db,
+            run,
+            "Provider failed on /private/logical/deleted-thread.pdf",
+        )
         append_message(
             runtime_db,
             thread=thread,
@@ -2258,6 +2348,7 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
         )
         assert set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()) == {
             "runtime_message",
+            "runtime_run",
             "runtime_session_note",
             "runtime_thread",
         }
