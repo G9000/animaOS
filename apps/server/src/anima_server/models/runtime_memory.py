@@ -137,6 +137,38 @@ class MemoryExtractionFailure(RuntimeBase):
     )
 
 
+@event.listens_for(MemoryExtractionFailure, "load")
+def _hydrate_sealed_memory_extraction_failure(
+    failure: MemoryExtractionFailure,
+    _context: object,
+) -> None:
+    runtime_db = object_session(failure)
+    if runtime_db is None or failure.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="memory_extraction_failure",
+        row_id=int(failure.id),
+        owner_id=int(failure.user_id),
+    )
+    if payload is None:
+        return
+    user_preview = payload.get("user_message_preview")
+    assistant_preview = payload.get("assistant_response_preview")
+    if user_preview is not None and not isinstance(user_preview, str):
+        raise ValueError("sealed extraction user preview is invalid")
+    if assistant_preview is not None and not isinstance(assistant_preview, str):
+        raise ValueError("sealed extraction assistant preview is invalid")
+    set_committed_value(failure, "user_message_preview", user_preview)
+    set_committed_value(
+        failure,
+        "assistant_response_preview",
+        assistant_preview,
+    )
+
+
 class ProfileUpdateCandidate(RuntimeBase):
     """Structured user profile update awaiting promotion to the soul DB."""
 

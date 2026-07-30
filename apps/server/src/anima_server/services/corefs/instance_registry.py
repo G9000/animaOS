@@ -18,6 +18,7 @@ from sqlalchemy.engine import make_url
 
 _REGISTRY_VERSION = 1
 _LEASE_TTL = timedelta(hours=24)
+_LEGACY_LOCK_TTL = timedelta(minutes=1)
 _REGISTRY_LOCK = threading.RLock()
 
 
@@ -53,6 +54,7 @@ class RuntimeInstanceRegistry:
         app_data_root: Path,
         *,
         pid_is_alive: Callable[[int], bool] | None = None,
+        process_start_identity: Callable[[int], str | None] | None = None,
         process_id: int | None = None,
         now: Callable[[], datetime] | None = None,
         hostname: str | None = None,
@@ -60,9 +62,19 @@ class RuntimeInstanceRegistry:
         self.app_data_root = app_data_root.expanduser().resolve()
         self._registry_path = self.app_data_root / "core-instance-registry.json"
         self._pid_is_alive = pid_is_alive or _pid_is_alive
+        self._process_start_identity = (
+            process_start_identity or _process_start_identity
+        )
         self._process_id = process_id if process_id is not None else os.getpid()
         self._now = now or (lambda: datetime.now(UTC))
         self._hostname = hostname or platform.node()
+        self._current_process_start_identity = self._process_start_identity(
+            self._process_id
+        )
+        if not self._current_process_start_identity:
+            raise InstanceBindingCollision(
+                "current process start identity is unavailable"
+            )
 
     def resolve(
         self,
@@ -137,6 +149,7 @@ class RuntimeInstanceRegistry:
                     "filesystem_identity": filesystem_identity,
                     "hostname": self._hostname,
                     "pid": self._process_id,
+                    "process_start_identity": self._current_process_start_identity,
                     "lease_updated_at": now.isoformat(),
                     "runtime_url_fingerprint": runtime_url_fingerprint,
                 }
@@ -184,8 +197,11 @@ class RuntimeInstanceRegistry:
                     record.get("local_instance_id") == binding.local_instance_id
                     and record.get("pid") == self._process_id
                     and record.get("hostname") == self._hostname
+                    and record.get("process_start_identity")
+                    == self._current_process_start_identity
                 ):
                     record["pid"] = None
+                    record["process_start_identity"] = None
                     record["lease_updated_at"] = self._now().isoformat()
                     self._write_registry(registry)
                     break
@@ -237,7 +253,15 @@ class RuntimeInstanceRegistry:
         if updated.tzinfo is None:
             updated = updated.replace(tzinfo=UTC)
         if record.get("hostname") == self._hostname:
-            return self._pid_is_alive(pid)
+            if not self._pid_is_alive(pid):
+                return False
+            expected_identity = record.get("process_start_identity")
+            if not isinstance(expected_identity, str) or not expected_identity:
+                # Version-1 records created before process identity support
+                # remain conservative for one lease TTL, but PID reuse can no
+                # longer keep them live indefinitely.
+                return now - updated <= _LEASE_TTL
+            return self._process_start_identity(pid) == expected_identity
         return now - updated <= _LEASE_TTL
 
     def _reject_runtime_url_collision(
@@ -304,6 +328,7 @@ class RuntimeInstanceRegistry:
                 "filesystem_identity": binding.filesystem_identity,
                 "hostname": self._hostname,
                 "pid": self._process_id,
+                "process_start_identity": self._current_process_start_identity,
                 "updated_at": now.isoformat(),
             },
         )
@@ -328,10 +353,26 @@ class RuntimeInstanceRegistry:
                     lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
                     lock_pid = int(lock_payload.get("pid", 0))
                     lock_host = str(lock_payload.get("hostname", ""))
+                    lock_process_identity = lock_payload.get(
+                        "process_start_identity"
+                    )
                 except (OSError, ValueError, json.JSONDecodeError):
                     lock_pid = 0
                     lock_host = ""
-                if lock_host == self._hostname and not self._pid_is_alive(lock_pid):
+                    lock_process_identity = None
+                lock_is_live = lock_host != self._hostname
+                if lock_host == self._hostname and self._pid_is_alive(lock_pid):
+                    if (
+                        isinstance(lock_process_identity, str)
+                        and lock_process_identity
+                    ):
+                        lock_is_live = (
+                            self._process_start_identity(lock_pid)
+                            == lock_process_identity
+                        )
+                    else:
+                        lock_is_live = self._legacy_lock_is_fresh(lock_path)
+                if not lock_is_live:
                     lock_path.unlink(missing_ok=True)
                     descriptor = os.open(
                         lock_path,
@@ -345,7 +386,13 @@ class RuntimeInstanceRegistry:
             os.write(
                 descriptor,
                 json.dumps(
-                    {"pid": self._process_id, "hostname": self._hostname}
+                    {
+                        "pid": self._process_id,
+                        "hostname": self._hostname,
+                        "process_start_identity": (
+                            self._current_process_start_identity
+                        ),
+                    }
                 ).encode("utf-8"),
             )
             yield
@@ -353,6 +400,16 @@ class RuntimeInstanceRegistry:
             if descriptor is not None:
                 os.close(descriptor)
                 lock_path.unlink(missing_ok=True)
+
+    def _legacy_lock_is_fresh(self, lock_path: Path) -> bool:
+        try:
+            updated = datetime.fromtimestamp(
+                lock_path.stat().st_mtime,
+                tz=UTC,
+            )
+        except OSError:
+            return False
+        return self._now() - updated <= _LEGACY_LOCK_TTL
 
 
 def _read_core_id(core_path: Path) -> str:
@@ -398,6 +455,19 @@ def _pid_is_alive(pid: int) -> bool:
     except (OSError, ProcessLookupError):
         return False
     return True
+
+
+def _process_start_identity(pid: int) -> str | None:
+    if pid <= 0:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return format(psutil.Process(pid).create_time(), ".6f")
+    except (OSError, psutil.Error):
+        return None
 
 
 def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:

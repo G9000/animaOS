@@ -62,6 +62,7 @@ def test_registry_refuses_a_live_divergent_clone_and_rebuilds_after_stale_lease(
     registry = RuntimeInstanceRegistry(
         app_data,
         pid_is_alive=lambda pid: pid == 100,
+        process_start_identity=lambda pid: f"process-{pid}",
         process_id=100,
         now=lambda: now,
     )
@@ -73,6 +74,7 @@ def test_registry_refuses_a_live_divergent_clone_and_rebuilds_after_stale_lease(
     stale_registry = RuntimeInstanceRegistry(
         app_data,
         pid_is_alive=lambda _pid: False,
+        process_start_identity=lambda pid: f"process-{pid}",
         process_id=200,
         now=lambda: now + timedelta(hours=25),
     )
@@ -93,6 +95,7 @@ def test_registry_never_expires_a_same_machine_lease_while_its_process_is_alive(
     RuntimeInstanceRegistry(
         app_data,
         pid_is_alive=lambda pid: pid == 100,
+        process_start_identity=lambda pid: f"process-{pid}",
         process_id=100,
         now=lambda: now,
     ).resolve(source)
@@ -100,12 +103,62 @@ def test_registry_never_expires_a_same_machine_lease_while_its_process_is_alive(
     long_running_machine = RuntimeInstanceRegistry(
         app_data,
         pid_is_alive=lambda pid: pid == 100,
+        process_start_identity=lambda pid: f"process-{pid}",
         process_id=200,
         now=lambda: now + timedelta(days=7),
     )
 
     with pytest.raises(InstanceBindingCollision, match="live divergent copy"):
         long_running_machine.resolve(clone)
+
+
+def test_registry_reclaims_reused_pid_lease_and_lock(
+    managed_tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    app_data = managed_tmp_path / "app-data"
+    source = _make_core(managed_tmp_path / "source" / ".anima")
+    clone = managed_tmp_path / "clone" / ".anima"
+    shutil.copytree(source, clone)
+    process_starts = {
+        100: "process-100-original",
+        200: "process-200-current",
+    }
+
+    RuntimeInstanceRegistry(
+        app_data,
+        pid_is_alive=lambda pid: pid in process_starts,
+        process_start_identity=lambda pid: process_starts.get(pid),
+        process_id=100,
+        now=lambda: now,
+        hostname="test-host",
+    ).resolve(source)
+
+    process_starts[100] = "process-100-reused"
+    lock_path = app_data / ".core-instance-registry.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 100,
+                "hostname": "test-host",
+                "process_start_identity": "process-100-original",
+            }
+        ),
+        encoding="utf-8",
+    )
+    replacement = RuntimeInstanceRegistry(
+        app_data,
+        pid_is_alive=lambda pid: pid in process_starts,
+        process_start_identity=lambda pid: process_starts.get(pid),
+        process_id=200,
+        now=lambda: now + timedelta(minutes=1),
+        hostname="test-host",
+    )
+
+    clone_binding = replacement.resolve(clone)
+
+    assert clone_binding.core_path == clone.resolve()
+    assert not lock_path.exists()
 
 
 def test_registry_explicit_fork_never_reuses_source_runtime(

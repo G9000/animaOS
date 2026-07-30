@@ -307,6 +307,76 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
             runtime_db.scalar(select(PendingMemoryOp).where(PendingMemoryOp.id == pending.id))
 
 
+def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+    from anima_server.services.agent.consolidation import (
+        record_memory_extraction_failure,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        failure = record_memory_extraction_failure(
+            runtime_db,
+            user_id=7,
+            source_message_ids=[101, 102],
+            user_message="seeded extraction user preview",
+            assistant_response="seeded extraction assistant preview",
+            failure_reason="temporary provider failure",
+            status="pending",
+        )
+
+        stored = runtime_db.execute(
+            text(
+                "SELECT user_message_preview, assistant_response_preview "
+                "FROM memory_extraction_failures WHERE id = :id"
+            ),
+            {"id": failure.id},
+        ).one()
+        assert stored == (None, None)
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "memory_extraction_failure"
+                )
+            )
+            is not None
+        )
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalar(
+            select(MemoryExtractionFailure).where(
+                MemoryExtractionFailure.id == failure.id
+            )
+        )
+        assert loaded is not None
+        assert loaded.user_message_preview == "seeded extraction user preview"
+        assert (
+            loaded.assistant_response_preview
+            == "seeded extraction assistant preview"
+        )
+
+        index.clear_unlocked_state()
+        runtime_db.expunge_all()
+        with pytest.raises(RuntimeSealingLocked):
+            runtime_db.scalar(
+                select(MemoryExtractionFailure).where(
+                    MemoryExtractionFailure.id == failure.id
+                )
+            )
+
+
 def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
     monkeypatch,
 ) -> None:
