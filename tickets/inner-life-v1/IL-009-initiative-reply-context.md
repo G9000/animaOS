@@ -1,18 +1,18 @@
 # IL-009 - Carry initiative context into the Reply round-trip
 
-- Status: backlog
+- Status: done
 - Priority: P3
 - Scope: `apps/desktop/src/components/InitiativeOverlay.tsx`, `apps/desktop/src/pages/chat`
 - Parent: none
 - Depends on: `IL-008`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-28 19:29 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-30 17:23 MYT
+- Started: 2026-07-30 17:14 MYT
+- Completed: 2026-07-30 17:23 MYT
 
 ## Goal
 
@@ -56,6 +56,18 @@ rather than blocking IL-008 on it.
 - 2026-07-28 16:13 MYT - Ticket created from the IL-008 final whole-branch review.
 - 2026-07-28 16:59 MYT - Codex review round 2 on PR #123: added the template-required `Spec`/`Updated`/`Started`/`Completed` lifecycle fields.
 - 2026-07-28 19:29 MYT - Codex review round 5 on PR #123: detached from `IL-000` (`Parent: none`) — the v1 parent is `done` and a backlog child inside its acceptance-bearing table made the tracker inconsistent. Lineage: filed from the IL-008 final review; IL-000 lists this under "Follow-ups Beyond v1 Scope".
+
+- 2026-07-30 17:14 MYT - Claimed and started by Claude (branch
+  `il-009-initiative-reply-context`).
+- 2026-07-30 17:23 MYT - Implemented via the chat page's existing
+  seeded-thread contract: Reply now navigates with
+  `initiativeReplyState(current)` (new pure helper in
+  `lib/initiativeReply.ts`) — the initiative text renders verbatim as the
+  opening assistant message of a fresh thread AND rides into the user's
+  first send as context messages, so it is visible to the user and
+  available to the model. State is captured before the async ack so the
+  overlay advancing to the next pending row mid-flight can't swap the
+  seeded text. 3 tests.
 
 ## Validation
 
