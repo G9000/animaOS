@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-29 14:14 MYT
-- Updated: 2026-07-29 15:58 MYT
+- Updated: 2026-07-29 16:48 MYT
 - Started: 2026-07-29 14:14 MYT
 - Completed: 2026-07-29 15:58 MYT
 
@@ -81,11 +81,18 @@ hour — in two small, strictly grounded ways:
   legal lifecycle (done, Owner: Claude, Completed stamped), reparented as a
   standalone follow-up per the IL-009 precedent, PRD link corrected to the
   canonical docs/prds/presence/inner-life-v1.md.
+- 2026-07-29 16:48 MYT - PR #128 review round 2, two P2 grounding fixes in
+  `_resolve_held_thought`: (1) stale-pressure guard — pressure counts only
+  if the drive tick has processed the user's latest message
+  (`last_user_turn_at >= last_message_at`), otherwise it's a pre-turn
+  leftover the turn-reset hasn't reached; (2) the foresight horizon is now
+  evaluated on the LOCAL calendar date (system zone, `tz` test seam),
+  matching the tick's local-time discipline. Two regression tests.
 
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_held_thought.py` — 10 passed
+  - `uv run pytest tests/test_inner_life_held_thought.py` — 12 passed
   - `uv run pytest tests/test_inner_life_presence.py` — 28 passed
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`

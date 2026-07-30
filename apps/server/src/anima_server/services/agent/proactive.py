@@ -14,7 +14,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 import httpx
 from sqlalchemy import select
@@ -282,6 +282,7 @@ def _resolve_held_thought(
     user_id: int,
     last_message_at: datetime | None,
     now: datetime,
+    tz: tzinfo | None = None,
 ) -> str | None:
     """IL-011: the one open thread that genuinely stayed with the agent over
     the absence, or None. Grounded, never confabulated — every condition is a
@@ -293,13 +294,22 @@ def _resolve_held_thought(
     3. Accumulated pressure: the runtime ``unresolved_thread`` drive is at or
        above ``greeting_held_thought_min_pressure`` — i.e. the thread
        measurably built up while they were away, we are not inventing
-       preoccupation after the fact.
+       preoccupation after the fact. The stored pressure counts only if the
+       drive tick has already processed the user's latest message (PR #128
+       review): a user turn hard-resets this drive, so pressure whose
+       ``last_user_turn_at`` predates ``last_message_at`` is a pre-turn
+       leftover the reset simply hasn't reached yet — never ground on it.
     4. The material exists: an open, in-horizon ForesightSignal — the SAME
        definition IL3 uses for the drive's grow signal, so the thought voiced
-       is the thread that actually accumulated the pressure.
+       is the thread that actually accumulated the pressure. The horizon is
+       evaluated on the LOCAL calendar date (PR #128 review), matching the
+       tick's local-time discipline — a UTC date would disagree with the
+       query that accumulated the pressure for part of every local day.
 
     Requires an active memories DEK (``df`` fails open, so without one the
-    decrypted read would return ciphertext into the greeting prompt)."""
+    decrypted read would return ciphertext into the greeting prompt).
+    ``tz`` is a test seam for the local zone; it defaults to the real system
+    zone, same as the drive tick."""
     from anima_server.services.presence_config import get_presence_config_values
 
     values = get_presence_config_values(db, user_id)
@@ -308,7 +318,8 @@ def _resolve_held_thought(
 
     if last_message_at is None:
         return None  # first meeting: nothing was ever left open
-    gap_hours = (now - _normalize_utc(last_message_at)).total_seconds() / 3600.0
+    last_message_utc = _normalize_utc(last_message_at)
+    gap_hours = (now - last_message_utc).total_seconds() / 3600.0
     if gap_hours < settings.greeting_held_thought_min_gap_hours:
         return None
 
@@ -316,24 +327,35 @@ def _resolve_held_thought(
         return None
     from anima_server.models.runtime_consciousness import DriveStateRow
 
-    pressure = runtime_db.scalar(
-        select(DriveStateRow.unresolved_thread).where(DriveStateRow.user_id == user_id)
+    drive_row = runtime_db.scalar(
+        select(DriveStateRow).where(DriveStateRow.user_id == user_id)
     )
-    if pressure is None or pressure < settings.greeting_held_thought_min_pressure:
+    if (
+        drive_row is None
+        or drive_row.unresolved_thread < settings.greeting_held_thought_min_pressure
+    ):
+        return None
+    # Stale-pressure guard (condition 3 above): the tick must have seen the
+    # latest user message, or the pressure predates a reset it still owes.
+    if drive_row.last_user_turn_at is None or (
+        _normalize_utc(drive_row.last_user_turn_at) < last_message_utc
+    ):
         return None
 
     from anima_server.services.agent.inner_life.initiative import (
         _open_in_horizon_foresight,
     )
+    from anima_server.services.agent.inner_life.presence import system_zoneinfo
     from anima_server.services.data_crypto import DOMAIN_MEMORIES
     from anima_server.services.sessions import get_active_dek
 
     if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
         return None
+    local_today = now.astimezone(tz or system_zoneinfo()).date()
     row = db.scalar(
         _open_in_horizon_foresight(
             user_id,
-            now.date(),
+            local_today,
             settings.initiative_unresolved_thread_horizon_days,
         ).limit(1)
     )
