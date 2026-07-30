@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-31 00:36 MYT
+- Updated: 2026-07-31 03:03 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-31 00:36 MYT
+- Completed: 2026-07-31 03:03 MYT
 
 ## Goal
 
@@ -133,6 +133,15 @@ rather than blocking IL-008 on it.
   so a persistently failing close can no longer wedge unrelated
   conversations. Build re-run on this head: pass.
 
+- 2026-07-31 03:03 MYT - PR #131 review round 7 (2 P1s), completion
+  re-stamped: (1) the MOUNT seed path (Reply from another route) now
+  registers the active server thread for closure exactly like the
+  in-place path — it previously only cleared client state, so the first
+  submit mixed the reply into the old conversation; (2) New Thread now
+  ADOPTS a pending seed close instead of abandoning it (its semantics
+  want the old conversation closed anyway) — abandoning left the old
+  thread active with a usable composer. Build re-run on this head: pass.
+
 ## Validation
 
 - Commands:
@@ -140,7 +149,7 @@ rather than blocking IL-008 on it.
     25 pass (10 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 6), 2026-07-31 00:36 MYT
+    FINAL head (round 7), 2026-07-31 03:03 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

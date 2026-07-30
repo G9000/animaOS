@@ -719,8 +719,17 @@ export default function Chat() {
         }
       }
 
-      // 1. Seeded open from the dashboard.
+      // 1. Seeded open (dashboard thought, or an initiative Reply from
+      // another route — PR #131 round 7). If a server-side thread is still
+      // active, register it for closure exactly like the in-place seed
+      // path: without this the first submit sends no threadId and
+      // get_or_create_thread mixes the seeded reply into that old
+      // conversation. The send guard settles the close before any send.
       if (seedActiveRef.current) {
+        if (active) {
+          pendingSeedCloseRef.current = active.id;
+          void settleSeedClose();
+        }
         seedFreshThread(pendingContextRef.current);
         return;
       }
@@ -852,7 +861,12 @@ export default function Chat() {
   const handleNewThread = async () => {
     seedActiveRef.current = false;
     pendingContextRef.current = [];
-    abandonSeedClose();
+    // Deliberately NOT abandoning a pending seed close here (PR #131
+    // round 7): New Thread wants the old conversation closed anyway, and
+    // applySeedNavigation already nulled currentThreadIdRef — dropping the
+    // pending close would leave the old server thread active with the
+    // composer usable, so a quick submit (no threadId) would land in it.
+    // The ref stays owed and the send guard settles it before any send.
 
     const threadToClose = currentThreadIdRef.current;
     currentThreadIdRef.current = null;
