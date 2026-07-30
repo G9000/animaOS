@@ -26,6 +26,36 @@ class InstanceBindingCollision(RuntimeError):
     """Raised when a Core cannot safely claim machine-local Runtime state."""
 
 
+@contextmanager
+def _exclusive_registry_update_guard(path: Path) -> Iterator[None]:
+    """Hold a crash-released, non-blocking OS lock for registry mutation."""
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"\0")
+                    os.fsync(descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(
+                    descriptor,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+        except OSError as exc:
+            raise InstanceBindingCollision(
+                "machine-local instance registry is being updated"
+            ) from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeInstanceBinding:
     core_id: str
@@ -337,8 +367,19 @@ class RuntimeInstanceRegistry:
     def _locked_registry(self) -> Iterator[None]:
         """Serialize cross-process registry updates with an atomic lock file."""
         lock_path = self.app_data_root / ".core-instance-registry.lock"
+        guard_path = self.app_data_root / ".core-instance-registry.guard"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            _exclusive_registry_update_guard(guard_path),
+            self._claimed_registry_lock(lock_path),
+        ):
+            yield
+
+    @contextmanager
+    def _claimed_registry_lock(self, lock_path: Path) -> Iterator[None]:
+        """Publish diagnostic ownership while the OS update guard is held."""
         descriptor: int | None = None
+        owner_token = uuid4().hex
         try:
             try:
                 descriptor = os.open(
@@ -399,6 +440,7 @@ class RuntimeInstanceRegistry:
                         "process_start_identity": (
                             self._current_process_start_identity
                         ),
+                        "owner_token": owner_token,
                     }
                 ).encode("utf-8"),
             )
@@ -406,7 +448,14 @@ class RuntimeInstanceRegistry:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-                lock_path.unlink(missing_ok=True)
+                try:
+                    current_payload = json.loads(
+                        lock_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    current_payload = {}
+                if current_payload.get("owner_token") == owner_token:
+                    lock_path.unlink(missing_ok=True)
 
     def _legacy_lock_is_fresh(self, lock_path: Path) -> bool:
         try:

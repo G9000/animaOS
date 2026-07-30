@@ -844,6 +844,77 @@ def test_search_document_chunks_repairs_indexed_document_vectors_after_reset(
     assert [result.chunk_id for result in results] == [chunks[0].id]
 
 
+def test_search_document_chunks_repairs_retained_null_vectors_after_dimension_reset(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    document, chunks = _document_with_chunks(runtime_db)
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=lambda _text: _embedding(0.2, 0.8),
+    ) == 2
+    _mark_document_indexed(runtime_db, document)
+    for row in _embedding_rows(runtime_db):
+        row.embedding = None
+        row.embedding_checksum = None
+    runtime_db.flush()
+    embedding_calls: list[str] = []
+
+    def embedding_fn(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _embedding(float(len(embedding_calls)), 1.0)
+
+    def fake_search_by_vector(
+        self: Any,
+        user_id: int,
+        **_kwargs: Any,
+    ) -> list[VectorSearchResult]:
+        current_source_ids = {
+            row.source_id
+            for row in _embedding_rows(runtime_db)
+            if row.embedding is not None
+        }
+        if chunks[0].id not in current_source_ids:
+            return []
+        return [
+            VectorSearchResult(
+                item_id=chunks[0].id,
+                content="alpha preview",
+                category="document",
+                importance=3,
+                similarity=0.91,
+                source_type="document_chunk",
+            )
+        ]
+
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        fake_search_by_vector,
+    )
+    from anima_server.services.documents import rag as rag_module
+
+    monkeypatch.setattr(
+        rag_module,
+        "_lexical_document_chunk_ranking",
+        lambda *_args, **_kwargs: [],
+    )
+
+    results = search_document_chunks(
+        runtime_db,
+        user_id=1,
+        query="alpha",
+        embedding_fn=embedding_fn,
+    )
+
+    assert embedding_calls == ["alpha", "alpha notes", "beta notes"]
+    assert all(row.embedding is not None for row in _embedding_rows(runtime_db))
+    assert [result.chunk_id for result in results] == [chunks[0].id]
+
+
 def test_search_document_chunks_discards_partial_lazy_repair_vectors(
     runtime_db: Session,
     monkeypatch: Any,

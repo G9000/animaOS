@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from anima_server.services.corefs.instance_registry import (
@@ -22,6 +24,69 @@ def _make_core(path: Path, *, core_id: str = "core-019f") -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _delayed_stale_lock_reclaimer(
+    app_data: str,
+    stale_unlink_entered: Any,
+    competitor_attempted: Any,
+    result_path: str,
+) -> None:
+    lock_path = Path(app_data) / ".core-instance-registry.lock"
+    original_unlink = Path.unlink
+    delayed = False
+
+    def delayed_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        nonlocal delayed
+        if path == lock_path and not delayed:
+            delayed = True
+            stale_unlink_entered.set()
+            if not competitor_attempted.wait(10):
+                raise RuntimeError("competitor did not attempt the registry lock")
+        original_unlink(path, *args, **kwargs)
+
+    Path.unlink = delayed_unlink
+    try:
+        registry = RuntimeInstanceRegistry(
+            Path(app_data),
+            pid_is_alive=lambda _pid: False,
+            process_start_identity=lambda pid: f"process-{pid}",
+            hostname="test-host",
+        )
+        try:
+            with registry._locked_registry():
+                Path(result_path).write_text("acquired", encoding="utf-8")
+        except InstanceBindingCollision:
+            Path(result_path).write_text("collision", encoding="utf-8")
+    finally:
+        Path.unlink = original_unlink
+
+
+def _competing_stale_lock_reclaimer(
+    app_data: str,
+    stale_unlink_entered: Any,
+    competitor_attempted: Any,
+    release_competitor: Any,
+    result_path: str,
+) -> None:
+    if not stale_unlink_entered.wait(10):
+        Path(result_path).write_text("stale-wait-timeout", encoding="utf-8")
+        competitor_attempted.set()
+        return
+    registry = RuntimeInstanceRegistry(
+        Path(app_data),
+        pid_is_alive=lambda _pid: False,
+        process_start_identity=lambda pid: f"process-{pid}",
+        hostname="test-host",
+    )
+    try:
+        with registry._locked_registry():
+            Path(result_path).write_text("acquired", encoding="utf-8")
+            competitor_attempted.set()
+            release_competitor.wait(10)
+    except InstanceBindingCollision:
+        Path(result_path).write_text("collision", encoding="utf-8")
+        competitor_attempted.set()
 
 
 def test_default_pid_probe_does_not_signal_current_process() -> None:
@@ -211,6 +276,62 @@ def test_registry_reclaims_malformed_lock_after_bounded_freshness_window(
 
     assert binding.core_path == core.resolve()
     assert not lock_path.exists()
+
+
+def test_registry_stale_lock_reclamation_is_atomic_across_processes(
+    managed_tmp_path: Path,
+) -> None:
+    app_data = managed_tmp_path / "app-data"
+    lock_path = app_data / ".core-instance-registry.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 999_999_999,
+                "hostname": "test-host",
+                "process_start_identity": "dead-process",
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = multiprocessing.get_context("spawn")
+    stale_unlink_entered = context.Event()
+    competitor_attempted = context.Event()
+    release_competitor = context.Event()
+    first_result = managed_tmp_path / "first-result.txt"
+    second_result = managed_tmp_path / "second-result.txt"
+    first = context.Process(
+        target=_delayed_stale_lock_reclaimer,
+        args=(
+            str(app_data),
+            stale_unlink_entered,
+            competitor_attempted,
+            str(first_result),
+        ),
+    )
+    second = context.Process(
+        target=_competing_stale_lock_reclaimer,
+        args=(
+            str(app_data),
+            stale_unlink_entered,
+            competitor_attempted,
+            release_competitor,
+            str(second_result),
+        ),
+    )
+
+    first.start()
+    assert stale_unlink_entered.wait(10)
+    second.start()
+    assert competitor_attempted.wait(10)
+    first.join(timeout=10)
+    release_competitor.set()
+    second.join(timeout=10)
+
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    assert first_result.read_text(encoding="utf-8") == "acquired"
+    assert second_result.read_text(encoding="utf-8") == "collision"
 
 
 def test_registry_explicit_fork_never_reuses_source_runtime(

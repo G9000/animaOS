@@ -331,6 +331,7 @@ def _indexed_documents_without_current_vectors(
             RuntimeEmbedding.user_id == RuntimeDocument.user_id,
             RuntimeEmbedding.source_type == "document_chunk",
             RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash,
+            RuntimeEmbedding.embedding.isnot(None),
         )
         .exists()
     )
