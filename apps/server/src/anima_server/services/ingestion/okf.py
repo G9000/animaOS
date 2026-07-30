@@ -131,6 +131,12 @@ def _upsert_concept(
         owner_id=user_id,
         value=slug,
     )
+    concept_type_lookup = runtime_private_lookup_value(
+        db,
+        owner_id=user_id,
+        value=concept_type,
+        max_length=48,
+    )
     concept = db.scalar(
         select(RuntimeKnowledgeConcept).where(
             RuntimeKnowledgeConcept.user_id == user_id,
@@ -140,7 +146,7 @@ def _upsert_concept(
     if concept is None:
         concept = RuntimeKnowledgeConcept(
             user_id=user_id,
-            concept_type=concept_type,
+            concept_type=concept_type_lookup,
             slug=slug_lookup,
             title="",
             description=None,
@@ -150,7 +156,7 @@ def _upsert_concept(
             status="active",
         )
     else:
-        concept.concept_type = concept_type
+        concept.concept_type = concept_type_lookup
         concept.content_hash = _content_hash(body_markdown)
         concept.status = "active"
         concept.updated_at = datetime.now(UTC)
@@ -160,6 +166,7 @@ def _upsert_concept(
         row_type="runtime_knowledge_concept",
         owner_id=user_id,
         payload={
+            "concept_type": concept_type,
             "slug": slug,
             "title": title,
             "description": description,
@@ -167,6 +174,7 @@ def _upsert_concept(
             "frontmatter_json": dict(frontmatter_json),
         },
         placeholders={
+            "concept_type": concept_type_lookup,
             "slug": slug_lookup,
             "title": "",
             "description": None,

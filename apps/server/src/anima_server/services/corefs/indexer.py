@@ -105,6 +105,8 @@ class CoreFSProgressiveIndex:
         ] = {}
         self._runtime_embedding_fingerprint: str | None = None
         self._pending_runtime_embedding_fingerprint: str | None = None
+        self._runtime_embedding_expected_count = 0
+        self._runtime_embedding_failures: set[tuple[str, int]] = set()
         self._semantic_fingerprint: str | None = None
         self._pending_semantic_fingerprint: str | None = None
         self._processed_revisions: set[tuple[str, str]] = set()
@@ -320,6 +322,8 @@ class CoreFSProgressiveIndex:
                 category,
                 importance,
             )
+            self._runtime_embedding_failures.discard((source_type, source_id))
+            self._update_runtime_embedding_family_locked()
 
     def runtime_embedding_fingerprint(self) -> str | None:
         """Return the active generation tag for newly produced Runtime vectors."""
@@ -340,10 +344,16 @@ class CoreFSProgressiveIndex:
         self,
         *,
         embedding_fingerprint: str | None = None,
+        expected_count: int | None = None,
     ) -> None:
         """Claim the embedding space used by one Runtime rebuild pass."""
+        if expected_count is not None and expected_count < 0:
+            raise ValueError("Runtime embedding count must be non-negative")
         with self._lock:
             self._require_unlocked()
+            if expected_count is not None:
+                self._runtime_embedding_expected_count = expected_count
+                self._runtime_embedding_failures.clear()
             pending = self._pending_runtime_embedding_fingerprint
             if pending is not None:
                 if embedding_fingerprint != pending:
@@ -356,6 +366,39 @@ class CoreFSProgressiveIndex:
             ):
                 self._runtime_embeddings.clear()
                 self._runtime_embedding_fingerprint = embedding_fingerprint
+
+    def mark_runtime_embedding_failure(
+        self,
+        *,
+        source_type: str,
+        source_id: int,
+    ) -> None:
+        """Keep one failed Runtime vector visible to readiness and retries."""
+        if not source_type:
+            raise ValueError("Runtime embedding source type must be non-empty")
+        if source_id <= 0:
+            raise ValueError("Runtime embedding source ID must be positive")
+        with self._lock:
+            self._require_unlocked()
+            self._runtime_embedding_failures.add((source_type, source_id))
+            self._update_runtime_embedding_family_locked()
+
+    def runtime_embedding_rebuild_status(
+        self,
+    ) -> tuple[int, tuple[tuple[str, int], ...]]:
+        """Return the current pass size and failed opaque Runtime row keys."""
+        with self._lock:
+            self._require_unlocked()
+            return (
+                self._runtime_embedding_expected_count,
+                tuple(sorted(self._runtime_embedding_failures)),
+            )
+
+    def publish_runtime_embedding_readiness(self) -> None:
+        """Expose Runtime vector failures through the current catalog snapshot."""
+        with self._lock:
+            self._require_catalog()
+            self._update_runtime_embedding_family_locked(force=True)
 
     def runtime_embedding_vector(
         self,
@@ -432,6 +475,8 @@ class CoreFSProgressiveIndex:
                 if source_ids is not None and stored_source_id not in source_ids:
                     continue
                 self._runtime_embeddings.pop(key, None)
+                self._runtime_embedding_failures.discard(key)
+            self._update_runtime_embedding_family_locked()
 
     def indexed_texts(self) -> tuple[tuple[str, str, str, str], ...]:
         """Return unlock-scoped text needed to resume an interrupted rebuild."""
@@ -731,6 +776,8 @@ class CoreFSProgressiveIndex:
             self._runtime_embeddings.clear()
             self._runtime_embedding_fingerprint = None
             self._pending_runtime_embedding_fingerprint = None
+            self._runtime_embedding_expected_count = 0
+            self._runtime_embedding_failures.clear()
             self._semantic_fingerprint = None
             self._pending_semantic_fingerprint = None
             self._processed_revisions.clear()
@@ -748,6 +795,23 @@ class CoreFSProgressiveIndex:
                 self._search_key = None
             self._sealer.clear()
             self._state = ReadinessState.LOCKED
+
+    def _update_runtime_embedding_family_locked(self, *, force: bool = False) -> None:
+        family = "runtime_embeddings"
+        if not force and family not in self._families:
+            return
+        unavailable = tuple(
+            f"{source_type}:{source_id}"
+            for source_type, source_id in sorted(self._runtime_embedding_failures)
+        )
+        total = self._runtime_embedding_expected_count
+        self._families[family] = FamilyReadiness(
+            total=total,
+            processed=max(total - len(unavailable), 0),
+            failed=len(unavailable),
+            degraded=bool(unavailable),
+            unavailable_object_ids=unavailable,
+        )
 
     def _increment_family_processed(self, family: str) -> None:
         current = self._families.get(family)

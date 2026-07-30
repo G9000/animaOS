@@ -243,7 +243,7 @@ def test_import_seals_private_slug_and_reuses_opaque_lookup(
     concepts_dir.mkdir(parents=True)
     (concepts_dir / "private-import.md").write_text(
         "---\n"
-        "type: claim\n"
+        "type: relationship-with-alex\n"
         "title: Private import\n"
         "---\n\n"
         "Private imported body.\n",
@@ -261,17 +261,24 @@ def test_import_seals_private_slug_and_reuses_opaque_lookup(
     import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
     runtime_db.flush()
 
-    raw_slug = runtime_db.scalar(
-        select(RuntimeKnowledgeConcept.__table__.c.slug)
-    )
+    raw_concept = runtime_db.execute(
+        select(
+            RuntimeKnowledgeConcept.__table__.c.slug,
+            RuntimeKnowledgeConcept.__table__.c.concept_type,
+        )
+    ).one()
     concept_ids = list(runtime_db.scalars(select(RuntimeKnowledgeConcept.id)))
     runtime_db.expunge_all()
     hydrated_concept = runtime_db.scalar(select(RuntimeKnowledgeConcept))
 
-    assert raw_slug == f"sealed:{index.blind_token('private-import').hex()}"
+    assert raw_concept == (
+        f"sealed:{index.blind_token('private-import').hex()}",
+        f"sealed:{index.blind_token('relationship-with-alex').hex()}"[:48],
+    )
     assert len(concept_ids) == 1
     assert hydrated_concept is not None
     assert hydrated_concept.slug == "private-import"
+    assert hydrated_concept.concept_type == "relationship-with-alex"
 
 
 def test_import_rejects_concept_slugs_that_export_would_reject(

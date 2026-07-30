@@ -89,6 +89,8 @@ def rebuild_unlocked_search(
     )
     index = session.runtime_index
     user_id = getattr(session, "user_id", None)
+    runtime_embedding_total = 0
+    runtime_embedding_failures: tuple[tuple[str, int], ...] = ()
     if runtime_db is not None and embedder is not None and isinstance(user_id, int):
         from anima_server.services.corefs.sealed_runtime import (
             rebuild_runtime_embeddings,
@@ -99,6 +101,9 @@ def rebuild_unlocked_search(
             index=index,
             user_id=user_id,
             embedder=embedder,
+        )
+        runtime_embedding_total, runtime_embedding_failures = (
+            index.runtime_embedding_rebuild_status()
         )
     prior = index.snapshot()
     if prior.catalog_generation != selected.generation:
@@ -128,6 +133,13 @@ def rebuild_unlocked_search(
         degraded.setdefault(family, set()).add(object_id)
     for family, object_ids in degraded.items():
         family_counts[family] += len(object_ids)
+    if runtime_embedding_total:
+        family_counts["runtime_embeddings"] = runtime_embedding_total
+        if runtime_embedding_failures:
+            degraded["runtime_embeddings"] = {
+                f"{source_type}:{source_id}"
+                for source_type, source_id in runtime_embedding_failures
+            }
 
     prior = index.snapshot()
     # Same-unlock retries can retain already decrypted text in memory and
@@ -162,6 +174,8 @@ def rebuild_unlocked_search(
             families=dict(family_counts),
             degraded={family: tuple(sorted(object_ids)) for family, object_ids in degraded.items()},
         )
+        if runtime_embedding_total:
+            index.publish_runtime_embedding_readiness()
         if not reusable_blind_generation:
             index.begin_blind_generation(
                 generation=selected.generation,
@@ -294,9 +308,15 @@ def rebuild_unlocked_search(
                     entry["family"] for entry in entries if entry["stable_id"] == object_id
                 )
                 index.mark_family_failure(family=family, object_id=object_id)
-    if not text_failed and not semantic_failed:
+    runtime_embedding_failed = bool(runtime_embedding_failures)
+    if not text_failed and not semantic_failed and not runtime_embedding_failed:
         index.finish()
-    if runtime_db is not None and not text_failed and not semantic_failed:
+    if (
+        runtime_db is not None
+        and not text_failed
+        and not semantic_failed
+        and not runtime_embedding_failed
+    ):
         _finish_durable_index_state(
             runtime_db,
             index=index,

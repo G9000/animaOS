@@ -2637,7 +2637,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         runtime_db.add(pending)
         concept = RuntimeKnowledgeConcept(
             user_id=7,
-            concept_type="claim",
+            concept_type="relationship-with-alex",
             slug="legacy-private-concept",
             title="Legacy private title",
             description="Legacy private description",
@@ -2746,6 +2746,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         ).one()
         raw_concept = runtime_db.execute(
             select(
+                RuntimeKnowledgeConcept.__table__.c.concept_type,
                 RuntimeKnowledgeConcept.__table__.c.slug,
                 RuntimeKnowledgeConcept.__table__.c.title,
                 RuntimeKnowledgeConcept.__table__.c.description,
@@ -2804,6 +2805,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
         assert raw_concept == (
+            f"sealed:{index.blind_token('relationship-with-alex').hex()}"[:48],
             f"sealed:{index.blind_token('legacy-private-concept').hex()}",
             "",
             None,
@@ -2850,6 +2852,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert loaded_pending.content == "legacy pending plaintext"
         assert loaded_pending.old_content == "older plaintext"
         assert loaded_concept is not None
+        assert loaded_concept.concept_type == "relationship-with-alex"
         assert loaded_concept.slug == "legacy-private-concept"
         assert loaded_concept.title == "Legacy private title"
         assert loaded_concept.description == "Legacy private description"
@@ -2980,6 +2983,105 @@ def test_runtime_embedding_rebuild_restores_vectors_for_a_new_unlock(
         assert embedded_texts == [content]
         hits = second_index.search_runtime_embeddings(tuple(vector), limit=5)
         assert [(hit.source_type, hit.source_id) for hit in hits] == [("memory_item", 92)]
+
+
+def test_runtime_embedding_failure_keeps_catalog_rebuild_retryable(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import migration as corefs_migration
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex, ReadinessState
+    from conftest_runtime import runtime_db_session
+
+    content = "private Runtime embedding retry marker"
+    attempts = 0
+    with runtime_db_session() as runtime_db:
+        first_index = CoreFSProgressiveIndex("core-a")
+        first_index.unlock(
+            sqlcipher_key=b"k" * 32,
+            local_instance_id="instance-a",
+        )
+        row = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=92,
+            content_hash=RuntimeEmbedding.compute_content_hash(content),
+            embedding_checksum=None,
+            embedding=None,
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        runtime_db.add(row)
+        runtime_db.flush()
+        sealed_runtime.seal_runtime_record(
+            runtime_db,
+            index=first_index,
+            row_type="runtime_embedding",
+            row_id=row.id,
+            owner_id=7,
+            payload={
+                "content_preview": content,
+                "embedding_content": content,
+            },
+        )
+
+        monkeypatch.setattr(
+            corefs_migration,
+            "_walk_authenticated_files",
+            lambda **_kwargs: ([], []),
+        )
+
+        class NativeSession:
+            def validation_snapshot(self, _keys):
+                return {"generation": 10, "catalogHash": "catalog-hash"}
+
+        def flaky_embedder(_value: str) -> tuple[float, ...]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ValueError("temporary Runtime embedding outage")
+            return (1.0, 0.0)
+
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(
+            sqlcipher_key=b"k" * 32,
+            local_instance_id="instance-a",
+        )
+        session = SimpleNamespace(
+            user_id=7,
+            runtime_index=index,
+            corefs_session=NativeSession(),
+            corefs_keys=object(),
+        )
+
+        corefs_migration.rebuild_unlocked_search(
+            session,
+            embedder=flaky_embedder,
+            runtime_db=runtime_db,
+        )
+
+        first = index.snapshot()
+        assert first.state is ReadinessState.SEMANTIC_INDEXING
+        assert first.families["runtime_embeddings"].failed == 1
+        assert first.families["runtime_embeddings"].degraded is True
+
+        corefs_migration.rebuild_unlocked_search(
+            session,
+            embedder=flaky_embedder,
+            runtime_db=runtime_db,
+        )
+
+        assert attempts == 2
+        assert index.snapshot().state is ReadinessState.READY
+        assert index.snapshot().families["runtime_embeddings"].degraded is False
+        assert index.runtime_embedding_vector(
+            source_type="memory_item",
+            source_id=92,
+        ) == (1.0, 0.0)
 
 
 def test_runtime_embedding_refresh_rebuilds_existing_vectors_for_new_fingerprint() -> None:

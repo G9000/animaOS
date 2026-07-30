@@ -43,8 +43,15 @@ def _digest(value: str) -> str:
 def _sealed_lookup_value(
     index: CoreFSProgressiveIndex,
     value: str,
+    *,
+    max_length: int | None = None,
 ) -> str:
-    return f"sealed:{index.blind_token(value).hex()}"
+    lookup = f"sealed:{index.blind_token(value).hex()}"
+    if max_length is None:
+        return lookup
+    if max_length <= len("sealed:"):
+        raise ValueError("sealed lookup length cannot hold an opaque token")
+    return lookup[:max_length]
 
 
 def _active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
@@ -240,13 +247,18 @@ def runtime_private_lookup_value(
     *,
     owner_id: int,
     value: str,
+    max_length: int | None = None,
 ) -> str:
     """Return a queryable opaque projection for a private Runtime identifier."""
     index = runtime_index_for_sensitive_write(
         runtime_db,
         user_id=owner_id,
     )
-    return value if index is None else _sealed_lookup_value(index, value)
+    return (
+        value
+        if index is None
+        else _sealed_lookup_value(index, value, max_length=max_length)
+    )
 
 
 def persist_runtime_embedding(
@@ -550,6 +562,7 @@ def convert_legacy_runtime_rows(
             RuntimeKnowledgeConcept.__table__,
             "runtime_knowledge_concept",
             {
+                "concept_type": "concept_type",
                 "slug": "slug",
                 "title": "title",
                 "description": "description",
@@ -557,6 +570,7 @@ def convert_legacy_runtime_rows(
                 "frontmatter_json": "frontmatter_json",
             },
             {
+                "concept_type": "",
                 "slug": "",
                 "title": "",
                 "description": None,
@@ -847,9 +861,6 @@ def rebuild_runtime_embeddings(
     embedding_fingerprint = (
         fingerprint_value if isinstance(fingerprint_value, str) and fingerprint_value else None
     )
-    index.begin_runtime_embedding_rebuild(
-        embedding_fingerprint=embedding_fingerprint,
-    )
     table = RuntimeEmbedding.__table__
     statement = select(
         table.c.id,
@@ -859,8 +870,13 @@ def rebuild_runtime_embeddings(
         table.c.category,
         table.c.importance,
     ).where(table.c.user_id == user_id)
+    rows = list(runtime_db.execute(statement).mappings())
+    index.begin_runtime_embedding_rebuild(
+        embedding_fingerprint=embedding_fingerprint,
+        expected_count=len(rows),
+    )
     rebuilt = 0
-    for row in runtime_db.execute(statement).mappings():
+    for row in rows:
         source_type = str(row["source_type"])
         source_id = int(row["source_id"])
         if (
@@ -879,12 +895,20 @@ def rebuild_runtime_embeddings(
             owner_id=int(row["user_id"]),
         )
         if payload is None:
+            index.mark_runtime_embedding_failure(
+                source_type=source_type,
+                source_id=source_id,
+            )
             continue
         embedding_content = payload.get(
             "embedding_content",
             payload.get("content_preview"),
         )
         if not isinstance(embedding_content, str) or not embedding_content:
+            index.mark_runtime_embedding_failure(
+                source_type=source_type,
+                source_id=source_id,
+            )
             continue
         try:
             vector = tuple(float(value) for value in embedder(embedding_content))
@@ -898,6 +922,10 @@ def rebuild_runtime_embeddings(
                 embedding_fingerprint=embedding_fingerprint,
             )
         except (TypeError, ValueError):
+            index.mark_runtime_embedding_failure(
+                source_type=source_type,
+                source_id=source_id,
+            )
             logger.exception(
                 "Failed to rebuild Runtime embedding %s:%s",
                 source_type,
@@ -905,6 +933,8 @@ def rebuild_runtime_embeddings(
             )
             continue
         rebuilt += 1
+    if index.snapshot().catalog_generation is not None:
+        index.publish_runtime_embedding_readiness()
     return rebuilt
 
 
@@ -976,9 +1006,17 @@ def _convert_legacy_statement(
                 raise ValueError("legacy Runtime source URI is invalid")
             scrubbed["source_uri"] = _sealed_lookup_value(index, source_uri)
         elif row_type == "runtime_knowledge_concept":
+            concept_type = payload["concept_type"]
             slug = payload["slug"]
+            if not isinstance(concept_type, str):
+                raise ValueError("legacy Runtime knowledge concept type is invalid")
             if not isinstance(slug, str):
                 raise ValueError("legacy Runtime knowledge concept slug is invalid")
+            scrubbed["concept_type"] = _sealed_lookup_value(
+                index,
+                concept_type,
+                max_length=48,
+            )
             scrubbed["slug"] = _sealed_lookup_value(index, slug)
         runtime_db.execute(table.update().where(table.c.id == row_id).values(**scrubbed))
         converted += 1
@@ -1446,7 +1484,14 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeThread: ("runtime_thread", ("title",)),
         RuntimeKnowledgeConcept: (
             "runtime_knowledge_concept",
-            ("slug", "title", "description", "body_markdown", "frontmatter_json"),
+            (
+                "concept_type",
+                "slug",
+                "title",
+                "description",
+                "body_markdown",
+                "frontmatter_json",
+            ),
         ),
         RuntimeKnowledgeConceptSource: (
             "runtime_knowledge_concept_source",

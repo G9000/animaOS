@@ -157,6 +157,12 @@ def _merge_concepts(
             owner_id=user_id,
             value=slug,
         )
+        concept_type_lookup = runtime_private_lookup_value(
+            db,
+            owner_id=user_id,
+            value=concept_type,
+            max_length=48,
+        )
         title = _required_str(payload, "title")
         body_markdown = _required_str(payload, "body_markdown")
         description = _optional_str(payload, "description")
@@ -173,7 +179,7 @@ def _merge_concepts(
             persisted_slug = slug
             concept = RuntimeKnowledgeConcept(
                 user_id=user_id,
-                concept_type=concept_type,
+                concept_type=concept_type_lookup,
                 slug=slug_lookup,
                 title="",
                 description=None,
@@ -200,7 +206,7 @@ def _merge_concepts(
                 "source_count": len(payload.get("source_span_ids", []) or []),
             },
         }
-        concept.concept_type = concept_type
+        concept.concept_type = concept_type_lookup
         concept.metadata_json = {"compiled_from_source_id": source.id}
         concept.content_hash = _content_hash(body_markdown)
         concept.status = "active"
@@ -212,6 +218,7 @@ def _merge_concepts(
             row_type="runtime_knowledge_concept",
             owner_id=user_id,
             payload={
+                "concept_type": concept_type,
                 "slug": persisted_slug,
                 "title": title,
                 "description": description,
@@ -219,6 +226,7 @@ def _merge_concepts(
                 "frontmatter_json": frontmatter,
             },
             placeholders={
+                "concept_type": concept_type_lookup,
                 "slug": persisted_slug_lookup,
                 "title": "",
                 "description": None,
@@ -502,6 +510,12 @@ def _find_merge_target(
     title: str,
     merge_confidence: float | None,
 ) -> RuntimeKnowledgeConcept | None:
+    concept_type_lookup = runtime_private_lookup_value(
+        db,
+        owner_id=user_id,
+        value=concept_type,
+        max_length=48,
+    )
     exact = db.scalar(
         select(RuntimeKnowledgeConcept).where(
             RuntimeKnowledgeConcept.user_id == user_id,
@@ -516,7 +530,7 @@ def _find_merge_target(
         db.scalars(
             select(RuntimeKnowledgeConcept).where(
                 RuntimeKnowledgeConcept.user_id == user_id,
-                RuntimeKnowledgeConcept.concept_type == concept_type,
+                RuntimeKnowledgeConcept.concept_type == concept_type_lookup,
             )
         ).all()
     )
