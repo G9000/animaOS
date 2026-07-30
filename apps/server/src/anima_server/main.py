@@ -43,6 +43,7 @@ from .api.routes.ws import router as ws_router
 from .config import (
     default_runtime_app_data_root,
     load_persisted_runtime_settings,
+    resolve_runtime_path_outside_core,
     settings,
 )
 from .db.pg_lifecycle import EmbeddedPG
@@ -106,18 +107,12 @@ def _claim_runtime_instance(
             )
         return _active_runtime_binding
 
-    app_data_root = (
+    app_data_root = resolve_runtime_path_outside_core(
         Path(settings.runtime_app_data_dir)
         if settings.runtime_app_data_dir
-        else default_runtime_app_data_root()
-    ).expanduser().resolve()
-    portable_core = settings.data_dir.expanduser().resolve()
-    if app_data_root.is_relative_to(portable_core) or portable_core.is_relative_to(
-        app_data_root
-    ):
-        raise RuntimeError(
-            "ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core"
-        )
+        else default_runtime_app_data_root(),
+        setting_name="ANIMA_RUNTIME_APP_DATA_DIR",
+    )
     registry = RuntimeInstanceRegistry(app_data_root)
     binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
     try:

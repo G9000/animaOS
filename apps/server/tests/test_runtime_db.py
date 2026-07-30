@@ -1157,6 +1157,8 @@ def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
 ) -> None:
+    from anima_server.services import anima_core_retrieval as retrieval_module
+
     app_data = managed_tmp_path / "machine-app-data"
     observed: list[tuple[str, Path]] = []
     original_data_dir = settings.data_dir
@@ -1223,6 +1225,12 @@ def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
             / "runtime-config.json"
         )
         assert not get_runtime_settings_path().is_relative_to(settings.data_dir)
+        assert retrieval_module.get_retrieval_root() == (
+            Path(settings.runtime_instance_data_dir) / "cache" / "indices"
+        )
+        assert not retrieval_module.get_retrieval_root().is_relative_to(
+            settings.data_dir
+        )
         main_module._release_runtime_instance_claim()
     finally:
         settings.data_dir = original_data_dir
@@ -1301,6 +1309,62 @@ def test_runtime_app_data_root_rejects_portable_core_nested_within_it(
         settings.health_log_dir = original_health_log_dir
         dispose_cached_engines()
         sys.modules.pop("anima_server.main", None)
+
+
+def test_retrieval_root_uses_unbound_machine_data_before_instance_claim(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services import anima_core_retrieval as retrieval_module
+
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    app_data_root = managed_tmp_path / "machine-app-data"
+
+    try:
+        settings.data_dir = managed_tmp_path / "portable" / ".anima"
+        settings.runtime_app_data_dir = str(app_data_root)
+        settings.runtime_instance_data_dir = ""
+
+        assert retrieval_module.get_retrieval_root() == (
+            app_data_root / "unbound" / "cache" / "indices"
+        )
+        assert not retrieval_module.get_retrieval_root().is_relative_to(
+            settings.data_dir
+        )
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+
+
+def test_retrieval_root_rejects_overlapping_unbound_machine_data(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services import anima_core_retrieval as retrieval_module
+
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    core = managed_tmp_path / "portable" / ".anima"
+    overlapping_runtime = core / "runtime"
+
+    try:
+        settings.data_dir = core
+        settings.runtime_app_data_dir = str(overlapping_runtime)
+        settings.runtime_instance_data_dir = ""
+
+        with pytest.raises(
+            RuntimeError,
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+        ):
+            retrieval_module.get_retrieval_root()
+
+        assert not overlapping_runtime.exists()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
 
 
 def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(

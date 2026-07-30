@@ -343,6 +343,17 @@ def default_runtime_app_data_root() -> Path:
     return (root / "anima").expanduser().resolve()
 
 
+def resolve_runtime_path_outside_core(path: Path, *, setting_name: str) -> Path:
+    """Resolve a machine-local Runtime path and reject portable-Core overlap."""
+    resolved = path.expanduser().resolve()
+    portable_core = settings.data_dir.expanduser().resolve()
+    if resolved.is_relative_to(portable_core) or portable_core.is_relative_to(
+        resolved
+    ):
+        raise RuntimeError(f"{setting_name} must not overlap the portable Core")
+    return resolved
+
+
 def load_persisted_runtime_settings() -> None:
     """Load locally persisted runtime settings into the active process."""
     path = get_runtime_settings_path()

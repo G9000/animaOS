@@ -9,7 +9,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from threading import Lock
 
-from anima_server.config import settings
+from anima_server.config import (
+    default_runtime_app_data_root,
+    resolve_runtime_path_outside_core,
+    settings,
+)
 from anima_server.services import anima_core_bindings
 
 logger = logging.getLogger(__name__)
@@ -361,7 +365,19 @@ def _update_transcript_index_doc(
 
 
 def get_retrieval_root() -> Path:
-    return settings.data_dir / "indices"
+    if settings.runtime_instance_data_dir:
+        instance_root = resolve_runtime_path_outside_core(
+            Path(settings.runtime_instance_data_dir),
+            setting_name="ANIMA_RUNTIME_INSTANCE_DATA_DIR",
+        )
+        return instance_root / "cache" / "indices"
+    app_data_root = resolve_runtime_path_outside_core(
+        Path(settings.runtime_app_data_dir)
+        if settings.runtime_app_data_dir
+        else default_runtime_app_data_root(),
+        setting_name="ANIMA_RUNTIME_APP_DATA_DIR",
+    )
+    return app_data_root / "unbound" / "cache" / "indices"
 
 
 def get_retrieval_status() -> dict[str, object]:
