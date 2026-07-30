@@ -281,7 +281,10 @@ def test_foresight_horizon_uses_the_local_calendar_date(soul_db, runtime_db) -> 
 
     tz = ZoneInfo("Etc/GMT-14")  # UTC+14 (POSIX sign convention)
     now = datetime(2026, 7, 29, 23, 0, tzinfo=UTC)  # locally: 2026-07-30 13:00
-    last = now - timedelta(hours=30)
+    # A 9h gap whose start already falls on the same LOCAL date as the
+    # return (2026-07-30 in UTC+14), so the round-6 gap-start horizon check
+    # passes and the test isolates the local-vs-UTC date distinction.
+    last = now - timedelta(hours=9)
     horizon = int(settings.initiative_unresolved_thread_horizon_days)
     boundary = date(2026, 7, 30) + timedelta(days=horizon)  # local_today + horizon
 
@@ -346,3 +349,40 @@ def test_held_thought_from_the_users_final_pre_gap_message(soul_db, runtime_db) 
         soul_db, runtime_db, user_id=user_id, last_message_at=LONG_AGO, now=NOW
     )
     assert thought == "the gallery opening they were nervous about"
+
+
+def test_no_held_thought_for_a_signal_out_of_horizon_at_gap_start(
+    soul_db, runtime_db
+) -> None:
+    """Regression (PR #128 review round 6): offline gaps are backfilled by
+    the first tick against the CURRENT horizon, so a signal that only slid
+    into the window mid-gap can inherit the whole gap's aggregate pressure.
+    It must also have been in-horizon on the last-message local date, or the
+    greeting stays silent."""
+    from zoneinfo import ZoneInfo
+
+    from anima_server.config import settings
+
+    tz = ZoneInfo("UTC")
+    horizon = int(settings.initiative_unresolved_thread_horizon_days)
+    user_id = _seed_all_conditions(soul_db, runtime_db)
+    fs = soul_db.query(ForesightSignal).one()
+    # In horizon at the return date, but one day BEYOND it at gap start.
+    fs.start_date = LONG_AGO.date() + timedelta(days=horizon + 1)
+    soul_db.commit()
+    assert fs.start_date <= NOW.date() + timedelta(days=horizon)  # query passes
+    assert (
+        _resolve_held_thought(
+            soul_db, runtime_db, user_id=user_id, last_message_at=LONG_AGO, now=NOW, tz=tz
+        )
+        is None
+    )
+    # Inside the gap-start horizon: surfaces again.
+    fs.start_date = LONG_AGO.date() + timedelta(days=horizon)
+    soul_db.commit()
+    assert (
+        _resolve_held_thought(
+            soul_db, runtime_db, user_id=user_id, last_message_at=LONG_AGO, now=NOW, tz=tz
+        )
+        == "the gallery opening they were nervous about"
+    )

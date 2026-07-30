@@ -360,13 +360,11 @@ def _resolve_held_thought(
 
     if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
         return None
-    local_today = now.astimezone(tz or system_zoneinfo()).date()
+    local_zone = tz or system_zoneinfo()
+    local_today = now.astimezone(local_zone).date()
+    horizon_days = settings.initiative_unresolved_thread_horizon_days
     row = db.scalar(
-        _open_in_horizon_foresight(
-            user_id,
-            local_today,
-            settings.initiative_unresolved_thread_horizon_days,
-        ).limit(1)
+        _open_in_horizon_foresight(user_id, local_today, horizon_days).limit(1)
     )
     if row is None:
         return None
@@ -382,6 +380,18 @@ def _resolve_held_thought(
     # means no grounding, so silence.
     anchored_at = row.observed_at or row.created_at
     if anchored_at is None or _normalize_utc(anchored_at) > last_message_utc:
+        return None
+    # In-horizon at gap start too (PR #128 review round 6): offline gaps are
+    # backfilled by the first tick against the CURRENT horizon, so a signal
+    # whose start_date only entered the sliding window mid-gap can inherit
+    # the whole gap's aggregate growth despite being ineligible to grow it
+    # when the user left. Require eligibility on the last-message local date
+    # as well — the same `start_date <= date + horizon` predicate the query
+    # applies to the return date.
+    gap_start_local_date = last_message_utc.astimezone(local_zone).date()
+    if row.start_date is None or row.start_date > gap_start_local_date + timedelta(
+        days=horizon_days
+    ):
         return None
     content = df(user_id, row.content, table="foresight_signals", field="content")
     content = (content or "").strip()
