@@ -34,18 +34,14 @@ def _embedding(*values: float) -> list[float]:
 
 def _constraint_columns(model: type, name: str) -> tuple[str, ...]:
     constraint = next(
-        constraint
-        for constraint in model.__table__.constraints
-        if constraint.name == name
+        constraint for constraint in model.__table__.constraints if constraint.name == name
     )
     return tuple(column.name for column in constraint.columns)
 
 
 def _foreign_key_constraint(model: type, name: str) -> ForeignKeyConstraint:
     constraint = next(
-        constraint
-        for constraint in model.__table__.constraints
-        if constraint.name == name
+        constraint for constraint in model.__table__.constraints if constraint.name == name
     )
     assert isinstance(constraint, ForeignKeyConstraint)
     return constraint
@@ -110,8 +106,7 @@ def test_document_chunk_ownership_foreign_key_constraint_registered() -> None:
         "user_id",
     )
     assert tuple(
-        f"{element.column.table.name}.{element.column.name}"
-        for element in constraint.elements
+        f"{element.column.table.name}.{element.column.name}" for element in constraint.elements
     ) == (
         "runtime_documents.id",
         "runtime_documents.user_id",
@@ -204,6 +199,7 @@ def test_replace_document_chunks_replaces_existing_chunks_and_hashes_content(
     assert [chunk.content_text for chunk in chunks] == ["second chunk", "third chunk"]
     assert runtime_db.scalar(select(func.count(RuntimeDocumentChunk.id))) == 2
     assert chunks[0].content_hash == hashlib.sha256(b"second chunk").hexdigest()
+    assert [chunk.content_char_count for chunk in chunks] == [12, 11]
     assert chunks[1].content_hash == hashlib.sha256(b"third chunk").hexdigest()
     assert chunks[1].page_start == 5
     assert chunks[1].page_end == 6
@@ -371,9 +367,7 @@ def test_replace_document_chunks_stamps_parse_quality(runtime_db) -> None:
         runtime_db,
         document_id=document.id,
         chunks=[
-            ExtractedDocumentChunk(
-                chunk_index=0, content_text="alpha", page_start=1, page_end=1
-            )
+            ExtractedDocumentChunk(chunk_index=0, content_text="alpha", page_start=1, page_end=1)
         ],
         parse_quality="preview",
     )

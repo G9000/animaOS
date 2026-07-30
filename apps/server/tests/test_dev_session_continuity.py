@@ -186,6 +186,32 @@ def test_session_store_restores_unlock_and_sqlcipher_without_db_viewer_state(
     assert restored.get_db_viewer_verified_at(token) is None
 
 
+def test_restored_session_reconstructs_runtime_index_from_sqlcipher_key(
+    tmp_path: Path,
+) -> None:
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    snapshot.write(_payload(token="restored-token"))
+    sentinel_index = SimpleNamespace()
+    calls: list[tuple[object | None, bytes | None]] = []
+
+    def runtime_index_factory(
+        corefs_keys: object | None,
+        sqlcipher_key: bytes | None,
+    ) -> object:
+        calls.append((corefs_keys, sqlcipher_key))
+        return sentinel_index
+
+    restored = UnlockSessionStore(
+        snapshot=snapshot,
+        runtime_index_factory=runtime_index_factory,  # type: ignore[arg-type]
+    )
+
+    session = restored.resolve("restored-token")
+    assert session is not None
+    assert session.runtime_index is sentinel_index
+    assert calls == [(None, b"k" * 32)]
+
+
 def test_session_store_does_not_restore_session_that_had_corefs_keys(
     tmp_path: Path,
 ) -> None:
@@ -224,7 +250,11 @@ def test_session_store_does_not_restore_legacy_session_without_corefs_marker(
     restored = UnlockSessionStore(snapshot=snapshot)
 
     assert restored.resolve("legacy-token") is None
-    assert snapshot.load() == {"version": 1, "sessions": [], "sqlcipherKey": payload["sqlcipherKey"]}
+    assert snapshot.load() == {
+        "version": 1,
+        "sessions": [],
+        "sqlcipherKey": payload["sqlcipherKey"],
+    }
 
 
 def test_session_store_discards_expired_snapshot_sessions(tmp_path: Path) -> None:
@@ -240,7 +270,11 @@ def test_session_store_discards_expired_snapshot_sessions(tmp_path: Path) -> Non
     restored = UnlockSessionStore(snapshot=snapshot)
 
     assert restored.resolve("expired-token") is None
-    assert snapshot.load() == {"version": 1, "sessions": [], "sqlcipherKey": payload["sqlcipherKey"]}
+    assert snapshot.load() == {
+        "version": 1,
+        "sessions": [],
+        "sqlcipherKey": payload["sqlcipherKey"],
+    }
 
 
 def test_session_store_persists_revocation_and_clear(tmp_path: Path) -> None:
@@ -540,11 +574,7 @@ def _snapshot_tokens(snapshot: _FailingSnapshot) -> set[str]:
     assert payload is not None
     sessions = payload["sessions"]
     assert isinstance(sessions, list)
-    return {
-        str(session["token"])
-        for session in sessions
-        if isinstance(session, dict)
-    }
+    return {str(session["token"]) for session in sessions if isinstance(session, dict)}
 
 
 @pytest.mark.asyncio
@@ -564,9 +594,7 @@ async def test_native_close_detaches_token_before_extended_wait(
         token,
         native_session,
         expires_at=(
-            datetime.now(UTC) - timedelta(seconds=1)
-            if operation == "expiry_purge"
-            else None
+            datetime.now(UTC) - timedelta(seconds=1) if operation == "expiry_purge" else None
         ),
     )
 
@@ -847,16 +875,12 @@ def test_async_code_does_not_call_sync_unlock_accessors() -> None:
             for statement in function.body:
                 visitor.visit(statement)
             for node in visitor.calls:
-                if (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id
-                    in {
-                        "get_active_dek",
-                        "get_active_deks",
-                        "require_unlocked_session",
-                        "require_unlocked_user",
-                    }
-                ):
+                if isinstance(node.func, ast.Name) and node.func.id in {
+                    "get_active_dek",
+                    "get_active_deks",
+                    "require_unlocked_session",
+                    "require_unlocked_user",
+                }:
                     forbidden_calls.append(
                         f"{path.relative_to(source_dir)}:"
                         f"{node.lineno}:{function.name}:{node.func.id}"

@@ -1429,6 +1429,112 @@ def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
         assert loaded.source_message_ids == [10, 20]
 
 
+def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
+    monkeypatch,
+    runtime_db: Session,
+) -> None:
+    from anima_server.models.pending_memory_op import PendingMemoryOp
+    from anima_server.models.runtime import RuntimeDocumentChunk
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents.models import (
+        DocumentRegistration,
+        ExtractedDocumentChunk,
+    )
+    from anima_server.services.documents.store import (
+        register_document,
+        replace_document_chunks,
+    )
+
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=7,
+            filename="legacy.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/7/legacy.pdf",
+            sha256="7" * 64,
+            size_bytes=128,
+        ),
+    )
+    chunks = replace_document_chunks(
+        runtime_db,
+        document_id=document.id,
+        chunks=[
+            ExtractedDocumentChunk(
+                chunk_index=0,
+                content_text="legacy document plaintext",
+            )
+        ],
+        parse_quality="legacy",
+    )
+    pending = PendingMemoryOp(
+        user_id=7,
+        op_type="append",
+        target_block="human",
+        content="legacy pending plaintext",
+        old_content="older plaintext",
+    )
+    runtime_db.add(pending)
+    runtime_db.flush()
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.flush()
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    converted = sealed_runtime.convert_legacy_runtime_rows(
+        runtime_db,
+        index=index,
+        user_id=7,
+    )
+    runtime_db.flush()
+
+    raw_chunk = runtime_db.execute(
+        select(
+            RuntimeDocumentChunk.__table__.c.content_text,
+            RuntimeDocumentChunk.__table__.c.content_char_count,
+        ).where(RuntimeDocumentChunk.__table__.c.id == chunks[0].id)
+    ).one()
+    raw_pending = runtime_db.execute(
+        select(
+            PendingMemoryOp.__table__.c.content,
+            PendingMemoryOp.__table__.c.old_content,
+        ).where(PendingMemoryOp.__table__.c.id == pending.id)
+    ).one()
+    assert converted == 2
+    assert raw_chunk == ("", len("legacy document plaintext"))
+    assert raw_pending == ("", None)
+    assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
+
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    runtime_db.expunge_all()
+    loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
+    loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
+    assert loaded_chunk is not None
+    assert loaded_chunk.content_text == "legacy document plaintext"
+    assert loaded_pending is not None
+    assert loaded_pending.content == "legacy pending plaintext"
+    assert loaded_pending.old_content == "older plaintext"
+    assert (
+        sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        == 0
+    )
+
+
 def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(
     monkeypatch,
 ) -> None:

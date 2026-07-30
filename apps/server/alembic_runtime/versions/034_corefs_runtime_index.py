@@ -31,6 +31,26 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
 
+    if inspector.has_table("runtime_document_chunks"):
+        chunk_columns = {
+            column["name"] for column in inspector.get_columns("runtime_document_chunks")
+        }
+        if "content_char_count" not in chunk_columns:
+            op.add_column(
+                "runtime_document_chunks",
+                sa.Column(
+                    "content_char_count",
+                    sa.Integer(),
+                    nullable=False,
+                    server_default=sa.text("0"),
+                ),
+            )
+            op.execute(
+                sa.text(
+                    "UPDATE runtime_document_chunks SET content_char_count = LENGTH(content_text)"
+                )
+            )
+
     if not inspector.has_table("corefs_runtime_binding"):
         op.create_table(
             "corefs_runtime_binding",
@@ -232,3 +252,10 @@ def downgrade() -> None:
     for table_name in reversed(TABLES):
         if inspector.has_table(table_name):
             op.drop_table(table_name)
+    inspector = inspect(bind)
+    if inspector.has_table("runtime_document_chunks"):
+        chunk_columns = {
+            column["name"] for column in inspector.get_columns("runtime_document_chunks")
+        }
+        if "content_char_count" in chunk_columns:
+            op.drop_column("runtime_document_chunks", "content_char_count")

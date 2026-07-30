@@ -215,6 +215,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             )
             ensure_pgvector()
             ensure_runtime_tables()
+            unlock_session_store.initialize_runtime_indexes()
 
             try:
                 from .services.agent.inner_life.catchup import apply_offline_catchup

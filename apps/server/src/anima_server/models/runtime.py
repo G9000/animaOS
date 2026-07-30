@@ -48,9 +48,7 @@ from anima_server.db.runtime_base import RuntimeBase
 
 class RuntimeThread(RuntimeBase):
     __tablename__ = "runtime_threads"
-    __table_args__ = (
-        Index("ix_runtime_threads_user_status", "user_id", "status"),
-    )
+    __table_args__ = (Index("ix_runtime_threads_user_status", "user_id", "status"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -193,12 +191,8 @@ class RuntimeWorkflowRun(RuntimeBase):
     input_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    retry_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
-    )
-    max_retries: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("3")
-    )
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -339,6 +333,12 @@ class RuntimeDocumentChunk(RuntimeBase):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_char_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -905,9 +905,7 @@ class RuntimeStep(RuntimeBase):
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     response_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    tool_calls_json: Mapped[list[dict[str, object]] | None] = mapped_column(
-        JSON, nullable=True
-    )
+    tool_calls_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
     usage_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -1034,9 +1032,7 @@ class RuntimeMessage(RuntimeBase):
         ):
             return True
         return (
-            self.role == "tool"
-            and self.tool_name is not None
-            and self.tool_name != "send_message"
+            self.role == "tool" and self.tool_name is not None and self.tool_name != "send_message"
         )
 
 
@@ -1129,9 +1125,7 @@ class RuntimeBackgroundTaskRun(RuntimeBase):
     """Tracked background task execution for debugging and monitoring."""
 
     __tablename__ = "runtime_background_task_runs"
-    __table_args__ = (
-        Index("ix_runtime_bg_task_runs_user_status", "user_id", "status"),
-    )
+    __table_args__ = (Index("ix_runtime_bg_task_runs_user_status", "user_id", "status"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(

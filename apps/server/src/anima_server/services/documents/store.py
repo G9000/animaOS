@@ -173,6 +173,7 @@ def replace_document_chunks(
             user_id=document.user_id,
             chunk_index=chunk.chunk_index,
             content_text=chunk.content_text,
+            content_char_count=len(chunk.content_text),
             content_hash=_content_hash(chunk.content_text),
             page_start=chunk.page_start,
             page_end=chunk.page_end,

@@ -52,9 +52,7 @@ def runtime_index_for_sensitive_write(
     index = active_runtime_index(user_id)
     if index is not None:
         return index
-    binding = runtime_db.scalar(
-        select(CoreFSRuntimeBinding.binding_slot).limit(1)
-    )
+    binding = runtime_db.scalar(select(CoreFSRuntimeBinding.binding_slot).limit(1))
     if binding is not None:
         raise RuntimeSealingLocked(
             "sensitive Runtime writes are unavailable while CoreFS is locked"
@@ -147,6 +145,201 @@ def seal_runtime_fields(
         set_committed_value(row, field, value)
 
 
+def convert_legacy_runtime_rows(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    user_id: int,
+) -> int:
+    """Seal and scrub legacy plaintext Runtime rows for one unlocked owner.
+
+    Alembic cannot perform this conversion because the sealing key only exists
+    inside an unlock session. Each row is sealed and scrubbed in the caller's
+    transaction, and an existing sealed payload makes the pass idempotent.
+    """
+    from anima_server.models.pending_memory_op import PendingMemoryOp
+    from anima_server.models.runtime import (
+        RuntimeDocumentChunk,
+        RuntimeImageAnnotation,
+        RuntimeMessage,
+        RuntimeSourceArtifact,
+        RuntimeSourceSpan,
+        RuntimeStep,
+        RuntimeThread,
+    )
+    from anima_server.models.runtime_memory import (
+        MemoryCandidate,
+        MemoryExtractionFailure,
+        ProfileUpdateCandidate,
+        RuntimeSessionNote,
+    )
+
+    specifications = (
+        (
+            RuntimeMessage.__table__,
+            "runtime_message",
+            {
+                "content_text": "content_text",
+                "content_json": "content_json",
+                "tool_args_json": "tool_args_json",
+            },
+            {"content_text": None, "content_json": None, "tool_args_json": None},
+        ),
+        (
+            RuntimeDocumentChunk.__table__,
+            "runtime_document_chunk",
+            {"content_text": "content_text"},
+            {"content_text": ""},
+        ),
+        (
+            RuntimeImageAnnotation.__table__,
+            "runtime_image_annotation",
+            {"content_text": "content_text"},
+            {"content_text": ""},
+        ),
+        (
+            RuntimeSourceArtifact.__table__,
+            "runtime_source_artifact",
+            {"content_text": "content_text"},
+            {"content_text": None},
+        ),
+        (
+            RuntimeSourceSpan.__table__,
+            "runtime_source_span",
+            {"content_text": "content_text"},
+            {"content_text": ""},
+        ),
+        (
+            MemoryCandidate.__table__,
+            "memory_candidate",
+            {"content": "content", "tags": "tags_json", "salience": "salience_json"},
+            {"content": "", "tags_json": None, "salience_json": None},
+        ),
+        (
+            MemoryExtractionFailure.__table__,
+            "memory_extraction_failure",
+            {
+                "user_message_preview": "user_message_preview",
+                "assistant_response_preview": "assistant_response_preview",
+            },
+            {"user_message_preview": None, "assistant_response_preview": None},
+        ),
+        (
+            ProfileUpdateCandidate.__table__,
+            "profile_update_candidate",
+            {"value": "value", "evidence_text": "evidence_text"},
+            {"value": "", "evidence_text": None},
+        ),
+        (
+            RuntimeSessionNote.__table__,
+            "runtime_session_note",
+            {"key": "key", "value": "value"},
+            {"key": "", "value": ""},
+        ),
+        (
+            PendingMemoryOp.__table__,
+            "pending_memory_op",
+            {"content": "content", "old_content": "old_content"},
+            {"content": "", "old_content": None},
+        ),
+    )
+
+    converted = 0
+    for table, row_type, payload_columns, placeholders in specifications:
+        statement = select(
+            table.c.id.label("_row_id"),
+            table.c.user_id.label("_owner_id"),
+            *(table.c[column].label(column) for column in payload_columns.values()),
+        ).where(table.c.user_id == user_id)
+        converted += _convert_legacy_statement(
+            runtime_db,
+            index=index,
+            table=table,
+            row_type=row_type,
+            statement=statement,
+            payload_columns=payload_columns,
+            placeholders=placeholders,
+        )
+
+    step_table = RuntimeStep.__table__
+    thread_table = RuntimeThread.__table__
+    converted += _convert_legacy_statement(
+        runtime_db,
+        index=index,
+        table=step_table,
+        row_type="runtime_step",
+        statement=(
+            select(
+                step_table.c.id.label("_row_id"),
+                thread_table.c.user_id.label("_owner_id"),
+                step_table.c.request_json,
+                step_table.c.response_json,
+                step_table.c.tool_calls_json,
+            )
+            .join(thread_table, thread_table.c.id == step_table.c.thread_id)
+            .where(thread_table.c.user_id == user_id)
+        ),
+        payload_columns={
+            "request_json": "request_json",
+            "response_json": "response_json",
+            "tool_calls_json": "tool_calls_json",
+        },
+        placeholders={
+            "request_json": {},
+            "response_json": {},
+            "tool_calls_json": None,
+        },
+    )
+    runtime_db.flush()
+    return converted
+
+
+def _convert_legacy_statement(
+    runtime_db: Session,
+    *,
+    index: CoreFSProgressiveIndex,
+    table: Any,
+    row_type: str,
+    statement: Any,
+    payload_columns: dict[str, str],
+    placeholders: dict[str, object],
+) -> int:
+    converted = 0
+    for row in runtime_db.execute(statement).mappings():
+        row_id = int(row["_row_id"])
+        owner_id = int(row["_owner_id"])
+        already_sealed = runtime_db.scalar(
+            select(CoreFSSealedPayload.id).where(
+                CoreFSSealedPayload.core_id == index.core_id,
+                CoreFSSealedPayload.local_instance_id == index.local_instance_id,
+                CoreFSSealedPayload.row_type == row_type,
+                CoreFSSealedPayload.row_id_hash == _digest(str(row_id)),
+            )
+        )
+        if already_sealed is not None:
+            continue
+        payload = {
+            payload_name: row[column_name] for payload_name, column_name in payload_columns.items()
+        }
+        seal_runtime_record(
+            runtime_db,
+            index=index,
+            row_type=row_type,
+            row_id=row_id,
+            owner_id=owner_id,
+            payload=payload,
+        )
+        scrubbed = dict(placeholders)
+        if row_type == "runtime_document_chunk":
+            content_text = payload["content_text"]
+            if not isinstance(content_text, str):
+                raise ValueError("legacy Runtime document chunk text is invalid")
+            scrubbed["content_char_count"] = len(content_text)
+        runtime_db.execute(table.update().where(table.c.id == row_id).values(**scrubbed))
+        converted += 1
+    return converted
+
+
 def reseal_runtime_message(
     runtime_db: Session,
     message: RuntimeMessage,
@@ -156,15 +349,9 @@ def reseal_runtime_message(
     tool_args_json: dict[str, object] | None | object = _UNCHANGED,
 ) -> None:
     """Persist a Runtime message mutation without exposing its private fields."""
-    next_content_text = (
-        message.content_text if content_text is _UNCHANGED else content_text
-    )
-    next_content_json = (
-        message.content_json if content_json is _UNCHANGED else content_json
-    )
-    next_tool_args_json = (
-        message.tool_args_json if tool_args_json is _UNCHANGED else tool_args_json
-    )
+    next_content_text = message.content_text if content_text is _UNCHANGED else content_text
+    next_content_json = message.content_json if content_json is _UNCHANGED else content_json
+    next_tool_args_json = message.tool_args_json if tool_args_json is _UNCHANGED else tool_args_json
     runtime_index = runtime_index_for_sensitive_write(
         runtime_db,
         user_id=int(message.user_id),

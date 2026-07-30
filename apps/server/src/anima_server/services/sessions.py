@@ -8,7 +8,7 @@ import ctypes
 import logging
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Condition, Event, RLock
@@ -94,9 +94,7 @@ class UnlockSessionStore:
         self._lock = RLock()
         self._construction_condition = Condition(self._lock)
         self._snapshot = snapshot
-        self._corefs_session_factory = (
-            corefs_session_factory or _create_native_corefs_session
-        )
+        self._corefs_session_factory = corefs_session_factory or _create_native_corefs_session
         self._runtime_index_factory = runtime_index_factory or _create_runtime_index
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
@@ -126,9 +124,7 @@ class UnlockSessionStore:
                 cleanup.extend(self._purge_expired_locked())
                 next_sessions = dict(self._sessions)
                 next_sessions[token] = session
-                cleanup.extend(
-                    self._commit_locked(next_sessions, self._sqlcipher_key)
-                )
+                cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
             self._run_cleanup(cleanup)
             return token
         except Exception:
@@ -176,9 +172,7 @@ class UnlockSessionStore:
                     if session.user_id != user_id
                 }
                 next_sessions[token] = replacement
-                cleanup.extend(
-                    self._commit_locked(next_sessions, self._sqlcipher_key)
-                )
+                cleanup.extend(self._commit_locked(next_sessions, self._sqlcipher_key))
             self._run_cleanup(cleanup)
             return token
         except Exception:
@@ -264,14 +258,8 @@ class UnlockSessionStore:
 
     def start(self) -> None:
         with self._lock:
-            if (
-                self._active_constructions
-                or self._active_shutdowns
-                or self._closing_sessions
-            ):
-                raise RuntimeError(
-                    "Unlock session store cannot start while teardown is active"
-                )
+            if self._active_constructions or self._active_shutdowns or self._closing_sessions:
+                raise RuntimeError("Unlock session store cannot start while teardown is active")
             self._shut_down = False
 
     def get_active_dek(self, user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
@@ -319,9 +307,7 @@ class UnlockSessionStore:
         with self._lock:
             cleanup.extend(self._purge_expired_locked())
             sessions = tuple(
-                session
-                for session in self._sessions.values()
-                if session.user_id == user_id
+                session for session in self._sessions.values() if session.user_id == user_id
             )
         self._run_cleanup(cleanup)
         return sessions
@@ -358,9 +344,7 @@ class UnlockSessionStore:
         try:
             with self._lock:
                 self._ensure_running_locked()
-                cleanup.extend(
-                    self._commit_locked(dict(self._sessions), copied_key)
-                )
+                cleanup.extend(self._commit_locked(dict(self._sessions), copied_key))
         except Exception:
             _zero_dek(copied_key)
             raise
@@ -381,9 +365,7 @@ class UnlockSessionStore:
     def _purge_expired_locked(self) -> _CleanupBatch:
         now = self._now()
         next_sessions = {
-            token: session
-            for token, session in self._sessions.items()
-            if session.expires_at > now
+            token: session for token, session in self._sessions.items() if session.expires_at > now
         }
         if len(next_sessions) == len(self._sessions):
             return _CleanupBatch()
@@ -405,9 +387,7 @@ class UnlockSessionStore:
         next_sqlcipher_key: bytes | None,
     ) -> _CleanupBatch:
         if self._snapshot is not None:
-            self._snapshot.write(
-                self._snapshot_payload(next_sessions, next_sqlcipher_key)
-            )
+            self._snapshot.write(self._snapshot_payload(next_sessions, next_sqlcipher_key))
         return self._apply_state_locked(next_sessions, next_sqlcipher_key)
 
     def _apply_state_locked(
@@ -440,10 +420,7 @@ class UnlockSessionStore:
         }
         self._rebuild_latest_deks_locked()
 
-        if (
-            previous_sqlcipher_key is not None
-            and previous_sqlcipher_key is not next_sqlcipher_key
-        ):
+        if previous_sqlcipher_key is not None and previous_sqlcipher_key is not next_sqlcipher_key:
             cleanup.sqlcipher_keys.append(previous_sqlcipher_key)
         return cleanup
 
@@ -453,29 +430,24 @@ class UnlockSessionStore:
         deks: dict[str, bytes],
         corefs_keys: object | None,
     ) -> UnlockSession:
-        copied_deks = {
-            domain: _copy_key(dek)
-            for domain, dek in deks.items()
-        }
+        copied_deks = {domain: _copy_key(dek) for domain, dek in deks.items()}
         corefs_session: object | None = None
         runtime_index: CoreFSProgressiveIndex | None = None
         try:
-            corefs_session = (
-                None
-                if corefs_keys is None
-                else self._corefs_session_factory()
-            )
+            corefs_session = None if corefs_keys is None else self._corefs_session_factory()
             if corefs_session is not None and not callable(
                 getattr(corefs_session, "begin_close", None)
             ):
-                raise RuntimeError(
-                    "CoreFS native session does not implement begin_close"
-                )
+                raise RuntimeError("CoreFS native session does not implement begin_close")
             with self._lock:
                 sqlcipher_key = self._sqlcipher_key
             runtime_index = self._runtime_index_factory(
                 corefs_keys,
                 sqlcipher_key,
+            )
+            self._convert_runtime_index_rows(
+                runtime_index,
+                user_id=user_id,
             )
         except Exception:
             if runtime_index is not None:
@@ -498,6 +470,69 @@ class UnlockSessionStore:
             corefs_session=corefs_session,
             runtime_index=runtime_index,
         )
+
+    @staticmethod
+    def _convert_runtime_index_rows(
+        runtime_index: CoreFSProgressiveIndex | None,
+        *,
+        user_id: int,
+    ) -> bool:
+        if runtime_index is None:
+            return True
+        from anima_server.db.runtime import get_runtime_session_factory
+        from anima_server.services.corefs.sealed_runtime import (
+            convert_legacy_runtime_rows,
+        )
+
+        try:
+            factory = get_runtime_session_factory()
+        except RuntimeError:
+            # Restored development sessions are decoded before the lifespan
+            # initializes Runtime. The startup handoff retries after Alembic.
+            return False
+        with factory() as runtime_db:
+            convert_legacy_runtime_rows(
+                runtime_db,
+                index=runtime_index,
+                user_id=user_id,
+            )
+            runtime_db.commit()
+        return True
+
+    def initialize_runtime_indexes(self) -> None:
+        """Finish restored-session Runtime setup after the DB is migrated."""
+        with self._lock:
+            sessions = dict(self._sessions)
+            sqlcipher_key = self._sqlcipher_key
+
+        replacements: dict[str, UnlockSession] = {}
+        created_indexes: list[CoreFSProgressiveIndex] = []
+        try:
+            for token, session in sessions.items():
+                runtime_index = session.runtime_index
+                if runtime_index is None:
+                    runtime_index = self._runtime_index_factory(
+                        None,
+                        sqlcipher_key,
+                    )
+                    if runtime_index is not None:
+                        created_indexes.append(runtime_index)
+                self._convert_runtime_index_rows(
+                    runtime_index,
+                    user_id=session.user_id,
+                )
+                replacements[token] = replace(
+                    session,
+                    runtime_index=runtime_index,
+                )
+        except Exception:
+            for runtime_index in created_indexes:
+                runtime_index.clear_unlocked_state()
+            raise
+
+        with self._lock:
+            self._sessions = replacements
+            self._rebuild_latest_deks_locked()
 
     def _ensure_running_locked(self) -> None:
         if self._shut_down:
@@ -559,9 +594,7 @@ class UnlockSessionStore:
         )
         if begin_close is None:
             if native_session is not None:
-                record.error = RuntimeError(
-                    "CoreFS native session does not implement begin_close"
-                )
+                record.error = RuntimeError("CoreFS native session does not implement begin_close")
                 logger.error("%s", record.error)
             return
         try:
@@ -599,9 +632,7 @@ class UnlockSessionStore:
         result = worker.result()
         if cancellation_requested:
             if _cancel_result is not None:
-                cleanup_worker = asyncio.create_task(
-                    asyncio.to_thread(_cancel_result, result)
-                )
+                cleanup_worker = asyncio.create_task(asyncio.to_thread(_cancel_result, result))
                 await UnlockSessionStore._drain_worker(cleanup_worker)
                 cleanup_worker.result()
             raise asyncio.CancelledError
@@ -689,6 +720,8 @@ class UnlockSessionStore:
         raw_sessions = payload["sessions"]
         if not isinstance(raw_sessions, list):
             raise ValueError("Invalid snapshot sessions")
+        raw_sqlcipher_key = payload["sqlcipherKey"]
+        sqlcipher_key = None if raw_sqlcipher_key is None else _decode_key(raw_sqlcipher_key)
         now = self._now()
         sessions: dict[str, UnlockSession] = {}
         discarded_sessions = False
@@ -707,8 +740,7 @@ class UnlockSessionStore:
             if not isinstance(had_corefs_keys, bool):
                 raise ValueError("Invalid snapshot CoreFS marker")
             deks = {
-                str(domain): _decode_key(encoded_key)
-                for domain, encoded_key in raw_deks.items()
+                str(domain): _decode_key(encoded_key) for domain, encoded_key in raw_deks.items()
             }
             if expires_at <= now or had_corefs_keys:
                 discarded_sessions = True
@@ -718,11 +750,11 @@ class UnlockSessionStore:
                 user_id=user_id,
                 deks=deks,
                 expires_at=expires_at,
+                runtime_index=self._runtime_index_factory(
+                    None,
+                    sqlcipher_key,
+                ),
             )
-        raw_sqlcipher_key = payload["sqlcipherKey"]
-        sqlcipher_key = (
-            None if raw_sqlcipher_key is None else _decode_key(raw_sqlcipher_key)
-        )
         return sessions, sqlcipher_key, discarded_sessions
 
     @staticmethod
@@ -742,16 +774,13 @@ class UnlockSessionStore:
                         for domain, dek in sorted(session.deks.items())
                     },
                     "hadCorefsKeys": (
-                        session.corefs_keys is not None
-                        or session.corefs_session is not None
+                        session.corefs_keys is not None or session.corefs_session is not None
                     ),
                 }
                 for token, session in sessions.items()
             ],
             "sqlcipherKey": (
-                None
-                if sqlcipher_key is None
-                else base64.b64encode(sqlcipher_key).decode("ascii")
+                None if sqlcipher_key is None else base64.b64encode(sqlcipher_key).decode("ascii")
             ),
         }
 
@@ -766,11 +795,7 @@ class UnlockSessionStore:
 
 
 def _format_expiry(value: datetime) -> str:
-    return (
-        value.astimezone(UTC)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _parse_expiry(value: object) -> datetime:
@@ -813,9 +838,7 @@ def _zero_dek(dek: bytes) -> None:
 
 # Initialize the process-global store only after every restore helper above is
 # defined. Dev reloads import this module with a snapshot already present.
-unlock_session_store = UnlockSessionStore(
-    snapshot=DevSessionSnapshot.from_environment()
-)
+unlock_session_store = UnlockSessionStore(snapshot=DevSessionSnapshot.from_environment())
 
 
 def get_active_dek(user_id: int, domain: str = DEFAULT_DOMAIN) -> bytes | None:
