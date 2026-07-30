@@ -411,6 +411,32 @@ def test_embedding_table_reset_preserves_terminal_indexed_documents(
     assert document.indexed_at is not None
 
 
+def test_dimension_reset_inventory_with_null_vectors_remains_unembedded(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    _patch_pgvec_upsert(monkeypatch)
+    document, chunks = _document_with_chunks(runtime_db)
+
+    assert embed_document_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+        embedding_fn=lambda _text: _embedding(0.2, 0.8),
+    ) == 2
+    for row in _embedding_rows(runtime_db):
+        row.embedding = None
+        row.embedding_checksum = None
+    runtime_db.flush()
+
+    assert document.status == "indexed"
+    assert get_unembedded_chunks(
+        runtime_db,
+        user_id=1,
+        document_id=document.id,
+    ) == chunks
+
+
 def test_embed_document_chunks_does_not_mark_empty_document_indexed(
     runtime_db: Session,
     monkeypatch: Any,

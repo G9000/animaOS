@@ -878,6 +878,123 @@ def test_dispose_runtime_engine_cleans_up(runtime_database_url: str) -> None:
         get_runtime_engine()
 
 
+def test_embedding_dimension_reconciliation_preserves_runtime_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+    query_result = MagicMock()
+    query_result.fetchone.return_value = (768,)
+    query_connection = MagicMock()
+    query_connection.execute.return_value = query_result
+    query_context = MagicMock()
+    query_context.__enter__.return_value = query_connection
+    query_context.__exit__.return_value = None
+
+    write_connection = MagicMock()
+    write_context = MagicMock()
+    write_context.__enter__.return_value = write_connection
+    write_context.__exit__.return_value = None
+
+    engine = MagicMock()
+    engine.connect.return_value = query_context
+    engine.begin.return_value = write_context
+    original_type = RuntimeEmbedding.__table__.c.embedding.type
+    monkeypatch.setattr(config, "resolve_embedding_dim", lambda: 384)
+
+    try:
+        runtime_module._reconcile_embedding_dimension(engine)
+        executed = [
+            str(call.args[0])
+            for call in write_connection.execute.call_args_list
+        ]
+    finally:
+        RuntimeEmbedding.__table__.c.embedding.type = original_type
+
+    assert all("DROP TABLE" not in statement for statement in executed)
+    assert any(
+        "ALTER COLUMN embedding TYPE vector(384) USING NULL::vector(384)"
+        in statement
+        for statement in executed
+    )
+    assert any(
+        "SET embedding_checksum = NULL" in statement
+        for statement in executed
+    )
+
+
+@requires_runtime_backend
+def test_embedding_dimension_reconciliation_retains_postgres_rows(
+    runtime_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from pgvector.sqlalchemy import Vector
+
+    init_runtime_engine(runtime_database_url)
+    runtime_module.ensure_runtime_tables()
+    engine = get_runtime_engine()
+    factory = get_runtime_session_factory()
+    original_dim = RuntimeEmbedding.__table__.c.embedding.type.dim
+    target_dim = original_dim + 1
+    row_id: int | None = None
+
+    try:
+        with factory() as runtime_db:
+            row = RuntimeEmbedding(
+                user_id=7,
+                source_type="document_chunk",
+                source_id=42,
+                content_hash="a" * 64,
+                embedding_checksum="b" * 64,
+                embedding=[0.0] * original_dim,
+                content_preview="inventory marker",
+                category="document",
+                importance=4,
+            )
+            runtime_db.add(row)
+            runtime_db.commit()
+            row_id = int(row.id)
+
+        monkeypatch.setattr(config, "resolve_embedding_dim", lambda: target_dim)
+        runtime_module._reconcile_embedding_dimension(engine)
+
+        with engine.connect() as connection:
+            retained = connection.execute(
+                text(
+                    "SELECT id, user_id, source_type, source_id, content_hash, "
+                    "embedding, embedding_checksum, content_preview, category, importance "
+                    "FROM embeddings WHERE id = :row_id"
+                ),
+                {"row_id": row_id},
+            ).one()
+            current_type = connection.execute(
+                text(
+                    "SELECT format_type(a.atttypid, a.atttypmod) "
+                    "FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+                    "WHERE c.relname = 'embeddings' AND a.attname = 'embedding'"
+                )
+            ).scalar_one()
+
+        assert retained == (
+            row_id,
+            7,
+            "document_chunk",
+            42,
+            "a" * 64,
+            None,
+            None,
+            "inventory marker",
+            "document",
+            4,
+        )
+        assert current_type == f"vector({target_dim})"
+    finally:
+        RuntimeEmbedding.__table__.c.embedding.type = Vector(original_dim)
+
+
 def test_ensure_pgvector_enables_vector_extension(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

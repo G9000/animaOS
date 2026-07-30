@@ -327,8 +327,8 @@ def ensure_pgvector_dimension(
     PostgreSQL runtime a model switch to a different dimension can't be
     satisfied by deleting rows — the column type is unchanged, so every
     re-embed upsert of the new-dimension vectors would fail with a dimension
-    mismatch.  When the stored column dimension differs, drop all rows (they
-    are all stale under the new contract anyway) and ``ALTER`` the column type.
+    mismatch. When the stored column dimension differs, retain the source
+    inventory while invalidating its stale vector and checksum fields.
 
     No-op on non-PostgreSQL backends (the sqlite variant is dimension-agnostic)
     and when the dimension already matches, so it is safe to call on every
@@ -362,37 +362,20 @@ def ensure_pgvector_dimension(
                     current_dim = None
             if current_dim == int(dim):
                 return True
-            # A dimension change forces dropping ALL rows — pgvector can't hold
-            # old-dimension vectors in a vector(new) column, so non-memory
-            # sources go too.  Make that loud rather than silent: memory items
-            # are rebuilt by the backfill and documents self-heal via the RAG
-            # after-reset repair, but image-annotation and knowledge-concept
-            # vectors are only rebuilt on re-ingestion.
-            dropped_non_memory = (
-                rt_db.execute(
-                    text("SELECT count(*) FROM embeddings WHERE source_type <> 'memory_item'")
-                ).scalar()
-                or 0
+            # Old vectors cannot inhabit the new fixed-width column, but the
+            # non-vector rows remain the rebuild inventory for every source.
+            from anima_server.db.runtime import (
+                realign_runtime_embedding_dimension,
             )
-            rt_db.execute(text("DELETE FROM embeddings"))
-            rt_db.execute(
-                text(f"ALTER TABLE embeddings ALTER COLUMN embedding TYPE vector({int(dim)})")
-            )
+
+            realign_runtime_embedding_dimension(rt_db, dimension=int(dim))
             rt_db.commit()
             logger.info(
-                "Recreated embeddings.embedding as vector(%d) for re-embed (was %s)",
+                "Realigned embeddings.embedding as vector(%d) for re-embed "
+                "while retaining source inventory (was %s)",
                 dim,
                 current_type,
             )
-            if dropped_non_memory:
-                degraded_logger.warning(
-                    "Dropped %d non-memory embedding rows while realigning the "
-                    "pgvector column to dim %d; document vectors self-heal on "
-                    "the next RAG query, image/knowledge-concept vectors rebuild "
-                    "on re-ingestion.",
-                    dropped_non_memory,
-                    dim,
-                )
             return True
     except Exception:
         logger.exception("Failed to align pgvector column to dimension %d", dim)
@@ -448,9 +431,8 @@ def reset_derived_embedding_stores(
                 # backfill in this cycle, so deleting them would drop those
                 # memories from recall with no way to rebuild them — a worse
                 # regression than a stale vector on an operator-initiated model
-                # change.  Re-embedding non-memory sources is a separate follow
-                # up; dimension changes still wipe the whole column via
-                # ``ensure_pgvector_dimension`` (unavoidable there).
+                # change. Dimension changes keep that inventory with null
+                # vectors so unlock-scoped rebuilding can restore it.
                 delete_runtime_embedding_records(
                     rt_db,
                     owner_id=user_id,

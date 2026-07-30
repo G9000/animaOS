@@ -45,6 +45,7 @@ def get_unembedded_chunks(
             RuntimeEmbedding.source_type == "document_chunk",
             RuntimeEmbedding.source_id == RuntimeDocumentChunk.id,
             RuntimeEmbedding.content_hash == RuntimeDocumentChunk.content_hash,
+            RuntimeEmbedding.embedding.isnot(None),
         )
         .exists()
     )

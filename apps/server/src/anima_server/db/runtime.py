@@ -211,17 +211,11 @@ def ensure_runtime_tables() -> None:
 
 
 def _reconcile_embedding_dimension(engine: Engine) -> None:
-    """Drop and recreate the embeddings table if the vector dimension changed.
+    """Realign the vector column while preserving its source inventory.
 
-    Memory vectors can be rebuilt from ``MemoryItem.embedding_json`` in SQLite.
-    Document vectors only live in this runtime table, so indexed documents
-    with persisted chunks are marked unindexed after a reset and can be
-    re-embedded.
-
-    Uses ``create_all`` (not Alembic) to recreate the table, because
-    Alembic's ``upgrade head`` is a no-op when already at head.  The
-    column type on the ORM model is updated in-place before creating
-    so the new table gets the correct dimension.
+    The non-vector columns link unlock-sealed embedding inputs to their source
+    rows. Preserve that inventory and invalidate only stale vector/checksum
+    fields so the new dimension can rebuild after unlock.
     """
     from anima_server.config import resolve_embedding_dim
 
@@ -249,24 +243,45 @@ def _reconcile_embedding_dimension(engine: Engine) -> None:
             )
         from pgvector.sqlalchemy import Vector
 
-        from anima_server.db.runtime_base import RuntimeBase
         from anima_server.models.runtime_embedding import RuntimeEmbedding
 
-        RuntimeEmbedding.__table__.c.embedding.type = Vector(expected_dim)
-
         with engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS embeddings CASCADE"))
-        RuntimeBase.metadata.create_all(
-            engine, tables=[RuntimeEmbedding.__table__]
-        )
+            realign_runtime_embedding_dimension(conn, dimension=expected_dim)
+        RuntimeEmbedding.__table__.c.embedding.type = Vector(expected_dim)
         _mark_indexed_documents_unindexed_after_embedding_reset(engine)
         logger.info(
-            "Embeddings table recreated with dimension %d. "
+            "Embeddings inventory retained with vector dimension %d. "
             "Background sync will repopulate.",
             expected_dim,
         )
     except Exception:
         logger.debug("Embedding dimension check skipped", exc_info=True)
+
+
+def realign_runtime_embedding_dimension(
+    connection,
+    *,
+    dimension: int,
+) -> None:
+    """Atomically retain embedding inventory while invalidating stale vectors."""
+    if dimension <= 0:
+        raise ValueError("embedding dimension must be positive")
+    connection.execute(text("DROP INDEX IF EXISTS ix_embeddings_hnsw"))
+    connection.execute(
+        text(
+            "ALTER TABLE embeddings "
+            f"ALTER COLUMN embedding TYPE vector({dimension}) "
+            f"USING NULL::vector({dimension})"
+        )
+    )
+    connection.execute(text("UPDATE embeddings SET embedding_checksum = NULL"))
+    connection.execute(
+        text(
+            "CREATE INDEX ix_embeddings_hnsw ON embeddings "
+            "USING hnsw (embedding vector_cosine_ops) "
+            "WITH (m = 16, ef_construction = 64)"
+        )
+    )
 
 
 def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> int:
