@@ -1086,7 +1086,24 @@ export default function Chat() {
   // Returns true only when the send actually proceeded — guard rejections
   // and attachment failures return false so callers (handleSubmit) can keep
   // un-consumed seed state for the retry (PR #131 round 4).
+  // sendInFlightRef is a SYNCHRONOUS latch (PR #131 round 5): the close-await
+  // below yields before `streaming` is set, so without it a double submit
+  // passes every guard twice and starts two streams with the same draft.
   const sendMessage = async (
+    text: string,
+    contextMessages: ChatContextMessage[] = [],
+    opts: { skipContextDisplay?: boolean } = {},
+  ): Promise<boolean> => {
+    if (sendInFlightRef.current) return false;
+    sendInFlightRef.current = true;
+    try {
+      return await sendMessageInner(text, contextMessages, opts);
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+  const sendInFlightRef = useRef(false);
+  const sendMessageInner = async (
     text: string,
     contextMessages: ChatContextMessage[] = [],
     opts: { skipContextDisplay?: boolean } = {},
@@ -1297,8 +1314,14 @@ export default function Chat() {
         ? await sendMessage(input, seedContext, { skipContextDisplay: true })
         : await sendMessage(input);
       if (accepted && wasSeed) {
-        pendingContextRef.current = [];
-        seedActiveRef.current = false;
+        // Consume only what THIS send carried (PR #131 round 5): a Reply
+        // arriving during the send merges into pendingContextRef, and
+        // mergeSeedContexts always APPENDS — so the captured seed is exactly
+        // the prefix. Anything after it (initiative B) stays queued for the
+        // next send instead of being discarded with an unconditional clear.
+        const remaining = pendingContextRef.current.slice(seedContext.length);
+        pendingContextRef.current = remaining;
+        seedActiveRef.current = remaining.length > 0;
       }
     })();
   };

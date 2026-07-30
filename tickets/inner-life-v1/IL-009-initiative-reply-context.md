@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-30 21:59 MYT
+- Updated: 2026-07-30 23:43 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-30 21:59 MYT
+- Completed: 2026-07-30 23:43 MYT
 
 ## Goal
 
@@ -114,6 +114,15 @@ rather than blocking IL-008 on it.
   (presence GET/PUT round-trip incl. initiativeEnabled), chat history +
   brief greeting, initiatives poll — all pass, recorded below.
 
+- 2026-07-30 23:43 MYT - PR #131 review round 5 (P1 + 2 P2), completion
+  re-stamped: (1) submissions are serialized by a synchronous in-flight
+  latch — the close-await yields before `streaming` is set, so a double
+  submit previously passed every guard twice and started two streams;
+  (2) handleSubmit now consumes only the seed PREFIX it actually sent —
+  a Reply merging mid-send stays queued instead of being discarded by
+  the unconditional clear; (3) the recorded `bun run build` evidence was
+  from the round-2 head — re-run and recorded on THIS final head.
+
 ## Validation
 
 - Commands:
@@ -121,7 +130,7 @@ rather than blocking IL-008 on it.
     25 pass (10 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    round-2 head, 2026-07-30 19:38 MYT
+    FINAL head (round 5), 2026-07-30 23:43 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`
