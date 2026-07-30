@@ -378,6 +378,155 @@ def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
             )
 
 
+def test_runtime_step_writer_seals_duplicate_trace_payloads(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeStep
+    from anima_server.services.agent.persistence import (
+        create_run,
+        create_step,
+        get_or_create_thread,
+    )
+    from anima_server.services.agent.runtime_types import (
+        MessageSnapshot,
+        StepTrace,
+        ToolCall,
+        ToolExecutionResult,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        run = create_run(
+            runtime_db,
+            thread_id=thread.id,
+            user_id=7,
+            provider="test",
+            model="test",
+            mode="chat",
+        )
+        step = create_step(
+            runtime_db,
+            thread_id=thread.id,
+            run_id=run.id,
+            trace=StepTrace(
+                step_index=0,
+                request_messages=(
+                    MessageSnapshot(
+                        role="user",
+                        content="seeded step request plaintext",
+                    ),
+                ),
+                assistant_text="seeded step response plaintext",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="private-tool",
+                        arguments={"secret": "seeded step arguments"},
+                    ),
+                ),
+                tool_results=(
+                    ToolExecutionResult(
+                        call_id="call-1",
+                        name="private-tool",
+                        output="seeded step tool output",
+                    ),
+                ),
+            ),
+        )
+        runtime_db.flush()
+
+        stored = runtime_db.execute(
+            text(
+                "SELECT request_json, response_json, tool_calls_json "
+                "FROM runtime_steps WHERE id = :id"
+            ),
+            {"id": step.id},
+        ).one()
+        raw = " ".join(str(value) for value in stored)
+        assert "seeded step request plaintext" not in raw
+        assert "seeded step response plaintext" not in raw
+        assert "seeded step arguments" not in raw
+        assert "seeded step tool output" not in raw
+        assert (
+            runtime_db.scalar(
+                select(CoreFSSealedPayload).where(
+                    CoreFSSealedPayload.row_type == "runtime_step"
+                )
+            )
+            is not None
+        )
+
+        runtime_db.expunge_all()
+        loaded = runtime_db.scalar(
+            select(RuntimeStep).where(RuntimeStep.id == step.id)
+        )
+        assert loaded is not None
+        assert loaded.request_json["messages"][0]["content"] == (
+            "seeded step request plaintext"
+        )
+        assert loaded.response_json["assistant_text"] == (
+            "seeded step response plaintext"
+        )
+        assert loaded.tool_calls_json is not None
+        assert loaded.tool_calls_json[0]["arguments"] == {
+            "secret": "seeded step arguments"
+        }
+
+
+def test_thread_deletion_removes_its_sealed_runtime_payloads(
+    monkeypatch,
+) -> None:
+    from anima_server.services.agent.persistence import (
+        append_message,
+        get_or_create_thread,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.images.deletion import delete_thread_with_image_cleanup
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        append_message(
+            runtime_db,
+            thread=thread,
+            run_id=None,
+            step_id=None,
+            sequence_id=1,
+            role="user",
+            content_text="delete me permanently",
+        )
+        assert runtime_db.scalar(select(CoreFSSealedPayload.id)) is not None
+
+        result = delete_thread_with_image_cleanup(
+            runtime_db,
+            user_id=7,
+            thread_id=thread.id,
+        )
+
+        assert result.deleted is True
+        assert runtime_db.scalar(select(CoreFSSealedPayload.id)) is None
+
+
 def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
     monkeypatch,
 ) -> None:

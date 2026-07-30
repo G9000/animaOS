@@ -14,10 +14,12 @@ from anima_server.models.runtime import (
     RuntimeImageAsset,
     RuntimeImageMessageLink,
     RuntimeMessage,
+    RuntimeStep,
     RuntimeThread,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
+from anima_server.services.corefs.sealed_runtime import delete_sealed_runtime_records
 from anima_server.services.data_crypto import get_active_dek
 from anima_server.services.images.store import delete_image_asset_file_if_safe
 
@@ -190,6 +192,11 @@ def delete_thread_with_image_cleanup(
             )
         ).all()
     )
+    step_ids = list(
+        runtime_db.scalars(
+            select(RuntimeStep.id).where(RuntimeStep.thread_id == thread_id)
+        ).all()
+    )
     candidate_asset_ids = _candidate_thread_image_asset_ids(
         runtime_db,
         user_id=user_id,
@@ -203,6 +210,19 @@ def delete_thread_with_image_cleanup(
                 RuntimeImageMessageLink.user_id == user_id,
                 RuntimeImageMessageLink.message_id.in_(message_ids),
             )
+        )
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_message",
+            row_ids=message_ids,
+            owner_id=user_id,
+        )
+    if step_ids:
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_step",
+            row_ids=step_ids,
+            owner_id=user_id,
         )
     runtime_db.execute(delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id))
     runtime_db.delete(thread)

@@ -973,6 +973,7 @@ def test_config_auto_derives_url_from_embedded_pg(
         stop=MagicMock(),
     )
     init_calls: list[tuple[str, bool]] = []
+    binding_calls: list[tuple[str, str]] = []
     cancel_pending_reflection = AsyncMock()
     drain_background_memory_tasks = AsyncMock()
     dispose_runtime_engine_mock = MagicMock()
@@ -989,6 +990,13 @@ def test_config_auto_derives_url_from_embedded_pg(
         main_module = _reload_main_module()
 
         monkeypatch.setattr(main_module, "_start_embedded_pg", lambda: fake_pg)
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: binding_calls.append(
+                (core_id, local_instance_id)
+            ),
+        )
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
@@ -1014,6 +1022,7 @@ def test_config_auto_derives_url_from_embedded_pg(
         _run_app_lifespan(app)
         assert init_calls == [
             (fake_pg.database_url, settings.database_echo)]
+        assert len(binding_calls) == 1
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
@@ -1261,6 +1270,98 @@ def test_explicit_runtime_url_skips_embedded_pg(
         sys.modules.pop("anima_server.main", None)
 
 
+def test_embedded_runtime_database_is_bound_before_other_database_work(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    startup_calls: list[str] = []
+    binding = SimpleNamespace(
+        core_id="core-embedded",
+        local_instance_id="instance-embedded",
+    )
+
+    class FakeEmbeddedPG:
+        database_url = "postgresql://embedded/runtime"
+
+        def stop(self) -> None:
+            pass
+
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+
+    try:
+        settings.data_dir = managed_tmp_path / "anima-data"
+        settings.runtime_database_url = ""
+        settings.runtime_pg_data_dir = ""
+        dispose_cached_engines()
+        main_module = _reload_main_module()
+
+        monkeypatch.setattr(
+            main_module,
+            "_claim_runtime_instance",
+            lambda *, runtime_url=None: (
+                startup_calls.append(f"claim:{runtime_url}"),
+                binding,
+            )[1],
+        )
+        monkeypatch.setattr(
+            main_module,
+            "_start_embedded_pg",
+            lambda: FakeEmbeddedPG(),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "init_runtime_engine",
+            lambda database_url, **_kwargs: startup_calls.append(
+                f"init:{database_url}"
+            ),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: startup_calls.append(
+                f"bind:{core_id}:{local_instance_id}"
+            ),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_pgvector",
+            lambda: startup_calls.append("pgvector"),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_tables",
+            lambda: startup_calls.append("migrate"),
+        )
+        monkeypatch.setattr(main_module, "dispose_runtime_engine", lambda: None)
+        monkeypatch.setattr(
+            "anima_server.services.agent.reflection.cancel_pending_reflection",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.drain_background_memory_tasks",
+            AsyncMock(),
+        )
+        _stub_create_app_bootstrap(monkeypatch, main_module)
+
+        _run_app_lifespan(main_module.create_app())
+
+        assert startup_calls[:5] == [
+            "claim:None",
+            f"init:{FakeEmbeddedPG.database_url}",
+            "bind:core-embedded:instance-embedded",
+            "pgvector",
+            "migrate",
+        ]
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
 def test_lifespan_shutdown_closes_unlock_store_before_runtime_disposal_when_cancelled(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
@@ -1359,6 +1460,11 @@ def test_lifespan_startup_failure_closes_unlock_store_before_runtime_resources(
 
         monkeypatch.setattr(main_module, "_start_embedded_pg", start_embedded_pg)
         monkeypatch.setattr(main_module, "init_runtime_engine", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda **_kwargs: None,
+        )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", ensure_runtime_tables)
         monkeypatch.setattr(

@@ -612,6 +612,15 @@ def create_step(
     trace: StepTrace,
     prompt_budget: object | None = None,
 ) -> RuntimeStep:
+    user_id = db.scalar(
+        select(RuntimeThread.user_id).where(RuntimeThread.id == thread_id)
+    )
+    if user_id is None:
+        raise ValueError("Runtime step thread is missing")
+    runtime_index = runtime_index_for_sensitive_write(
+        db,
+        user_id=int(user_id),
+    )
     request_json: dict[str, object] = {
         "messages": [
             _slim_message_snapshot(message) for message in trace.request_messages
@@ -621,23 +630,40 @@ def create_step(
     }
     if prompt_budget is not None:
         request_json["prompt_budget"] = asdict(prompt_budget)
+    response_json: dict[str, object] = {
+        "assistant_text": trace.assistant_text,
+        "tool_results": [asdict(result) for result in trace.tool_results],
+    }
+    tool_calls_json = [asdict(tool_call) for tool_call in trace.tool_calls] or None
 
     step = RuntimeStep(
         thread_id=thread_id,
         run_id=run_id,
         step_index=trace.step_index,
         status="completed",
-        request_json=request_json,
-        response_json={
-            "assistant_text": trace.assistant_text,
-            "tool_results": [asdict(result) for result in trace.tool_results],
-        },
-        tool_calls_json=[asdict(tool_call)
-                         for tool_call in trace.tool_calls] or None,
+        request_json={} if runtime_index is not None else request_json,
+        response_json={} if runtime_index is not None else response_json,
+        tool_calls_json=None if runtime_index is not None else tool_calls_json,
         usage_json=_serialize_usage(trace.usage),
     )
     db.add(step)
     db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            db,
+            index=runtime_index,
+            row_type="runtime_step",
+            row_id=int(step.id),
+            owner_id=int(user_id),
+            payload={
+                "request_json": request_json,
+                "response_json": response_json,
+                "tool_calls_json": tool_calls_json,
+            },
+        )
+        set_committed_value(step, "request_json", request_json)
+        set_committed_value(step, "response_json", response_json)
+        set_committed_value(step, "tool_calls_json", tool_calls_json)
     return step
 
 

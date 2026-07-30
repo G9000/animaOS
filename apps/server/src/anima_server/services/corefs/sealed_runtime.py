@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.corefs_runtime import (
@@ -104,6 +104,26 @@ def seal_runtime_record(
         stored.ciphertext = sealed.ciphertext
         stored.aad_digest = hashlib.sha256(aad.encode()).hexdigest()
     runtime_db.flush()
+
+
+def delete_sealed_runtime_records(
+    runtime_db: Session,
+    *,
+    row_type: str,
+    row_ids: list[int],
+    owner_id: int,
+) -> None:
+    """Delete sealed payloads when their source Runtime rows are deleted."""
+    row_id_hashes = [_digest(str(row_id)) for row_id in row_ids]
+    if not row_id_hashes:
+        return
+    runtime_db.execute(
+        delete(CoreFSSealedPayload).where(
+            CoreFSSealedPayload.row_type == row_type,
+            CoreFSSealedPayload.row_id_hash.in_(row_id_hashes),
+            CoreFSSealedPayload.owner_id_hash == _digest(str(owner_id)),
+        )
+    )
 
 
 def load_runtime_record(

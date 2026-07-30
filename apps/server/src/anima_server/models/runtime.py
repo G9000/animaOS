@@ -31,6 +31,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     func,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSON
@@ -916,6 +917,43 @@ class RuntimeStep(RuntimeBase):
     )
 
     run: Mapped[RuntimeRun] = relationship(back_populates="steps")
+
+
+@event.listens_for(RuntimeStep, "load")
+def _hydrate_sealed_runtime_step(
+    step: RuntimeStep,
+    _context: object,
+) -> None:
+    runtime_db = object_session(step)
+    if runtime_db is None or step.id is None:
+        return
+    owner_id = runtime_db.scalar(
+        select(RuntimeThread.user_id).where(RuntimeThread.id == step.thread_id)
+    )
+    if owner_id is None:
+        raise ValueError("sealed Runtime step owner is missing")
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="runtime_step",
+        row_id=int(step.id),
+        owner_id=int(owner_id),
+    )
+    if payload is None:
+        return
+    request_json = payload.get("request_json")
+    response_json = payload.get("response_json")
+    tool_calls_json = payload.get("tool_calls_json")
+    if not isinstance(request_json, dict):
+        raise ValueError("sealed Runtime step request is invalid")
+    if not isinstance(response_json, dict):
+        raise ValueError("sealed Runtime step response is invalid")
+    if tool_calls_json is not None and not isinstance(tool_calls_json, list):
+        raise ValueError("sealed Runtime step tool calls are invalid")
+    set_committed_value(step, "request_json", request_json)
+    set_committed_value(step, "response_json", response_json)
+    set_committed_value(step, "tool_calls_json", tool_calls_json)
 
 
 class RuntimeMessage(RuntimeBase):

@@ -188,10 +188,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
-        if settings.runtime_database_url:
-            runtime_binding = _claim_runtime_instance(
-                runtime_url=settings.runtime_database_url
-            )
+        runtime_binding = _claim_runtime_instance(
+            runtime_url=settings.runtime_database_url or None
+        )
         embedded_pg = _start_embedded_pg()
         load_persisted_runtime_settings()
         runtime_url = (
@@ -206,13 +205,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 pool_size=settings.runtime_pool_size,
                 max_overflow=settings.runtime_pool_max_overflow,
             )
-            if settings.runtime_database_url:
-                if runtime_binding is None:
-                    raise RuntimeError("explicit Runtime database has no instance binding")
-                ensure_runtime_database_binding(
-                    core_id=runtime_binding.core_id,
-                    local_instance_id=runtime_binding.local_instance_id,
-                )
+            ensure_runtime_database_binding(
+                core_id=runtime_binding.core_id,
+                local_instance_id=runtime_binding.local_instance_id,
+            )
             ensure_pgvector()
             ensure_runtime_tables()
 
