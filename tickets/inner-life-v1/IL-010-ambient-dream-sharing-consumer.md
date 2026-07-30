@@ -1,18 +1,18 @@
 # IL-010 - Implement the "ambient" dream-sharing consumer
 
-- Status: backlog
+- Status: done
 - Priority: P3
 - Scope: `apps/server/src/anima_server/services/agent/proactive.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/desktop/src/pages/Presence.tsx`
 - Parent: none
 - Depends on: `IL-007`, `IL-008`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-29 11:56 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-30 16:44 MYT
+- Started: 2026-07-30 16:27 MYT
+- Completed: 2026-07-30 16:44 MYT
 
 ## Goal
 
@@ -50,11 +50,28 @@ backend contract still accepts and round-trips the value).
   Ambient before offering it"); the Presence selector's Ambient option was
   removed in the same commit pending this consumer.
 
+- 2026-07-30 16:27 MYT - Claimed and started by Claude (backlog ->
+  in_progress -> done in one branch: `il-010-ambient-dream-consumer`).
+- 2026-07-30 16:44 MYT - Implemented: `proactive._resolve_ambient_dream`
+  (consent: master switch AND dream_sharing == "ambient"; DEK gate; most
+  recent share-worthy unsurfaced dream_journal row; consume-once — marked
+  surfaced and COMMITTED on hand-off so a dream is never voiced twice and
+  stops re-raising dream_residue). Woven into the greeting LLM prompt
+  (pinned to the stated narrative, framed AS a dream) and the static
+  fallback. on_ask/off untouched (tested). Ambient option restored in the
+  desktop Presence selector. 10 tests in
+  `tests/test_inner_life_ambient_dream.py`.
+
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 10 passed
+  - Full suite (`bun run test`) — **3176 passed, 0 failed, 10 skipped**,
+    run 2026-07-30 17:11 MYT
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/server/tests/test_inner_life_ambient_dream.py` (new)
+  - `apps/desktop/src/pages/Presence.tsx`
 - Notes:
-  - none
+  - The surfaced-mark commit lives inside the resolver (greeting sessions
+    never commit otherwise); greeting paths are read-only apart from it.
