@@ -170,7 +170,13 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
         )
         db.commit()
     with rt_factory() as db:
-        db.add(DriveStateRow(user_id=USER_ID, unresolved_thread=0.85, updated_at=gap_end))
+        # Sub-threshold seed (theta 0.7): the REAL foresight signal must grow
+        # the remaining pressure through the production tick (0.10/h over the
+        # 5h to tick_at -> 0.8). If the tick stopped feeding the open signal
+        # into advance_drives, the leak would leave ~0.29 and nothing fires —
+        # a pre-seeded above-theta value would mask exactly that regression
+        # (PR #129 review).
+        db.add(DriveStateRow(user_id=USER_ID, unresolved_thread=0.3, updated_at=gap_end))
         db.commit()
 
     tick_at = gap_end + timedelta(hours=5)
@@ -260,11 +266,10 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
     # ----------------------- IL-003 x IL-007: dream_residue -> initiative
     # Days later the share-worthy dream becomes the next initiative and is
     # marked surfaced so it stops re-raising.
-    with rt_factory() as db:
-        row = db.scalar(select(DriveStateRow).where(DriveStateRow.user_id == USER_ID))
-        row.dream_residue = 0.9  # pressure accumulated over subsequent ticks
-        row.last_fired_at = None  # cooldown elapsed (simulate days later)
-        db.commit()
+    # No pressure is seeded here either: the share-worthy unsurfaced dream
+    # IS the dream_residue grow signal, so the ~3 days of elapsed time to the
+    # next tick must build the pressure (0.05/h) through production code
+    # alone; the first fire's cooldown (24h base) has genuinely elapsed.
     with soul_factory() as db:  # resolve the foresight so it can't dominate
         fs = db.scalars(select(ForesightSignal)).one()
         fs.status = "resolved"
