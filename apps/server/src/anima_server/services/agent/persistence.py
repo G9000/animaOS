@@ -30,6 +30,7 @@ from anima_server.services.agent.state import (
 )
 from anima_server.services.corefs.sealed_runtime import (
     runtime_index_for_sensitive_write,
+    seal_runtime_fields,
     seal_runtime_record,
 )
 
@@ -388,9 +389,15 @@ def persist_agent_result(
 
 def mark_run_failed(db: Session, run: RuntimeRun, error_text: str) -> None:
     run.status = "failed"
-    run.error_text = error_text
     run.completed_at = datetime.now(UTC)
-    db.add(run)
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_run",
+        owner_id=int(run.user_id),
+        payload={"error_text": error_text},
+        placeholders={"error_text": None},
+    )
 
 
 def cancel_run(db: Session, run_id: int) -> RuntimeRun | None:

@@ -355,6 +355,7 @@ def convert_legacy_runtime_rows(
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
         RuntimeMessage,
+        RuntimeRun,
         RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
@@ -413,6 +414,12 @@ def convert_legacy_runtime_rows(
                 "tool_args_json": "tool_args_json",
             },
             {"content_text": None, "content_json": None, "tool_args_json": None},
+        ),
+        (
+            RuntimeRun.__table__,
+            "runtime_run",
+            {"error_text": "error_text"},
+            {"error_text": None},
         ),
         (
             RuntimeDocumentChunk.__table__,
@@ -1199,6 +1206,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
         RuntimeKnowledgeBundleRun,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
+        RuntimeRun,
         RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
@@ -1235,6 +1243,7 @@ def _install_private_runtime_hydration() -> dict[type[Any], tuple[str, tuple[str
             ("content_text", "metadata_json"),
         ),
         RuntimeEmbedding: ("runtime_embedding", ("content_preview",)),
+        RuntimeRun: ("runtime_run", ("error_text",)),
         RuntimeWorkflowRun: (
             "runtime_workflow_run",
             ("input_json", "result_json", "error_json"),

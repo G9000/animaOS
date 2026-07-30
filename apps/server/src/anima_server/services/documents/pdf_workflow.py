@@ -21,6 +21,7 @@ from anima_server.services.agent.candidate_ops import create_memory_candidate
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.corefs.sealed_runtime import (
     delete_runtime_embedding_records,
+    delete_sealed_runtime_records,
     runtime_private_lookup_value,
 )
 from anima_server.services.documents.chunking import chunk_pages_structured
@@ -820,6 +821,12 @@ def _rewind_unindexed_document_resume_state(
         if chunks and not context.require_pages():
             checkpoint = context._checkpoint("text_extracted")
             if checkpoint is not None:
+                delete_sealed_runtime_records(
+                    context.db,
+                    row_type="runtime_workflow_checkpoint",
+                    row_ids=[int(checkpoint.id)],
+                    owner_id=int(context.run.user_id),
+                )
                 context.db.delete(checkpoint)
                 context.db.flush()
             context.chunks = None

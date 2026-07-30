@@ -1057,6 +1057,103 @@ def test_unlock_converter_seals_legacy_workflow_errors(
     }
 
 
+def test_agent_run_failure_writer_seals_error_text(monkeypatch) -> None:
+    from anima_server.models.runtime import RuntimeRun, RuntimeThread
+    from anima_server.services.agent.persistence import mark_run_failed
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    private_error = "Provider failed while reading /private/logical/manual.pdf"
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        thread = RuntimeThread(user_id=7, status="active")
+        runtime_db.add(thread)
+        runtime_db.flush()
+        run = RuntimeRun(
+            thread_id=thread.id,
+            user_id=7,
+            provider="test",
+            model="test",
+            mode="chat",
+            status="running",
+        )
+        runtime_db.add(run)
+        runtime_db.flush()
+
+        mark_run_failed(runtime_db, run, private_error)
+        runtime_db.flush()
+        raw_error = runtime_db.scalar(
+            select(RuntimeRun.__table__.c.error_text).where(
+                RuntimeRun.__table__.c.id == run.id
+            )
+        )
+        run_id = int(run.id)
+        runtime_db.expunge_all()
+        hydrated = runtime_db.get(RuntimeRun, run_id)
+
+    assert raw_error is None
+    assert hydrated is not None
+    assert hydrated.error_text == private_error
+
+
+def test_unlock_converter_seals_legacy_agent_run_error_text(monkeypatch) -> None:
+    from anima_server.models.runtime import RuntimeRun, RuntimeThread
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    private_error = "Legacy failure from /private/logical/archive.pdf"
+
+    with runtime_db_session() as runtime_db:
+        thread = RuntimeThread(user_id=7, status="active")
+        runtime_db.add(thread)
+        runtime_db.flush()
+        run = RuntimeRun(
+            thread_id=thread.id,
+            user_id=7,
+            provider="test",
+            model="test",
+            mode="chat",
+            status="failed",
+            error_text=private_error,
+        )
+        runtime_db.add(run)
+        runtime_db.flush()
+        run_id = int(run.id)
+
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        raw_error = runtime_db.scalar(
+            select(RuntimeRun.__table__.c.error_text).where(
+                RuntimeRun.__table__.c.id == run_id
+            )
+        )
+        runtime_db.expunge_all()
+        hydrated = runtime_db.get(RuntimeRun, run_id)
+
+    assert converted >= 1
+    assert raw_error is None
+    assert hydrated is not None
+    assert hydrated.error_text == private_error
+
+
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
     monkeypatch,
 ) -> None:
