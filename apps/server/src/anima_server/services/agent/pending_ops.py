@@ -61,6 +61,7 @@ def create_pending_op(
             payload={
                 "content": content.strip(),
                 "old_content": old_content,
+                "failure_reason": None,
             },
         )
         from sqlalchemy.orm.attributes import set_committed_value

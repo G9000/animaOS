@@ -95,13 +95,18 @@ def _hydrate_sealed_memory_candidate(
         raise ValueError("sealed memory candidate content is invalid")
     tags = payload.get("tags")
     salience = payload.get("salience")
+    last_error = payload.get("last_error")
     if tags is not None and not isinstance(tags, list):
         raise ValueError("sealed memory candidate tags are invalid")
     if salience is not None and not isinstance(salience, dict):
         raise ValueError("sealed memory candidate salience is invalid")
+    if last_error is not None and not isinstance(last_error, str):
+        raise ValueError("sealed memory candidate error is invalid")
     set_committed_value(candidate, "content", content)
     set_committed_value(candidate, "tags_json", tags)
     set_committed_value(candidate, "salience_json", salience)
+    if "last_error" in payload:
+        set_committed_value(candidate, "last_error", last_error)
 
 
 class MemoryExtractionFailure(RuntimeBase):
@@ -225,12 +230,17 @@ def _hydrate_sealed_profile_update_candidate(
         return
     value = payload.get("value")
     evidence_text = payload.get("evidence_text")
+    last_error = payload.get("last_error")
     if not isinstance(value, str):
         raise ValueError("sealed profile-update candidate value is invalid")
     if evidence_text is not None and not isinstance(evidence_text, str):
         raise ValueError("sealed profile-update candidate evidence is invalid")
+    if last_error is not None and not isinstance(last_error, str):
+        raise ValueError("sealed profile-update candidate error is invalid")
     set_committed_value(candidate, "value", value)
     set_committed_value(candidate, "evidence_text", evidence_text)
+    if "last_error" in payload:
+        set_committed_value(candidate, "last_error", last_error)
 
 
 class PromotionJournal(RuntimeBase):

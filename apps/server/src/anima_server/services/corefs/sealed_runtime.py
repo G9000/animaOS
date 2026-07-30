@@ -466,8 +466,18 @@ def convert_legacy_runtime_rows(
         (
             MemoryCandidate.__table__,
             "memory_candidate",
-            {"content": "content", "tags": "tags_json", "salience": "salience_json"},
-            {"content": "", "tags_json": None, "salience_json": None},
+            {
+                "content": "content",
+                "tags": "tags_json",
+                "salience": "salience_json",
+                "last_error": "last_error",
+            },
+            {
+                "content": "",
+                "tags_json": None,
+                "salience_json": None,
+                "last_error": None,
+            },
         ),
         (
             MemoryExtractionFailure.__table__,
@@ -486,8 +496,12 @@ def convert_legacy_runtime_rows(
         (
             ProfileUpdateCandidate.__table__,
             "profile_update_candidate",
-            {"value": "value", "evidence_text": "evidence_text"},
-            {"value": "", "evidence_text": None},
+            {
+                "value": "value",
+                "evidence_text": "evidence_text",
+                "last_error": "last_error",
+            },
+            {"value": "", "evidence_text": None, "last_error": None},
         ),
         (
             RuntimeSessionNote.__table__,
@@ -498,8 +512,12 @@ def convert_legacy_runtime_rows(
         (
             PendingMemoryOp.__table__,
             "pending_memory_op",
-            {"content": "content", "old_content": "old_content"},
-            {"content": "", "old_content": None},
+            {
+                "content": "content",
+                "old_content": "old_content",
+                "failure_reason": "failure_reason",
+            },
+            {"content": "", "old_content": None, "failure_reason": None},
         ),
         (
             RuntimeWorkflowRun.__table__,
@@ -1053,6 +1071,98 @@ def reseal_memory_extraction_failure(
         assistant_preview,
     )
     set_committed_value(failure, "failure_reason", next_reason)
+
+
+def reseal_memory_candidate_error(
+    runtime_db: Session,
+    candidate: Any,
+    *,
+    last_error: str | None,
+) -> None:
+    """Replace a candidate error without exposing its sealed private fields."""
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=int(candidate.user_id),
+    )
+    if runtime_index is None:
+        candidate.last_error = last_error
+        return
+
+    content = candidate.content
+    tags = candidate.tags_json
+    salience = candidate.salience_json
+    candidate.content = ""
+    candidate.tags_json = None
+    candidate.salience_json = None
+    candidate.last_error = None
+    runtime_db.flush([candidate])
+    seal_runtime_record(
+        runtime_db,
+        index=runtime_index,
+        row_type="memory_candidate",
+        row_id=int(candidate.id),
+        owner_id=int(candidate.user_id),
+        payload={
+            "content": content,
+            "tags": tags,
+            "salience": salience,
+            "last_error": last_error,
+        },
+    )
+    set_committed_value(candidate, "content", content)
+    set_committed_value(candidate, "tags_json", tags)
+    set_committed_value(candidate, "salience_json", salience)
+    set_committed_value(candidate, "last_error", last_error)
+
+
+def reseal_profile_update_candidate_error(
+    runtime_db: Session,
+    candidate: Any,
+    *,
+    last_error: str | None,
+) -> None:
+    """Replace a profile-candidate error within its sealed payload."""
+    seal_runtime_fields(
+        runtime_db,
+        row=candidate,
+        row_type="profile_update_candidate",
+        owner_id=int(candidate.user_id),
+        payload={
+            "value": candidate.value,
+            "evidence_text": candidate.evidence_text,
+            "last_error": last_error,
+        },
+        placeholders={
+            "value": "",
+            "evidence_text": None,
+            "last_error": None,
+        },
+    )
+
+
+def reseal_pending_memory_op_error(
+    runtime_db: Session,
+    op: Any,
+    *,
+    failure_reason: str | None,
+) -> None:
+    """Replace a pending-op failure within its sealed payload."""
+    seal_runtime_fields(
+        runtime_db,
+        row=op,
+        row_type="pending_memory_op",
+        owner_id=int(op.user_id),
+        payload={
+            "content": op.content,
+            "old_content": op.old_content,
+            "failure_reason": failure_reason,
+        },
+        placeholders={
+            "content": "",
+            "old_content": None,
+            "failure_reason": None,
+        },
+    )
 
 
 def delete_sealed_runtime_records(

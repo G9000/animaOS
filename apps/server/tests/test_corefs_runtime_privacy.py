@@ -1581,6 +1581,10 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
     from anima_server.services.agent.pending_ops import create_pending_op
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.corefs.sealed_runtime import (
+        reseal_memory_candidate_error,
+        reseal_pending_memory_op_error,
+    )
     from conftest_runtime import runtime_db_session
 
     index = CoreFSProgressiveIndex("core-a")
@@ -1597,6 +1601,7 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
             user_id=7,
             content="seeded candidate plaintext",
             category="fact",
+            tags=["private-tag"],
         )
         pending = create_pending_op(
             runtime_db,
@@ -1609,20 +1614,39 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
             source_tool_call_id=None,
         )
         runtime_db.flush()
+        private_candidate_error = (
+            "Provider leaked candidate content in /private/logical/candidate-error.pdf"
+        )
+        private_pending_error = (
+            "SQL parameters leaked pending content in /private/logical/pending-error.pdf"
+        )
+        reseal_memory_candidate_error(
+            runtime_db,
+            candidate,
+            last_error=private_candidate_error,
+        )
+        reseal_pending_memory_op_error(
+            runtime_db,
+            pending,
+            failure_reason=private_pending_error,
+        )
 
         assert candidate is not None
-        assert (
-            runtime_db.scalar(
-                text("SELECT content FROM memory_candidates WHERE id = :id"),
-                {"id": candidate.id},
-            )
-            == ""
-        )
+        assert candidate.tags_json == ["private-tag"]
+        assert candidate.salience_json is not None
+        stored_candidate = runtime_db.execute(
+            text("SELECT content, last_error FROM memory_candidates WHERE id = :id"),
+            {"id": candidate.id},
+        ).one()
+        assert stored_candidate == ("", None)
         stored_pending = runtime_db.execute(
-            text("SELECT content, old_content FROM pending_memory_ops WHERE id = :id"),
+            text(
+                "SELECT content, old_content, failure_reason "
+                "FROM pending_memory_ops WHERE id = :id"
+            ),
             {"id": pending.id},
         ).one()
-        assert stored_pending == ("", None)
+        assert stored_pending == ("", None, None)
         assert (
             runtime_db.scalar(
                 select(CoreFSSealedPayload).where(
@@ -1649,9 +1673,13 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
         )
         assert loaded_candidate is not None
         assert loaded_candidate.content == "seeded candidate plaintext"
+        assert loaded_candidate.tags_json == ["private-tag"]
+        assert loaded_candidate.salience_json is not None
+        assert loaded_candidate.last_error == private_candidate_error
         assert loaded_pending is not None
         assert loaded_pending.content == "seeded pending-op plaintext"
         assert loaded_pending.old_content == "seeded old pending-op plaintext"
+        assert loaded_pending.failure_reason == private_pending_error
 
         index.clear_unlocked_state()
         runtime_db.expunge_all()
@@ -1781,6 +1809,9 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
     )
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.corefs.sealed_runtime import (
+        reseal_profile_update_candidate_error,
+    )
     from conftest_runtime import runtime_db_session
 
     index = CoreFSProgressiveIndex("core-a")
@@ -1803,11 +1834,22 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
         )
 
         assert candidate is not None
+        private_error = (
+            "Provider leaked profile value in /private/logical/profile-error.pdf"
+        )
+        reseal_profile_update_candidate_error(
+            runtime_db,
+            candidate,
+            last_error=private_error,
+        )
         stored = runtime_db.execute(
-            text("SELECT value, evidence_text FROM profile_update_candidates WHERE id = :id"),
+            text(
+                "SELECT value, evidence_text, last_error "
+                "FROM profile_update_candidates WHERE id = :id"
+            ),
             {"id": candidate.id},
         ).one()
-        assert stored == ("", None)
+        assert stored == ("", None, None)
         assert (
             runtime_db.scalar(
                 select(CoreFSSealedPayload).where(
@@ -1824,6 +1866,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
         assert loaded is not None
         assert loaded.value == "seeded private profile value"
         assert loaded.evidence_text == "seeded private profile evidence"
+        assert loaded.last_error == private_error
 
         index.clear_unlocked_state()
         runtime_db.expunge_all()
@@ -1831,6 +1874,99 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
             runtime_db.scalar(
                 select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.id == candidate.id)
             )
+
+
+def test_unlock_converter_seals_legacy_candidate_and_pending_errors(
+    monkeypatch,
+) -> None:
+    from anima_server.models.pending_memory_op import PendingMemoryOp
+    from anima_server.models.runtime_memory import MemoryCandidate, ProfileUpdateCandidate
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+
+    with runtime_db_session() as runtime_db:
+        memory_candidate = MemoryCandidate(
+            user_id=7,
+            content="legacy private candidate",
+            category="fact",
+            importance=3,
+            importance_source="llm",
+            source="llm",
+            content_hash="a" * 64,
+            status="failed",
+            last_error="legacy candidate provider output",
+        )
+        profile_candidate = ProfileUpdateCandidate(
+            user_id=7,
+            category="identity",
+            key="project",
+            value="legacy private profile value",
+            evidence_text="legacy private profile evidence",
+            source="llm",
+            content_hash="b" * 64,
+            status="failed",
+            last_error="legacy profile provider output",
+        )
+        pending = PendingMemoryOp(
+            user_id=7,
+            op_type="replace",
+            target_block="human",
+            content="legacy private pending content",
+            old_content="legacy private pending old content",
+            failed=True,
+            failure_reason="legacy pending SQL parameters",
+        )
+        runtime_db.add_all([memory_candidate, profile_candidate, pending])
+        runtime_db.flush()
+        memory_candidate_id = int(memory_candidate.id)
+        profile_candidate_id = int(profile_candidate.id)
+        pending_id = int(pending.id)
+
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        raw_memory = runtime_db.execute(
+            select(
+                MemoryCandidate.__table__.c.content,
+                MemoryCandidate.__table__.c.last_error,
+            ).where(MemoryCandidate.__table__.c.id == memory_candidate_id)
+        ).one()
+        raw_profile = runtime_db.execute(
+            select(
+                ProfileUpdateCandidate.__table__.c.value,
+                ProfileUpdateCandidate.__table__.c.evidence_text,
+                ProfileUpdateCandidate.__table__.c.last_error,
+            ).where(ProfileUpdateCandidate.__table__.c.id == profile_candidate_id)
+        ).one()
+        raw_pending = runtime_db.execute(
+            select(
+                PendingMemoryOp.__table__.c.content,
+                PendingMemoryOp.__table__.c.old_content,
+                PendingMemoryOp.__table__.c.failure_reason,
+            ).where(PendingMemoryOp.__table__.c.id == pending_id)
+        ).one()
+        runtime_db.expunge_all()
+        hydrated_memory = runtime_db.get(MemoryCandidate, memory_candidate_id)
+        hydrated_profile = runtime_db.get(ProfileUpdateCandidate, profile_candidate_id)
+        hydrated_pending = runtime_db.get(PendingMemoryOp, pending_id)
+
+    assert converted >= 3
+    assert raw_memory == ("", None)
+    assert raw_profile == ("", None, None)
+    assert raw_pending == ("", None, None)
+    assert hydrated_memory is not None
+    assert hydrated_memory.last_error == "legacy candidate provider output"
+    assert hydrated_profile is not None
+    assert hydrated_profile.last_error == "legacy profile provider output"
+    assert hydrated_pending is not None
+    assert hydrated_pending.failure_reason == "legacy pending SQL parameters"
 
 
 def test_runtime_session_notes_use_sealed_rows_and_reseal_updates(

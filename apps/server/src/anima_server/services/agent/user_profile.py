@@ -512,6 +512,7 @@ def create_profile_update_candidate(
             payload={
                 "value": clean_value,
                 "evidence_text": clean_evidence,
+                "last_error": None,
             },
         )
         set_committed_value(candidate, "value", clean_value)

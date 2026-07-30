@@ -76,9 +76,14 @@ def _hydrate_sealed_pending_memory_op(
         return
     content = payload.get("content")
     old_content = payload.get("old_content")
+    failure_reason = payload.get("failure_reason")
     if not isinstance(content, str) or (
         old_content is not None and not isinstance(old_content, str)
     ):
         raise ValueError("sealed pending memory operation payload is invalid")
+    if failure_reason is not None and not isinstance(failure_reason, str):
+        raise ValueError("sealed pending memory operation failure is invalid")
     set_committed_value(op, "content", content)
     set_committed_value(op, "old_content", old_content)
+    if "failure_reason" in payload:
+        set_committed_value(op, "failure_reason", failure_reason)

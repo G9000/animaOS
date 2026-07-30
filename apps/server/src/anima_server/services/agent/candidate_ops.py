@@ -145,6 +145,7 @@ def create_memory_candidate(
                         "content": existing.content,
                         "tags": existing.tags_json,
                         "salience": merged_salience,
+                        "last_error": existing.last_error,
                     },
                 )
                 from sqlalchemy.orm.attributes import set_committed_value
@@ -186,6 +187,7 @@ def create_memory_candidate(
                         "content": content.strip(),
                         "tags": tags,
                         "salience": salience_json,
+                        "last_error": None,
                     },
                 )
                 from sqlalchemy.orm.attributes import set_committed_value
