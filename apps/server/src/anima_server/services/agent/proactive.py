@@ -64,6 +64,11 @@ class GreetingContext:
     # unresolved_thread pressure actually accumulated over the gap. None
     # whenever any grounding condition fails; never synthesized.
     held_thought: str | None = None
+    # IL-010: a real dream the "ambient" dream-sharing mode may weave into
+    # this greeting — verbatim from the most recent share-worthy unsurfaced
+    # dream_journal row (marked surfaced on hand-off). None unless the user
+    # explicitly chose the ambient mode; never synthesized.
+    ambient_dream: str | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +280,64 @@ async def _invoke_ollama_native_chat(
     return stripped or None
 
 
+def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
+    """IL-010: the dream reference an "ambient" greeting may weave, or None.
+
+    Gives ``presence_config.dream_sharing == "ambient"`` its real behavior
+    (the IL-007 PRD's "the companion may weave a dream into greetings").
+    Grounded like the held thought — every condition is a persisted signal:
+
+    1. Consent: the Presence master switch is on AND dream_sharing is
+       exactly ``"ambient"`` — ``on_ask`` stays ask-or-IL3-fire only and
+       ``off`` stays fully suppressed.
+    2. An active memories DEK (``df`` fails open; without one the read
+       would hand ciphertext to the greeting prompt).
+    3. A real dream: the most recent share-worthy, not-yet-surfaced
+       ``dream_journal`` row.
+
+    Consume-once: the returned dream is marked ``surfaced`` and COMMITTED
+    here, in the same operation that hands it to the greeting surface —
+    the greeting (LLM or static fallback) always includes it, and a dream
+    must never be voiced twice nor keep re-raising ``dream_residue`` after
+    it was woven. The commit lives in this helper because the greeting
+    routes' ``get_db`` session never commits otherwise, and every caller
+    of ``gather_greeting_context`` would have to remember the side effect.
+    Called before any other pending writes exist on the session (greeting
+    paths are read-only apart from this), so the commit is contained.
+    """
+    from anima_server.models import DreamJournal
+    from anima_server.services.data_crypto import DOMAIN_MEMORIES
+    from anima_server.services.sessions import get_active_dek
+
+    values = get_presence_config_values(db, user_id)
+    if not (values.enabled and values.dream_sharing == "ambient"):
+        return None
+    if get_active_dek(user_id, DOMAIN_MEMORIES) is None:
+        return None
+
+    row = db.scalar(
+        select(DreamJournal)
+        .where(
+            DreamJournal.user_id == user_id,
+            DreamJournal.share_worthy.is_(True),
+            DreamJournal.surfaced.is_(False),
+        )
+        .order_by(DreamJournal.dreamt_at.desc())
+        .limit(1)
+    )
+    if row is None:
+        return None
+    narrative = (
+        df(user_id, row.narrative, table="dream_journal", field="narrative") or ""
+    ).strip()
+    if not narrative:
+        return None
+
+    row.surfaced = True
+    db.commit()
+    return narrative[:240]
+
+
 def _resolve_held_thought(
     db: Session,
     runtime_db: Session | None,
@@ -449,6 +512,7 @@ def gather_greeting_context(
         last_message_at=last_message.created_at if last_message else None,
         now=now,
     )
+    ambient_dream = _resolve_ambient_dream(db, user_id=user_id)
 
     # Get recent episode summary
     recent_episode = db.scalar(
@@ -558,6 +622,7 @@ def gather_greeting_context(
         is_birthday=is_birthday,
         days_until_birthday=days_until_birthday,
         held_thought=held_thought,
+        ambient_dream=ambient_dream,
     )
 
 
@@ -579,6 +644,9 @@ def build_static_greeting(ctx: GreetingContext) -> str:
 
     if ctx.held_thought:
         parts.append(f'Something you mentioned stayed with me — "{ctx.held_thought}".')
+
+    if ctx.ambient_dream:
+        parts.append(f'I dreamt about something recently — "{ctx.ambient_dream}".')
 
     if ctx.overdue_task_count:
         s = "s" if ctx.overdue_task_count != 1 else ""
@@ -911,6 +979,17 @@ async def generate_greeting(
             + f'you: "{ctx.held_thought}". You may mention it briefly and '
             + "naturally, but only what is stated here — do not invent "
             + "details, outcomes, or feelings about it."
+        ).strip()
+
+    if ctx.ambient_dream:
+        # IL-010: the user chose ambient dream-sharing; the dream text is a
+        # real dream_journal narrative — pin the model to it, framed AS a
+        # dream (never as a memory of something that happened).
+        memory_context = (
+            memory_context
+            + f'\n\nYou dreamt recently: "{ctx.ambient_dream}". You may weave '
+            + "a brief mention of it into the greeting, clearly as a dream — "
+            + "only what is stated here, no invented details or meanings."
         ).strip()
 
     # Use templated greeting prompt
