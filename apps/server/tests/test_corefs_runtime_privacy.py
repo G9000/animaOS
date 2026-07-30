@@ -1731,6 +1731,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
     )
     from conftest_runtime import runtime_db_session
 
+    legacy_document_text = ("legacy full document embedding input " * 10) + "final marker"
     with runtime_db_session() as runtime_db:
         document = register_document(
             runtime_db,
@@ -1750,7 +1751,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             chunks=[
                 ExtractedDocumentChunk(
                     chunk_index=0,
-                    content_text="legacy document plaintext",
+                    content_text=legacy_document_text,
                     section_title="legacy private section",
                     metadata_json={"outline": "legacy private outline"},
                 )
@@ -1839,12 +1840,12 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         vector[0] = 1.0
         runtime_embedding = RuntimeEmbedding(
             user_id=7,
-            source_type="memory_item",
-            source_id=91,
+            source_type="document_chunk",
+            source_id=chunks[0].id,
             content_hash="e" * 64,
             embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(vector),
             embedding=vector,
-            content_preview="legacy embedding plaintext",
+            content_preview=legacy_document_text[:200],
             category="fact",
             importance=4,
         )
@@ -1929,7 +1930,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             ).where(RuntimeEmbedding.__table__.c.id == runtime_embedding.id)
         ).one()
         assert converted == 10
-        assert raw_chunk[0:3] == ("", len("legacy document plaintext"), None)
+        assert raw_chunk[0:3] == ("", len(legacy_document_text), None)
         assert raw_chunk[3] is None
         assert raw_pending == ("", None)
         assert raw_concept == ("", None, "", {})
@@ -1942,7 +1943,9 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert raw_workflow_checkpoint == (None, None)
         assert raw_embedding == ("", None, None)
         hits = index.search_runtime_embeddings(tuple(vector), limit=5)
-        assert [(hit.source_type, hit.source_id) for hit in hits] == [("memory_item", 91)]
+        assert [(hit.source_type, hit.source_id) for hit in hits] == [
+            ("document_chunk", chunks[0].id)
+        ]
         assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
 
         monkeypatch.setattr(
@@ -1964,7 +1967,7 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             workflow_checkpoint.id,
         )
         assert loaded_chunk is not None
-        assert loaded_chunk.content_text == "legacy document plaintext"
+        assert loaded_chunk.content_text == legacy_document_text
         assert loaded_chunk.section_title == "legacy private section"
         assert loaded_chunk.metadata_json == {"outline": "legacy private outline"}
         assert loaded_pending is not None
@@ -2008,6 +2011,23 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             )
             == 0
         )
+
+        rebuilt_index = CoreFSProgressiveIndex("core-a")
+        rebuilt_index.unlock(
+            sqlcipher_key=b"k" * 32,
+            local_instance_id="instance-a",
+        )
+        embedded_texts: list[str] = []
+        assert (
+            sealed_runtime.rebuild_runtime_embeddings(
+                runtime_db,
+                index=rebuilt_index,
+                user_id=7,
+                embedder=lambda value: embedded_texts.append(value) or tuple(vector),
+            )
+            == 1
+        )
+        assert embedded_texts == [f"legacy private section\n\n{legacy_document_text}"]
 
 
 def test_runtime_embedding_rebuild_restores_vectors_for_a_new_unlock(
@@ -2083,6 +2103,248 @@ def test_runtime_embedding_rebuild_restores_vectors_for_a_new_unlock(
         assert embedded_texts == [content]
         hits = second_index.search_runtime_embeddings(tuple(vector), limit=5)
         assert [(hit.source_type, hit.source_id) for hit in hits] == [("memory_item", 92)]
+
+
+def test_runtime_embedding_refresh_rebuilds_existing_vectors_for_new_fingerprint() -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    old_vector = (1.0, 0.0)
+    index.begin_runtime_embedding_rebuild(embedding_fingerprint="old")
+    index.upsert_runtime_embedding(
+        source_type="memory_item",
+        source_id=93,
+        vector=old_vector,
+        content="private content",
+        category="fact",
+        importance=5,
+        embedding_fingerprint="old",
+    )
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        row = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=93,
+            content_hash=RuntimeEmbedding.compute_content_hash("private content"),
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        runtime_db.add(row)
+        runtime_db.flush()
+        sealed_runtime.seal_runtime_record(
+            runtime_db,
+            index=index,
+            row_type="runtime_embedding",
+            row_id=row.id,
+            owner_id=7,
+            payload={
+                "content_preview": "private content",
+                "embedding_content": "private content",
+            },
+        )
+        index.request_runtime_embedding_refresh(embedding_fingerprint="new")
+        with pytest.raises(ValueError, match="configuration changed"):
+            index.upsert_runtime_embedding(
+                source_type="memory_item",
+                source_id=93,
+                vector=old_vector,
+                content="stale private content",
+                category="fact",
+                importance=5,
+                embedding_fingerprint="old",
+            )
+
+        embedded_texts: list[str] = []
+
+        def embed(value: str) -> tuple[float, ...]:
+            embedded_texts.append(value)
+            return (0.0, 1.0)
+
+        embed.corefs_embedding_fingerprint = "new"  # type: ignore[attr-defined]
+        assert (
+            sealed_runtime.rebuild_runtime_embeddings(
+                runtime_db,
+                index=index,
+                user_id=7,
+                embedder=embed,
+            )
+            == 1
+        )
+        assert embedded_texts == ["private content"]
+        assert index.runtime_embedding_vector(
+            source_type="memory_item",
+            source_id=93,
+        ) == (0.0, 1.0)
+
+
+def test_legacy_memory_embedding_content_uses_the_constructing_session_dek(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from anima_server.db import session as soul_session
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.crypto import encrypt_text_with_dek
+    from conftest_runtime import runtime_db_session
+
+    memory_dek = b"m" * 32
+    content = ("full legacy memory embedding input " * 10) + "final marker"
+    encrypted = encrypt_text_with_dek(
+        content,
+        memory_dek,
+        aad=b"memory_items:7:content",
+    )
+
+    class SoulDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _model, source_id: int):
+            assert source_id == 96
+            return SimpleNamespace(user_id=7, content=encrypted)
+
+    monkeypatch.setattr(
+        soul_session,
+        "get_user_session_factory",
+        lambda _owner_id: SoulDB,
+    )
+
+    with runtime_db_session() as runtime_db:
+        assert (
+            sealed_runtime._legacy_runtime_embedding_content(
+                runtime_db,
+                owner_id=7,
+                source_type="memory_item",
+                source_id=96,
+                memory_dek=memory_dek,
+            )
+            == content
+        )
+
+
+def test_runtime_embedding_cache_changes_only_after_commit_and_fans_out(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    indexes = (
+        CoreFSProgressiveIndex("core-a"),
+        CoreFSProgressiveIndex("core-a"),
+    )
+    for index in indexes:
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: indexes[0])
+    monkeypatch.setattr(sealed_runtime, "active_runtime_indexes", lambda _user_id: indexes)
+    vector = (1.0, 0.0)
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.commit()
+
+        rolled_back = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=94,
+            content_hash=RuntimeEmbedding.compute_content_hash("rolled back"),
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        sealed_runtime.persist_runtime_embedding(
+            runtime_db,
+            row=rolled_back,
+            owner_id=7,
+            embedding=vector,
+            content="rolled back",
+        )
+        runtime_db.flush()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=94) is None
+            for index in indexes
+        )
+        runtime_db.rollback()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=94) is None
+            for index in indexes
+        )
+
+        committed = RuntimeEmbedding(
+            user_id=7,
+            source_type="memory_item",
+            source_id=95,
+            content_hash=RuntimeEmbedding.compute_content_hash("committed"),
+            content_preview="",
+            category="fact",
+            importance=5,
+        )
+        sealed_runtime.persist_runtime_embedding(
+            runtime_db,
+            row=committed,
+            owner_id=7,
+            embedding=vector,
+            content="committed",
+        )
+        runtime_db.flush()
+        runtime_db.commit()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=95) == vector
+            for index in indexes
+        )
+
+        assert (
+            sealed_runtime.delete_runtime_embedding_records(
+                runtime_db,
+                owner_id=7,
+                source_type="memory_item",
+                source_ids=[95],
+            )
+            == 1
+        )
+        runtime_db.rollback()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=95) == vector
+            for index in indexes
+        )
+
+        assert (
+            sealed_runtime.delete_runtime_embedding_records(
+                runtime_db,
+                owner_id=7,
+                source_type="memory_item",
+                source_ids=[95],
+            )
+            == 1
+        )
+        runtime_db.commit()
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=95) is None
+            for index in indexes
+        )
 
 
 def test_corefs_bound_runtime_refuses_sensitive_writes_after_lock(
@@ -2229,6 +2491,7 @@ def test_production_embedding_writers_seal_content_previews(
         assert all(row[0] is None for row in raw_rows)
         assert all(row[1] is None for row in raw_rows)
         assert [row[2] for row in raw_rows] == ["", "", ""]
+        runtime_db.commit()
         image_hits = PgVecStore(runtime_db).search_by_vector(
             7,
             query_embedding=image_embedding,

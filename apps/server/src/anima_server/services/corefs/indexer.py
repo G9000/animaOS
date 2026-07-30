@@ -103,6 +103,8 @@ class CoreFSProgressiveIndex:
             tuple[str, int],
             tuple[tuple[float, ...], str, str, int],
         ] = {}
+        self._runtime_embedding_fingerprint: str | None = None
+        self._pending_runtime_embedding_fingerprint: str | None = None
         self._semantic_fingerprint: str | None = None
         self._pending_semantic_fingerprint: str | None = None
         self._processed_revisions: set[tuple[str, str]] = set()
@@ -287,6 +289,7 @@ class CoreFSProgressiveIndex:
         content: str,
         category: str,
         importance: int,
+        embedding_fingerprint: str | None = None,
     ) -> None:
         if not source_type:
             raise ValueError("Runtime embedding source type must be non-empty")
@@ -296,12 +299,52 @@ class CoreFSProgressiveIndex:
             raise ValueError("Runtime embedding vector must be non-empty")
         with self._lock:
             self._require_unlocked()
+            if (
+                self._pending_runtime_embedding_fingerprint is not None
+                and embedding_fingerprint != self._pending_runtime_embedding_fingerprint
+            ):
+                raise ValueError("Runtime embedding configuration changed")
+            if (
+                embedding_fingerprint is not None
+                and embedding_fingerprint != self._runtime_embedding_fingerprint
+            ):
+                raise ValueError("Runtime embedding configuration changed")
             self._runtime_embeddings[(source_type, source_id)] = (
                 tuple(float(value) for value in vector),
                 content,
                 category,
                 importance,
             )
+
+    def request_runtime_embedding_refresh(self, *, embedding_fingerprint: str) -> None:
+        """Invalidate Runtime vectors and reject work from the prior embedding space."""
+        if not embedding_fingerprint:
+            raise ValueError("embedding fingerprint must be non-empty")
+        with self._lock:
+            self._require_unlocked()
+            self._runtime_embeddings.clear()
+            self._pending_runtime_embedding_fingerprint = embedding_fingerprint
+
+    def begin_runtime_embedding_rebuild(
+        self,
+        *,
+        embedding_fingerprint: str | None = None,
+    ) -> None:
+        """Claim the embedding space used by one Runtime rebuild pass."""
+        with self._lock:
+            self._require_unlocked()
+            pending = self._pending_runtime_embedding_fingerprint
+            if pending is not None:
+                if embedding_fingerprint != pending:
+                    raise ValueError("Runtime embedding configuration changed")
+                self._runtime_embedding_fingerprint = pending
+                self._pending_runtime_embedding_fingerprint = None
+            elif (
+                embedding_fingerprint is not None
+                and embedding_fingerprint != self._runtime_embedding_fingerprint
+            ):
+                self._runtime_embeddings.clear()
+                self._runtime_embedding_fingerprint = embedding_fingerprint
 
     def runtime_embedding_vector(
         self,
@@ -675,6 +718,8 @@ class CoreFSProgressiveIndex:
                 self._documents.pop(object_id, None)
             self._vectors.clear()
             self._runtime_embeddings.clear()
+            self._runtime_embedding_fingerprint = None
+            self._pending_runtime_embedding_fingerprint = None
             self._semantic_fingerprint = None
             self._pending_semantic_fingerprint = None
             self._processed_revisions.clear()

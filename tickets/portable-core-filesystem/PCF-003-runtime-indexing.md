@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-30 21:40 MYT
+- Updated: 2026-07-30 22:02 MYT
 - Started: 2026-07-29 01:57 MYT
 - Completed:
 
@@ -67,9 +67,12 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 - 2026-07-30 21:16 MYT - Addressed PR #127's two exact-head P1 findings on `a601afa3` test-first. CoreFS-bound semantic vectors and checksums now remain only in the unlock-scoped in-memory index while mapped Runtime rows retain nullable placeholders, and document/image/source filenames, storage paths, metadata, titles, media types, and source URIs use unlock-derived sealed payloads with a keyed opaque lookup projection. The unlock converter scrubs legacy parent descriptors and deletion removes image-asset ciphertext. Three raw-storage regressions failed RED and passed GREEN; the expanded privacy/index/retrieval/deletion/migration band passed `200`, Runtime Alembic reports only `034_corefs_runtime_index`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. The child and parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout.
 - 2026-07-30 21:40 MYT - Addressed PR #127's three exact-head P1 findings on `63bdb443` test-first. Portable catalog refreshes now preserve the independent unlock-only Runtime embedding map, every newly published or restored unlock session schedules regeneration from the full encrypted embedding input, and the legacy converter moves any persisted vector into the current unlock before atomically scrubbing PostgreSQL vector/checksum/preview columns. Four focused regressions failed RED and passed GREEN; the expanded privacy/index/migration/session/document/image/retrieval/workflow band passed `228`, Runtime Alembic reports only `034_corefs_runtime_index`, and scoped Ruff/format, repository organization, the complete workspace build, and diff hygiene pass. The child and parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout.
 
+- 2026-07-30 22:02 MYT - Addressed PR #127's four exact-head lifecycle findings on `b2ddbddf` test-first. Embedding configuration refresh now invalidates Runtime vectors under the same exact fingerprint as portable vectors and rejects stale worker output; commit/rollback hooks publish embedding upserts and deletions only after database success to every live unlock index; and the unlock converter recovers full document, image, source, concept, and encrypted memory inputs before permanently scrubbing legacy previews/vectors. Four focused regressions failed RED and five focused cases passed GREEN. The canonical CoreFS/Runtime/dev-session band passed `211`, the config refresh regression passed, and scoped Ruff/format plus diff hygiene pass. The child and parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout.
+
 ## Validation
 
 - Commands:
+  - PR #127 Runtime embedding lifecycle follow-up: four focused regressions failed RED and five focused cases passed GREEN; the canonical CoreFS/Runtime/dev-session band passed `211`; the config refresh regression passed; scoped Ruff/format and diff hygiene passed.
   - PR #127 Runtime-vector lifecycle follow-up: four focused regressions failed RED and passed GREEN; the expanded affected band passed `228`; Runtime Alembic reports only `034_corefs_runtime_index`; scoped Ruff/format, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 vector/descriptor privacy follow-up: three raw-storage regressions failed RED and passed GREEN; the expanded privacy/index/retrieval/deletion/migration band passed `200`; scoped Ruff, Runtime-head validation, repository organization, workspace build, and diff hygiene passed.
   - PR #127 token-alias/workflow-input/thread-title follow-up: five focused regressions failed RED and six passed GREEN; the expanded PCF/session/thread/workflow band passed `250`; scoped Ruff, repository organization, workspace build, and diff hygiene passed.

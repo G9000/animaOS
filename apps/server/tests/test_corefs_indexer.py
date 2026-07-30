@@ -359,3 +359,26 @@ def test_legacy_unlock_session_still_creates_runtime_sealing_index() -> None:
     finally:
         store.revoke(token)
         store.clear_sqlcipher_key()
+
+
+def test_unlock_store_returns_every_live_runtime_index_for_a_user() -> None:
+    indexes = [
+        CoreFSProgressiveIndex("core-index"),
+        CoreFSProgressiveIndex("core-index"),
+    ]
+    for index in indexes:
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    remaining = iter(indexes)
+    store = UnlockSessionStore(
+        runtime_index_factory=lambda _keys, _key: next(remaining),
+    )
+    store.set_sqlcipher_key(b"k" * 32)
+
+    first = store.create(9, {"memories": b"m" * 32})
+    second = store.create(9, {"memories": b"m" * 32})
+    try:
+        assert store.get_active_runtime_indexes(9) == tuple(indexes)
+    finally:
+        store.revoke(first)
+        store.revoke(second)
+        store.clear_sqlcipher_key()

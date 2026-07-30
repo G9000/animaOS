@@ -5,6 +5,8 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from contextlib import suppress
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, event, select
@@ -52,6 +54,16 @@ def _active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
 
 def active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
     return _active_runtime_index(user_id)
+
+
+def active_runtime_indexes(user_id: int) -> tuple[CoreFSProgressiveIndex, ...]:
+    from anima_server.services.sessions import unlock_session_store
+
+    indexes = unlock_session_store.get_active_runtime_indexes(user_id)
+    if indexes:
+        return indexes
+    index = _active_runtime_index(user_id)
+    return () if index is None else (index,)
 
 
 def runtime_index_for_sensitive_write(
@@ -221,14 +233,31 @@ def persist_runtime_embedding(
         placeholders={"content_preview": ""},
     )
     if index is not None:
-        index.upsert_runtime_embedding(
-            source_type=str(row.source_type),
-            source_id=int(row.source_id),
-            vector=vector,
-            content=content_preview,
-            category=str(row.category),
-            importance=int(row.importance),
-        )
+        source_type = str(row.source_type)
+        source_id = int(row.source_id)
+        category = str(row.category)
+        importance = int(row.importance)
+
+        def publish(_session: Session) -> None:
+            with suppress(Exception):
+                event.remove(runtime_db, "after_rollback", discard)
+            for live_index in active_runtime_indexes(owner_id):
+                with suppress(CoreFSRuntimeLocked, ValueError):
+                    live_index.upsert_runtime_embedding(
+                        source_type=source_type,
+                        source_id=source_id,
+                        vector=vector,
+                        content=content_preview,
+                        category=category,
+                        importance=importance,
+                    )
+
+        def discard(_session: Session) -> None:
+            with suppress(Exception):
+                event.remove(runtime_db, "after_commit", publish)
+
+        event.listen(runtime_db, "after_commit", publish, once=True)
+        event.listen(runtime_db, "after_rollback", discard, once=True)
 
 
 def load_runtime_embedding_vector(
@@ -259,6 +288,7 @@ def convert_legacy_runtime_rows(
     *,
     index: CoreFSProgressiveIndex,
     user_id: int,
+    memory_dek: bytes | None = None,
 ) -> int:
     """Seal and scrub legacy plaintext Runtime rows for one unlocked owner.
 
@@ -435,6 +465,7 @@ def convert_legacy_runtime_rows(
         runtime_db,
         index=index,
         user_id=user_id,
+        memory_dek=memory_dek,
     )
     for table, row_type, payload_columns, placeholders in specifications:
         statement = select(
@@ -513,6 +544,7 @@ def _convert_legacy_runtime_embeddings(
     *,
     index: CoreFSProgressiveIndex,
     user_id: int,
+    memory_dek: bytes | None,
 ) -> int:
     """Move legacy Runtime vectors into unlock memory and scrub PostgreSQL."""
     from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -545,9 +577,16 @@ def _convert_legacy_runtime_embeddings(
             row["content_preview"] if payload is None else payload.get("content_preview", "")
         )
         if payload is None:
+            embedding_content = _legacy_runtime_embedding_content(
+                runtime_db,
+                owner_id=owner_id,
+                source_type=str(row["source_type"]),
+                source_id=int(row["source_id"]),
+                memory_dek=memory_dek,
+            )
             payload = {
                 "content_preview": preview,
-                "embedding_content": preview,
+                "embedding_content": embedding_content or preview,
             }
             seal_runtime_record(
                 runtime_db,
@@ -585,6 +624,99 @@ def _convert_legacy_runtime_embeddings(
     return converted
 
 
+def _legacy_runtime_embedding_content(
+    runtime_db: Session,
+    *,
+    owner_id: int,
+    source_type: str,
+    source_id: int,
+    memory_dek: bytes | None,
+) -> str | None:
+    """Recover the original embedding input before legacy source rows are scrubbed."""
+    from anima_server.models.runtime import (
+        RuntimeDocumentChunk,
+        RuntimeImageAnnotation,
+        RuntimeKnowledgeConcept,
+        RuntimeSourceSpan,
+    )
+
+    if source_type == "document_chunk":
+        row = runtime_db.execute(
+            select(
+                RuntimeDocumentChunk.__table__.c.content_text,
+                RuntimeDocumentChunk.__table__.c.section_title,
+                RuntimeDocumentChunk.__table__.c.metadata_json,
+            ).where(
+                RuntimeDocumentChunk.__table__.c.id == source_id,
+                RuntimeDocumentChunk.__table__.c.user_id == owner_id,
+            )
+        ).one_or_none()
+        if row is not None:
+            from anima_server.services.documents.contextual import chunk_index_text
+
+            return chunk_index_text(
+                SimpleNamespace(
+                    content_text=str(row.content_text),
+                    section_title=row.section_title,
+                    metadata_json=row.metadata_json,
+                )
+            )
+    elif source_type == "image_annotation":
+        return runtime_db.scalar(
+            select(RuntimeImageAnnotation.__table__.c.content_text).where(
+                RuntimeImageAnnotation.__table__.c.id == source_id,
+                RuntimeImageAnnotation.__table__.c.user_id == owner_id,
+            )
+        )
+    elif source_type == "source_span":
+        return runtime_db.scalar(
+            select(RuntimeSourceSpan.__table__.c.content_text).where(
+                RuntimeSourceSpan.__table__.c.id == source_id,
+                RuntimeSourceSpan.__table__.c.user_id == owner_id,
+            )
+        )
+    elif source_type == "knowledge_concept":
+        row = runtime_db.execute(
+            select(
+                RuntimeKnowledgeConcept.__table__.c.title,
+                RuntimeKnowledgeConcept.__table__.c.description,
+                RuntimeKnowledgeConcept.__table__.c.body_markdown,
+            ).where(
+                RuntimeKnowledgeConcept.__table__.c.id == source_id,
+                RuntimeKnowledgeConcept.__table__.c.user_id == owner_id,
+            )
+        ).one_or_none()
+        if row is not None:
+            return "\n\n".join(
+                value
+                for value in (str(row.title), row.description, str(row.body_markdown))
+                if isinstance(value, str) and value.strip()
+            )
+    elif source_type == "memory_item":
+        try:
+            from anima_server.db.session import get_user_session_factory
+            from anima_server.models import MemoryItem
+            from anima_server.services.crypto import decrypt_text_with_dek
+
+            with get_user_session_factory(owner_id)() as soul_db:
+                memory = soul_db.get(MemoryItem, source_id)
+                if memory is not None and memory.user_id == owner_id:
+                    if memory_dek is None:
+                        return memory.content
+                    return decrypt_text_with_dek(
+                        memory.content,
+                        memory_dek,
+                        aad=f"memory_items:{owner_id}:content".encode(),
+                    )
+        except Exception:
+            logger.exception(
+                "Unable to recover legacy memory embedding input for %s:%s",
+                owner_id,
+                source_id,
+            )
+    return None
+
+
 def rebuild_runtime_embeddings(
     runtime_db: Session,
     *,
@@ -595,6 +727,13 @@ def rebuild_runtime_embeddings(
     """Regenerate unlock-only vectors from sealed embedding inputs."""
     from anima_server.models.runtime_embedding import RuntimeEmbedding
 
+    fingerprint_value = getattr(embedder, "corefs_embedding_fingerprint", None)
+    embedding_fingerprint = (
+        fingerprint_value if isinstance(fingerprint_value, str) and fingerprint_value else None
+    )
+    index.begin_runtime_embedding_rebuild(
+        embedding_fingerprint=embedding_fingerprint,
+    )
     table = RuntimeEmbedding.__table__
     statement = select(
         table.c.id,
@@ -640,6 +779,7 @@ def rebuild_runtime_embeddings(
                 content=str(payload.get("content_preview", embedding_content[:200])),
                 category=str(row["category"]),
                 importance=int(row["importance"]),
+                embedding_fingerprint=embedding_fingerprint,
             )
         except (TypeError, ValueError):
             logger.exception(
@@ -794,17 +934,6 @@ def delete_runtime_embedding_records(
 
     if source_ids is not None and not source_ids:
         return 0
-    if owner_id is not None:
-        index = active_runtime_index(owner_id)
-        if index is not None:
-            index.delete_runtime_embeddings(
-                source_type=source_type,
-                source_ids=(
-                    None
-                    if source_ids is None
-                    else frozenset(int(source_id) for source_id in source_ids)
-                ),
-            )
     conditions = []
     if owner_id is not None:
         conditions.append(RuntimeEmbedding.user_id == owner_id)
@@ -815,15 +944,24 @@ def delete_runtime_embedding_records(
 
     rows = list(
         runtime_db.execute(
-            select(RuntimeEmbedding.id, RuntimeEmbedding.user_id).where(*conditions)
+            select(
+                RuntimeEmbedding.id,
+                RuntimeEmbedding.user_id,
+                RuntimeEmbedding.source_type,
+                RuntimeEmbedding.source_id,
+            ).where(*conditions)
         ).all()
     )
     if not rows:
         return 0
 
     row_ids_by_owner: defaultdict[int, list[int]] = defaultdict(list)
-    for row_id, row_owner_id in rows:
+    deleted_sources_by_owner: defaultdict[int, defaultdict[str, set[int]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
+    for row_id, row_owner_id, row_source_type, row_source_id in rows:
         row_ids_by_owner[int(row_owner_id)].append(int(row_id))
+        deleted_sources_by_owner[int(row_owner_id)][str(row_source_type)].add(int(row_source_id))
     for row_owner_id, row_ids in row_ids_by_owner.items():
         delete_sealed_runtime_records(
             runtime_db,
@@ -833,9 +971,28 @@ def delete_runtime_embedding_records(
         )
     runtime_db.execute(
         delete(RuntimeEmbedding).where(
-            RuntimeEmbedding.id.in_([int(row_id) for row_id, _owner_id in rows])
+            RuntimeEmbedding.id.in_([int(row_id) for row_id, *_rest in rows])
         )
     )
+
+    def publish(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(runtime_db, "after_rollback", discard)
+        for row_owner_id, sources in deleted_sources_by_owner.items():
+            for live_index in active_runtime_indexes(row_owner_id):
+                for deleted_source_type, deleted_source_ids in sources.items():
+                    with suppress(CoreFSRuntimeLocked):
+                        live_index.delete_runtime_embeddings(
+                            source_type=deleted_source_type,
+                            source_ids=frozenset(deleted_source_ids),
+                        )
+
+    def discard(_session: Session) -> None:
+        with suppress(Exception):
+            event.remove(runtime_db, "after_commit", publish)
+
+    event.listen(runtime_db, "after_commit", publish, once=True)
+    event.listen(runtime_db, "after_rollback", discard, once=True)
     return len(rows)
 
 

@@ -434,10 +434,17 @@ def configured_embedding_fingerprint() -> str:
 def refresh_unlocked_semantic_search(session: UnlockSession) -> bool:
     """Invalidate and rebuild semantic vectors after embedding settings change."""
     index = session.runtime_index
-    if index is None or session.corefs_session is None or session.corefs_keys is None:
+    if index is None:
         return False
     fingerprint = configured_embedding_fingerprint()
-    if index.snapshot().catalog_generation is not None:
+    index.request_runtime_embedding_refresh(
+        embedding_fingerprint=fingerprint,
+    )
+    if (
+        session.corefs_session is not None
+        and session.corefs_keys is not None
+        and index.snapshot().catalog_generation is not None
+    ):
         index.request_semantic_refresh(
             embedding_fingerprint=fingerprint,
         )

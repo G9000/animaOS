@@ -303,17 +303,23 @@ class UnlockSessionStore:
         self,
         user_id: int,
     ) -> CoreFSProgressiveIndex | None:
+        indexes = self.get_active_runtime_indexes(user_id)
+        return indexes[-1] if indexes else None
+
+    def get_active_runtime_indexes(
+        self,
+        user_id: int,
+    ) -> tuple[CoreFSProgressiveIndex, ...]:
         cleanup = _CleanupBatch()
         with self._lock:
             cleanup.extend(self._purge_expired_locked())
-            indexes = [
+            indexes = tuple(
                 session.runtime_index
                 for session in self._sessions.values()
                 if session.user_id == user_id and session.runtime_index is not None
-            ]
-            index = indexes[-1] if indexes else None
+            )
         self._run_cleanup(cleanup)
-        return index
+        return tuple(dict.fromkeys(indexes))
 
     def get_active_sessions(self, user_id: int) -> tuple[UnlockSession, ...]:
         cleanup = _CleanupBatch()
@@ -462,6 +468,7 @@ class UnlockSessionStore:
             self._convert_runtime_index_rows(
                 runtime_index,
                 user_id=user_id,
+                memory_dek=copied_deks.get(DEFAULT_DOMAIN),
             )
         except Exception:
             if runtime_index is not None:
@@ -490,6 +497,7 @@ class UnlockSessionStore:
         runtime_index: CoreFSProgressiveIndex | None,
         *,
         user_id: int,
+        memory_dek: bytes | None,
     ) -> bool:
         if runtime_index is None:
             return True
@@ -509,6 +517,7 @@ class UnlockSessionStore:
                 runtime_db,
                 index=runtime_index,
                 user_id=user_id,
+                memory_dek=memory_dek,
             )
             runtime_db.commit()
         return True
@@ -534,6 +543,7 @@ class UnlockSessionStore:
                 self._convert_runtime_index_rows(
                     runtime_index,
                     user_id=session.user_id,
+                    memory_dek=session.deks.get(DEFAULT_DOMAIN),
                 )
                 replacements[token] = replace(
                     session,
@@ -897,6 +907,10 @@ def get_active_deks(user_id: int) -> dict[str, bytes] | None:
 
 def active_unlock_sessions(user_id: int) -> tuple[UnlockSession, ...]:
     return unlock_session_store.get_active_sessions(user_id)
+
+
+def active_runtime_indexes(user_id: int) -> tuple[CoreFSProgressiveIndex, ...]:
+    return unlock_session_store.get_active_runtime_indexes(user_id)
 
 
 def set_sqlcipher_key(key: bytes) -> None:
