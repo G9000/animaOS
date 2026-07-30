@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-30 23:43 MYT
+- Updated: 2026-07-31 00:36 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-30 23:43 MYT
+- Completed: 2026-07-31 00:36 MYT
 
 ## Goal
 
@@ -123,6 +123,16 @@ rather than blocking IL-008 on it.
   the unconditional clear; (3) the recorded `bun run build` evidence was
   from the round-2 head — re-run and recorded on THIS final head.
 
+- 2026-07-31 00:36 MYT - PR #131 review round 6 (P1 + P2), completion
+  re-stamped: (1) settleSeedClose memoizes its in-flight promise — the
+  eager close and the send guard now share ONE POST instead of racing
+  two concurrent closes into duplicate on_thread_close side effects;
+  (2) abandoning the seeded reply (selecting another thread / New
+  Thread) clears the pending-close guard with one final best-effort
+  close — except when re-opening the very thread the close targets —
+  so a persistently failing close can no longer wedge unrelated
+  conversations. Build re-run on this head: pass.
+
 ## Validation
 
 - Commands:
@@ -130,7 +140,7 @@ rather than blocking IL-008 on it.
     25 pass (10 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 5), 2026-07-30 23:43 MYT
+    FINAL head (round 6), 2026-07-31 00:36 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

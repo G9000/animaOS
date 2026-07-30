@@ -561,19 +561,45 @@ export default function Chat() {
   // rounds 3-4). sendMessage retries the close itself before proceeding,
   // so the state is self-healing rather than a one-shot guard.
   const pendingSeedCloseRef = useRef<number | null>(null);
-  const settleSeedClose = async (): Promise<boolean> => {
+  // One shared in-flight close (PR #131 round 6): the eager close and the
+  // send guard both settle through here — without memoization they issued
+  // two concurrent POST /threads/{id}/close, and on PostgreSQL both could
+  // read the thread as active and schedule on_thread_close twice
+  // (duplicate episode generation/archival).
+  const seedClosePromiseRef = useRef<Promise<boolean> | null>(null);
+  const settleSeedClose = (): Promise<boolean> => {
+    if (seedClosePromiseRef.current) return seedClosePromiseRef.current;
     const threadId = pendingSeedCloseRef.current;
-    if (threadId == null) return true;
-    try {
-      await api.threads.close(threadId);
-      pendingSeedCloseRef.current = null;
-      api.threads
-        .list()
-        .then((list) => setThreads(dedupeThreads(list.threads)))
-        .catch(() => {});
-      return true;
-    } catch {
-      return false; // stays pending; the next send retries
+    if (threadId == null) return Promise.resolve(true);
+    const inFlight = (async () => {
+      try {
+        await api.threads.close(threadId);
+        pendingSeedCloseRef.current = null;
+        api.threads
+          .list()
+          .then((list) => setThreads(dedupeThreads(list.threads)))
+          .catch(() => {});
+        return true;
+      } catch {
+        return false; // stays pending; the next send retries
+      } finally {
+        seedClosePromiseRef.current = null;
+      }
+    })();
+    seedClosePromiseRef.current = inFlight;
+    return inFlight;
+  };
+  // A pending close belongs to the seeded-reply intent. When the user
+  // abandons that intent (picks another thread, starts a new one), the
+  // guard must stop gating unrelated sends: fire one last best-effort
+  // close and clear it (PR #131 round 6) — unless the user is re-opening
+  // the very thread the close targets, in which case closing it would
+  // archive the conversation they just selected.
+  const abandonSeedClose = (keepThreadId?: number) => {
+    const abandoned = pendingSeedCloseRef.current;
+    pendingSeedCloseRef.current = null;
+    if (abandoned != null && abandoned !== keepThreadId) {
+      void api.threads.close(abandoned).catch(() => {});
     }
   };
   const applySeedNavigation = (context: ChatContextMessage[]) => {
@@ -809,6 +835,7 @@ export default function Chat() {
   const handleSelectThread = async (threadId: number) => {
     seedActiveRef.current = false;
     pendingContextRef.current = [];
+    abandonSeedClose(threadId); // don't close the thread being re-opened
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
@@ -825,6 +852,7 @@ export default function Chat() {
   const handleNewThread = async () => {
     seedActiveRef.current = false;
     pendingContextRef.current = [];
+    abandonSeedClose();
 
     const threadToClose = currentThreadIdRef.current;
     currentThreadIdRef.current = null;
