@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-31 02:18 MYT
+- Updated: 2026-07-31 02:30 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
-| PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
+| PCF-003 | Machine-local Runtime and progressive indexing | in_progress | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
@@ -80,7 +80,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
-- PCF-003 - Machine-local Runtime and progressive indexing (implementation-head acceptance completed 2026-07-31 02:18 MYT; PR #127 metadata closeout head pending final review).
 
 ## Activity Log
 
@@ -303,12 +302,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-31 01:25 MYT - Addressed PR #127's two exact-head sealed-payload lifecycle findings on `6a59e4a2` with RED/GREEN deletion regressions. Background-task retention now removes each expired run's sealed result/error payload in the same transaction as its source row, and conversation deletion inventories Runtime run IDs so cascaded run failures cannot leave encrypted orphans. The expanded Runtime privacy, sleep-agent, and image-deletion band passed `98`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-31 01:39 MYT - Addressed PR #127's exact-head candidate/pending-op failure-detail finding on `0faae4cf` with four RED/GREEN assertions across three focused cases. Memory candidates, profile-update candidates, and pending memory operations now keep error details inside their existing sealed payloads across production writers, Soul Writer and forgetting mutations, unlock hydration, and legacy conversion; candidate resealing also preserves its in-session tags and salience. The expanded Runtime privacy, Soul Writer, retry-hygiene, and forgetting band passed `114`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003 and this parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout; PCF-004 remains dependency-ineligible.
 - 2026-07-31 02:18 MYT - Completed PCF-003 after implementation head `a9b763b2` passed all five required checks, full GraphQL pagination found zero unresolved non-outdated actionable threads, and Codex reported no major issues for reviewed commit `a9b763b2de`. PCF-003's child state, parent row, completed history, timestamp, validation, and activity are synchronized for the required metadata-only closeout review. This parent remains `in_progress` because later required children remain; PCF-004 and PCF-005 are now dependency-eligible but remain unclaimed in backlog.
+- 2026-07-31 02:30 MYT - Reopened PCF-003 after the metadata closeout review found substantive profile-key privacy and degraded text-rebuild retry gaps. The fixes now seal content-derived profile keys across every current and legacy boundary and keep per-object text failures in a retryable indexing state until the missing object succeeds. Three focused assertions failed RED and passed GREEN; the expanded affected band passed `119`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. PCF-003's child state, parent row, completed history, timestamp, validation, and activity are synchronized as `in_progress`; PCF-004 and PCF-005 are dependency-ineligible again pending refreshed review and second-phase closeout.
 
 - 2026-07-30 15:50 MYT - Planning only: filed `PCF-011` (backlog, unassigned) documenting the windows-native-lease CI flake observed on PR #128 (`object_lease_diagnostic_records_ordered_boundaries_and_required_mutations`, DiagnosticInvariant on a docs-only commit, green on unmodified re-run). No ownership or state changes to any existing child.
 
 ## Validation
 
 - Commands:
+  - PR #127 profile-key privacy/text-read retry follow-up: three focused assertions failed RED and passed GREEN; expanded profile, consolidation, privacy, migration, and security coverage passed `119`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PCF-003 clean implementation head: PR #127 head `a9b763b2` passed standalone checkout, Server Ruff, pytest, Windows native lease, and macOS native lease; full pagination covered `38` top-level comments, `75` reviews, `84` review threads, all per-thread comment connections, and current-head checks with zero unresolved current actionable threads; Codex reported no major issues for reviewed commit `a9b763b2de`.
   - PR #127 candidate/pending-op failure-detail follow-up: four assertions failed RED across three focused cases and passed GREEN; expanded coverage passed `114`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 sealed-payload lifecycle follow-up: both background-task retention and conversation-run deletion regressions failed RED and passed GREEN; expanded coverage passed `98`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.

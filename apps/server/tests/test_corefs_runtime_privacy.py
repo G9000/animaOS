@@ -1827,7 +1827,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
             runtime_db,
             user_id=7,
             category="identity",
-            key="favorite_project",
+            key="partner_alex",
             value="seeded private profile value",
             evidence_text="seeded private profile evidence",
             source_message_ids=[101],
@@ -1844,12 +1844,12 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
         )
         stored = runtime_db.execute(
             text(
-                "SELECT value, evidence_text, last_error "
+                "SELECT key, value, evidence_text, last_error "
                 "FROM profile_update_candidates WHERE id = :id"
             ),
             {"id": candidate.id},
         ).one()
-        assert stored == ("", None, None)
+        assert stored == ("", "", None, None)
         assert (
             runtime_db.scalar(
                 select(CoreFSSealedPayload).where(
@@ -1864,6 +1864,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
             select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.id == candidate.id)
         )
         assert loaded is not None
+        assert loaded.key == "partner_alex"
         assert loaded.value == "seeded private profile value"
         assert loaded.evidence_text == "seeded private profile evidence"
         assert loaded.last_error == private_error
@@ -1904,7 +1905,7 @@ def test_unlock_converter_seals_legacy_candidate_and_pending_errors(
         profile_candidate = ProfileUpdateCandidate(
             user_id=7,
             category="identity",
-            key="project",
+            key="partner_alex",
             value="legacy private profile value",
             evidence_text="legacy private profile evidence",
             source="llm",
@@ -1940,6 +1941,7 @@ def test_unlock_converter_seals_legacy_candidate_and_pending_errors(
         ).one()
         raw_profile = runtime_db.execute(
             select(
+                ProfileUpdateCandidate.__table__.c.key,
                 ProfileUpdateCandidate.__table__.c.value,
                 ProfileUpdateCandidate.__table__.c.evidence_text,
                 ProfileUpdateCandidate.__table__.c.last_error,
@@ -1959,11 +1961,12 @@ def test_unlock_converter_seals_legacy_candidate_and_pending_errors(
 
     assert converted >= 3
     assert raw_memory == ("", None)
-    assert raw_profile == ("", None, None)
+    assert raw_profile == ("", "", None, None)
     assert raw_pending == ("", None, None)
     assert hydrated_memory is not None
     assert hydrated_memory.last_error == "legacy candidate provider output"
     assert hydrated_profile is not None
+    assert hydrated_profile.key == "partner_alex"
     assert hydrated_profile.last_error == "legacy profile provider output"
     assert hydrated_pending is not None
     assert hydrated_pending.failure_reason == "legacy pending SQL parameters"

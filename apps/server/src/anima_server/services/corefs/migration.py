@@ -188,6 +188,7 @@ def rebuild_unlocked_search(
         for object_id, revision, _family, text in index.indexed_texts()
     }
     indexed: list[tuple[str, str]] = list(indexed_by_revision.values())
+    text_failed = False
     for entry in entries:
         durable_key = _durable_entry_key(entry)
         in_memory = indexed_by_revision.get((entry["stable_id"], entry["revision"]))
@@ -211,6 +212,7 @@ def rebuild_unlocked_search(
                 path=entry["path"],
             )
         except (UnicodeDecodeError, ValueError) as exc:
+            text_failed = True
             index.mark_family_failure(
                 family=entry["family"],
                 object_id=entry["stable_id"],
@@ -292,9 +294,9 @@ def rebuild_unlocked_search(
                     entry["family"] for entry in entries if entry["stable_id"] == object_id
                 )
                 index.mark_family_failure(family=family, object_id=object_id)
-    if not semantic_failed:
+    if not text_failed and not semantic_failed:
         index.finish()
-    if runtime_db is not None and not semantic_failed:
+    if runtime_db is not None and not text_failed and not semantic_failed:
         _finish_durable_index_state(
             runtime_db,
             index=index,

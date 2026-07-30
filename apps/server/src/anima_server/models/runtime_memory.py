@@ -228,15 +228,19 @@ def _hydrate_sealed_profile_update_candidate(
     )
     if payload is None:
         return
+    key = payload.get("key")
     value = payload.get("value")
     evidence_text = payload.get("evidence_text")
     last_error = payload.get("last_error")
+    if not isinstance(key, str):
+        raise ValueError("sealed profile-update candidate key is invalid")
     if not isinstance(value, str):
         raise ValueError("sealed profile-update candidate value is invalid")
     if evidence_text is not None and not isinstance(evidence_text, str):
         raise ValueError("sealed profile-update candidate evidence is invalid")
     if last_error is not None and not isinstance(last_error, str):
         raise ValueError("sealed profile-update candidate error is invalid")
+    set_committed_value(candidate, "key", key)
     set_committed_value(candidate, "value", value)
     set_committed_value(candidate, "evidence_text", evidence_text)
     if "last_error" in payload:

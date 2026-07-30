@@ -497,11 +497,12 @@ def convert_legacy_runtime_rows(
             ProfileUpdateCandidate.__table__,
             "profile_update_candidate",
             {
+                "key": "key",
                 "value": "value",
                 "evidence_text": "evidence_text",
                 "last_error": "last_error",
             },
-            {"value": "", "evidence_text": None, "last_error": None},
+            {"key": "", "value": "", "evidence_text": None, "last_error": None},
         ),
         (
             RuntimeSessionNote.__table__,
@@ -1128,11 +1129,13 @@ def reseal_profile_update_candidate_error(
         row_type="profile_update_candidate",
         owner_id=int(candidate.user_id),
         payload={
+            "key": candidate.key,
             "value": candidate.value,
             "evidence_text": candidate.evidence_text,
             "last_error": last_error,
         },
         placeholders={
+            "key": "",
             "value": "",
             "evidence_text": None,
             "last_error": None,

@@ -1,6 +1,6 @@
 # PCF-003 - Machine-local Runtime and progressive indexing
 
-- Status: done
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server` runtime/indexing, desktop readiness/security UI
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-31 02:18 MYT
+- Updated: 2026-07-31 02:30 MYT
 - Started: 2026-07-29 01:57 MYT
-- Completed: 2026-07-31 02:18 MYT
+- Completed:
 
 ## Goal
 
@@ -80,10 +80,12 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 - 2026-07-31 01:25 MYT - Addressed PR #127's two exact-head sealed-payload lifecycle findings on `6a59e4a2` test-first. Background-task retention now selects expired run IDs and owners, deletes their `runtime_background_task_run` sealed payloads, and deletes the source rows in one transaction. Conversation deletion now inventories the thread's Runtime run IDs and deletes `runtime_run` payloads before the ORM cascade removes failed runs. Both regressions failed RED and passed GREEN; the expanded Runtime privacy, sleep-agent, and image-deletion band passed `98`. Scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. The child and parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout.
 - 2026-07-31 01:39 MYT - Addressed PR #127's exact-head candidate/pending-op failure-detail finding on `0faae4cf` test-first. `MemoryCandidate.last_error`, `ProfileUpdateCandidate.last_error`, and `PendingMemoryOp.failure_reason` now share each row's sealed writer, placeholder, hydration, and legacy-conversion boundary. Soul Writer failure, retry-reset, duplicate, and success mutations reseal the complete row payload, and profile forgetting uses the same boundary; memory-candidate resealing restores tags and salience in-session after scrubbing. Four assertions failed RED across three focused cases and passed GREEN; the expanded Runtime privacy, Soul Writer, retry-hygiene, and forgetting band passed `114`. Scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. The child and parent remain `in_progress` pending refreshed current-head CI/review and synchronized second-phase closeout.
 - 2026-07-31 02:18 MYT - Completed PCF-003 after implementation head `a9b763b2` passed standalone checkout, Server Ruff, pytest, Windows native lease, and macOS native lease. Full GraphQL pagination covered `38` top-level comments, `75` reviews, `84` review threads, every per-thread comment connection, and the current-head checks with zero unresolved non-outdated actionable threads. Codex's exact-head result reported no major issues for `a9b763b2de`. Acceptance evidence is complete; this synchronized metadata closeout now enters the required second exact-head review.
+- 2026-07-31 02:30 MYT - Reopened PCF-003 because the metadata closeout review found two current-head gaps that genuinely invalidated privacy and progressive-rebuild acceptance. Profile candidate keys can be content-derived, so they now share the value/evidence/error sealed payload, mapped placeholder, hydration, resealing, and legacy-conversion boundary. Per-object text read failures now keep the index retryable instead of publishing premature `ready`; a same-unlock retry indexes the missing object and clears degradation. All three focused assertions failed RED and passed GREEN; the expanded profile, consolidation, privacy, migration, and security band passed `119`. Scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. The child and parent remain `in_progress` pending refreshed current-head CI/review and a new synchronized second-phase closeout.
 
 ## Validation
 
 - Commands:
+  - PR #127 profile-key privacy/text-read retry follow-up: all three focused assertions failed RED and passed GREEN; expanded affected coverage passed `119`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 clean implementation head: `a9b763b2` passed all five required checks; fully paginated comments, reviews, threads, per-thread comments, and checks found zero unresolved current actionable threads; Codex reported no major issues for reviewed commit `a9b763b2de`.
   - PR #127 candidate/pending-op failure-detail follow-up: four assertions failed RED across three focused cases and passed GREEN; expanded coverage passed `114`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
   - PR #127 sealed-payload lifecycle follow-up: both background-task retention and conversation-run deletion regressions failed RED and passed GREEN; expanded coverage passed `98`; scoped Ruff, repository organization, the complete workspace build, and diff hygiene passed.
@@ -119,4 +121,4 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
   - `.github/workflows/corefs-provenance.yml` and `scripts/check_corefs_release_notices.py`
   - `tickets/portable-core-filesystem/` and `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Notes:
-  - Implementation head acceptance is complete. The metadata closeout head must still satisfy the same exact-head review and required-check stopping rule before the PR monitor can stop.
+  - The first metadata closeout review reopened acceptance for two substantive gaps. The validated follow-up head must receive refreshed exact-head review before another synchronized metadata closeout.

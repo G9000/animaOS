@@ -490,7 +490,7 @@ def create_profile_update_candidate(
     candidate = ProfileUpdateCandidate(
         user_id=user_id,
         category=normalized_category,
-        key=normalized_key,
+        key="" if runtime_index is not None else normalized_key,
         value="" if runtime_index is not None else clean_value,
         confidence=confidence,
         evidence_text=None if runtime_index is not None else clean_evidence,
@@ -510,11 +510,13 @@ def create_profile_update_candidate(
             row_id=int(candidate.id),
             owner_id=user_id,
             payload={
+                "key": normalized_key,
                 "value": clean_value,
                 "evidence_text": clean_evidence,
                 "last_error": None,
             },
         )
+        set_committed_value(candidate, "key", normalized_key)
         set_committed_value(candidate, "value", clean_value)
         set_committed_value(candidate, "evidence_text", clean_evidence)
     return candidate

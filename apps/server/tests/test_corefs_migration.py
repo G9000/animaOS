@@ -449,6 +449,58 @@ def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> N
     assert index.snapshot().families["note"].degraded is False
 
 
+def test_text_read_failure_stays_retryable_until_document_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corefs_keys = object()
+    read_attempts = 0
+    entry = {
+        "family": "note",
+        "path": "Notes/retry.md",
+        "stable_id": "note-retry",
+        "revision": "1",
+    }
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 10, "catalogHash": "catalog-hash"}
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "_walk_authenticated_files",
+        lambda **_kwargs: ([entry], []),
+    )
+
+    def flaky_read(**_kwargs) -> str:
+        nonlocal read_attempts
+        read_attempts += 1
+        if read_attempts == 1:
+            raise ValueError("temporary native read mismatch")
+        return "text retry marker"
+
+    monkeypatch.setattr(corefs_migration, "_read_authenticated_text", flaky_read)
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    rebuild_unlocked_search(session)
+
+    assert index.snapshot().state is ReadinessState.TEXT_INDEXING
+    assert index.snapshot().families["note"].degraded is True
+
+    rebuild_unlocked_search(session)
+
+    assert read_attempts == 2
+    assert index.snapshot().state is ReadinessState.READY
+    assert index.snapshot().families["note"].degraded is False
+    assert index.search_text("retry marker") == ("note-retry",)
+
+
 def test_semantic_retry_rebuilds_all_vectors_after_embedding_config_changes() -> None:
     from conftest_runtime import runtime_db_session
 
