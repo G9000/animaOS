@@ -114,6 +114,12 @@ def forget_image_asset(
                 RuntimeEmbedding.source_id.in_(annotation_ids),
             )
         )
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_image_annotation",
+            row_ids=annotation_ids,
+            owner_id=user_id,
+        )
 
     file_deleted = delete_image_asset_file_if_safe(asset)
     runtime_db.delete(asset)
@@ -198,9 +204,7 @@ def delete_thread_with_image_cleanup(
         ).all()
     )
     step_ids = list(
-        runtime_db.scalars(
-            select(RuntimeStep.id).where(RuntimeStep.thread_id == thread_id)
-        ).all()
+        runtime_db.scalars(select(RuntimeStep.id).where(RuntimeStep.thread_id == thread_id)).all()
     )
     session_note_ids = list(
         runtime_db.scalars(
@@ -444,12 +448,15 @@ def _delete_orphaned_transient_asset(
         return False, False
     if asset.retention_state in RETAINED_IMAGE_STATES:
         return False, False
-    link_count = runtime_db.scalar(
-        select(func.count(RuntimeImageMessageLink.id)).where(
-            RuntimeImageMessageLink.user_id == user_id,
-            RuntimeImageMessageLink.image_asset_id == image_asset_id,
+    link_count = (
+        runtime_db.scalar(
+            select(func.count(RuntimeImageMessageLink.id)).where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.image_asset_id == image_asset_id,
+            )
         )
-    ) or 0
+        or 0
+    )
     if link_count > 0:
         return False, False
     if _archived_image_asset_reference_exists(
@@ -564,10 +571,7 @@ def _remove_image_asset_metadata(
             isinstance(attachment, dict)
             and (
                 (attachment_id is not None and attachment.get("id") == attachment_id)
-                or (
-                    image_asset_id is not None
-                    and attachment.get("assetId") == image_asset_id
-                )
+                or (image_asset_id is not None and attachment.get("assetId") == image_asset_id)
             )
         )
     ]
@@ -626,9 +630,5 @@ def _is_matching_image_source_pill(
         return False
     ref = pill.get("ref")
     return (
-        (
-            image_asset_id is not None
-            and (ref == image_asset_id or ref == f"image:{image_asset_id}")
-        )
-        or (isinstance(ref, str) and ref in attachment_ids)
-    )
+        image_asset_id is not None and (ref == image_asset_id or ref == f"image:{image_asset_id}")
+    ) or (isinstance(ref, str) and ref in attachment_ids)

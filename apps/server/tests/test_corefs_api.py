@@ -220,8 +220,9 @@ def test_logical_paths_allow_native_valid_unicode_categories(
     monkeypatch.setattr(
         corefs_route.logical,
         "stat_v1",
-        lambda **kwargs: calls.append(kwargs)
-        or b'{"version":"corefs-logical-v1","result":{"kind":"file"}}',
+        lambda **kwargs: (
+            calls.append(kwargs) or b'{"version":"corefs-logical-v1","result":{"kind":"file"}}'
+        ),
     )
 
     response = corefs_client.post(
@@ -381,8 +382,10 @@ def test_search_readiness_rejects_caller_supplied_runtime_state(
     monkeypatch.setattr(
         corefs_route.logical,
         "search_readiness_v1",
-        lambda **kwargs: calls.append(kwargs)
-        or b'{"version":"corefs-logical-v1","result":{"status":{"state":"ready"}}}',
+        lambda **kwargs: (
+            calls.append(kwargs)
+            or b'{"version":"corefs-logical-v1","result":{"status":{"state":"ready"}}}'
+        ),
     )
 
     response = corefs_client.post(
@@ -415,8 +418,10 @@ def test_search_readiness_uses_server_runtime_state(
     monkeypatch.setattr(
         corefs_route.logical,
         "search_readiness_v1",
-        lambda **kwargs: calls.append(kwargs)
-        or b'{"version":"corefs-logical-v1","result":{"status":{"state":"not_ready"}}}',
+        lambda **kwargs: (
+            calls.append(kwargs)
+            or b'{"version":"corefs-logical-v1","result":{"status":{"state":"not_ready"}}}'
+        ),
     )
 
     response = corefs_client.post(
@@ -466,7 +471,7 @@ def test_search_readiness_maps_progressive_index_state_without_private_data() ->
     assert degraded.index_generation == 9
 
 
-def test_search_operation_queries_unlock_scoped_text_and_semantic_index(
+def test_search_operation_queries_unlock_scoped_exact_text_and_semantic_index(
     corefs_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -476,6 +481,9 @@ def test_search_operation_queries_unlock_scoped_text_and_semantic_index(
     index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
     index.begin_catalog()
     index.publish_catalog(catalog_generation=9, families={"notes": 2})
+    index.begin_blind_generation(generation=9, expected_count=1)
+    index.add_blind_token(generation=9, value="alpha", object_id="note-1")
+    index.commit_blind_generation(9)
     index.begin_text_indexing()
     index.index_text(
         family="notes",
@@ -529,6 +537,16 @@ def test_search_operation_queries_unlock_scoped_text_and_semantic_index(
             "maxResults": 1,
         },
     )
+    exact_response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "search",
+            "query": "alpha",
+            "searchMode": "exact",
+            "maxResults": 1,
+        },
+    )
     semantic_response = corefs_client.post(
         "/api/corefs/operation",
         headers=_unlock_headers(),
@@ -544,6 +562,12 @@ def test_search_operation_queries_unlock_scoped_text_and_semantic_index(
     assert text_response.json()["result"] == {
         "generation": 9,
         "mode": "text",
+        "objectIds": ["note-1"],
+    }
+    assert exact_response.status_code == 200
+    assert exact_response.json()["result"] == {
+        "generation": 9,
+        "mode": "exact",
         "objectIds": ["note-1"],
     }
     assert semantic_response.status_code == 200
@@ -606,8 +630,9 @@ def test_stale_cursor_generation_is_rejected_before_native_dispatch(
     monkeypatch.setattr(
         corefs_route.logical,
         "list_v1",
-        lambda **kwargs: calls.append(kwargs)
-        or b'{"version":"corefs-logical-v1","result":{"entries":[]}}',
+        lambda **kwargs: (
+            calls.append(kwargs) or b'{"version":"corefs-logical-v1","result":{"entries":[]}}'
+        ),
     )
 
     response = corefs_client.post(
@@ -645,10 +670,18 @@ def test_stale_cursor_generation_is_rejected_before_native_dispatch(
             413,
             "corefs_response_too_large",
         ),
-        ("invalid operation limit: list limit must be between 1 and 100", 422, "corefs_invalid_request"),
+        (
+            "invalid operation limit: list limit must be between 1 and 100",
+            422,
+            "corefs_invalid_request",
+        ),
         ("invalid glob pattern: unterminated character class", 422, "corefs_invalid_request"),
         ("invalid grep pattern: pattern exceeds maximum bytes", 422, "corefs_invalid_request"),
-        ("invalid grep_limit pattern: responseBytes below maxLineBytes", 422, "corefs_invalid_request"),
+        (
+            "invalid grep_limit pattern: responseBytes below maxLineBytes",
+            422,
+            "corefs_invalid_request",
+        ),
     ],
 )
 def test_native_logical_errors_map_to_stable_client_responses(

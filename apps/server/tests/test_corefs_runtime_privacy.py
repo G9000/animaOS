@@ -343,9 +343,7 @@ def test_production_document_image_and_source_writers_seal_private_text(
         )
 
         raw_values = [
-            runtime_db.execute(
-                text(f"SELECT content_text FROM {table_name}")
-            ).scalar_one()
+            runtime_db.execute(text(f"SELECT content_text FROM {table_name}")).scalar_one()
             for table_name in (
                 RuntimeDocumentChunk.__tablename__,
                 RuntimeImageAnnotation.__tablename__,
@@ -353,9 +351,7 @@ def test_production_document_image_and_source_writers_seal_private_text(
                 RuntimeSourceSpan.__tablename__,
             )
         ]
-        row_types = set(
-            runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()
-        )
+        row_types = set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all())
         runtime_db.expunge_all()
         hydrated_values = [
             runtime_db.scalar(select(model)).content_text
@@ -380,6 +376,270 @@ def test_production_document_image_and_source_writers_seal_private_text(
         "runtime_source_artifact",
         "runtime_source_span",
     }.issubset(row_types)
+
+
+def test_document_chunk_replacement_deletes_superseded_sealed_payload(
+    monkeypatch,
+) -> None:
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.documents.models import (
+        DocumentRegistration,
+        ExtractedDocumentChunk,
+    )
+    from anima_server.services.documents.store import (
+        register_document,
+        replace_document_chunks,
+    )
+    from conftest_runtime import runtime_db_session
+    from sqlalchemy import func
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        document = register_document(
+            runtime_db,
+            DocumentRegistration(
+                user_id=1,
+                filename="private.pdf",
+                mime_type="application/pdf",
+                storage_path="corefs://private.pdf",
+                sha256="a" * 64,
+                size_bytes=128,
+            ),
+        )
+        replace_document_chunks(
+            runtime_db,
+            document_id=document.id,
+            chunks=[ExtractedDocumentChunk(chunk_index=0, content_text="old private")],
+            parse_quality="native",
+        )
+        sentinel = register_document(
+            runtime_db,
+            DocumentRegistration(
+                user_id=1,
+                filename="sentinel.pdf",
+                mime_type="application/pdf",
+                storage_path="corefs://sentinel.pdf",
+                sha256="b" * 64,
+                size_bytes=64,
+            ),
+        )
+        replace_document_chunks(
+            runtime_db,
+            document_id=sentinel.id,
+            chunks=[ExtractedDocumentChunk(chunk_index=0, content_text="sentinel")],
+            parse_quality="native",
+        )
+        replace_document_chunks(
+            runtime_db,
+            document_id=document.id,
+            chunks=[ExtractedDocumentChunk(chunk_index=0, content_text="new private")],
+            parse_quality="native",
+        )
+
+        sealed_count = runtime_db.scalar(
+            select(func.count(CoreFSSealedPayload.id)).where(
+                CoreFSSealedPayload.row_type == "runtime_document_chunk"
+            )
+        )
+
+    assert sealed_count == 2
+
+
+def test_message_pruning_deletes_expired_sealed_payload(
+    monkeypatch,
+) -> None:
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.services.agent.eager_consolidation import prune_expired_messages
+    from anima_server.services.agent.persistence import append_message, get_or_create_thread
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+    from sqlalchemy import func
+    from sqlalchemy.orm import sessionmaker
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+
+    with runtime_db_session() as runtime_db:
+        thread = get_or_create_thread(runtime_db, user_id=7)
+        thread.status = "closed"
+        thread.is_archived = True
+        message = append_message(
+            runtime_db,
+            thread=thread,
+            run_id=None,
+            step_id=None,
+            sequence_id=1,
+            role="user",
+            content_text="expired private message",
+        )
+        message.created_at = datetime.now(UTC) - timedelta(days=60)
+        runtime_db.commit()
+        factory = sessionmaker(
+            bind=runtime_db.get_bind(),
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.eager_consolidation.settings.message_ttl_days",
+            30,
+        )
+
+        deleted = asyncio.run(prune_expired_messages(runtime_db_factory=factory))
+        with factory() as verification_db:
+            message_count = verification_db.scalar(select(func.count(RuntimeMessage.id)))
+            sealed_count = verification_db.scalar(
+                select(func.count(CoreFSSealedPayload.id)).where(
+                    CoreFSSealedPayload.row_type == "runtime_message"
+                )
+            )
+
+    assert deleted == 1
+    assert message_count == 0
+    assert sealed_count == 0
+
+
+def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import RuntimeImageAsset, RuntimeSource
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.images import deletion as image_deletion
+    from anima_server.services.images.indexing import _upsert_active_annotation
+    from anima_server.services.ingestion.artifacts import (
+        replace_source_artifacts_and_spans,
+    )
+    from anima_server.services.ingestion.models import (
+        SourceArtifactInput,
+        SourceSpanInput,
+    )
+    from conftest_runtime import runtime_db_session
+    from sqlalchemy import func
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    monkeypatch.setattr(
+        image_deletion,
+        "delete_image_asset_file_if_safe",
+        lambda _asset: False,
+    )
+
+    with runtime_db_session() as runtime_db:
+        source = RuntimeSource(
+            user_id=1,
+            kind="document",
+            source_uri="corefs://private-source",
+            content_hash="a" * 64,
+            title="Private source",
+            status="registered",
+        )
+        runtime_db.add(source)
+        runtime_db.flush()
+        replace_source_artifacts_and_spans(
+            runtime_db,
+            source=source,
+            artifacts=[
+                SourceArtifactInput(
+                    artifact_kind="plain_text",
+                    content_text="old artifact",
+                    content_hash="b" * 64,
+                )
+            ],
+            spans=[
+                SourceSpanInput(
+                    artifact_kind="plain_text",
+                    span_kind="paragraph",
+                    locator_json={"paragraph_index": 0},
+                    content_text="old span",
+                    content_hash="c" * 64,
+                )
+            ],
+        )
+        replace_source_artifacts_and_spans(
+            runtime_db,
+            source=source,
+            artifacts=[
+                SourceArtifactInput(
+                    artifact_kind="plain_text",
+                    content_text="new artifact",
+                    content_hash="d" * 64,
+                )
+            ],
+            spans=[
+                SourceSpanInput(
+                    artifact_kind="plain_text",
+                    span_kind="paragraph",
+                    locator_json={"paragraph_index": 0},
+                    content_text="new span",
+                    content_hash="e" * 64,
+                )
+            ],
+        )
+
+        image = RuntimeImageAsset(
+            user_id=1,
+            filename="private.png",
+            mime_type="image/png",
+            storage_path="corefs://private.png",
+            sha256="f" * 64,
+            size_bytes=64,
+        )
+        runtime_db.add(image)
+        runtime_db.flush()
+        _upsert_active_annotation(
+            runtime_db,
+            user_id=1,
+            image_asset_id=image.id,
+            annotation_kind="ocr_text",
+            content_text="private OCR",
+            source_model=None,
+        )
+        assert image_deletion.forget_image_asset(
+            runtime_db,
+            user_id=1,
+            image_asset_id=image.id,
+        ).forgotten
+
+        counts = {
+            row_type: runtime_db.scalar(
+                select(func.count(CoreFSSealedPayload.id)).where(
+                    CoreFSSealedPayload.row_type == row_type
+                )
+            )
+            for row_type in (
+                "runtime_source_artifact",
+                "runtime_source_span",
+                "runtime_image_annotation",
+            )
+        }
+
+    assert counts == {
+        "runtime_source_artifact": 1,
+        "runtime_source_span": 1,
+        "runtime_image_annotation": 0,
+    }
 
 
 def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
@@ -518,24 +778,17 @@ def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
 
         runtime_db.expunge_all()
         loaded = runtime_db.scalar(
-            select(MemoryExtractionFailure).where(
-                MemoryExtractionFailure.id == failure.id
-            )
+            select(MemoryExtractionFailure).where(MemoryExtractionFailure.id == failure.id)
         )
         assert loaded is not None
         assert loaded.user_message_preview == "seeded extraction user preview"
-        assert (
-            loaded.assistant_response_preview
-            == "seeded extraction assistant preview"
-        )
+        assert loaded.assistant_response_preview == "seeded extraction assistant preview"
 
         index.clear_unlocked_state()
         runtime_db.expunge_all()
         with pytest.raises(RuntimeSealingLocked):
             runtime_db.scalar(
-                select(MemoryExtractionFailure).where(
-                    MemoryExtractionFailure.id == failure.id
-                )
+                select(MemoryExtractionFailure).where(MemoryExtractionFailure.id == failure.id)
             )
 
 
@@ -571,10 +824,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
 
         assert candidate is not None
         stored = runtime_db.execute(
-            text(
-                "SELECT value, evidence_text "
-                "FROM profile_update_candidates WHERE id = :id"
-            ),
+            text("SELECT value, evidence_text FROM profile_update_candidates WHERE id = :id"),
             {"id": candidate.id},
         ).one()
         assert stored == ("", None)
@@ -589,9 +839,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
 
         runtime_db.expunge_all()
         loaded = runtime_db.scalar(
-            select(ProfileUpdateCandidate).where(
-                ProfileUpdateCandidate.id == candidate.id
-            )
+            select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.id == candidate.id)
         )
         assert loaded is not None
         assert loaded.value == "seeded private profile value"
@@ -601,9 +849,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
         runtime_db.expunge_all()
         with pytest.raises(RuntimeSealingLocked):
             runtime_db.scalar(
-                select(ProfileUpdateCandidate).where(
-                    ProfileUpdateCandidate.id == candidate.id
-                )
+                select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.id == candidate.id)
             )
 
 
@@ -649,10 +895,7 @@ def test_runtime_session_notes_use_sealed_rows_and_reseal_updates(
 
         assert updated.id == note.id
         stored = runtime_db.execute(
-            text(
-                "SELECT key, value FROM runtime_session_notes "
-                "WHERE id = :id"
-            ),
+            text("SELECT key, value FROM runtime_session_notes WHERE id = :id"),
             {"id": note.id},
         ).one()
         assert stored == ("", "")
@@ -678,11 +921,7 @@ def test_runtime_session_notes_use_sealed_rows_and_reseal_updates(
         index.clear_unlocked_state()
         runtime_db.expunge_all()
         with pytest.raises(RuntimeSealingLocked):
-            runtime_db.scalar(
-                select(RuntimeSessionNote).where(
-                    RuntimeSessionNote.id == note.id
-                )
-            )
+            runtime_db.scalar(select(RuntimeSessionNote).where(RuntimeSessionNote.id == note.id))
 
 
 def test_compaction_and_archive_runtime_message_writers_are_sealed(
@@ -760,10 +999,7 @@ def test_compaction_and_archive_runtime_message_writers_are_sealed(
         )
 
         stored = runtime_db.execute(
-            text(
-                "SELECT content_text, content_json, tool_args_json "
-                "FROM runtime_messages"
-            )
+            text("SELECT content_text, content_json, tool_args_json FROM runtime_messages")
         ).all()
         raw = " ".join(str(value) for row in stored for value in row)
         assert "seeded compacted user plaintext" not in raw
@@ -828,17 +1064,13 @@ def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
         assert stored == (None, "null", "null")
         assert (
             runtime_db.scalar(
-                select(CoreFSSealedPayload).where(
-                    CoreFSSealedPayload.row_type == "runtime_message"
-                )
+                select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "runtime_message")
             )
             is not None
         )
 
         runtime_db.expunge_all()
-        loaded = runtime_db.scalar(
-            select(RuntimeMessage).where(RuntimeMessage.id == message.id)
-        )
+        loaded = runtime_db.scalar(select(RuntimeMessage).where(RuntimeMessage.id == message.id))
         assert loaded is not None
         assert loaded.content_text == "seeded message plaintext"
         assert loaded.content_json == {"private": "seeded message json"}
@@ -847,9 +1079,7 @@ def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
         index.clear_unlocked_state()
         runtime_db.expunge_all()
         with pytest.raises(RuntimeSealingLocked):
-            runtime_db.scalar(
-                select(RuntimeMessage).where(RuntimeMessage.id == message.id)
-            )
+            runtime_db.scalar(select(RuntimeMessage).where(RuntimeMessage.id == message.id))
 
 
 def test_sealed_runtime_messages_remain_queryable_and_reseal_mutations(
@@ -933,9 +1163,7 @@ def test_sealed_runtime_messages_remain_queryable_and_reseal_mutations(
         ) == [message.id]
 
         sealed_before = runtime_db.scalar(
-            select(CoreFSSealedPayload).where(
-                CoreFSSealedPayload.row_type == "runtime_message"
-            )
+            select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "runtime_message")
         )
         assert sealed_before is not None
         ciphertext_before = bytes(sealed_before.ciphertext)
@@ -965,17 +1193,13 @@ def test_sealed_runtime_messages_remain_queryable_and_reseal_mutations(
 
         runtime_db.expunge_all()
         sealed_after = runtime_db.scalar(
-            select(CoreFSSealedPayload).where(
-                CoreFSSealedPayload.row_type == "runtime_message"
-            )
+            select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "runtime_message")
         )
         assert sealed_after is not None
         assert bytes(sealed_after.ciphertext) != ciphertext_before
 
         runtime_db.expunge_all()
-        loaded = runtime_db.scalar(
-            select(RuntimeMessage).where(RuntimeMessage.id == message.id)
-        )
+        loaded = runtime_db.scalar(select(RuntimeMessage).where(RuntimeMessage.id == message.id))
         assert loaded is not None
         assert loaded.content_text == "sealed searchable message"
         assert loaded.content_json == {
@@ -1066,28 +1290,18 @@ def test_runtime_step_writer_seals_duplicate_trace_payloads(
         assert "seeded step tool output" not in raw
         assert (
             runtime_db.scalar(
-                select(CoreFSSealedPayload).where(
-                    CoreFSSealedPayload.row_type == "runtime_step"
-                )
+                select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "runtime_step")
             )
             is not None
         )
 
         runtime_db.expunge_all()
-        loaded = runtime_db.scalar(
-            select(RuntimeStep).where(RuntimeStep.id == step.id)
-        )
+        loaded = runtime_db.scalar(select(RuntimeStep).where(RuntimeStep.id == step.id))
         assert loaded is not None
-        assert loaded.request_json["messages"][0]["content"] == (
-            "seeded step request plaintext"
-        )
-        assert loaded.response_json["assistant_text"] == (
-            "seeded step response plaintext"
-        )
+        assert loaded.request_json["messages"][0]["content"] == ("seeded step request plaintext")
+        assert loaded.response_json["assistant_text"] == ("seeded step response plaintext")
         assert loaded.tool_calls_json is not None
-        assert loaded.tool_calls_json[0]["arguments"] == {
-            "secret": "seeded step arguments"
-        }
+        assert loaded.tool_calls_json[0]["arguments"] == {"secret": "seeded step arguments"}
 
 
 def test_thread_deletion_removes_its_sealed_runtime_payloads(
@@ -1129,9 +1343,10 @@ def test_thread_deletion_removes_its_sealed_runtime_payloads(
             key="delete-note-key",
             value="delete-note-value",
         )
-        assert set(
-            runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()
-        ) == {"runtime_message", "runtime_session_note"}
+        assert set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()) == {
+            "runtime_message",
+            "runtime_session_note",
+        }
 
         result = delete_thread_with_image_cleanup(
             runtime_db,
@@ -1172,9 +1387,7 @@ def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
         )
         assert candidate is not None
         sealed_before = runtime_db.scalar(
-            select(CoreFSSealedPayload).where(
-                CoreFSSealedPayload.row_type == "memory_candidate"
-            )
+            select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "memory_candidate")
         )
         assert sealed_before is not None
         ciphertext_before = bytes(sealed_before.ciphertext)
@@ -1192,19 +1405,14 @@ def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
 
         assert duplicate is None
         stored = runtime_db.execute(
-            text(
-                "SELECT content, tags_json, salience_json "
-                "FROM memory_candidates WHERE id = :id"
-            ),
+            text("SELECT content, tags_json, salience_json FROM memory_candidates WHERE id = :id"),
             {"id": candidate.id},
         ).one()
         assert stored == ("", "null", "null")
 
         runtime_db.expunge_all()
         sealed_after = runtime_db.scalar(
-            select(CoreFSSealedPayload).where(
-                CoreFSSealedPayload.row_type == "memory_candidate"
-            )
+            select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "memory_candidate")
         )
         assert sealed_after is not None
         assert bytes(sealed_after.ciphertext) != ciphertext_before

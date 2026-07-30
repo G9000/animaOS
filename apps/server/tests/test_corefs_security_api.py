@@ -50,7 +50,11 @@ def test_corefs_security_status_schedules_unlocked_rebuild_after_catalog(
         "require_unlocked_session",
         lambda _request: session,
     )
-    monkeypatch.setattr(corefs_security, "reconcile_authenticated_catalog", reconcile)
+    monkeypatch.setattr(
+        corefs_security,
+        "reconcile_catalog_if_idle",
+        lambda current: reconcile(current) or True,
+    )
     monkeypatch.setattr(
         corefs_security,
         "schedule_unlocked_rebuild",
@@ -97,8 +101,8 @@ def test_corefs_security_status_retries_a_stranded_rebuild(
     )
     monkeypatch.setattr(
         corefs_security,
-        "reconcile_authenticated_catalog",
-        lambda current: current,
+        "reconcile_catalog_if_idle",
+        lambda current: True,
     )
     monkeypatch.setattr(
         corefs_security,

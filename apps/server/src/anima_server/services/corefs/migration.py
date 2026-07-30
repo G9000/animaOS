@@ -28,12 +28,8 @@ _INDEX_VERSION = 1
 logger = logging.getLogger(__name__)
 
 _rebuild_workers_lock = Lock()
-_rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = (
-    WeakKeyDictionary()
-)
-_rebuild_pending: WeakKeyDictionary[CoreFSProgressiveIndex, bool] = (
-    WeakKeyDictionary()
-)
+_rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = WeakKeyDictionary()
+_rebuild_pending: WeakKeyDictionary[CoreFSProgressiveIndex, bool] = WeakKeyDictionary()
 
 
 class _ConfiguredEmbeddingQuery:
@@ -133,10 +129,7 @@ def rebuild_unlocked_search(
         index.publish_catalog(
             catalog_generation=selected.generation,
             families=dict(family_counts),
-            degraded={
-                family: tuple(sorted(object_ids))
-                for family, object_ids in degraded.items()
-            },
+            degraded={family: tuple(sorted(object_ids)) for family, object_ids in degraded.items()},
         )
         index.begin_blind_generation(
             generation=selected.generation,
@@ -158,9 +151,7 @@ def rebuild_unlocked_search(
     indexed: list[tuple[str, str]] = list(indexed_by_revision.values())
     for entry in entries:
         durable_key = _durable_entry_key(entry)
-        in_memory = indexed_by_revision.get(
-            (entry["stable_id"], entry["revision"])
-        )
+        in_memory = indexed_by_revision.get((entry["stable_id"], entry["revision"]))
         if in_memory is not None:
             if runtime_db is not None and durable_key not in completed_entries:
                 _record_text_progress(
@@ -230,9 +221,7 @@ def rebuild_unlocked_search(
             None,
         )
         embedding_fingerprint = (
-            fingerprint_value
-            if isinstance(fingerprint_value, str) and fingerprint_value
-            else None
+            fingerprint_value if isinstance(fingerprint_value, str) and fingerprint_value else None
         )
         if (
             index.snapshot().state is not ReadinessState.SEMANTIC_INDEXING
@@ -252,9 +241,7 @@ def rebuild_unlocked_search(
                     embedding_fingerprint=embedding_fingerprint,
                 )
                 family = next(
-                    entry["family"]
-                    for entry in entries
-                    if entry["stable_id"] == object_id
+                    entry["family"] for entry in entries if entry["stable_id"] == object_id
                 )
                 index.clear_family_failure(
                     family=family,
@@ -304,6 +291,20 @@ def schedule_unlocked_rebuild(
     return True
 
 
+def reconcile_catalog_if_idle(session: UnlockSession) -> bool:
+    """Reconcile only when no rebuild can publish an older catalog afterward."""
+    index = session.runtime_index
+    if index is None:
+        raise ValueError("CoreFS reconciliation requires an unlocked Runtime index")
+    with _rebuild_workers_lock:
+        current = _rebuild_workers.get(index)
+        if current is not None and current.is_alive():
+            _rebuild_pending[index] = True
+            return False
+        reconcile_authenticated_catalog(session)
+    return True
+
+
 def _run_scheduled_rebuild(
     session: UnlockSession,
     index: CoreFSProgressiveIndex,
@@ -311,9 +312,7 @@ def _run_scheduled_rebuild(
     try:
         from anima_server.db.runtime import get_runtime_session_factory
 
-        configured_embedder = _ConfiguredEmbeddingQuery(
-            configured_embedding_fingerprint()
-        )
+        configured_embedder = _ConfiguredEmbeddingQuery(configured_embedding_fingerprint())
         try:
             runtime_db_factory = get_runtime_session_factory()
         except RuntimeError:
@@ -362,11 +361,7 @@ def configured_embedding_fingerprint() -> str:
 def refresh_unlocked_semantic_search(session: UnlockSession) -> bool:
     """Invalidate and rebuild semantic vectors after embedding settings change."""
     index = session.runtime_index
-    if (
-        index is None
-        or session.corefs_session is None
-        or session.corefs_keys is None
-    ):
+    if index is None or session.corefs_session is None or session.corefs_keys is None:
         return False
     fingerprint = configured_embedding_fingerprint()
     if index.snapshot().catalog_generation is not None:
@@ -421,9 +416,7 @@ def _prepare_durable_index_state(
                 CoreFSIndexEntry.revision_hash == revision_hash,
             )
         )
-        checksum = _digest(
-            f"{family}:{entry['path']}:{entry['stable_id']}:{entry['revision']}"
-        )
+        checksum = _digest(f"{family}:{entry['path']}:{entry['stable_id']}:{entry['revision']}")
         if stored is None:
             stored = CoreFSIndexEntry(
                 core_id=index.core_id,
@@ -534,11 +527,7 @@ def _finish_durable_index_state(
     index: CoreFSProgressiveIndex,
     generation: int,
 ) -> None:
-    degraded = {
-        family
-        for family, value in index.snapshot().families.items()
-        if value.degraded
-    }
+    degraded = {family for family, value in index.snapshot().families.items() if value.degraded}
     checkpoints = runtime_db.scalars(
         select(CoreFSIndexCheckpoint).where(
             CoreFSIndexCheckpoint.core_id == index.core_id,
@@ -548,11 +537,7 @@ def _finish_durable_index_state(
         )
     ).all()
     for checkpoint in checkpoints:
-        checkpoint.status = (
-            "ready_degraded"
-            if checkpoint.family in degraded
-            else "ready"
-        )
+        checkpoint.status = "ready_degraded" if checkpoint.family in degraded else "ready"
     runtime_db.commit()
 
 

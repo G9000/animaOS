@@ -24,6 +24,7 @@ from anima_server.services.agent.transcript_archive import (
     messages_to_transcript_dicts,
     resolve_transcript_path,
 )
+from anima_server.services.corefs.sealed_runtime import delete_sealed_runtime_records
 from anima_server.services.data_crypto import df
 from anima_server.services.sessions import get_active_dek_async
 
@@ -225,9 +226,7 @@ async def inactivity_sweep(
                 thread_id,
                 exc_info=True,
             )
-        _update_archival_retry_state(
-            resolved_runtime_db_factory, thread_id=thread_id
-        )
+        _update_archival_retry_state(resolved_runtime_db_factory, thread_id=thread_id)
 
     if stale_threads:
         logger.info("Inactivity sweep closed %d threads", len(stale_threads))
@@ -273,13 +272,9 @@ def _update_archival_retry_state(
                     _ARCHIVE_BACKOFF_BASE_MINUTES * 2 ** (thread.archive_retry_count - 1),
                     _ARCHIVE_BACKOFF_CAP_MINUTES,
                 )
-                thread.archive_next_retry_at = datetime.now(UTC) + timedelta(
-                    minutes=delay_minutes
-                )
+                thread.archive_next_retry_at = datetime.now(UTC) + timedelta(minutes=delay_minutes)
     except Exception:
-        logger.exception(
-            "Failed to update archival retry state for thread %d", thread_id
-        )
+        logger.exception("Failed to update archival retry state for thread %d", thread_id)
 
 
 async def prune_expired_messages(
@@ -301,10 +296,27 @@ async def prune_expired_messages(
             if not archived_thread_ids:
                 return 0
 
-            result = db.execute(
-                delete(RuntimeMessage).where(
+            expired_messages = db.execute(
+                select(RuntimeMessage.id, RuntimeMessage.user_id).where(
                     RuntimeMessage.created_at < cutoff,
                     RuntimeMessage.thread_id.in_(archived_thread_ids),
+                )
+            ).all()
+            if not expired_messages:
+                return 0
+            ids_by_owner: dict[int, list[int]] = {}
+            for message_id, user_id in expired_messages:
+                ids_by_owner.setdefault(int(user_id), []).append(int(message_id))
+            for owner_id, message_ids in ids_by_owner.items():
+                delete_sealed_runtime_records(
+                    db,
+                    row_type="runtime_message",
+                    row_ids=message_ids,
+                    owner_id=owner_id,
+                )
+            result = db.execute(
+                delete(RuntimeMessage).where(
+                    RuntimeMessage.id.in_([int(message_id) for message_id, _ in expired_messages])
                 )
             )
             deleted = int(result.rowcount or 0)
@@ -334,9 +346,7 @@ async def prune_old_background_task_runs(
         return 0
 
     resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
-    cutoff = datetime.now(UTC) - timedelta(
-        days=settings.background_task_run_retention_days
-    )
+    cutoff = datetime.now(UTC) - timedelta(days=settings.background_task_run_retention_days)
     try:
         with session_scope(resolved_runtime_db_factory) as db:
             result = db.execute(
@@ -371,7 +381,9 @@ async def prune_expired_transcripts() -> int:
             meta = load_transcript_sidecar(meta_path)
             if meta is None:
                 continue
-            archived_at = datetime.fromisoformat(str(meta.get("archived_at", "")).replace("Z", "+00:00"))
+            archived_at = datetime.fromisoformat(
+                str(meta.get("archived_at", "")).replace("Z", "+00:00")
+            )
         except ValueError:
             continue
 
@@ -390,7 +402,9 @@ async def prune_expired_transcripts() -> int:
                     user_id=int(meta.get("user_id", 0)),
                 )
             except RuntimeError:
-                logger.debug("Rust transcript index delete is unavailable during transcript pruning")
+                logger.debug(
+                    "Rust transcript index delete is unavailable during transcript pruning"
+                )
             except Exception:
                 logger.warning(
                     "Failed to delete transcript %s from the Rust retrieval index during pruning",
@@ -403,10 +417,14 @@ async def prune_expired_transcripts() -> int:
                         family="transcript",
                     )
                 except Exception:
-                    logger.debug("Failed to mark transcript index dirty during pruning", exc_info=True)
+                    logger.debug(
+                        "Failed to mark transcript index dirty during pruning", exc_info=True
+                    )
             deleted += 1
         except OSError:
-            logger.warning("Failed to delete expired transcript artifact %s", meta_path.name, exc_info=True)
+            logger.warning(
+                "Failed to delete expired transcript artifact %s", meta_path.name, exc_info=True
+            )
 
     if deleted:
         logger.info("Pruned %d expired transcripts", deleted)

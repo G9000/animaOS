@@ -17,7 +17,7 @@ from anima_server.schemas.corefs_security import (
 from anima_server.services.core import get_core_id, get_manifest_path
 from anima_server.services.corefs.indexer import ReadinessState
 from anima_server.services.corefs.migration import (
-    reconcile_authenticated_catalog,
+    reconcile_catalog_if_idle,
     schedule_unlocked_rebuild,
 )
 from anima_server.services.corefs.rotation import rotate_or_resume_frk
@@ -53,8 +53,8 @@ def _security_status(session: UnlockSession) -> CoreFSSecurityStatusResponse:
     if (
         getattr(session, "corefs_session", None) is not None
         and getattr(session, "corefs_keys", None) is not None
+        and reconcile_catalog_if_idle(session)
     ):
-        reconcile_authenticated_catalog(session)
         reconciled = index.snapshot()
         if reconciled.state in {
             ReadinessState.CATALOG_LOADING,

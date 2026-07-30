@@ -297,9 +297,7 @@ def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> N
                         "revision": 1,
                         "contentHash": "d" * 64,
                         "offset": 0,
-                        "bytesBase64": base64.b64encode(
-                            b"semantic retry marker"
-                        ).decode(),
+                        "bytesBase64": base64.b64encode(b"semantic retry marker").decode(),
                     },
                 }
             ).encode()
@@ -526,6 +524,39 @@ def test_unlocked_rebuild_scheduler_queues_forced_refresh_after_active_worker(
     assert len(calls) == 2
 
 
+def test_catalog_reconciliation_queues_behind_active_rebuild(
+    monkeypatch,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(runtime_index=index)
+    first_started = Event()
+    release_first = Event()
+    second_completed = Event()
+    calls: list[object] = []
+
+    def blocking_rebuild(current, *, embedder=None, runtime_db=None) -> None:
+        calls.append((current, embedder, runtime_db))
+        if len(calls) == 1:
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_completed.set()
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "rebuild_unlocked_search",
+        blocking_rebuild,
+    )
+
+    assert schedule_unlocked_rebuild(session) is True
+    assert first_started.wait(timeout=2)
+    assert corefs_migration.reconcile_catalog_if_idle(session) is False
+    release_first.set()
+    assert second_completed.wait(timeout=2)
+    assert len(calls) == 2
+
+
 def test_walk_failures_publish_an_observable_degraded_family() -> None:
     corefs_keys = object()
 
@@ -665,9 +696,7 @@ def test_rebuild_retry_uses_durable_progress_without_rereading_completed_text() 
             select(CoreFSIndexEntry).where(CoreFSIndexEntry.status == "text_indexed")
         )
         checkpoint = runtime_db.scalar(
-            select(CoreFSIndexCheckpoint).where(
-                CoreFSIndexCheckpoint.family == "note"
-            )
+            select(CoreFSIndexCheckpoint).where(CoreFSIndexCheckpoint.family == "note")
         )
         assert entry is not None
         assert checkpoint is not None

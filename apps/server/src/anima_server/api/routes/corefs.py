@@ -265,13 +265,25 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
         ("logical path is not a file:", status.HTTP_409_CONFLICT, "corefs_not_file"),
         ("logical path is not a directory:", status.HTTP_409_CONFLICT, "corefs_not_directory"),
         ("cursor generation ", status.HTTP_409_CONFLICT, "corefs_cursor_generation_mismatch"),
-        ("invalid operation limit:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        (
+            "invalid operation limit:",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "corefs_invalid_request",
+        ),
         ("invalid path ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("path is for ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid glob pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid grep pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
-        ("invalid grep_limit pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
-        ("invalid literal pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        (
+            "invalid grep_limit pattern:",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "corefs_invalid_request",
+        ),
+        (
+            "invalid literal pattern:",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "corefs_invalid_request",
+        ),
         ("invalid regex pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("cannot read ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
     )
@@ -281,9 +293,8 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
                 status_code=status_code,
                 detail={"code": code, "message": message},
             )
-    if (
-        " response item requires " in message
-        or (message.startswith("requested ") and " response bytes exceeds maximum " in message)
+    if " response item requires " in message or (
+        message.startswith("requested ") and " response bytes exceeds maximum " in message
     ):
         return HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -399,11 +410,11 @@ def _dispatch_read(
                 },
             )
         mode = payload.searchMode
-        capability = (
-            IndexCapability.TEXT_SEARCH
-            if mode == "text"
-            else IndexCapability.SEMANTIC_SEARCH
-        )
+        capability = {
+            "exact": IndexCapability.EXACT_SEARCH,
+            "text": IndexCapability.TEXT_SEARCH,
+            "semantic": IndexCapability.SEMANTIC_SEARCH,
+        }[mode]
         if capability not in snapshot.capabilities:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -415,7 +426,9 @@ def _dispatch_read(
             )
         query_id = index.begin_query()
         try:
-            if mode == "text":
+            if mode == "exact":
+                object_ids = index.lookup_exact(payload.query or "")[: payload.maxResults]
+            elif mode == "text":
                 object_ids = index.search_text(payload.query or "")[: payload.maxResults]
             else:
                 vector = embed_configured_query(payload.query or "")
