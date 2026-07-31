@@ -840,6 +840,113 @@ def test_unlock_converter_seals_legacy_knowledge_bundle_runs(
     assert hydrated.error_json == {"message": "private legacy failure"}
 
 
+def test_unlock_converter_discards_legacy_noncanonical_knowledge_link_types() -> None:
+    from anima_server.models.runtime import (
+        RuntimeKnowledgeConcept,
+        RuntimeKnowledgeLink,
+    )
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    with runtime_db_session() as runtime_db:
+        source = RuntimeKnowledgeConcept(
+            user_id=7,
+            concept_type="topic",
+            slug="source-topic",
+            title="Source Topic",
+            body_markdown="Source body.",
+            frontmatter_json={},
+            content_hash=hashlib.sha256(b"source").hexdigest(),
+        )
+        target = RuntimeKnowledgeConcept(
+            user_id=7,
+            concept_type="topic",
+            slug="target-topic",
+            title="Target Topic",
+            body_markdown="Target body.",
+            frontmatter_json={},
+            content_hash=hashlib.sha256(b"target").hexdigest(),
+        )
+        alias_target = RuntimeKnowledgeConcept(
+            user_id=7,
+            concept_type="topic",
+            slug="alias-target-topic",
+            title="Alias Target Topic",
+            body_markdown="Alias target body.",
+            frontmatter_json={},
+            content_hash=hashlib.sha256(b"alias-target").hexdigest(),
+        )
+        runtime_db.add_all([source, target, alias_target])
+        runtime_db.flush()
+        target_id = target.id
+        alias_target_id = alias_target.id
+        runtime_db.add_all(
+            [
+                RuntimeKnowledgeLink(
+                    user_id=7,
+                    source_concept_id=source.id,
+                    target_concept_id=target.id,
+                    link_type="supports",
+                ),
+                RuntimeKnowledgeLink(
+                    user_id=7,
+                    source_concept_id=source.id,
+                    target_concept_id=target.id,
+                    link_type="reveals my private relationship",
+                ),
+                RuntimeKnowledgeLink(
+                    user_id=7,
+                    source_concept_id=source.id,
+                    target_concept_id=target.id,
+                    link_type="relates_to",
+                ),
+                RuntimeKnowledgeLink(
+                    user_id=7,
+                    source_concept_id=source.id,
+                    target_concept_id=target.id,
+                    link_type="related",
+                ),
+                RuntimeKnowledgeLink(
+                    user_id=7,
+                    source_concept_id=source.id,
+                    target_concept_id=alias_target.id,
+                    link_type="relates_to",
+                ),
+                CoreFSRuntimeBinding(
+                    binding_slot=1,
+                    core_id="core-a",
+                    local_instance_id="instance-a",
+                ),
+            ]
+        )
+        runtime_db.flush()
+
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        links = runtime_db.execute(
+            select(
+                RuntimeKnowledgeLink.target_concept_id,
+                RuntimeKnowledgeLink.link_type,
+            ).order_by(
+                RuntimeKnowledgeLink.target_concept_id,
+                RuntimeKnowledgeLink.link_type,
+            )
+        ).all()
+
+    assert converted == 6
+    assert links == [
+        (target_id, "related"),
+        (target_id, "supports"),
+        (alias_target_id, "related"),
+    ]
+
+
 def test_workflow_error_writers_reseal_run_and_checkpoint_payloads(
     monkeypatch,
 ) -> None:

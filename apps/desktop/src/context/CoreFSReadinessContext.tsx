@@ -29,9 +29,15 @@ export function catalogNavigationAvailable(
   return status?.readiness.capabilities.includes("navigation") ?? false;
 }
 
-export function CoreFSReadinessProvider({ children }: { children: ReactNode }) {
+export function CoreFSReadinessProvider({
+  children,
+  initialStatus = null,
+}: {
+  children: ReactNode;
+  initialStatus?: CoreFSSecurityStatus | null;
+}) {
   const { isAuthenticated } = useAuth();
-  const [status, setStatus] = useState<CoreFSSecurityStatus | null>(null);
+  const [status, setStatus] = useState<CoreFSSecurityStatus | null>(initialStatus);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

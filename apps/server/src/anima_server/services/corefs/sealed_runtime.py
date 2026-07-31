@@ -371,6 +371,7 @@ def convert_legacy_runtime_rows(
         RuntimeKnowledgeBundleRun,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
+        RuntimeKnowledgeLink,
         RuntimeMessage,
         RuntimeRun,
         RuntimeSource,
@@ -387,6 +388,7 @@ def convert_legacy_runtime_rows(
         ProfileUpdateCandidate,
         RuntimeSessionNote,
     )
+    from anima_server.services.ingestion.compiler import KNOWLEDGE_LINK_TYPES
 
     specifications = (
         (
@@ -592,6 +594,49 @@ def convert_legacy_runtime_rows(
         user_id=user_id,
         memory_dek=memory_dek,
     )
+    link_table = RuntimeKnowledgeLink.__table__
+    legacy_related_links = list(
+        runtime_db.execute(
+            select(
+                link_table.c.id,
+                link_table.c.source_concept_id,
+                link_table.c.target_concept_id,
+            ).where(
+                link_table.c.user_id == user_id,
+                link_table.c.link_type == "relates_to",
+            )
+        )
+        .mappings()
+    )
+    for legacy_link in legacy_related_links:
+        canonical_link_id = runtime_db.scalar(
+            select(link_table.c.id).where(
+                link_table.c.user_id == user_id,
+                link_table.c.source_concept_id
+                == legacy_link["source_concept_id"],
+                link_table.c.target_concept_id
+                == legacy_link["target_concept_id"],
+                link_table.c.link_type == "related",
+            )
+        )
+        if canonical_link_id is None:
+            runtime_db.execute(
+                link_table.update()
+                .where(link_table.c.id == legacy_link["id"])
+                .values(link_type="related")
+            )
+        else:
+            runtime_db.execute(
+                delete(link_table).where(link_table.c.id == legacy_link["id"])
+            )
+        converted += 1
+    discarded_links = runtime_db.execute(
+        delete(RuntimeKnowledgeLink).where(
+            RuntimeKnowledgeLink.user_id == user_id,
+            RuntimeKnowledgeLink.link_type.not_in(tuple(KNOWLEDGE_LINK_TYPES)),
+        )
+    ).rowcount
+    converted += max(int(discarded_links or 0), 0)
     for table, row_type, payload_columns, placeholders in specifications:
         statement = select(
             table.c.id.label("_row_id"),

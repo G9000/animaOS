@@ -34,6 +34,9 @@ from anima_server.services.ingestion.sources import (
 )
 
 CompileMode = Literal["initial", "refresh", "repair"]
+KNOWLEDGE_LINK_TYPES = frozenset(
+    {"mentions", "supports", "contradicts", "depends_on", "updates", "related"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,6 +470,8 @@ def _merge_links(
         if source is None or target is None or source.id == target.id:
             continue
         link_type = _required_str(payload, "link_type")
+        if link_type not in KNOWLEDGE_LINK_TYPES:
+            continue
         link_key = (source.id, target.id, link_type)
         if link_key in seen_links:
             continue

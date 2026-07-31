@@ -18,6 +18,7 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.services.ingestion.compiler import (
+    KNOWLEDGE_LINK_TYPES,
     CompileMode,
     CompileResult,
     compile_source_to_concepts,
@@ -50,7 +51,7 @@ Return ONE JSON object, nothing else:
     }
   ],
   "links": [
-    {"source_slug": "...", "target_slug": "...", "link_type": "supports" | "contradicts" | "updates" | "relates_to", "confidence": 0.0-1.0}
+    {"source_slug": "...", "target_slug": "...", "link_type": "mentions" | "supports" | "contradicts" | "depends_on" | "updates" | "related", "confidence": 0.0-1.0}
   ],
   "metadata": {"compiler": "llm_wiki"}
 }
@@ -280,6 +281,9 @@ def _prepare_llm_payload(
             for key in required_link_fields
         ):
             continue
+        link_type = str(link["link_type"]).strip()
+        if link_type not in KNOWLEDGE_LINK_TYPES:
+            continue
         confidence = link.get("confidence")
         if confidence is not None and not isinstance(confidence, int | float):
             continue
@@ -290,6 +294,7 @@ def _prepare_llm_payload(
                 for key in ("source_slug", "target_slug")
                 if isinstance(value := link.get(key), str)
             },
+            "link_type": link_type,
         }
         if (
             link.get("source_slug") in dropped_slugs

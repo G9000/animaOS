@@ -11,6 +11,7 @@ from anima_server.models.runtime import (
     RuntimeKnowledgeBundleRun,
     RuntimeKnowledgeConcept,
     RuntimeKnowledgeConceptSource,
+    RuntimeKnowledgeLink,
 )
 from anima_server.services.agent.sleep_agent import _task_knowledge_autocompile
 from anima_server.services.ingestion.adapters.text import (
@@ -132,6 +133,61 @@ async def test_llm_compile_produces_cited_concepts(runtime_db) -> None:
     # Prompt carried source metadata and span ids for citation.
     assert f"span {span_ids[0]}" in client.prompts[0]
     assert "relays.md" in client.prompts[0] or "Relays" in client.prompts[0]
+
+
+@pytest.mark.asyncio()
+async def test_llm_compile_discards_link_types_outside_the_documented_enum(
+    runtime_db,
+) -> None:
+    source, spans = _ingest_markdown(
+        runtime_db,
+        "# Relays\n\nInspect relays before restart.",
+        filename="private-link.md",
+    )
+    span_ids = _evidence_ids(spans)
+    client = _ScriptedClient(
+        _llm_payload(
+            [
+                {
+                    "type": "source_summary",
+                    "slug": f"summary-relays-{source.id}",
+                    "title": "Relays",
+                    "description": "Summary.",
+                    "body_markdown": "# Relays\n\nRelay maintenance overview.",
+                    "source_span_ids": span_ids,
+                    "tags": ["compiled"],
+                },
+                {
+                    "type": "topic",
+                    "slug": "relay-inspection",
+                    "title": "Relay Inspection",
+                    "description": "When to inspect relays.",
+                    "body_markdown": "# Relay Inspection\n\nInspect before restart.",
+                    "source_span_ids": span_ids,
+                    "tags": ["relays"],
+                },
+            ],
+            links=[
+                {
+                    "source_slug": "relay-inspection",
+                    "target_slug": f"summary-relays-{source.id}",
+                    "link_type": "reveals my private relationship",
+                    "confidence": 0.9,
+                }
+            ],
+        )
+    )
+
+    result = await compile_source_knowledge_llm(
+        runtime_db,
+        source=source,
+        spans=spans,
+        llm_client=client,
+    )
+
+    assert result.status == "completed"
+    assert result.link_count == 0
+    assert runtime_db.scalar(select(RuntimeKnowledgeLink)) is None
 
 
 @pytest.mark.asyncio()
