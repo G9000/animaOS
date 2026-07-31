@@ -305,3 +305,42 @@ def test_ambient_surfacing_resets_dream_residue_pressure(
         assert row.dream_residue == 0.0  # drained like the fire path
         assert row.starvation_losses == {"relational": 1}  # history cleared
     rt_engine.dispose()
+
+
+def test_optout_during_the_greeting_blocks_the_claim(
+    soul_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 5, P1): the consent pre-check is unlocked,
+    so a presence-config PUT could commit between it and the claim and the
+    stale read would authorize voicing a dream AFTER the opt-out. The claim
+    now re-reads consent on fresh state while holding the same per-user
+    consent lock the config PUT holds through its commit."""
+    with soul_factory() as db:
+        user_id = _seed(db)
+
+    claimer = soul_factory()
+    flipped = {"done": False}
+    real_values = proactive.get_presence_config_values
+
+    def optout_after_precheck(db_, uid):
+        out = real_values(db_, uid)
+        # Fires on the UNLOCKED pre-check: another session opts out and
+        # commits before the locked re-read runs.
+        if not flipped["done"]:
+            flipped["done"] = True
+            with soul_factory() as other:
+                cfg = get_or_create_presence_config(other, uid)
+                cfg.dream_sharing = "off"
+                other.commit()
+        return out
+
+    monkeypatch.setattr(proactive, "get_presence_config_values", optout_after_precheck)
+    try:
+        assert _resolve_ambient_dream(claimer, user_id=user_id) is None
+    finally:
+        claimer.close()
+
+    with soul_factory() as db:
+        # The dream was NOT consumed: the opt-out wins and it stays available
+        # for whenever the user turns ambient sharing back on.
+        assert db.scalars(select(DreamJournal)).one().surfaced is False

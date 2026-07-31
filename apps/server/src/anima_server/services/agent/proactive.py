@@ -322,8 +322,11 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
 
     from anima_server.models import DreamJournal
     from anima_server.services.data_crypto import DOMAIN_MEMORIES
+    from anima_server.services.presence_config import presence_consent_lock
     from anima_server.services.sessions import get_active_dek
 
+    # Cheap pre-check outside the lock: the overwhelming majority of
+    # greetings are not in ambient mode, and this avoids serializing them.
     values = get_presence_config_values(db, user_id)
     if not (values.enabled and values.dream_sharing == "ambient"):
         return None
@@ -350,24 +353,39 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
         .limit(1)
         .scalar_subquery()
     )
-    try:
-        claimed = db.execute(
-            update(DreamJournal)
-            .where(
-                DreamJournal.id == candidate_id,
-                DreamJournal.surfaced.is_(False),
-            )
-            .values(surfaced=True)
-            .returning(DreamJournal.narrative)
-        ).first()
-        if claimed is None:
+    # Hold the SAME per-user consent lock the presence-config PUT holds
+    # through its commit (PR #130 review, P1) — the pre-check above is
+    # unlocked, so an opt-out committing between it and the claim would
+    # otherwise consume and voice a dream after the user said stop. Inside
+    # the lock we re-read consent on FRESH state (expire_all, mirroring
+    # delivery._initiative_consent_allows) and only then claim, so an
+    # opt-out either lands before the re-read (silence) or blocks until the
+    # claim decision is made (the opt-out post-dates the voicing).
+    with presence_consent_lock(user_id):
+        db.expire_all()
+        fresh = get_presence_config_values(db, user_id)
+        if not (fresh.enabled and fresh.dream_sharing == "ambient"):
             db.rollback()
             return None
-        db.commit()
-    except OperationalError:
-        # Lost a genuine lock race despite the busy timeout: prefer silence.
-        db.rollback()
-        return None
+        db.rollback()  # end the re-read's snapshot before the write
+        try:
+            claimed = db.execute(
+                update(DreamJournal)
+                .where(
+                    DreamJournal.id == candidate_id,
+                    DreamJournal.surfaced.is_(False),
+                )
+                .values(surfaced=True)
+                .returning(DreamJournal.narrative)
+            ).first()
+            if claimed is None:
+                db.rollback()
+                return None
+            db.commit()
+        except OperationalError:
+            # Lost a genuine lock race despite the busy timeout: silence.
+            db.rollback()
+            return None
 
     narrative = (
         df(user_id, claimed.narrative, table="dream_journal", field="narrative") or ""

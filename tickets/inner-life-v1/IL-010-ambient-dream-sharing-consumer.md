@@ -1,6 +1,6 @@
 # IL-010 - Implement the "ambient" dream-sharing consumer
 
-- Status: done
+- Status: in_progress
 - Priority: P3
 - Scope: `apps/server/src/anima_server/services/agent/proactive.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/desktop/src/pages/Presence.tsx`
 - Parent: none
@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-31 03:52 MYT
+- Updated: 2026-07-31 13:46 MYT
 - Started: 2026-07-30 16:27 MYT
-- Completed: 2026-07-31 03:52 MYT
+- Completed:
 
 ## Goal
 
@@ -108,12 +108,24 @@ backend contract still accepts and round-trips the value).
   (it holds the only durable copy), withdrawn consent clears it, and
   unknown consent keeps it for a mount that can verify.
 
+- 2026-07-31 13:46 MYT - PR #130 review round 5: ticket REOPENED to in_progress and
+  `Completed` cleared (last provisional completion was 2026-07-31 03:52 MYT) — per
+  the tracked-work review workflow a child stays open until review
+  establishes a clean implementation head, with metadata closeout
+  afterwards; the earlier per-round re-stamping recorded acceptance
+  while actionable defects were still open. Round-5 fixes: the dream
+  claim now holds the per-user presence_consent_lock from a FRESH
+  consent re-read through the claim commit (the unlocked pre-check
+  could otherwise authorize voicing after an opt-out committed);
+  durable client receipt is deferred to IL-015 with the rationale
+  recorded there and in the PR thread.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 14 passed
-  - Full suite on the round-4 head — **3180 passed, 0 failed, 10
-    skipped**, run 2026-07-31 11:58 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 15 passed
+  - Full suite on the round-5 head — **3181 passed, 0 failed, 10
+    skipped**, run 2026-07-31 14:16 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/api/routes/chat.py`
@@ -124,5 +136,10 @@ backend contract still accepts and round-trips the value).
   - `apps/server/tests/test_inner_life_ambient_dream.py` (new)
   - `apps/desktop/src/pages/Presence.tsx`
 - Notes:
+  - Residual risk (accepted, tracked as `IL-015`): a dream claimed for a
+    greeting whose HTTP response never reaches the browser (reload, tab
+    close, dropped connection) stays surfaced without being voiced. The
+    conservative direction — silence rather than re-voicing — is deliberate;
+    a stronger guarantee needs a claim/ack protocol (schema + endpoint).
   - The surfaced-mark commit lives inside the resolver (greeting sessions
     never commit otherwise); greeting paths are read-only apart from it.
