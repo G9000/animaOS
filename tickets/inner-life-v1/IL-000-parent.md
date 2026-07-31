@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-31 13:46 MYT
+- Updated: 2026-07-31 14:59 MYT
 - Started: 2026-07-15 16:55 MYT
 - Completed: 2026-07-29 12:35 MYT
 
@@ -37,6 +37,8 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - `IL-011` - Return acknowledgment: grounded held-thought greeting + reconnect energy texture (`done` 2026-07-29, PR #128, depends on `IL-002`, `IL-003`).
 - `IL-012` - Mood-congruent reconsolidation target (`done` 2026-07-29, PR #128, depends on `IL-006`).
 - `IL-013` - Drive starvation carryover in initiative selection (`done` 2026-07-29, PR #128, depends on `IL-003`).
+- `IL-015` - Durable client receipt for ambient dream surfacing (`backlog`, depends on `IL-010`): filed from PR #130 review; IL-010's claim-on-serve can lose a dream to a dropped HTTP response, and closing that needs a claim/ack protocol (schema + endpoint). IL-010 records the accepted residual risk.
+- `IL-014` - Sub-threshold moment crystallization (`backlog` design ticket, depends on `IL-004`, `IL-005`): filed 2026-07-30 from the v1.1 comparative analysis; gated on a design review of its right-to-forget and encryption tensions before any code.
 
 ## Completed Ticket History
 
@@ -53,6 +55,11 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - 2026-07-29 11:44 MYT - Parent closeout synchronized with the round-9 child state: `Completed` re-stamped to the child's final completion (11:36 MYT), validation summary refreshed to the current 15/15 poller / 90 server results.
 - 2026-07-29 12:35 MYT - `IL-008` round 10: Ambient option withdrawn pending `IL-010` (no-op consumer); AGENTS.md validation gate run and recorded on the child (build pass, live smoke pass, full suite cross-referenced to PR #126's tracked set). Completion re-stamped; this parent's metadata synchronized.
 - 2026-07-29 15:58 MYT - Standalone follow-ups `IL-011`/`IL-012`/`IL-013` implemented and recorded in the Follow-ups section (PR #128); `IL-010` back-filled into the same section for registry completeness. This parent stays `done` — v1 acceptance is unchanged and judged over the child table.
+- 2026-07-30 20:46 MYT - Planning only: `IL-014` (sub-threshold moment crystallization, backlog design ticket) registered in the Follow-ups section; filed from the v1.1 comparative analysis with an explicit design gate. No lifecycle changes to any child.
+- 2026-07-31 14:59 MYT - Planning only: `IL-015` (durable client receipt for ambient dream
+  surfacing, backlog) registered in the Follow-ups section — filed from PR #130
+  review where the claim-on-serve gap was deferred with the residual risk
+  recorded on `IL-010`. No lifecycle changes to any child.
 
 ## Deliverables
 

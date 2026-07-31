@@ -216,11 +216,17 @@ class DriveStateRow(RuntimeBase):
     # eventually surfaces. NULL/missing keys mean zero losses. Reset per
     # drive when it fires or when its pressure is hard-reset.
     starvation_losses: Mapped[dict | None] = mapped_column(SA_JSON, nullable=True)
+    # NO onupdate here (RWF-007's lifecycle test caught this): updated_at is
+    # the Δt REFERENCE the drive tick advances from, owned exclusively by
+    # ``initiative._apply_pressures`` (which stamps the tick's injected local
+    # time) — not an audit column. An automatic wall-clock stamp fired on any
+    # OTHER writer of this row (the IL7 dream-attempt marker is one) and
+    # silently erased the accumulated growth window between the last tick and
+    # that write — and under injected time it zeroed every subsequent Δt.
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ,
         nullable=False,
         server_default=func.now(),
-        onupdate=func.now(),
     )
 
 
