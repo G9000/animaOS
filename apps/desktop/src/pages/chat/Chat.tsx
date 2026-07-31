@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { classifySeedNavigation, mergeSeedContexts } from "../../lib/initiativeReply";
+import {
+  classifySeedCloseAbandon,
+  classifySeedNavigation,
+  mergeSeedContexts,
+} from "../../lib/initiativeReply";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type {
@@ -597,9 +601,42 @@ export default function Chat() {
   // archive the conversation they just selected.
   const abandonSeedClose = (keepThreadId?: number) => {
     const abandoned = pendingSeedCloseRef.current;
+    const inFlight = seedClosePromiseRef.current;
     pendingSeedCloseRef.current = null;
-    if (abandoned != null && abandoned !== keepThreadId) {
-      void api.threads.close(abandoned).catch(() => {});
+    seedNeedsThreadDiscoveryRef.current = false;
+    const action = classifySeedCloseAbandon({
+      pendingThreadId: abandoned,
+      keepThreadId,
+      hasInFlightClose: inFlight != null,
+    });
+    if (action === "none" || abandoned == null) return;
+    if (action === "await-inflight" && inFlight) {
+      // Reuse the in-flight close (PR #131 round 8) — a second concurrent
+      // POST would duplicate on_thread_close. Retry only if it FAILED,
+      // which is sequential, not concurrent.
+      void inFlight.then((ok) => {
+        if (!ok) void api.threads.close(abandoned).catch(() => {});
+      });
+      return;
+    }
+    void api.threads.close(abandoned).catch(() => {});
+  };
+  // Set when a seed mounted but the /threads request FAILED: an absent
+  // active thread is then unknown, not proven absent (PR #131 round 8).
+  // The send guard re-runs discovery before routing any reply.
+  const seedNeedsThreadDiscoveryRef = useRef(false);
+  const settleSeedDiscovery = async (): Promise<boolean> => {
+    if (!seedNeedsThreadDiscoveryRef.current) return true;
+    try {
+      const list = await api.threads.list();
+      const discovered = dedupeThreads(list.threads);
+      setThreads(discovered);
+      const stillActive = discovered.find((t) => t.status === "active") ?? null;
+      seedNeedsThreadDiscoveryRef.current = false;
+      if (stillActive) pendingSeedCloseRef.current = stillActive.id;
+      return true;
+    } catch {
+      return false; // stays unknown; the next send retries discovery
     }
   };
   const applySeedNavigation = (context: ChatContextMessage[]) => {
@@ -729,6 +766,12 @@ export default function Chat() {
         if (active) {
           pendingSeedCloseRef.current = active.id;
           void settleSeedClose();
+        } else if (!threadsRes) {
+          // The /threads request FAILED — "no active thread" is unknown,
+          // not proven (PR #131 round 8). Seeding proceeds so the user sees
+          // the initiative, but the send guard re-runs discovery (and any
+          // needed close) before the reply can be routed.
+          seedNeedsThreadDiscoveryRef.current = true;
         }
         seedFreshThread(pendingContextRef.current);
         return;
@@ -1177,6 +1220,10 @@ export default function Chat() {
     // An in-place seed still owes the old thread a close: settle it (with
     // retry-on-next-send semantics) before this reply can be routed, or
     // get_or_create_thread would append it to the old conversation.
+    if (seedNeedsThreadDiscoveryRef.current && !(await settleSeedDiscovery())) {
+      setError("Couldn't start the reply thread - try sending again.");
+      return false;
+    }
     if (pendingSeedCloseRef.current != null && !(await settleSeedClose())) {
       setError("Couldn't start the reply thread - try sending again.");
       return false;

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  classifySeedCloseAbandon,
   classifySeedNavigation,
   initiativeReplyState,
   mergeSeedContexts,
@@ -90,5 +91,42 @@ describe("mergeSeedContexts (PR #131 round 2)", () => {
     const merged = mergeSeedContexts(existing, [msg("b")]);
     expect(existing).toHaveLength(1);
     expect(merged).toHaveLength(2);
+  });
+});
+
+describe("classifySeedCloseAbandon (PR #131 round 8)", () => {
+  test("reuses an in-flight close instead of racing a second POST", () => {
+    expect(
+      classifySeedCloseAbandon({ pendingThreadId: 7, hasInFlightClose: true }),
+    ).toBe("await-inflight");
+  });
+
+  test("fires one best-effort close when nothing is in flight", () => {
+    expect(
+      classifySeedCloseAbandon({ pendingThreadId: 7, hasInFlightClose: false }),
+    ).toBe("close");
+  });
+
+  test("never closes the thread the user is re-opening", () => {
+    expect(
+      classifySeedCloseAbandon({
+        pendingThreadId: 7,
+        keepThreadId: 7,
+        hasInFlightClose: false,
+      }),
+    ).toBe("none");
+    expect(
+      classifySeedCloseAbandon({
+        pendingThreadId: 7,
+        keepThreadId: 7,
+        hasInFlightClose: true,
+      }),
+    ).toBe("none");
+  });
+
+  test("nothing owed means nothing to do", () => {
+    expect(
+      classifySeedCloseAbandon({ pendingThreadId: null, hasInFlightClose: true }),
+    ).toBe("none");
   });
 });

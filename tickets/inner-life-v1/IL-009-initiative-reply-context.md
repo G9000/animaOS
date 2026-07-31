@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-31 03:03 MYT
+- Updated: 2026-07-31 13:35 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-31 03:03 MYT
+- Completed: 2026-07-31 13:35 MYT
 
 ## Goal
 
@@ -142,14 +142,24 @@ rather than blocking IL-008 on it.
   want the old conversation closed anyway) — abandoning left the old
   thread active with a usable composer. Build re-run on this head: pass.
 
+- 2026-07-31 13:35 MYT - PR #131 review round 8 (2 P1s), completion re-stamped:
+  (1) abandoning a seed no longer bypasses the memoized close — it
+  reuses the in-flight request (retrying only if that one definitively
+  failed, which is sequential rather than concurrent), so selecting
+  another thread mid-close can't duplicate on_thread_close; (2) a mount
+  seed whose /threads request FAILED no longer treats 'no active thread'
+  as proven — it flags discovery as unknown and the send guard re-runs
+  discovery (registering any needed close) before routing the reply,
+  rejecting with a retry message while it stays unknown.
+
 ## Validation
 
 - Commands:
   - `bun test tests/initiativeReply.test.ts tests/initiativePoller.test.ts` —
-    25 pass (10 IL-009 tests + the 15 poller regressions)
+    29 pass (14 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 7), 2026-07-31 03:03 MYT
+    FINAL head (round 8), 2026-07-31 13:35 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

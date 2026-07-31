@@ -68,3 +68,28 @@ export function mergeSeedContexts(
 ): ChatContextMessage[] {
   return [...(existing ?? []), ...next];
 }
+
+/**
+ * What abandoning a seeded reply should do with its owed thread close
+ * (PR #131 round 8).
+ *
+ * Re-issuing `close` while the eager close is still in flight sends a second
+ * concurrent POST for the same thread — on PostgreSQL both sessions can see
+ * it active and each schedule `on_thread_close()`, duplicating episode
+ * generation and archival. So: reuse the in-flight request when one exists
+ * (retrying only if it definitively failed), skip entirely when the user is
+ * re-opening the very thread the close targets, and otherwise fire one
+ * best-effort close.
+ */
+export type SeedCloseAbandonAction = "none" | "await-inflight" | "close";
+
+export function classifySeedCloseAbandon(options: {
+  pendingThreadId: number | null;
+  keepThreadId?: number;
+  hasInFlightClose: boolean;
+}): SeedCloseAbandonAction {
+  const { pendingThreadId, keepThreadId, hasInFlightClose } = options;
+  if (pendingThreadId == null) return "none";
+  if (pendingThreadId === keepThreadId) return "none";
+  return hasInFlightClose ? "await-inflight" : "close";
+}
