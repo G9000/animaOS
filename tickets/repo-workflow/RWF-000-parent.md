@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-16 00:59 MYT
+- Updated: 2026-07-30 22:01 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed: 2026-07-16 00:44 MYT
 
@@ -28,6 +28,10 @@ This table is the execution order; dependency eligibility still controls when ea
 | `RWF-003` | Add ticket metadata validation | `done` | `RWF-001` |
 | `RWF-004` | Reconcile repository documentation and hygiene | `done` | `RWF-002` |
 | `RWF-006` | Validate, publish, and complete PR review | `done` | `RWF-001`, `RWF-002`, `RWF-003`, `RWF-004`, `RWF-005` |
+
+## Follow-ups Beyond Initial Scope
+
+- `RWF-007` - CI gate for the server test suite + enforced Inner Life lifecycle test (`done` 2026-07-30): standalone follow-up, not a child of this closed parent — the initiative's acceptance is judged over the child table above.
 
 ## Deliverables
 
@@ -112,6 +116,12 @@ This table is the execution order; dependency eligibility still controls when ea
 - 2026-07-16 00:28 MYT - Re-completed `RWF-001` after the active-ownership repair passed 34 focused tests, the live organization/zero-unassigned audit, official skill validation, diff/scope assertions, and the root build. The intended final fix commit is `tickets: enforce active ownership`; kept `RWF-006` and `RWF-000` `in_progress`, preserved parent ownership, and left parent `Completed:` empty.
 - 2026-07-16 00:44 MYT - Closed `RWF-006` and `RWF-000` because all six child files and parent rows are `done`, initiative validation passed, and implementation head `ac0e84422fb1da4fbeb2ed8dc001033358d386e1` received Codex's clean [issue comment](https://github.com/G9000/animaOS/pull/99#issuecomment-4983011236) (`IC_kwDORPzHkM8AAAABKQK3pA`, `2026-07-15T16:36:44Z`, `Reviewed commit: ac0e84422f`) after complete review/thread/comment pagination showed zero unresolved non-outdated actionable threads and the prior thread resolved/outdated. PR #99 was ready, open, and unmerged at closeout and that state was preserved; parent ownership remains `Codex`, and the pushed metadata head still requires the terminal review guard without merge.
 - 2026-07-16 00:59 MYT - Recorded PR #99's external squash merge at `2026-07-15T16:46:01Z` as new `origin/main` `10b63ac6769d2ddfac29246f7159a4713308791f` and the authorized metadata-only recovery. Preserved the old local branch at closeout commit `4913f51b9082f23cf29e8bb151379d3050b9560f`; created `codex/repo-workflow-closeout` from the squash commit, pushed initial head `aa3b6ea5c7b81963d181877a2ae4474539616c1b`, and opened draft [PR #100](https://github.com/G9000/animaOS/pull/100) against `main`. Verified draft/open/unmerged state and initial head synchronization; all child rows, parent `Status: done`, parent ownership, and `Completed: 2026-07-16 00:44 MYT` remain unchanged pending the evidence-recording push and exact review request.
+
+- 2026-07-30 22:01 MYT - Planning only (recorded per PR #129 review):
+  `RWF-007` (CI gate for the server test suite + enforced Inner Life
+  lifecycle test) registered as a standalone follow-up in the section
+  below on 2026-07-30. Post-closeout registration; no lifecycle changes
+  to any child of this done parent.
 
 ## Validation
 

@@ -3305,3 +3305,28 @@ def test_signal_driven_reset_clears_starvation_losses_even_while_disabled(
 
     soul_engine.dispose()
     runtime_engine.dispose()
+
+
+def test_dream_attempt_marker_does_not_clobber_the_drive_delta_reference() -> None:
+    """Regression (found by RWF-007's promoted lifecycle test): drive_states
+    .updated_at is the Δt REFERENCE the tick advances pressures from, stamped
+    exclusively by _apply_pressures with the tick's own time. It previously
+    carried onupdate=func.now(), so any OTHER writer of the row — the IL7
+    dream-attempt marker in production — re-stamped it with the wall clock,
+    silently erasing the accumulated growth window since the last tick (and
+    zeroing every subsequent Δt under injected time)."""
+    engine = _create_runtime_engine()
+    factory = _make_factory(engine)
+    t0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    with factory() as db_:
+        db_.add(DriveStateRow(user_id=1, unresolved_thread=0.3, updated_at=t0))
+        db_.commit()
+    with factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        row.last_dream_attempt_at = t0 + timedelta(hours=11)  # IL7's independent write
+        db_.commit()
+    with factory() as db_:
+        row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
+        stored = row.updated_at if row.updated_at.tzinfo else row.updated_at.replace(tzinfo=UTC)
+        assert stored == t0  # the Δt reference belongs to the tick alone
+    engine.dispose()
