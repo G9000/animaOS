@@ -321,6 +321,7 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
     from sqlalchemy.exc import OperationalError
 
     from anima_server.models import DreamJournal
+    from anima_server.services.crypto import ENCRYPTED_PREFIX
     from anima_server.services.data_crypto import DOMAIN_MEMORIES
     from anima_server.services.presence_config import presence_consent_lock
     from anima_server.services.sessions import get_active_dek
@@ -381,18 +382,43 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
             if claimed is None:
                 db.rollback()
                 return None
+            # Decrypt and validate BEFORE the claim becomes durable (PR #130
+            # review): a corrupt ciphertext/AAD or a DEK revoked since the
+            # check above would otherwise burn the dream on a claim nothing
+            # can voice — df() either raises or fails open to ciphertext.
+            # RETURNING gives us the value pre-commit, so an unusable
+            # narrative rolls the claim back and the entry stays retriable.
+            narrative = (
+                df(user_id, claimed.narrative, table="dream_journal", field="narrative")
+                or ""
+            ).strip()
+            # df() fails OPEN (returns the stored value) when the DEK went
+            # away, so an intact ciphertext envelope means "not decrypted".
+            still_ciphertext = narrative.startswith(f"{ENCRYPTED_PREFIX}:")
+            if not narrative or still_ciphertext:
+                if still_ciphertext:
+                    logger.warning(
+                        "Ambient dream narrative did not decrypt for user %s; "
+                        "leaving the dream unsurfaced",
+                        user_id,
+                    )
+                db.rollback()
+                return None
             db.commit()
         except OperationalError:
             # Lost a genuine lock race despite the busy timeout: silence.
             db.rollback()
             return None
+        except Exception:
+            # Decryption raised (corrupt AAD, revoked DEK, ...): never burn
+            # the claim on a dream we cannot read.
+            logger.warning(
+                "Ambient dream claim aborted for user %s", user_id, exc_info=True
+            )
+            db.rollback()
+            return None
 
-    narrative = (
-        df(user_id, claimed.narrative, table="dream_journal", field="narrative") or ""
-    ).strip()
-    # A whitespace-only narrative burns its claim — acceptable: a content-
-    # less dream was never shareable, and un-claiming would reopen the race.
-    return narrative[:240] or None
+    return narrative[:240]
 
 
 def _reset_dream_residue_after_surfacing(

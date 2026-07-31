@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-31 13:46 MYT
+- Updated: 2026-07-31 15:06 MYT
 - Started: 2026-07-30 16:27 MYT
 - Completed:
 
@@ -120,12 +120,24 @@ backend contract still accepts and round-trips the value).
   durable client receipt is deferred to IL-015 with the rationale
   recorded there and in the PR thread.
 
+- 2026-07-31 15:06 MYT - PR #130 review round 6 (2 P2s): (1) the narrative is now
+  decrypted and validated BEFORE the claim commits — a corrupt
+  ciphertext/AAD or a DEK revoked since the gate used to burn the dream
+  on a claim nothing could voice; RETURNING supplies the value pre-commit,
+  and an unreadable narrative (raise, empty, or an intact `enc2:` envelope
+  from df failing open) rolls the claim back so the entry stays retriable.
+  (2) `IL-015` is now actually registered in IL-000's Follow-ups section
+  with a planning activity entry — the earlier scripted edit silently
+  no-op'd because this branch predated the IL-014 line it anchored on;
+  origin/main is merged in and that conflict resolved.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 15 passed
-  - Full suite on the round-5 head — **3181 passed, 0 failed, 10
-    skipped**, run 2026-07-31 14:16 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 16 passed
+  - Full suite on the round-6 head (origin/main merged in, so it now
+    includes the promoted e2e lifecycle test) — **3184 passed, 0
+    failed, 10 skipped**, run 2026-07-31 15:31 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/api/routes/chat.py`

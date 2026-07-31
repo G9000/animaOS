@@ -344,3 +344,32 @@ def test_optout_during_the_greeting_blocks_the_claim(
         # The dream was NOT consumed: the opt-out wins and it stays available
         # for whenever the user turns ambient sharing back on.
         assert db.scalars(select(DreamJournal)).one().surfaced is False
+
+
+def test_undecryptable_narrative_does_not_burn_the_claim(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 6): the claim used to commit BEFORE the
+    narrative was decrypted, so a corrupt ciphertext/AAD or a DEK revoked
+    since the gate burned the dream on a claim nothing could voice. Decrypt
+    and validate pre-commit; an unreadable narrative rolls back and the
+    entry stays retriable."""
+    user_id = _seed(soul_db)
+
+    def df_raises(uid, value, **kw):
+        raise RuntimeError("AAD mismatch")
+
+    monkeypatch.setattr(proactive, "df", df_raises)
+    assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is False
+
+    # df failing OPEN (DEK gone -> stored value returned unchanged) is also
+    # caught: an intact ciphertext envelope means "not decrypted".
+    from anima_server.services.crypto import ENCRYPTED_PREFIX
+
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.narrative = f"{ENCRYPTED_PREFIX}:nonce:tag:ciphertext"
+    soul_db.commit()
+    monkeypatch.setattr(proactive, "df", lambda uid, v, **kw: v)
+    assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is False
