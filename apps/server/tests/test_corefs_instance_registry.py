@@ -200,6 +200,54 @@ def test_registry_never_expires_a_same_machine_lease_while_its_process_is_alive(
         long_running_machine.resolve(clone)
 
 
+def test_registry_refuses_a_second_live_owner_for_the_same_core_path(
+    managed_tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    app_data = managed_tmp_path / "app-data"
+    core = _make_core(managed_tmp_path / "portable" / ".anima")
+    process_starts = {
+        100: "process-100",
+        200: "process-200",
+    }
+    first = RuntimeInstanceRegistry(
+        app_data,
+        pid_is_alive=lambda pid: pid in process_starts,
+        process_start_identity=lambda pid: process_starts.get(pid),
+        process_id=100,
+        now=lambda: now,
+        hostname="test-host",
+    )
+    first_binding = first.resolve(core)
+
+    second = RuntimeInstanceRegistry(
+        app_data,
+        pid_is_alive=lambda pid: pid in process_starts,
+        process_start_identity=lambda pid: process_starts.get(pid),
+        process_id=200,
+        now=lambda: now + timedelta(minutes=1),
+        hostname="test-host",
+    )
+
+    with pytest.raises(InstanceBindingCollision, match="already owns"):
+        second.resolve(core)
+
+    registry_payload = json.loads(
+        (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
+    )
+    lease_payload = json.loads(
+        (first_binding.instance_root / "instance-lease.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert registry_payload["instances"][0]["pid"] == 100
+    assert lease_payload["pid"] == 100
+
+    del process_starts[100]
+    reclaimed = second.resolve(core)
+    assert reclaimed.local_instance_id == first_binding.local_instance_id
+
+
 def test_registry_reclaims_reused_pid_lease_and_lock(
     managed_tmp_path: Path,
 ) -> None:

@@ -148,6 +148,14 @@ class RuntimeInstanceRegistry:
                     ),
                     None,
                 )
+                if (
+                    selected is not None
+                    and self._record_is_live(selected, now=now)
+                    and not self._record_is_owned_by_current_process(selected)
+                ):
+                    raise InstanceBindingCollision(
+                        "another live process already owns this Core instance"
+                    )
 
             if selected is None and not (fork or rebuild):
                 live_divergent = next(
@@ -293,6 +301,16 @@ class RuntimeInstanceRegistry:
                 return now - updated <= _LEASE_TTL
             return self._process_start_identity(pid) == expected_identity
         return now - updated <= _LEASE_TTL
+
+    def _record_is_owned_by_current_process(
+        self, record: dict[str, object]
+    ) -> bool:
+        return (
+            record.get("hostname") == self._hostname
+            and record.get("pid") == self._process_id
+            and record.get("process_start_identity")
+            == self._current_process_start_identity
+        )
 
     def _reject_runtime_url_collision(
         self,
