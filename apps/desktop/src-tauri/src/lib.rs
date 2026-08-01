@@ -596,24 +596,34 @@ fn resolve_runtime_data_env_overrides(runtime_working_dir: Option<&Path>) -> Vec
     }
 
     let explicit_data_dir = env_var_nonempty("ANIMA_DATA_DIR").map(PathBuf::from);
-    let runtime_data_dir = explicit_data_dir
-        .clone()
-        .unwrap_or_else(|| daemon_data_dir().join("runtime"));
-    let _ = fs::create_dir_all(&runtime_data_dir);
-    let uv_project_environment = runtime_data_dir.join(".venv");
+    let explicit_runtime_app_data_dir =
+        env_var_nonempty("ANIMA_RUNTIME_APP_DATA_DIR").map(PathBuf::from);
+    let (core_dir, runtime_app_data_dir, uv_project_environment) = resolve_packaged_data_dirs(
+        explicit_data_dir.clone(),
+        explicit_runtime_app_data_dir.clone(),
+        daemon_data_dir(),
+    );
+    let _ = fs::create_dir_all(&core_dir);
 
     let mut env = Vec::new();
     if explicit_data_dir.is_none() {
         env.push((
             "ANIMA_DATA_DIR".to_string(),
-            runtime_data_dir.to_string_lossy().to_string(),
+            core_dir.to_string_lossy().to_string(),
+        ));
+    }
+
+    if explicit_runtime_app_data_dir.is_none() {
+        env.push((
+            "ANIMA_RUNTIME_APP_DATA_DIR".to_string(),
+            runtime_app_data_dir.to_string_lossy().to_string(),
         ));
     }
 
     if env_var_nonempty("ANIMA_DATABASE_URL").is_none() {
         env.push((
             "ANIMA_DATABASE_URL".to_string(),
-            sqlite_database_url(&runtime_data_dir.join("anima.db")),
+            packaged_database_url(&core_dir),
         ));
     }
 
@@ -627,6 +637,22 @@ fn resolve_runtime_data_env_overrides(runtime_working_dir: Option<&Path>) -> Vec
     ));
 
     env
+}
+
+fn resolve_packaged_data_dirs(
+    explicit_data_dir: Option<PathBuf>,
+    explicit_runtime_app_data_dir: Option<PathBuf>,
+    daemon_root: PathBuf,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let core_dir = explicit_data_dir.unwrap_or_else(|| daemon_root.join("runtime"));
+    let default_runtime_app_data_dir = daemon_root
+        .parent()
+        .map(|parent| parent.join("runtime-app-data"))
+        .unwrap_or_else(|| daemon_root.join("runtime-app-data"));
+    let runtime_app_data_dir =
+        explicit_runtime_app_data_dir.unwrap_or(default_runtime_app_data_dir);
+    let uv_project_environment = daemon_root.join("runtime-environment").join(".venv");
+    (core_dir, runtime_app_data_dir, uv_project_environment)
 }
 
 fn env_var_nonempty(key: &str) -> Option<String> {
@@ -810,4 +836,80 @@ pub fn run() {
             }
         }
     });
+}
+
+fn packaged_database_url(core_dir: &Path) -> String {
+    sqlite_database_url(&core_dir.join("anima.db"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packaged_core_and_runtime_defaults_are_disjoint() {
+        let daemon_root = PathBuf::from("platform-data")
+            .join("anima")
+            .join("runtime-daemon");
+
+        let (core_dir, runtime_app_data_dir, uv_project_environment) =
+            resolve_packaged_data_dirs(None, None, daemon_root.clone());
+
+        assert_eq!(core_dir, daemon_root.join("runtime"));
+        assert_eq!(
+            runtime_app_data_dir,
+            daemon_root.parent().unwrap().join("runtime-app-data")
+        );
+        assert!(!core_dir.starts_with(&runtime_app_data_dir));
+        assert!(!runtime_app_data_dir.starts_with(&core_dir));
+        assert_eq!(
+            uv_project_environment,
+            daemon_root.join("runtime-environment").join(".venv")
+        );
+        assert!(!uv_project_environment.starts_with(&core_dir));
+        assert_eq!(
+            packaged_database_url(&core_dir),
+            "sqlite:///platform-data/anima/runtime-daemon/runtime/anima.db"
+        );
+    }
+
+    #[test]
+    fn packaged_data_layout_preserves_explicit_overrides() {
+        let core_dir = PathBuf::from("explicit-core");
+        let runtime_app_data_dir = PathBuf::from("explicit-runtime");
+        let daemon_root = PathBuf::from("platform-data")
+            .join("anima")
+            .join("runtime-daemon");
+
+        assert_eq!(
+            resolve_packaged_data_dirs(
+                Some(core_dir.clone()),
+                Some(runtime_app_data_dir.clone()),
+                daemon_root.clone(),
+            ),
+            (
+                core_dir,
+                runtime_app_data_dir,
+                daemon_root.join("runtime-environment").join(".venv"),
+            )
+        );
+    }
+
+    #[test]
+    fn explicit_overlapping_runtime_root_cannot_receive_the_launcher_environment() {
+        let core_dir = PathBuf::from("portable-core");
+        let overlapping_runtime_dir = core_dir.join("runtime-app-data");
+
+        let (_, runtime_app_data_dir, uv_project_environment) = resolve_packaged_data_dirs(
+            Some(core_dir.clone()),
+            Some(overlapping_runtime_dir.clone()),
+            PathBuf::from("platform-data")
+                .join("anima")
+                .join("runtime-daemon"),
+        );
+
+        assert_eq!(runtime_app_data_dir, overlapping_runtime_dir);
+        assert!(!uv_project_environment.starts_with(&core_dir));
+        assert!(!uv_project_environment.starts_with(&runtime_app_data_dir));
+    }
 }
