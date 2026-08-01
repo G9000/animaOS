@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
+
 import pytest
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
@@ -56,6 +59,33 @@ def test_indexer_publishes_catalog_before_text_and_semantic_readiness() -> None:
     assert ready.state is ReadinessState.READY
     assert IndexCapability.SEMANTIC_SEARCH in ready.capabilities
     assert ready.families["gallery"].degraded is True
+
+
+def test_indexer_rejects_mixed_semantic_vector_dimensions() -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.begin_catalog()
+    index.publish_catalog(catalog_generation=7, families={"notes": 2})
+    index.begin_text_indexing()
+    index.index_text(
+        family="notes",
+        object_id="note-1",
+        revision="rev-1",
+        text="first note",
+    )
+    index.index_text(
+        family="notes",
+        object_id="note-2",
+        revision="rev-2",
+        text="second note",
+    )
+    index.begin_semantic_indexing()
+    index.index_vector(object_id="note-1", vector=(1.0, 0.0))
+
+    with pytest.raises(ValueError, match="dimension"):
+        index.index_vector(object_id="note-2", vector=(1.0, 0.0, 0.0))
+
+    assert index.search_semantic((1.0, 0.0), limit=5) == ("note-1",)
 
 
 def test_indexer_cancel_resume_is_idempotent_and_keeps_canonical_state_untouched() -> None:
@@ -382,6 +412,65 @@ def test_unlock_store_returns_every_live_runtime_index_for_a_user() -> None:
         store.revoke(first)
         store.revoke(second)
         store.clear_sqlcipher_key()
+
+
+def test_unlock_store_serializes_legacy_conversion_across_logins(monkeypatch) -> None:
+    store = UnlockSessionStore(runtime_index_factory=lambda _keys, _key: None)
+    first_entered = Event()
+    second_entered = Event()
+    release_first = Event()
+    second_started = Event()
+    counter_lock = Lock()
+    active = 0
+    maximum_active = 0
+    calls = 0
+
+    def convert_runtime_index_rows(
+        _runtime_index,
+        *,
+        user_id: int,
+        memory_dek: bytes | None,
+    ) -> bool:
+        nonlocal active, maximum_active, calls
+        assert user_id == 9
+        assert memory_dek == b"m" * 32
+        with counter_lock:
+            calls += 1
+            call_number = calls
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            if call_number == 1:
+                first_entered.set()
+                assert release_first.wait(timeout=5)
+            else:
+                second_entered.set()
+            return True
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(store, "_convert_runtime_index_rows", convert_runtime_index_rows)
+
+    def create_second() -> str:
+        second_started.set()
+        return store.create(9, {"memories": b"m" * 32})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(store.create, 9, {"memories": b"m" * 32})
+        assert first_entered.wait(timeout=5)
+        second = executor.submit(create_second)
+        assert second_started.wait(timeout=5)
+        try:
+            assert second_entered.wait(timeout=0.2) is False
+        finally:
+            release_first.set()
+        tokens = (first.result(timeout=5), second.result(timeout=5))
+
+    assert second_entered.is_set()
+    assert maximum_active == 1
+    for token in tokens:
+        store.revoke(token)
 
 
 def test_unlock_store_keeps_ready_index_active_during_second_login_rebuild() -> None:

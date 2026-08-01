@@ -103,6 +103,7 @@ class UnlockSessionStore:
         on_session_published: Callable[[UnlockSession], None] | None = None,
     ) -> None:
         self._lock = RLock()
+        self._runtime_conversion_lock = RLock()
         self._construction_condition = Condition(self._lock)
         self._snapshot = snapshot
         self._corefs_session_factory = corefs_session_factory or _create_native_corefs_session
@@ -503,11 +504,12 @@ class UnlockSessionStore:
                 corefs_keys,
                 sqlcipher_key,
             )
-            self._convert_runtime_index_rows(
-                runtime_index,
-                user_id=user_id,
-                memory_dek=copied_deks.get(DEFAULT_DOMAIN),
-            )
+            with self._runtime_conversion_lock:
+                self._convert_runtime_index_rows(
+                    runtime_index,
+                    user_id=user_id,
+                    memory_dek=copied_deks.get(DEFAULT_DOMAIN),
+                )
         except Exception:
             if runtime_index is not None:
                 runtime_index.clear_unlocked_state()
@@ -569,24 +571,25 @@ class UnlockSessionStore:
         replacements: dict[str, UnlockSession] = {}
         created_indexes: list[CoreFSProgressiveIndex] = []
         try:
-            for token, session in sessions.items():
-                runtime_index = session.runtime_index
-                if runtime_index is None:
-                    runtime_index = self._runtime_index_factory(
-                        None,
-                        sqlcipher_key,
+            with self._runtime_conversion_lock:
+                for token, session in sessions.items():
+                    runtime_index = session.runtime_index
+                    if runtime_index is None:
+                        runtime_index = self._runtime_index_factory(
+                            None,
+                            sqlcipher_key,
+                        )
+                        if runtime_index is not None:
+                            created_indexes.append(runtime_index)
+                    self._convert_runtime_index_rows(
+                        runtime_index,
+                        user_id=session.user_id,
+                        memory_dek=session.deks.get(DEFAULT_DOMAIN),
                     )
-                    if runtime_index is not None:
-                        created_indexes.append(runtime_index)
-                self._convert_runtime_index_rows(
-                    runtime_index,
-                    user_id=session.user_id,
-                    memory_dek=session.deks.get(DEFAULT_DOMAIN),
-                )
-                replacements[token] = replace(
-                    session,
-                    runtime_index=runtime_index,
-                )
+                    replacements[token] = replace(
+                        session,
+                        runtime_index=runtime_index,
+                    )
         except Exception:
             for runtime_index in created_indexes:
                 runtime_index.clear_unlocked_state()

@@ -601,7 +601,14 @@ class CoreFSProgressiveIndex:
                 raise ValueError("semantic embedding configuration changed")
             if object_id not in self._documents:
                 raise ValueError("semantic vector requires indexed text")
-            self._vectors[object_id] = tuple(float(value) for value in vector)
+            normalized = tuple(float(value) for value in vector)
+            if self._vectors:
+                expected_dimension = len(next(iter(self._vectors.values())))
+                if len(normalized) != expected_dimension:
+                    raise ValueError(
+                        "semantic vector dimension does not match index generation"
+                    )
+            self._vectors[object_id] = normalized
 
     def finish(self) -> None:
         with self._lock:

@@ -449,6 +449,71 @@ def test_semantic_embedding_failure_stays_retryable_until_vectors_succeed() -> N
     assert index.snapshot().families["note"].degraded is False
 
 
+def test_mixed_semantic_dimensions_stay_retryable_until_vector_is_corrected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corefs_keys = object()
+    bad_dimension = True
+    entries = [
+        {
+            "family": "note",
+            "path": "Notes/one.md",
+            "stable_id": "note-1",
+            "revision": "1",
+        },
+        {
+            "family": "note",
+            "path": "Notes/two.md",
+            "stable_id": "note-2",
+            "revision": "1",
+        },
+    ]
+
+    class NativeSession:
+        def validation_snapshot(self, keys):
+            assert keys is corefs_keys
+            return {"generation": 10, "catalogHash": "catalog-hash"}
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "_walk_authenticated_files",
+        lambda **_kwargs: (entries, []),
+    )
+    monkeypatch.setattr(
+        corefs_migration,
+        "_read_authenticated_text",
+        lambda **kwargs: kwargs["path"],
+    )
+
+    def embedder(text_value: str) -> tuple[float, ...]:
+        if text_value == "Notes/two.md" and bad_dimension:
+            return (1.0, 0.0, 0.0)
+        return (1.0, 0.0)
+
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(
+        runtime_index=index,
+        corefs_session=NativeSession(),
+        corefs_keys=corefs_keys,
+    )
+
+    rebuild_unlocked_search(session, embedder=embedder)
+
+    snapshot = index.snapshot()
+    assert snapshot.state is ReadinessState.SEMANTIC_INDEXING
+    assert snapshot.families["note"].unavailable_object_ids == ("note-2",)
+    assert index.search_semantic((1.0, 0.0), limit=5) == ("note-1",)
+
+    bad_dimension = False
+    rebuild_unlocked_search(session, embedder=embedder)
+
+    snapshot = index.snapshot()
+    assert snapshot.state is ReadinessState.READY
+    assert snapshot.families["note"].unavailable_object_ids == ()
+    assert index.search_semantic((1.0, 0.0), limit=5) == ("note-1", "note-2")
+
+
 def test_text_read_failure_stays_retryable_until_document_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
