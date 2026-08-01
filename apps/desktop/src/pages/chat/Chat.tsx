@@ -1,4 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  classifySeedCloseAbandon,
+  classifySeedNavigation,
+  mergeSeedContexts,
+} from "../../lib/initiativeReply";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import type {
@@ -479,6 +484,12 @@ export default function Chat() {
   // "ask"/"start chat" actions). Cleared once the user sends or switches threads.
   const seedActiveRef = useRef(locationState?.seedThread === true);
   const resumeThreadIdRef = useRef<number | null>(locationState?.resumeThreadId ?? null);
+  // The navigation this component has already applied seed state for. The
+  // refs above only capture location.state at MOUNT; a seedThread navigation
+  // that lands while Chat is already mounted (IL-009: Reply on an initiative
+  // while on /chat) must re-seed explicitly — see the location.key effect
+  // below. The initial key counts as handled by the useRef initializers.
+  const handledSeedKeyRef = useRef(location.key);
 
   // Messages & input
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -537,6 +548,202 @@ export default function Chat() {
     }
   }, []);
 
+  // ===== IL-009: seed navigations onto an already-mounted Chat =====
+  // The initiative overlay is global, so Reply can navigate to /chat while
+  // Chat is already the active route. Same-route navigation updates
+  // location.state but none of the mount-time refs above — without this
+  // effect the initiative is acked and its text silently vanishes. Each
+  // navigation applies exactly once (location.key); the initial key is
+  // owned by the mount path. Arrivals mid-stream are deferred until the
+  // stream settles instead of swapping the thread under it.
+  const pendingSeedNavRef = useRef<ChatContextMessage[] | null>(null);
+  // The old thread an in-place seed still owes a server-side close for.
+  // Sending before that close commits would let get_or_create_thread select
+  // the still-active OLD thread and append the seeded reply to the previous
+  // conversation — and a FAILED close must keep blocking (not silently
+  // unblock) or the same corruption happens one submit later (PR #131
+  // rounds 3-4). sendMessage retries the close itself before proceeding,
+  // so the state is self-healing rather than a one-shot guard.
+  const pendingSeedCloseRef = useRef<number | null>(null);
+  // One shared in-flight close (PR #131 round 6): the eager close and the
+  // send guard both settle through here — without memoization they issued
+  // two concurrent POST /threads/{id}/close, and on PostgreSQL both could
+  // read the thread as active and schedule on_thread_close twice
+  // (duplicate episode generation/archival).
+  // Bumped whenever the visible conversation intent changes (thread
+  // selected, New Thread, a new seed applied). A send that suspends on the
+  // discovery/close awaits compares it afterwards (PR #131 round 11): the
+  // user may have switched threads mid-await, and resuming would post the
+  // captured seed into a stale/undefined thread and yank the UI there.
+  const conversationEpochRef = useRef(0);
+  // Memoized WITH its thread id (PR #131 round 10): a bare promise let
+  // thread A's request settle — or fail — on behalf of a newly pending
+  // thread B, so B's close could be skipped (or A's retry could close B)
+  // while A stayed the active server thread.
+  // Every in-flight close, keyed by thread (PR #131 round 14): a single
+  // slot lost track when closes for different threads overlapped — starting
+  // T2's close erased the record of T1's, so re-selecting T1 saw nothing in
+  // flight and allowed a send while T1's close was still running.
+  const seedCloseInFlightRef = useRef<Map<number, Promise<boolean>>>(new Map());
+  const closeThreadOnce = (threadId: number): Promise<boolean> => {
+    const existing = seedCloseInFlightRef.current.get(threadId);
+    if (existing) return existing;
+    const promise = (async () => {
+      try {
+        await api.threads.close(threadId);
+        // Clear the marker only if it still points at THIS thread — a newer
+        // seed may have moved it on while this request was in flight.
+        if (pendingSeedCloseRef.current === threadId) {
+          pendingSeedCloseRef.current = null;
+        }
+        api.threads
+          .list()
+          .then((list) => setThreads(dedupeThreads(list.threads)))
+          .catch(() => {});
+        return true;
+      } catch {
+        return false; // stays pending; the next send retries
+      } finally {
+        seedCloseInFlightRef.current.delete(threadId);
+      }
+    })();
+    seedCloseInFlightRef.current.set(threadId, promise);
+    return promise;
+  };
+  const settleSeedClose = (): Promise<boolean> => {
+    const threadId = pendingSeedCloseRef.current;
+    if (threadId == null) return Promise.resolve(true);
+    return closeThreadOnce(threadId);
+  };
+  // A pending close belongs to the seeded-reply intent. When the user
+  // abandons that intent (picks another thread, starts a new one), the
+  // guard must stop gating unrelated sends: fire one last best-effort
+  // close and clear it (PR #131 round 6) — unless the user is re-opening
+  // the very thread the close targets, in which case closing it would
+  // archive the conversation they just selected.
+  // A thread-state transition the UI has started but not finished (PR #131
+  // round 12): re-opening a thread whose close is still in flight must not
+  // let a send begin while that close is pending — the close would commit
+  // mid-turn and archive the conversation the turn is writing into.
+  const threadSettleRef = useRef<Promise<unknown> | null>(null);
+  const abandonSeedClose = (keepThreadId?: number) => {
+    const abandoned = pendingSeedCloseRef.current;
+    const inFlight =
+      abandoned != null ? seedCloseInFlightRef.current.get(abandoned) : undefined;
+    pendingSeedCloseRef.current = null;
+    seedNeedsThreadDiscoveryRef.current = false;
+    const action = classifySeedCloseAbandon({
+      pendingThreadId: abandoned,
+      keepThreadId,
+      inFlightThreadId: inFlight ? abandoned : null,
+    });
+    if (action === "none" || abandoned == null) return;
+    if (action === "await-inflight" && inFlight) {
+      // Reuse the in-flight close for THIS thread (PR #131 rounds 8/10) —
+      // a second concurrent POST would duplicate on_thread_close. Retry
+      // only if it FAILED, which is sequential, not concurrent.
+      void inFlight.then((ok) => {
+        if (!ok) void api.threads.close(abandoned).catch(() => {});
+      });
+      return;
+    }
+    void closeThreadOnce(abandoned);
+  };
+  // Whether an active server thread is still UNDISCOVERED for a seeded
+  // reply. Starts true for a MOUNT seed (PR #131 round 9): seedActiveRef is
+  // live immediately, but /threads is still in flight — a fast submit in
+  // that window would stream with no threadId and let the server pick the
+  // user's still-active old thread. Cleared once discovery succeeds; left
+  // true when it fails (PR #131 round 8), since "no active thread" is then
+  // unknown rather than proven. The send guard re-runs discovery before
+  // routing any reply while this is set.
+  const seedNeedsThreadDiscoveryRef = useRef(
+    locationState?.seedThread === true,
+  );
+  // True once the initial /threads request has resolved. Until then the
+  // component does NOT know the live thread, even on an already-mounted
+  // route (PR #131 round 14).
+  const threadsHydratedRef = useRef(false);
+  const settleSeedDiscovery = async (): Promise<boolean> => {
+    if (!seedNeedsThreadDiscoveryRef.current) return true;
+    try {
+      const list = await api.threads.list();
+      const discovered = dedupeThreads(list.threads);
+      threadsHydratedRef.current = true;
+      setThreads(discovered);
+      const stillActive = discovered.find((t) => t.status === "active") ?? null;
+      seedNeedsThreadDiscoveryRef.current = false;
+      if (stillActive) pendingSeedCloseRef.current = stillActive.id;
+      return true;
+    } catch {
+      return false; // stays unknown; the next send retries discovery
+    }
+  };
+  const applySeedNavigation = (context: ChatContextMessage[]) => {
+    if (user?.id == null) return;
+    // A prior seed still unsent (mount seed or an earlier Reply)? Every
+    // acked initiative's text must survive — merge, never overwrite
+    // (PR #131 round 2).
+    const merged =
+      seedActiveRef.current && currentThreadIdRef.current == null
+        ? mergeSeedContexts(pendingContextRef.current, context)
+        : context;
+    // Close the active server-side thread first (mirrors handleNewThread):
+    // clearing only the client refs would let the first reply's
+    // get_or_create_thread land in the still-active old conversation
+    // (PR #131 round 2). The new thread is created on first send.
+    conversationEpochRef.current += 1;
+    const threadToClose = currentThreadIdRef.current;
+    // An in-place seed knows the live thread id synchronously ONLY once the
+    // initial /threads request has resolved (PR #131 round 14). Clicking
+    // Reply on an already-mounted but still-hydrating /chat leaves
+    // currentThreadIdRef null while a previous thread is still active, so
+    // discovery stays owed and the send guard settles it first.
+    seedNeedsThreadDiscoveryRef.current = !threadsHydratedRef.current;
+    pendingContextRef.current = merged;
+    seedActiveRef.current = true;
+    resumeThreadIdRef.current = null;
+    currentThreadIdRef.current = null;
+    setCurrentThreadId(null);
+    setMessages(contextToSeedMessages(merged, user.id));
+    setError("");
+    if (threadToClose != null) {
+      pendingSeedCloseRef.current = threadToClose;
+      void settleSeedClose();
+    }
+  };
+  useEffect(() => {
+    const state = location.state as ChatLocationState | null;
+    const action = classifySeedNavigation({
+      handledKey: handledSeedKeyRef.current,
+      key: location.key,
+      seedThread: state?.seedThread === true,
+      contextCount: state?.contextMessages?.length ?? 0,
+      streaming: streamingRef.current,
+    });
+    if (action === "ignore") return;
+    handledSeedKeyRef.current = location.key;
+    const context = state?.contextMessages ?? [];
+    if (action === "defer") {
+      // Queue EVERY deferred seed — a second Reply during the same stream
+      // must not discard the first acked initiative (PR #131 round 2).
+      pendingSeedNavRef.current = mergeSeedContexts(
+        pendingSeedNavRef.current,
+        context,
+      );
+      return;
+    }
+    applySeedNavigation(context);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, location.state, user?.id]);
+  useEffect(() => {
+    if (streaming || pendingSeedNavRef.current == null) return;
+    const context = pendingSeedNavRef.current;
+    pendingSeedNavRef.current = null;
+    applySeedNavigation(context);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming]);
+
   // ===== Initial data loading =====
   // One coherent landing flow. The chat always shows a single thread:
   //   1. seeded (opened from the dashboard) → fresh thread, companion's
@@ -574,6 +781,7 @@ export default function Chat() {
       if (revoked) return;
 
       const nextThreads = threadsRes ? dedupeThreads(threadsRes.threads) : [];
+      if (threadsRes) threadsHydratedRef.current = true;
       setThreads(nextThreads);
       const active = nextThreads.find((t) => t.status === "active") ?? null;
 
@@ -596,8 +804,25 @@ export default function Chat() {
         }
       }
 
-      // 1. Seeded open from the dashboard.
+      // 1. Seeded open (dashboard thought, or an initiative Reply from
+      // another route — PR #131 round 7). If a server-side thread is still
+      // active, register it for closure exactly like the in-place seed
+      // path: without this the first submit sends no threadId and
+      // get_or_create_thread mixes the seeded reply into that old
+      // conversation. The send guard settles the close before any send.
       if (seedActiveRef.current) {
+        if (threadsRes) {
+          // Discovery succeeded: what it found (an active thread, or
+          // genuinely none) is authoritative, so the guard opens.
+          seedNeedsThreadDiscoveryRef.current = false;
+          if (active) {
+            pendingSeedCloseRef.current = active.id;
+            void settleSeedClose();
+          }
+        }
+        // On a FAILED /threads the guard stays true (round 8). Seeding
+        // proceeds either way so the user sees the initiative; the send
+        // guard settles discovery and any needed close before routing.
         seedFreshThread(pendingContextRef.current);
         return;
       }
@@ -711,14 +936,47 @@ export default function Chat() {
 
   const handleSelectThread = async (threadId: number) => {
     seedActiveRef.current = false;
+    conversationEpochRef.current += 1;
+    // This selection's own epoch. If another selection (or a seed) bumps it
+    // while we wait below, THIS handler is stale and must not apply its
+    // thread's messages over the newer one (PR #131 round 15).
+    const selectionEpoch = conversationEpochRef.current;
     pendingContextRef.current = [];
+    // Re-opening the very thread whose close is in flight: that request is
+    // deliberately NOT cancelled (abandonSeedClose returns "none" for the
+    // kept thread), so wait for it to settle before treating the thread as
+    // usable — otherwise a submit could start against a thread that is
+    // about to be closed and archived mid-turn (PR #131 round 12).
+    const awaitingClose = seedCloseInFlightRef.current.get(threadId) ?? null;
+    abandonSeedClose(threadId); // don't close the thread being re-opened
+    // Claim the selection BEFORE any await (PR #131 round 13): a send that
+    // resumes from the SAME settle promise must observe the thread the user
+    // picked, not the pre-selection value. Both operations wake from one
+    // promise, so whichever runs first would otherwise decide the routing.
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
+    if (awaitingClose) {
+      threadSettleRef.current = awaitingClose;
+      try {
+        await awaitingClose;
+      } finally {
+        if (threadSettleRef.current === awaitingClose) {
+          threadSettleRef.current = null;
+        }
+      }
+      // Superseded while waiting: the newer selection owns the UI and
+      // currentThreadIdRef now targets its thread — loading ours would show
+      // this thread's history while replies went to the other one.
+      if (conversationEpochRef.current !== selectionEpoch) return;
+    }
     setMessages([]);
     historyHydratedRef.current = false;
     try {
       await loadThreadMessages(threadId);
+      // A selection that landed during the fetch owns the view now.
+      if (conversationEpochRef.current !== selectionEpoch) return;
     } catch {
+      if (conversationEpochRef.current !== selectionEpoch) return;
       setCurrentThreadId(null);
       currentThreadIdRef.current = null;
       setError("Failed to load thread messages.");
@@ -727,7 +985,14 @@ export default function Chat() {
 
   const handleNewThread = async () => {
     seedActiveRef.current = false;
+    conversationEpochRef.current += 1;
     pendingContextRef.current = [];
+    // Deliberately NOT abandoning a pending seed close here (PR #131
+    // round 7): New Thread wants the old conversation closed anyway, and
+    // applySeedNavigation already nulled currentThreadIdRef — dropping the
+    // pending close would leave the old server thread active with the
+    // composer usable, so a quick submit (no threadId) would land in it.
+    // The ref stays owed and the send guard settles it before any send.
 
     const threadToClose = currentThreadIdRef.current;
     currentThreadIdRef.current = null;
@@ -986,11 +1251,31 @@ export default function Chat() {
   }, []);
 
   // Send message
+  // Returns true only when the send actually proceeded — guard rejections
+  // and attachment failures return false so callers (handleSubmit) can keep
+  // un-consumed seed state for the retry (PR #131 round 4).
+  // sendInFlightRef is a SYNCHRONOUS latch (PR #131 round 5): the close-await
+  // below yields before `streaming` is set, so without it a double submit
+  // passes every guard twice and starts two streams with the same draft.
   const sendMessage = async (
     text: string,
     contextMessages: ChatContextMessage[] = [],
     opts: { skipContextDisplay?: boolean } = {},
-  ) => {
+  ): Promise<boolean> => {
+    if (sendInFlightRef.current) return false;
+    sendInFlightRef.current = true;
+    try {
+      return await sendMessageInner(text, contextMessages, opts);
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+  const sendInFlightRef = useRef(false);
+  const sendMessageInner = async (
+    text: string,
+    contextMessages: ChatContextMessage[] = [],
+    opts: { skipContextDisplay?: boolean } = {},
+  ): Promise<boolean> => {
     const documentsForTurn = selectedDocuments.filter(
       (document) => document.status === "indexed" && document.documentId != null,
     );
@@ -1002,18 +1287,43 @@ export default function Chat() {
     );
     if (hasIndexingDocuments) {
       setError("Wait for PDF indexing to finish before sending.");
-      return;
+      return false;
     }
     if (hasFailedDocuments) {
       setError("Remove failed PDFs before sending.");
-      return;
+      return false;
     }
     if (
       (!text.trim() && selectedImages.length === 0 && documentsForTurn.length === 0) ||
       user?.id == null ||
       streaming
     ) {
-      return;
+      return false;
+    }
+    // An in-place seed still owes the old thread a close: settle it (with
+    // retry-on-next-send semantics) before this reply can be routed, or
+    // get_or_create_thread would append it to the old conversation.
+    const epochAtSend = conversationEpochRef.current;
+    // A thread the UI is mid-transition on (e.g. re-opened while its close
+    // was in flight) must settle before anything is routed into it.
+    if (threadSettleRef.current) {
+      await threadSettleRef.current.catch(() => {});
+    }
+    if (seedNeedsThreadDiscoveryRef.current && !(await settleSeedDiscovery())) {
+      setError("Couldn't start the reply thread - try sending again.");
+      return false;
+    }
+    if (pendingSeedCloseRef.current != null && !(await settleSeedClose())) {
+      setError("Couldn't start the reply thread - try sending again.");
+      return false;
+    }
+    // The user may have selected another thread or pressed New Thread while
+    // those awaits were pending (PR #131 round 11). Resuming here would post
+    // the captured seed with a stale thread id — creating a hidden
+    // conversation and yanking the UI into it when the trace returns. Abort
+    // instead; the composer keeps the draft for a deliberate resend.
+    if (conversationEpochRef.current !== epochAtSend) {
+      return false;
     }
 
     const userMsg = text.trim() || "Summarize the selected document.";
@@ -1037,7 +1347,15 @@ export default function Chat() {
       );
     } catch {
       setError("Failed to read image attachment.");
-      return;
+      return false;
+    }
+    // Reading attachments is async (FileReader), and a large image can take
+    // long enough for the user to switch threads or start an initiative
+    // reply meanwhile (PR #131 round 15). Re-check before consuming UI state
+    // or routing — the request would otherwise carry this draft and image
+    // into whatever conversation is now current.
+    if (conversationEpochRef.current !== epochAtSend) {
+      return false;
     }
 
     setInput("");
@@ -1085,7 +1403,11 @@ export default function Chat() {
       for await (const chunk of api.chat.stream(
         userMsg,
         user.id,
-        currentThreadId ?? undefined,
+        // The REF, not the render closure (PR #131 round 13): sendMessage
+        // awaits thread settling/discovery/close, and the captured state
+        // value goes stale across those awaits — routing with it sent no
+        // thread id and stored the turn in a different conversation.
+        currentThreadIdRef.current ?? undefined,
         requestAttachments,
         turnContextMessages,
         activeTodayContext,
@@ -1173,20 +1495,33 @@ export default function Chat() {
       streamingRef.current = false;
       setReasoningBuffer("");
     }
+    return true;
   };
 
   // Submit handler — on the first reply to a seeded thread, carry the seeded
   // thought along as context (it's already shown, so don't re-render it).
   const handleSubmit = () => {
+    // Seed refs are consumed ONLY when the send actually proceeds — a
+    // guard rejection (pending thread close, indexing PDFs, ...) must leave
+    // the acked initiative's context intact for the retry, or the retry
+    // takes the non-seed path and the model never sees it (PR #131 round 4).
     const seedContext = pendingContextRef.current;
     const wasSeed = seedActiveRef.current && seedContext.length > 0;
-    pendingContextRef.current = [];
-    seedActiveRef.current = false;
-    if (wasSeed) {
-      void sendMessage(input, seedContext, { skipContextDisplay: true });
-    } else {
-      void sendMessage(input);
-    }
+    void (async () => {
+      const accepted = wasSeed
+        ? await sendMessage(input, seedContext, { skipContextDisplay: true })
+        : await sendMessage(input);
+      if (accepted && wasSeed) {
+        // Consume only what THIS send carried (PR #131 round 5): a Reply
+        // arriving during the send merges into pendingContextRef, and
+        // mergeSeedContexts always APPENDS — so the captured seed is exactly
+        // the prefix. Anything after it (initiative B) stays queued for the
+        // next send instead of being discarded with an unconditional clear.
+        const remaining = pendingContextRef.current.slice(seedContext.length);
+        pendingContextRef.current = remaining;
+        seedActiveRef.current = remaining.length > 0;
+      }
+    })();
   };
 
   // Message content renderer

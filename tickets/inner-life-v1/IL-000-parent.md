@@ -32,7 +32,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 
 ## Follow-ups Beyond v1 Scope
 
-- `IL-009` - Initiative reply context carry-over (`backlog`, depends on `IL-008`): optional polish filed from the IL-008 final review. Tracked as a standalone follow-up, not a child of this closed v1 parent — the v1 acceptance ("all child tickets done") is judged over the child table above.
+- `IL-009` - Initiative reply context carry-over (`done` 2026-07-30, branch il-009-initiative-reply-context, depends on `IL-008`): optional polish filed from the IL-008 final review. Tracked as a standalone follow-up, not a child of this closed v1 parent — the v1 acceptance ("all child tickets done") is judged over the child table above.
 - `IL-010` - Ambient dream-sharing consumer (`backlog`, depends on `IL-007`, `IL-008`): filed from IL-008 review round 10 when the Ambient option was withdrawn pending a real consumer.
 - `IL-011` - Return acknowledgment: grounded held-thought greeting + reconnect energy texture (`done` 2026-07-29, PR #128, depends on `IL-002`, `IL-003`).
 - `IL-012` - Mood-congruent reconsolidation target (`done` 2026-07-29, PR #128, depends on `IL-006`).

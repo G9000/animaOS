@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { usePendingInitiatives } from "../hooks/usePendingInitiatives";
+import { initiativeReplyState } from "../lib/initiativeReply";
 
 /**
  * Surfaces the oldest pending IL3 initiative as a corner card. Rendered
@@ -34,8 +35,16 @@ export default function InitiativeOverlay() {
               // the poller with a fresh tombstone set. Ack must complete
               // before navigation or the new poller's initial GET could
               // re-fetch this row while the POST is still in flight.
+              // IL-009: the navigation carries the initiative text into the
+              // chat as a seeded thread, so the reply references what the
+              // companion actually said. The state is captured BEFORE the
+              // async ack — `current` could advance to the next pending row
+              // while the POST is in flight.
               event.preventDefault();
-              void ack(current.id).then(() => navigate("/chat"));
+              const replyState = initiativeReplyState(current);
+              void ack(current.id).then(() =>
+                navigate("/chat", { state: replyState }),
+              );
             }}
             className="border border-primary bg-input px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-foreground transition-colors hover:bg-background"
           >
