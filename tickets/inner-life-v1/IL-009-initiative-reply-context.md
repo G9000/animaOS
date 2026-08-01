@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-08-01 21:26 MYT
+- Updated: 2026-08-01 22:04 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-08-01 21:26 MYT
+- Completed: 2026-08-01 22:04 MYT
 
 ## Goal
 
@@ -172,6 +172,15 @@ rather than blocking IL-008 on it.
   discovery init — was reviewed at 4350044, the Update-branch head that
   predates the round-9 fix; no code change needed.)
 
+- 2026-08-01 22:04 MYT - PR #131 review round 11 (P1): a send suspended on the
+  discovery/close awaits resumed without rechecking intent — if the user
+  selected another thread or pressed New Thread meanwhile, it posted the
+  captured seed with a stale thread id, creating a hidden conversation
+  and yanking the UI there when the trace returned. A conversation-intent
+  epoch is bumped by every visible-conversation change (thread select,
+  New Thread, new seed) and compared after the awaits; a mismatch aborts
+  the send and leaves the draft for a deliberate resend.
+
 ## Validation
 
 - Commands:
@@ -179,7 +188,7 @@ rather than blocking IL-008 on it.
     30 pass (15 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 10), 2026-08-01 21:26 MYT
+    FINAL head (round 11), 2026-08-01 22:04 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

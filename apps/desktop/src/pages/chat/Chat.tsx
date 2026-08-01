@@ -570,6 +570,12 @@ export default function Chat() {
   // two concurrent POST /threads/{id}/close, and on PostgreSQL both could
   // read the thread as active and schedule on_thread_close twice
   // (duplicate episode generation/archival).
+  // Bumped whenever the visible conversation intent changes (thread
+  // selected, New Thread, a new seed applied). A send that suspends on the
+  // discovery/close awaits compares it afterwards (PR #131 round 11): the
+  // user may have switched threads mid-await, and resuming would post the
+  // captured seed into a stale/undefined thread and yank the UI there.
+  const conversationEpochRef = useRef(0);
   // Memoized WITH its thread id (PR #131 round 10): a bare promise let
   // thread A's request settle — or fail — on behalf of a newly pending
   // thread B, so B's close could be skipped (or A's retry could close B)
@@ -673,6 +679,7 @@ export default function Chat() {
     // clearing only the client refs would let the first reply's
     // get_or_create_thread land in the still-active old conversation
     // (PR #131 round 2). The new thread is created on first send.
+    conversationEpochRef.current += 1;
     const threadToClose = currentThreadIdRef.current;
     // In-place seeds know the live thread id synchronously, so nothing is
     // undiscovered here (the mount path is the async case).
@@ -912,6 +919,7 @@ export default function Chat() {
 
   const handleSelectThread = async (threadId: number) => {
     seedActiveRef.current = false;
+    conversationEpochRef.current += 1;
     pendingContextRef.current = [];
     abandonSeedClose(threadId); // don't close the thread being re-opened
     currentThreadIdRef.current = threadId;
@@ -929,6 +937,7 @@ export default function Chat() {
 
   const handleNewThread = async () => {
     seedActiveRef.current = false;
+    conversationEpochRef.current += 1;
     pendingContextRef.current = [];
     // Deliberately NOT abandoning a pending seed close here (PR #131
     // round 7): New Thread wants the old conversation closed anyway, and
@@ -1246,12 +1255,21 @@ export default function Chat() {
     // An in-place seed still owes the old thread a close: settle it (with
     // retry-on-next-send semantics) before this reply can be routed, or
     // get_or_create_thread would append it to the old conversation.
+    const epochAtSend = conversationEpochRef.current;
     if (seedNeedsThreadDiscoveryRef.current && !(await settleSeedDiscovery())) {
       setError("Couldn't start the reply thread - try sending again.");
       return false;
     }
     if (pendingSeedCloseRef.current != null && !(await settleSeedClose())) {
       setError("Couldn't start the reply thread - try sending again.");
+      return false;
+    }
+    // The user may have selected another thread or pressed New Thread while
+    // those awaits were pending (PR #131 round 11). Resuming here would post
+    // the captured seed with a stale thread id — creating a hidden
+    // conversation and yanking the UI into it when the trace returns. Abort
+    // instead; the composer keeps the draft for a deliberate resend.
+    if (conversationEpochRef.current !== epochAtSend) {
       return false;
     }
 
