@@ -94,17 +94,26 @@ describe("mergeSeedContexts (PR #131 round 2)", () => {
   });
 });
 
-describe("classifySeedCloseAbandon (PR #131 round 8)", () => {
-  test("reuses an in-flight close instead of racing a second POST", () => {
+describe("classifySeedCloseAbandon (PR #131 rounds 8/10)", () => {
+  test("reuses an in-flight close for the SAME thread", () => {
     expect(
-      classifySeedCloseAbandon({ pendingThreadId: 7, hasInFlightClose: true }),
+      classifySeedCloseAbandon({ pendingThreadId: 7, inFlightThreadId: 7 }),
     ).toBe("await-inflight");
+  });
+
+  test("never lets another thread's request settle this one (round 10)", () => {
+    // T1's close is in flight while T2 is the pending close: awaiting T1
+    // would skip T2's close entirely, or let T1's failure retry against T2.
+    expect(
+      classifySeedCloseAbandon({ pendingThreadId: 2, inFlightThreadId: 1 }),
+    ).toBe("close");
   });
 
   test("fires one best-effort close when nothing is in flight", () => {
     expect(
-      classifySeedCloseAbandon({ pendingThreadId: 7, hasInFlightClose: false }),
+      classifySeedCloseAbandon({ pendingThreadId: 7, inFlightThreadId: null }),
     ).toBe("close");
+    expect(classifySeedCloseAbandon({ pendingThreadId: 7 })).toBe("close");
   });
 
   test("never closes the thread the user is re-opening", () => {
@@ -112,21 +121,21 @@ describe("classifySeedCloseAbandon (PR #131 round 8)", () => {
       classifySeedCloseAbandon({
         pendingThreadId: 7,
         keepThreadId: 7,
-        hasInFlightClose: false,
+        inFlightThreadId: null,
       }),
     ).toBe("none");
     expect(
       classifySeedCloseAbandon({
         pendingThreadId: 7,
         keepThreadId: 7,
-        hasInFlightClose: true,
+        inFlightThreadId: 7,
       }),
     ).toBe("none");
   });
 
   test("nothing owed means nothing to do", () => {
     expect(
-      classifySeedCloseAbandon({ pendingThreadId: null, hasInFlightClose: true }),
+      classifySeedCloseAbandon({ pendingThreadId: null, inFlightThreadId: 7 }),
     ).toBe("none");
   });
 });

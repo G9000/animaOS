@@ -570,15 +570,27 @@ export default function Chat() {
   // two concurrent POST /threads/{id}/close, and on PostgreSQL both could
   // read the thread as active and schedule on_thread_close twice
   // (duplicate episode generation/archival).
-  const seedClosePromiseRef = useRef<Promise<boolean> | null>(null);
+  // Memoized WITH its thread id (PR #131 round 10): a bare promise let
+  // thread A's request settle — or fail — on behalf of a newly pending
+  // thread B, so B's close could be skipped (or A's retry could close B)
+  // while A stayed the active server thread.
+  const seedCloseInFlightRef = useRef<{
+    threadId: number;
+    promise: Promise<boolean>;
+  } | null>(null);
   const settleSeedClose = (): Promise<boolean> => {
-    if (seedClosePromiseRef.current) return seedClosePromiseRef.current;
     const threadId = pendingSeedCloseRef.current;
     if (threadId == null) return Promise.resolve(true);
-    const inFlight = (async () => {
+    const inFlight = seedCloseInFlightRef.current;
+    if (inFlight && inFlight.threadId === threadId) return inFlight.promise;
+    const promise = (async () => {
       try {
         await api.threads.close(threadId);
-        pendingSeedCloseRef.current = null;
+        // Clear the marker only if it still points at THIS thread — a newer
+        // seed may have moved it on while this request was in flight.
+        if (pendingSeedCloseRef.current === threadId) {
+          pendingSeedCloseRef.current = null;
+        }
         api.threads
           .list()
           .then((list) => setThreads(dedupeThreads(list.threads)))
@@ -587,11 +599,13 @@ export default function Chat() {
       } catch {
         return false; // stays pending; the next send retries
       } finally {
-        seedClosePromiseRef.current = null;
+        if (seedCloseInFlightRef.current?.threadId === threadId) {
+          seedCloseInFlightRef.current = null;
+        }
       }
     })();
-    seedClosePromiseRef.current = inFlight;
-    return inFlight;
+    seedCloseInFlightRef.current = { threadId, promise };
+    return promise;
   };
   // A pending close belongs to the seeded-reply intent. When the user
   // abandons that intent (picks another thread, starts a new one), the
@@ -601,20 +615,20 @@ export default function Chat() {
   // archive the conversation they just selected.
   const abandonSeedClose = (keepThreadId?: number) => {
     const abandoned = pendingSeedCloseRef.current;
-    const inFlight = seedClosePromiseRef.current;
+    const inFlight = seedCloseInFlightRef.current;
     pendingSeedCloseRef.current = null;
     seedNeedsThreadDiscoveryRef.current = false;
     const action = classifySeedCloseAbandon({
       pendingThreadId: abandoned,
       keepThreadId,
-      hasInFlightClose: inFlight != null,
+      inFlightThreadId: inFlight?.threadId ?? null,
     });
     if (action === "none" || abandoned == null) return;
     if (action === "await-inflight" && inFlight) {
-      // Reuse the in-flight close (PR #131 round 8) — a second concurrent
-      // POST would duplicate on_thread_close. Retry only if it FAILED,
-      // which is sequential, not concurrent.
-      void inFlight.then((ok) => {
+      // Reuse the in-flight close for THIS thread (PR #131 rounds 8/10) —
+      // a second concurrent POST would duplicate on_thread_close. Retry
+      // only if it FAILED, which is sequential, not concurrent.
+      void inFlight.promise.then((ok) => {
         if (!ok) void api.threads.close(abandoned).catch(() => {});
       });
       return;

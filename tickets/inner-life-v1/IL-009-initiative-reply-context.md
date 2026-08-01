@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-08-01 21:02 MYT
+- Updated: 2026-08-01 21:26 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-08-01 21:02 MYT
+- Completed: 2026-08-01 21:26 MYT
 
 ## Goal
 
@@ -161,14 +161,25 @@ rather than blocking IL-008 on it.
   succeeds; in-place seeds clear it since they know the thread id
   synchronously. Build re-run on this head: pass.
 
+- 2026-08-01 21:26 MYT - PR #131 review round 10 (P1): the round-8 close memoization
+  held a bare promise, so thread A's in-flight request could settle (or
+  fail) on behalf of a newly pending thread B — B's close skipped while
+  A stayed active, or A's retry closing B. The in-flight close is now
+  keyed by thread id: reuse only on a match, the success path clears the
+  pending marker only if it still points at that thread, and
+  `classifySeedCloseAbandon` takes `inFlightThreadId` so the association
+  is part of the tested contract. (The round's second thread — mount-seed
+  discovery init — was reviewed at 4350044, the Update-branch head that
+  predates the round-9 fix; no code change needed.)
+
 ## Validation
 
 - Commands:
   - `bun test tests/initiativeReply.test.ts tests/initiativePoller.test.ts` —
-    29 pass (14 IL-009 tests + the 15 poller regressions)
+    30 pass (15 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 9), 2026-08-01 21:02 MYT
+    FINAL head (round 10), 2026-08-01 21:26 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

@@ -86,10 +86,13 @@ export type SeedCloseAbandonAction = "none" | "await-inflight" | "close";
 export function classifySeedCloseAbandon(options: {
   pendingThreadId: number | null;
   keepThreadId?: number;
-  hasInFlightClose: boolean;
+  /** Thread the in-flight close request targets, if any. Reuse is only
+   * legal when it matches the pending thread (PR #131 round 10): a promise
+   * for thread A must never settle — or fail — on behalf of thread B. */
+  inFlightThreadId?: number | null;
 }): SeedCloseAbandonAction {
-  const { pendingThreadId, keepThreadId, hasInFlightClose } = options;
+  const { pendingThreadId, keepThreadId, inFlightThreadId } = options;
   if (pendingThreadId == null) return "none";
   if (pendingThreadId === keepThreadId) return "none";
-  return hasInFlightClose ? "await-inflight" : "close";
+  return inFlightThreadId === pendingThreadId ? "await-inflight" : "close";
 }
