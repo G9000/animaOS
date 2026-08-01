@@ -1158,14 +1158,20 @@ async def generate_greeting(
             content = getattr(response, "content", "")
         if isinstance(content, str) and content.strip():
             message = content.strip()
-            if ctx.ambient_dream:
-                # IL-010: the claim already committed — voicing is OUR
-                # responsibility, not the model's. Same sentence the static
-                # greeting uses, so a claimed dream is always heard.
-                message = f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}"
+            # Pills are generated from the model's OWN greeting, BEFORE the
+            # dream is appended (PR #130 review, P1): generate_thought_pills
+            # makes a second LLM request, so appending first would ship the
+            # decrypted dream narrative to a cloud provider — breaking both
+            # the on-device promise in AiSettings and this feature's own
+            # invariant that the dream never enters any LLM prompt.
             pills = await generate_thought_pills(
                 prompt_loader, greeting_message=message, ctx=ctx
             )
+            if ctx.ambient_dream:
+                # The claim already committed — voicing is OUR responsibility,
+                # not the model's. Same sentence the static greeting uses, so
+                # a claimed dream is always heard.
+                message = f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}"
             return GreetingResult(
                 message=message,
                 context=ctx,

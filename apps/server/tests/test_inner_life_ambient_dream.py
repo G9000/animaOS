@@ -373,3 +373,56 @@ def test_undecryptable_narrative_does_not_burn_the_claim(
     monkeypatch.setattr(proactive, "df", lambda uid, v, **kw: v)
     assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is False
+
+
+def _pill_context_fields(ctx) -> str:
+    """The ctx fields generate_thought_pills renders into its prompt."""
+    return " ".join(
+        str(v or "")
+        for v in (
+            ctx.current_focus,
+            ctx.emotional_summary,
+            ctx.recent_episode_summary,
+            ctx.working_memory_summary,
+        )
+    )
+
+
+def test_dream_never_reaches_the_pill_llm_request(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 7, P1): generate_thought_pills issues a
+    SECOND LLM request. Appending the dream before that call shipped the
+    decrypted narrative to whatever provider is configured — including cloud
+    providers, against the on-device promise and this feature's own rule
+    that the dream never enters an LLM prompt. Pills are generated from the
+    model's own greeting; the dream is appended afterwards."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    user_id = _seed(soul_db)
+    seen: dict[str, str] = {}
+
+    async def fake_llm_greeting(messages, **kw):
+        return "Welcome back."
+
+    async def spy_pills(prompt_loader, *, greeting_message, ctx):
+        seen["greeting_message"] = greeting_message
+        return [{"kind": "topic", "label": "welcome"}]
+
+    monkeypatch.setattr(settings, "agent_provider", "ollama")
+    monkeypatch.setattr(proactive, "_invoke_ollama_native_chat", fake_llm_greeting)
+    monkeypatch.setattr(proactive, "generate_thought_pills", spy_pills)
+
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+
+    # The dream IS voiced to the user...
+    assert "a blurred dream about the boat you restored" in result.message
+    # ...but never appeared in the text handed to the pill model.
+    assert seen["greeting_message"] == "Welcome back."
+    assert "boat you restored" not in seen["greeting_message"]
+    # generate_thought_pills also renders four ctx fields; none may carry the
+    # dream, asserted so a future change that starts doing so fails loudly.
+    assert "boat you restored" not in _pill_context_fields(result.context)

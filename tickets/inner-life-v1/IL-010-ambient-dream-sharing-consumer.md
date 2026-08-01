@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-31 15:06 MYT
+- Updated: 2026-08-01 20:54 MYT
 - Started: 2026-07-30 16:27 MYT
 - Completed:
 
@@ -131,13 +131,21 @@ backend contract still accepts and round-trips the value).
   no-op'd because this branch predated the IL-014 line it anchored on;
   origin/main is merged in and that conflict resolved.
 
+- 2026-08-01 20:54 MYT - PR #130 review round 7 (P1, privacy): thought-pill generation
+  issues a SECOND LLM request with the greeting text, and the dream was
+  appended BEFORE that call — so with a cloud agent_provider the
+  decrypted dream narrative was transmitted off-device, against both the
+  AiSettings promise and this feature's own rule (round 3) that the dream
+  never enters an LLM prompt. Pills are now generated from the model's
+  own greeting and the dream is appended after. Regression test spies on
+  the pill call and asserts the narrative is absent from both the message
+  and the four ctx fields that request renders.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 16 passed
-  - Full suite on the round-6 head (origin/main merged in, so it now
-    includes the promoted e2e lifecycle test) — **3184 passed, 0
-    failed, 10 skipped**, run 2026-07-31 15:31 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 17 passed
+  - Full suite: re-run pending on the round-7 head (recorded before push)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/api/routes/chat.py`
