@@ -62,6 +62,8 @@ from anima_server.services.agent.state import (
 )
 from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
+from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
+from anima_server.services.corefs.sealed_runtime import runtime_index_for_sensitive_write
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,13 @@ async def send_message(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
     await require_unlocked_user_async(request, payload.userId)
+    try:
+        runtime_index_for_sensitive_write(runtime_db, user_id=payload.userId)
+    except RuntimeSealingLocked as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_runtime_index_unavailable"},
+        ) from exc
     message = normalize_document_only_user_message(payload.message, payload.documentIds)
 
     if not payload.stream:
