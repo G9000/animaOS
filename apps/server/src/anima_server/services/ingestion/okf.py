@@ -51,7 +51,13 @@ def export_okf_bundle(
     concepts = list(
         db.scalars(
             select(RuntimeKnowledgeConcept)
-            .where(RuntimeKnowledgeConcept.user_id == user_id)
+            .where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                # A refresh compile retires superseded pages as "inactive";
+                # retrieval and lint scope to "active", so the exported bundle
+                # must too or retired pages reappear on every export.
+                RuntimeKnowledgeConcept.status == "active",
+            )
             .order_by(RuntimeKnowledgeConcept.slug)
         ).all()
     )
@@ -382,7 +388,12 @@ def _parse_markdown(path: Path) -> tuple[dict[str, object], str]:
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         return {"type": "note", "title": _title_from_slug(path.stem)}, text
-    _, yaml_text, body = text.split("---\n", maxsplit=2)
+    parts = text.split("---\n", maxsplit=2)
+    if len(parts) < 3:
+        # The import route reports ValueError as the 422 detail; without this
+        # the caller would get a tuple-unpacking message instead.
+        raise ValueError(f"Unterminated OKF frontmatter in {path}")
+    _, yaml_text, body = parts
     parsed = yaml.safe_load(yaml_text) or {}
     if not isinstance(parsed, dict):
         raise ValueError(f"Invalid OKF frontmatter in {path}")

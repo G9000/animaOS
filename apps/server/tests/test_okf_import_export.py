@@ -150,6 +150,23 @@ def test_export_rejects_concept_slugs_that_escape_concepts_dir(runtime_db, tmp_p
     assert not (tmp_path / "log.md").exists()
 
 
+def test_export_excludes_retired_concepts(runtime_db, tmp_path) -> None:
+    # A refresh compile retires concepts a source no longer supports by setting
+    # status="inactive". Retrieval and lint already treat "active" as the only
+    # visible state, so a retired page must not reappear in an exported bundle.
+    retired = _concept(slug="topic-retired", title="Retired topic")
+    retired.status = "inactive"
+    runtime_db.add_all([_concept(), retired])
+    runtime_db.commit()
+
+    result = export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    assert result.concept_count == 1
+    assert (tmp_path / "concepts" / "topic-runtime-ingestion.md").exists()
+    assert not (tmp_path / "concepts" / "topic-retired.md").exists()
+    assert "topic-retired.md" not in (tmp_path / "index.md").read_text(encoding="utf-8")
+
+
 def test_export_preserves_concept_citations(runtime_db, tmp_path) -> None:
     _seed_cited_concept(runtime_db)
 
@@ -534,3 +551,17 @@ def test_import_updates_existing_concept_by_slug(runtime_db, tmp_path) -> None:
     assert concepts[0].title == "New title"
     assert concepts[0].body_markdown == "New body.\n"
     assert concepts[0].content_hash == _sha("New body.\n")
+
+
+def test_import_rejects_unterminated_frontmatter(runtime_db, tmp_path) -> None:
+    # The import route surfaces ValueError as the 422 detail, so an unclosed
+    # frontmatter block must not leak a tuple-unpacking message to the caller.
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir(parents=True)
+    (concepts_dir / "broken.md").write_text(
+        "---\ntype: topic\ntitle: Broken\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unterminated OKF frontmatter"):
+        import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
