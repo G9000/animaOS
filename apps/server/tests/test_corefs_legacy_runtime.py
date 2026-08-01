@@ -130,6 +130,48 @@ def test_relocation_preserves_source_when_quarantine_target_conflicts(
     ) == "16"
 
 
+@pytest.mark.parametrize(
+    "linked_root",
+    ["source", "target", "source_parent", "target_parent"],
+)
+def test_relocation_rejects_linked_tree_roots_before_copy_or_delete(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    linked_root: str,
+) -> None:
+    core = _make_core(managed_tmp_path / "portable" / ".anima")
+    binding = RuntimeInstanceRegistry(managed_tmp_path / "app-data").resolve(core)
+    if linked_root == "source_parent":
+        source = core / "runtime" / "pg_data"
+        target = binding.legacy_pg_data_dir
+        linked_path = source.parent
+    else:
+        source = core / "indices"
+        target = binding.indices_dir
+        linked_path = target.parent if linked_root == "target_parent" else source
+    source.mkdir(parents=True)
+    (source / "checkpoint.bin").write_bytes(b"index")
+    if linked_root in {"target", "target_parent"}:
+        target.mkdir(parents=True)
+        (target / "checkpoint.bin").write_bytes(b"index")
+    if linked_root == "target":
+        linked_path = target
+    original_is_symlink = Path.is_symlink
+
+    def is_symlink(path: Path) -> bool:
+        return path == linked_path or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+
+    with pytest.raises(LegacyRuntimeCollision, match="links and junctions"):
+        relocate_legacy_runtime(core, binding, postgres_running=False)
+
+    assert (source / "checkpoint.bin").read_bytes() == b"index"
+    if linked_root in {"target", "target_parent"}:
+        assert (target / "checkpoint.bin").read_bytes() == b"index"
+    assert not binding.migration_journal_path.exists()
+
+
 def test_core_root_inventory_rejects_machine_local_runtime_writers(
     managed_tmp_path: Path,
 ) -> None:

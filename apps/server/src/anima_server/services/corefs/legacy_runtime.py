@@ -56,6 +56,26 @@ def relocate_legacy_runtime(
         )
 
     legacy_pg_source = canonical_core / "runtime" / "pg_data"
+    indices_source = canonical_core / "indices"
+    health_logs_source = canonical_core / "logs"
+    runtime_config_source = canonical_core / RUNTIME_SETTINGS_FILENAME
+    runtime_config_target = binding.instance_root / "config" / RUNTIME_SETTINGS_FILENAME
+    for source in (
+        legacy_pg_source,
+        indices_source,
+        health_logs_source,
+        runtime_config_source,
+    ):
+        _reject_link_chain(source, boundary=canonical_core)
+    for target in (
+        binding.legacy_pg_data_dir,
+        binding.indices_dir,
+        binding.health_log_dir,
+        runtime_config_target,
+        binding.migration_journal_path,
+    ):
+        _reject_link_chain(target, boundary=binding.instance_root)
+
     if postgres_running and legacy_pg_source.exists():
         raise LegacyRuntimeCollision(
             "legacy Runtime relocation requires PostgreSQL is stopped"
@@ -66,16 +86,16 @@ def relocate_legacy_runtime(
         binding.legacy_pg_data_dir,
     )
     indices_moved, indices_inventory = _move_verified_tree(
-        canonical_core / "indices",
+        indices_source,
         binding.indices_dir,
     )
     health_logs_moved, health_logs_inventory = _move_verified_tree(
-        canonical_core / "logs",
+        health_logs_source,
         binding.health_log_dir,
     )
     runtime_config_moved, runtime_config_inventory = _move_verified_file(
-        canonical_core / RUNTIME_SETTINGS_FILENAME,
-        binding.instance_root / "config" / RUNTIME_SETTINGS_FILENAME,
+        runtime_config_source,
+        runtime_config_target,
     )
     _remove_empty_directory(canonical_core / "runtime")
 
@@ -116,12 +136,14 @@ def _move_verified_tree(
     source: Path,
     target: Path,
 ) -> tuple[bool, _TreeInventory | None]:
+    _reject_link(source)
     if not source.exists():
         return False, None
     if not source.is_dir():
         raise LegacyRuntimeCollision(f"legacy Runtime source is not a directory: {source}")
 
     source_inventory = _inventory_tree(source)
+    _reject_link(target)
     if target.exists():
         if not target.is_dir() or _inventory_tree(target) != source_inventory:
             raise LegacyRuntimeCollision(
@@ -236,6 +258,20 @@ def _reject_link(path: Path) -> None:
         raise LegacyRuntimeCollision(
             f"legacy Runtime relocation rejects links and junctions: {path}"
         )
+
+
+def _reject_link_chain(path: Path, *, boundary: Path) -> None:
+    try:
+        relative = path.relative_to(boundary)
+    except ValueError as exc:
+        raise LegacyRuntimeCollision(
+            f"legacy Runtime relocation path escapes its boundary: {path}"
+        ) from exc
+    current = boundary
+    _reject_link(current)
+    for part in relative.parts:
+        current /= part
+        _reject_link(current)
 
 
 def _hash_file(path: Path) -> str:
