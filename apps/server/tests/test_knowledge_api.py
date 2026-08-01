@@ -848,3 +848,77 @@ def test_knowledge_search_excludes_section_spans() -> None:
         # duplicates the same text) must not appear or displace it.
         assert "paragraph" in kinds
         assert "section" not in kinds
+
+
+def _retire_one_concept(concept_slug_contains: str) -> int:
+    """Retire the first concept whose slug contains *concept_slug_contains*."""
+    with get_runtime_session_factory()() as runtime_db:
+        concept = next(
+            concept
+            for concept in runtime_db.scalars(select(RuntimeKnowledgeConcept)).all()
+            if concept_slug_contains in concept.slug
+        )
+        concept.status = "inactive"
+        runtime_db.add(concept)
+        runtime_db.commit()
+        return concept.id
+
+
+def test_knowledge_search_excludes_retired_concepts() -> None:
+    with managed_test_client("anima-knowledge-search-retired-") as client:
+        user_id, headers = _register(client, username="knowledge-search-retired")
+
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retired.md",
+                "title": "Quorvex Notes",
+                "content": "# Quorvex Notes\n\nQuorvex paragraph body.",
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201
+        retired_id = _retire_one_concept("span")
+
+        response = client.get(
+            f"/api/knowledge/search?userId={user_id}&q=quorvex",
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        # A refresh compile retires superseded pages as "inactive"; retrieval
+        # and lint scope to "active", so search must not resurrect them.
+        assert retired_id not in {concept["id"] for concept in response.json()["concepts"]}
+
+
+def test_concepts_listing_excludes_retired_concepts_unless_requested() -> None:
+    with managed_test_client("anima-knowledge-concepts-retired-") as client:
+        user_id, headers = _register(client, username="knowledge-concepts-retired")
+
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "retired-list.md",
+                "title": "Zalbrix Notes",
+                "content": "# Zalbrix Notes\n\nZalbrix paragraph body.",
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201
+        retired_id = _retire_one_concept("span")
+
+        listed = client.get(f"/api/knowledge/concepts?userId={user_id}", headers=headers)
+        assert listed.status_code == 200
+        assert retired_id not in {concept["id"] for concept in listed.json()["concepts"]}
+
+        # Retired pages stay reachable for auditing, but only on request.
+        including = client.get(
+            f"/api/knowledge/concepts?userId={user_id}&includeRetired=true",
+            headers=headers,
+        )
+        assert including.status_code == 200
+        assert retired_id in {concept["id"] for concept in including.json()["concepts"]}
