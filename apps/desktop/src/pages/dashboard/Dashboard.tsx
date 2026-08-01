@@ -124,6 +124,16 @@ export default function Dashboard() {
     // the freshly loaded presence config (PR #130 review): an opt-out
     // between the stash and this mount must win, so the stash is discarded
     // (the dream was consumed server-side; the user asked for silence).
+    // IL-015: acknowledge only once a dream-bearing greeting is actually
+    // DISPLAYED — not when it is fetched or stashed. An unacknowledged claim
+    // expires server-side and the dream is offered again, which is exactly
+    // what should happen if the user never saw it. Best-effort: a failed ack
+    // just means the dream returns later.
+    const ackIfDream = (g: Greeting) => {
+      if (g.ambientDream && g.ambientDreamId != null) {
+        void api.chat.ackGreetingDream(user.id, g.ambientDreamId).catch(() => {});
+      }
+    };
     if (peekOneShotGreeting(user.id)) {
       void api.presence
         .get(user.id)
@@ -135,7 +145,10 @@ export default function Dashboard() {
           setPresenceConfig(cfg);
           if (ambientConsentAllows(cfg)) {
             const oneShot = takeOneShotGreeting(user.id);
-            if (oneShot) setBrief(oneShot);
+            if (oneShot) {
+              setBrief(oneShot);
+              ackIfDream(oneShot);
+            }
           } else {
             // Consent withdrawn: the user asked for silence — discard.
             clearOneShotGreetings(user.id);
@@ -171,6 +184,7 @@ export default function Dashboard() {
             return;
           }
           setBrief(g);
+          ackIfDream(g);
           setCachedGreeting(user.id, g);
         })
         .catch(() => {

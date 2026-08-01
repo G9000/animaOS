@@ -7,10 +7,10 @@
 - Depends on: IL-004, IL-005
 - Owner: unassigned
 - PRD: docs/prds/presence/inner-life-v1.md
-- Spec: none
+- Spec: docs/superpowers/specs/2026-08-02-il-014-subthreshold-crystallization-design.md
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-07-30 15:50 MYT
+- Updated: 2026-08-02 04:10 MYT
 - Started:
 - Completed:
 
@@ -65,6 +65,15 @@ resolve on paper first:
 - 2026-07-30 15:50 MYT - Filed from the Inner Life v1.1 comparative analysis
   as the highest-value not-yet-adopted idea, deliberately gated on design
   because of the right-to-forget and encryption tensions.
+
+- 2026-08-02 04:10 MYT - Design drafted (see Spec) and awaiting approval — the ticket
+  stays `backlog` deliberately: its acceptance requires design sign-off
+  before an implementation ticket is cut. The doc proposes the buffer
+  mechanism (reusing IL-004 topic keys, soul-store, field-encrypted) and
+  takes a position on each of the four tensions, with one open product
+  question flagged for you: whether the pre-crystallization buffer should
+  be VISIBLE to the user. That answer changes the schema and the consent
+  surface, so it needs deciding before any code.
 
 ## Validation
 

@@ -321,6 +321,32 @@ async def get_brief(
     }
 
 
+@router.post("/greeting/dream-ack")
+async def acknowledge_greeting_dream(
+    request: Request,
+    userId: int = Query(ge=0),
+    dreamId: int = Query(ge=1),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """IL-015: confirm the client received a dream-bearing greeting.
+
+    Marks the dream ``surfaced`` (the durable "never voice this again"
+    flag) and clears its claim. Idempotent and ownership-scoped: acking a
+    dream twice, or one belonging to another user, returns
+    ``{"acknowledged": false}`` rather than erroring — the client acks
+    best-effort and must never be penalised for a retry.
+    """
+    await require_unlocked_user_async(request, userId)
+
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+    )
+
+    acknowledged = acknowledge_dream(db, user_id=userId, dream_id=dreamId)
+    db.commit()
+    return {"acknowledged": acknowledged}
+
+
 @router.get("/greeting")
 async def get_greeting(
     request: Request,
@@ -344,6 +370,11 @@ async def get_greeting(
         # (already marked surfaced). The client must treat such a greeting as
         # one-shot: display it now, never cache/replay it (PR #130 review).
         "ambientDream": result.context.ambient_dream is not None,
+        # IL-015: acknowledge with POST /api/chat/greeting/dream-ack once the
+        # client has actually rendered or durably stored this greeting. Until
+        # then the claim expires and the dream is offered again — a dropped
+        # response no longer silences it.
+        "ambientDreamId": result.ambient_dream_id,
         # The same greeting WITHOUT the dream sentence, for surfaces that
         # forward greeting text into an LLM prompt (the dashboard "explore"
         # handoff). Null when `message` is already dream-free.

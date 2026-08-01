@@ -766,6 +766,14 @@ export function createApiClient(options: ApiClientOptions) {
         request<DailyBrief>(`/chat/brief?userId=${userId}`),
       greeting: (userId: number) =>
         request<Greeting>(`/chat/greeting?userId=${userId}`),
+      // IL-015: confirm a dream-bearing greeting actually reached the user.
+      // Until this lands the claim expires and the dream is offered again,
+      // so a dropped response no longer silences it.
+      ackGreetingDream: (userId: number, dreamId: number) =>
+        request<{ acknowledged: boolean }>(
+          `/chat/greeting/dream-ack?userId=${userId}&dreamId=${dreamId}`,
+          { method: "POST" },
+        ),
       reflection: (userId: number) =>
         request<Reflection>(`/chat/reflection?userId=${userId}`),
       nudges: (userId: number) =>

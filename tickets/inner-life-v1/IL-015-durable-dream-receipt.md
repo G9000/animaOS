@@ -1,17 +1,17 @@
 # IL-015 - Durable client receipt for ambient dream surfacing
 
-- Status: backlog
+- Status: in_progress
 - Priority: P3
 - Scope: `apps/server/src/anima_server/services/agent/proactive.py`, `apps/server/src/anima_server/api/routes`, `apps/server/alembic_core`, `apps/desktop`
 - Parent: none
 - Depends on: `IL-010`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-07-31 13:46 MYT
-- Started:
+- Updated: 2026-08-02 04:10 MYT
+- Started: 2026-08-02 04:10 MYT
 - Completed:
 
 Standalone follow-up beyond the closed Inner Life v1 scope — tracked in
@@ -60,11 +60,38 @@ is its own ticket:
   durable client receipt"). IL-010 records the residual risk and this ticket
   carries the fix; the interim behavior is deliberately biased toward silence.
 
+- 2026-08-02 04:10 MYT - Claimed and implemented on worktree branch
+  `worktree-il-015-dream-receipt`. Design as filed: `claimed_at` is a
+  claim state distinct from `surfaced`, so a greeting claims a dream but
+  only an explicit client acknowledgement surfaces it; an unacknowledged
+  claim expires after `dream_claim_ttl_minutes` (default 10) and the
+  dream is offered again. Asymmetry is deliberate: a lost ack costs one
+  repeat after the TTL, a lost expiry would cost permanent silence.
+  Server: `dream_receipt.py` (offerable query, acknowledge, release),
+  migration `20260802_0001`, `POST /chat/greeting/dream-ack`,
+  `ambientDreamId` on the greeting response. Client: acks on DISPLAY —
+  not on fetch or stash — in both the fresh-fetch and one-shot paths.
+
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 28 passed
+  - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
+  - `bunx tsc --noEmit` (apps/desktop) — clean
+  - Full suite (`bun run test`) — **3363 passed, 0 failed, 10 skipped**,
+    run 2026-08-02 04:52 MYT
+  - `bun test tests/` (apps/desktop) — 111 passed, 0 failed
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
+  - `apps/server/src/anima_server/models/agent_runtime.py`
+  - `apps/server/alembic_core/versions/20260802_0001_dream_claim_receipt.py` (new)
+  - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/server/src/anima_server/api/routes/chat.py`
+  - `apps/server/src/anima_server/config.py`
+  - `packages/api-client/src/client.ts`, `packages/api-client/src/types.ts`
+  - `apps/desktop/src/pages/dashboard/Dashboard.tsx`
+  - `apps/server/tests/test_inner_life_ambient_dream.py`
 - Notes:
-  - none
+  - IL-010's accepted residual risk is now closed: a greeting whose response
+    never reaches the browser leaves the claim to expire, and the dream is
+    offered again instead of being lost.

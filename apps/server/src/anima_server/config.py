@@ -220,6 +220,11 @@ class Settings(BaseSettings):
     presence_reconnect_dip_min_gap_hours: float = Field(default=48.0, ge=0.0)
     presence_reconnect_dip_per_day: float = Field(default=0.01, ge=0.0)
     presence_reconnect_dip_cap: float = Field(default=0.06, ge=0.0, le=1.0)
+    # IL-015: how long a dream claim suppresses re-offering before it is
+    # treated as never-delivered. Long enough that a slow greeting round
+    # trip can still be acknowledged; short enough that a dropped response
+    # doesn't silence the dream for a whole session.
+    dream_claim_ttl_minutes: float = Field(default=10.0, gt=0.0)
     # IL-011 held thought: greeting-context gate values (see proactive.py).
     greeting_held_thought_min_gap_hours: float = Field(default=8.0, ge=0.0)
     greeting_held_thought_min_pressure: float = Field(default=0.3, ge=0.0, le=1.0)

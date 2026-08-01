@@ -23,6 +23,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
+from anima_server.services.agent.inner_life.dream_receipt import (
+    claim_cutoff,
+    offerable_dream_query,
+    release_claim,
+)
 from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.data_crypto import df
 from anima_server.services.presence_config import (
@@ -85,6 +90,10 @@ class GreetingResult:
     # (the dashboard "explore" handoff seeds chat context). Set only when a
     # dream was actually appended; None means `message` is already safe.
     handoff_message: str | None = None
+    # IL-015: the claimed dream's id, so the client can acknowledge receipt.
+    # Set only when this greeting actually voices a dream; the claim expires
+    # and the dream is re-offered if no acknowledgement arrives.
+    ambient_dream_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -300,7 +309,7 @@ def _finalize_ambient_dream(
     *,
     user_id: int,
     message: str,
-) -> tuple[str, GreetingContext, str | None]:
+) -> tuple[str, GreetingContext, str | None, int | None]:
     """Decide and APPLY the dream's voicing atomically w.r.t. consent
     updates (PR #130 review rounds 9-10).
 
@@ -323,7 +332,7 @@ def _finalize_ambient_dream(
     HTTP response is already in flight. No server-side ordering removes it.
     """
     if claim is None or not ctx.ambient_dream:
-        return message, ctx, None
+        return message, ctx, None, None
 
     from anima_server.services.presence_config import presence_consent_lock
 
@@ -337,6 +346,7 @@ def _finalize_ambient_dream(
                 f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}",
                 ctx,
                 message,
+                claim.dream_id,
             )
         _release_ambient_dream_claim(db, dream_id=claim.dream_id)
         logger.info(
@@ -344,7 +354,7 @@ def _finalize_ambient_dream(
             "dream released unvoiced",
             user_id,
         )
-        return message, dataclasses.replace(ctx, ambient_dream=None), None
+        return message, dataclasses.replace(ctx, ambient_dream=None), None, None
 
 
 def _dream_free_static_greeting(ctx: GreetingContext) -> str | None:
@@ -376,17 +386,11 @@ class AmbientDreamClaim:
 
 
 def _release_ambient_dream_claim(db: Session, *, dream_id: int) -> None:
-    """Un-surface a dream this request claimed but will NOT voice."""
-    from sqlalchemy import update
-
-    from anima_server.models import DreamJournal
-
+    """Drop a claim this request took but will NOT voice (IL-015: clears
+    ``claimed_at``; ``surfaced`` was never set, since only an acknowledged
+    receipt sets that)."""
     try:
-        db.execute(
-            update(DreamJournal)
-            .where(DreamJournal.id == dream_id)
-            .values(surfaced=False)
-        )
+        release_claim(db, dream_id=dream_id)
         db.commit()
     except Exception:
         db.rollback()
@@ -450,13 +454,11 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | 
     # statement (candidate selection folded in as a scalar subquery) that
     # begins directly as a write.
     db.rollback()
+    claim_at = datetime.now(UTC)
+    stale_before = claim_cutoff(claim_at)
     candidate_id = (
-        select(DreamJournal.id)
-        .where(
-            DreamJournal.user_id == user_id,
-            DreamJournal.share_worthy.is_(True),
-            DreamJournal.surfaced.is_(False),
-        )
+        offerable_dream_query(user_id, now=claim_at)
+        .with_only_columns(DreamJournal.id)
         .order_by(DreamJournal.dreamt_at.desc())
         .limit(1)
         .scalar_subquery()
@@ -477,13 +479,20 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | 
             return None
         db.rollback()  # end the re-read's snapshot before the write
         try:
+            # IL-015: CLAIM (not surface). `surfaced` now means "the client
+            # acknowledged receipt"; a claim only suppresses re-offering
+            # until it is acknowledged or expires. The WHERE repeats the
+            # offerable predicate so a rival claim between the subquery and
+            # this UPDATE loses (rowcount 0) rather than double-claiming.
             claimed = db.execute(
                 update(DreamJournal)
                 .where(
                     DreamJournal.id == candidate_id,
                     DreamJournal.surfaced.is_(False),
+                    (DreamJournal.claimed_at.is_(None))
+                    | (DreamJournal.claimed_at < stale_before),
                 )
-                .values(surfaced=True)
+                .values(claimed_at=claim_at)
                 .returning(DreamJournal.id, DreamJournal.narrative)
             ).first()
             if claimed is None:
@@ -1153,10 +1162,15 @@ async def generate_greeting(
 
     if settings.agent_provider == "scaffold":
         base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
-        message, ctx, handoff = _finalize_ambient_dream(
+        message, ctx, handoff, dream_id = _finalize_ambient_dream(
             db, ctx, dream_claim, user_id=user_id, message=base
         )
-        return GreetingResult(message=message, context=ctx, handoff_message=handoff)
+        return GreetingResult(
+            message=message,
+            context=ctx,
+            handoff_message=handoff,
+            ambient_dream_id=dream_id,
+        )
 
     # Build the LLM prompt with available context
     identity_context = ""
@@ -1298,10 +1312,11 @@ async def generate_greeting(
             # decision runs under the consent lock, appending the same
             # sentence the static greeting uses while keeping the pre-append
             # text as the LLM-safe handoff copy (PR #130 review).
-            message, ctx, handoff_message = _finalize_ambient_dream(
+            message, ctx, handoff_message, dream_id = _finalize_ambient_dream(
                 db, ctx, dream_claim, user_id=user_id, message=message
             )
             return GreetingResult(
+                ambient_dream_id=dream_id,
                 message=message,
                 context=ctx,
                 llm_generated=True,
@@ -1314,7 +1329,7 @@ async def generate_greeting(
 
     # Fallback to static
     base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
-    message, ctx, handoff = _finalize_ambient_dream(
+    message, ctx, handoff, dream_id = _finalize_ambient_dream(
         db, ctx, dream_claim, user_id=user_id, message=base
     )
     return GreetingResult(
@@ -1322,6 +1337,7 @@ async def generate_greeting(
         context=ctx,
         errors=errors,
         handoff_message=handoff,
+        ambient_dream_id=dream_id,
     )
 
 

@@ -746,6 +746,10 @@ export interface Greeting {
   // greeting text into an LLM prompt (e.g. the dashboard chat handoff) must
   // use this when present — the dream must never enter a model prompt.
   handoffMessage?: string | null;
+  // IL-015: id of the claimed dream. Acknowledge with
+  // `api.chat.ackGreetingDream` once this greeting has actually been shown,
+  // otherwise the claim expires and the dream is offered again.
+  ambientDreamId?: number | null;
   pills?: MessagePill[];
   context: {
     currentFocus: string | null;
