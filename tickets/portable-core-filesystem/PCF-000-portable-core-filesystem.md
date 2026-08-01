@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-01 13:36 MYT
+- Updated: 2026-08-01 13:58 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -319,6 +319,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-01 13:17 MYT - Completed PCF-003 after implementation head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed all five required checks and Codex reported no major issues for reviewed commit `70d22b7c32`. Full GraphQL pagination consumed all `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads. The known Windows native-lease aggregate flake passed on an unchanged failed-job rerun and remains separately tracked by PCF-011. PCF-003's child state, parent row, completed history, timestamp, validation, changed paths, and residual-risk disposition are synchronized as `done`. This initiative remains `in_progress` because later required children remain; PCF-004 and PCF-005 are dependency-eligible but unclaimed in backlog.
 - 2026-08-01 13:31 MYT - Reopened PCF-003 after the exact-head Codex review of metadata head `07765613cc454c1ec174e7e389873b45cdf1da62` found that a second live login can replace the process-wide ready Runtime retrieval index with a new empty index. Removed PCF-003 from completed history and synchronized its child/parent state as `in_progress`; PCF-004 and PCF-005 are dependency-ineligible pending a test-first fix, validation, and refreshed exact-head clean review.
 - 2026-08-01 13:36 MYT - Addressed PCF-003's multi-login Runtime-index review finding test-first. Retrieval now retains the newest ready live index during a later session's rebuild/degraded interval and switches only after the replacement reaches ready, preserving an existing dense result. The focused regression failed RED; affected index/session/RAG/privacy coverage passed `149`, with scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review green. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
+- 2026-08-01 13:58 MYT - Addressed PCF-003's exact-head stale-span lifecycle finding test-first. Source replacement now cleans dependent citation ciphertext and the stale span's Runtime embedding row, sealed input, and live-index vector before relational deletion. The regression failed RED at `2 != 1`; affected ingestion/compiler/privacy coverage passed `102`, three reextract API regressions passed with explicit CoreFS keyslot wiring, and scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review passed. A mixed API run separately reached `22` existing `ensure_core_manifest()` harness failures after `102` unaffected tests passed. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 
 ## Validation
 

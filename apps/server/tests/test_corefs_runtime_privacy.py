@@ -1679,6 +1679,166 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
     }
 
 
+def test_source_replacement_deletes_dependent_sealed_payloads_and_embeddings(
+    monkeypatch,
+) -> None:
+    from anima_server.models.runtime import (
+        RuntimeKnowledgeConcept,
+        RuntimeKnowledgeConceptSource,
+        RuntimeSource,
+        RuntimeSourceSpan,
+    )
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.ingestion.artifacts import (
+        replace_source_artifacts_and_spans,
+    )
+    from anima_server.services.ingestion.models import (
+        SourceArtifactInput,
+        SourceSpanInput,
+    )
+    from conftest_runtime import runtime_db_session
+    from sqlalchemy import func
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    embedding = [1.0] + [0.0] * (RuntimeEmbedding.__table__.c.embedding.type.dim - 1)
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.execute(text("PRAGMA foreign_keys = ON"))
+        source = RuntimeSource(
+            user_id=1,
+            kind="document",
+            source_uri="corefs://private-source",
+            content_hash="a" * 64,
+            title="Private source",
+            status="registered",
+        )
+        runtime_db.add(source)
+        runtime_db.flush()
+        _, old_spans = replace_source_artifacts_and_spans(
+            runtime_db,
+            source=source,
+            artifacts=[
+                SourceArtifactInput(
+                    artifact_kind="plain_text",
+                    content_text="old artifact",
+                    content_hash="b" * 64,
+                )
+            ],
+            spans=[
+                SourceSpanInput(
+                    artifact_kind="plain_text",
+                    span_kind="paragraph",
+                    locator_json={"paragraph_index": 0},
+                    content_text="old private quote",
+                    content_hash="c" * 64,
+                )
+            ],
+            embedding_fn=lambda _text: embedding,
+        )
+        concept = RuntimeKnowledgeConcept(
+            user_id=1,
+            concept_type="claim",
+            slug="private-claim",
+            title="Private claim",
+            body_markdown="Private compiled claim.",
+            frontmatter_json={"type": "claim"},
+            content_hash="d" * 64,
+            status="active",
+        )
+        runtime_db.add(concept)
+        runtime_db.flush()
+        citation = RuntimeKnowledgeConceptSource(
+            user_id=1,
+            concept_id=concept.id,
+            source_id=source.id,
+            span_id=old_spans[0].id,
+            citation_label="S1",
+            quote_text="old private quote",
+            metadata_json={"compiler": "test"},
+        )
+        sealed_runtime.seal_runtime_fields(
+            runtime_db,
+            row=citation,
+            row_type="runtime_knowledge_concept_source",
+            owner_id=1,
+            payload={
+                "quote_text": "old private quote",
+                "metadata_json": {"compiler": "test"},
+            },
+            placeholders={"quote_text": None, "metadata_json": None},
+        )
+        old_span_id = int(old_spans[0].id)
+        runtime_db.commit()
+
+        _, new_spans = replace_source_artifacts_and_spans(
+            runtime_db,
+            source=source,
+            artifacts=[
+                SourceArtifactInput(
+                    artifact_kind="plain_text",
+                    content_text="new artifact",
+                    content_hash="e" * 64,
+                )
+            ],
+            spans=[
+                SourceSpanInput(
+                    artifact_kind="plain_text",
+                    span_kind="paragraph",
+                    locator_json={"paragraph_index": 0},
+                    content_text="new private quote",
+                    content_hash="f" * 64,
+                )
+            ],
+            embedding_fn=lambda _text: embedding,
+        )
+        new_span_id = int(new_spans[0].id)
+        runtime_db.commit()
+
+        assert runtime_db.get(RuntimeSourceSpan, old_span_id) is None
+        assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource.id)) is None
+        assert runtime_db.scalar(
+            select(func.count(RuntimeEmbedding.id)).where(
+                RuntimeEmbedding.user_id == 1,
+                RuntimeEmbedding.source_type == "source_span",
+            )
+        ) == 1
+        sealed_counts = {
+            row_type: runtime_db.scalar(
+                select(func.count(CoreFSSealedPayload.id)).where(
+                    CoreFSSealedPayload.row_type == row_type
+                )
+            )
+            for row_type in (
+                "runtime_source_span",
+                "runtime_knowledge_concept_source",
+                "runtime_embedding",
+            )
+        }
+
+    assert old_span_id != new_span_id
+    assert sealed_counts == {
+        "runtime_source_span": 1,
+        "runtime_knowledge_concept_source": 0,
+        "runtime_embedding": 1,
+    }
+    assert index.runtime_embedding_vector(
+        source_type="source_span",
+        source_id=old_span_id,
+    ) is None
+    assert index.runtime_embedding_vector(
+        source_type="source_span",
+        source_id=new_span_id,
+    ) == tuple(embedding)
+
+
 def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
     monkeypatch,
 ) -> None:

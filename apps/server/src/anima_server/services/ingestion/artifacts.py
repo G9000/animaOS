@@ -7,11 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
+    RuntimeKnowledgeConceptSource,
     RuntimeSource,
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
 )
 from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
     delete_sealed_runtime_records,
     seal_runtime_fields,
 )
@@ -139,6 +141,26 @@ def replace_source_artifacts_and_spans(
     stale_span_ids = [
         int(stale_span.id) for stale_span in existing_spans if stale_span.id not in stored_span_ids
     ]
+    stale_citation_ids = list(
+        db.scalars(
+            select(RuntimeKnowledgeConceptSource.id).where(
+                RuntimeKnowledgeConceptSource.user_id == source.user_id,
+                RuntimeKnowledgeConceptSource.span_id.in_(stale_span_ids),
+            )
+        ).all()
+    )
+    delete_sealed_runtime_records(
+        db,
+        row_type="runtime_knowledge_concept_source",
+        row_ids=stale_citation_ids,
+        owner_id=int(source.user_id),
+    )
+    delete_runtime_embedding_records(
+        db,
+        owner_id=int(source.user_id),
+        source_type="source_span",
+        source_ids=stale_span_ids,
+    )
     delete_sealed_runtime_records(
         db,
         row_type="runtime_source_span",
