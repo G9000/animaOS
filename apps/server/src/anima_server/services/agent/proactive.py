@@ -293,6 +293,39 @@ async def _invoke_ollama_native_chat(
     return stripped or None
 
 
+def _drop_dream_if_consent_withdrawn(
+    db: Session,
+    ctx: GreetingContext,
+    claim: AmbientDreamClaim | None,
+    *,
+    user_id: int,
+) -> GreetingContext:
+    """Re-check consent AFTER the LLM calls, before the dream is handed to
+    the user (PR #130 review).
+
+    The claim commits before generation, and the greeting + pill requests
+    can take ~14s combined; an opt-out committing in that window would
+    otherwise still be answered with a dream. Here the server knows for
+    certain the narrative has not reached the user yet, so the claim is
+    RELEASED (the dream stays available for a later greeting) rather than
+    silently burned — the opposite trade from the client-receipt gap in
+    IL-015, where delivery is genuinely unknown.
+    """
+    if claim is None or not ctx.ambient_dream:
+        return ctx
+    db.expire_all()
+    values = get_presence_config_values(db, user_id)
+    if values.enabled and values.dream_sharing == "ambient":
+        return ctx
+    _release_ambient_dream_claim(db, dream_id=claim.dream_id)
+    logger.info(
+        "Ambient consent withdrawn during greeting generation for user %s; "
+        "dream released unvoiced",
+        user_id,
+    )
+    return dataclasses.replace(ctx, ambient_dream=None)
+
+
 def _dream_free_static_greeting(ctx: GreetingContext) -> str | None:
     """The static greeting rebuilt WITHOUT the ambient-dream sentence, or
     None when no dream was woven (the message is then already safe to hand
@@ -309,7 +342,39 @@ def _ambient_dream_sentence(dream: str) -> str:
     return f'I dreamt about something recently — "{dream}".'
 
 
-def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
+@dataclass(frozen=True)
+class AmbientDreamClaim:
+    """A dream marked surfaced for THIS greeting. Carries its id so the
+    claim can be released if the greeting ends up not voicing it (PR #130
+    review): releasing is only safe when the server knows for certain the
+    narrative never reached the response — otherwise silence is preferred
+    (see IL-015)."""
+
+    dream_id: int
+    narrative: str
+
+
+def _release_ambient_dream_claim(db: Session, *, dream_id: int) -> None:
+    """Un-surface a dream this request claimed but will NOT voice."""
+    from sqlalchemy import update
+
+    from anima_server.models import DreamJournal
+
+    try:
+        db.execute(
+            update(DreamJournal)
+            .where(DreamJournal.id == dream_id)
+            .values(surfaced=False)
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Failed to release ambient dream claim %s", dream_id, exc_info=True
+        )
+
+
+def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | None:
     """IL-010: claim the dream an "ambient" greeting will voice, or None.
 
     Gives ``presence_config.dream_sharing == "ambient"`` its real behavior
@@ -398,7 +463,7 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
                     DreamJournal.surfaced.is_(False),
                 )
                 .values(surfaced=True)
-                .returning(DreamJournal.narrative)
+                .returning(DreamJournal.id, DreamJournal.narrative)
             ).first()
             if claimed is None:
                 db.rollback()
@@ -439,7 +504,7 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> str | None:
             db.rollback()
             return None
 
-    return narrative[:240]
+    return AmbientDreamClaim(dream_id=claimed.id, narrative=narrative[:240])
 
 
 def _reset_dream_residue_after_surfacing(
@@ -1060,12 +1125,13 @@ async def generate_greeting(
     # build_static_greeting, the LLM path via the deterministic append).
     # Never in gather_greeting_context: that gatherer is shared with
     # non-greeting paths that would consume dreams invisibly (PR #130).
-    ambient_dream = _resolve_ambient_dream(db, user_id=user_id)
-    if ambient_dream:
-        ctx = dataclasses.replace(ctx, ambient_dream=ambient_dream)
+    dream_claim = _resolve_ambient_dream(db, user_id=user_id)
+    if dream_claim:
+        ctx = dataclasses.replace(ctx, ambient_dream=dream_claim.narrative)
         _reset_dream_residue_after_surfacing(runtime_db, user_id=user_id)
 
     if settings.agent_provider == "scaffold":
+        ctx = _drop_dream_if_consent_withdrawn(db, ctx, dream_claim, user_id=user_id)
         return GreetingResult(
             message=build_static_greeting(ctx),
             context=ctx,
@@ -1208,6 +1274,9 @@ async def generate_greeting(
             pills = await generate_thought_pills(
                 prompt_loader, greeting_message=message, ctx=ctx
             )
+            ctx = _drop_dream_if_consent_withdrawn(
+                db, ctx, dream_claim, user_id=user_id
+            )
             handoff_message: str | None = None
             if ctx.ambient_dream:
                 # The claim already committed — voicing is OUR responsibility,
@@ -1229,6 +1298,7 @@ async def generate_greeting(
         errors.append(str(e))
 
     # Fallback to static
+    ctx = _drop_dream_if_consent_withdrawn(db, ctx, dream_claim, user_id=user_id)
     return GreetingResult(
         message=build_static_greeting(ctx),
         context=ctx,

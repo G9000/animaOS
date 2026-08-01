@@ -82,8 +82,9 @@ def _seed(
 
 def test_ambient_mode_returns_dream_and_marks_it_surfaced(soul_db) -> None:
     user_id = _seed(soul_db)
-    dream = _resolve_ambient_dream(soul_db, user_id=user_id)
-    assert dream == "a blurred dream about the boat you restored"
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    assert claim.narrative == "a blurred dream about the boat you restored"
     row = soul_db.scalars(select(DreamJournal)).one()
     assert row.surfaced is True  # consume-once: stops re-raising dream_residue
 
@@ -172,12 +173,12 @@ def test_most_recent_share_worthy_unsurfaced_dream_wins(soul_db) -> None:
         )
     )
     soul_db.commit()
-    assert _resolve_ambient_dream(soul_db, user_id=user_id) == "newer dream"
+    assert _resolve_ambient_dream(soul_db, user_id=user_id).narrative == "newer dream"
 
 
 def test_narrative_is_truncated_to_240_chars(soul_db) -> None:
     user_id = _seed(soul_db, narrative="x" * 600)
-    assert _resolve_ambient_dream(soul_db, user_id=user_id) == "x" * 240
+    assert _resolve_ambient_dream(soul_db, user_id=user_id).narrative == "x" * 240
 
 
 def test_static_greeting_renders_ambient_dream(soul_db) -> None:
@@ -465,3 +466,38 @@ def test_handoff_copy_is_absent_when_no_dream_was_woven(
     user_id = _seed(soul_db, dream_sharing="off")
     result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
     assert result.handoff_message is None
+
+
+def test_optout_during_generation_releases_the_claim_unvoiced(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 9, P1): the claim commits BEFORE the
+    greeting and pill LLM calls (~14s combined). An opt-out committing in
+    that window used to still be answered with a dream. Consent is now
+    re-checked after generation; because the server knows the narrative has
+    not reached the user, the claim is RELEASED rather than burned — the
+    dream stays available for a later greeting."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+
+    def optout_mid_generation(runtime_db, *, user_id):
+        # Runs between the claim commit and the consent revalidation — the
+        # same position the greeting/pill LLM calls occupy in real requests.
+        cfg = get_or_create_presence_config(soul_db, user_id)
+        cfg.dream_sharing = "off"
+        soul_db.commit()
+
+    monkeypatch.setattr(
+        proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation
+    )
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+
+    assert "boat you restored" not in result.message  # never voiced
+    assert result.context.ambient_dream is None
+    # Released, not burned: still available once the user re-enables ambient.
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is False

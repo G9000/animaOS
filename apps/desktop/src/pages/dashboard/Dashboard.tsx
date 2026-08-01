@@ -24,7 +24,7 @@ import type {
   DiaryEntryData,
 } from "@anima/api-client";
 import type { GalleryImage } from "./nodes/node-types";
-import { api } from "../../lib/api";
+import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
   clearOneShotGreetings,
@@ -154,13 +154,20 @@ export default function Dashboard() {
       setBrief(cached.greeting);
     } else {
       setBriefLoading(true);
+      // Bind the handoff to the session that ASKED for this greeting
+      // (PR #130 review): if the user logs out and someone else signs in
+      // before this resolves, the late callback must not write A's
+      // decrypted dream into B's storage.
+      const originUnlockToken = getUnlockToken();
       api.chat
         .greeting(user.id)
         .then((g) => {
           if (!active) {
             // The dream inside was already consumed server-side — hand it
             // to the next mount instead of discarding it (PR #130 review).
-            if (g.ambientDream) stashOneShotGreeting(user.id, g);
+            if (g.ambientDream) {
+              stashOneShotGreeting(user.id, g, originUnlockToken);
+            }
             return;
           }
           setBrief(g);

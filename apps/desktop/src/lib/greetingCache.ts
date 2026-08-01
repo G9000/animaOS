@@ -99,12 +99,20 @@ function writeOneShotQueue(queue: OneShotEntry[]): void {
 // several greeting requests in flight, each having claimed a different dream
 // server-side — a single slot let the second stash overwrite (and silence
 // forever) the first consumed narrative.
-export function stashOneShotGreeting(userId: number, greeting: Greeting): void {
-  // Never write decrypted content for a session that is no longer unlocked
-  // (PR #130 review): a greeting request can resolve AFTER logout or a lock,
-  // and its late callback would otherwise repopulate plaintext into storage
-  // the locked/login webview can read.
-  if (!getUnlockToken()) return;
+export function stashOneShotGreeting(
+  userId: number,
+  greeting: Greeting,
+  /** Unlock token captured when the greeting request STARTED. The stash is
+   * refused unless it is still the live token (PR #130 review): a bare
+   * truthiness check accepted a REPLACEMENT session, so a late callback
+   * could write user A's decrypted dream into the sessionStorage of user B
+   * who signed in meanwhile. Omitted only by callers with no request
+   * context, which then require merely that some session is unlocked. */
+  originUnlockToken?: string | null,
+): void {
+  const live = getUnlockToken();
+  if (!live) return; // logged out or locked
+  if (originUnlockToken !== undefined && originUnlockToken !== live) return;
   writeOneShotQueue([...readOneShotQueue(), { greeting, userId }]);
 }
 

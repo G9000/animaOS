@@ -125,3 +125,28 @@ describe("session-bound plaintext handling (PR #130 round 8)", () => {
     expect(takeOneShotGreeting(7)?.message).toBe("dreamy");
   });
 });
+
+describe("origin-session binding (PR #130 round 9)", () => {
+  test("a late callback cannot write into a REPLACEMENT session", () => {
+    // User A's greeting is in flight; A logs out and B signs in before it
+    // resolves. A bare truthiness check accepted B's token and would have
+    // written A's decrypted dream into B's sessionStorage.
+    setUnlockToken("token-A");
+    const originToken = "token-A";
+    setUnlockToken("token-B"); // A logged out, B signed in
+    stashOneShotGreeting(7, greeting({ ambientDream: true }), originToken);
+    expect(peekOneShotGreeting(7)).toBe(false);
+  });
+
+  test("the originating session may still stash", () => {
+    setUnlockToken("token-A");
+    stashOneShotGreeting(7, greeting({ ambientDream: true }), "token-A");
+    expect(peekOneShotGreeting(7)).toBe(true);
+  });
+
+  test("no live session refuses regardless of origin", () => {
+    clearUnlockToken();
+    stashOneShotGreeting(7, greeting({ ambientDream: true }), null);
+    expect(peekOneShotGreeting(7)).toBe(false);
+  });
+});

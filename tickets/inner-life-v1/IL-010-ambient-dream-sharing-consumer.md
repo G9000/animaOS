@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-08-01 22:40 MYT
+- Updated: 2026-08-01 23:59 MYT
 - Started: 2026-07-30 16:27 MYT
 - Completed:
 
@@ -154,13 +154,26 @@ backend contract still accepts and round-trips the value).
   `purgeGreetingStorage()` now runs on logout AND the locked-session
   event, and the stash refuses to write without an unlock token.
 
+- 2026-08-01 23:59 MYT - PR #130 review round 9 (2 P1s): (1) consent is re-validated
+  AFTER generation, before the dream is handed over — the claim commits
+  before the greeting+pill LLM calls (~14s of timeouts) and an opt-out
+  landing in that window was still answered with a dream. Because the
+  server knows the narrative has not reached the user, the claim is
+  RELEASED (surfaced=False) rather than burned, so the dream stays
+  available; the resolver now returns an identifiable `AmbientDreamClaim`
+  to make that possible. (2) The late-stash guard only checked that SOME
+  session was unlocked, so if user A logged out and B signed in before
+  A's greeting resolved, A's decrypted dream was written into B's
+  sessionStorage; the stash now binds to the unlock token captured when
+  the request started and refuses on mismatch.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 19 passed
-  - `bun test tests/greetingCache.test.ts` — 11 passed
-  - Full suite on the round-8 head — **3354 passed, 0 failed, 10
-    skipped**, run 2026-08-01 22:40 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 20 passed
+  - `bun test tests/greetingCache.test.ts` — 14 passed
+  - Full suite on the round-9 head — **3355 passed, 0 failed, 10
+    skipped**, run 2026-08-01 23:59 MYT
   - `bun run build` (Nx server + desktop, cargo check) — pass
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
