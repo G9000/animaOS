@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-4-diary-folders-drafts-and-notes-vertical-slice`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 04:06 MYT
+- Updated: 2026-08-02 04:19 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -42,6 +42,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-07-12 18:58 MYT - Added the `core.notes` root, ownership defaults, and rename/move/restart acceptance coverage.
 - 2026-07-13 20:47 MYT - Reconciled migration with the merged Tiptap Journal: canonicalized sanitized HTML, extracted inline media to CoreFS objects, and added the current content/sanitizer helpers and tests to scope.
 - 2026-08-02 04:06 MYT - Claimed PCF-004 from clean `main` at `51678d08680747d90ff0c03c0e091331456ae837` after PCF-003 completion. Executing the approved Task 4 plan directly in the main checkout per user direction, with test-first backend and Journal slices followed by independent specification and quality review.
+- 2026-08-02 04:19 MYT - The first native integration pass proved the planned converter entry point did not exist: public mutation is intentionally frozen, the sequential crate-private shadow mutator cannot atomically publish a writing graph, and PyO3 exposes read/validation only. Removed the parallel encrypted-filesystem prototype, retained the green portable codec/migration groundwork in `7ac84178`, and corrected Task 4 to add one sealed session-scoped validation-batch API, deterministic native IDs, exact-head CAS, and role resolution while leaving public mutation frozen until PCF-008.
 
 ## Validation
 

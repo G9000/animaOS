@@ -490,6 +490,14 @@ PCF-005 are dependency-eligible but remain unclaimed in backlog.
 **Depends on:** `PCF-003`
 
 **Files:**
+- Modify: `packages/anima-corefs/src/id.rs`
+- Modify: `packages/anima-corefs/src/logical/mod.rs`
+- Modify: `packages/anima-corefs/src/logical/backend.rs`
+- Modify: `packages/anima-corefs/src/logical/service.rs`
+- Modify: `packages/anima-corefs/src/logical/wire.rs`
+- Modify: `packages/anima-corefs/src/logical/mutation.rs`
+- Create: `packages/anima-corefs/src/logical/mutation/converter.rs`
+- Modify: `packages/anima-core/src/ffi.rs`
 - Modify: `apps/server/src/anima_server/services/diary.py`
 - Modify: `apps/server/src/anima_server/api/routes/diary.py`
 - Modify: `apps/server/src/anima_server/schemas/diary.py`
@@ -505,6 +513,8 @@ PCF-005 are dependency-eligible but remain unclaimed in backlog.
 - Test: `apps/desktop/tests/journal-corefs.test.ts`
 - Test: `apps/desktop/tests/journal-content.test.ts`
 - Test: `apps/desktop/tests/journal-html.test.ts`
+- Test: `packages/anima-corefs/tests/logical_snapshot.rs`
+- Test: `packages/anima-corefs/tests/logical_wire.rs`
 
 - [ ] **Step 1: Add failing logical-format and folder-role tests**
 
@@ -518,13 +528,15 @@ Seed SQLCipher diary folders/entries/attachments with plain-text bodies, rich HT
 
 Convert each legacy diary folder to a first-class CoreFS folder with its stable ID, hierarchy, ordering, and metadata. Use sanitized HTML plus typed metadata as the canonical diary format so existing Tiptap formatting is not downgraded to Markdown. Reuse the desktop sanitizer contract on the server through one versioned allowlist; extract inline `data:` images into encrypted CoreFS binary objects and publish their diary references atomically. Bind the Journal app to the unique `core.journal` role and standalone notes to the unique `core.notes` role rather than display paths; both roots default to `owner=user` and `agentAccess=write`. Private diary and note content remains writable by ANIMA unless the user explicitly lowers access. Keep legacy reads behind the CoreFS layout version until converted and verified. Never dual-authority write after the slice activates.
 
+Expose one sealed session-scoped validation-batch converter rather than unfreezing public CoreFS mutation. It must validate native opaque IDs, format/kind pairs, graph references, explicit root policy, stable-role uniqueness, object revision preconditions, and an exact expected validation head; prepare all encrypted revisions and publish exactly one validation generation. Add a deterministic domain-separated migration-ID helper plus read-only stable-role resolution. Ordinary public mutation remains frozen until PCF-008.
+
 - [ ] **Step 4: Prepare diary service/routes for CoreFS behind the cutover gate**
 
 Preserve existing response schemas and authorization checks so the desktop API contract does not change unnecessarily. Return resolvable CoreFS media references only through an unlocked authorized session, and update the Journal renderer/content helpers so rich HTML, covers, attachments, and extracted inline media behave as they do today. Before PCF-008, converters write only the inactive validation catalog and routes keep legacy authority; the CoreFS adapter becomes writable authority only through the global cutover state machine.
 
-- [ ] **Step 5: Move Journal drafts out of localStorage**
+- [ ] **Step 5: Stage Journal drafts for encrypted CoreFS cutover**
 
-Use encrypted Core draft objects with revision preconditions. Remove legacy localStorage drafts only after successful server save/migration.
+Define versioned encrypted Core draft objects with revision preconditions and include existing local drafts in the inactive validation catalog. Before PCF-008, keep legacy localStorage drafts available because interactive CoreFS mutation remains frozen. At cutover, remove a legacy localStorage draft only after its encrypted server migration/save is verified.
 
 - [ ] **Step 6: Add note access through CoreFS**
 

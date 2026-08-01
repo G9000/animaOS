@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 04:06 MYT
+- Updated: 2026-08-02 04:19 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -331,6 +331,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-01 19:05 MYT - Addressed PCF-003's exact-head consequential path-oracle and Soul-only-navigation findings test-first. Durable Runtime progress checksums no longer encode private logical paths, and the HUD plus all currently non-CoreFS-backed routes remain available to supported Soul-scoped sessions. Both focused regressions failed RED and pass GREEN; migration plus Runtime privacy coverage passes `68`, all `79` desktop tests pass, and scoped Ruff/format, desktop build, repository organization, and diff hygiene pass. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 19:49 MYT - Completed PCF-003 and synchronized its parent row after PR #127 head `f0991e38` passed all five required checks. Full GraphQL pagination covered `71` top-level comments, `95` reviews, `112` review threads, every per-thread comment connection, reactions, and current-head checks with zero unresolved non-outdated consequential threads; focused Codex review reported no major issues for exact head `f0991e38bb`. This parent remains `in_progress`; PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog.
 - 2026-08-02 04:06 MYT - Claimed PCF-004 from clean `main` at `51678d08680747d90ff0c03c0e091331456ae837` and synchronized its child row as `in_progress`. Work follows the approved diary/folder/draft/note vertical-slice plan directly in the main checkout per user direction; PCF-005 remains dependency-eligible and unclaimed.
+- 2026-08-02 04:19 MYT - PCF-004 native integration exposed a missing sealed converter boundary: public CoreFS mutation correctly remains frozen, while the crate-private sequential shadow mutator cannot publish the diary/folder/media graph in one validation generation. The invalid parallel draft-store prototype was removed; green codec/migration groundwork remains in `7ac84178`, and the approved Task 4 plan now includes a session-scoped atomic validation-batch API, deterministic native IDs, exact-head CAS, and read-only stable-role resolution. PCF-004 remains `in_progress`; PCF-005 is unchanged.
 
 ## Validation
 
