@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-08-02 01:57 MYT
+- Updated: 2026-08-02 02:11 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-08-02 01:57 MYT
+- Completed: 2026-08-02 02:11 MYT
 
 ## Goal
 
@@ -211,6 +211,19 @@ rather than blocking IL-008 on it.
   In-flight closes are now a per-thread Map, with one `closeThreadOnce`
   entry point that de-duplicates per thread.
 
+- 2026-08-02 02:11 MYT - PR #131 review round 15 (2 P1s, both fallout of round 13's
+  ref routing): (1) a thread selection suspended on an in-flight close
+  could be superseded by a newer selection, then resume and load ITS
+  messages while `currentThreadIdRef` targeted the newer thread — UI
+  showing one conversation while replies went to another. Each selection
+  now carries its own epoch and returns if superseded, both after the
+  close wait and after the message fetch. (2) `sendMessage` re-checked
+  the epoch after the settle/discovery/close awaits but then awaited
+  FileReader for image attachments; a slow read let a thread switch
+  land, and routing from the live ref carried the draft into the new
+  conversation. The epoch is re-checked after attachment conversion,
+  before any UI state is consumed or the stream starts.
+
 ## Validation
 
 - Commands:
@@ -218,7 +231,7 @@ rather than blocking IL-008 on it.
     30 pass (15 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 14), 2026-08-02 01:57 MYT
+    FINAL head (round 15), 2026-08-02 02:11 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

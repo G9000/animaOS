@@ -937,6 +937,10 @@ export default function Chat() {
   const handleSelectThread = async (threadId: number) => {
     seedActiveRef.current = false;
     conversationEpochRef.current += 1;
+    // This selection's own epoch. If another selection (or a seed) bumps it
+    // while we wait below, THIS handler is stale and must not apply its
+    // thread's messages over the newer one (PR #131 round 15).
+    const selectionEpoch = conversationEpochRef.current;
     pendingContextRef.current = [];
     // Re-opening the very thread whose close is in flight: that request is
     // deliberately NOT cancelled (abandonSeedClose returns "none" for the
@@ -960,12 +964,19 @@ export default function Chat() {
           threadSettleRef.current = null;
         }
       }
+      // Superseded while waiting: the newer selection owns the UI and
+      // currentThreadIdRef now targets its thread — loading ours would show
+      // this thread's history while replies went to the other one.
+      if (conversationEpochRef.current !== selectionEpoch) return;
     }
     setMessages([]);
     historyHydratedRef.current = false;
     try {
       await loadThreadMessages(threadId);
+      // A selection that landed during the fetch owns the view now.
+      if (conversationEpochRef.current !== selectionEpoch) return;
     } catch {
+      if (conversationEpochRef.current !== selectionEpoch) return;
       setCurrentThreadId(null);
       currentThreadIdRef.current = null;
       setError("Failed to load thread messages.");
@@ -1336,6 +1347,14 @@ export default function Chat() {
       );
     } catch {
       setError("Failed to read image attachment.");
+      return false;
+    }
+    // Reading attachments is async (FileReader), and a large image can take
+    // long enough for the user to switch threads or start an initiative
+    // reply meanwhile (PR #131 round 15). Re-check before consuming UI state
+    // or routing — the request would otherwise carry this draft and image
+    // into whatever conversation is now current.
+    if (conversationEpochRef.current !== epochAtSend) {
       return false;
     }
 
