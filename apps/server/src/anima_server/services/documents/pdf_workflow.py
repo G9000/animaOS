@@ -22,7 +22,7 @@ from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.corefs.sealed_runtime import (
     delete_runtime_embedding_records,
     delete_sealed_runtime_records,
-    runtime_private_lookup_value,
+    runtime_private_exact_lookup_value,
 )
 from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import (
@@ -647,10 +647,11 @@ def _document_source_needs_embeddings(
     *,
     document: RuntimeDocument,
 ) -> bool:
-    source_uri = runtime_private_lookup_value(
+    source_uri = runtime_private_exact_lookup_value(
         db,
         owner_id=int(document.user_id),
         value=f"runtime-document://{document.id}",
+        namespace="runtime_source.source_uri",
     )
     source = db.scalar(
         select(RuntimeSource).where(

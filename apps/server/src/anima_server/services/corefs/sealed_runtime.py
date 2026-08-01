@@ -54,6 +54,21 @@ def _sealed_lookup_value(
     return lookup[:max_length]
 
 
+def _sealed_exact_lookup_value(
+    index: CoreFSProgressiveIndex,
+    value: str,
+    *,
+    namespace: str,
+    max_length: int | None = None,
+) -> str:
+    lookup = f"sealed:{index.private_lookup_token(value, namespace=namespace).hex()}"
+    if max_length is None:
+        return lookup
+    if max_length <= len("sealed:"):
+        raise ValueError("sealed lookup length cannot hold an opaque token")
+    return lookup[:max_length]
+
+
 def _active_runtime_index(user_id: int) -> CoreFSProgressiveIndex | None:
     from anima_server.services.sessions import unlock_session_store
 
@@ -258,6 +273,31 @@ def runtime_private_lookup_value(
         value
         if index is None
         else _sealed_lookup_value(index, value, max_length=max_length)
+    )
+
+
+def runtime_private_exact_lookup_value(
+    runtime_db: Session,
+    *,
+    owner_id: int,
+    value: str,
+    namespace: str,
+    max_length: int | None = None,
+) -> str:
+    """Return an opaque projection that preserves exact identifier identity."""
+    index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=owner_id,
+    )
+    return (
+        value
+        if index is None
+        else _sealed_exact_lookup_value(
+            index,
+            value,
+            namespace=namespace,
+            max_length=max_length,
+        )
     )
 
 
@@ -1025,6 +1065,22 @@ def _convert_legacy_statement(
                 raise ValueError("sealed Runtime payload is missing")
             missing_fields = row_payload.keys() - existing_payload.keys()
             if not missing_fields:
+                if row_type == "runtime_source":
+                    source_uri = existing_payload.get("source_uri")
+                    if not isinstance(source_uri, str):
+                        raise ValueError("legacy Runtime source URI is invalid")
+                    expected_lookup = _sealed_exact_lookup_value(
+                        index,
+                        source_uri,
+                        namespace="runtime_source.source_uri",
+                    )
+                    if row_payload.get("source_uri") != expected_lookup:
+                        runtime_db.execute(
+                            table.update()
+                            .where(table.c.id == row_id)
+                            .values(source_uri=expected_lookup)
+                        )
+                        converted += 1
                 continue
             payload = dict(existing_payload)
             payload.update(
@@ -1053,7 +1109,11 @@ def _convert_legacy_statement(
             source_uri = payload["source_uri"]
             if not isinstance(source_uri, str):
                 raise ValueError("legacy Runtime source URI is invalid")
-            scrubbed["source_uri"] = _sealed_lookup_value(index, source_uri)
+            scrubbed["source_uri"] = _sealed_exact_lookup_value(
+                index,
+                source_uri,
+                namespace="runtime_source.source_uri",
+            )
         elif row_type == "runtime_knowledge_concept":
             concept_type = payload["concept_type"]
             slug = payload["slug"]

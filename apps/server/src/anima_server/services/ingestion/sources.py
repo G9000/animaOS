@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeKnowledgeBundleRun, RuntimeSource
 from anima_server.services.corefs.sealed_runtime import (
-    runtime_private_lookup_value,
+    runtime_private_exact_lookup_value,
     seal_runtime_fields,
 )
 from anima_server.services.ingestion.adapters.base import IngestionAdapter
@@ -17,10 +17,11 @@ from anima_server.services.ingestion.retrieval import EmbeddingFn
 
 
 def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
-    source_uri = runtime_private_lookup_value(
+    source_uri = runtime_private_exact_lookup_value(
         db,
         owner_id=identity.user_id,
         value=identity.source_uri,
+        namespace="runtime_source.source_uri",
     )
     existing = db.scalar(
         select(RuntimeSource).where(

@@ -660,6 +660,25 @@ class CoreFSProgressiveIndex:
             key = self._require_search_key_locked()
             return hmac.digest(key, normalized.encode("utf-8"), "sha256")
 
+    def private_lookup_token(self, value: str, *, namespace: str) -> bytes:
+        """Return a domain-separated opaque token without normalizing identity."""
+        if not value:
+            raise ValueError("private lookup value must be non-empty")
+        if not namespace:
+            raise ValueError("private lookup namespace must be non-empty")
+        namespace_bytes = namespace.encode("utf-8")
+        value_bytes = value.encode("utf-8")
+        payload = (
+            b"runtime-private-lookup:v1\x00"
+            + len(namespace_bytes).to_bytes(4, "big")
+            + namespace_bytes
+            + len(value_bytes).to_bytes(8, "big")
+            + value_bytes
+        )
+        with self._lock:
+            key = self._require_search_key_locked()
+            return hmac.digest(key, payload, "sha256")
+
     def begin_blind_generation(
         self,
         *,

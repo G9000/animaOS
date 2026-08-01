@@ -134,7 +134,7 @@ from anima_server.services.agent.tools import get_tools, prepare_action_tool_sch
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
 from anima_server.services.corefs.sealed_runtime import (
     reseal_runtime_message,
-    runtime_private_lookup_value,
+    runtime_private_exact_lookup_value,
 )
 from anima_server.services.data_crypto import df
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
@@ -2260,10 +2260,11 @@ def _document_source_ids(
     if not source_uris:
         return []
     source_uris = [
-        runtime_private_lookup_value(
+        runtime_private_exact_lookup_value(
             runtime_db,
             owner_id=user_id,
             value=source_uri,
+            namespace="runtime_source.source_uri",
         )
         for source_uri in source_uris
     ]

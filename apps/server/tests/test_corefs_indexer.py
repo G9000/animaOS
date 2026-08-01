@@ -230,6 +230,28 @@ def test_blind_token_generation_switch_is_atomic_and_instance_bound() -> None:
     assert another_instance.lookup_exact("alpha") == ()
 
 
+def test_private_lookup_tokens_preserve_exact_identity_and_domain() -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+
+    source_upper = index.private_lookup_token(
+        "file:///docs/A.md",
+        namespace="runtime_source.source_uri",
+    )
+    assert source_upper != index.private_lookup_token(
+        "file:///docs/a.md",
+        namespace="runtime_source.source_uri",
+    )
+    assert source_upper != index.private_lookup_token(
+        " file:///docs/A.md ",
+        namespace="runtime_source.source_uri",
+    )
+    assert source_upper != index.private_lookup_token(
+        "file:///docs/A.md",
+        namespace="another.private.field",
+    )
+
+
 def test_exact_search_capability_requires_current_catalog_blind_generation() -> None:
     index = CoreFSProgressiveIndex("core-index")
     index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")

@@ -546,6 +546,19 @@ def test_production_asset_and_source_writers_seal_private_descriptors(
                 metadata_json={"private_note": "source descriptor metadata"},
             ),
         )
+        case_variant_uri = source_uri.replace("captured", "Captured")
+        case_variant_source = register_source(
+            runtime_db,
+            SourceIdentity(
+                user_id=7,
+                kind="web_capture",
+                source_uri=case_variant_uri,
+                content_hash="8" * 64,
+                title=source_title,
+                media_type="text/html",
+                metadata_json={"private_note": "source descriptor metadata"},
+            ),
+        )
         event.remove(runtime_db.bind, "before_cursor_execute", capture_parameters)
 
         raw_document = runtime_db.execute(
@@ -586,6 +599,7 @@ def test_production_asset_and_source_writers_seal_private_descriptors(
         image_filename,
         "image descriptor metadata",
         source_uri,
+        case_variant_uri,
         source_title,
         "source descriptor metadata",
     ):
@@ -596,6 +610,7 @@ def test_production_asset_and_source_writers_seal_private_descriptors(
     assert raw_source[1:] == (None, None, None)
     assert same_source.id == source.id
     assert renamed_source.id != source.id
+    assert case_variant_source.id != source.id
     assert hydrated_document is not None
     assert hydrated_document.filename == document_filename
     assert hydrated_document.mime_type == "application/pdf"
@@ -3150,6 +3165,27 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
             "storage_path": ".anima/documents/7/legacy-private.pdf"
         }
         assert loaded_workflow_checkpoint.output_json == {"summary": "legacy private summary"}
+        normalized_legacy_projection = (
+            f"sealed:{index.blind_token('https://private.example.test/legacy').hex()}"
+        )
+        runtime_db.execute(
+            RuntimeSource.__table__.update()
+            .where(RuntimeSource.__table__.c.id == source.id)
+            .values(source_uri=normalized_legacy_projection)
+        )
+        assert (
+            sealed_runtime.convert_legacy_runtime_rows(
+                runtime_db,
+                index=index,
+                user_id=7,
+            )
+            == 1
+        )
+        assert runtime_db.scalar(
+            select(RuntimeSource.__table__.c.source_uri).where(
+                RuntimeSource.__table__.c.id == source.id
+            )
+        ) != normalized_legacy_projection
         assert (
             sealed_runtime.convert_legacy_runtime_rows(
                 runtime_db,
