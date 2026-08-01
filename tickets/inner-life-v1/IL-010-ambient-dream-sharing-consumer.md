@@ -1,6 +1,6 @@
 # IL-010 - Implement the "ambient" dream-sharing consumer
 
-- Status: in_progress
+- Status: done
 - Priority: P3
 - Scope: `apps/server/src/anima_server/services/agent/proactive.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/desktop/src/pages/Presence.tsx`
 - Parent: none
@@ -10,10 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-08-02 01:12 MYT
+- Updated: 2026-08-02 02:35 MYT
 - Started: 2026-07-30 16:27 MYT
-- Completed:
-
+- Completed: 2026-08-02 02:35 MYT
 ## Goal
 
 Give `presence_config.dream_sharing = "ambient"` real behavior. The IL-007 PRD
@@ -179,6 +178,13 @@ backend contract still accepts and round-trips the value).
   release both sit inside the lock, so a refactor can't silently reopen
   the window). Residual, documented: an opt-out committing while the HTTP
   response is already in flight — the same window delivery.py accepts.
+
+- 2026-08-02 02:35 MYT - CLOSED OUT: PR #130 merged to main as `8d49172` after a clean
+  Codex pass (10 review rounds). The ticket was reopened at round 5 per the
+  tracked-work review workflow — a child stays open until review establishes
+  a clean head — and this is the post-review metadata closeout with a single
+  final completion timestamp. Deferred work is tracked as `IL-015` (durable
+  client receipt) with the residual risk recorded below.
 
 ## Validation
 

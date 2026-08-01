@@ -8,7 +8,7 @@
 - PRD: none
 - Plan: docs/superpowers/plans/2026-07-15-repository-organization-project-management.md
 - Created: 2026-06-26 17:18 MYT
-- Updated: 2026-07-30 22:01 MYT
+- Updated: 2026-08-02 02:35 MYT
 - Started: 2026-07-15 17:11 MYT
 - Completed: 2026-07-16 00:44 MYT
 
@@ -32,6 +32,7 @@ This table is the execution order; dependency eligibility still controls when ea
 ## Follow-ups Beyond Initial Scope
 
 - `RWF-007` - CI gate for the server test suite + enforced Inner Life lifecycle test (`done` 2026-07-30): standalone follow-up, not a child of this closed parent — the initiative's acceptance is judged over the child table above.
+- `RWF-008` - CI gate for the desktop app (typecheck, tests, build) (`in_progress`, PR to follow): sibling of RWF-007 closing the same hole for `apps/desktop`, which reported no checks at all — PR #131 ran fifteen review rounds on desktop code with no CI.
 
 ## Deliverables
 
@@ -122,6 +123,10 @@ This table is the execution order; dependency eligibility still controls when ea
   lifecycle test) registered as a standalone follow-up in the section
   below on 2026-07-30. Post-closeout registration; no lifecycle changes
   to any child of this done parent.
+
+- 2026-08-02 02:35 MYT - Planning only: `RWF-008` (desktop CI gate) registered in the
+  Follow-ups section and claimed by Claude; closes the gating hole RWF-007
+  left for `apps/desktop`. No lifecycle changes to any child.
 
 ## Validation
 
