@@ -935,6 +935,12 @@ export default function Chat() {
     const awaitingClose =
       closing && closing.threadId === threadId ? closing.promise : null;
     abandonSeedClose(threadId); // don't close the thread being re-opened
+    // Claim the selection BEFORE any await (PR #131 round 13): a send that
+    // resumes from the SAME settle promise must observe the thread the user
+    // picked, not the pre-selection value. Both operations wake from one
+    // promise, so whichever runs first would otherwise decide the routing.
+    currentThreadIdRef.current = threadId;
+    setCurrentThreadId(threadId);
     if (awaitingClose) {
       threadSettleRef.current = awaitingClose;
       try {
@@ -945,8 +951,6 @@ export default function Chat() {
         }
       }
     }
-    currentThreadIdRef.current = threadId;
-    setCurrentThreadId(threadId);
     setMessages([]);
     historyHydratedRef.current = false;
     try {
@@ -1370,7 +1374,11 @@ export default function Chat() {
       for await (const chunk of api.chat.stream(
         userMsg,
         user.id,
-        currentThreadId ?? undefined,
+        // The REF, not the render closure (PR #131 round 13): sendMessage
+        // awaits thread settling/discovery/close, and the captured state
+        // value goes stale across those awaits — routing with it sent no
+        // thread id and stored the turn in a different conversation.
+        currentThreadIdRef.current ?? undefined,
         requestAttachments,
         turnContextMessages,
         activeTodayContext,

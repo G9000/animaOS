@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-08-02 00:55 MYT
+- Updated: 2026-08-02 01:45 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-08-02 00:55 MYT
+- Completed: 2026-08-02 01:45 MYT
 
 ## Goal
 
@@ -190,6 +190,16 @@ rather than blocking IL-008 on it.
   loading the thread, and a `threadSettleRef` gate makes sendMessage wait
   on any in-flight thread-state transition before routing anything.
 
+- 2026-08-02 01:45 MYT - PR #131 review round 13 (P1): selecting a thread whose close
+  was in flight and submitting immediately left both operations waking
+  from the SAME settle promise — the send could resume first and route
+  with the pre-selection thread id (null), storing the turn in a
+  different conversation and letting the trace switch the UI there. Two
+  fixes: handleSelectThread now claims the selection (ref + state) BEFORE
+  awaiting, and the stream request routes from `currentThreadIdRef.current`
+  instead of the render-closure `currentThreadId`, which goes stale across
+  every await sendMessage performs (settle, discovery, close).
+
 ## Validation
 
 - Commands:
@@ -197,7 +207,7 @@ rather than blocking IL-008 on it.
     30 pass (15 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 12), 2026-08-02 00:55 MYT
+    FINAL head (round 13), 2026-08-02 01:45 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`
