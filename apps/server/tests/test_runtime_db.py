@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from anima_server.config import settings
+from anima_server.config import get_runtime_settings_path, settings
 from anima_server.db import dispose_cached_engines
 from anima_server.db import runtime as runtime_module
 from anima_server.db.pg_lifecycle import EmbeddedPG
@@ -49,10 +50,13 @@ requires_runtime_backend = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_engine_state() -> None:
+def _reset_runtime_engine_state(managed_tmp_path: Path) -> None:
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
     dispose_runtime_engine()
     yield
     dispose_runtime_engine()
+    settings.runtime_app_data_dir = original_runtime_app_data_dir
 
 
 @pytest.fixture
@@ -874,6 +878,123 @@ def test_dispose_runtime_engine_cleans_up(runtime_database_url: str) -> None:
         get_runtime_engine()
 
 
+def test_embedding_dimension_reconciliation_preserves_runtime_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+
+    query_result = MagicMock()
+    query_result.fetchone.return_value = (768,)
+    query_connection = MagicMock()
+    query_connection.execute.return_value = query_result
+    query_context = MagicMock()
+    query_context.__enter__.return_value = query_connection
+    query_context.__exit__.return_value = None
+
+    write_connection = MagicMock()
+    write_context = MagicMock()
+    write_context.__enter__.return_value = write_connection
+    write_context.__exit__.return_value = None
+
+    engine = MagicMock()
+    engine.connect.return_value = query_context
+    engine.begin.return_value = write_context
+    original_type = RuntimeEmbedding.__table__.c.embedding.type
+    monkeypatch.setattr(config, "resolve_embedding_dim", lambda: 384)
+
+    try:
+        runtime_module._reconcile_embedding_dimension(engine)
+        executed = [
+            str(call.args[0])
+            for call in write_connection.execute.call_args_list
+        ]
+    finally:
+        RuntimeEmbedding.__table__.c.embedding.type = original_type
+
+    assert all("DROP TABLE" not in statement for statement in executed)
+    assert any(
+        "ALTER COLUMN embedding TYPE vector(384) USING NULL::vector(384)"
+        in statement
+        for statement in executed
+    )
+    assert any(
+        "SET embedding_checksum = NULL" in statement
+        for statement in executed
+    )
+
+
+@requires_runtime_backend
+def test_embedding_dimension_reconciliation_retains_postgres_rows(
+    runtime_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server import config
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from pgvector.sqlalchemy import Vector
+
+    init_runtime_engine(runtime_database_url)
+    runtime_module.ensure_runtime_tables()
+    engine = get_runtime_engine()
+    factory = get_runtime_session_factory()
+    original_dim = RuntimeEmbedding.__table__.c.embedding.type.dim
+    target_dim = original_dim + 1
+    row_id: int | None = None
+
+    try:
+        with factory() as runtime_db:
+            row = RuntimeEmbedding(
+                user_id=7,
+                source_type="document_chunk",
+                source_id=42,
+                content_hash="a" * 64,
+                embedding_checksum="b" * 64,
+                embedding=[0.0] * original_dim,
+                content_preview="inventory marker",
+                category="document",
+                importance=4,
+            )
+            runtime_db.add(row)
+            runtime_db.commit()
+            row_id = int(row.id)
+
+        monkeypatch.setattr(config, "resolve_embedding_dim", lambda: target_dim)
+        runtime_module._reconcile_embedding_dimension(engine)
+
+        with engine.connect() as connection:
+            retained = connection.execute(
+                text(
+                    "SELECT id, user_id, source_type, source_id, content_hash, "
+                    "embedding, embedding_checksum, content_preview, category, importance "
+                    "FROM embeddings WHERE id = :row_id"
+                ),
+                {"row_id": row_id},
+            ).one()
+            current_type = connection.execute(
+                text(
+                    "SELECT format_type(a.atttypid, a.atttypmod) "
+                    "FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+                    "WHERE c.relname = 'embeddings' AND a.attname = 'embedding'"
+                )
+            ).scalar_one()
+
+        assert retained == (
+            row_id,
+            7,
+            "document_chunk",
+            42,
+            "a" * 64,
+            None,
+            None,
+            "inventory marker",
+            "document",
+            4,
+        )
+        assert current_type == f"vector({target_dim})"
+    finally:
+        RuntimeEmbedding.__table__.c.embedding.type = Vector(original_dim)
+
+
 def test_ensure_pgvector_enables_vector_extension(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -969,6 +1090,7 @@ def test_config_auto_derives_url_from_embedded_pg(
         stop=MagicMock(),
     )
     init_calls: list[tuple[str, bool]] = []
+    binding_calls: list[tuple[str, str]] = []
     cancel_pending_reflection = AsyncMock()
     drain_background_memory_tasks = AsyncMock()
     dispose_runtime_engine_mock = MagicMock()
@@ -985,6 +1107,13 @@ def test_config_auto_derives_url_from_embedded_pg(
         main_module = _reload_main_module()
 
         monkeypatch.setattr(main_module, "_start_embedded_pg", lambda: fake_pg)
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: binding_calls.append(
+                (core_id, local_instance_id)
+            ),
+        )
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
@@ -1010,6 +1139,7 @@ def test_config_auto_derives_url_from_embedded_pg(
         _run_app_lifespan(app)
         assert init_calls == [
             (fake_pg.database_url, settings.database_echo)]
+        assert len(binding_calls) == 1
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
@@ -1023,12 +1153,296 @@ def test_config_auto_derives_url_from_embedded_pg(
         sys.modules.pop("anima_server.main", None)
 
 
+def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services import anima_core_retrieval as retrieval_module
+
+    app_data = managed_tmp_path / "machine-app-data"
+    observed: list[tuple[str, Path]] = []
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    original_health_log_dir = settings.health_log_dir
+
+    class FakeEmbeddedPG:
+        def __init__(self, data_dir: Path) -> None:
+            self.data_dir = data_dir
+
+        def start(self) -> None:
+            registry_path = app_data / "core-instance-registry.json"
+            assert registry_path.is_file()
+            observed.append(("start", self.data_dir))
+
+        def stop(self) -> None:
+            return None
+
+    try:
+        settings.data_dir = managed_tmp_path / "portable" / ".anima"
+        settings.runtime_database_url = ""
+        settings.runtime_pg_data_dir = ""
+        settings.runtime_app_data_dir = str(app_data)
+        dispose_cached_engines()
+        main_module = _reload_main_module()
+        monkeypatch.setattr(main_module, "EmbeddedPG", FakeEmbeddedPG)
+
+        pg = main_module._start_embedded_pg()
+
+        assert pg is not None
+        registry = json.loads(
+            (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
+        )
+        local_instance_id = registry["instances"][0]["local_instance_id"]
+        assert observed == [
+            (
+                "start",
+                app_data
+                / "cores"
+                / registry["instances"][0]["core_id"]
+                / "instances"
+                / local_instance_id
+                / "runtime"
+                / "pg_data",
+            )
+        ]
+        assert not observed[0][1].is_relative_to(settings.data_dir)
+        assert Path(settings.runtime_instance_data_dir) == (
+            app_data
+            / "cores"
+            / registry["instances"][0]["core_id"]
+            / "instances"
+            / local_instance_id
+        )
+        assert Path(settings.health_log_dir) == (
+            Path(settings.runtime_instance_data_dir) / "health-logs"
+        )
+        assert get_runtime_settings_path() == (
+            Path(settings.runtime_instance_data_dir)
+            / "config"
+            / "runtime-config.json"
+        )
+        assert not get_runtime_settings_path().is_relative_to(settings.data_dir)
+        assert retrieval_module.get_retrieval_root() == (
+            Path(settings.runtime_instance_data_dir) / "cache" / "indices"
+        )
+        assert not retrieval_module.get_retrieval_root().is_relative_to(
+            settings.data_dir
+        )
+        main_module._release_runtime_instance_claim()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+        settings.health_log_dir = original_health_log_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
+@pytest.mark.parametrize("runtime_suffix", [(), ("runtime",)])
+def test_runtime_app_data_root_rejects_portable_core_paths(
+    managed_tmp_path: Path,
+    runtime_suffix: tuple[str, ...],
+) -> None:
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    core = managed_tmp_path / "portable" / ".anima"
+    runtime_root = core.joinpath(*runtime_suffix)
+
+    try:
+        settings.data_dir = core
+        settings.runtime_app_data_dir = str(runtime_root)
+        main_module = _reload_main_module()
+
+        with pytest.raises(
+            RuntimeError,
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+        ):
+            main_module._claim_runtime_instance()
+
+        assert not (runtime_root / "core-instance-registry.json").exists()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
+def test_runtime_app_data_root_rejects_portable_core_nested_within_it(
+    managed_tmp_path: Path,
+) -> None:
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    original_health_log_dir = settings.health_log_dir
+    app_data_root = managed_tmp_path / "machine-app-data"
+    core = app_data_root / "cores" / "core-overlap"
+    core.mkdir(parents=True)
+    (core / "manifest.json").write_text(
+        json.dumps({"core_id": "core-overlap"}),
+        encoding="utf-8",
+    )
+    main_module = None
+
+    try:
+        settings.data_dir = core
+        settings.runtime_app_data_dir = str(app_data_root)
+        main_module = _reload_main_module()
+
+        with pytest.raises(
+            RuntimeError,
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+        ):
+            main_module._claim_runtime_instance()
+
+        assert not (app_data_root / "core-instance-registry.json").exists()
+    finally:
+        if main_module is not None:
+            main_module._release_runtime_instance_claim()
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+        settings.health_log_dir = original_health_log_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
+def test_retrieval_root_uses_unbound_machine_data_before_instance_claim(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services import anima_core_retrieval as retrieval_module
+
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    app_data_root = managed_tmp_path / "machine-app-data"
+
+    try:
+        settings.data_dir = managed_tmp_path / "portable" / ".anima"
+        settings.runtime_app_data_dir = str(app_data_root)
+        settings.runtime_instance_data_dir = ""
+
+        assert retrieval_module.get_retrieval_root() == (
+            app_data_root / "unbound" / "cache" / "indices"
+        )
+        assert not retrieval_module.get_retrieval_root().is_relative_to(
+            settings.data_dir
+        )
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+
+
+def test_retrieval_root_rejects_overlapping_unbound_machine_data(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services import anima_core_retrieval as retrieval_module
+
+    original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
+    core = managed_tmp_path / "portable" / ".anima"
+    overlapping_runtime = core / "runtime"
+
+    try:
+        settings.data_dir = core
+        settings.runtime_app_data_dir = str(overlapping_runtime)
+        settings.runtime_instance_data_dir = ""
+
+        with pytest.raises(
+            RuntimeError,
+            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+        ):
+            retrieval_module.get_retrieval_root()
+
+        assert not overlapping_runtime.exists()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
+
+
+def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    app_data = managed_tmp_path / "machine-app-data"
+    core = managed_tmp_path / "portable" / ".anima"
+    core.mkdir(parents=True)
+    (core / "manifest.json").write_text(
+        json.dumps({"core_id": "core-legacy-runtime"}),
+        encoding="utf-8",
+    )
+    legacy_pg = core / "runtime" / "pg_data"
+    legacy_pg.mkdir(parents=True)
+    (legacy_pg / "PG_VERSION").write_text("17", encoding="ascii")
+    observed: list[Path] = []
+
+    class FakeEmbeddedPG:
+        def __init__(self, data_dir: Path) -> None:
+            self.data_dir = data_dir
+
+        def start(self) -> None:
+            observed.append(self.data_dir)
+
+        def stop(self) -> None:
+            return None
+
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_health_log_dir = settings.health_log_dir
+
+    try:
+        settings.data_dir = core
+        settings.runtime_database_url = ""
+        settings.runtime_pg_data_dir = ""
+        settings.runtime_app_data_dir = str(app_data)
+        settings.health_log_dir = ""
+        main_module = _reload_main_module()
+        monkeypatch.setattr(main_module, "EmbeddedPG", FakeEmbeddedPG)
+
+        pg = main_module._start_embedded_pg()
+
+        assert pg is not None
+        registry = json.loads(
+            (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
+        )
+        record = registry["instances"][0]
+        assert observed == [
+            app_data
+            / "cores"
+            / record["core_id"]
+            / "instances"
+            / record["local_instance_id"]
+            / "legacy-runtime-source"
+            / "pg_data"
+        ]
+        assert not legacy_pg.exists()
+        main_module._release_runtime_instance_claim()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.health_log_dir = original_health_log_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
 def test_explicit_runtime_url_skips_embedded_pg(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
 ) -> None:
     explicit_url = "postgresql://anima:test@localhost:5432/anima_runtime"
     init_calls: list[tuple[str, bool]] = []
+    startup_order: list[str] = []
     cancel_pending_reflection = AsyncMock()
     drain_background_memory_tasks = AsyncMock()
     dispose_runtime_engine_mock = MagicMock()
@@ -1046,11 +1460,29 @@ def test_explicit_runtime_url_skips_embedded_pg(
 
         assert main_module._start_embedded_pg() is None
 
+        real_claim_runtime_instance = main_module._claim_runtime_instance
+        monkeypatch.setattr(
+            main_module,
+            "_claim_runtime_instance",
+            lambda *, runtime_url=None: (
+                startup_order.append(f"claim:{runtime_url}"),
+                real_claim_runtime_instance(runtime_url=runtime_url),
+            )[1],
+        )
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False, **kw: init_calls.append(
-                (database_url, echo)),
+            lambda database_url, *, echo=False, **kw: (
+                startup_order.append(f"init:{database_url}"),
+                init_calls.append((database_url, echo)),
+            ),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: startup_order.append(
+                f"bind:{core_id}:{local_instance_id}"
+            ),
         )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
@@ -1070,10 +1502,107 @@ def test_explicit_runtime_url_skips_embedded_pg(
 
         _run_app_lifespan(app)
         assert init_calls == [(explicit_url, settings.database_echo)]
+        assert startup_order[:2] == [
+            f"claim:{explicit_url}",
+            f"init:{explicit_url}",
+        ]
+        assert startup_order[2].startswith("bind:")
 
         cancel_pending_reflection.assert_awaited_once_with()
         drain_background_memory_tasks.assert_awaited_once_with()
         dispose_runtime_engine_mock.assert_called_once_with()
+    finally:
+        settings.data_dir = original_data_dir
+        settings.runtime_database_url = original_runtime_database_url
+        settings.runtime_pg_data_dir = original_runtime_pg_data_dir
+        dispose_cached_engines()
+        sys.modules.pop("anima_server.main", None)
+
+
+def test_embedded_runtime_database_is_bound_before_other_database_work(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path: Path,
+) -> None:
+    startup_calls: list[str] = []
+    binding = SimpleNamespace(
+        core_id="core-embedded",
+        local_instance_id="instance-embedded",
+    )
+
+    class FakeEmbeddedPG:
+        database_url = "postgresql://embedded/runtime"
+
+        def stop(self) -> None:
+            pass
+
+    original_data_dir = settings.data_dir
+    original_runtime_database_url = settings.runtime_database_url
+    original_runtime_pg_data_dir = settings.runtime_pg_data_dir
+
+    try:
+        settings.data_dir = managed_tmp_path / "anima-data"
+        settings.runtime_database_url = ""
+        settings.runtime_pg_data_dir = ""
+        dispose_cached_engines()
+        main_module = _reload_main_module()
+
+        monkeypatch.setattr(
+            main_module,
+            "_claim_runtime_instance",
+            lambda *, runtime_url=None: (
+                startup_calls.append(f"claim:{runtime_url}"),
+                binding,
+            )[1],
+        )
+        monkeypatch.setattr(
+            main_module,
+            "_start_embedded_pg",
+            lambda: FakeEmbeddedPG(),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "init_runtime_engine",
+            lambda database_url, **_kwargs: startup_calls.append(
+                f"init:{database_url}"
+            ),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: startup_calls.append(
+                f"bind:{core_id}:{local_instance_id}"
+            ),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_pgvector",
+            lambda: startup_calls.append("pgvector"),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_tables",
+            lambda: startup_calls.append("migrate"),
+        )
+        monkeypatch.setattr(main_module, "dispose_runtime_engine", lambda: None)
+        monkeypatch.setattr(
+            "anima_server.services.agent.reflection.cancel_pending_reflection",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "anima_server.services.agent.consolidation.drain_background_memory_tasks",
+            AsyncMock(),
+        )
+        _stub_create_app_bootstrap(monkeypatch, main_module)
+
+        _run_app_lifespan(main_module.create_app())
+
+        assert startup_calls[:5] == [
+            "claim:None",
+            f"init:{FakeEmbeddedPG.database_url}",
+            "bind:core-embedded:instance-embedded",
+            "pgvector",
+            "migrate",
+        ]
     finally:
         settings.data_dir = original_data_dir
         settings.runtime_database_url = original_runtime_database_url
@@ -1180,6 +1709,11 @@ def test_lifespan_startup_failure_closes_unlock_store_before_runtime_resources(
 
         monkeypatch.setattr(main_module, "_start_embedded_pg", start_embedded_pg)
         monkeypatch.setattr(main_module, "init_runtime_engine", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            main_module,
+            "ensure_runtime_database_binding",
+            lambda **_kwargs: None,
+        )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", ensure_runtime_tables)
         monkeypatch.setattr(
@@ -1241,6 +1775,14 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         )
         monkeypatch.setattr(
             main_module,
+            "ensure_runtime_database_binding",
+            lambda *, core_id, local_instance_id: startup_calls.append(
+                f"bind:{core_id}:{local_instance_id}"
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module,
             "ensure_pgvector",
             lambda: startup_calls.append("pgvector"),
             raising=False,
@@ -1265,8 +1807,19 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         app = main_module.create_app()
 
         _run_app_lifespan(app)
+        registry = json.loads(
+            (
+                Path(settings.runtime_app_data_dir)
+                / "core-instance-registry.json"
+            ).read_text(encoding="utf-8")
+        )
+        binding_record = registry["instances"][0]
         assert startup_calls == [
             f"init:{explicit_url}",
+            (
+                f"bind:{binding_record['core_id']}:"
+                f"{binding_record['local_instance_id']}"
+            ),
             "pgvector",
             "migrate",
         ]
@@ -1279,6 +1832,37 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         settings.runtime_pg_data_dir = original_runtime_pg_data_dir
         dispose_cached_engines()
         sys.modules.pop("anima_server.main", None)
+
+
+def test_runtime_database_binding_rejects_another_core_instance(
+    managed_tmp_path: Path,
+) -> None:
+    runtime_db = managed_tmp_path / "shared-runtime.db"
+    init_runtime_engine(f"sqlite+pysqlite:///{runtime_db.as_posix()}")
+
+    runtime_module.ensure_runtime_database_binding(
+        core_id="core-a",
+        local_instance_id="instance-a",
+    )
+    runtime_module.ensure_runtime_database_binding(
+        core_id="core-a",
+        local_instance_id="instance-a",
+    )
+
+    with pytest.raises(RuntimeError, match="another Core instance"):
+        runtime_module.ensure_runtime_database_binding(
+            core_id="core-b",
+            local_instance_id="instance-b",
+        )
+
+    with get_runtime_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT core_id, local_instance_id "
+                "FROM corefs_runtime_binding WHERE binding_slot = 1"
+            )
+        ).one()
+    assert row == ("core-a", "instance-a")
 
 
 @pytest.mark.skipif(

@@ -71,6 +71,7 @@ export type CoreFsOperation =
   | "glob"
   | "grep"
   | "read"
+  | "search"
   | "search_readiness"
   | "mkdir"
   | "create_file"
@@ -86,6 +87,7 @@ export interface CoreFsOperationRequest {
   root?: string | null;
   pattern?: string | null;
   query?: string | null;
+  searchMode?: "exact" | "text" | "semantic";
   cursorAfter?: string | null;
   globCursorAfter?: string | null;
   grepCursorPath?: string | null;
@@ -122,6 +124,47 @@ export interface CoreFsOperationResponse {
   operation: CoreFsOperation;
   selected?: CoreFsSelectedSnapshot | null;
   result?: Record<string, unknown> | null;
+}
+
+export interface CoreFSFamilyReadiness {
+  total: number;
+  processed: number;
+  failed: number;
+  degraded: boolean;
+}
+
+export interface CoreFSSecurityStatus {
+  coreId: string;
+  filesystemAvailable: boolean;
+  readiness: {
+    state: string;
+    catalogGeneration: number | null;
+    processedObjects: number;
+    capabilities: string[];
+    retryable: boolean;
+    families: Record<string, CoreFSFamilyReadiness>;
+  };
+  rotation: {
+    activeFrkVersion: number;
+    pendingFrkVersion: number | null;
+    decryptOnlyFrkVersions: number[];
+    phase: "idle" | "prepared" | "verifying";
+    passwordReopenVerified: boolean;
+    recoveryReopenVerified: boolean;
+    oldKeyRetirementSafe: boolean;
+    oldKeyRetirementBlockers: string[];
+    blindIndexGeneration: number | null;
+    blindIndexPendingGeneration: number | null;
+    blindIndexProgress: number;
+  };
+}
+
+export interface CoreFSRotationResponse {
+  success: boolean;
+  unlockToken: string;
+  activeFrkVersion: number;
+  committedCatalogGeneration: number;
+  resumed: boolean;
 }
 
 export type VaultTransferFormat = "vault_json" | "anima_capsule";

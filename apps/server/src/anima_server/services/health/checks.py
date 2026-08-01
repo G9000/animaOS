@@ -8,6 +8,58 @@ from typing import Any
 from anima_server.services.health.models import CheckResult
 
 
+async def check_corefs_readiness(
+    user_id: int,
+    *,
+    session_store: Any | None = None,
+) -> CheckResult:
+    """Report private-text-free CoreFS index readiness for an active unlock."""
+    start = time.monotonic()
+    if session_store is None:
+        from anima_server.services.sessions import unlock_session_store
+
+        session_store = unlock_session_store
+    index = session_store.get_active_runtime_index(user_id)
+    if index is None:
+        return CheckResult(
+            name="corefs_readiness",
+            status="healthy",
+            message="CoreFS is locked",
+            details={
+                "state": "locked",
+                "catalog_generation": None,
+                "processed_objects": 0,
+                "degraded_families": 0,
+            },
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+
+    snapshot = index.snapshot()
+    degraded_families = sum(int(family.degraded) for family in snapshot.families.values())
+    if degraded_families:
+        health_status = "degraded"
+        message = f"{degraded_families} CoreFS index family/families degraded"
+    elif snapshot.state.value == "ready":
+        health_status = "healthy"
+        message = "CoreFS search index ready"
+    else:
+        health_status = "degraded"
+        message = f"CoreFS index is {snapshot.state.value}"
+    return CheckResult(
+        name="corefs_readiness",
+        status=health_status,
+        message=message,
+        details={
+            "state": snapshot.state.value,
+            "catalog_generation": snapshot.catalog_generation,
+            "processed_objects": snapshot.processed_objects,
+            "degraded_families": degraded_families,
+            "capabilities": sorted(capability.value for capability in snapshot.capabilities),
+        },
+        duration_ms=(time.monotonic() - start) * 1000,
+    )
+
+
 async def check_db_integrity(
     user_id: int,
     *,

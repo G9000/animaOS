@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeDocument
 from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.documents.chunking import chunk_pages_structured
 from anima_server.services.documents.indexing import EmbeddingFn, embed_document_chunks
 from anima_server.services.documents.parsing import (
@@ -165,26 +166,38 @@ def list_reparse_candidates(
     exclusion is a cooldown, not permanent, so a transient failure still gets
     retried later. ``failure_cooldown_hours=None`` (or 0) disables the filter.
     """
+    base_conditions = (
+        RuntimeDocument.user_id == user_id,
+        RuntimeDocument.status == "indexed",
+        RuntimeDocument.parse_quality != PARSE_QUALITY_DOCLING,
+    )
+    if not failure_cooldown_hours:
+        return list(
+            runtime_db.scalars(
+                select(RuntimeDocument.id)
+                .where(*base_conditions)
+                .order_by(RuntimeDocument.id)
+            ).all()
+        )
+
     stmt = (
-        select(RuntimeDocument.id, RuntimeDocument.metadata_json)
+        select(RuntimeDocument)
         .where(
-            RuntimeDocument.user_id == user_id,
-            RuntimeDocument.status == "indexed",
-            RuntimeDocument.parse_quality != PARSE_QUALITY_DOCLING,
+            *base_conditions,
         )
         .order_by(RuntimeDocument.id)
     )
-    rows = runtime_db.execute(stmt).all()
-    if not failure_cooldown_hours:
-        return [doc_id for doc_id, _ in rows]
+    documents = list(runtime_db.scalars(stmt).all())
 
     cutoff = datetime.now(UTC) - timedelta(hours=failure_cooldown_hours)
     candidates: list[int] = []
-    for doc_id, metadata in rows:
-        failed_at = _parse_failed_at((metadata or {}).get(_DOCLING_REPARSE_FAILED_AT_KEY))
+    for document in documents:
+        failed_at = _parse_failed_at(
+            (document.metadata_json or {}).get(_DOCLING_REPARSE_FAILED_AT_KEY)
+        )
         if failed_at is not None and failed_at > cutoff:
             continue
-        candidates.append(doc_id)
+        candidates.append(document.id)
     return candidates
 
 
@@ -206,9 +219,24 @@ def mark_docling_reparse_failed(
         return
     metadata = dict(document.metadata_json or {})
     metadata[_DOCLING_REPARSE_FAILED_AT_KEY] = datetime.now(UTC).isoformat()
-    document.metadata_json = metadata
-    runtime_db.add(document)
-    runtime_db.flush()
+    seal_runtime_fields(
+        runtime_db,
+        row=document,
+        row_type="runtime_document",
+        owner_id=user_id,
+        payload={
+            "filename": document.filename,
+            "mime_type": document.mime_type,
+            "storage_path": document.storage_path,
+            "metadata_json": metadata,
+        },
+        placeholders={
+            "filename": "",
+            "mime_type": "",
+            "storage_path": "",
+            "metadata_json": None,
+        },
+    )
 
 
 def _parse_failed_at(value: object) -> datetime | None:

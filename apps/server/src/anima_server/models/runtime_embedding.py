@@ -56,13 +56,13 @@ class RuntimeEmbedding(RuntimeBase):
         String(64),
         nullable=False,
     )  # SHA-256 of plaintext for staleness detection
-    embedding_checksum: Mapped[str] = mapped_column(
+    embedding_checksum: Mapped[str | None] = mapped_column(
         String(64),
-        nullable=False,
+        nullable=True,
     )
-    embedding: Mapped[Any] = mapped_column(
+    embedding: Mapped[Any | None] = mapped_column(
         _vector_column(),
-        nullable=False,
+        nullable=True,
     )
     content_preview: Mapped[str] = mapped_column(
         String(200),

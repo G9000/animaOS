@@ -21,6 +21,7 @@ def get_default_registry() -> HealthCheckRegistry:
     """Build a registry with all v1 health checks registered."""
     from anima_server.services.health.checks import (
         check_background_tasks,
+        check_corefs_readiness,
         check_db_integrity,
         check_llm_connectivity,
         check_memory_pipeline,
@@ -31,6 +32,7 @@ def get_default_registry() -> HealthCheckRegistry:
     registry.register("db_integrity", check_db_integrity)
     registry.register("llm_connectivity", check_llm_connectivity)
     registry.register("background_tasks", check_background_tasks)
+    registry.register("corefs_readiness", check_corefs_readiness)
     registry.register("memory_pipeline", check_memory_pipeline)
     registry.register("retrieval_capabilities", check_retrieval_capabilities)
     return registry

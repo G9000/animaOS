@@ -22,12 +22,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSON
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, object_session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.db.runtime_base import RuntimeBase
 
@@ -70,6 +72,43 @@ class MemoryCandidate(RuntimeBase):
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
 
 
+@event.listens_for(MemoryCandidate, "load")
+def _hydrate_sealed_memory_candidate(
+    candidate: MemoryCandidate,
+    _context: object,
+) -> None:
+    runtime_db = object_session(candidate)
+    if runtime_db is None or candidate.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="memory_candidate",
+        row_id=int(candidate.id),
+        owner_id=int(candidate.user_id),
+    )
+    if payload is None:
+        return
+    content = payload.get("content")
+    if not isinstance(content, str):
+        raise ValueError("sealed memory candidate content is invalid")
+    tags = payload.get("tags")
+    salience = payload.get("salience")
+    last_error = payload.get("last_error")
+    if tags is not None and not isinstance(tags, list):
+        raise ValueError("sealed memory candidate tags are invalid")
+    if salience is not None and not isinstance(salience, dict):
+        raise ValueError("sealed memory candidate salience is invalid")
+    if last_error is not None and not isinstance(last_error, str):
+        raise ValueError("sealed memory candidate error is invalid")
+    set_committed_value(candidate, "content", content)
+    set_committed_value(candidate, "tags_json", tags)
+    set_committed_value(candidate, "salience_json", salience)
+    if "last_error" in payload:
+        set_committed_value(candidate, "last_error", last_error)
+
+
 class MemoryExtractionFailure(RuntimeBase):
     """Failed turn-level LLM extraction work preserved for retry."""
 
@@ -103,6 +142,43 @@ class MemoryExtractionFailure(RuntimeBase):
     )
 
 
+@event.listens_for(MemoryExtractionFailure, "load")
+def _hydrate_sealed_memory_extraction_failure(
+    failure: MemoryExtractionFailure,
+    _context: object,
+) -> None:
+    runtime_db = object_session(failure)
+    if runtime_db is None or failure.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="memory_extraction_failure",
+        row_id=int(failure.id),
+        owner_id=int(failure.user_id),
+    )
+    if payload is None:
+        return
+    user_preview = payload.get("user_message_preview")
+    assistant_preview = payload.get("assistant_response_preview")
+    failure_reason = payload.get("failure_reason")
+    if user_preview is not None and not isinstance(user_preview, str):
+        raise ValueError("sealed extraction user preview is invalid")
+    if assistant_preview is not None and not isinstance(assistant_preview, str):
+        raise ValueError("sealed extraction assistant preview is invalid")
+    if failure_reason is not None and not isinstance(failure_reason, str):
+        raise ValueError("sealed extraction failure reason is invalid")
+    set_committed_value(failure, "user_message_preview", user_preview)
+    set_committed_value(
+        failure,
+        "assistant_response_preview",
+        assistant_preview,
+    )
+    if failure_reason is not None:
+        set_committed_value(failure, "failure_reason", failure_reason)
+
+
 class ProfileUpdateCandidate(RuntimeBase):
     """Structured user profile update awaiting promotion to the soul DB."""
 
@@ -132,6 +208,43 @@ class ProfileUpdateCandidate(RuntimeBase):
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+
+@event.listens_for(ProfileUpdateCandidate, "load")
+def _hydrate_sealed_profile_update_candidate(
+    candidate: ProfileUpdateCandidate,
+    _context: object,
+) -> None:
+    runtime_db = object_session(candidate)
+    if runtime_db is None or candidate.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="profile_update_candidate",
+        row_id=int(candidate.id),
+        owner_id=int(candidate.user_id),
+    )
+    if payload is None:
+        return
+    key = payload.get("key")
+    value = payload.get("value")
+    evidence_text = payload.get("evidence_text")
+    last_error = payload.get("last_error")
+    if not isinstance(key, str):
+        raise ValueError("sealed profile-update candidate key is invalid")
+    if not isinstance(value, str):
+        raise ValueError("sealed profile-update candidate value is invalid")
+    if evidence_text is not None and not isinstance(evidence_text, str):
+        raise ValueError("sealed profile-update candidate evidence is invalid")
+    if last_error is not None and not isinstance(last_error, str):
+        raise ValueError("sealed profile-update candidate error is invalid")
+    set_committed_value(candidate, "key", key)
+    set_committed_value(candidate, "value", value)
+    set_committed_value(candidate, "evidence_text", evidence_text)
+    if "last_error" in payload:
+        set_committed_value(candidate, "last_error", last_error)
 
 
 class PromotionJournal(RuntimeBase):
@@ -185,6 +298,34 @@ class RuntimeSessionNote(RuntimeBase):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
+
+
+@event.listens_for(RuntimeSessionNote, "load")
+def _hydrate_sealed_runtime_session_note(
+    note: RuntimeSessionNote,
+    _context: object,
+) -> None:
+    runtime_db = object_session(note)
+    if runtime_db is None or note.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="runtime_session_note",
+        row_id=int(note.id),
+        owner_id=int(note.user_id),
+    )
+    if payload is None:
+        return
+    key = payload.get("key")
+    value = payload.get("value")
+    if not isinstance(key, str):
+        raise ValueError("sealed Runtime session-note key is invalid")
+    if not isinstance(value, str):
+        raise ValueError("sealed Runtime session-note value is invalid")
+    set_committed_value(note, "key", key)
+    set_committed_value(note, "value", value)
 
 
 class MemoryAccessLog(RuntimeBase):

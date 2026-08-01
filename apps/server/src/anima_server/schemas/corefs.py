@@ -13,6 +13,7 @@ CoreFsOperation = Literal[
     "glob",
     "grep",
     "read",
+    "search",
     "search_readiness",
     "mkdir",
     "create_file",
@@ -24,6 +25,7 @@ CoreFsOperation = Literal[
 ]
 
 CoreFsPrincipalKind = Literal["user", "anima", "client"]
+CoreFsSearchMode = Literal["exact", "text", "semantic"]
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MAX_LOGICAL_PATH_BYTES = 32 * 1024
@@ -83,8 +85,7 @@ def normalize_logical_path(value: str | None, *, field_name: str) -> str | None:
         if len(part.encode("utf-8")) > _MAX_PORTABLE_NAME_BYTES:
             raise ValueError(f"{field_name} contains a component over the byte limit.")
         if any(char in _AMBIGUOUS_PATH_CHARACTERS for char in part) or any(
-            "\u202a" <= char <= "\u202e" or "\u2066" <= char <= "\u2069"
-            for char in part
+            "\u202a" <= char <= "\u202e" or "\u2066" <= char <= "\u2069" for char in part
         ):
             raise ValueError(f"{field_name} contains an ambiguous Unicode path character.")
         if any(unicodedata.category(char) == "Cc" for char in part):
@@ -101,9 +102,10 @@ def _has_uri_scheme(value: str) -> bool:
     scheme, separator, _rest = first_component.partition(":")
     if not separator or not scheme:
         return False
-    return scheme[0].isascii() and scheme[0].isalpha() and all(
-        (char.isascii() and char.isalnum()) or char in {"+", "-", "."}
-        for char in scheme
+    return (
+        scheme[0].isascii()
+        and scheme[0].isalpha()
+        and all((char.isascii() and char.isalnum()) or char in {"+", "-", "."} for char in scheme)
     )
 
 
@@ -115,6 +117,7 @@ class CoreFsOperationRequest(BaseModel):
     root: str | None = None
     pattern: str | None = None
     query: str | None = None
+    searchMode: CoreFsSearchMode = "text"
     cursorAfter: str | None = None
     globCursorAfter: str | None = None
     grepCursorPath: str | None = None
@@ -147,6 +150,8 @@ class CoreFsOperationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_cursor_generation(self) -> CoreFsOperationRequest:
+        if self.operation == "search" and not (self.query or "").strip():
+            raise ValueError("query is required for search.")
         if self.grepCursorPath is None and (
             self.grepCursorByteOffset is not None or self.grepCursorWalkAfter is not None
         ):

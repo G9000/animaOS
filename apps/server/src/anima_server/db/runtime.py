@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Generator
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
 from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.schema import CreateTable
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ class RuntimeDatabaseEngine(StrEnum):
     POSTGRES = "postgresql"
     SQLITE = "sqlite"
     OTHER = "other"
+
+
+class RuntimeDatabaseBindingCollision(RuntimeError):
+    """Raised when a Runtime database belongs to another Core instance."""
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +136,59 @@ def get_runtime_db() -> Generator[Session, None, None]:
         session.close()
 
 
+def ensure_runtime_database_binding(
+    *,
+    core_id: str,
+    local_instance_id: str,
+) -> None:
+    """Atomically claim the target Runtime database before other DB work."""
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+
+    engine = get_runtime_engine()
+    table = CoreFSRuntimeBinding.__table__
+    now = datetime.now(UTC)
+    values = {
+        "binding_slot": 1,
+        "core_id": core_id,
+        "local_instance_id": local_instance_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    with engine.begin() as connection:
+        connection.execute(CreateTable(table, if_not_exists=True))
+        if connection.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert
+
+            statement = insert(table).values(**values).on_conflict_do_nothing(
+                index_elements=[table.c.binding_slot]
+            )
+            connection.execute(statement)
+        elif connection.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+
+            statement = insert(table).values(**values).on_conflict_do_nothing(
+                index_elements=[table.c.binding_slot]
+            )
+            connection.execute(statement)
+        else:
+            existing = connection.execute(
+                select(table.c.binding_slot).where(table.c.binding_slot == 1)
+            ).first()
+            if existing is None:
+                connection.execute(table.insert().values(**values))
+
+        binding = connection.execute(
+            select(table.c.core_id, table.c.local_instance_id).where(
+                table.c.binding_slot == 1
+            )
+        ).one()
+        if binding != (core_id, local_instance_id):
+            raise RuntimeDatabaseBindingCollision(
+                "Runtime database is already bound to another Core instance"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Alembic migration helper
 # ---------------------------------------------------------------------------
@@ -152,17 +211,11 @@ def ensure_runtime_tables() -> None:
 
 
 def _reconcile_embedding_dimension(engine: Engine) -> None:
-    """Drop and recreate the embeddings table if the vector dimension changed.
+    """Realign the vector column while preserving its source inventory.
 
-    Memory vectors can be rebuilt from ``MemoryItem.embedding_json`` in SQLite.
-    Document vectors only live in this runtime table, so indexed documents
-    with persisted chunks are marked unindexed after a reset and can be
-    re-embedded.
-
-    Uses ``create_all`` (not Alembic) to recreate the table, because
-    Alembic's ``upgrade head`` is a no-op when already at head.  The
-    column type on the ORM model is updated in-place before creating
-    so the new table gets the correct dimension.
+    The non-vector columns link unlock-sealed embedding inputs to their source
+    rows. Preserve that inventory and invalidate only stale vector/checksum
+    fields so the new dimension can rebuild after unlock.
     """
     from anima_server.config import resolve_embedding_dim
 
@@ -190,24 +243,45 @@ def _reconcile_embedding_dimension(engine: Engine) -> None:
             )
         from pgvector.sqlalchemy import Vector
 
-        from anima_server.db.runtime_base import RuntimeBase
         from anima_server.models.runtime_embedding import RuntimeEmbedding
 
-        RuntimeEmbedding.__table__.c.embedding.type = Vector(expected_dim)
-
         with engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS embeddings CASCADE"))
-        RuntimeBase.metadata.create_all(
-            engine, tables=[RuntimeEmbedding.__table__]
-        )
+            realign_runtime_embedding_dimension(conn, dimension=expected_dim)
+        RuntimeEmbedding.__table__.c.embedding.type = Vector(expected_dim)
         _mark_indexed_documents_unindexed_after_embedding_reset(engine)
         logger.info(
-            "Embeddings table recreated with dimension %d. "
+            "Embeddings inventory retained with vector dimension %d. "
             "Background sync will repopulate.",
             expected_dim,
         )
     except Exception:
         logger.debug("Embedding dimension check skipped", exc_info=True)
+
+
+def realign_runtime_embedding_dimension(
+    connection,
+    *,
+    dimension: int,
+) -> None:
+    """Atomically retain embedding inventory while invalidating stale vectors."""
+    if dimension <= 0:
+        raise ValueError("embedding dimension must be positive")
+    connection.execute(text("DROP INDEX IF EXISTS ix_embeddings_hnsw"))
+    connection.execute(
+        text(
+            "ALTER TABLE embeddings "
+            f"ALTER COLUMN embedding TYPE vector({dimension}) "
+            f"USING NULL::vector({dimension})"
+        )
+    )
+    connection.execute(text("UPDATE embeddings SET embedding_checksum = NULL"))
+    connection.execute(
+        text(
+            "CREATE INDEX ix_embeddings_hnsw ON embeddings "
+            "USING hnsw (embedding vector_cosine_ops) "
+            "WITH (m = 16, ef_construction = 64)"
+        )
+    )
 
 
 def _mark_indexed_documents_unindexed_after_embedding_reset(engine: Engine) -> int:

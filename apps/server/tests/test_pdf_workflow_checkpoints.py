@@ -809,6 +809,74 @@ def test_resume_from_approval_reembeds_unindexed_document(
     assert runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id))) == 8
 
 
+def test_approve_pdf_memory_proposals_reembeds_bound_corefs_document(
+    runtime_db: Session,
+    monkeypatch: Any,
+) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    request = _request()
+    run = start_pdf_ingestion_workflow(runtime_db, request)
+    run_pdf_ingestion_until_wait_or_done(
+        runtime_db,
+        workflow_run_id=run.id,
+        dependencies=_dependencies(_Calls()),
+    )
+    document = runtime_db.scalar(
+        select(RuntimeDocument).where(RuntimeDocument.workflow_run_id == run.id)
+    )
+    assert document is not None
+    for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
+        runtime_db.delete(embedding)
+    document.status = "registered"
+    document.indexed_at = None
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.commit()
+    embedding_calls: list[str] = []
+
+    def repair_embedding(text: str) -> list[float]:
+        embedding_calls.append(text)
+        return _embedding(float(len(text)), 2.0)
+
+    approved = approve_pdf_memory_proposals(
+        runtime_db,
+        workflow_run_id=run.id,
+        approved_proposal_indices=[],
+        embedding_fn=repair_embedding,
+    )
+
+    assert approved.status == "completed"
+    assert approved.current_state == "memory_saved"
+    assert embedding_calls == ["manual.pdf alpha", "beta"]
+    runtime_db.refresh(document)
+    assert document.status == "indexed"
+    rows = list(runtime_db.scalars(select(RuntimeEmbedding)).all())
+    assert rows
+    assert all(
+        row.embedding is None and row.embedding_checksum is None for row in rows
+    )
+    runtime_db.commit()
+    assert all(
+        index.runtime_embedding_vector(
+            source_type="document_chunk",
+            source_id=chunk.id,
+        )
+        is not None
+        for chunk in list_document_chunks(runtime_db, document_id=document.id)
+    )
+
+
 def test_duplicate_indexed_pdf_workflow_reuses_existing_index(
     runtime_db: Session,
     monkeypatch: Any,
@@ -984,6 +1052,11 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
     _patch_pgvec_upsert(monkeypatch)
     request = _request()
     indexed_run = start_pdf_ingestion_workflow(runtime_db, request)
@@ -1000,6 +1073,18 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
         chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
 
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    runtime_db.add(
+        CoreFSRuntimeBinding(
+            binding_slot=1,
+            core_id="core-a",
+            local_instance_id="instance-a",
+        )
+    )
+    runtime_db.commit()
+
     duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
     _checkpoint(
         runtime_db,
@@ -1014,6 +1099,23 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
         state_name="text_extracted",
         output_json={"document_id": document.id, "pages": []},
         artifact_refs_json={"document_id": document.id},
+    )
+    text_checkpoint = runtime_db.scalar(
+        select(RuntimeWorkflowCheckpoint).where(
+            RuntimeWorkflowCheckpoint.workflow_run_id == duplicate_run.id,
+            RuntimeWorkflowCheckpoint.state_name == "text_extracted",
+        )
+    )
+    assert text_checkpoint is not None
+    text_checkpoint_id = int(text_checkpoint.id)
+    assert (
+        load_runtime_record(
+            runtime_db,
+            row_type="runtime_workflow_checkpoint",
+            row_id=text_checkpoint_id,
+            owner_id=request.user_id,
+        )
+        is not None
     )
 
     for embedding in runtime_db.scalars(select(RuntimeEmbedding)).all():
@@ -1047,6 +1149,16 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
         chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
     assert resumed_chunk_ids == original_chunk_ids
+    assert runtime_db.get(RuntimeWorkflowCheckpoint, text_checkpoint_id) is None
+    assert (
+        load_runtime_record(
+            runtime_db,
+            row_type="runtime_workflow_checkpoint",
+            row_id=text_checkpoint_id,
+            owner_id=request.user_id,
+        )
+        is None
+    )
 
 
 def test_resume_reused_text_checkpoint_replaces_stale_pages_payload(

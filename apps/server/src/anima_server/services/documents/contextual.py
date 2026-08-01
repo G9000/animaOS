@@ -19,6 +19,10 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocumentChunk
+from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
+    seal_runtime_fields,
+)
 from anima_server.services.documents.store import (
     get_document_for_user,
     list_document_chunks,
@@ -56,9 +60,7 @@ def generate_document_chunk_blurbs(
     """
     if settings.contextual_chunks != "on":
         return 0
-    document = get_document_for_user(
-        runtime_db, user_id=user_id, document_id=document_id
-    )
+    document = get_document_for_user(runtime_db, user_id=user_id, document_id=document_id)
     if document is None:
         return 0
     chunks = list_document_chunks(runtime_db, document_id=document.id)
@@ -66,8 +68,7 @@ def generate_document_chunk_blurbs(
         return 0
     if len(chunks) > settings.contextual_chunks_max_chunks:
         logger.info(
-            "Skipping contextual blurbs for document %s: %d chunks exceeds "
-            "the %d-chunk budget",
+            "Skipping contextual blurbs for document %s: %d chunks exceeds the %d-chunk budget",
             document.id,
             len(chunks),
             settings.contextual_chunks_max_chunks,
@@ -77,9 +78,7 @@ def generate_document_chunk_blurbs(
     pending_chunks = [
         chunk
         for chunk in chunks
-        if not isinstance(
-            (chunk.metadata_json or {}).get(CONTEXT_BLURB_METADATA_KEY), str
-        )
+        if not isinstance((chunk.metadata_json or {}).get(CONTEXT_BLURB_METADATA_KEY), str)
     ]
     if not pending_chunks:
         return 0
@@ -90,8 +89,7 @@ def generate_document_chunk_blurbs(
         _generate_blurbs(
             document_id=document.id,
             prompts=[
-                (chunk.id, _blurb_prompt(document.filename, chunk))
-                for chunk in pending_chunks
+                (chunk.id, _blurb_prompt(document.filename, chunk)) for chunk in pending_chunks
             ],
             llm_client=llm_client,
         )
@@ -106,31 +104,48 @@ def generate_document_chunk_blurbs(
             continue
         metadata = dict(chunk.metadata_json or {})
         metadata[CONTEXT_BLURB_METADATA_KEY] = blurb[:_BLURB_MAX_CHARS]
-        chunk.metadata_json = metadata
-        runtime_db.add(chunk)
+        seal_runtime_fields(
+            runtime_db,
+            row=chunk,
+            row_type="runtime_document_chunk",
+            owner_id=user_id,
+            payload={
+                "content_text": chunk.content_text,
+                "section_title": chunk.section_title,
+                "metadata_json": metadata,
+            },
+            placeholders={
+                "content_text": "",
+                "section_title": None,
+                "metadata_json": None,
+            },
+        )
         blurbed_chunk_ids.append(chunk.id)
         written += 1
     if blurbed_chunk_ids:
         # Embedding validity is keyed on the raw content hash, which a blurb
         # does not change — the old vectors must be dropped or the dense
         # index would never pick up the new contextual text.
-        _delete_chunk_embeddings(runtime_db, chunk_ids=blurbed_chunk_ids)
+        _delete_chunk_embeddings(
+            runtime_db,
+            user_id=user_id,
+            chunk_ids=blurbed_chunk_ids,
+        )
     runtime_db.flush()
     return written
 
 
 def _delete_chunk_embeddings(
-    runtime_db: Session, *, chunk_ids: Sequence[int]
+    runtime_db: Session,
+    *,
+    user_id: int,
+    chunk_ids: Sequence[int],
 ) -> None:
-    from sqlalchemy import delete
-
-    from anima_server.models.runtime_embedding import RuntimeEmbedding
-
-    runtime_db.execute(
-        delete(RuntimeEmbedding).where(
-            RuntimeEmbedding.source_type == "document_chunk",
-            RuntimeEmbedding.source_id.in_(list(chunk_ids)),
-        )
+    delete_runtime_embedding_records(
+        runtime_db,
+        owner_id=user_id,
+        source_type="document_chunk",
+        source_ids=chunk_ids,
     )
 
 

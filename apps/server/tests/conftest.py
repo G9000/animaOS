@@ -218,8 +218,16 @@ def managed_test_client(
 ) -> Generator[TestClient, None, None]:
     temp_root = create_managed_temp_dir(prefix)
     original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
 
     settings.data_dir = temp_root / "anima-data"
+    settings.runtime_app_data_dir = str(temp_root / "runtime-app-data")
+    # The Runtime registry resolves the portable Core path strictly. Provision
+    # the same minimal manifest production creates before the lifespan claims
+    # its machine-local Runtime binding.
+    from anima_server.services.core import ensure_core_manifest
+
+    ensure_core_manifest()
     dispose_cached_engines()
     unlock_session_store.start()
     unlock_session_store.clear()
@@ -243,7 +251,10 @@ def managed_test_client(
         app = main_module.create_app()
 
     try:
-        with patch.object(main_module, "_start_embedded_pg", return_value=None), TestClient(app) as client:
+        with (
+            patch.object(main_module, "_start_embedded_pg", return_value=None),
+            TestClient(app) as client,
+        ):
             yield client
     finally:
         unlock_session_store.clear()
@@ -252,6 +263,7 @@ def managed_test_client(
         reset_vector_store()
         dispose_cached_engines()
         settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
         if invalidate_agent:
             invalidate_agent_runtime_cache()
         sys.modules.pop("anima_server.main", None)

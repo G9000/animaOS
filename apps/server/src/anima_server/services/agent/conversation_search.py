@@ -136,8 +136,6 @@ def _search_messages(
         .where(
             RuntimeMessage.user_id == user_id,
             RuntimeMessage.role.in_(allowed_roles),
-            RuntimeMessage.content_text.is_not(None),
-            RuntimeMessage.content_text != "",
         )
         .order_by(RuntimeMessage.created_at.desc())
         .limit(_CONVERSATION_SEARCH_SCAN_LIMIT)

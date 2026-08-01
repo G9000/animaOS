@@ -301,42 +301,69 @@ async def delete_memory_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Memory item not found",
         )
+    # Walk the full supersession chain (MIH-001): with FK enforcement live,
+    # deleting a successor fires superseded_by's ON DELETE SET NULL and
+    # would RESURRECT its predecessors as active memories. Deleting a memory
+    # deletes the fact, not "roll back to its previous version" — the same
+    # decision forget_memory documents for its own chain walk. Before
+    # enforcement the predecessors survived as hidden zombie rows pointing
+    # at a nonexistent id, which is the same bug wearing a quieter face.
+    chain_items = [existing]
+    frontier = [item_id]
+    while frontier:
+        preds = list(
+            db.scalars(
+                select(MemoryItem).where(
+                    MemoryItem.user_id == user_id,
+                    MemoryItem.superseded_by.in_(frontier),
+                )
+            ).all()
+        )
+        frontier = [p.id for p in preds]
+        chain_items.extend(preds)
+    chain_ids = [item.id for item in chain_items]
+
     db.execute(
         delete(MemoryItemEvidence).where(
             MemoryItemEvidence.user_id == user_id,
-            MemoryItemEvidence.memory_item_id == item_id,
+            MemoryItemEvidence.memory_item_id.in_(chain_ids),
         )
     )
-    # SQLite FK cascades are not enforced, so directly deleting a distilled
-    # tombstone would orphan its TendencyContribution ledger row and leave
-    # the aggregate tendency counting a memory that no longer exists. Scrub
-    # the ledger and recompute affected tendencies via the same right-to-
-    # forget path forget_memory uses.
-    if existing.distilled_at is not None:
+    # A distilled tombstone anywhere in the chain would orphan its
+    # TendencyContribution ledger row and leave the aggregate tendency
+    # counting a memory that no longer exists. Scrub the ledger and recompute
+    # affected tendencies via the same right-to-forget path forget_memory
+    # uses.
+    distilled_ids = [item.id for item in chain_items if item.distilled_at is not None]
+    if distilled_ids:
         from anima_server.services.agent.forgetting import (
             _scrub_tendency_contributions_for_forget,
         )
 
-        _scrub_tendency_contributions_for_forget(db, user_id=user_id, chain_ids=[item_id])
-    # IL6: same unenforced-FK story — remove reconsolidation_log rows for
-    # this item so a direct delete can't orphan them (they're exported and
-    # could reattach to a reused item id).
+        _scrub_tendency_contributions_for_forget(
+            db, user_id=user_id, chain_ids=distilled_ids
+        )
+    # IL6: remove reconsolidation_log rows for the chain so a direct delete
+    # can't orphan them (they're exported and could reattach to a reused
+    # item id).
     from anima_server.models import ReconsolidationLog
 
     db.execute(
         delete(ReconsolidationLog).where(
             ReconsolidationLog.user_id == user_id,
-            ReconsolidationLog.memory_item_id == item_id,
+            ReconsolidationLog.memory_item_id.in_(chain_ids),
         )
     )
-    db.delete(existing)
+    for item in chain_items:
+        db.delete(item)
     db.commit()
-    _remove_from_vector_store(user_id, item_id, db)
-    removed = remove_memory_item_from_retrieval_index_by_id(
-        user_id=user_id,
-        item_id=item_id,
-    )
-    invalidate_memory_retrieval_indexes(user_id, mark_dirty=not removed)
+    for chain_id in chain_ids:
+        _remove_from_vector_store(user_id, chain_id, db)
+        removed = remove_memory_item_from_retrieval_index_by_id(
+            user_id=user_id,
+            item_id=chain_id,
+        )
+        invalidate_memory_retrieval_indexes(user_id, mark_dirty=not removed)
     return {"deleted": True}
 
 

@@ -1,5 +1,8 @@
 import json
 import logging
+import os
+import sys
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +28,8 @@ class Settings(BaseSettings):
     data_dir: Path = DEFAULT_DATA_DIR
     runtime_database_url: str = ""
     runtime_pg_data_dir: str = ""
+    runtime_app_data_dir: str = ""
+    runtime_instance_data_dir: str = ""
     runtime_pool_size: int = 5
     runtime_pool_max_overflow: int = 10
     agent_provider: str = "ollama"
@@ -312,7 +317,42 @@ _PERSISTED_RUNTIME_SETTING_FIELDS: tuple[str, ...] = (
 
 def get_runtime_settings_path() -> Path:
     """Return the local runtime settings file path."""
-    return settings.data_dir / RUNTIME_SETTINGS_FILENAME
+    if settings.runtime_instance_data_dir:
+        return (
+            Path(settings.runtime_instance_data_dir)
+            / "config"
+            / RUNTIME_SETTINGS_FILENAME
+        )
+    app_data_root = (
+        Path(settings.runtime_app_data_dir)
+        if settings.runtime_app_data_dir
+        else default_runtime_app_data_root()
+    )
+    return app_data_root / "unbound" / "config" / RUNTIME_SETTINGS_FILENAME
+
+
+def default_runtime_app_data_root() -> Path:
+    """Return the machine-local application-data root without touching CoreFS."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Local"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        configured = os.environ.get("XDG_DATA_HOME")
+        root = Path(configured) if configured else Path.home() / ".local" / "share"
+    return (root / "anima").expanduser().resolve()
+
+
+def resolve_runtime_path_outside_core(path: Path, *, setting_name: str) -> Path:
+    """Resolve a machine-local Runtime path and reject portable-Core overlap."""
+    resolved = path.expanduser().resolve()
+    portable_core = settings.data_dir.expanduser().resolve()
+    if resolved.is_relative_to(portable_core) or portable_core.is_relative_to(
+        resolved
+    ):
+        raise RuntimeError(f"{setting_name} must not overlap the portable Core")
+    return resolved
 
 
 def load_persisted_runtime_settings() -> None:
@@ -372,8 +412,22 @@ def persist_runtime_settings() -> Path:
         payload[field] = str(getattr(settings, field, ""))
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2,
-                    sort_keys=True) + "\n", encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return path
 
 

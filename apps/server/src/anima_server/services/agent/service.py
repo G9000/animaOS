@@ -132,6 +132,10 @@ from anima_server.services.agent.tool_context import (
 )
 from anima_server.services.agent.tools import get_tools, prepare_action_tool_schemas
 from anima_server.services.agent.turn_coordinator import get_thread_lock, get_user_creation_lock
+from anima_server.services.corefs.sealed_runtime import (
+    reseal_runtime_message,
+    runtime_private_exact_lookup_value,
+)
 from anima_server.services.data_crypto import df
 from anima_server.services.documents.rag import DocumentRagResult, search_document_chunks
 from anima_server.services.documents.store import get_document_for_user, list_document_chunks
@@ -296,9 +300,7 @@ async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> Ru
     was_active = run.status not in ("completed", "failed", "cancelled")
     run = cancel_run(runtime_db, run_id)
     companion = get_companion(user_id)
-    if companion is not None and (
-        was_active or companion.get_cancel_event(run_id) is not None
-    ):
+    if companion is not None and (was_active or companion.get_cancel_event(run_id) is not None):
         # Only signal when a turn can still observe it: an in-flight turn
         # pops its event in Stage 2's finally, but a pre-set event created
         # for a long-terminal run would sit in the map forever.
@@ -307,7 +309,9 @@ async def cancel_agent_run(run_id: int, user_id: int, runtime_db: Session) -> Ru
     return run
 
 
-async def dry_run_agent(user_message: str, user_id: int, db: Session, runtime_db: Session) -> DryRunResult:
+async def dry_run_agent(
+    user_message: str, user_id: int, db: Session, runtime_db: Session
+) -> DryRunResult:
     """Execute a dry run: build the full prompt but do not call the LLM.
 
     Does not create any DB records (threads, messages, runs).
@@ -367,8 +371,7 @@ async def approve_or_deny_turn(
     runtime_db: Session,
     *,
     denial_reason: str | None = None,
-    event_callback: Callable[[AgentStreamEvent],
-                             Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
 ) -> AgentResult:
     row = runtime_db.execute(
         select(RuntimeRun.thread_id, RuntimeRun.user_id, RuntimeRun.status).where(
@@ -405,8 +408,7 @@ async def _approve_or_deny_turn_locked(
     runtime_db: Session,
     *,
     denial_reason: str | None = None,
-    event_callback: Callable[[AgentStreamEvent],
-                             Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
 ) -> AgentResult:
     """Resume a turn after an approval decision.
 
@@ -443,8 +445,7 @@ async def _approve_or_deny_turn_locked(
 
     history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
     memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
-    conversation_turn_count = count_messages_by_role(
-        runtime_db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
     cancel_event = companion.create_cancel_event(run.id)
     set_tool_context(
@@ -518,11 +519,9 @@ async def _approve_or_deny_turn_locked(
         run_id=run.id,
         trigger_token_limit=max(
             1,
-            int(resolve_context_budget_tokens() *
-                settings.agent_compaction_trigger_ratio),
+            int(resolve_context_budget_tokens() * settings.agent_compaction_trigger_ratio),
         ),
-        keep_last_messages=max(
-            1, settings.agent_compaction_keep_last_messages),
+        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
         reserved_prompt_tokens=(
             result.prompt_budget.system_prompt_token_estimate
             if result.prompt_budget is not None
@@ -671,8 +670,7 @@ async def _execute_agent_turn(
     runtime_db: Session,
     *,
     thread_id: int | None = None,
-    event_callback: Callable[[AgentStreamEvent],
-                             Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
@@ -752,8 +750,7 @@ async def _execute_agent_turn_locked(
     runtime_db: Session,
     *,
     thread_id: int | None = None,
-    event_callback: Callable[[AgentStreamEvent],
-                             Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
@@ -784,8 +781,7 @@ async def _execute_agent_turn_locked(
     # "running" forever.
     try:
         if event_callback is not None:
-            await event_callback(
-                build_run_started_event(run_id=run.id, thread_id=thread.id))
+            await event_callback(build_run_started_event(run_id=run.id, thread_id=thread.id))
 
         # Stage 1b: Proactive context management — compact before the LLM
         # call if estimated context usage already exceeds the threshold.
@@ -1022,8 +1018,7 @@ async def _prepare_turn_context(
     runtime_db: Session,
     *,
     thread_id: int | None = None,
-    event_callback: Callable[[AgentStreamEvent],
-                             Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     source: str | None = None,
     attachments: Sequence[ChatRequestAttachment] = (),
     document_ids: Sequence[int] = (),
@@ -1046,8 +1041,7 @@ async def _prepare_turn_context(
     if thread_id is not None:
         thread = runtime_db.get(RuntimeThread, thread_id)
         if thread is None or thread.user_id != user_id:
-            raise ValueError(
-                f"Thread {thread_id} not found for user {user_id}")
+            raise ValueError(f"Thread {thread_id} not found for user {user_id}")
         if thread.status != "active":
             dek = await get_active_dek_async(user_id, "conversations")
             displaced_thread_ids = reactivate_thread_if_needed(
@@ -1067,7 +1061,7 @@ async def _prepare_turn_context(
     else:
         thread = get_or_create_thread(runtime_db, user_id)
 
-    maybe_set_thread_title(thread, user_message)
+    maybe_set_thread_title(runtime_db, thread, user_message)
     prev_thread_id = companion.thread_id
     companion.thread_id = thread.id
     if prev_thread_id != thread.id:
@@ -1102,9 +1096,7 @@ async def _prepare_turn_context(
             count=context_sequence_count + 1,
         )
         persisted_context_messages: list[RuntimeMessage] = []
-        for offset, (context_message, cleaned_content) in enumerate(
-            cleaned_context_messages
-        ):
+        for offset, (context_message, cleaned_content) in enumerate(cleaned_context_messages):
             content_json = attach_serialized_pills(
                 None,
                 [_serialize_context_pill(pill) for pill in context_message.pills],
@@ -1141,8 +1133,7 @@ async def _prepare_turn_context(
                 document_ids=document_ids,
             ),
         )
-        conversation_turn_count = count_messages_by_role(
-            runtime_db, thread.id, "user")
+        conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
     except Exception:
         _delete_prepared_attachments(prepared_attachments)
         raise
@@ -1243,8 +1234,7 @@ def _fail_turn_setup(
             mark_run_failed(runtime_db, run, str(exc))
         runtime_db.commit()
     except Exception:
-        logger.exception(
-            "Failed to clean up run %s after turn-setup failure", run.id)
+        logger.exception("Failed to clean up run %s after turn-setup failure", run.id)
         with contextlib.suppress(Exception):
             runtime_db.rollback()
 
@@ -1289,8 +1279,7 @@ async def _assemble_turn_context(
                 run_soul_writer(user_id, ops_only=True)
             )
     except Exception:
-        logger.debug("Pre-turn Soul Writer check failed for user %s",
-                     user_id, exc_info=True)
+        logger.debug("Pre-turn Soul Writer check failed for user %s", user_id, exc_info=True)
 
     # Semantic retrieval is always per-turn (query-dependent).
     semantic_results: list[tuple[int, str, float]] | None = None
@@ -1536,7 +1525,10 @@ async def _process_feedback_signals_background(
             if not signals:
                 return
             record_feedback_signals(
-                soul_db, user_id=user_id, signals=signals, runtime_db=bg_runtime_db,
+                soul_db,
+                user_id=user_id,
+                signals=signals,
+                runtime_db=bg_runtime_db,
             )
             # When a correction is detected, fix the underlying memory
             if any(s.signal_type == "correction" for s in signals):
@@ -1733,9 +1725,7 @@ def _build_assistant_source_pills(
         if turn_ctx.document_source_pills:
             pills.extend(turn_ctx.document_source_pills)
         else:
-            pills.append(
-                {"kind": "document_source", "label": "CITED DOCS", "ref": None}
-            )
+            pills.append({"kind": "document_source", "label": "CITED DOCS", "ref": None})
     for attachment in turn_ctx.attachments:
         pill: dict[str, object] = {
             "kind": "image_source",
@@ -1746,9 +1736,7 @@ def _build_assistant_source_pills(
         if attachment.asset_id is not None:
             pill["assetId"] = attachment.asset_id
         if source_message is not None:
-            pill["url"] = (
-                f"/api/chat/messages/{source_message.id}/attachments/{attachment.id}"
-            )
+            pill["url"] = f"/api/chat/messages/{source_message.id}/attachments/{attachment.id}"
             pill["messageId"] = source_message.id
             pill["threadId"] = source_message.thread_id
             pill["attachmentId"] = attachment.id
@@ -1801,9 +1789,7 @@ def _build_document_context_block(
         if not owned_document_ids:
             return None
         cleaned_document_ids = owned_document_ids
-    query = user_message.strip() or _default_document_only_user_message(
-        cleaned_document_ids
-    )
+    query = user_message.strip() or _default_document_only_user_message(cleaned_document_ids)
 
     # Full-document context: when the combined text of every selected
     # document fits the window-scaled budget, inject the whole documents
@@ -1938,9 +1924,7 @@ def _build_document_context_block(
             if document is not None:
                 selected_lines.append(f"- doc:{document.id} {document.filename}")
     except Exception:
-        logger.debug(
-            "Selected document listing failed for user %s", user_id, exc_info=True
-        )
+        logger.debug("Selected document listing failed for user %s", user_id, exc_info=True)
         selected_lines = []
     if selected_lines:
         lines.append("")
@@ -1984,7 +1968,7 @@ def _full_document_texts(
     budget_chars = resolve_document_context_budget_chars()
 
     # Cheap admission check: reject an oversized selection via a SQL length
-    # aggregate BEFORE loading any chunk body. `SUM(LENGTH(content_text))` is
+    # aggregate BEFORE loading any chunk body. `SUM(content_char_count)` is
     # a strict lower bound of the assembled text length (assembly still adds
     # "\n\n" separators between chunks and per-document markers on top), so
     # rejecting when the aggregate alone exceeds budget is always correct.
@@ -1996,7 +1980,7 @@ def _full_document_texts(
     # through to the existing path) on any query error rather than crash.
     try:
         chunk_length_sum = runtime_db.scalar(
-            select(func.sum(func.length(RuntimeDocumentChunk.content_text))).where(
+            select(func.sum(RuntimeDocumentChunk.content_char_count)).where(
                 RuntimeDocumentChunk.document_id.in_(document_ids),
                 RuntimeDocumentChunk.user_id == user_id,
             )
@@ -2130,11 +2114,7 @@ def _raw_document_results_without_compiled_coverage(
             exc_info=True,
         )
         return list(results)
-    return [
-        result
-        for result in results
-        if result.chunk_id not in covered_chunk_ids
-    ]
+    return [result for result in results if result.chunk_id not in covered_chunk_ids]
 
 
 def _compiled_document_chunk_ids(
@@ -2191,9 +2171,9 @@ def _document_knowledge_hits(
             .where(
                 RuntimeKnowledgeConcept.user_id == user_id,
                 RuntimeKnowledgeConcept.status == "active",
-                RuntimeKnowledgeConcept.metadata_json[
-                    "compiled_from_source_id"
-                ].as_integer().in_(source_ids),
+                RuntimeKnowledgeConcept.metadata_json["compiled_from_source_id"]
+                .as_integer()
+                .in_(source_ids),
             )
             .order_by(
                 RuntimeKnowledgeConcept.updated_at.desc(),
@@ -2237,9 +2217,7 @@ def _query_matched_document_concepts(
     if not chunk_ids:
         return []
     concepts_by_id = {
-        concept.id: concept
-        for concept in concepts
-        if concept.concept_type != "source_summary"
+        concept.id: concept for concept in concepts if concept.concept_type != "source_summary"
     }
     if not concepts_by_id:
         return []
@@ -2281,6 +2259,15 @@ def _document_source_ids(
     source_uris = [f"runtime-document://{document_id}" for document_id in document_ids]
     if not source_uris:
         return []
+    source_uris = [
+        runtime_private_exact_lookup_value(
+            runtime_db,
+            owner_id=user_id,
+            value=source_uri,
+            namespace="runtime_source.source_uri",
+        )
+        for source_uri in source_uris
+    ]
     return list(
         runtime_db.scalars(
             select(RuntimeSource.id).where(
@@ -2460,8 +2447,7 @@ async def _invoke_turn_runtime(
     run: RuntimeRun,
     user_msg: RuntimeMessage,
     turn_ctx: _TurnContext,
-    event_callback: Callable[[AgentStreamEvent],
-                             Awaitable[None]] | None = None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     cancel_event: asyncio.Event | None = None,
     tool_delegate: Callable[..., Awaitable[Any]] | None = None,
     delegated_tool_names: frozenset[str] = frozenset(),
@@ -2501,8 +2487,7 @@ async def _invoke_turn_runtime(
 
         prepared_action_schemas: list[dict[str, Any]] = []
         if extra_tool_schemas:
-            prepared_action_schemas = prepare_action_tool_schemas(
-                extra_tool_schemas)
+            prepared_action_schemas = prepare_action_tool_schemas(extra_tool_schemas)
         if tool_delegate:
             tool_executor = ToolExecutor(
                 get_tools(),
@@ -2536,9 +2521,15 @@ async def _invoke_turn_runtime(
                 "Context overflow detected — compacted %d messages, retrying",
                 compacted.compacted_message_count,
             )
-            health_emit("llm", "compaction", "info", user_id=user_id, data={
-                "compacted_messages": compacted.compacted_message_count,
-            })
+            health_emit(
+                "llm",
+                "compaction",
+                "info",
+                user_id=user_id,
+                data={
+                    "compacted_messages": compacted.compacted_message_count,
+                },
+            )
 
             # Post-compaction: promote pending candidates
             try:
@@ -2546,8 +2537,7 @@ async def _invoke_turn_runtime(
 
                 await run_soul_writer(user_id)
             except Exception:
-                logger.debug(
-                    "Post-emergency-compaction Soul Writer failed", exc_info=True)
+                logger.debug("Post-emergency-compaction Soul Writer failed", exc_info=True)
 
             turn_ctx = _rebuild_turn_context_after_compaction(
                 runtime_db,
@@ -2634,8 +2624,7 @@ async def _proactive_compact_if_needed(
     history_chars = sum(len(m.content or "") for m in turn_ctx.history)
     estimated_tokens = estimate_char_tokens(block_chars + history_chars)
 
-    threshold = int(resolve_context_budget_tokens() *
-                    settings.agent_compaction_trigger_ratio)
+    threshold = int(resolve_context_budget_tokens() * settings.agent_compaction_trigger_ratio)
     if estimated_tokens <= threshold:
         return turn_ctx
 
@@ -2649,8 +2638,7 @@ async def _proactive_compact_if_needed(
         thread=thread,
         run_id=run.id,
         trigger_token_limit=threshold,
-        keep_last_messages=max(
-            1, settings.agent_compaction_keep_last_messages),
+        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
         reserved_prompt_tokens=estimate_char_tokens(block_chars),
     )
     if result is None:
@@ -2696,10 +2684,7 @@ def _should_retry_after_compaction(exc: StepFailedError) -> bool:
         return False
     if not isinstance(exc.cause, ContextWindowOverflowError):
         return False
-    return (
-        exc.context.step_index == 0
-        and exc.progression < StepProgression.TOOLS_STARTED
-    )
+    return exc.context.step_index == 0 and exc.progression < StepProgression.TOOLS_STARTED
 
 
 def _emergency_compact(
@@ -2739,8 +2724,7 @@ def _rebuild_turn_context_after_compaction(
     companion = _get_companion(user_id)
     companion.invalidate_history(thread_id=thread.id)
     history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
-    conversation_turn_count = count_messages_by_role(
-        runtime_db, thread.id, "user")
+    conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
     return _TurnContext(
         history=history,
         conversation_turn_count=conversation_turn_count,
@@ -2890,6 +2874,7 @@ def _remove_failed_turn_image_links(
         return
 
     _remove_failed_turn_attachment_metadata(
+        runtime_db,
         user_msg,
         attachment_ids={attachment_id for attachment_id, _image_asset_id in link_rows},
         image_asset_ids=image_asset_ids,
@@ -2913,6 +2898,7 @@ def _remove_failed_turn_image_links(
 
 
 def _remove_failed_turn_attachment_metadata(
+    runtime_db: Session,
     user_msg: RuntimeMessage,
     *,
     attachment_ids: set[str],
@@ -2942,7 +2928,11 @@ def _remove_failed_turn_attachment_metadata(
         next_content_json[ATTACHMENTS_CONTENT_KEY] = filtered_attachments
     else:
         next_content_json.pop(ATTACHMENTS_CONTENT_KEY, None)
-    user_msg.content_json = next_content_json or None
+    reseal_runtime_message(
+        runtime_db,
+        user_msg,
+        content_json=next_content_json or None,
+    )
 
 
 def _is_failed_turn_attachment(
@@ -3019,12 +3009,12 @@ def _persist_approval_checkpoint(
 
     if pending_tool_call is None:
         mark_run_failed(
-            runtime_db, run, "Could not reconstruct pending tool call for approval checkpoint")
+            runtime_db, run, "Could not reconstruct pending tool call for approval checkpoint"
+        )
         runtime_db.commit()
         return None
 
-    seq_id = reserve_message_sequences(
-        runtime_db, thread_id=thread.id, count=1)
+    seq_id = reserve_message_sequences(runtime_db, thread_id=thread.id, count=1)
     save_approval_checkpoint(
         runtime_db,
         thread=thread,
@@ -3114,11 +3104,12 @@ async def _compact_thread_in_background(
                     run_id=run_id,
                     trigger_token_limit=max(
                         1,
-                        int(resolve_context_budget_tokens() *
-                            settings.agent_compaction_trigger_ratio),
+                        int(
+                            resolve_context_budget_tokens()
+                            * settings.agent_compaction_trigger_ratio
+                        ),
                     ),
-                    keep_last_messages=max(
-                        1, settings.agent_compaction_keep_last_messages),
+                    keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
                     reserved_prompt_tokens=reserved_prompt_tokens,
                 )
 
@@ -3126,7 +3117,8 @@ async def _compact_thread_in_background(
                 compaction_result = None
                 try:
                     compaction_result = await compact_thread_context_with_llm(
-                        runtime_db, **compaction_kwargs)
+                        runtime_db, **compaction_kwargs
+                    )
                 except Exception:
                     logger.warning(
                         "LLM compaction failed for thread %s; falling back "
@@ -3137,8 +3129,7 @@ async def _compact_thread_in_background(
 
                 # Fall back to fast text-based compaction if LLM didn't trigger
                 if compaction_result is None:
-                    compaction_result = compact_thread_context(
-                        runtime_db, **compaction_kwargs)
+                    compaction_result = compact_thread_context(runtime_db, **compaction_kwargs)
 
                 runtime_db.commit()
                 if compaction_result is not None:
@@ -3148,8 +3139,7 @@ async def _compact_thread_in_background(
                         thread_id=thread_id,
                     )
     except Exception:
-        logger.exception(
-            "Post-turn compaction failed for thread %s", thread_id)
+        logger.exception("Post-turn compaction failed for thread %s", thread_id)
 
 
 def _extract_inner_thoughts(result: AgentResult) -> str:
@@ -3374,9 +3364,7 @@ def _experience_approach(result: AgentResult) -> str:
 
 def _experience_quality(result: AgentResult) -> float:
     any_error = any(
-        tool_result.is_error
-        for trace in result.step_traces
-        for tool_result in trace.tool_results
+        tool_result.is_error for trace in result.step_traces for tool_result in trace.tool_results
     )
     if any_error and result.response:
         return 0.55
@@ -3459,7 +3447,9 @@ async def stream_agent(
             yield event
 
 
-def list_agent_history(user_id: int, runtime_db: Session, *, limit: int = 50) -> list[RuntimeMessage]:
+def list_agent_history(
+    user_id: int, runtime_db: Session, *, limit: int = 50
+) -> list[RuntimeMessage]:
     return list_transcript_messages(
         runtime_db,
         user_id=user_id,

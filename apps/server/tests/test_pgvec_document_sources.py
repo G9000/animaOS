@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import bm25_index as bm25_module
+from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent import vector_store as vector_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.pgvec_store import PgVecStore
@@ -54,10 +55,25 @@ def _compiled_sql(stmt: Any) -> str:
     )
 
 
-def test_pgvec_upsert_source_builds_source_aware_upsert() -> None:
+def test_pgvec_upsert_source_builds_source_aware_upsert(monkeypatch) -> None:
     db = FakeSession()
     embedding = [0.1, 0.2, 0.3]
     runtime_embedding = np.array(embedding, dtype=np.float32).tolist()
+    sealed_payloads: list[dict[str, object]] = []
+
+    def capture_sealed_preview(
+        _db: object,
+        *,
+        payload: dict[str, object],
+        **_kwargs: object,
+    ) -> None:
+        sealed_payloads.append(payload)
+
+    monkeypatch.setattr(
+        pgvec_module,
+        "seal_runtime_fields",
+        capture_sealed_preview,
+    )
 
     PgVecStore(db).upsert_source(
         7,
@@ -75,9 +91,10 @@ def test_pgvec_upsert_source_builds_source_aware_upsert() -> None:
     assert params["content_hash"] == hashlib.sha256(b"document chunk content").hexdigest()
     assert params["embedding_checksum"] == compute_embedding_checksum(runtime_embedding)
     assert params["embedding"] == runtime_embedding
-    assert params["content_preview"] == "document chunk content"
+    assert params["content_preview"] == ""
     assert params["category"] == "document"
     assert params["importance"] == 3
+    assert sealed_payloads == [{"content_preview": "document chunk content"}]
 
 
 def test_pgvec_memory_upsert_delegates_to_memory_source(monkeypatch) -> None:
@@ -193,9 +210,7 @@ def test_source_specific_delete_removes_only_matching_source() -> None:
     store.delete_source(1, source_type="document_chunk", source_id=42)
 
     results = store.search_by_vector(1, query_embedding=[1.0, 0.0], limit=10)
-    assert [(result.source_type, result.item_id) for result in results] == [
-        ("memory_item", 42)
-    ]
+    assert [(result.source_type, result.item_id) for result in results] == [("memory_item", 42)]
 
 
 def test_public_memory_api_still_searches_memory_rows() -> None:
@@ -313,7 +328,7 @@ def test_get_collection_count_returns_only_memory_rows_when_documents_exist() ->
         reset_vector_store()
 
 
-def test_pgvec_delete_source_builds_source_specific_delete() -> None:
+def test_pgvec_delete_source_selects_exact_rows_for_lifecycle_cleanup() -> None:
     db = FakeSession()
 
     PgVecStore(db).delete_source(9, source_type="document_chunk", source_id=77)
@@ -322,7 +337,7 @@ def test_pgvec_delete_source_builds_source_specific_delete() -> None:
     sql = _compiled_sql(db.statements[0])
     assert "embeddings.user_id = 9" in sql
     assert "embeddings.source_type = 'document_chunk'" in sql
-    assert "embeddings.source_id = 77" in sql
+    assert "embeddings.source_id IN (77)" in sql
 
 
 def test_pgvec_count_source_filters_by_source_type() -> None:
@@ -373,9 +388,7 @@ def test_pgvec_search_source_ids_adds_sql_filter() -> None:
 
 def test_pgvec_search_source_id_query_adds_sql_filter() -> None:
     db = FakeSession()
-    source_query = select(RuntimeEmbedding.source_id).where(
-        RuntimeEmbedding.category == "document"
-    )
+    source_query = select(RuntimeEmbedding.source_id).where(RuntimeEmbedding.category == "document")
 
     PgVecStore(db).search_by_vector(
         2,

@@ -18,6 +18,11 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.services.agent.json_utils import parse_json_object
+from anima_server.services.corefs.sealed_runtime import (
+    delete_sealed_runtime_records,
+    runtime_private_lookup_value,
+    seal_runtime_fields,
+)
 from anima_server.services.ingestion.retrieval import (
     EmbeddingFn,
     upsert_concept_embedding,
@@ -29,6 +34,9 @@ from anima_server.services.ingestion.sources import (
 )
 
 CompileMode = Literal["initial", "refresh", "repair"]
+KNOWLEDGE_LINK_TYPES = frozenset(
+    {"mentions", "supports", "contradicts", "depends_on", "updates", "related"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +155,17 @@ def _merge_concepts(
             raise ValueError("Compiler concept entries must be objects.")
         concept_type = _required_str(payload, "type")
         slug = _required_okf_slug(payload, "slug")
+        slug_lookup = runtime_private_lookup_value(
+            db,
+            owner_id=user_id,
+            value=slug,
+        )
+        concept_type_lookup = runtime_private_lookup_value(
+            db,
+            owner_id=user_id,
+            value=concept_type,
+            max_length=48,
+        )
         title = _required_str(payload, "title")
         body_markdown = _required_str(payload, "body_markdown")
         description = _optional_str(payload, "description")
@@ -155,27 +174,31 @@ def _merge_concepts(
             db,
             user_id=user_id,
             concept_type=concept_type,
-            slug=slug,
+            slug=slug_lookup,
             title=title,
             merge_confidence=_optional_float(payload, "merge_confidence"),
         )
         if concept is None:
+            persisted_slug = slug
             concept = RuntimeKnowledgeConcept(
                 user_id=user_id,
-                concept_type=concept_type,
-                slug=slug,
-                title=title,
-                description=description,
-                body_markdown=body_markdown,
+                concept_type=concept_type_lookup,
+                slug=slug_lookup,
+                title="",
+                description=None,
+                body_markdown="",
                 frontmatter_json={},
                 content_hash=_content_hash(body_markdown),
                 status="active",
             )
-        concept.concept_type = concept_type
-        concept.title = title
-        concept.description = description
-        concept.body_markdown = body_markdown
-        concept.frontmatter_json = {
+        else:
+            persisted_slug = concept.slug
+        persisted_slug_lookup = runtime_private_lookup_value(
+            db,
+            owner_id=user_id,
+            value=persisted_slug,
+        )
+        frontmatter = {
             "type": concept_type,
             "title": title,
             "description": description,
@@ -186,13 +209,34 @@ def _merge_concepts(
                 "source_count": len(payload.get("source_span_ids", []) or []),
             },
         }
+        concept.concept_type = concept_type_lookup
         concept.metadata_json = {"compiled_from_source_id": source.id}
         concept.content_hash = _content_hash(body_markdown)
         concept.status = "active"
         concept.compiled_at = now
         concept.updated_at = now
-        db.add(concept)
-        db.flush()
+        seal_runtime_fields(
+            db,
+            row=concept,
+            row_type="runtime_knowledge_concept",
+            owner_id=user_id,
+            payload={
+                "concept_type": concept_type,
+                "slug": persisted_slug,
+                "title": title,
+                "description": description,
+                "body_markdown": body_markdown,
+                "frontmatter_json": frontmatter,
+            },
+            placeholders={
+                "concept_type": concept_type_lookup,
+                "slug": persisted_slug_lookup,
+                "title": "",
+                "description": None,
+                "body_markdown": "",
+                "frontmatter_json": {},
+            },
+        )
         _replace_concept_sources(
             db,
             user_id=user_id,
@@ -213,21 +257,16 @@ def _retire_stale_source_concepts(
     active_concepts: Sequence[RuntimeKnowledgeConcept],
 ) -> list[RuntimeKnowledgeConcept]:
     active_ids = {concept.id for concept in active_concepts}
-    source_citation_concept_ids = select(
-        RuntimeKnowledgeConceptSource.concept_id
-    ).where(
+    source_citation_concept_ids = select(RuntimeKnowledgeConceptSource.concept_id).where(
         RuntimeKnowledgeConceptSource.user_id == user_id,
         RuntimeKnowledgeConceptSource.source_id == source.id,
-        RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string()
-        == "llm_wiki",
+        RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string() == "llm_wiki",
     )
     stmt = select(RuntimeKnowledgeConcept).where(
         RuntimeKnowledgeConcept.user_id == user_id,
         RuntimeKnowledgeConcept.status == "active",
         or_(
-            RuntimeKnowledgeConcept.metadata_json[
-                "compiled_from_source_id"
-            ].as_integer()
+            RuntimeKnowledgeConcept.metadata_json["compiled_from_source_id"].as_integer()
             == source.id,
             RuntimeKnowledgeConcept.id.in_(source_citation_concept_ids),
         ),
@@ -237,15 +276,29 @@ def _retire_stale_source_concepts(
     stale_concepts = list(db.scalars(stmt).all())
     now = datetime.now(UTC)
     for concept in stale_concepts:
+        stale_citation_ids = list(
+            db.scalars(
+                select(RuntimeKnowledgeConceptSource.id).where(
+                    RuntimeKnowledgeConceptSource.user_id == user_id,
+                    RuntimeKnowledgeConceptSource.concept_id == concept.id,
+                    RuntimeKnowledgeConceptSource.source_id == source.id,
+                    RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string()
+                    == "llm_wiki",
+                )
+            ).all()
+        )
+        delete_sealed_runtime_records(
+            db,
+            row_type="runtime_knowledge_concept_source",
+            row_ids=stale_citation_ids,
+            owner_id=user_id,
+        )
         db.execute(
             delete(RuntimeKnowledgeConceptSource).where(
                 RuntimeKnowledgeConceptSource.user_id == user_id,
                 RuntimeKnowledgeConceptSource.concept_id == concept.id,
                 RuntimeKnowledgeConceptSource.source_id == source.id,
-                RuntimeKnowledgeConceptSource.metadata_json[
-                    "compiler"
-                ].as_string()
-                == "llm_wiki",
+                RuntimeKnowledgeConceptSource.metadata_json["compiler"].as_string() == "llm_wiki",
             )
         )
         remaining_source_id = db.scalar(
@@ -327,10 +380,18 @@ def _concepts_by_payload_and_merged_slug(
     }
     missing_slugs = referenced_slugs - concepts_by_slug.keys()
     if missing_slugs:
+        missing_slug_lookups = [
+            runtime_private_lookup_value(
+                db,
+                owner_id=user_id,
+                value=slug,
+            )
+            for slug in missing_slugs
+        ]
         existing_concepts = db.scalars(
             select(RuntimeKnowledgeConcept).where(
                 RuntimeKnowledgeConcept.user_id == user_id,
-                RuntimeKnowledgeConcept.slug.in_(missing_slugs),
+                RuntimeKnowledgeConcept.slug.in_(missing_slug_lookups),
             )
         ).all()
         for concept in existing_concepts:
@@ -347,6 +408,21 @@ def _replace_concept_sources(
     span_ids: list[int],
     spans_by_id: dict[int, RuntimeSourceSpan],
 ) -> None:
+    previous_citation_ids = list(
+        db.scalars(
+            select(RuntimeKnowledgeConceptSource.id).where(
+                RuntimeKnowledgeConceptSource.user_id == user_id,
+                RuntimeKnowledgeConceptSource.concept_id == concept.id,
+                RuntimeKnowledgeConceptSource.source_id == source.id,
+            )
+        ).all()
+    )
+    delete_sealed_runtime_records(
+        db,
+        row_type="runtime_knowledge_concept_source",
+        row_ids=previous_citation_ids,
+        owner_id=user_id,
+    )
     db.execute(
         delete(RuntimeKnowledgeConceptSource).where(
             RuntimeKnowledgeConceptSource.user_id == user_id,
@@ -354,24 +430,27 @@ def _replace_concept_sources(
             RuntimeKnowledgeConceptSource.source_id == source.id,
         )
     )
-    citations: list[RuntimeKnowledgeConceptSource] = []
     for index, span_id in enumerate(span_ids, start=1):
         span = spans_by_id.get(span_id)
         if span is None:
             raise ValueError(f"Compiler referenced unknown span id {span_id}.")
-        citations.append(
-            RuntimeKnowledgeConceptSource(
-                user_id=user_id,
-                concept_id=concept.id,
-                source_id=source.id,
-                span_id=span.id,
-                citation_label=f"S{index}",
-                quote_text=span.content_text,
-                metadata_json={"compiler": "llm_wiki"},
-            )
+        citation = RuntimeKnowledgeConceptSource(
+            user_id=user_id,
+            concept_id=concept.id,
+            source_id=source.id,
+            span_id=span.id,
+            citation_label=f"S{index}",
+            quote_text=None,
+            metadata_json={"compiler": "llm_wiki"},
         )
-    db.add_all(citations)
-    db.flush()
+        seal_runtime_fields(
+            db,
+            row=citation,
+            row_type="runtime_knowledge_concept_source",
+            owner_id=user_id,
+            payload={"quote_text": span.content_text},
+            placeholders={"quote_text": None},
+        )
 
 
 def _merge_links(
@@ -391,6 +470,8 @@ def _merge_links(
         if source is None or target is None or source.id == target.id:
             continue
         link_type = _required_str(payload, "link_type")
+        if link_type not in KNOWLEDGE_LINK_TYPES:
+            continue
         link_key = (source.id, target.id, link_type)
         if link_key in seen_links:
             continue
@@ -434,6 +515,12 @@ def _find_merge_target(
     title: str,
     merge_confidence: float | None,
 ) -> RuntimeKnowledgeConcept | None:
+    concept_type_lookup = runtime_private_lookup_value(
+        db,
+        owner_id=user_id,
+        value=concept_type,
+        max_length=48,
+    )
     exact = db.scalar(
         select(RuntimeKnowledgeConcept).where(
             RuntimeKnowledgeConcept.user_id == user_id,
@@ -448,7 +535,7 @@ def _find_merge_target(
         db.scalars(
             select(RuntimeKnowledgeConcept).where(
                 RuntimeKnowledgeConcept.user_id == user_id,
-                RuntimeKnowledgeConcept.concept_type == concept_type,
+                RuntimeKnowledgeConcept.concept_type == concept_type_lookup,
             )
         ).all()
     )
