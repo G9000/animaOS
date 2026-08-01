@@ -33,7 +33,6 @@ from anima_server.models import (
     RuntimeBackgroundTaskRun,
     RuntimeDocument,
     RuntimeDocumentChunk,
-    RuntimeEmbedding,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
@@ -66,6 +65,7 @@ from anima_server.models.runtime_memory import (
 )
 from anima_server.services.corefs.sealed_runtime import (
     delete_all_sealed_runtime_records_for_owner,
+    delete_runtime_embedding_records,
 )
 
 
@@ -230,11 +230,9 @@ def _reset_runtime_state(
         "memory_retrieval_feedback",
         delete(MemoryRetrievalFeedback).where(MemoryRetrievalFeedback.user_id == user_id),
     )
-    _delete(
+    deleted["runtime_embeddings"] = delete_runtime_embedding_records(
         db,
-        deleted,
-        "runtime_embeddings",
-        delete(RuntimeEmbedding).where(RuntimeEmbedding.user_id == user_id),
+        owner_id=user_id,
     )
     _delete(
         db,

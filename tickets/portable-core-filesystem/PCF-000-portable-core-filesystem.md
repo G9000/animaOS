@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-01 13:58 MYT
+- Updated: 2026-08-01 16:29 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -320,6 +320,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-01 13:31 MYT - Reopened PCF-003 after the exact-head Codex review of metadata head `07765613cc454c1ec174e7e389873b45cdf1da62` found that a second live login can replace the process-wide ready Runtime retrieval index with a new empty index. Removed PCF-003 from completed history and synchronized its child/parent state as `in_progress`; PCF-004 and PCF-005 are dependency-ineligible pending a test-first fix, validation, and refreshed exact-head clean review.
 - 2026-08-01 13:36 MYT - Addressed PCF-003's multi-login Runtime-index review finding test-first. Retrieval now retains the newest ready live index during a later session's rebuild/degraded interval and switches only after the replacement reaches ready, preserving an existing dense result. The focused regression failed RED; affected index/session/RAG/privacy coverage passed `149`, with scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review green. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 13:58 MYT - Addressed PCF-003's exact-head stale-span lifecycle finding test-first. Source replacement now cleans dependent citation ciphertext and the stale span's Runtime embedding row, sealed input, and live-index vector before relational deletion. The regression failed RED at `2 != 1`; affected ingestion/compiler/privacy coverage passed `102`, three reextract API regressions passed with explicit CoreFS keyslot wiring, and scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review passed. A mixed API run separately reached `22` existing `ensure_core_manifest()` harness failures after `102` unaffected tests passed. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
+- 2026-08-01 16:29 MYT - Addressed PCF-003's exact-head eval-reset live-vector finding test-first. Owner-scoped Runtime embedding deletion now uses the shared root-transaction cleanup boundary, preserving rollback safety and evicting committed deletions from every active unlock-scoped index while retaining another user's row/vector. The production regression failed RED before the fix; the complete eval harness passed `26` with explicit CoreFS keyslot wiring, four transaction/generation helper cases passed, and scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review passed. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 
 ## Validation
 

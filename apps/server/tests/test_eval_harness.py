@@ -1080,6 +1080,101 @@ def test_eval_import_transcript_raw_chunks_ignores_invalid_session_date(
     assert _parse_session_observed_at("2023/99/99") is None
 
 
+def test_reset_eval_user_state_evicts_live_corefs_vectors(monkeypatch) -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.eval_reset import _reset_runtime_state
+
+    target_indexes = (
+        CoreFSProgressiveIndex("core-a"),
+        CoreFSProgressiveIndex("core-a"),
+    )
+    other_index = CoreFSProgressiveIndex("core-b")
+    indexes_by_user = {71: target_indexes, 72: (other_index,)}
+    for indexes in indexes_by_user.values():
+        for index in indexes:
+            index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    for index in target_indexes:
+        index.upsert_runtime_embedding(
+            source_type="memory_item",
+            source_id=91,
+            vector=(1.0, 0.0),
+            content="eval memory",
+            category="fact",
+            importance=5,
+        )
+    other_index.upsert_runtime_embedding(
+        source_type="memory_item",
+        source_id=92,
+        vector=(0.0, 1.0),
+        content="other memory",
+        category="fact",
+        importance=5,
+    )
+    monkeypatch.setattr(
+        sealed_runtime,
+        "active_runtime_indexes",
+        lambda user_id: indexes_by_user.get(user_id, ()),
+    )
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add_all(
+            [
+                RuntimeEmbedding(
+                    user_id=71,
+                    source_type="memory_item",
+                    source_id=91,
+                    content_hash=RuntimeEmbedding.compute_content_hash("eval memory"),
+                    content_preview="eval memory",
+                    category="fact",
+                    importance=5,
+                ),
+                RuntimeEmbedding(
+                    user_id=72,
+                    source_type="memory_item",
+                    source_id=92,
+                    content_hash=RuntimeEmbedding.compute_content_hash("other memory"),
+                    content_preview="other memory",
+                    category="fact",
+                    importance=5,
+                ),
+            ]
+        )
+        runtime_db.commit()
+
+        deleted: dict[str, int] = {}
+        _reset_runtime_state(runtime_db, user_id=71, deleted=deleted)
+
+        assert deleted["runtime_embeddings"] == 1
+        assert runtime_db.scalar(
+            select(RuntimeEmbedding).where(RuntimeEmbedding.user_id == 71)
+        ) is None
+        assert runtime_db.scalar(
+            select(RuntimeEmbedding).where(RuntimeEmbedding.user_id == 72)
+        ) is not None
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=91)
+            == (1.0, 0.0)
+            for index in target_indexes
+        )
+        assert (
+            other_index.runtime_embedding_vector(source_type="memory_item", source_id=92)
+            == (0.0, 1.0)
+        )
+
+        runtime_db.commit()
+
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=91) is None
+            for index in target_indexes
+        )
+        assert (
+            other_index.runtime_embedding_vector(source_type="memory_item", source_id=92)
+            == (0.0, 1.0)
+        )
+
+
 def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
     from anima_server.services.eval_reset import reset_eval_user_state
 

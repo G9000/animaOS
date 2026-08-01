@@ -476,9 +476,10 @@ git -c commit.gpgsign=false commit -m "runtime: rebuild CoreFS indexes after unl
 
 PR #127 implementation head `70d22b7c` passed all required checks and received a
 clean exact-head Codex review, but later exact-head reviews exposed multi-login
-Runtime-index selection and stale-span payload lifecycle gaps. Both test-first
-follow-ups are implemented; Task 3 remains reopened until refreshed exact-head
-CI/review, while PCF-004 and PCF-005 remain dependency-ineligible and unclaimed.
+Runtime-index selection, stale-span payload lifecycle, and eval-reset live-vector
+eviction gaps. All three test-first follow-ups are implemented; Task 3 remains
+reopened until refreshed exact-head CI/review, while PCF-004 and PCF-005 remain
+dependency-ineligible and unclaimed.
 
 ## Task 4: Diary, folders, drafts, and notes vertical slice
 
