@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-08-01 23:59 MYT
+- Updated: 2026-08-02 01:12 MYT
 - Started: 2026-07-30 16:27 MYT
 - Completed:
 
@@ -167,13 +167,26 @@ backend contract still accepts and round-trips the value).
   sessionStorage; the stash now binds to the unlock token captured when
   the request started and refuses on mismatch.
 
+- 2026-08-02 01:12 MYT - PR #130 review round 10 (P1): round 9's post-generation
+  consent recheck was an UNLOCKED read, so an opt-out could still commit
+  between the read and the append. The check and the append are now one
+  operation (`_finalize_ambient_dream`) held under the same per-user
+  `presence_consent_lock` the config PUT holds through its commit: inside
+  the lock it either appends the dream sentence or releases the claim.
+  Collapsing check-here/append-there into one helper is the point — that
+  split was the gap. Two tests: behavioral (opt-out mid-generation yields
+  no dream and an unsurfaced row) and structural (the append and the
+  release both sit inside the lock, so a refactor can't silently reopen
+  the window). Residual, documented: an opt-out committing while the HTTP
+  response is already in flight — the same window delivery.py accepts.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 20 passed
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 22 passed
   - `bun test tests/greetingCache.test.ts` — 14 passed
-  - Full suite on the round-9 head — **3355 passed, 0 failed, 10
-    skipped**, run 2026-08-01 23:59 MYT
+  - Full suite on the round-10 head — **3357 passed, 0 failed, 10
+    skipped**, run 2026-08-02 01:12 MYT
   - `bun run build` (Nx server + desktop, cargo check) — pass
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`

@@ -501,3 +501,52 @@ def test_optout_during_generation_releases_the_claim_unvoiced(
     assert result.context.ambient_dream is None
     # Released, not burned: still available once the user re-enables ambient.
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is False
+
+
+def test_final_consent_decision_is_serialized_with_config_updates(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 10, P1): round 9's post-generation recheck
+    was an UNLOCKED read, so an opt-out could still commit between that read
+    and the append. The whole final decision — re-read, then release-or-append
+    — now runs under the same per-user presence_consent_lock the config PUT
+    holds through its commit, so an opt-out cannot interleave."""
+    import inspect
+
+    from anima_server.services.agent.proactive import _finalize_ambient_dream
+
+    source = inspect.getsource(_finalize_ambient_dream)
+    # The append must happen INSIDE the lock, not after it.
+    assert "with presence_consent_lock(user_id):" in source
+    lock_at = source.index("with presence_consent_lock(user_id):")
+    assert source.index("_ambient_dream_sentence(ctx.ambient_dream)") > lock_at
+    assert source.index("_release_ambient_dream_claim") > lock_at
+
+
+def test_optout_between_recheck_and_append_cannot_voice_the_dream(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The behavioral half of the above: an opt-out committing while the
+    final decision holds the lock must not produce a dream-bearing
+    greeting, and the claim is released rather than burned."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+
+    def optout_mid_generation(runtime_db, *, user_id):
+        cfg = get_or_create_presence_config(soul_db, user_id)
+        cfg.dream_sharing = "off"
+        soul_db.commit()
+
+    monkeypatch.setattr(
+        proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation
+    )
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+
+    assert "boat you restored" not in result.message
+    assert result.handoff_message is None
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is False

@@ -293,37 +293,58 @@ async def _invoke_ollama_native_chat(
     return stripped or None
 
 
-def _drop_dream_if_consent_withdrawn(
+def _finalize_ambient_dream(
     db: Session,
     ctx: GreetingContext,
     claim: AmbientDreamClaim | None,
     *,
     user_id: int,
-) -> GreetingContext:
-    """Re-check consent AFTER the LLM calls, before the dream is handed to
-    the user (PR #130 review).
+    message: str,
+) -> tuple[str, GreetingContext, str | None]:
+    """Decide and APPLY the dream's voicing atomically w.r.t. consent
+    updates (PR #130 review rounds 9-10).
 
     The claim commits before generation, and the greeting + pill requests
-    can take ~14s combined; an opt-out committing in that window would
-    otherwise still be answered with a dream. Here the server knows for
-    certain the narrative has not reached the user yet, so the claim is
-    RELEASED (the dream stays available for a later greeting) rather than
-    silently burned — the opposite trade from the client-receipt gap in
-    IL-015, where delivery is genuinely unknown.
+    can take ~14s combined, so consent must be re-read afterwards. Round 9
+    did that read WITHOUT the lock, which is still check-then-act: an
+    opt-out could commit between the read and the append. The whole
+    decision — re-read, release-or-append — therefore runs under the same
+    per-user ``presence_consent_lock`` the config PUT holds through its
+    commit, so the two are mutually exclusive.
+
+    Returns ``(message, ctx, handoff_message)``: on consent the dream
+    sentence is appended and the pre-append text becomes the handoff copy;
+    on withdrawal the claim is RELEASED (the dream stays available for a
+    later greeting) — the server knows the narrative never reached the
+    user, the opposite trade from IL-015's unknowable client receipt.
+
+    Residual window, unavoidable and shared with
+    ``delivery.list_and_mark_delivered``: an opt-out committing while the
+    HTTP response is already in flight. No server-side ordering removes it.
     """
     if claim is None or not ctx.ambient_dream:
-        return ctx
-    db.expire_all()
-    values = get_presence_config_values(db, user_id)
-    if values.enabled and values.dream_sharing == "ambient":
-        return ctx
-    _release_ambient_dream_claim(db, dream_id=claim.dream_id)
-    logger.info(
-        "Ambient consent withdrawn during greeting generation for user %s; "
-        "dream released unvoiced",
-        user_id,
-    )
-    return dataclasses.replace(ctx, ambient_dream=None)
+        return message, ctx, None
+
+    from anima_server.services.presence_config import presence_consent_lock
+
+    with presence_consent_lock(user_id):
+        db.expire_all()
+        values = get_presence_config_values(db, user_id)
+        if values.enabled and values.dream_sharing == "ambient":
+            # Append INSIDE the lock: an opt-out can no longer slip between
+            # the check and the hand-off.
+            return (
+                f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}",
+                ctx,
+                message,
+            )
+        _release_ambient_dream_claim(db, dream_id=claim.dream_id)
+        logger.info(
+            "Ambient consent withdrawn during greeting generation for user %s; "
+            "dream released unvoiced",
+            user_id,
+        )
+        return message, dataclasses.replace(ctx, ambient_dream=None), None
 
 
 def _dream_free_static_greeting(ctx: GreetingContext) -> str | None:
@@ -1131,12 +1152,11 @@ async def generate_greeting(
         _reset_dream_residue_after_surfacing(runtime_db, user_id=user_id)
 
     if settings.agent_provider == "scaffold":
-        ctx = _drop_dream_if_consent_withdrawn(db, ctx, dream_claim, user_id=user_id)
-        return GreetingResult(
-            message=build_static_greeting(ctx),
-            context=ctx,
-            handoff_message=_dream_free_static_greeting(ctx),
+        base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
+        message, ctx, handoff = _finalize_ambient_dream(
+            db, ctx, dream_claim, user_id=user_id, message=base
         )
+        return GreetingResult(message=message, context=ctx, handoff_message=handoff)
 
     # Build the LLM prompt with available context
     identity_context = ""
@@ -1274,18 +1294,13 @@ async def generate_greeting(
             pills = await generate_thought_pills(
                 prompt_loader, greeting_message=message, ctx=ctx
             )
-            ctx = _drop_dream_if_consent_withdrawn(
-                db, ctx, dream_claim, user_id=user_id
+            # Voicing is OUR responsibility, not the model's — and the
+            # decision runs under the consent lock, appending the same
+            # sentence the static greeting uses while keeping the pre-append
+            # text as the LLM-safe handoff copy (PR #130 review).
+            message, ctx, handoff_message = _finalize_ambient_dream(
+                db, ctx, dream_claim, user_id=user_id, message=message
             )
-            handoff_message: str | None = None
-            if ctx.ambient_dream:
-                # The claim already committed — voicing is OUR responsibility,
-                # not the model's. Same sentence the static greeting uses, so
-                # a claimed dream is always heard. The pre-append text is kept
-                # as the handoff copy so downstream LLM surfaces never receive
-                # the dream (PR #130 review).
-                handoff_message = message
-                message = f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}"
             return GreetingResult(
                 message=message,
                 context=ctx,
@@ -1298,12 +1313,15 @@ async def generate_greeting(
         errors.append(str(e))
 
     # Fallback to static
-    ctx = _drop_dream_if_consent_withdrawn(db, ctx, dream_claim, user_id=user_id)
+    base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
+    message, ctx, handoff = _finalize_ambient_dream(
+        db, ctx, dream_claim, user_id=user_id, message=base
+    )
     return GreetingResult(
-        message=build_static_greeting(ctx),
+        message=message,
         context=ctx,
         errors=errors,
-        handoff_message=_dream_free_static_greeting(ctx),
+        handoff_message=handoff,
     )
 
 
