@@ -24,7 +24,16 @@ import type {
   DiaryEntryData,
 } from "@anima/api-client";
 import type { GalleryImage } from "./nodes/node-types";
-import { api } from "../../lib/api";
+import { api, getUnlockToken } from "../../lib/api";
+import {
+  ambientConsentAllows,
+  clearOneShotGreetings,
+  getCachedGreeting,
+  peekOneShotGreeting,
+  setCachedGreeting,
+  stashOneShotGreeting,
+  takeOneShotGreeting,
+} from "../../lib/greetingCache";
 import { buildMemoryImages } from "../../lib/image-memories";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { dashboardNodeTypes, type DashboardNode } from "./nodes";
@@ -32,53 +41,7 @@ import { buildInitialNodes } from "./layout";
 import { useNodePositions } from "./useNodePositions";
 import { AuthImage } from "../../components/AuthImage";
 
-const GREETING_CACHE_KEY = "anima_dashboard_greeting";
-const GREETING_CACHE_TTL_MS = 5 * 60 * 1000;
 const CLOSED_NODES_KEY = "anima_dashboard_closed_nodes";
-
-type CachedGreeting = { greeting: Greeting; ts: number; userId: number };
-
-function clearCachedGreeting(): void {
-  try {
-    sessionStorage.removeItem(GREETING_CACHE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-function getCachedGreeting(userId: number): CachedGreeting | null {
-  try {
-    const raw = sessionStorage.getItem(GREETING_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (
-      parsed?.userId === userId &&
-      parsed?.greeting?.llmGenerated === true &&
-      typeof parsed.ts === "number" &&
-      Date.now() - parsed.ts < GREETING_CACHE_TTL_MS
-    )
-      return parsed;
-    clearCachedGreeting();
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-function setCachedGreeting(userId: number, greeting: Greeting): void {
-  try {
-    if (!greeting.llmGenerated) {
-      clearCachedGreeting();
-      return;
-    }
-    sessionStorage.setItem(
-      GREETING_CACHE_KEY,
-      JSON.stringify({ greeting, ts: Date.now(), userId }),
-    );
-  } catch {
-    /* ignore */
-  }
-}
 
 function relativeSession(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -156,15 +119,57 @@ export default function Dashboard() {
   useEffect(() => {
     if (user?.id == null || needsSetup !== false) return;
     let active = true;
+    // A dream-bearing greeting stashed by an unmounted fetch (below) is
+    // displayed exactly once — but ONLY after re-checking consent against
+    // the freshly loaded presence config (PR #130 review): an opt-out
+    // between the stash and this mount must win, so the stash is discarded
+    // (the dream was consumed server-side; the user asked for silence).
+    if (peekOneShotGreeting(user.id)) {
+      void api.presence
+        .get(user.id)
+        .then((cfg) => {
+          // Unmounted before the consent check resolved? LEAVE the queue
+          // intact (PR #130 round 4) — this is the only durable copy of an
+          // already-consumed dream, and the next mount can still render it.
+          if (!active) return;
+          setPresenceConfig(cfg);
+          if (ambientConsentAllows(cfg)) {
+            const oneShot = takeOneShotGreeting(user.id);
+            if (oneShot) setBrief(oneShot);
+          } else {
+            // Consent withdrawn: the user asked for silence — discard.
+            clearOneShotGreetings(user.id);
+          }
+        })
+        .catch(() => {
+          // Unknown consent: prefer silence THIS mount, but keep the queue
+          // for a mount that can actually verify consent.
+        });
+      return () => {
+        active = false;
+      };
+    }
     const cached = getCachedGreeting(user.id);
     if (cached) {
       setBrief(cached.greeting);
     } else {
       setBriefLoading(true);
+      // Bind the handoff to the session that ASKED for this greeting
+      // (PR #130 review): if the user logs out and someone else signs in
+      // before this resolves, the late callback must not write A's
+      // decrypted dream into B's storage.
+      const originUnlockToken = getUnlockToken();
       api.chat
         .greeting(user.id)
         .then((g) => {
-          if (!active) return;
+          if (!active) {
+            // The dream inside was already consumed server-side — hand it
+            // to the next mount instead of discarding it (PR #130 review).
+            if (g.ambientDream) {
+              stashOneShotGreeting(user.id, g, originUnlockToken);
+            }
+            return;
+          }
           setBrief(g);
           setCachedGreeting(user.id, g);
         })
@@ -440,7 +445,15 @@ export default function Dashboard() {
   // sent; the thought rides along as context on the user's first reply.
   const handleExplore = useCallback(
     (thought: string, pills?: MessagePill[]) => {
-      const trimmed = thought?.trim() ?? "";
+      let source = thought ?? "";
+      // IL-010 (PR #130 review): this handoff seeds chat context, which the
+      // server places in the model history — so the ambient dream must not
+      // ride along. When the text being explored IS the dream-bearing
+      // greeting, swap in the server's dream-free copy.
+      if (brief?.ambientDream && brief.handoffMessage && source === brief.message) {
+        source = brief.handoffMessage;
+      }
+      const trimmed = source.trim();
       const canIncludeGreetingContext =
         presenceConfig?.enabled !== false &&
         presenceConfig?.homeGreetingContextEnabled !== false;
@@ -457,7 +470,7 @@ export default function Dashboard() {
           : [];
       navigate("/chat", { state: { contextMessages, seedThread: true } });
     },
-    [navigate, presenceConfig],
+    [navigate, presenceConfig, brief],
   );
 
   const initialNodes = useMemo(() => {

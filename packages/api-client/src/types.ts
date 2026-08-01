@@ -739,6 +739,13 @@ export interface Reflection {
 export interface Greeting {
   message: string;
   llmGenerated: boolean;
+  // IL-010: this greeting voices a consumed (surfaced) ambient dream — it is
+  // one-shot: display once, never cache or replay it.
+  ambientDream?: boolean;
+  // The same greeting WITHOUT the dream sentence. Any surface that forwards
+  // greeting text into an LLM prompt (e.g. the dashboard chat handoff) must
+  // use this when present — the dream must never enter a model prompt.
+  handoffMessage?: string | null;
   pills?: MessagePill[];
   context: {
     currentFocus: string | null;

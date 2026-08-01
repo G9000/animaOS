@@ -1,17 +1,17 @@
 # IL-010 - Implement the "ambient" dream-sharing consumer
 
-- Status: backlog
+- Status: in_progress
 - Priority: P3
 - Scope: `apps/server/src/anima_server/services/agent/proactive.py`, `apps/server/src/anima_server/services/agent/inner_life`, `apps/desktop/src/pages/Presence.tsx`
 - Parent: none
 - Depends on: `IL-007`, `IL-008`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-07-29 11:56 MYT
-- Started:
+- Updated: 2026-08-02 01:12 MYT
+- Started: 2026-07-30 16:27 MYT
 - Completed:
 
 ## Goal
@@ -50,11 +50,160 @@ backend contract still accepts and round-trips the value).
   Ambient before offering it"); the Presence selector's Ambient option was
   removed in the same commit pending this consumer.
 
+- 2026-07-30 16:27 MYT - Claimed and started by Claude (backlog ->
+  in_progress -> done in one branch: `il-010-ambient-dream-consumer`).
+- 2026-07-30 16:44 MYT - Implemented: `proactive._resolve_ambient_dream`
+  (consent: master switch AND dream_sharing == "ambient"; DEK gate; most
+  recent share-worthy unsurfaced dream_journal row; consume-once — marked
+  surfaced and COMMITTED on hand-off so a dream is never voiced twice and
+  stops re-raising dream_residue). Woven into the greeting LLM prompt
+  (pinned to the stated narrative, framed AS a dream) and the static
+  fallback. on_ask/off untouched (tested). Ambient option restored in the
+  desktop Presence selector. 10 tests in
+  `tests/test_inner_life_ambient_dream.py`.
+
+- 2026-07-30 18:47 MYT - PR #130 review round 1 (P1 + 2 P2), completion
+  re-stamped after acceptance-affecting fixes: (1) consumption moved OUT
+  of gather_greeting_context — that gatherer is shared with agent-state
+  and reflection paths that never render the dream, so ambient dreams
+  were burned invisibly; generate_greeting is now the only consumer.
+  (2) Voicing is deterministic: the claimed dream's sentence (single
+  source, `_ambient_dream_sentence`) is appended to the LLM greeting and
+  rendered by the static paths — never entrusted to the model's
+  discretion (the old prompt said "may mention"). (3) The claim is an
+  atomic conditional update (WHERE surfaced = 0, rowcount checked) — a
+  rival claiming between select and update leaves the loser silent.
+  Three regression tests incl. an interleaved-rival race.
+
+- 2026-07-30 20:55 MYT - PR #130 review round 2 (2 P2s), completion
+  re-stamped — durable client handoff: the greeting response now carries
+  `ambientDream: true` when it voices a consumed dream, and the
+  Dashboard treats such greetings as ONE-SHOT: (1) never cached, so the
+  5-minute session cache can't replay the same surfaced dream on every
+  remount; (2) a fetch that resolves after the Dashboard unmounted
+  stashes the dream-bearing message in a one-shot slot the next mount
+  takes exactly once — the consumed dream is displayed, not discarded.
+  Cache helpers extracted to `lib/greetingCache.ts` with 5 bun tests.
+
+- 2026-07-30 23:53 MYT - PR #130 review round 3 (P1 + 2 P2), completion
+  re-stamped: (1) the one-shot replay now re-checks consent against a
+  FRESH presence config before displaying — an opt-out between the stash
+  and the next mount wins and the stash is discarded (unknown consent
+  prefers silence); (2) ambient surfacing drains the runtime
+  dream_residue pressure and its starvation history exactly like the
+  initiative fire path, so voiced-dream pressure can't transfer to the
+  next unrelated dream; (3) the one-shot slot became a FIFO QUEUE —
+  concurrent in-flight consumptions each survive to a later mount
+  instead of the second overwriting the first. Tests: 14 server + 8
+  cache (queue FIFO, peek-without-consume, consent gate).
+
+- 2026-07-31 03:52 MYT - PR #130 review round 4 (2 P2s), completion re-stamped:
+  (1) the claim is now a SINGLE conditional UPDATE (candidate folded in
+  as a scalar subquery, RETURNING the narrative) issued after ending the
+  consent read's transaction — under WAL, the old select-then-update
+  raised SQLITE_BUSY_SNAPSHOT on the losing connection instead of
+  rowcount 0; a residual lock race maps to silence via OperationalError.
+  (2) the Dashboard dequeues a stashed greeting only while MOUNTED and
+  after consent verifies — an unmount mid-check leaves the queue intact
+  (it holds the only durable copy), withdrawn consent clears it, and
+  unknown consent keeps it for a mount that can verify.
+
+- 2026-07-31 13:46 MYT - PR #130 review round 5: ticket REOPENED to in_progress and
+  `Completed` cleared (last provisional completion was 2026-07-31 03:52 MYT) — per
+  the tracked-work review workflow a child stays open until review
+  establishes a clean implementation head, with metadata closeout
+  afterwards; the earlier per-round re-stamping recorded acceptance
+  while actionable defects were still open. Round-5 fixes: the dream
+  claim now holds the per-user presence_consent_lock from a FRESH
+  consent re-read through the claim commit (the unlocked pre-check
+  could otherwise authorize voicing after an opt-out committed);
+  durable client receipt is deferred to IL-015 with the rationale
+  recorded there and in the PR thread.
+
+- 2026-07-31 15:06 MYT - PR #130 review round 6 (2 P2s): (1) the narrative is now
+  decrypted and validated BEFORE the claim commits — a corrupt
+  ciphertext/AAD or a DEK revoked since the gate used to burn the dream
+  on a claim nothing could voice; RETURNING supplies the value pre-commit,
+  and an unreadable narrative (raise, empty, or an intact `enc2:` envelope
+  from df failing open) rolls the claim back so the entry stays retriable.
+  (2) `IL-015` is now actually registered in IL-000's Follow-ups section
+  with a planning activity entry — the earlier scripted edit silently
+  no-op'd because this branch predated the IL-014 line it anchored on;
+  origin/main is merged in and that conflict resolved.
+
+- 2026-08-01 20:54 MYT - PR #130 review round 7 (P1, privacy): thought-pill generation
+  issues a SECOND LLM request with the greeting text, and the dream was
+  appended BEFORE that call — so with a cloud agent_provider the
+  decrypted dream narrative was transmitted off-device, against both the
+  AiSettings promise and this feature's own rule (round 3) that the dream
+  never enters an LLM prompt. Pills are now generated from the model's
+  own greeting and the dream is appended after. Regression test spies on
+  the pill call and asserts the narrative is absent from both the message
+  and the four ctx fields that request renders.
+
+- 2026-08-01 22:40 MYT - PR #130 review round 8 (2 P1s, both privacy): (1) the
+  dashboard "explore" handoff copies the greeting into chat context,
+  which the server places in model history — a SECOND route by which the
+  dream reached an LLM. GreetingResult now carries a dream-free
+  `handoff_message` (the pre-append text; static paths rebuild it from a
+  stripped ctx), exposed as `handoffMessage`, and the dashboard
+  substitutes it when the explored text is the dream-bearing greeting.
+  (2) The one-shot queue wrote the decrypted narrative to sessionStorage
+  with no TTL and no session binding: it survived logout/lock in a
+  readable webview, and a late callback could repopulate it afterwards.
+  `purgeGreetingStorage()` now runs on logout AND the locked-session
+  event, and the stash refuses to write without an unlock token.
+
+- 2026-08-01 23:59 MYT - PR #130 review round 9 (2 P1s): (1) consent is re-validated
+  AFTER generation, before the dream is handed over — the claim commits
+  before the greeting+pill LLM calls (~14s of timeouts) and an opt-out
+  landing in that window was still answered with a dream. Because the
+  server knows the narrative has not reached the user, the claim is
+  RELEASED (surfaced=False) rather than burned, so the dream stays
+  available; the resolver now returns an identifiable `AmbientDreamClaim`
+  to make that possible. (2) The late-stash guard only checked that SOME
+  session was unlocked, so if user A logged out and B signed in before
+  A's greeting resolved, A's decrypted dream was written into B's
+  sessionStorage; the stash now binds to the unlock token captured when
+  the request started and refuses on mismatch.
+
+- 2026-08-02 01:12 MYT - PR #130 review round 10 (P1): round 9's post-generation
+  consent recheck was an UNLOCKED read, so an opt-out could still commit
+  between the read and the append. The check and the append are now one
+  operation (`_finalize_ambient_dream`) held under the same per-user
+  `presence_consent_lock` the config PUT holds through its commit: inside
+  the lock it either appends the dream sentence or releases the claim.
+  Collapsing check-here/append-there into one helper is the point — that
+  split was the gap. Two tests: behavioral (opt-out mid-generation yields
+  no dream and an unsurfaced row) and structural (the append and the
+  release both sit inside the lock, so a refactor can't silently reopen
+  the window). Residual, documented: an opt-out committing while the HTTP
+  response is already in flight — the same window delivery.py accepts.
+
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 22 passed
+  - `bun test tests/greetingCache.test.ts` — 14 passed
+  - Full suite on the round-10 head — **3357 passed, 0 failed, 10
+    skipped**, run 2026-08-02 01:12 MYT
+  - `bun run build` (Nx server + desktop, cargo check) — pass
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/desktop/src/context/AuthContext.tsx`
+  - `packages/api-client/src/types.ts`
+  - `apps/server/src/anima_server/api/routes/chat.py`
+  - `packages/api-client/src/types.ts`
+  - `apps/desktop/src/lib/greetingCache.ts` (new)
+  - `apps/desktop/src/pages/dashboard/Dashboard.tsx`
+  - `apps/desktop/tests/greetingCache.test.ts` (new)
+  - `apps/server/tests/test_inner_life_ambient_dream.py` (new)
+  - `apps/desktop/src/pages/Presence.tsx`
 - Notes:
-  - none
+  - Residual risk (accepted, tracked as `IL-015`): a dream claimed for a
+    greeting whose HTTP response never reaches the browser (reload, tab
+    close, dropped connection) stays surfaced without being voiced. The
+    conservative direction — silence rather than re-voicing — is deliberate;
+    a stronger guarantee needs a claim/ack protocol (schema + endpoint).
+  - The surfaced-mark commit lives inside the resolver (greeting sessions
+    never commit otherwise); greeting paths are read-only apart from it.
