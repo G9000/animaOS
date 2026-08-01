@@ -580,15 +580,14 @@ export default function Chat() {
   // thread A's request settle — or fail — on behalf of a newly pending
   // thread B, so B's close could be skipped (or A's retry could close B)
   // while A stayed the active server thread.
-  const seedCloseInFlightRef = useRef<{
-    threadId: number;
-    promise: Promise<boolean>;
-  } | null>(null);
-  const settleSeedClose = (): Promise<boolean> => {
-    const threadId = pendingSeedCloseRef.current;
-    if (threadId == null) return Promise.resolve(true);
-    const inFlight = seedCloseInFlightRef.current;
-    if (inFlight && inFlight.threadId === threadId) return inFlight.promise;
+  // Every in-flight close, keyed by thread (PR #131 round 14): a single
+  // slot lost track when closes for different threads overlapped — starting
+  // T2's close erased the record of T1's, so re-selecting T1 saw nothing in
+  // flight and allowed a send while T1's close was still running.
+  const seedCloseInFlightRef = useRef<Map<number, Promise<boolean>>>(new Map());
+  const closeThreadOnce = (threadId: number): Promise<boolean> => {
+    const existing = seedCloseInFlightRef.current.get(threadId);
+    if (existing) return existing;
     const promise = (async () => {
       try {
         await api.threads.close(threadId);
@@ -605,13 +604,16 @@ export default function Chat() {
       } catch {
         return false; // stays pending; the next send retries
       } finally {
-        if (seedCloseInFlightRef.current?.threadId === threadId) {
-          seedCloseInFlightRef.current = null;
-        }
+        seedCloseInFlightRef.current.delete(threadId);
       }
     })();
-    seedCloseInFlightRef.current = { threadId, promise };
+    seedCloseInFlightRef.current.set(threadId, promise);
     return promise;
+  };
+  const settleSeedClose = (): Promise<boolean> => {
+    const threadId = pendingSeedCloseRef.current;
+    if (threadId == null) return Promise.resolve(true);
+    return closeThreadOnce(threadId);
   };
   // A pending close belongs to the seeded-reply intent. When the user
   // abandons that intent (picks another thread, starts a new one), the
@@ -626,25 +628,26 @@ export default function Chat() {
   const threadSettleRef = useRef<Promise<unknown> | null>(null);
   const abandonSeedClose = (keepThreadId?: number) => {
     const abandoned = pendingSeedCloseRef.current;
-    const inFlight = seedCloseInFlightRef.current;
+    const inFlight =
+      abandoned != null ? seedCloseInFlightRef.current.get(abandoned) : undefined;
     pendingSeedCloseRef.current = null;
     seedNeedsThreadDiscoveryRef.current = false;
     const action = classifySeedCloseAbandon({
       pendingThreadId: abandoned,
       keepThreadId,
-      inFlightThreadId: inFlight?.threadId ?? null,
+      inFlightThreadId: inFlight ? abandoned : null,
     });
     if (action === "none" || abandoned == null) return;
     if (action === "await-inflight" && inFlight) {
       // Reuse the in-flight close for THIS thread (PR #131 rounds 8/10) —
       // a second concurrent POST would duplicate on_thread_close. Retry
       // only if it FAILED, which is sequential, not concurrent.
-      void inFlight.promise.then((ok) => {
+      void inFlight.then((ok) => {
         if (!ok) void api.threads.close(abandoned).catch(() => {});
       });
       return;
     }
-    void api.threads.close(abandoned).catch(() => {});
+    void closeThreadOnce(abandoned);
   };
   // Whether an active server thread is still UNDISCOVERED for a seeded
   // reply. Starts true for a MOUNT seed (PR #131 round 9): seedActiveRef is
@@ -657,11 +660,16 @@ export default function Chat() {
   const seedNeedsThreadDiscoveryRef = useRef(
     locationState?.seedThread === true,
   );
+  // True once the initial /threads request has resolved. Until then the
+  // component does NOT know the live thread, even on an already-mounted
+  // route (PR #131 round 14).
+  const threadsHydratedRef = useRef(false);
   const settleSeedDiscovery = async (): Promise<boolean> => {
     if (!seedNeedsThreadDiscoveryRef.current) return true;
     try {
       const list = await api.threads.list();
       const discovered = dedupeThreads(list.threads);
+      threadsHydratedRef.current = true;
       setThreads(discovered);
       const stillActive = discovered.find((t) => t.status === "active") ?? null;
       seedNeedsThreadDiscoveryRef.current = false;
@@ -686,9 +694,12 @@ export default function Chat() {
     // (PR #131 round 2). The new thread is created on first send.
     conversationEpochRef.current += 1;
     const threadToClose = currentThreadIdRef.current;
-    // In-place seeds know the live thread id synchronously, so nothing is
-    // undiscovered here (the mount path is the async case).
-    seedNeedsThreadDiscoveryRef.current = false;
+    // An in-place seed knows the live thread id synchronously ONLY once the
+    // initial /threads request has resolved (PR #131 round 14). Clicking
+    // Reply on an already-mounted but still-hydrating /chat leaves
+    // currentThreadIdRef null while a previous thread is still active, so
+    // discovery stays owed and the send guard settles it first.
+    seedNeedsThreadDiscoveryRef.current = !threadsHydratedRef.current;
     pendingContextRef.current = merged;
     seedActiveRef.current = true;
     resumeThreadIdRef.current = null;
@@ -770,6 +781,7 @@ export default function Chat() {
       if (revoked) return;
 
       const nextThreads = threadsRes ? dedupeThreads(threadsRes.threads) : [];
+      if (threadsRes) threadsHydratedRef.current = true;
       setThreads(nextThreads);
       const active = nextThreads.find((t) => t.status === "active") ?? null;
 
@@ -931,9 +943,7 @@ export default function Chat() {
     // kept thread), so wait for it to settle before treating the thread as
     // usable — otherwise a submit could start against a thread that is
     // about to be closed and archived mid-turn (PR #131 round 12).
-    const closing = seedCloseInFlightRef.current;
-    const awaitingClose =
-      closing && closing.threadId === threadId ? closing.promise : null;
+    const awaitingClose = seedCloseInFlightRef.current.get(threadId) ?? null;
     abandonSeedClose(threadId); // don't close the thread being re-opened
     // Claim the selection BEFORE any await (PR #131 round 13): a send that
     // resumes from the SAME settle promise must observe the thread the user

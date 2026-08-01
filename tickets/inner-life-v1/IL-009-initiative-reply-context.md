@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-08-02 01:45 MYT
+- Updated: 2026-08-02 01:57 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-08-02 01:45 MYT
+- Completed: 2026-08-02 01:57 MYT
 
 ## Goal
 
@@ -200,6 +200,17 @@ rather than blocking IL-008 on it.
   instead of the render-closure `currentThreadId`, which goes stale across
   every await sendMessage performs (settle, discovery, close).
 
+- 2026-08-02 01:57 MYT - PR #131 review round 14 (2 P1s): (1) in-place seeds cleared
+  the discovery guard unconditionally, but an already-MOUNTED /chat that
+  is still hydrating doesn't know its live thread — Reply + a quick
+  submit then bypassed both guards. The clear is now conditional on the
+  initial /threads request having resolved (`threadsHydratedRef`).
+  (2) The in-flight close was a single {threadId, promise} slot, so a
+  close for T2 erased the record of an unfinished close for T1 and
+  re-selecting T1 permitted a send while its close was still running.
+  In-flight closes are now a per-thread Map, with one `closeThreadOnce`
+  entry point that de-duplicates per thread.
+
 ## Validation
 
 - Commands:
@@ -207,7 +218,7 @@ rather than blocking IL-008 on it.
     30 pass (15 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 13), 2026-08-02 01:45 MYT
+    FINAL head (round 14), 2026-08-02 01:57 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`
