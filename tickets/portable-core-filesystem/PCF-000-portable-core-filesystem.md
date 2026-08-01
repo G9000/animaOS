@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-01 19:49 MYT
+- Updated: 2026-08-02 04:06 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -25,7 +25,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
-| PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
+| PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
@@ -330,6 +330,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-01 18:38 MYT - Addressed PCF-003's consequential packaged-startup finding test-first. Packaged launches keep the established portable-Core location and fallback Soul database while exporting a disjoint sibling machine Runtime app-data root; the launcher environment remains under the machine-local daemon root before Python validation, explicit overrides remain authoritative, and overlap still fails closed. The compile-red layout regression plus override, database-continuity, and invalid-overlap coverage pass, all `79` desktop tests pass, and the desktop build, Tauri host check, repository organization, and diff hygiene pass. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 19:05 MYT - Addressed PCF-003's exact-head consequential path-oracle and Soul-only-navigation findings test-first. Durable Runtime progress checksums no longer encode private logical paths, and the HUD plus all currently non-CoreFS-backed routes remain available to supported Soul-scoped sessions. Both focused regressions failed RED and pass GREEN; migration plus Runtime privacy coverage passes `68`, all `79` desktop tests pass, and scoped Ruff/format, desktop build, repository organization, and diff hygiene pass. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 19:49 MYT - Completed PCF-003 and synchronized its parent row after PR #127 head `f0991e38` passed all five required checks. Full GraphQL pagination covered `71` top-level comments, `95` reviews, `112` review threads, every per-thread comment connection, reactions, and current-head checks with zero unresolved non-outdated consequential threads; focused Codex review reported no major issues for exact head `f0991e38bb`. This parent remains `in_progress`; PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog.
+- 2026-08-02 04:06 MYT - Claimed PCF-004 from clean `main` at `51678d08680747d90ff0c03c0e091331456ae837` and synchronized its child row as `in_progress`. Work follows the approved diary/folder/draft/note vertical-slice plan directly in the main checkout per user direction; PCF-005 remains dependency-eligible and unclaimed.
 
 ## Validation
 
@@ -519,6 +520,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog; PCF-011 separately tracks the known Windows native-lease aggregate flake.
+  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 is claimed and `in_progress`; PCF-005 remains dependency-eligible and unclaimed in backlog. PCF-011 separately tracks the known Windows native-lease aggregate flake.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

@@ -1,16 +1,16 @@
 # PCF-004 - Diary, folders, drafts, and notes
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server` diary/CoreFS, `apps/desktop` Journal
 - Parent: `PCF-000`
 - Depends on: `PCF-003`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-4-diary-folders-drafts-and-notes-vertical-slice`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-13 20:47 MYT
-- Started:
+- Updated: 2026-08-02 04:06 MYT
+- Started: 2026-08-02 04:06 MYT
 - Completed:
 
 ## Goal
@@ -41,6 +41,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-07-12 17:34 MYT - Added stable Journal role and explicit private-diary ownership/access defaults.
 - 2026-07-12 18:58 MYT - Added the `core.notes` root, ownership defaults, and rename/move/restart acceptance coverage.
 - 2026-07-13 20:47 MYT - Reconciled migration with the merged Tiptap Journal: canonicalized sanitized HTML, extracted inline media to CoreFS objects, and added the current content/sanitizer helpers and tests to scope.
+- 2026-08-02 04:06 MYT - Claimed PCF-004 from clean `main` at `51678d08680747d90ff0c03c0e091331456ae837` after PCF-003 completion. Executing the approved Task 4 plan directly in the main checkout per user direction, with test-first backend and Journal slices followed by independent specification and quality review.
 
 ## Validation
 
