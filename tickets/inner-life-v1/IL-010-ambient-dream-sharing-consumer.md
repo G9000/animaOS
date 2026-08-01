@@ -145,7 +145,9 @@ backend contract still accepts and round-trips the value).
 
 - Commands:
   - `uv run pytest tests/test_inner_life_ambient_dream.py` — 17 passed
-  - Full suite: re-run pending on the round-7 head (recorded before push)
+  - Full suite on the round-7 head (origin/main merged in — count
+    reflects main's newer tests) — **3352 passed, 0 failed, 10
+    skipped**, run 2026-08-01 21:23 MYT
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/api/routes/chat.py`
