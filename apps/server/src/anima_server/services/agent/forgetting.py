@@ -1532,6 +1532,9 @@ def _reject_profile_candidates_for_forget_contexts(
     runtime_contexts: list[RuntimeProfileForgetContext],
 ) -> int:
     from anima_server.models.runtime_memory import ProfileUpdateCandidate
+    from anima_server.services.corefs.sealed_runtime import (
+        reseal_profile_update_candidate_error,
+    )
 
     contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
     for context in runtime_contexts:
@@ -1564,7 +1567,11 @@ def _reject_profile_candidates_for_forget_contexts(
         ):
             continue
         candidate.status = "rejected"
-        candidate.last_error = "Source memory forgotten before profile promotion"
+        reseal_profile_update_candidate_error(
+            runtime_db,
+            candidate,
+            last_error="Source memory forgotten before profile promotion",
+        )
         candidate.processed_at = now
         rejected += 1
     if rejected:

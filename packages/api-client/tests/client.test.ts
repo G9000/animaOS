@@ -39,10 +39,15 @@ describe("createApiClient error handling", () => {
     const result = await api.corefs.operation({
       operation: "stat",
       path: "Diary/today.md",
+      searchMode: "exact",
     });
 
     expect(requestedUrl).toBe("https://api.test/api/corefs/operation");
-    expect(requestBody).toEqual({ operation: "stat", path: "Diary/today.md" });
+    expect(requestBody).toEqual({
+      operation: "stat",
+      path: "Diary/today.md",
+      searchMode: "exact",
+    });
     expect(requestHeaders?.get("x-anima-unlock")).toBe("unlock-token");
     expect(requestHeaders?.get("x-anima-nonce")).toBe("sidecar-nonce");
     expect(requestHeaders?.get("x-anima-corefs-principal")).toBeNull();

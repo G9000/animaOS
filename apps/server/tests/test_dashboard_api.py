@@ -510,6 +510,287 @@ async def test_config_update_validates_cleared_ollama_url_against_default(
 
 
 @pytest.mark.asyncio
+async def test_config_update_refreshes_unlocked_corefs_semantic_search(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    session = object()
+    sibling_session = object()
+    refresh_calls: list[object] = []
+
+    async def unlocked(_request: object, _user_id: object) -> object:
+        return session
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_embedding_provider,
+        settings.agent_embedding_model,
+        settings.agent_embedding_api_key,
+        settings.agent_embedding_base_url,
+    )
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", unlocked)
+    monkeypatch.setattr(
+        config_route,
+        "active_unlock_sessions",
+        lambda _user_id: (session, sibling_session),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        config_route,
+        "refresh_unlocked_semantic_search",
+        lambda current: refresh_calls.append(current),
+        raising=False,
+    )
+
+    try:
+        settings.agent_provider = "openai"
+        settings.agent_model = "gpt-4o-mini"
+        settings.agent_embedding_provider = "openai"
+        settings.agent_embedding_model = "text-embedding-3-small"
+        settings.agent_embedding_api_key = ""
+        settings.agent_embedding_base_url = ""
+
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="openai",
+                model="gpt-4o-mini",
+                embeddingProvider="fastembed",
+                embeddingModel="BAAI/bge-small-en-v1.5",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert refresh_calls == [session, sibling_session]
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_embedding_provider,
+            settings.agent_embedding_model,
+            settings.agent_embedding_api_key,
+            settings.agent_embedding_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_config_update_restores_active_settings_when_persistence_fails(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    async def validate(_payload: object) -> None:
+        return None
+
+    field_names = (
+        "agent_provider",
+        "agent_model",
+        "agent_extraction_model",
+        "agent_base_url",
+        "agent_api_key",
+        "agent_api_keys_json",
+        "agent_embedding_provider",
+        "agent_embedding_model",
+        "agent_embedding_api_key",
+        "agent_embedding_base_url",
+    )
+    original = {name: getattr(settings, name) for name in field_names}
+    previous = {
+        "agent_provider": "openai",
+        "agent_model": "old-chat-model",
+        "agent_extraction_model": "old-extraction-model",
+        "agent_base_url": "",
+        "agent_api_key": "legacy-chat-key",
+        "agent_api_keys_json": '{"openai":"old-provider-key"}',
+        "agent_embedding_provider": "openai",
+        "agent_embedding_model": "old-embedding-model",
+        "agent_embedding_api_key": "old-embedding-key",
+        "agent_embedding_base_url": "https://old-embeddings.invalid/v1",
+    }
+    for name, value in previous.items():
+        setattr(settings, name, value)
+
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", _async_unlocked_ok)
+    monkeypatch.setattr(config_route, "_validate_prospective_ollama_targets", validate)
+
+    def fail_persistence() -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(config_route, "persist_runtime_settings", fail_persistence)
+
+    try:
+        with pytest.raises(HTTPException) as failed:
+            await config_route.update_config(
+                1,
+                config_route.AgentConfigUpdateRequest(
+                    provider="ollama",
+                    model="new-chat-model",
+                    extractionModel="new-extraction-model",
+                    apiKey="new-chat-key",
+                    ollamaUrl="http://127.0.0.1:11434",
+                    embeddingProvider="fastembed",
+                    embeddingModel="new-embedding-model",
+                    embeddingApiKey="new-embedding-key",
+                ),
+                Request({"type": "http", "method": "PUT", "path": "/"}),
+                _mode=None,
+                db=None,
+            )
+
+        assert failed.value.status_code == 500
+        assert {name: getattr(settings, name) for name in field_names} == previous
+    finally:
+        for name, value in original.items():
+            setattr(settings, name, value)
+
+
+@pytest.mark.asyncio
+async def test_config_update_refreshes_remaining_sessions_after_one_refresh_fails(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    first_session = object()
+    second_session = object()
+    refreshed: list[object] = []
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_embedding_provider,
+        settings.agent_embedding_model,
+    )
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", _async_unlocked_ok)
+    monkeypatch.setattr(
+        config_route,
+        "active_unlock_sessions",
+        lambda _user_id: (first_session, second_session),
+    )
+
+    def refresh(session: object) -> None:
+        if session is first_session:
+            raise RuntimeError("session revoked")
+        refreshed.append(session)
+
+    monkeypatch.setattr(config_route, "refresh_unlocked_semantic_search", refresh)
+
+    try:
+        settings.agent_provider = "openai"
+        settings.agent_model = "gpt-4o-mini"
+        settings.agent_embedding_provider = "openai"
+        settings.agent_embedding_model = "text-embedding-3-small"
+
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="openai",
+                model="gpt-4o-mini",
+                embeddingProvider="fastembed",
+                embeddingModel="BAAI/bge-small-en-v1.5",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert refreshed == [second_session]
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_embedding_provider,
+            settings.agent_embedding_model,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_config_update_refreshes_embeddings_when_ollama_endpoint_changes(
+    monkeypatch,
+) -> None:
+    from anima_server.api.routes import config as config_route
+    from starlette.requests import Request
+
+    session = object()
+    refresh_calls: list[object] = []
+
+    async def unlocked(_request: object, _user_id: object) -> object:
+        return session
+
+    async def validate(_payload: object) -> None:
+        return None
+
+    original = (
+        settings.agent_provider,
+        settings.agent_model,
+        settings.agent_base_url,
+        settings.agent_embedding_provider,
+        settings.agent_embedding_model,
+        settings.agent_embedding_api_key,
+        settings.agent_embedding_base_url,
+    )
+    monkeypatch.setattr(config_route, "persist_runtime_settings", lambda: None)
+    monkeypatch.setattr(config_route, "require_unlocked_user_async", unlocked)
+    monkeypatch.setattr(config_route, "_validate_prospective_ollama_targets", validate)
+    monkeypatch.setattr(
+        config_route,
+        "active_unlock_sessions",
+        lambda _user_id: (session,),
+    )
+    monkeypatch.setattr(
+        config_route,
+        "refresh_unlocked_semantic_search",
+        lambda current: refresh_calls.append(current),
+    )
+
+    try:
+        settings.agent_provider = "ollama"
+        settings.agent_model = "chat-model"
+        settings.agent_base_url = "http://127.0.0.1:11434"
+        settings.agent_embedding_provider = "ollama"
+        settings.agent_embedding_model = "nomic-embed-text"
+        settings.agent_embedding_api_key = ""
+        settings.agent_embedding_base_url = ""
+
+        result = await config_route.update_config(
+            1,
+            config_route.AgentConfigUpdateRequest(
+                provider="ollama",
+                model="chat-model",
+                ollamaUrl="http://127.0.0.1:22434",
+                embeddingProvider="ollama",
+                embeddingModel="nomic-embed-text",
+            ),
+            Request({"type": "http", "method": "PUT", "path": "/"}),
+            _mode=None,
+            db=None,
+        )
+
+        assert result == {"status": "updated"}
+        assert refresh_calls == [session]
+    finally:
+        (
+            settings.agent_provider,
+            settings.agent_model,
+            settings.agent_base_url,
+            settings.agent_embedding_provider,
+            settings.agent_embedding_model,
+            settings.agent_embedding_api_key,
+            settings.agent_embedding_base_url,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_config_update_rejects_embedding_only_ollama_without_mutation(monkeypatch) -> None:
     from anima_server.api.routes import config as config_route
     from fastapi import HTTPException
@@ -1774,6 +2055,32 @@ def test_runtime_settings_persist_and_reload(tmp_path) -> None:
         settings.agent_extraction_model = original_extraction_model
         settings.agent_api_key = original_api_key
         settings.agent_base_url = original_base_url
+
+
+def test_runtime_settings_persistence_preserves_previous_file_when_replace_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "runtime-config.json"
+    original_content = '{"agent_provider":"openai"}\n'
+    config_path.write_text(original_content, encoding="utf-8")
+    original_provider = settings.agent_provider
+    monkeypatch.setattr(config_module, "get_runtime_settings_path", lambda: config_path)
+
+    def fail_replace(_source, _target) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(config_module.os, "replace", fail_replace)
+
+    try:
+        settings.agent_provider = "ollama"
+        with pytest.raises(OSError, match="replace failed"):
+            config_module.persist_runtime_settings()
+
+        assert config_path.read_text(encoding="utf-8") == original_content
+        assert list(tmp_path.glob(".runtime-config.json.*.tmp")) == []
+    finally:
+        settings.agent_provider = original_provider
 
 
 def test_home_journal_streak() -> None:

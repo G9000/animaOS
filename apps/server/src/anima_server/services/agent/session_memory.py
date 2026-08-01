@@ -7,7 +7,8 @@ like "user seems tired today", "we're debugging a Python error", or
 
 Session notes can be promoted to long-term memory if they prove important.
 
-Notes now live in PG (RuntimeSessionNote) — no field-level encryption needed.
+Notes live in Runtime PostgreSQL, with private key/value fields sealed whenever
+that Runtime is bound to CoreFS.
 """
 
 from __future__ import annotations
@@ -16,9 +17,14 @@ import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.config import settings
 from anima_server.models.runtime_memory import RuntimeSessionNote
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_index_for_sensitive_write,
+    seal_runtime_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,19 +59,22 @@ def write_session_note(
     if note_type not in ("observation", "plan", "context", "emotion"):
         note_type = "observation"
 
-    # Check for existing note with same key
-    existing = runtime_db.scalar(
-        select(RuntimeSessionNote).where(
-            RuntimeSessionNote.thread_id == thread_id,
-            RuntimeSessionNote.key == key,
-            RuntimeSessionNote.is_active.is_(True),
-        )
+    # CoreFS-bound rows keep the mapped key as an empty placeholder, so match
+    # against the small, bounded set after unlock-scoped hydration.
+    existing = _find_active_note(
+        runtime_db,
+        thread_id=thread_id,
+        key=key,
     )
 
     if existing is not None:
-        existing.value = value
         existing.note_type = note_type
-        runtime_db.flush()
+        _persist_private_note_fields(
+            runtime_db,
+            note=existing,
+            key=key,
+            value=value,
+        )
         return existing
 
     # Enforce max active notes — deactivate oldest if at limit
@@ -80,8 +89,12 @@ def write_session_note(
         value=value,
         note_type=note_type,
     )
-    runtime_db.add(note)
-    runtime_db.flush()
+    _persist_private_note_fields(
+        runtime_db,
+        note=note,
+        key=key,
+        value=value,
+    )
     return note
 
 
@@ -92,12 +105,10 @@ def remove_session_note(
     key: str,
 ) -> bool:
     """Deactivate a session note by key. Returns True if found."""
-    note = runtime_db.scalar(
-        select(RuntimeSessionNote).where(
-            RuntimeSessionNote.thread_id == thread_id,
-            RuntimeSessionNote.key == key,
-            RuntimeSessionNote.is_active.is_(True),
-        )
+    note = _find_active_note(
+        runtime_db,
+        thread_id=thread_id,
+        key=key,
     )
     if note is None:
         return False
@@ -126,17 +137,15 @@ def promote_session_note(
 
     Returns ``True`` if the note was found and promoted, ``False`` otherwise.
     """
-    note = runtime_db.scalar(
-        select(RuntimeSessionNote).where(
-            RuntimeSessionNote.thread_id == thread_id,
-            RuntimeSessionNote.key == key,
-            RuntimeSessionNote.is_active.is_(True),
-        )
+    note = _find_active_note(
+        runtime_db,
+        thread_id=thread_id,
+        key=key,
     )
     if note is None:
         return False
 
-    content = note.value  # plaintext — no decryption needed
+    content = note.value
 
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 
@@ -179,7 +188,7 @@ def render_session_memory_text(notes: list[RuntimeSessionNote], *, user_id: int 
     total_len = 0
 
     for note in notes:
-        note_value = note.value  # plaintext — no decryption needed
+        note_value = note.value
         line = f"[{note.note_type}] {note.key}: {note_value}"
         if total_len + len(line) > settings.agent_session_memory_budget_chars:
             break
@@ -201,6 +210,63 @@ def _count_active_notes(runtime_db: Session, thread_id: int) -> int:
         )
         or 0
     )
+
+
+def _find_active_note(
+    runtime_db: Session,
+    *,
+    thread_id: int,
+    key: str,
+) -> RuntimeSessionNote | None:
+    return next(
+        (
+            note
+            for note in get_session_notes(
+                runtime_db,
+                thread_id=thread_id,
+                active_only=True,
+            )
+            if note.key == key
+        ),
+        None,
+    )
+
+
+def _persist_private_note_fields(
+    runtime_db: Session,
+    *,
+    note: RuntimeSessionNote,
+    key: str,
+    value: str,
+) -> None:
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=int(note.user_id),
+    )
+    if runtime_index is None:
+        note.key = key
+        note.value = value
+        runtime_db.add(note)
+        runtime_db.flush([note])
+        return
+
+    note.key = ""
+    note.value = ""
+    runtime_db.add(note)
+    runtime_db.flush([note])
+    seal_runtime_record(
+        runtime_db,
+        index=runtime_index,
+        row_type="runtime_session_note",
+        row_id=int(note.id),
+        owner_id=int(note.user_id),
+        payload={
+            "key": key,
+            "value": value,
+        },
+    )
+    set_committed_value(note, "key", key)
+    set_committed_value(note, "value", value)
 
 
 def _deactivate_oldest_note(runtime_db: Session, thread_id: int) -> None:

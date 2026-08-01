@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Link } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
+import { CoreFSReadinessProvider } from "./context/CoreFSReadinessContext";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/dashboard/Dashboard";
@@ -148,7 +149,9 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <CoreFSReadinessProvider>
+          <AppRoutes />
+        </CoreFSReadinessProvider>
       </AuthProvider>
     </BrowserRouter>
   );

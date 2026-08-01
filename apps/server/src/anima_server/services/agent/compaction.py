@@ -161,9 +161,11 @@ def compact_thread_context(
         thread_id=thread.id,
         count=1,
     )
-    summary_message = RuntimeMessage(
-        thread_id=thread.id,
-        user_id=thread.user_id,
+    from anima_server.services.agent.persistence import append_message
+
+    summary_message = append_message(
+        db,
+        thread=thread,
         run_id=run_id,
         step_id=None,
         sequence_id=summary_sequence_id,
@@ -173,15 +175,7 @@ def compact_thread_context(
             "compacted_message_count": len(compacted_rows),
             "source_sequence_end": compacted_rows[-1].sequence_id,
         },
-        is_in_context=True,
-        token_estimate=estimate_message_tokens(
-            content_text=summary_text,
-            content_json=None,
-            tool_name=None,
-        ),
     )
-    db.add(summary_message)
-    db.flush()
 
     estimated_tokens_after = summary_message.token_estimate or 0
     estimated_tokens_after += sum(
@@ -520,9 +514,11 @@ async def compact_thread_context_with_llm(
         existing_summary_rows, compacted_rows, user_id=thread.user_id
     )
 
-    summary_message = RuntimeMessage(
-        thread_id=thread.id,
-        user_id=thread.user_id,
+    from anima_server.services.agent.persistence import append_message
+
+    summary_message = append_message(
+        db,
+        thread=thread,
         run_id=run_id,
         step_id=None,
         sequence_id=summary_sequence_id,
@@ -534,15 +530,7 @@ async def compact_thread_context_with_llm(
             "source_sequence_end": compacted_rows[-1].sequence_id,
             "llm_summarized": used_llm,
         },
-        is_in_context=True,
-        token_estimate=estimate_message_tokens(
-            content_text=summary_text,
-            content_json=None,
-            tool_name=None,
-        ),
     )
-    db.add(summary_message)
-    db.flush()
 
     estimated_tokens_after = summary_message.token_estimate or 0
     estimated_tokens_after += sum(

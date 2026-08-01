@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -28,8 +29,14 @@ from anima_server.services.agent.embeddings import (
     _resolve_embedding_api_key,
 )
 from anima_server.services.agent.llm import SUPPORTED_PROVIDERS
+from anima_server.services.corefs.migration import (
+    configured_embedding_fingerprint,
+    refresh_unlocked_semantic_search,
+)
+from anima_server.services.sessions import active_unlock_sessions
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+logger = logging.getLogger(__name__)
 
 
 class ProviderInfo(BaseModel):
@@ -466,6 +473,22 @@ async def update_config(
     # against the NEW chat provider and misdetect a switch, clearing the
     # piggyback credential on a save the user only meant as a chat change.
     old_effective_embedding_provider = resolve_embedding_provider()
+    old_embedding_fingerprint = configured_embedding_fingerprint()
+    mutable_setting_fields = (
+        "agent_provider",
+        "agent_model",
+        "agent_extraction_model",
+        "agent_base_url",
+        "agent_api_key",
+        "agent_api_keys_json",
+        "agent_embedding_provider",
+        "agent_embedding_model",
+        "agent_embedding_api_key",
+        "agent_embedding_base_url",
+    )
+    previous_settings = {
+        name: getattr(settings, name) for name in mutable_setting_fields
+    }
 
     settings.agent_provider = payload.provider
     settings.agent_model = payload.model
@@ -553,6 +576,8 @@ async def update_config(
     try:
         persist_runtime_settings()
     except OSError as exc:
+        for name, value in previous_settings.items():
+            setattr(settings, name, value)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to persist AI settings: {exc}",
@@ -561,14 +586,19 @@ async def update_config(
     from anima_server.services.agent import invalidate_agent_runtime_cache
     from anima_server.services.agent.embeddings import clear_embedding_cache
 
-    # A changed embedding provider/model/dim (including a reset back to the
-    # bundled default) is picked up on the next embedding call purely via
-    # clear_embedding_cache(): it re-arms the one-shot cold-start sync,
-    # resets the embedding-contract cache, and clears the detected-dim latch
-    # (see embeddings.clear_embedding_cache), so a dimension/model mismatch
-    # is caught by the existing contract-migration machinery instead of
-    # silently serving stale-model vectors. Nothing else to build here.
+    # Reset the shared embedding-contract caches first. CoreFS semantic vectors
+    # are unlock-scoped rather than stored in that cache, so a provider/model
+    # change also invalidates and rebuilds that generation below.
     clear_embedding_cache()
     invalidate_agent_runtime_cache()
+    if configured_embedding_fingerprint() != old_embedding_fingerprint:
+        for unlock_session in active_unlock_sessions(user_id):
+            try:
+                refresh_unlocked_semantic_search(unlock_session)
+            except Exception:
+                logger.warning(
+                    "Failed to refresh one unlock-scoped semantic index after config update",
+                    exc_info=True,
+                )
 
     return {"status": "updated"}

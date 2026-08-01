@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeImageAsset
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.images.models import StoredImageAsset
 
 ALLOWED_IMAGE_MIME_TYPES = {
@@ -67,17 +68,33 @@ def register_image_asset(
 
     asset = RuntimeImageAsset(
         user_id=user_id,
-        filename=_sanitize_filename(filename),
-        mime_type=normalized_mime,
-        storage_path=storage_path,
+        filename=None,
+        mime_type="",
+        storage_path="",
         sha256=digest,
         size_bytes=len(data),
         status="registered",
         retention_state="transient",
-        metadata_json=dict(metadata_json) if metadata_json is not None else None,
+        metadata_json=None,
     )
-    db.add(asset)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=asset,
+        row_type="runtime_image_asset",
+        owner_id=user_id,
+        payload={
+            "filename": _sanitize_filename(filename),
+            "mime_type": normalized_mime,
+            "storage_path": storage_path,
+            "metadata_json": dict(metadata_json) if metadata_json is not None else None,
+        },
+        placeholders={
+            "filename": None,
+            "mime_type": "",
+            "storage_path": "",
+            "metadata_json": None,
+        },
+    )
     return StoredImageAsset(asset=asset, path=path, created=True)
 
 

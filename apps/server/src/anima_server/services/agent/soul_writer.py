@@ -257,6 +257,11 @@ def _run_soul_writer_inner(
     from anima_server.db.helpers import dual_session_scope
     from anima_server.db.runtime import get_runtime_session_factory
     from anima_server.db.session import SessionLocal, get_user_session_factory, is_sqlite_mode
+    from anima_server.services.corefs.sealed_runtime import (
+        reseal_memory_candidate_error,
+        reseal_pending_memory_op_error,
+        reseal_profile_update_candidate_error,
+    )
 
     rt_factory = runtime_db_factory or get_runtime_session_factory()
     if soul_db_factory is not None:
@@ -292,7 +297,11 @@ def _run_soul_writer_inner(
         )
         for op in failed_ops:
             op.failed = False
-            op.failure_reason = None
+            reseal_pending_memory_op_error(
+                runtime_db,
+                op,
+                failure_reason=None,
+            )
         if failed_ops:
             runtime_db.flush()
             pending_ops.extend(failed_ops)
@@ -327,7 +336,11 @@ def _run_soul_writer_inner(
             except Exception as e:
                 logger.exception("Soul Writer op %s failed", op.id)
                 op.failed = True
-                op.failure_reason = str(e)[:500]
+                reseal_pending_memory_op_error(
+                    runtime_db,
+                    op,
+                    failure_reason=str(e)[:500],
+                )
                 op.retry_count = (op.retry_count or 0) + 1
                 result.ops_failed += 1
                 result.errors.append(f"op {op.id}: {e}")
@@ -411,7 +424,11 @@ def _run_soul_writer_inner(
                         candidate.id, candidate.content_hash,
                     )
                     candidate.status = "failed"
-                    candidate.last_error = "active duplicate content_hash"
+                    reseal_memory_candidate_error(
+                        runtime_db,
+                        candidate,
+                        last_error="active duplicate content_hash",
+                    )
                     candidate.retry_count = (candidate.retry_count or 0) + 1
             candidates = queued
 
@@ -429,7 +446,11 @@ def _run_soul_writer_inner(
                 logger.exception(
                     "Soul Writer candidate %s failed", candidate.id)
                 candidate.status = "failed"
-                candidate.last_error = str(e)[:500]
+                reseal_memory_candidate_error(
+                    runtime_db,
+                    candidate,
+                    last_error=str(e)[:500],
+                )
                 candidate.retry_count = (candidate.retry_count or 0) + 1
                 result.candidates_failed += 1
                 result.errors.append(f"candidate {candidate.id}: {e}")
@@ -460,12 +481,21 @@ def _run_soul_writer_inner(
                     soul_db_factory=soul_factory,
                     result=result,
                 )
+                reseal_profile_update_candidate_error(
+                    runtime_db,
+                    candidate,
+                    last_error=None,
+                )
             except Exception as e:
                 logger.exception(
                     "Soul Writer profile update candidate %s failed", candidate.id
                 )
                 candidate.status = "failed"
-                candidate.last_error = str(e)[:500]
+                reseal_profile_update_candidate_error(
+                    runtime_db,
+                    candidate,
+                    last_error=str(e)[:500],
+                )
                 candidate.retry_count = (candidate.retry_count or 0) + 1
                 result.profile_updates_failed += 1
                 result.errors.append(f"profile update {candidate.id}: {e}")
@@ -543,6 +573,9 @@ def _retry_memory_extraction_failures(
     from anima_server.services.agent.user_profile import (
         create_profile_update_candidates_from_payload,
     )
+    from anima_server.services.corefs.sealed_runtime import (
+        reseal_memory_extraction_failure,
+    )
 
     # Retry genuine failures immediately, plus "pending" guards that have gone
     # stale — a still-pending row past the staleness window means the process
@@ -604,14 +637,22 @@ def _retry_memory_extraction_failures(
             # Normalize a recovered stale "pending" guard to "failed" so it is
             # a plain retryable row from here on.
             failure.status = "failed"
-            failure.failure_reason = str(exc)[:2000]
+            reseal_memory_extraction_failure(
+                runtime_db,
+                failure,
+                failure_reason=str(exc),
+            )
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {exc}")
             continue
 
         if llm_result.failed:
             failure.status = "failed"
-            failure.failure_reason = (llm_result.error or "LLM memory extraction failed")[:2000]
+            reseal_memory_extraction_failure(
+                runtime_db,
+                failure,
+                failure_reason=llm_result.error or "LLM memory extraction failed",
+            )
             result.extraction_failures_failed += 1
             result.errors.append(f"extraction failure {failure.id}: {failure.failure_reason}")
             continue
@@ -842,7 +883,6 @@ def _process_profile_update_candidate(
 
     candidate.status = "promoted"
     candidate.processed_at = datetime.now(UTC)
-    candidate.last_error = None
     result.profile_updates_promoted += 1
 
 

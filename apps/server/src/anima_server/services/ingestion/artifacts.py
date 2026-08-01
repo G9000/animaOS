@@ -7,9 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import (
+    RuntimeKnowledgeConceptSource,
     RuntimeSource,
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
+)
+from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
+    delete_sealed_runtime_records,
+    seal_runtime_fields,
 )
 from anima_server.services.ingestion.models import (
     SourceArtifactInput,
@@ -43,8 +49,7 @@ def replace_source_artifacts_and_spans(
         ).all()
     )
     artifacts_by_identity = {
-        (artifact.artifact_kind, artifact.content_hash): artifact
-        for artifact in existing_artifacts
+        (artifact.artifact_kind, artifact.content_hash): artifact for artifact in existing_artifacts
     }
 
     stored_artifacts: list[RuntimeSourceArtifact] = []
@@ -59,27 +64,28 @@ def replace_source_artifacts_and_spans(
                 artifact_kind=artifact_input.artifact_kind,
                 content_hash=artifact_input.content_hash,
             )
-        artifact.content_text = artifact_input.content_text
-        artifact.metadata_json = _copy_metadata(artifact_input.metadata_json)
         artifact.updated_at = now
-        db.add(artifact)
+        metadata_json = _copy_metadata(artifact_input.metadata_json)
+        seal_runtime_fields(
+            db,
+            row=artifact,
+            row_type="runtime_source_artifact",
+            owner_id=int(source.user_id),
+            payload={
+                "content_text": artifact_input.content_text,
+                "metadata_json": metadata_json,
+            },
+            placeholders={"content_text": None, "metadata_json": None},
+        )
         stored_artifacts.append(artifact)
-    db.flush()
 
-    artifacts_by_kind = {
-        artifact.artifact_kind: artifact for artifact in stored_artifacts
-    }
-    artifact_kind_by_id = {
-        artifact.id: artifact.artifact_kind for artifact in existing_artifacts
-    }
+    artifacts_by_kind = {artifact.artifact_kind: artifact for artifact in stored_artifacts}
+    artifact_kind_by_id = {artifact.id: artifact.artifact_kind for artifact in existing_artifacts}
     existing_spans = list(
-        db.scalars(
-            select(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)
-        ).all()
+        db.scalars(select(RuntimeSourceSpan).where(RuntimeSourceSpan.source_id == source.id)).all()
     )
     spans_by_identity = {
-        (span.artifact_id, span.locator_hash, span.content_hash): span
-        for span in existing_spans
+        (span.artifact_id, span.locator_hash, span.content_hash): span for span in existing_spans
     }
     spans_by_stable_identity = {
         (
@@ -116,19 +122,67 @@ def replace_source_artifacts_and_spans(
         span.artifact_id = artifact.id
         span.span_kind = span_input.span_kind
         span.locator_json = dict(span_input.locator_json)
-        span.content_text = span_input.content_text
-        span.metadata_json = _copy_metadata(span_input.metadata_json)
         span.updated_at = now
-        db.add(span)
+        metadata_json = _copy_metadata(span_input.metadata_json)
+        seal_runtime_fields(
+            db,
+            row=span,
+            row_type="runtime_source_span",
+            owner_id=int(source.user_id),
+            payload={
+                "content_text": span_input.content_text,
+                "metadata_json": metadata_json,
+            },
+            placeholders={"content_text": "", "metadata_json": None},
+        )
         stored_spans.append(span)
-    db.flush()
 
     stored_span_ids = {span.id for span in stored_spans}
+    stale_span_ids = [
+        int(stale_span.id) for stale_span in existing_spans if stale_span.id not in stored_span_ids
+    ]
+    stale_citation_ids = list(
+        db.scalars(
+            select(RuntimeKnowledgeConceptSource.id).where(
+                RuntimeKnowledgeConceptSource.user_id == source.user_id,
+                RuntimeKnowledgeConceptSource.span_id.in_(stale_span_ids),
+            )
+        ).all()
+    )
+    delete_sealed_runtime_records(
+        db,
+        row_type="runtime_knowledge_concept_source",
+        row_ids=stale_citation_ids,
+        owner_id=int(source.user_id),
+    )
+    delete_runtime_embedding_records(
+        db,
+        owner_id=int(source.user_id),
+        source_type="source_span",
+        source_ids=stale_span_ids,
+    )
+    delete_sealed_runtime_records(
+        db,
+        row_type="runtime_source_span",
+        row_ids=stale_span_ids,
+        owner_id=int(source.user_id),
+    )
     for stale_span in existing_spans:
         if stale_span.id not in stored_span_ids:
             db.delete(stale_span)
 
     stored_artifact_ids = {artifact.id for artifact in stored_artifacts}
+    stale_artifact_ids = [
+        int(stale_artifact.id)
+        for stale_artifact in existing_artifacts
+        if stale_artifact.id not in stored_artifact_ids
+    ]
+    delete_sealed_runtime_records(
+        db,
+        row_type="runtime_source_artifact",
+        row_ids=stale_artifact_ids,
+        owner_id=int(source.user_id),
+    )
     for stale_artifact in existing_artifacts:
         if stale_artifact.id not in stored_artifact_ids:
             db.delete(stale_artifact)

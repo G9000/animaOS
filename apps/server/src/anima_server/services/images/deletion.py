@@ -14,10 +14,17 @@ from anima_server.models.runtime import (
     RuntimeImageAsset,
     RuntimeImageMessageLink,
     RuntimeMessage,
+    RuntimeRun,
+    RuntimeStep,
     RuntimeThread,
 )
-from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.models.runtime_memory import RuntimeSessionNote
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY, PILLS_CONTENT_KEY
+from anima_server.services.corefs.sealed_runtime import (
+    delete_runtime_embedding_records,
+    delete_sealed_runtime_records,
+    reseal_runtime_message,
+)
 from anima_server.services.data_crypto import get_active_dek
 from anima_server.services.images.store import delete_image_asset_file_if_safe
 
@@ -80,6 +87,7 @@ def forget_image_asset(
     }
     for link, message in linked_messages:
         _remove_image_asset_metadata(
+            runtime_db,
             message,
             image_asset_id=image_asset_id,
             attachment_id=link.attachment_id,
@@ -100,15 +108,26 @@ def forget_image_asset(
         ).all()
     )
     if annotation_ids:
-        runtime_db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "image_annotation",
-                RuntimeEmbedding.source_id.in_(annotation_ids),
-            )
+        delete_runtime_embedding_records(
+            runtime_db,
+            owner_id=user_id,
+            source_type="image_annotation",
+            source_ids=annotation_ids,
+        )
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_image_annotation",
+            row_ids=annotation_ids,
+            owner_id=user_id,
         )
 
     file_deleted = delete_image_asset_file_if_safe(asset)
+    delete_sealed_runtime_records(
+        runtime_db,
+        row_type="runtime_image_asset",
+        row_ids=[image_asset_id],
+        owner_id=user_id,
+    )
     runtime_db.delete(asset)
     runtime_db.flush()
     return ForgetImageResult(
@@ -145,7 +164,7 @@ def remove_message_image_link(
         return RemoveImageLinkResult(removed=False)
 
     image_asset_id = link.image_asset_id
-    _remove_attachment_metadata(message, attachment_id)
+    _remove_attachment_metadata(runtime_db, message, attachment_id)
     _remove_image_source_pills(
         runtime_db,
         user_id=user_id,
@@ -190,6 +209,25 @@ def delete_thread_with_image_cleanup(
             )
         ).all()
     )
+    step_ids = list(
+        runtime_db.scalars(select(RuntimeStep.id).where(RuntimeStep.thread_id == thread_id)).all()
+    )
+    run_ids = list(
+        runtime_db.scalars(
+            select(RuntimeRun.id).where(
+                RuntimeRun.user_id == user_id,
+                RuntimeRun.thread_id == thread_id,
+            )
+        ).all()
+    )
+    session_note_ids = list(
+        runtime_db.scalars(
+            select(RuntimeSessionNote.id).where(
+                RuntimeSessionNote.user_id == user_id,
+                RuntimeSessionNote.thread_id == thread_id,
+            )
+        ).all()
+    )
     candidate_asset_ids = _candidate_thread_image_asset_ids(
         runtime_db,
         user_id=user_id,
@@ -204,6 +242,39 @@ def delete_thread_with_image_cleanup(
                 RuntimeImageMessageLink.message_id.in_(message_ids),
             )
         )
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_message",
+            row_ids=message_ids,
+            owner_id=user_id,
+        )
+    if step_ids:
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_step",
+            row_ids=step_ids,
+            owner_id=user_id,
+        )
+    if run_ids:
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_run",
+            row_ids=run_ids,
+            owner_id=user_id,
+        )
+    if session_note_ids:
+        delete_sealed_runtime_records(
+            runtime_db,
+            row_type="runtime_session_note",
+            row_ids=session_note_ids,
+            owner_id=user_id,
+        )
+    delete_sealed_runtime_records(
+        runtime_db,
+        row_type="runtime_thread",
+        row_ids=[thread_id],
+        owner_id=user_id,
+    )
     runtime_db.execute(delete(RuntimeMessage).where(RuntimeMessage.thread_id == thread_id))
     runtime_db.delete(thread)
     runtime_db.flush()
@@ -404,12 +475,15 @@ def _delete_orphaned_transient_asset(
         return False, False
     if asset.retention_state in RETAINED_IMAGE_STATES:
         return False, False
-    link_count = runtime_db.scalar(
-        select(func.count(RuntimeImageMessageLink.id)).where(
-            RuntimeImageMessageLink.user_id == user_id,
-            RuntimeImageMessageLink.image_asset_id == image_asset_id,
+    link_count = (
+        runtime_db.scalar(
+            select(func.count(RuntimeImageMessageLink.id)).where(
+                RuntimeImageMessageLink.user_id == user_id,
+                RuntimeImageMessageLink.image_asset_id == image_asset_id,
+            )
         )
-    ) or 0
+        or 0
+    )
     if link_count > 0:
         return False, False
     if _archived_image_asset_reference_exists(
@@ -493,8 +567,13 @@ def _archived_transcript_thread_id(path: Path) -> int | None:
     return _coerce_positive_int(match.group(1))
 
 
-def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> None:
+def _remove_attachment_metadata(
+    runtime_db: Session,
+    message: RuntimeMessage,
+    attachment_id: str,
+) -> None:
     _remove_image_asset_metadata(
+        runtime_db,
         message,
         image_asset_id=None,
         attachment_id=attachment_id,
@@ -502,6 +581,7 @@ def _remove_attachment_metadata(message: RuntimeMessage, attachment_id: str) -> 
 
 
 def _remove_image_asset_metadata(
+    runtime_db: Session,
     message: RuntimeMessage,
     *,
     image_asset_id: int | None,
@@ -518,14 +598,15 @@ def _remove_image_asset_metadata(
             isinstance(attachment, dict)
             and (
                 (attachment_id is not None and attachment.get("id") == attachment_id)
-                or (
-                    image_asset_id is not None
-                    and attachment.get("assetId") == image_asset_id
-                )
+                or (image_asset_id is not None and attachment.get("assetId") == image_asset_id)
             )
         )
     ]
-    message.content_json = payload
+    reseal_runtime_message(
+        runtime_db,
+        message,
+        content_json=payload,
+    )
 
 
 def _remove_image_source_pills(
@@ -539,7 +620,6 @@ def _remove_image_source_pills(
         runtime_db.scalars(
             select(RuntimeMessage).where(
                 RuntimeMessage.user_id == user_id,
-                RuntimeMessage.content_json.is_not(None),
             )
         ).all()
     )
@@ -560,7 +640,11 @@ def _remove_image_source_pills(
         if len(next_pills) == len(raw_pills):
             continue
         payload[PILLS_CONTENT_KEY] = next_pills
-        message.content_json = payload
+        reseal_runtime_message(
+            runtime_db,
+            message,
+            content_json=payload,
+        )
 
 
 def _is_matching_image_source_pill(
@@ -573,9 +657,5 @@ def _is_matching_image_source_pill(
         return False
     ref = pill.get("ref")
     return (
-        (
-            image_asset_id is not None
-            and (ref == image_asset_id or ref == f"image:{image_asset_id}")
-        )
-        or (isinstance(ref, str) and ref in attachment_ids)
-    )
+        image_asset_id is not None and (ref == image_asset_id or ref == f"image:{image_asset_id}")
+    ) or (isinstance(ref, str) and ref in attachment_ids)

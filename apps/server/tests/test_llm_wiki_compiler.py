@@ -136,6 +136,42 @@ def test_compiler_creates_concepts_citations_links_and_completed_run(runtime_db)
     assert runtime_db.scalar(select(RuntimeKnowledgeBundleRun)).status == "completed"
 
 
+def test_compiler_discards_noncanonical_link_types_at_storage_boundary(
+    runtime_db,
+) -> None:
+    source, spans = _source_with_spans(runtime_db)
+    payload = {
+        "concepts": [
+            _concept_payload(
+                "source_summary", "source-notes", "Notes", [spans[0].id]
+            ),
+            _concept_payload(
+                "topic", "topic-evidence", "Evidence", [spans[0].id]
+            ),
+        ],
+        "links": [
+            {
+                "source_slug": "topic-evidence",
+                "target_slug": "source-notes",
+                "link_type": "reveals my private relationship",
+                "confidence": 0.8,
+            }
+        ],
+    }
+
+    result = compile_source_to_concepts(
+        runtime_db,
+        user_id=1,
+        source_id=source.id,
+        span_ids=[span.id for span in spans],
+        model=lambda request: json.dumps(payload),
+    )
+
+    assert result.status == "completed"
+    assert result.link_count == 0
+    assert runtime_db.scalar(select(RuntimeKnowledgeLink)) is None
+
+
 def test_compiler_embeds_completed_concepts(runtime_db) -> None:
     source, spans = _source_with_spans(runtime_db)
 

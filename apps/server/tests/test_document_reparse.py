@@ -418,6 +418,69 @@ def test_mark_docling_reparse_failed_excludes_within_cooldown(
     ) == []
 
 
+def test_mark_docling_reparse_failed_excludes_sealed_document_within_cooldown(
+    runtime_db: Session,
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=7,
+            filename="sealed-manual.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/7/sealed-manual.pdf",
+            sha256="b" * 64,
+            size_bytes=2048,
+        ),
+    )
+    document.status = "indexed"
+    document.parse_quality = "preview"
+    later_document = register_document(
+        runtime_db,
+        DocumentRegistration(
+            user_id=7,
+            filename="later-manual.pdf",
+            mime_type="application/pdf",
+            storage_path=".anima/documents/7/later-manual.pdf",
+            sha256="c" * 64,
+            size_bytes=2048,
+        ),
+    )
+    later_document.status = "indexed"
+    later_document.parse_quality = "preview"
+    runtime_db.flush()
+
+    reparse.mark_docling_reparse_failed(
+        runtime_db,
+        user_id=document.user_id,
+        document_id=document.id,
+    )
+    runtime_db.flush()
+    raw_metadata = runtime_db.execute(
+        select(RuntimeDocument.__table__.c.metadata_json).where(
+            RuntimeDocument.__table__.c.id == document.id
+        )
+    ).scalar_one()
+    runtime_db.expunge_all()
+
+    assert raw_metadata is None
+    assert reparse.list_reparse_candidates(
+        runtime_db, user_id=7, failure_cooldown_hours=24
+    ) == [later_document.id]
+
+
 def test_list_reparse_candidates_retries_failed_document_after_cooldown(
     runtime_db: Session,
     preview_document: RuntimeDocument,

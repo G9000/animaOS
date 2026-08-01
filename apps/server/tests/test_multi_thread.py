@@ -269,26 +269,27 @@ def test_reactivate_leaves_other_users_threads_untouched(db: Session) -> None:
     assert displaced == []
 
 
-def test_maybe_set_thread_title() -> None:
+def test_maybe_set_thread_title(db: Session) -> None:
     from anima_server.services.agent.thread_manager import maybe_set_thread_title
 
     # Sets title from a cleaned request instead of the raw prompt.
     thread = RuntimeThread(user_id=1, status="active", title=None)
-    maybe_set_thread_title(thread, "Can you help me fix the chat sidebar layout?")
+    maybe_set_thread_title(db, thread, "Can you help me fix the chat sidebar layout?")
     assert thread.title == "Fix the chat sidebar layout"
 
     # Does not overwrite existing title
-    maybe_set_thread_title(thread, "New message")
+    maybe_set_thread_title(db, thread, "New message")
     assert thread.title == "Fix the chat sidebar layout"
 
     # Leaves generic greetings untitled so the UI can fall back to date/time.
     thread2 = RuntimeThread(user_id=1, status="active", title=None)
-    maybe_set_thread_title(thread2, "hello")
+    maybe_set_thread_title(db, thread2, "hello")
     assert thread2.title is None
 
     # Truncates long substantive prompts cleanly.
     thread3 = RuntimeThread(user_id=1, status="active", title=None)
     maybe_set_thread_title(
+        db,
         thread3,
         "Please help me make the desktop sidebar thread titles shorter and less repetitive because it looks messy.",
     )

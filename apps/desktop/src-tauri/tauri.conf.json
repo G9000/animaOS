@@ -30,7 +30,7 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "resources/.anima/": ".anima/"
+      "resources/runtime/": "runtime/"
     },
     "icon": [
       "icons/32x32.png",

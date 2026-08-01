@@ -9,7 +9,6 @@ from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models.runtime import RuntimeThread, RuntimeWorkflowRun
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
-from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.vector_store import VectorSearchResult
 from anima_server.services.documents import ExtractedDocumentChunk, pdf_workflow
 from anima_server.services.documents.parsing import ExtractionOutcome
@@ -136,49 +135,6 @@ def _patch_pdf_edges(
             parse_quality="docling",
         ),
     )
-
-    def fake_upsert_source(
-        self: Any,
-        user_id: int,
-        *,
-        source_type: str,
-        source_id: int,
-        content: str,
-        embedding: list[float],
-        category: str = "document",
-        importance: int = 3,
-    ) -> None:
-        row = self._db.scalar(
-            select(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == source_type,
-                RuntimeEmbedding.source_id == source_id,
-            )
-        )
-        if row is None:
-            row = RuntimeEmbedding(
-                user_id=user_id,
-                source_type=source_type,
-                source_id=source_id,
-                content_hash=RuntimeEmbedding.compute_content_hash(content),
-                embedding_checksum=compute_embedding_checksum(embedding),
-                embedding=embedding,
-                content_preview=content[:200],
-                category=category,
-                importance=importance,
-            )
-            self._db.add(row)
-        else:
-            row.content_hash = RuntimeEmbedding.compute_content_hash(content)
-            row.embedding_checksum = compute_embedding_checksum(embedding)
-            row.embedding = embedding
-            row.content_preview = content[:200]
-            row.category = category
-            row.importance = importance
-        self._db.flush()
-
-    monkeypatch.setattr(pgvec_module.PgVecStore, "upsert_source", fake_upsert_source)
-
 
 def test_start_pdf_workflow_and_get_status() -> None:
     with managed_test_client("anima-documents-api-") as client:
