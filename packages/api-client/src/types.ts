@@ -135,6 +135,7 @@ export interface CoreFSFamilyReadiness {
 
 export interface CoreFSSecurityStatus {
   coreId: string;
+  filesystemAvailable: boolean;
   readiness: {
     state: string;
     catalogGeneration: number | null;

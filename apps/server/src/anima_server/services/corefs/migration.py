@@ -604,6 +604,11 @@ def _durable_entry_key(entry: dict[str, str]) -> tuple[str, str, str]:
     )
 
 
+def _durable_entry_checksum(entry: dict[str, str]) -> str:
+    family, object_hash, revision_hash = _durable_entry_key(entry)
+    return _digest(f"{family}:{object_hash}:{revision_hash}")
+
+
 def _prepare_durable_index_state(
     runtime_db: Session,
     *,
@@ -625,7 +630,7 @@ def _prepare_durable_index_state(
                 CoreFSIndexEntry.revision_hash == revision_hash,
             )
         )
-        checksum = _digest(f"{family}:{entry['path']}:{entry['stable_id']}:{entry['revision']}")
+        checksum = _durable_entry_checksum(entry)
         if stored is None:
             stored = CoreFSIndexEntry(
                 core_id=index.core_id,

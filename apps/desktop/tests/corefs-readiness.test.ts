@@ -4,6 +4,7 @@ import { catalogNavigationAvailable } from "../src/context/CoreFSReadinessContex
 
 const status: CoreFSSecurityStatus = {
   coreId: "core-test",
+  filesystemAvailable: true,
   readiness: {
     state: "catalog_ready_degraded",
     catalogGeneration: 7,
@@ -82,5 +83,16 @@ describe("CoreFS readiness", () => {
         },
       }),
     ).toBe(false);
+    expect(
+      catalogNavigationAvailable({
+        ...status,
+        filesystemAvailable: false,
+        readiness: {
+          ...status.readiness,
+          state: "opening_core",
+          capabilities: [],
+        },
+      }),
+    ).toBe(true);
   });
 });

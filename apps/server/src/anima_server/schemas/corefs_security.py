@@ -37,6 +37,7 @@ class CoreFSRotationStatusResponse(BaseModel):
 
 class CoreFSSecurityStatusResponse(BaseModel):
     coreId: str
+    filesystemAvailable: bool
     readiness: CoreFSReadinessResponse
     rotation: CoreFSRotationStatusResponse
 

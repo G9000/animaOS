@@ -90,6 +90,7 @@ def _security_status(session: UnlockSession) -> CoreFSSecurityStatusResponse:
 
     return CoreFSSecurityStatusResponse(
         coreId=get_core_id(),
+        filesystemAvailable=getattr(session, "corefs_keys", None) is not None,
         readiness=CoreFSReadinessResponse(
             state=snapshot.state.value,
             catalogGeneration=snapshot.catalog_generation,

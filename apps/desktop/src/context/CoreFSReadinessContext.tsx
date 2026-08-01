@@ -26,7 +26,11 @@ const CoreFSReadinessContext = createContext<CoreFSReadinessContextValue | null>
 export function catalogNavigationAvailable(
   status: CoreFSSecurityStatus | null,
 ): boolean {
-  return status?.readiness.capabilities.includes("navigation") ?? false;
+  if (!status) return false;
+  return (
+    !status.filesystemAvailable ||
+    status.readiness.capabilities.includes("navigation")
+  );
 }
 
 export function CoreFSReadinessProvider({

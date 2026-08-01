@@ -13,6 +13,7 @@ from anima_server.models.corefs_runtime import (
     CoreFSRuntimeBinding,
     CoreFSSealedPayload,
 )
+from anima_server.services.corefs import migration as corefs_migration
 from anima_server.services.corefs.runtime_sealing import (
     RuntimePayloadAAD,
     RuntimePayloadSealer,
@@ -169,6 +170,20 @@ def test_corefs_runtime_schema_builds_without_plaintext_search_columns() -> None
         assert "content_text" not in columns
         assert "embedding" not in columns
         assert "preview" not in columns
+
+
+def test_durable_index_checksum_does_not_encode_private_logical_path() -> None:
+    first = {
+        "family": "note",
+        "path": "People/Alex.md",
+        "stable_id": "opaque-note-id",
+        "revision": "7",
+    }
+    second = {**first, "path": "People/Sam.md"}
+
+    assert corefs_migration._durable_entry_checksum(first) == (
+        corefs_migration._durable_entry_checksum(second)
+    )
 
 
 def test_fresh_runtime_disk_contains_none_of_the_seeded_private_markers(

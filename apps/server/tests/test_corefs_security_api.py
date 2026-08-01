@@ -75,6 +75,7 @@ def test_corefs_security_status_schedules_unlocked_rebuild_after_catalog(
         response = client.get("/api/corefs/security/status")
 
     assert response.status_code == 200
+    assert response.json()["filesystemAvailable"] is True
     assert response.json()["readiness"]["state"] == "catalog_ready"
     assert calls == ["catalog", "schedule"]
 
@@ -167,6 +168,7 @@ def test_corefs_security_status_exposes_only_progress_and_rotation_metadata(
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["filesystemAvailable"] is False
     assert payload["readiness"]["state"] == "text_indexing"
     assert payload["readiness"]["catalogGeneration"] == 12
     assert payload["readiness"]["processedObjects"] == 1
