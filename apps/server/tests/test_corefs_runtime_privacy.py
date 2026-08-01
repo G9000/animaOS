@@ -3177,6 +3177,84 @@ def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
         assert embedded_texts == [f"legacy private section\n\n{legacy_document_text}"]
 
 
+def test_unlock_converter_rebuilds_untagged_legacy_vector_in_claimed_generation() -> None:
+    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from conftest_runtime import runtime_db_session
+
+    with runtime_db_session() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        legacy_vector = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
+        legacy_vector[0] = 1.0
+        runtime_embedding = RuntimeEmbedding(
+            user_id=7,
+            source_type="legacy_test",
+            source_id=101,
+            content_hash="e" * 64,
+            embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(legacy_vector),
+            embedding=legacy_vector,
+            content_preview="legacy embedding input",
+            category="fact",
+            importance=4,
+        )
+        runtime_db.add(runtime_embedding)
+        runtime_db.flush()
+
+        index = CoreFSProgressiveIndex("core-a")
+        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+        index.begin_runtime_embedding_rebuild(
+            embedding_fingerprint="provider:model",
+        )
+
+        converted = sealed_runtime.convert_legacy_runtime_rows(
+            runtime_db,
+            index=index,
+            user_id=7,
+        )
+        runtime_db.flush()
+
+        assert converted == 1
+        assert index.runtime_embedding_vector(
+            source_type="legacy_test",
+            source_id=101,
+        ) is None
+        raw_embedding = runtime_db.execute(
+            select(
+                RuntimeEmbedding.__table__.c.content_preview,
+                RuntimeEmbedding.__table__.c.embedding,
+                RuntimeEmbedding.__table__.c.embedding_checksum,
+            ).where(RuntimeEmbedding.__table__.c.id == runtime_embedding.id)
+        ).one()
+        assert raw_embedding == ("", None, None)
+
+        def embedder(_content: str) -> tuple[float, ...]:
+            rebuilt = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
+            rebuilt[1] = 1.0
+            return tuple(rebuilt)
+
+        embedder.corefs_embedding_fingerprint = "provider:model"  # type: ignore[attr-defined]
+        assert (
+            sealed_runtime.rebuild_runtime_embeddings(
+                runtime_db,
+                index=index,
+                user_id=7,
+                embedder=embedder,
+            )
+            == 1
+        )
+        assert index.runtime_embedding_vector(
+            source_type="legacy_test",
+            source_id=101,
+        ) == embedder("legacy embedding input")
+
+
 def test_runtime_embedding_rebuild_restores_vectors_for_a_new_unlock(
     monkeypatch,
 ) -> None:

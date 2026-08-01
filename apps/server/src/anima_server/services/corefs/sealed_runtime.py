@@ -736,6 +736,7 @@ def _convert_legacy_runtime_embeddings(
         table.c.embedding,
         table.c.embedding_checksum,
     ).where(table.c.user_id == user_id)
+    import_legacy_vectors = index.runtime_embedding_fingerprint() is None
     converted = 0
     for row in runtime_db.execute(statement).mappings():
         row_id = int(row["id"])
@@ -773,7 +774,10 @@ def _convert_legacy_runtime_embeddings(
             )
 
         stored_vector = row["embedding"]
-        if stored_vector is not None:
+        # Legacy rows do not record the provider/model generation that produced
+        # their vectors. Once the index has claimed a configured generation,
+        # only the scheduled rebuild may populate it from the sealed input.
+        if stored_vector is not None and import_legacy_vectors:
             index.upsert_runtime_embedding(
                 source_type=str(row["source_type"]),
                 source_id=int(row["source_id"]),
