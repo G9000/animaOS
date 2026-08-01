@@ -474,6 +474,11 @@ git add apps/server/src/anima_server/models/corefs_runtime.py apps/server/src/an
 git -c commit.gpgsign=false commit -m "runtime: rebuild CoreFS indexes after unlock"
 ```
 
+PR #127 implementation head `70d22b7c` passed all required checks and received a
+clean exact-head Codex review after full GraphQL pagination found zero unresolved
+actionable threads. The synchronized second-phase closeout is recorded; PCF-004
+and PCF-005 are dependency-eligible without being claimed.
+
 ## Task 4: Diary, folders, drafts, and notes vertical slice
 
 **Ticket:** `PCF-004`  

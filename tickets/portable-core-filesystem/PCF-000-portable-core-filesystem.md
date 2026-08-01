@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-31 12:42 MYT
+- Updated: 2026-08-01 13:17 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
-| PCF-003 | Machine-local Runtime and progressive indexing | in_progress | PCF-002 |
+| PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
@@ -80,6 +80,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
+- PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 13:17 MYT).
 
 ## Activity Log
 
@@ -316,10 +317,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-31 08:49 MYT - Diagnosed PR #127's current-head Server Tests failure as a stale PDF API test double that bypassed the production unlock-scoped CoreFS vector writer and made approval see already-indexed chunks as missing. Removed that obsolete replacement so the failing cases now exercise the real sealed Runtime embedding path. The two failures reproduced RED and passed GREEN; the complete documents API passed `29`, PDF workflow checkpoints passed `34`, and scoped Ruff plus repository organization passed. Independent review reproduced the exact `400`, confirmed the contextual-LLM connection error was already caught and unrelated, and found no broader production fix necessary. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending the repaired CI head, refreshed exact-head review, and second-phase closeout.
 - 2026-07-31 12:16 MYT - Addressed PR #127's two exact-head lease/cooldown findings with RED/GREEN coverage. Matching Core instance records reject a different live process before lease mutation while preserving same-process reuse and stale-owner recovery; cooldown-enabled reparse selection hydrates unlock-sealed failure metadata without changing the disabled-cooldown ID-only path, so one persistent low-ID failure cannot starve later documents. The complete affected modules plus sealed-descriptor and reparse-task coverage passed `40`; scoped Ruff, repository organization, diff hygiene, and independent review passed. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-07-31 12:42 MYT - Addressed PR #127's exact-head knowledge-link privacy and desktop-readiness findings with RED/GREEN coverage. Compiler links are constrained to the six architecture-defined structural types at both normalization and persistence; unlock conversion maps the formerly prompted `relates_to` alias to `related`, collapses collisions, and deletes genuinely unknown derived rows. Workspace navigation now remains hidden until CoreFS advertises its catalog `navigation` capability and appears for catalog-ready/degraded states. Three server regressions and both readiness states failed RED before their respective fixes and pass GREEN; the affected compiler/privacy band passed `91`, the complete desktop suite passed `79`, server and desktop production builds passed, and scoped Ruff, repository organization, and diff hygiene pass. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
+- 2026-08-01 13:17 MYT - Completed PCF-003 after implementation head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed all five required checks and Codex reported no major issues for reviewed commit `70d22b7c32`. Full GraphQL pagination consumed all `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads. The known Windows native-lease aggregate flake passed on an unchanged failed-job rerun and remains separately tracked by PCF-011. PCF-003's child state, parent row, completed history, timestamp, validation, changed paths, and residual-risk disposition are synchronized as `done`. This initiative remains `in_progress` because later required children remain; PCF-004 and PCF-005 are dependency-eligible but unclaimed in backlog.
 
 ## Validation
 
 - Commands:
+  - PR #127 final clean implementation head and second-phase closeout: head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed standalone checkout, Server Ruff, Server Tests, Windows native lease, and macOS native/fallback CoreFS checks; the unchanged Windows failed-job rerun passed after the known PCF-011 aggregate flake. Codex reported no major issues for reviewed commit `70d22b7c32`, and full GraphQL pagination consumed `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads.
   - PR #127 link-type/readiness follow-up: three server regressions and both desktop readiness states failed RED before their fixes and pass GREEN; compiler and Runtime privacy coverage passed `91`, the complete desktop suite passed `79`, server and desktop production builds passed, and scoped Ruff, repository organization, and diff hygiene passed.
   - PR #127 live-owner/sealed-cooldown follow-up: both production regressions failed RED and passed GREEN; complete instance-registry and document-reparse modules plus sealed-descriptor and reparse-task coverage passed `40`; scoped Ruff, repository organization, diff hygiene, and independent review passed.
   - PR #127 retrieval-root follow-up: the claimed instance-local and overlapping-unbound regressions each failed RED before their fixes and pass GREEN; six focused placement/overlap cases pass, and the Runtime DB plus retrieval writer/rebuild band passed `80`.
@@ -500,6 +503,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001 and PCF-002 are complete. PCF-003 is claimed by Codex and `in_progress` on `codex/pcf-003-runtime-indexing`.
+  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog; PCF-011 separately tracks the known Windows native-lease aggregate flake.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.
