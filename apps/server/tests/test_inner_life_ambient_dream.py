@@ -426,3 +426,42 @@ def test_dream_never_reaches_the_pill_llm_request(
     # generate_thought_pills also renders four ctx fields; none may carry the
     # dream, asserted so a future change that starts doing so fails loudly.
     assert "boat you restored" not in _pill_context_fields(result.context)
+
+
+def test_greeting_exposes_a_dream_free_handoff_copy(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #130 round 8, P1): the dashboard "explore" action
+    forwards the greeting into chat context, which the server places in the
+    model history — so the dream would reach the main chat LLM by a second
+    route. GreetingResult now carries a dream-free copy for handoff
+    surfaces, distinct from the displayed message."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+
+    assert "a blurred dream about the boat you restored" in result.message
+    assert result.handoff_message is not None
+    assert "boat you restored" not in result.handoff_message
+    assert "dreamt" not in result.handoff_message
+
+
+def test_handoff_copy_is_absent_when_no_dream_was_woven(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No dream means the displayed message is already safe — None signals
+    'use message as-is' rather than forcing callers to compare strings."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db, dream_sharing="off")
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+    assert result.handoff_message is None

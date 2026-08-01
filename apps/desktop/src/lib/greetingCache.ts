@@ -1,5 +1,7 @@
 import type { Greeting } from "@anima/api-client";
 
+import { getUnlockToken } from "./api";
+
 /**
  * Dashboard greeting cache (IL-010 / PR #130 review).
  *
@@ -98,7 +100,25 @@ function writeOneShotQueue(queue: OneShotEntry[]): void {
 // server-side — a single slot let the second stash overwrite (and silence
 // forever) the first consumed narrative.
 export function stashOneShotGreeting(userId: number, greeting: Greeting): void {
+  // Never write decrypted content for a session that is no longer unlocked
+  // (PR #130 review): a greeting request can resolve AFTER logout or a lock,
+  // and its late callback would otherwise repopulate plaintext into storage
+  // the locked/login webview can read.
+  if (!getUnlockToken()) return;
   writeOneShotQueue([...readOneShotQueue(), { greeting, userId }]);
+}
+
+/** Drop every pending handoff and the greeting cache — called when the
+ * unlock session ends (logout or lock). The dream is already consumed
+ * server-side; losing the handoff is the correct trade for not leaving
+ * decrypted autobiographical memory in a locked webview's storage. */
+export function purgeGreetingStorage(): void {
+  try {
+    sessionStorage.removeItem(GREETING_ONESHOT_KEY);
+  } catch {
+    /* ignore */
+  }
+  clearCachedGreeting();
 }
 
 /** Whether a stashed greeting exists for `userId` — without consuming it

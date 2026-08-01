@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-29 11:56 MYT
-- Updated: 2026-08-01 20:54 MYT
+- Updated: 2026-08-01 22:40 MYT
 - Started: 2026-07-30 16:27 MYT
 - Completed:
 
@@ -141,15 +141,31 @@ backend contract still accepts and round-trips the value).
   the pill call and asserts the narrative is absent from both the message
   and the four ctx fields that request renders.
 
+- 2026-08-01 22:40 MYT - PR #130 review round 8 (2 P1s, both privacy): (1) the
+  dashboard "explore" handoff copies the greeting into chat context,
+  which the server places in model history — a SECOND route by which the
+  dream reached an LLM. GreetingResult now carries a dream-free
+  `handoff_message` (the pre-append text; static paths rebuild it from a
+  stripped ctx), exposed as `handoffMessage`, and the dashboard
+  substitutes it when the explored text is the dream-bearing greeting.
+  (2) The one-shot queue wrote the decrypted narrative to sessionStorage
+  with no TTL and no session binding: it survived logout/lock in a
+  readable webview, and a late callback could repopulate it afterwards.
+  `purgeGreetingStorage()` now runs on logout AND the locked-session
+  event, and the stash refuses to write without an unlock token.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 17 passed
-  - Full suite on the round-7 head (origin/main merged in — count
-    reflects main's newer tests) — **3352 passed, 0 failed, 10
-    skipped**, run 2026-08-01 21:23 MYT
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 19 passed
+  - `bun test tests/greetingCache.test.ts` — 11 passed
+  - Full suite on the round-8 head — **3354 passed, 0 failed, 10
+    skipped**, run 2026-08-01 22:40 MYT
+  - `bun run build` (Nx server + desktop, cargo check) — pass
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/desktop/src/context/AuthContext.tsx`
+  - `packages/api-client/src/types.ts`
   - `apps/server/src/anima_server/api/routes/chat.py`
   - `packages/api-client/src/types.ts`
   - `apps/desktop/src/lib/greetingCache.ts` (new)

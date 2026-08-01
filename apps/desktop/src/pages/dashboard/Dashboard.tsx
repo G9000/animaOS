@@ -438,7 +438,15 @@ export default function Dashboard() {
   // sent; the thought rides along as context on the user's first reply.
   const handleExplore = useCallback(
     (thought: string, pills?: MessagePill[]) => {
-      const trimmed = thought?.trim() ?? "";
+      let source = thought ?? "";
+      // IL-010 (PR #130 review): this handoff seeds chat context, which the
+      // server places in the model history — so the ambient dream must not
+      // ride along. When the text being explored IS the dream-bearing
+      // greeting, swap in the server's dream-free copy.
+      if (brief?.ambientDream && brief.handoffMessage && source === brief.message) {
+        source = brief.handoffMessage;
+      }
+      const trimmed = source.trim();
       const canIncludeGreetingContext =
         presenceConfig?.enabled !== false &&
         presenceConfig?.homeGreetingContextEnabled !== false;
@@ -455,7 +463,7 @@ export default function Dashboard() {
           : [];
       navigate("/chat", { state: { contextMessages, seedThread: true } });
     },
-    [navigate, presenceConfig],
+    [navigate, presenceConfig, brief],
   );
 
   const initialNodes = useMemo(() => {

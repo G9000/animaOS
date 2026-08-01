@@ -344,6 +344,10 @@ async def get_greeting(
         # (already marked surfaced). The client must treat such a greeting as
         # one-shot: display it now, never cache/replay it (PR #130 review).
         "ambientDream": result.context.ambient_dream is not None,
+        # The same greeting WITHOUT the dream sentence, for surfaces that
+        # forward greeting text into an LLM prompt (the dashboard "explore"
+        # handoff). Null when `message` is already dream-free.
+        "handoffMessage": result.handoff_message,
         "pills": result.pills,
         "context": {
             "currentFocus": result.context.current_focus,

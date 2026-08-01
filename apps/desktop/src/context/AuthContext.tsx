@@ -12,6 +12,7 @@ import {
   getUnlockToken,
   UNLOCK_SESSION_LOCKED_EVENT,
 } from "../lib/api";
+import { purgeGreetingStorage } from "../lib/greetingCache";
 import { getDaemonStatus, refreshDaemonRuntimeNonce, startDaemon } from "../lib/daemon";
 
 interface AuthContextType {
@@ -120,6 +121,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleLockedSession = () => {
+      // Decrypted greeting/dream handoffs must not outlive the unlock
+      // session (PR #130 review).
+      purgeGreetingStorage();
       setUser(null);
     };
 
@@ -136,6 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // ignore
     }
     clearUnlockToken();
+    purgeGreetingStorage();
     setUser(null);
   };
 

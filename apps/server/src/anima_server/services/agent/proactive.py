@@ -80,6 +80,11 @@ class GreetingResult:
     llm_generated: bool = False
     pills: list[dict[str, str]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # IL-010 (PR #130 review): the same greeting WITHOUT the ambient-dream
+    # sentence, for surfaces that forward greeting text into an LLM prompt
+    # (the dashboard "explore" handoff seeds chat context). Set only when a
+    # dream was actually appended; None means `message` is already safe.
+    handoff_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,15 @@ async def _invoke_ollama_native_chat(
         return None
     stripped = content.strip()
     return stripped or None
+
+
+def _dream_free_static_greeting(ctx: GreetingContext) -> str | None:
+    """The static greeting rebuilt WITHOUT the ambient-dream sentence, or
+    None when no dream was woven (the message is then already safe to hand
+    to an LLM surface)."""
+    if not ctx.ambient_dream:
+        return None
+    return build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
 
 
 def _ambient_dream_sentence(dream: str) -> str:
@@ -1052,7 +1066,11 @@ async def generate_greeting(
         _reset_dream_residue_after_surfacing(runtime_db, user_id=user_id)
 
     if settings.agent_provider == "scaffold":
-        return GreetingResult(message=build_static_greeting(ctx), context=ctx)
+        return GreetingResult(
+            message=build_static_greeting(ctx),
+            context=ctx,
+            handoff_message=_dream_free_static_greeting(ctx),
+        )
 
     # Build the LLM prompt with available context
     identity_context = ""
@@ -1190,23 +1208,33 @@ async def generate_greeting(
             pills = await generate_thought_pills(
                 prompt_loader, greeting_message=message, ctx=ctx
             )
+            handoff_message: str | None = None
             if ctx.ambient_dream:
                 # The claim already committed — voicing is OUR responsibility,
                 # not the model's. Same sentence the static greeting uses, so
-                # a claimed dream is always heard.
+                # a claimed dream is always heard. The pre-append text is kept
+                # as the handoff copy so downstream LLM surfaces never receive
+                # the dream (PR #130 review).
+                handoff_message = message
                 message = f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}"
             return GreetingResult(
                 message=message,
                 context=ctx,
                 llm_generated=True,
                 pills=pills,
+                handoff_message=handoff_message,
             )
     except Exception as e:
         logger.debug("LLM greeting generation failed: %s", e)
         errors.append(str(e))
 
     # Fallback to static
-    return GreetingResult(message=build_static_greeting(ctx), context=ctx, errors=errors)
+    return GreetingResult(
+        message=build_static_greeting(ctx),
+        context=ctx,
+        errors=errors,
+        handoff_message=_dream_free_static_greeting(ctx),
+    )
 
 
 def _normalize_greeting_pills(raw: object) -> list[dict[str, str]]:

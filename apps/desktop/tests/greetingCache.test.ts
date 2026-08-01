@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Greeting } from "@anima/api-client";
 
+import { setUnlockToken, clearUnlockToken } from "../src/lib/api";
 import {
   ambientConsentAllows,
   getCachedGreeting,
   peekOneShotGreeting,
+  purgeGreetingStorage,
   setCachedGreeting,
   stashOneShotGreeting,
   takeOneShotGreeting,
@@ -34,7 +36,10 @@ function greeting(overrides: Partial<Greeting> = {}): Greeting {
   };
 }
 
-beforeEach(() => store.clear());
+beforeEach(() => {
+  store.clear();
+  setUnlockToken("unlocked");
+});
 
 describe("greeting TTL cache (IL-010 / PR #130)", () => {
   test("ordinary LLM greetings cache and replay", () => {
@@ -93,5 +98,30 @@ describe("one-shot queue + consent (PR #130 round 3)", () => {
     expect(ambientConsentAllows({ enabled: false, dreamSharing: "ambient" })).toBe(false);
     expect(ambientConsentAllows({ enabled: true, dreamSharing: "on_ask" })).toBe(false);
     expect(ambientConsentAllows({ enabled: true, dreamSharing: "off" })).toBe(false);
+  });
+});
+
+describe("session-bound plaintext handling (PR #130 round 8)", () => {
+  test("purge clears pending handoffs and the cache", () => {
+    stashOneShotGreeting(7, greeting({ ambientDream: true, message: "dreamy" }));
+    setCachedGreeting(7, greeting());
+    purgeGreetingStorage();
+    expect(peekOneShotGreeting(7)).toBe(false);
+    expect(getCachedGreeting(7)).toBeNull();
+  });
+
+  test("a late callback cannot repopulate plaintext after the session ends", () => {
+    // Greeting request resolves AFTER logout/lock: the stash must refuse,
+    // or decrypted autobiographical memory would sit in a locked webview's
+    // sessionStorage with no TTL.
+    clearUnlockToken();
+    stashOneShotGreeting(7, greeting({ ambientDream: true, message: "dreamy" }));
+    expect(peekOneShotGreeting(7)).toBe(false);
+  });
+
+  test("stashing works normally while the session is unlocked", () => {
+    setUnlockToken("unlocked");
+    stashOneShotGreeting(7, greeting({ ambientDream: true, message: "dreamy" }));
+    expect(takeOneShotGreeting(7)?.message).toBe("dreamy");
   });
 });
