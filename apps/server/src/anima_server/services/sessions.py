@@ -20,7 +20,7 @@ from anima_server.services.agent.embedding_resolution import (
     configured_embedding_fingerprint,
 )
 from anima_server.services.core import get_core_dir, get_core_id
-from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+from anima_server.services.corefs.indexer import CoreFSProgressiveIndex, ReadinessState
 from anima_server.services.dev_session_snapshot import DevSessionSnapshot
 
 SESSION_TTL = timedelta(hours=24)
@@ -333,7 +333,16 @@ class UnlockSessionStore:
         user_id: int,
     ) -> CoreFSProgressiveIndex | None:
         indexes = self.get_active_runtime_indexes(user_id)
-        return indexes[-1] if indexes else None
+        if not indexes:
+            return None
+        return next(
+            (
+                index
+                for index in reversed(indexes)
+                if index.snapshot().state is ReadinessState.READY
+            ),
+            indexes[-1],
+        )
 
     def get_active_runtime_indexes(
         self,

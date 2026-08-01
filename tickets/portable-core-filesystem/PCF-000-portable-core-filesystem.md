@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-01 13:17 MYT
+- Updated: 2026-08-01 13:36 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -24,7 +24,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 |---|---|---|---|
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
-| PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
+| PCF-003 | Machine-local Runtime and progressive indexing | in_progress | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | backlog | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
@@ -80,7 +80,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
-- PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 13:17 MYT).
 
 ## Activity Log
 
@@ -318,6 +317,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-07-31 12:16 MYT - Addressed PR #127's two exact-head lease/cooldown findings with RED/GREEN coverage. Matching Core instance records reject a different live process before lease mutation while preserving same-process reuse and stale-owner recovery; cooldown-enabled reparse selection hydrates unlock-sealed failure metadata without changing the disabled-cooldown ID-only path, so one persistent low-ID failure cannot starve later documents. The complete affected modules plus sealed-descriptor and reparse-task coverage passed `40`; scoped Ruff, repository organization, diff hygiene, and independent review passed. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-07-31 12:42 MYT - Addressed PR #127's exact-head knowledge-link privacy and desktop-readiness findings with RED/GREEN coverage. Compiler links are constrained to the six architecture-defined structural types at both normalization and persistence; unlock conversion maps the formerly prompted `relates_to` alias to `related`, collapses collisions, and deletes genuinely unknown derived rows. Workspace navigation now remains hidden until CoreFS advertises its catalog `navigation` capability and appears for catalog-ready/degraded states. Three server regressions and both readiness states failed RED before their respective fixes and pass GREEN; the affected compiler/privacy band passed `91`, the complete desktop suite passed `79`, server and desktop production builds passed, and scoped Ruff, repository organization, and diff hygiene pass. PCF-003 and this parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 13:17 MYT - Completed PCF-003 after implementation head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed all five required checks and Codex reported no major issues for reviewed commit `70d22b7c32`. Full GraphQL pagination consumed all `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads. The known Windows native-lease aggregate flake passed on an unchanged failed-job rerun and remains separately tracked by PCF-011. PCF-003's child state, parent row, completed history, timestamp, validation, changed paths, and residual-risk disposition are synchronized as `done`. This initiative remains `in_progress` because later required children remain; PCF-004 and PCF-005 are dependency-eligible but unclaimed in backlog.
+- 2026-08-01 13:31 MYT - Reopened PCF-003 after the exact-head Codex review of metadata head `07765613cc454c1ec174e7e389873b45cdf1da62` found that a second live login can replace the process-wide ready Runtime retrieval index with a new empty index. Removed PCF-003 from completed history and synchronized its child/parent state as `in_progress`; PCF-004 and PCF-005 are dependency-ineligible pending a test-first fix, validation, and refreshed exact-head clean review.
+- 2026-08-01 13:36 MYT - Addressed PCF-003's multi-login Runtime-index review finding test-first. Retrieval now retains the newest ready live index during a later session's rebuild/degraded interval and switches only after the replacement reaches ready, preserving an existing dense result. The focused regression failed RED; affected index/session/RAG/privacy coverage passed `149`, with scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review green. PCF-003 and this parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 
 ## Validation
 

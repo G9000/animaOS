@@ -475,9 +475,10 @@ git -c commit.gpgsign=false commit -m "runtime: rebuild CoreFS indexes after unl
 ```
 
 PR #127 implementation head `70d22b7c` passed all required checks and received a
-clean exact-head Codex review after full GraphQL pagination found zero unresolved
-actionable threads. The synchronized second-phase closeout is recorded; PCF-004
-and PCF-005 are dependency-eligible without being claimed.
+clean exact-head Codex review, but the metadata-head review at `07765613` exposed
+a multi-login Runtime-index selection gap. Task 3 is reopened until the test-first
+follow-up, now implemented and independently reviewed, receives refreshed exact-head
+CI/review; PCF-004 and PCF-005 are again dependency-ineligible and remain unclaimed.
 
 ## Task 4: Diary, folders, drafts, and notes vertical slice
 

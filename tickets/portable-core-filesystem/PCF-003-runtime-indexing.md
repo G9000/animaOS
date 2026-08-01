@@ -1,6 +1,6 @@
 # PCF-003 - Machine-local Runtime and progressive indexing
 
-- Status: done
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server` runtime/indexing, desktop readiness/security UI
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-01 13:17 MYT
+- Updated: 2026-08-01 13:36 MYT
 - Started: 2026-07-29 01:57 MYT
-- Completed: 2026-08-01 13:17 MYT
+- Completed:
 
 ## Goal
 
@@ -93,10 +93,13 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 - 2026-07-31 12:16 MYT - Addressed PR #127's two exact-head lease/cooldown findings test-first. A live process can no longer overwrite another process's matching Core instance lease; same-process reuse and stale-owner reclamation remain allowed, and the regression verifies the rejected claim leaves both registry and lease ownership intact. Cooldown-enabled document reparse selection now loads ORM entities so unlock-sealed failure metadata is hydrated, while the disabled-cooldown path remains an ID-only query; a sealed low-ID failure no longer starves a later eligible document. Both production regressions failed RED and passed GREEN; the complete affected modules plus sealed-descriptor and reparse-task coverage passed `40`. Scoped Ruff, repository organization, diff hygiene, and independent review pass. PCF-003 and its parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-07-31 12:42 MYT - Addressed PR #127's exact-head knowledge-link privacy and desktop-readiness findings test-first. Compiler-generated knowledge links now use the architecture's six canonical structural types at both LLM normalization and the shared storage boundary; unlock conversion maps the formerly prompted `relates_to` alias to `related`, collapses collisions, and removes genuinely unknown derived links so private relationship phrases cannot remain in indexed Runtime columns. The desktop HUD now withholds workspace navigation until the authenticated readiness payload advertises the `navigation` capability and renders it immediately for catalog-ready/degraded states. Three server regressions and both readiness states failed RED before their respective fixes and pass GREEN; the affected compiler/privacy band passed `91`, the complete desktop suite passed `79`, server and desktop production builds passed, and scoped Ruff, repository organization, and diff hygiene pass. PCF-003 and its parent remain synchronized as `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 13:17 MYT - Completed PCF-003 after implementation head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed all five required checks and Codex reported no major issues for reviewed commit `70d22b7c32`. Full GraphQL pagination consumed all `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads. The known Windows native-lease aggregate flake passed on an unchanged failed-job rerun and remains separately tracked by backlog ticket PCF-011. Child state, parent row, completed history, timestamps, validation, changed paths, and residual-risk disposition are synchronized for the final metadata-only closeout review; PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog.
+- 2026-08-01 13:31 MYT - Reopened PCF-003 after the exact-head Codex review of metadata head `07765613cc454c1ec174e7e389873b45cdf1da62` found that a second live login publishes a new empty Runtime index and process-wide retrieval unconditionally selects it ahead of the earlier ready index. PCF-004 and PCF-005 are dependency-ineligible again until a test-first fix, refreshed validation, and exact-head clean review restore acceptance.
+- 2026-08-01 13:36 MYT - Fixed the multi-login retrieval regression test-first. Process-wide retrieval now keeps the newest `READY` live index while a later session rebuilds or remains degraded, then hands off when the replacement reaches `READY`; the regression preserves a real dense result across that interval. The focused test failed RED, the affected index/session/RAG/privacy band passed `149`, scoped Ruff, repository organization, the complete workspace build, diff hygiene, and independent review passed. PCF-003 and its parent remain `in_progress` pending refreshed exact-head CI/review and second-phase closeout.
 
 ## Validation
 
 - Commands:
+  - PR #127 multi-login Runtime-index follow-up: the dense-result regression failed RED before the selector fix; `test_corefs_indexer.py`, development-session continuity, document RAG, and Runtime privacy passed `149`; scoped Ruff, `bun run check:repo`, the complete workspace build, `git diff --check`, and independent review passed.
   - PR #127 final clean implementation head: `70d22b7c32205c740eacd8f258e108405e3ee87b` passed standalone checkout, Server Ruff, Server Tests, Windows native lease, and macOS native/fallback CoreFS checks; the unchanged Windows failed-job rerun passed after the known PCF-011 aggregate flake. Full GraphQL pagination consumed `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads; Codex reported no major issues for reviewed commit `70d22b7c32`.
   - PR #127 link-type/readiness follow-up: three server regressions and both desktop readiness states failed RED before their fixes and pass GREEN; compiler and Runtime privacy coverage passed `91`, the complete desktop suite passed `79`, server and desktop production builds passed, and scoped Ruff, repository organization, and diff hygiene passed.
   - PR #127 live-owner/sealed-cooldown follow-up: both production regressions failed RED and passed GREEN; complete instance-registry and document-reparse modules plus sealed-descriptor and reparse-task coverage passed `40`; scoped Ruff, repository organization, diff hygiene, and independent review passed.
@@ -144,4 +147,4 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
   - `.github/workflows/corefs-provenance.yml` and `scripts/check_corefs_release_notices.py`
   - `tickets/portable-core-filesystem/` and `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Notes:
-  - PCF-003 has no remaining in-scope acceptance gap. PCF-011 separately tracks the known Windows native-lease aggregate flake; PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog.
+  - The multi-login Runtime-index selection gap is fixed and awaits refreshed exact-head CI/review. PCF-011 separately tracks the known Windows native-lease aggregate flake; PCF-004 and PCF-005 remain unclaimed and dependency-ineligible pending final closeout.

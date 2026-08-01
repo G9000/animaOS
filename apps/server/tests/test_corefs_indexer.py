@@ -382,3 +382,70 @@ def test_unlock_store_returns_every_live_runtime_index_for_a_user() -> None:
         store.revoke(first)
         store.revoke(second)
         store.clear_sqlcipher_key()
+
+
+def test_unlock_store_keeps_ready_index_active_during_second_login_rebuild() -> None:
+    ready_index = CoreFSProgressiveIndex("core-index")
+    ready_index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    ready_index.upsert_runtime_embedding(
+        source_type="memory",
+        source_id=1,
+        vector=(1.0, 0.0),
+        content="ready result",
+        category="episodic",
+        importance=7,
+    )
+    ready_index.begin_catalog()
+    ready_index.publish_catalog(catalog_generation=1, families={})
+    ready_index.finish()
+
+    rebuilding_index = CoreFSProgressiveIndex("core-index")
+    rebuilding_index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    remaining = iter((ready_index, rebuilding_index))
+    store = UnlockSessionStore(
+        runtime_index_factory=lambda _keys, _key: next(remaining),
+    )
+    store.set_sqlcipher_key(b"k" * 32)
+
+    first = store.create(9, {"memories": b"m" * 32})
+    second = store.create(9, {"memories": b"m" * 32})
+    try:
+        assert store.get_active_runtime_index(9) is ready_index
+        assert [
+            hit.content
+            for hit in store.get_active_runtime_index(9).search_runtime_embeddings(
+                (1.0, 0.0),
+                limit=5,
+            )
+        ] == ["ready result"]
+
+        rebuilding_index.begin_catalog()
+        rebuilding_index.publish_catalog(
+            catalog_generation=1,
+            families={"notes": 1},
+            degraded={"notes": ("note-1",)},
+        )
+        assert store.get_active_runtime_index(9) is ready_index
+
+        rebuilding_index.upsert_runtime_embedding(
+            source_type="memory",
+            source_id=1,
+            vector=(1.0, 0.0),
+            content="rebuilt result",
+            category="episodic",
+            importance=7,
+        )
+        rebuilding_index.finish()
+
+        assert store.get_active_runtime_index(9) is rebuilding_index
+        assert [
+            hit.content
+            for hit in store.get_active_runtime_index(9).search_runtime_embeddings(
+                (1.0, 0.0),
+                limit=5,
+            )
+        ] == ["rebuilt result"]
+    finally:
+        store.revoke(first)
+        store.revoke(second)
+        store.clear_sqlcipher_key()
