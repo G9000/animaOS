@@ -20,7 +20,7 @@ describe("desktop navigation", () => {
 
     expect(diaryIndex).toBeGreaterThan(-1);
     expect(TOP_NAV_ITEMS[diaryIndex]?.label).toBe("Diary");
-    expect(TOP_NAV_ITEMS[diaryIndex - 1]?.label).toBe("Chat");
+    expect(TOP_NAV_ITEMS[diaryIndex - 1]?.label).toBe("Home");
     expect(TOP_NAV_ITEMS[diaryIndex + 1]?.label).toBe("Memory");
   });
 });

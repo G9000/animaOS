@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from anima_server.config import settings
 from anima_server.models.runtime import RuntimeImageMessageLink, RuntimeMessage
 from anima_server.services.agent.state import ATTACHMENTS_CONTENT_KEY
+from anima_server.services.corefs.sealed_runtime import reseal_runtime_message
 from anima_server.services.images.store import register_image_asset
 
 
@@ -32,7 +33,6 @@ def backfill_legacy_chat_images(
             .where(
                 RuntimeMessage.user_id == user_id,
                 RuntimeMessage.role == "user",
-                RuntimeMessage.content_json.is_not(None),
             )
             .order_by(RuntimeMessage.id)
         ).all()
@@ -125,7 +125,11 @@ def backfill_legacy_chat_images(
             messages_scanned += 1
         if changed:
             payload[ATTACHMENTS_CONTENT_KEY] = next_attachments
-            message.content_json = payload
+            reseal_runtime_message(
+                runtime_db,
+                message,
+                content_json=payload,
+            )
 
     runtime_db.flush()
     return ImageBackfillReport(

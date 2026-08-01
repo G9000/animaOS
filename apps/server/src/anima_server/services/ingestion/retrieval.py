@@ -20,10 +20,13 @@ from anima_server.models.runtime import (
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.bm25_index import BM25Index
-from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import (
     _reciprocal_rank_fusion,
     generate_embedding,
+)
+from anima_server.services.corefs.sealed_runtime import (
+    load_runtime_embedding_vector,
+    persist_runtime_embedding,
 )
 
 EmbeddingFn = Callable[[str], list[float] | None | Awaitable[list[float] | None]]
@@ -214,22 +217,24 @@ def _upsert_embedding(
             source_type=source_type,
             source_id=source_id,
             content_hash=content_hash,
-            embedding_checksum=compute_embedding_checksum(embedding),
-            embedding=embedding,
-            content_preview=text[:200],
+            embedding_checksum=None,
+            embedding=None,
+            content_preview="",
             category=category,
             importance=importance,
         )
     else:
         existing.content_hash = content_hash
-        existing.embedding_checksum = compute_embedding_checksum(embedding)
-        existing.embedding = embedding
-        existing.content_preview = text[:200]
         existing.category = category
         existing.importance = importance
         existing.updated_at = now
-    db.add(existing)
-    db.flush()
+    persist_runtime_embedding(
+        db,
+        row=existing,
+        owner_id=user_id,
+        embedding=embedding,
+        content=text,
+    )
     return existing
 
 
@@ -305,11 +310,18 @@ def _concept_hits(
     concepts_by_id = {concept.id: concept for concept in all_concepts}
     dense_ranked = sorted(
         (
-            (
-                concept.id,
-                _cosine(query_embedding, _vector_to_list(embedding.embedding)),
-            )
+            (concept.id, _cosine(query_embedding, vector))
             for concept, embedding in rows
+            if (
+                vector := load_runtime_embedding_vector(
+                    db,
+                    owner_id=user_id,
+                    source_type="knowledge_concept",
+                    source_id=int(concept.id),
+                    persisted_embedding=embedding.embedding,
+                )
+            )
+            is not None
         ),
         key=lambda item: item[1],
         reverse=True,
@@ -317,17 +329,12 @@ def _concept_hits(
     dense_ranked = [(item_id, score) for item_id, score in dense_ranked if score > 0]
     dense_scores = dict(dense_ranked)
     lexical_ranked = _lexical_ranking(
-        [
-            (concept.id, _concept_embedding_text(concept))
-            for concept in all_concepts
-        ],
+        [(concept.id, _concept_embedding_text(concept)) for concept in all_concepts],
         query=query,
         limit=limit * 4,
     )
     fused = (
-        _reciprocal_rank_fusion(dense_ranked, lexical_ranked)
-        if lexical_ranked
-        else dense_ranked
+        _reciprocal_rank_fusion(dense_ranked, lexical_ranked) if lexical_ranked else dense_ranked
     )
     hits: list[KnowledgeConceptHit] = []
     for concept_id, _fused_score in fused[:limit]:
@@ -390,11 +397,18 @@ def _span_hits(
     spans_by_id = {span.id: (span, source) for span, source in all_rows}
     dense_ranked = sorted(
         (
-            (
-                span.id,
-                _cosine(query_embedding, _vector_to_list(embedding.embedding)),
-            )
+            (span.id, _cosine(query_embedding, vector))
             for span, _source, embedding in rows
+            if (
+                vector := load_runtime_embedding_vector(
+                    db,
+                    owner_id=user_id,
+                    source_type="source_span",
+                    source_id=int(span.id),
+                    persisted_embedding=embedding.embedding,
+                )
+            )
+            is not None
         ),
         key=lambda item: item[1],
         reverse=True,
@@ -407,9 +421,7 @@ def _span_hits(
         limit=limit * 4,
     )
     fused = (
-        _reciprocal_rank_fusion(dense_ranked, lexical_ranked)
-        if lexical_ranked
-        else dense_ranked
+        _reciprocal_rank_fusion(dense_ranked, lexical_ranked) if lexical_ranked else dense_ranked
     )
     hits: list[KnowledgeEvidenceSpanHit] = []
     for span_id, _fused_score in fused[:limit]:

@@ -698,7 +698,13 @@ def test_memory_writes_update_rust_index(monkeypatch) -> None:
             headers=headers,
         )
         assert resp.status_code == 200
-        assert deletes[-1]["record_id"] == updated["id"]
+        # MIH-001: deleting a successor deletes its whole supersede chain
+        # (enforced SET NULL would otherwise resurrect the predecessor), so
+        # index-delete events arrive for BOTH the successor and its
+        # already-superseded predecessor (idempotent for the predecessor,
+        # which left the active index at supersede time).
+        chain_deletes = {d["record_id"] for d in deletes[-2:]}
+        assert chain_deletes == {created["id"], updated["id"]}
 
 
 def test_memory_search_uses_rust_index_when_available(monkeypatch) -> None:

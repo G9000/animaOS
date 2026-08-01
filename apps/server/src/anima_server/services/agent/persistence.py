@@ -4,8 +4,9 @@ import logging
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, delete, desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.models.runtime import (
     RuntimeImageMessageLink,
@@ -26,6 +27,11 @@ from anima_server.services.agent.state import (
     attach_serialized_retrieval,
     deserialize_stored_attachments,
     serialize_agent_retrieval,
+)
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_index_for_sensitive_write,
+    seal_runtime_fields,
+    seal_runtime_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,24 +102,21 @@ def list_transcript_messages(
     limit: int | None = None,
 ) -> list[RuntimeMessage]:
     if thread_id is not None:
-        has_content = and_(
-            RuntimeMessage.content_text.is_not(None),
-            RuntimeMessage.content_text != "",
-        )
-        return list(
+        rows = list(
             db.scalars(
                 select(RuntimeMessage)
                 .where(
                     RuntimeMessage.thread_id == thread_id,
                     RuntimeMessage.role.notin_(("system", "approval")),
-                    or_(
-                        RuntimeMessage.is_in_context.is_(True),
-                        has_content,
-                    ),
                 )
                 .order_by(RuntimeMessage.sequence_id)
             ).all()
         )
+        return [
+            row
+            for row in rows
+            if row.is_in_context or row.content_text not in (None, "")
+        ]
 
     if user_id is None or limit is None:
         raise TypeError(
@@ -134,16 +137,20 @@ def list_transcript_messages(
         .where(
             RuntimeMessage.thread_id == thread.id,
             RuntimeMessage.role.in_(("user", "assistant", "system", "tool")),
-            RuntimeMessage.content_text.is_not(None),
-            RuntimeMessage.content_text != "",
             or_(RuntimeMessage.run_id.is_(None),
                 RuntimeRun.status.notin_(("failed", "cancelled"))),
         )
         .order_by(desc(RuntimeMessage.sequence_id))
-        .limit(limit)
-    ).all()
-    rows.reverse()
-    return [row for row in rows if not row.is_internal]
+    )
+    visible: list[RuntimeMessage] = []
+    for row in rows:
+        if row.content_text in (None, "") or row.is_internal:
+            continue
+        visible.append(row)
+        if len(visible) == limit:
+            break
+    visible.reverse()
+    return visible
 
 
 def close_thread(db: Session, *, thread_id: int) -> bool:
@@ -382,9 +389,15 @@ def persist_agent_result(
 
 def mark_run_failed(db: Session, run: RuntimeRun, error_text: str) -> None:
     run.status = "failed"
-    run.error_text = error_text
     run.completed_at = datetime.now(UTC)
-    db.add(run)
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_run",
+        owner_id=int(run.user_id),
+        payload={"error_text": error_text},
+        placeholders={"error_text": None},
+    )
 
 
 def cancel_run(db: Session, run_id: int) -> RuntimeRun | None:
@@ -530,9 +543,14 @@ def append_message(
     tool_call_id: str | None = None,
     tool_args_json: dict[str, object] | None = None,
     source: str | None = None,
+    is_in_context: bool = True,
     is_archived_history: bool = False,
 ) -> RuntimeMessage:
     timestamp = datetime.now(UTC)
+    runtime_index = runtime_index_for_sensitive_write(
+        db,
+        user_id=int(thread.user_id),
+    )
     message = RuntimeMessage(
         thread_id=thread.id,
         user_id=thread.user_id,
@@ -540,12 +558,12 @@ def append_message(
         step_id=step_id,
         sequence_id=sequence_id,
         role=role,
-        content_text=content_text,
-        content_json=content_json,
+        content_text=None if runtime_index is not None else content_text,
+        content_json=None if runtime_index is not None else content_json,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
-        tool_args_json=tool_args_json,
-        is_in_context=True,
+        tool_args_json=None if runtime_index is not None else tool_args_json,
+        is_in_context=is_in_context,
         is_archived_history=is_archived_history,
         token_estimate=estimate_message_tokens(
             content_text=content_text,
@@ -560,6 +578,22 @@ def append_message(
     thread.last_message_at = timestamp
     db.add(thread)
     db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            db,
+            index=runtime_index,
+            row_type="runtime_message",
+            row_id=int(message.id),
+            owner_id=int(thread.user_id),
+            payload={
+                "content_text": content_text,
+                "content_json": content_json,
+                "tool_args_json": tool_args_json,
+            },
+        )
+        set_committed_value(message, "content_text", content_text)
+        set_committed_value(message, "content_json", content_json)
+        set_committed_value(message, "tool_args_json", tool_args_json)
     return message
 
 
@@ -587,6 +621,15 @@ def create_step(
     trace: StepTrace,
     prompt_budget: object | None = None,
 ) -> RuntimeStep:
+    user_id = db.scalar(
+        select(RuntimeThread.user_id).where(RuntimeThread.id == thread_id)
+    )
+    if user_id is None:
+        raise ValueError("Runtime step thread is missing")
+    runtime_index = runtime_index_for_sensitive_write(
+        db,
+        user_id=int(user_id),
+    )
     request_json: dict[str, object] = {
         "messages": [
             _slim_message_snapshot(message) for message in trace.request_messages
@@ -596,23 +639,40 @@ def create_step(
     }
     if prompt_budget is not None:
         request_json["prompt_budget"] = asdict(prompt_budget)
+    response_json: dict[str, object] = {
+        "assistant_text": trace.assistant_text,
+        "tool_results": [asdict(result) for result in trace.tool_results],
+    }
+    tool_calls_json = [asdict(tool_call) for tool_call in trace.tool_calls] or None
 
     step = RuntimeStep(
         thread_id=thread_id,
         run_id=run_id,
         step_index=trace.step_index,
         status="completed",
-        request_json=request_json,
-        response_json={
-            "assistant_text": trace.assistant_text,
-            "tool_results": [asdict(result) for result in trace.tool_results],
-        },
-        tool_calls_json=[asdict(tool_call)
-                         for tool_call in trace.tool_calls] or None,
+        request_json={} if runtime_index is not None else request_json,
+        response_json={} if runtime_index is not None else response_json,
+        tool_calls_json=None if runtime_index is not None else tool_calls_json,
         usage_json=_serialize_usage(trace.usage),
     )
     db.add(step)
     db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            db,
+            index=runtime_index,
+            row_type="runtime_step",
+            row_id=int(step.id),
+            owner_id=int(user_id),
+            payload={
+                "request_json": request_json,
+                "response_json": response_json,
+                "tool_calls_json": tool_calls_json,
+            },
+        )
+        set_committed_value(step, "request_json", request_json)
+        set_committed_value(step, "response_json", response_json)
+        set_committed_value(step, "tool_calls_json", tool_calls_json)
     return step
 
 

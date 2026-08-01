@@ -12,7 +12,7 @@ import logging
 import struct
 from collections.abc import Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -23,16 +23,20 @@ from anima_server.services.agent.embedding_integrity import (
     compute_embedding_checksum,
 )
 from anima_server.services.agent.vector_store import VectorSearchResult, VectorStore
+from anima_server.services.corefs.sealed_runtime import (
+    active_runtime_index,
+    delete_runtime_embedding_records,
+    persist_runtime_embedding,
+    runtime_index_for_sensitive_write,
+    seal_runtime_fields,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _canonicalize_runtime_embedding(embedding: Sequence[float]) -> list[float]:
     """Match pgvector's float4 storage before hashing or persisting values."""
-    return [
-        struct.unpack("!f", struct.pack("!f", float(value)))[0]
-        for value in embedding
-    ]
+    return [struct.unpack("!f", struct.pack("!f", float(value)))[0] for value in embedding]
 
 
 class PgVecStore(VectorStore):
@@ -74,6 +78,44 @@ class PgVecStore(VectorStore):
     ) -> None:
         runtime_embedding = _canonicalize_runtime_embedding(embedding)
         content_hash = hashlib.sha256(content.encode()).hexdigest()
+        runtime_index = runtime_index_for_sensitive_write(
+            self._db,
+            user_id=user_id,
+        )
+        if runtime_index is not None:
+            stored = self._db.scalar(
+                select(RuntimeEmbedding).where(
+                    RuntimeEmbedding.user_id == user_id,
+                    RuntimeEmbedding.source_type == source_type,
+                    RuntimeEmbedding.source_id == source_id,
+                )
+            )
+            if stored is None:
+                stored = RuntimeEmbedding(
+                    user_id=user_id,
+                    source_type=source_type,
+                    source_id=source_id,
+                    content_hash=content_hash,
+                    embedding_checksum=None,
+                    embedding=None,
+                    content_preview="",
+                    category=category,
+                    importance=importance,
+                )
+            else:
+                stored.content_hash = content_hash
+                stored.category = category
+                stored.importance = importance
+            persist_runtime_embedding(
+                self._db,
+                row=stored,
+                owner_id=user_id,
+                embedding=runtime_embedding,
+                content=content,
+            )
+            self._db.flush()
+            return
+
         embedding_checksum = compute_embedding_checksum(runtime_embedding)
         stmt = pg_insert(RuntimeEmbedding).values(
             user_id=user_id,
@@ -82,7 +124,7 @@ class PgVecStore(VectorStore):
             content_hash=content_hash,
             embedding_checksum=embedding_checksum,
             embedding=runtime_embedding,
-            content_preview=content[:200],
+            content_preview="",
             category=category,
             importance=importance,
         )
@@ -92,7 +134,7 @@ class PgVecStore(VectorStore):
                 "embedding": stmt.excluded.embedding,
                 "content_hash": stmt.excluded.content_hash,
                 "embedding_checksum": stmt.excluded.embedding_checksum,
-                "content_preview": stmt.excluded.content_preview,
+                "content_preview": "",
                 "category": stmt.excluded.category,
                 "importance": stmt.excluded.importance,
                 "updated_at": func.now(),
@@ -100,17 +142,33 @@ class PgVecStore(VectorStore):
         )
         self._db.execute(stmt)
         self._db.flush()
+        stored = self._db.scalar(
+            select(RuntimeEmbedding).where(
+                RuntimeEmbedding.user_id == user_id,
+                RuntimeEmbedding.source_type == source_type,
+                RuntimeEmbedding.source_id == source_id,
+            )
+        )
+        if stored is None:
+            raise RuntimeError("Runtime embedding upsert did not return a stored row")
+        seal_runtime_fields(
+            self._db,
+            row=stored,
+            row_type="runtime_embedding",
+            owner_id=user_id,
+            payload={"content_preview": content[:200]},
+            placeholders={"content_preview": ""},
+        )
 
     def delete(self, user_id: int, *, item_id: int) -> None:
         self.delete_source(user_id, source_type="memory_item", source_id=item_id)
 
     def delete_source(self, user_id: int, *, source_type: str, source_id: int) -> None:
-        self._db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == source_type,
-                RuntimeEmbedding.source_id == source_id,
-            )
+        delete_runtime_embedding_records(
+            self._db,
+            owner_id=user_id,
+            source_type=source_type,
+            source_ids=[source_id],
         )
         self._db.flush()
 
@@ -131,6 +189,37 @@ class PgVecStore(VectorStore):
             raise ValueError("source_ids and source_id_query are mutually exclusive")
         if source_ids is not None and not source_ids:
             return []
+
+        runtime_index = active_runtime_index(user_id)
+        if runtime_index is not None:
+            resolved_source_ids = (
+                None if source_ids is None else frozenset(int(value) for value in source_ids)
+            )
+            if source_id_query is not None:
+                resolved_source_ids = frozenset(
+                    int(value) for value in self._db.scalars(source_id_query).all()
+                )
+            return [
+                VectorSearchResult(
+                    item_id=hit.source_id,
+                    content=hit.content,
+                    category=hit.category,
+                    importance=hit.importance,
+                    similarity=round(hit.similarity, 4),
+                    source_type=hit.source_type,
+                )
+                for hit in runtime_index.search_runtime_embeddings(
+                    tuple(query_embedding),
+                    limit=limit,
+                    category=category,
+                    source_types=(
+                        None
+                        if source_types is None
+                        else frozenset(str(value) for value in source_types)
+                    ),
+                    source_ids=resolved_source_ids,
+                )
+            ]
 
         distance = RuntimeEmbedding.embedding.cosine_distance(query_embedding)
         base_stmt = (
@@ -230,27 +319,20 @@ class PgVecStore(VectorStore):
         user_id: int,
         items: list[tuple[int, str, list[float], str, int]],
     ) -> int:
-        self._db.execute(
-            delete(RuntimeEmbedding).where(
-                RuntimeEmbedding.user_id == user_id,
-                RuntimeEmbedding.source_type == "memory_item",
-            )
+        delete_runtime_embedding_records(
+            self._db,
+            owner_id=user_id,
+            source_type="memory_item",
         )
         for item_id, content, embedding, category, importance in items:
-            content_hash = hashlib.sha256(content.encode()).hexdigest()
-            runtime_embedding = _canonicalize_runtime_embedding(embedding)
-            self._db.add(
-                RuntimeEmbedding(
-                    user_id=user_id,
-                    source_type="memory_item",
-                    source_id=item_id,
-                    content_hash=content_hash,
-                    embedding_checksum=compute_embedding_checksum(runtime_embedding),
-                    embedding=runtime_embedding,
-                    content_preview=content[:200],
-                    category=category,
-                    importance=importance,
-                )
+            self.upsert_source(
+                user_id,
+                source_type="memory_item",
+                source_id=item_id,
+                content=content,
+                embedding=embedding,
+                category=category,
+                importance=importance,
             )
         self._db.flush()
         return len(items)
@@ -279,5 +361,5 @@ class PgVecStore(VectorStore):
         )
 
     def reset(self) -> None:
-        self._db.execute(delete(RuntimeEmbedding))
+        delete_runtime_embedding_records(self._db)
         self._db.flush()

@@ -14,6 +14,10 @@ from anima_server.services.agent.memory_salience import (
     merge_salience,
     serialize_memory_salience,
 )
+from anima_server.services.corefs.sealed_runtime import (
+    runtime_index_for_sensitive_write,
+    seal_runtime_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,10 @@ def create_memory_candidate(
         category=category,
         importance=importance,
     )
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=user_id,
+    )
 
     # Explicit dedup check — works on both PG (with partial unique index) and SQLite.
     existing = runtime_db.scalar(
@@ -99,7 +107,7 @@ def create_memory_candidate(
             prior_repeats = int(
                 (existing.salience_json or {}).get("repeat_count", 1) or 1
             )
-            existing.salience_json = _merge_candidate_salience(
+            merged_salience = _merge_candidate_salience(
                 existing.salience_json,
                 salience_json,
             )
@@ -122,15 +130,36 @@ def create_memory_candidate(
                 # Weak-signal lane (IL4): an active repeat must still count
                 # toward latent accumulation — record it so the fold applies
                 # once per repeat.
-                merged_salience = dict(existing.salience_json or {})
+                merged_salience = dict(merged_salience)
                 merged_salience["repeat_count"] = prior_repeats + 1
+            if runtime_index is None:
                 existing.salience_json = merged_salience
+            else:
+                seal_runtime_record(
+                    runtime_db,
+                    index=runtime_index,
+                    row_type="memory_candidate",
+                    row_id=int(existing.id),
+                    owner_id=user_id,
+                    payload={
+                        "content": existing.content,
+                        "tags": existing.tags_json,
+                        "salience": merged_salience,
+                        "last_error": existing.last_error,
+                    },
+                )
+                from sqlalchemy.orm.attributes import set_committed_value
+
+                set_committed_value(existing, "salience_json", merged_salience)
             runtime_db.flush()
             return None
 
+    stored_content = "" if runtime_index is not None else content.strip()
+    stored_tags = None if runtime_index is not None else tags
+    stored_salience = None if runtime_index is not None else salience_json
     candidate = MemoryCandidate(
         user_id=user_id,
-        content=content.strip(),
+        content=stored_content,
         category=category,
         importance=importance,
         importance_source=importance_source,
@@ -140,13 +169,32 @@ def create_memory_candidate(
         supersedes_item_id=supersedes_item_id,
         source_message_ids=source_message_ids,
         extraction_model=extraction_model,
-        tags_json=tags,
-        salience_json=salience_json,
+        tags_json=stored_tags,
+        salience_json=stored_salience,
     )
     try:
         with runtime_db.begin_nested():
             runtime_db.add(candidate)
             runtime_db.flush()
+            if runtime_index is not None:
+                seal_runtime_record(
+                    runtime_db,
+                    index=runtime_index,
+                    row_type="memory_candidate",
+                    row_id=int(candidate.id),
+                    owner_id=user_id,
+                    payload={
+                        "content": content.strip(),
+                        "tags": tags,
+                        "salience": salience_json,
+                        "last_error": None,
+                    },
+                )
+                from sqlalchemy.orm.attributes import set_committed_value
+
+                set_committed_value(candidate, "content", content.strip())
+                set_committed_value(candidate, "tags_json", tags)
+                set_committed_value(candidate, "salience_json", salience_json)
         return candidate
     except IntegrityError:
         return None

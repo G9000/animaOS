@@ -165,6 +165,73 @@ async def test_llm_failure_keeps_intent_for_soul_writer_retry(
 
 
 @pytest.mark.asyncio
+async def test_llm_failure_reseals_provider_reason(
+    rt_factory,
+    _llm_provider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+    from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
+
+    _fake_regex_extraction(monkeypatch)
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(
+        sealed_runtime,
+        "_active_runtime_index",
+        lambda _user_id: index,
+    )
+    private_reason = "Provider leaked /private/logical/extraction-response.pdf"
+
+    with rt_factory() as runtime_db:
+        runtime_db.add(
+            CoreFSRuntimeBinding(
+                binding_slot=1,
+                core_id="core-a",
+                local_instance_id="instance-a",
+            )
+        )
+        runtime_db.commit()
+
+    async def failing_llm(**kwargs):
+        return SimpleNamespace(
+            failed=True,
+            error=private_reason,
+            memories=[],
+            profile_updates=[],
+            foresight=None,
+            emotion=None,
+        )
+
+    monkeypatch.setattr(consolidation, "extract_memories_via_llm", failing_llm)
+
+    await consolidation.run_background_extraction(
+        user_id=1,
+        user_message="I work as a gardener",
+        assistant_response="Noted!",
+        runtime_db_factory=rt_factory,
+        trigger_soul_writer=False,
+    )
+
+    with rt_factory() as runtime_db:
+        raw_reason = runtime_db.scalar(
+            select(MemoryExtractionFailure.__table__.c.failure_reason)
+        )
+        runtime_db.expunge_all()
+        intent = runtime_db.scalar(select(MemoryExtractionFailure))
+
+    assert raw_reason == ""
+    assert intent is not None
+    assert intent.failure_reason == private_reason
+
+    index.clear_unlocked_state()
+    with rt_factory() as runtime_db, pytest.raises(RuntimeSealingLocked):
+        runtime_db.scalar(select(MemoryExtractionFailure))
+
+
+@pytest.mark.asyncio
 async def test_scaffold_provider_writes_no_intent_row(
     rt_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

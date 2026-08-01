@@ -1,17 +1,17 @@
 # MIH-001 - Enforce SQLite foreign keys
 
-- Status: backlog
+- Status: done
 - Priority: P1
 - Scope: `apps/server/src/anima_server/db`, `apps/server/src/anima_server/services/vault.py`, `apps/server/src/anima_server/services/eval_reset.py`
 - Parent: none
 - Depends on: none
-- Owner: unassigned
+- Owner: Claude
 - PRD: none
 - Plan: none
 - Created: 2026-07-19 03:34 MYT
-- Updated: 2026-07-19 03:34 MYT
-- Started:
-- Completed:
+- Updated: 2026-07-31 02:56 MYT
+- Started: 2026-07-30 17:40 MYT
+- Completed: 2026-07-31 02:56 MYT
 
 ## Goal
 
@@ -43,11 +43,75 @@ Each was patched individually. Enabling FK enforcement would collapse this entir
 
 - 2026-07-19 03:34 MYT - Ticket created from IL-004/IL-005 review findings.
 
+- 2026-07-30 17:40 MYT - Claimed and started by Claude (branch
+  `mih-001-enforce-sqlite-fks`).
+- 2026-07-30 18:05 MYT - Decision: ENFORCE. `PRAGMA foreign_keys = ON`
+  added to all three `_make_engine` SQLite connect listeners (after
+  `PRAGMA key` on the SQLCipher path — statements before the key fail).
+  The full-suite audit surfaced exactly two latent reliances, both fixed:
+  (1) the direct item-delete route left superseded predecessors as hidden
+  zombie rows; enforced SET NULL resurrected them, so the route now walks
+  the supersession chain like forget_memory already documents (evidence,
+  tendency scrub, reconsolidation logs, vector/index removal per chain
+  item); (2) vault restore inserts payloads in snapshot order, not
+  FK-dependency order — restore now defers constraint checking to COMMIT
+  (`PRAGMA defer_foreign_keys = ON`, transaction-scoped), so order stops
+  mattering while an inconsistent snapshot still fails loudly. The
+  existing manual delete-ordering compensations are KEPT as defense in
+  depth. 4 regression tests in `tests/test_sqlite_fk_enforcement.py`.
+
+- 2026-07-30 20:29 MYT - Completed: post-fix full suite green (3170/0).
+  One test expectation legitimately changed with the chain-delete
+  semantics (test_memory_writes_update_rust_index now asserts index
+  deletes for the whole supersede chain, documented in-test).
+
+- 2026-07-30 21:43 MYT - PR #132 review round 1 (2 P1s — both real
+  data-loss holes in the enforcement rollout), completion re-stamped:
+  (1) a memories-scope vault restore bulk-deleted users, whose ON DELETE
+  CASCADE now executes immediately (defer_foreign_keys defers checks,
+  not actions) and destroyed the preserved tables — scoped restores now
+  upsert user rows field-wise with no delete; (2) Alembic batch_alter
+  rebuilds (copy-create-DROP-rename) fired the old parent's cascades
+  into child tables mid-upgrade — the migration runner now disables FKs
+  via the raw DBAPI cursor (a SQLAlchemy-level pragma would autobegin a
+  transaction and silently no-op) and restores enforcement in a finally.
+  Regression tests: an intermediate-revision (20260316_0001) seeded
+  upgrade preserving agent_steps/agent_messages through the 0002 batch
+  rebuild, and a memories-scope restore preserving threads/tasks while
+  merging the user row. Suite evidence refreshed below.
+
+- 2026-07-31 00:47 MYT - PR #132 review round 2 (P1 + P2), completion
+  re-stamped: (1) even a FULL restore no longer bulk-deletes users — the
+  cascade reaches user-owned tables the snapshot never exports (diaries,
+  presence config), so a normal backup/restore silently destroyed data
+  it could not recreate; users are upserted for every scope and a full
+  restore prunes only snapshot-ABSENT users (intended account removal).
+  (2) memory_item_tags now export and restore — the junction rows
+  cascade with the MemoryItem bulk delete and every restore silently
+  dropped the user's tag filters. Regression tests for both. Suite
+  evidence refreshed below.
+
+- 2026-07-31 02:56 MYT - PR #132 review round 3 (P2), completion
+  re-stamped: memoryItemTags added to the packaging allowlists
+  (_MEMORY_TABLES and _CAPSULE_CARD_TABLES) — the snapshot function
+  returned the key but memories-scope JSON exports and capsules filtered
+  it out, so imports of either artifact still restored an empty tag
+  payload. Packaging-level regression test added (9 total in the FK
+  test file).
+
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest tests/test_sqlite_fk_enforcement.py` — 9 passed
+  - `uv run pytest tests/test_vault.py` — 25 passed
+  - Full-suite audit (enforcement on, pre-fix): 2 failed / 3167 passed —
+    both failures triaged as latent non-enforcement reliances (see log)
+  - Full suite on the round-3 head — **3175 passed, 0 failed, 10
+    skipped**, run 2026-07-31 12:24 MYT
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/db/session.py` (pragmas + FK-off migration runner)
+  - `apps/server/src/anima_server/api/routes/memory.py`
+  - `apps/server/src/anima_server/services/vault.py`
+  - `apps/server/tests/test_sqlite_fk_enforcement.py` (new)
 - Notes:
   - Evidence: PR #112 review threads (5+ findings share this root cause).

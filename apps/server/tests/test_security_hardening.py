@@ -40,11 +40,12 @@ def _register_user(client: TestClient) -> dict[str, object]:
 
 def _create_test_app() -> tuple[object, object, object]:
     from anima_server import main as main_module
-    from anima_server.services.core import release_core_lock
+    from anima_server.services.core import ensure_core_manifest, release_core_lock
 
     temp_root = create_managed_temp_dir("anima-sec-app-")
     original_data_dir = settings.data_dir
     settings.data_dir = temp_root / "anima-data"
+    ensure_core_manifest()
     main_module._start_embedded_pg = lambda: None
     release_core_lock()
     try:
@@ -405,9 +406,7 @@ def test_create_app_warns_when_nonce_missing_outside_development() -> None:
         with patch.object(main_module.logger, "warning") as warning:
             _, original_data_dir, temp_root = _create_test_app()
 
-        warning.assert_any_call(
-            "Sidecar nonce is not configured in non-development environment"
-        )
+        warning.assert_any_call("Sidecar nonce is not configured in non-development environment")
     finally:
         settings.sidecar_nonce = original_nonce
         settings.app_env = original_env

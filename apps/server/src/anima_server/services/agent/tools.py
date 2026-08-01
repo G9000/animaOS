@@ -321,18 +321,24 @@ def _latest_user_source_message_ids(ctx: Any) -> list[int] | None:
 
     from anima_server.models.runtime import RuntimeMessage
 
-    message_id = ctx.runtime_db.scalar(
-        select(RuntimeMessage.id)
+    messages = ctx.runtime_db.scalars(
+        select(RuntimeMessage)
         .where(
             RuntimeMessage.thread_id == ctx.thread_id,
             RuntimeMessage.user_id == ctx.user_id,
             RuntimeMessage.role == "user",
-            RuntimeMessage.content_text.is_not(None),
         )
         .order_by(RuntimeMessage.sequence_id.desc())
-        .limit(1)
     )
-    return [int(message_id)] if message_id is not None else None
+    message = next(
+        (
+            candidate
+            for candidate in messages
+            if candidate.content_text is not None
+        ),
+        None,
+    )
+    return [int(message.id)] if message is not None else None
 
 
 @tool

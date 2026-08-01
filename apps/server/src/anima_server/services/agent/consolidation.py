@@ -505,8 +505,16 @@ async def run_background_extraction(
                     if intent is not None:
                         # Promote the in-flight guard to a retryable failure so
                         # the Soul Writer sweep picks it up.
+                        from anima_server.services.corefs.sealed_runtime import (
+                            reseal_memory_extraction_failure,
+                        )
+
                         intent.status = "failed"
-                        intent.failure_reason = reason[:2000]
+                        reseal_memory_extraction_failure(
+                            rt_db,
+                            intent,
+                            failure_reason=reason,
+                        )
                         intent.last_attempt_at = now
                         intent.updated_at = now
                     health_emit(
@@ -712,20 +720,64 @@ def record_memory_extraction_failure(
     a hard crash leaves it ``"pending"`` and the retry sweep recovers it once
     it goes stale.
     """
-    from anima_server.models.runtime_memory import MemoryExtractionFailure
+    from sqlalchemy.orm.attributes import set_committed_value
 
+    from anima_server.models.runtime_memory import MemoryExtractionFailure
+    from anima_server.services.corefs.sealed_runtime import (
+        runtime_index_for_sensitive_write,
+        seal_runtime_record,
+    )
+
+    user_message_preview = _preview_text(user_message)
+    assistant_response_preview = _preview_text(assistant_response)
+    runtime_index = runtime_index_for_sensitive_write(
+        runtime_db,
+        user_id=user_id,
+    )
     failure = MemoryExtractionFailure(
         user_id=user_id,
         source_message_ids=[int(message_id) for message_id in source_message_ids or []],
-        user_message_preview=_preview_text(user_message),
-        assistant_response_preview=_preview_text(assistant_response),
-        failure_reason=failure_reason[:2000],
+        user_message_preview=None
+        if runtime_index is not None
+        else user_message_preview,
+        assistant_response_preview=None
+        if runtime_index is not None
+        else assistant_response_preview,
+        failure_reason="" if runtime_index is not None else failure_reason[:2000],
         extraction_model=extraction_model,
         status=status,
         last_attempt_at=datetime.now(UTC),
     )
     runtime_db.add(failure)
     runtime_db.flush()
+    if runtime_index is not None:
+        seal_runtime_record(
+            runtime_db,
+            index=runtime_index,
+            row_type="memory_extraction_failure",
+            row_id=int(failure.id),
+            owner_id=user_id,
+            payload={
+                "user_message_preview": user_message_preview,
+                "assistant_response_preview": assistant_response_preview,
+                "failure_reason": failure_reason[:2000],
+            },
+        )
+        set_committed_value(
+            failure,
+            "user_message_preview",
+            user_message_preview,
+        )
+        set_committed_value(
+            failure,
+            "assistant_response_preview",
+            assistant_response_preview,
+        )
+        set_committed_value(
+            failure,
+            "failure_reason",
+            failure_reason[:2000],
+        )
     return failure
 
 

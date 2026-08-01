@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +15,16 @@ from anima_server.schemas.corefs import (
     CoreFsSelectedSnapshotResponse,
 )
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.indexer import (
+    CoreFSProgressiveIndex,
+    CoreFSRuntimeLocked,
+    IndexCapability,
+    ReadinessState,
+)
+from anima_server.services.corefs.migration import (
+    embed_configured_query,
+    initialize_catalog_if_idle,
+)
 from anima_server.services.sessions import UnlockSession
 
 router = APIRouter(prefix="/api/corefs", tags=["corefs"])
@@ -25,6 +36,7 @@ _READ_OPERATIONS = {
     "glob",
     "grep",
     "read",
+    "search",
     "search_readiness",
 }
 _WRITE_OPERATIONS = {
@@ -58,6 +70,7 @@ class CoreFsPrincipal:
 class CoreFsRequestContext:
     corefs_session: object
     keys: object
+    runtime_index: CoreFSProgressiveIndex | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +91,7 @@ def _resolve_request_context(session: UnlockSession) -> CoreFsRequestContext:
     return CoreFsRequestContext(
         corefs_session=session.corefs_session,
         keys=session.corefs_keys,
+        runtime_index=getattr(session, "runtime_index", None),
     )
 
 
@@ -137,10 +151,34 @@ def _resolve_search_runtime_state(
     context: CoreFsRequestContext,
     selected: logical.CoreFsValidationSnapshot,
 ) -> CoreFsSearchRuntimeState:
-    del context, selected
-    # CoreFS runtime indexing is introduced by a later migration slice. Until
-    # that server-owned index exists, the truthful state is always missing.
-    return CoreFsSearchRuntimeState(state="missing")
+    index = context.runtime_index
+    if index is None:
+        return CoreFsSearchRuntimeState(state="missing")
+    snapshot = index.snapshot()
+    if snapshot.catalog_generation is None:
+        initialize_catalog_if_idle(index, selected.generation)
+        snapshot = index.snapshot()
+    if snapshot.state is ReadinessState.LOCKED:
+        return CoreFsSearchRuntimeState(state="missing")
+    if snapshot.catalog_generation is None:
+        return CoreFsSearchRuntimeState(state="building")
+    if snapshot.catalog_generation != selected.generation:
+        return CoreFsSearchRuntimeState(
+            state="building",
+            index_generation=snapshot.catalog_generation,
+        )
+    if snapshot.state is ReadinessState.CATALOG_READY_DEGRADED or any(
+        family.degraded for family in snapshot.families.values()
+    ):
+        state: logical.CoreFsSearchState = "degraded"
+    elif snapshot.state is ReadinessState.READY:
+        state = "ready"
+    else:
+        state = "building"
+    return CoreFsSearchRuntimeState(
+        state=state,
+        index_generation=snapshot.catalog_generation,
+    )
 
 
 def _require_path(payload: CoreFsOperationRequest, *, field: str = "path") -> str:
@@ -226,13 +264,25 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
         ("logical path is not a file:", status.HTTP_409_CONFLICT, "corefs_not_file"),
         ("logical path is not a directory:", status.HTTP_409_CONFLICT, "corefs_not_directory"),
         ("cursor generation ", status.HTTP_409_CONFLICT, "corefs_cursor_generation_mismatch"),
-        ("invalid operation limit:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        (
+            "invalid operation limit:",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "corefs_invalid_request",
+        ),
         ("invalid path ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("path is for ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid glob pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("invalid grep pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
-        ("invalid grep_limit pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
-        ("invalid literal pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
+        (
+            "invalid grep_limit pattern:",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "corefs_invalid_request",
+        ),
+        (
+            "invalid literal pattern:",
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "corefs_invalid_request",
+        ),
         ("invalid regex pattern:", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
         ("cannot read ", status.HTTP_422_UNPROCESSABLE_CONTENT, "corefs_invalid_request"),
     )
@@ -242,9 +292,8 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
                 status_code=status_code,
                 detail={"code": code, "message": message},
             )
-    if (
-        " response item requires " in message
-        or (message.startswith("requested ") and " response bytes exceeds maximum " in message)
+    if " response item requires " in message or (
+        message.startswith("requested ") and " response bytes exceeds maximum " in message
     ):
         return HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -342,6 +391,73 @@ def _dispatch_read(
                 response_bytes=payload.responseBytes,
             )
         )
+    if payload.operation == "search":
+        index = context.runtime_index
+        if index is None or index.snapshot().state is ReadinessState.LOCKED:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail={"code": "corefs_search_locked"},
+            )
+        snapshot = index.snapshot()
+        if snapshot.catalog_generation != selected.generation:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_search_generation_stale",
+                    "indexGeneration": snapshot.catalog_generation,
+                    "selectedGeneration": selected.generation,
+                },
+            )
+        mode = payload.searchMode
+        capability = {
+            "exact": IndexCapability.EXACT_SEARCH,
+            "text": IndexCapability.TEXT_SEARCH,
+            "semantic": IndexCapability.SEMANTIC_SEARCH,
+        }[mode]
+        if capability not in snapshot.capabilities:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_search_not_ready",
+                    "mode": mode,
+                    "state": snapshot.state.value,
+                },
+            )
+        query_id = index.begin_query()
+        try:
+            if mode == "exact":
+                object_ids = index.lookup_exact(payload.query or "")[: payload.maxResults]
+            elif mode == "text":
+                object_ids = index.search_text(payload.query or "")[: payload.maxResults]
+            else:
+                vector = embed_configured_query(payload.query or "")
+                object_ids = index.search_semantic(
+                    vector,
+                    limit=payload.maxResults,
+                )
+        except CoreFSRuntimeLocked as exc:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail={"code": "corefs_search_locked"},
+            ) from exc
+        except (RuntimeError, TypeError, ValueError) as exc:
+            if mode != "semantic":
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "corefs_semantic_query_unavailable",
+                    "message": str(exc),
+                },
+            ) from exc
+        finally:
+            with suppress(CoreFSRuntimeLocked):
+                index.finish_query(query_id)
+        return {
+            "generation": selected.generation,
+            "mode": mode,
+            "objectIds": list(object_ids),
+        }
     if payload.operation == "search_readiness":
         runtime_state = _resolve_search_runtime_state(context=context, selected=selected)
         return _decode_logical_response(

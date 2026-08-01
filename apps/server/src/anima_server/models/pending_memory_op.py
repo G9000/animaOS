@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Index, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, Index, Integer, String, Text, event, func, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, object_session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.db.runtime_base import RuntimeBase
 
@@ -53,3 +54,36 @@ class PendingMemoryOp(RuntimeBase):
         server_default=text("0"),
     )
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+@event.listens_for(PendingMemoryOp, "load")
+def _hydrate_sealed_pending_memory_op(
+    op: PendingMemoryOp,
+    _context: object,
+) -> None:
+    runtime_db = object_session(op)
+    if runtime_db is None or op.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="pending_memory_op",
+        row_id=int(op.id),
+        owner_id=int(op.user_id),
+    )
+    if payload is None:
+        return
+    content = payload.get("content")
+    old_content = payload.get("old_content")
+    failure_reason = payload.get("failure_reason")
+    if not isinstance(content, str) or (
+        old_content is not None and not isinstance(old_content, str)
+    ):
+        raise ValueError("sealed pending memory operation payload is invalid")
+    if failure_reason is not None and not isinstance(failure_reason, str):
+        raise ValueError("sealed pending memory operation failure is invalid")
+    set_committed_value(op, "content", content)
+    set_committed_value(op, "old_content", old_content)
+    if "failure_reason" in payload:
+        set_committed_value(op, "failure_reason", failure_reason)

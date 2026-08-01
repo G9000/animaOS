@@ -60,7 +60,7 @@ from anima_server.services.corefs.credentials import (
     prepare_recovery_credential,
 )
 from anima_server.services.corefs.types import PayloadScope
-from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
+from anima_server.services.sessions import unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -241,9 +241,8 @@ async def logout(request: Request) -> dict[str, bool]:
     token = read_unlock_token(request)
 
     def detach_and_destroy() -> None:
-        unlock_session_store.revoke(token)
-        clear_sqlcipher_key()
-        dispose_all_user_engines()
+        if unlock_session_store.revoke_and_clear_sqlcipher_key_if_idle(token):
+            dispose_all_user_engines()
 
     await asyncio.to_thread(detach_and_destroy)
     return {"success": True}
