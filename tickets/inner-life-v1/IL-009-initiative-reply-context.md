@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-08-01 22:04 MYT
+- Updated: 2026-08-02 00:55 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-08-01 22:04 MYT
+- Completed: 2026-08-02 00:55 MYT
 
 ## Goal
 
@@ -181,6 +181,15 @@ rather than blocking IL-008 on it.
   New Thread, new seed) and compared after the awaits; a mismatch aborts
   the send and leaves the draft for a deliberate resend.
 
+- 2026-08-02 00:55 MYT - PR #131 review round 12 (P1): re-opening the very thread whose
+  eager close is in flight cleared the send guard while the close kept
+  running — a submit could then start against a thread that was about to
+  be closed, so the close committed mid-turn and archival ran while the
+  turn was still writing (later messages landing outside the archived
+  transcript). handleSelectThread now awaits that in-flight close before
+  loading the thread, and a `threadSettleRef` gate makes sendMessage wait
+  on any in-flight thread-state transition before routing anything.
+
 ## Validation
 
 - Commands:
@@ -188,7 +197,7 @@ rather than blocking IL-008 on it.
     30 pass (15 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 11), 2026-08-01 22:04 MYT
+    FINAL head (round 12), 2026-08-02 00:55 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

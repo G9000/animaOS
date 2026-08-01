@@ -619,6 +619,11 @@ export default function Chat() {
   // close and clear it (PR #131 round 6) — unless the user is re-opening
   // the very thread the close targets, in which case closing it would
   // archive the conversation they just selected.
+  // A thread-state transition the UI has started but not finished (PR #131
+  // round 12): re-opening a thread whose close is still in flight must not
+  // let a send begin while that close is pending — the close would commit
+  // mid-turn and archive the conversation the turn is writing into.
+  const threadSettleRef = useRef<Promise<unknown> | null>(null);
   const abandonSeedClose = (keepThreadId?: number) => {
     const abandoned = pendingSeedCloseRef.current;
     const inFlight = seedCloseInFlightRef.current;
@@ -921,7 +926,25 @@ export default function Chat() {
     seedActiveRef.current = false;
     conversationEpochRef.current += 1;
     pendingContextRef.current = [];
+    // Re-opening the very thread whose close is in flight: that request is
+    // deliberately NOT cancelled (abandonSeedClose returns "none" for the
+    // kept thread), so wait for it to settle before treating the thread as
+    // usable — otherwise a submit could start against a thread that is
+    // about to be closed and archived mid-turn (PR #131 round 12).
+    const closing = seedCloseInFlightRef.current;
+    const awaitingClose =
+      closing && closing.threadId === threadId ? closing.promise : null;
     abandonSeedClose(threadId); // don't close the thread being re-opened
+    if (awaitingClose) {
+      threadSettleRef.current = awaitingClose;
+      try {
+        await awaitingClose;
+      } finally {
+        if (threadSettleRef.current === awaitingClose) {
+          threadSettleRef.current = null;
+        }
+      }
+    }
     currentThreadIdRef.current = threadId;
     setCurrentThreadId(threadId);
     setMessages([]);
@@ -1256,6 +1279,11 @@ export default function Chat() {
     // retry-on-next-send semantics) before this reply can be routed, or
     // get_or_create_thread would append it to the old conversation.
     const epochAtSend = conversationEpochRef.current;
+    // A thread the UI is mid-transition on (e.g. re-opened while its close
+    // was in flight) must settle before anything is routed into it.
+    if (threadSettleRef.current) {
+      await threadSettleRef.current.catch(() => {});
+    }
     if (seedNeedsThreadDiscoveryRef.current && !(await settleSeedDiscovery())) {
       setError("Couldn't start the reply thread - try sending again.");
       return false;
