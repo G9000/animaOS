@@ -1,6 +1,6 @@
 # PCF-003 - Machine-local Runtime and progressive indexing
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: `apps/server` runtime/indexing, desktop readiness/security UI
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-3-machine-local-runtime-and-progressive-indexing`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-01 19:05 MYT
+- Updated: 2026-08-01 19:49 MYT
 - Started: 2026-07-29 01:57 MYT
-- Completed:
+- Completed: 2026-08-01 19:49 MYT
 
 ## Goal
 
@@ -104,8 +104,11 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
 - 2026-08-01 18:14 MYT - Addressed PR #127's exact-head case-sensitive source-identity finding test-first. Source URIs now use a dedicated versioned, length-delimited, domain-separated exact-value HMAC projection across fresh registration, document lookup, agent batch lookup, and legacy conversion; normalized blind tokens remain unchanged for search, slugs, and concept types. Existing sealed source rows are repaired from their encrypted payload during unlock conversion. The case-variant registration regression failed RED by reusing source `1`; exact-token domain/case/whitespace and legacy-projection repair coverage pass, the affected index/privacy/source/PDF workflow band passes `123`, and scoped Ruff, repository organization, the complete workspace build, and diff hygiene pass. A broader documents API attempt separately reproduced the known registration-harness `ensure_core_manifest()` failure after `126` unaffected passes. PCF-003 and its parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 18:38 MYT - Addressed PR #127's consequential packaged-startup finding test-first. The packaged desktop keeps the established Core path and fallback Soul database but now exports a disjoint sibling `ANIMA_RUNTIME_APP_DATA_DIR`; its virtual environment remains under the machine-local daemon root and cannot be redirected beside a portable Core or beneath an explicitly overlapping Runtime override before Python rejects that configuration. Explicit Core and Runtime overrides remain authoritative, and Python's bidirectional overlap guard remains fail-closed. The layout regression failed RED at compile time before the pure resolver existed; default disjointness, explicit overrides, database continuity, and pre-validation environment placement pass, all `79` desktop tests pass, and the desktop production build, Tauri host check, repository organization, and diff hygiene pass. PCF-003 and its parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
 - 2026-08-01 19:05 MYT - Addressed PR #127's exact-head consequential path-oracle and Soul-only-navigation findings test-first. Durable progress checksums now cover only already-opaque family/object/revision projections, so private logical paths cannot be confirmed offline from Runtime PostgreSQL. The HUD and all currently non-CoreFS-backed navigation remain available without CoreFS navigation capability, preserving supported Soul-scoped sessions; future CoreFS-backed routes require an explicit session-capability policy rather than ad hoc link hiding. Both regressions failed RED and pass GREEN; migration plus Runtime privacy coverage passes `68`, all `79` desktop tests pass, and scoped Ruff/format, the desktop production build, repository organization, and diff hygiene pass. PCF-003 and its parent remain `in_progress`; PCF-004 and PCF-005 remain dependency-ineligible pending refreshed exact-head CI/review and second-phase closeout.
+- 2026-08-01 19:49 MYT - Completed PCF-003 after PR #127 head `f0991e38` passed standalone checkout, Server Ruff, pytest, Windows native lease, and macOS native lease. Full GraphQL pagination covered `71` top-level comments, `95` reviews, `112` review threads, every per-thread comment connection, and current-head checks with zero unresolved non-outdated consequential threads; the focused Codex review reported no major issues for exact head `f0991e38bb`. PCF-004 and PCF-005 are now dependency-eligible but remain unclaimed in backlog.
 
 ## Validation
+
+- Second-phase closeout implementation evidence: exact head `f0991e38bbb7ee0a90f2b4cb5639f079a9dba72f`; all five required checks passed; fully paginated comments, reviews, threads, per-thread comments, reactions, and checks had no continuation gaps or unresolved consequential feedback; focused Codex review was clean.
 
 - Commands:
   - PR #127 path-oracle/Soul-navigation follow-up: both focused regressions failed RED and pass GREEN; CoreFS migration plus Runtime privacy coverage passed `68`, all `79` desktop tests passed, and scoped Ruff/format, the desktop production build, repository organization, and diff hygiene passed.
@@ -163,4 +166,4 @@ Move Runtime outside `.anima/`, add resumable migration/index state, progressive
   - `.github/workflows/corefs-provenance.yml` and `scripts/check_corefs_release_notices.py`
   - `tickets/portable-core-filesystem/` and `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - Notes:
-  - The multi-login selection, stale-span lifecycle, eval-reset live-vector, concurrent legacy-sealing, mixed semantic-dimension, linked legacy-tree root, and failed-config-persistence gaps are fixed and await refreshed exact-head CI/review. PCF-011 separately tracks the known Windows native-lease aggregate flake; PCF-004 and PCF-005 remain unclaimed and dependency-ineligible pending final closeout.
+  - PCF-003 is complete on clean implementation head `f0991e38`. PCF-011 separately tracks the known Windows native-lease aggregate flake; PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog.

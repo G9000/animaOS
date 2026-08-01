@@ -368,6 +368,7 @@ git -c commit.gpgsign=false commit -m "core: add Core Filesystem"
 
 **Ticket:** `PCF-003`  
 **Depends on:** `PCF-002`
+**Completed:** 2026-08-01.
 
 **Files:**
 - Create: `apps/server/src/anima_server/models/corefs_runtime.py`
@@ -474,16 +475,14 @@ git add apps/server/src/anima_server/models/corefs_runtime.py apps/server/src/an
 git -c commit.gpgsign=false commit -m "runtime: rebuild CoreFS indexes after unlock"
 ```
 
-PR #127 implementation head `70d22b7c` passed all required checks and received a
-clean exact-head Codex review, but later exact-head reviews exposed multi-login
-Runtime-index selection, stale-span payload lifecycle, eval-reset live-vector
-eviction, concurrent legacy-sealing, mixed semantic-dimension, and linked
-legacy-tree root, failed-config-persistence, and untagged legacy-vector gaps.
-The later case-sensitive source-identity, packaged Core/Runtime layout,
-durable-path-oracle, and Soul-only navigation gaps are also repaired. All twelve
-test-first follow-ups are implemented; Task 3 remains reopened until refreshed
-exact-head CI/review, while PCF-004 and PCF-005 remain dependency-ineligible and
-unclaimed.
+PR #127 implementation head `f0991e38` passed all required checks and received a
+clean focused exact-head Codex review after full pagination found zero unresolved
+consequential threads. The multi-login selection, stale-span lifecycle,
+eval-reset live-vector eviction, concurrent legacy-sealing, mixed semantic
+dimension, linked legacy-tree root, failed-config-persistence, untagged legacy
+vector, exact source-identity, packaged Core/Runtime layout, durable path-oracle,
+and Soul-only navigation gaps are repaired. Task 3 is complete; PCF-004 and
+PCF-005 are dependency-eligible but remain unclaimed in backlog.
 
 ## Task 4: Diary, folders, drafts, and notes vertical slice
 
