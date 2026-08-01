@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { cn, AiIcon, SecurityIcon, VaultIcon, LanguageIcon, AppearanceIcon, AdvancedIcon } from "@anima/standard-templates";
+import { cn, liftX, AiIcon, SecurityIcon, VaultIcon, LanguageIcon, AppearanceIcon, AdvancedIcon } from "@anima/standard-templates";
 
 function DaemonIcon() {
   return <span className="w-4 h-4 inline-flex items-center justify-center text-xs opacity-80">D</span>;
@@ -19,9 +19,9 @@ export default function Settings() {
   return (
     <div className="flex h-full overflow-hidden">
       {/* Left rail */}
-      <div className="relative z-10 w-48 flex-shrink-0 border-r border-foreground/[0.08] flex flex-col bg-background/25 backdrop-blur-[40px] shadow-[4px_0_24px_rgba(0,0,0,0.12)] pt-16 overflow-visible">
+      <div className="relative z-10 w-48 flex-shrink-0 border-r border-hairline flex flex-col bg-background/25 backdrop-blur-[40px] shadow-[4px_0_24px_rgba(0,0,0,0.12)] pt-hud overflow-visible">
         <div className="px-4 pt-5 pb-3 flex-shrink-0">
-          <p className="font-mono text-[8px] tracking-[0.32em] uppercase text-foreground/20 select-none">
+          <p className="font-mono text-micro tracking-caps-5 uppercase text-foreground/20 select-none">
             Config
           </p>
         </div>
@@ -30,19 +30,13 @@ export default function Settings() {
 
         <nav className="flex-1 px-2 py-2 space-y-px overflow-visible">
           {SETTINGS_SECTIONS.map(({ to, label, description, Icon }) => (
-            <NavLink key={to} to={to} end className="group block">
+            <NavLink key={to} to={to} end className={cn(liftX, "group block")}>
               {({ isActive }) => (
                 <div
                   className={cn(
-                    "relative flex items-center gap-2.5 px-3 py-2.5 transition-all duration-150",
+                    "relative flex items-center gap-2.5 px-3 py-2.5 transition-colors duration-150",
                     isActive ? "bg-accent z-20" : "group-hover:bg-foreground/[0.06] group-hover:z-10",
                   )}
-                  style={isActive ? {
-                    transform: "translateX(12px)",
-                    boxShadow: "-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 55%, transparent)",
-                  } : undefined}
-                  onMouseEnter={(e) => { if (!isActive) { const el = e.currentTarget as HTMLElement; el.style.transform = "translateX(6px)"; el.style.boxShadow = "-2px 2px 0 rgba(0,0,0,0.3), -3px 3px 0 rgba(0,0,0,0.15)"; } }}
-                  onMouseLeave={(e) => { if (!isActive) { const el = e.currentTarget as HTMLElement; el.style.transform = ""; el.style.boxShadow = ""; } }}
                 >
                   <span className={cn(
                     "shrink-0 transition-colors",
@@ -52,13 +46,13 @@ export default function Settings() {
                   </span>
                   <div className="flex flex-col min-w-0">
                     <span className={cn(
-                      "font-mono text-[11px] tracking-[0.12em] uppercase transition-colors",
+                      "font-mono text-detail tracking-caps-2 uppercase transition-colors",
                       isActive ? "text-background font-semibold" : "text-foreground/65",
                     )}>
                       {label}
                     </span>
                     <span className={cn(
-                      "font-mono text-[9px] mt-0.5 leading-snug tracking-wide truncate",
+                      "font-mono text-label mt-0.5 leading-snug tracking-wide truncate",
                       isActive ? "text-background/75" : "text-foreground/40",
                     )}>
                       {description}
@@ -72,7 +66,7 @@ export default function Settings() {
       </div>
 
       {/* Content pane */}
-      <div className="flex-1 overflow-y-auto pt-20 pb-10 px-8">
+      <div className="flex-1 overflow-y-auto pt-hud-gap pb-10 px-8">
         <Outlet />
       </div>
     </div>

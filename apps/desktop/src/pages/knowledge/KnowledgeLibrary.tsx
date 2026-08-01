@@ -144,14 +144,14 @@ export default function KnowledgeLibrary() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden pt-16">
+    <div className="flex h-full flex-col overflow-hidden pt-hud">
       <header className="shrink-0 border-b border-border bg-card/45 px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground/45">
+            <p className="font-mono text-caption uppercase tracking-caps-4 text-muted-foreground/45">
               Knowledge Library
             </p>
-            <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/30">
+            <p className="mt-1 font-mono text-label uppercase tracking-caps-3 text-muted-foreground/30">
               {sources.length} sources / {concepts.length} concepts
             </p>
           </div>
@@ -164,13 +164,13 @@ export default function KnowledgeLibrary() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Filter concepts"
-                className="h-9 w-56 border border-border bg-input pl-8 pr-3 font-mono text-[10px] text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-primary/40"
+                className="h-9 w-56 border border-border bg-input pl-8 pr-3 font-mono text-caption text-foreground outline-none placeholder:text-muted-foreground/30 focus:border-primary/40"
               />
             </div>
             <button
               type="button"
               onClick={runLint}
-              className="inline-flex h-9 items-center gap-2 border border-border px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:border-primary/40 hover:text-primary"
+              className="inline-flex h-9 items-center gap-2 border border-border px-3 font-mono text-caption uppercase tracking-caps-2 text-muted-foreground hover:border-primary/40 hover:text-primary"
               title="Run knowledge lint"
             >
               <Icons.Warning />
@@ -179,7 +179,7 @@ export default function KnowledgeLibrary() {
             <button
               type="button"
               onClick={exportBundle}
-              className="inline-flex h-9 items-center gap-2 border border-border px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:border-primary/40 hover:text-primary"
+              className="inline-flex h-9 items-center gap-2 border border-border px-3 font-mono text-caption uppercase tracking-caps-2 text-muted-foreground hover:border-primary/40 hover:text-primary"
               title="Export OKF bundle"
             >
               <Icons.Download />
@@ -188,7 +188,7 @@ export default function KnowledgeLibrary() {
             <button
               type="button"
               onClick={loadLibrary}
-              className="inline-flex h-9 items-center gap-2 border border-border px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:border-primary/40 hover:text-primary"
+              className="inline-flex h-9 items-center gap-2 border border-border px-3 font-mono text-caption uppercase tracking-caps-2 text-muted-foreground hover:border-primary/40 hover:text-primary"
               title="Refresh"
             >
               <Icons.Refresh />
@@ -197,7 +197,7 @@ export default function KnowledgeLibrary() {
           </div>
         </div>
         {(error || message) && (
-          <div className="mt-3 font-mono text-[10px] uppercase tracking-[0.12em]">
+          <div className="mt-3 font-mono text-caption uppercase tracking-caps-2">
             {error ? (
               <span className="text-destructive">{error}</span>
             ) : (
@@ -219,17 +219,17 @@ export default function KnowledgeLibrary() {
         <section className="flex min-h-0 flex-col border-r border-border bg-card/20">
           <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
             <div>
-              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/45">
+              <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/45">
                 Concepts
               </p>
-              <p className="font-mono text-[9px] text-muted-foreground/30">
+              <p className="font-mono text-label text-muted-foreground/30">
                 {visibleConcepts.length} visible
               </p>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {visibleConcepts.length === 0 && !loading ? (
-              <div className="px-4 py-6 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/35">
+              <div className="px-4 py-6 font-mono text-caption uppercase tracking-caps-3 text-muted-foreground/35">
                 No concepts
               </div>
             ) : (
@@ -249,11 +249,11 @@ export default function KnowledgeLibrary() {
                       <p className="truncate text-sm font-medium text-foreground">
                         {concept.title}
                       </p>
-                      <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/35">
+                      <p className="mt-1 truncate font-mono text-label text-muted-foreground/35">
                         {concept.conceptType} / {concept.slug}
                       </p>
                     </div>
-                    <span className="font-mono text-[9px] text-muted-foreground/30">
+                    <span className="font-mono text-label text-muted-foreground/30">
                       #{concept.id}
                     </span>
                   </div>
@@ -264,18 +264,18 @@ export default function KnowledgeLibrary() {
 
           <div className="max-h-48 shrink-0 overflow-y-auto border-t border-border">
             <div className="px-4 py-3">
-              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/45">
+              <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/45">
                 Lint
               </p>
               {lintFindings.length === 0 ? (
-                <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground/35">
+                <p className="mt-2 font-mono text-caption uppercase tracking-caps-2 text-muted-foreground/35">
                   No findings
                 </p>
               ) : (
                 <div className="mt-2 space-y-2">
                   {lintFindings.map((finding, index) => (
                     <div key={`${finding.code}-${index}`} className="border-l border-border pl-2">
-                      <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground/45">
+                      <p className="font-mono text-label uppercase tracking-caps-2 text-muted-foreground/45">
                         {finding.severity} / {finding.code}
                       </p>
                       <p className="mt-1 text-xs leading-5 text-foreground/75">

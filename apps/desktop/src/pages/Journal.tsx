@@ -486,7 +486,7 @@ function AttachmentPreview({
       <img
         src={previewUrl}
         alt={attachment.filename || "Diary attachment"}
-        className="max-h-64 max-w-full rounded-lg border border-foreground/[0.08] object-contain"
+        className="max-h-64 max-w-full rounded-lg border border-hairline object-contain"
       />
     );
   }
@@ -499,7 +499,7 @@ function AttachmentPreview({
     <video
       controls
       src={previewUrl}
-      className="max-h-64 max-w-full rounded-lg border border-foreground/[0.08]"
+      className="max-h-64 max-w-full rounded-lg border border-hairline"
     />
   );
 }
@@ -528,7 +528,7 @@ function EntryCoverThumbnail({ entry }: { entry: DiaryEntryData }) {
 
   if (!cover) return null;
   return (
-    <div className="h-14 w-14 shrink-0 rounded-lg border border-foreground/[0.08] bg-secondary/40 overflow-hidden">
+    <div className="h-14 w-14 shrink-0 rounded-lg border border-hairline bg-secondary/40 overflow-hidden">
       {url && <img src={url} alt="" className="h-full w-full object-cover" />}
     </div>
   );
@@ -550,7 +550,7 @@ function PendingFilePreview({ file }: { file: File }) {
       <img
         src={url}
         alt={file.name}
-        className="h-10 w-10 shrink-0 rounded-md object-cover border border-foreground/[0.08]"
+        className="h-10 w-10 shrink-0 rounded-md object-cover border border-hairline"
       />
     );
   }
@@ -1299,15 +1299,15 @@ export default function Journal() {
   };
 
   return (
-    <div className="h-full pt-16 p-4 flex gap-4 overflow-hidden">
+    <div className="h-full pt-hud p-4 flex gap-4 overflow-hidden">
       {/* Sidebar — entry list */}
-      <aside className="w-80 shrink-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
+      <aside className="w-80 shrink-0 rounded-xl border border-hairline bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between gap-3 px-5 py-4">
           <div>
             <h1 className="font-['Playfair_Display'] text-2xl font-semibold text-foreground">
               Diary
             </h1>
-            <p className="font-mono text-[9px] tracking-[0.22em] uppercase text-muted-foreground/50 mt-1">
+            <p className="font-mono text-label tracking-caps-4 uppercase text-muted-foreground/50 mt-1">
               {entries.length} {entries.length === 1 ? "entry" : "entries"}
             </p>
           </div>
@@ -1321,7 +1321,7 @@ export default function Journal() {
           </button>
         </div>
 
-        <div className="border-b border-foreground/[0.08] px-2 py-2 space-y-0.5">
+        <div className="border-b border-hairline px-2 py-2 space-y-0.5">
           <button
             type="button"
             onClick={() => setActiveFolderId(null)}
@@ -1334,7 +1334,7 @@ export default function Journal() {
           >
             <FolderGlyphIcon className={activeFolderId === null ? "text-accent" : "text-muted-foreground/60"} />
             <span className="flex-1 truncate text-detail">All entries</span>
-            <span className="font-mono text-[9px] text-muted-foreground/40">{entries.length}</span>
+            <span className="font-mono text-label text-muted-foreground/40">{entries.length}</span>
           </button>
           {folders.map((folder) => (
             <div key={folder.id} className="group relative flex items-center">
@@ -1348,7 +1348,7 @@ export default function Journal() {
                     if (event.key === "Enter") void commitRenameFolder();
                     if (event.key === "Escape") setEditingFolderId(null);
                   }}
-                  className="flex-1 mx-1 bg-foreground/[0.04] border border-foreground/[0.1] rounded-lg px-2 py-1 text-detail text-foreground outline-none focus:border-accent/50"
+                  className="flex-1 mx-1 bg-foreground/[0.04] border border-hairline rounded-lg px-2 py-1 text-detail text-foreground outline-none focus:border-accent/50"
                 />
               ) : (
                 <button
@@ -1365,7 +1365,7 @@ export default function Journal() {
                     className={activeFolderId === folder.id ? "text-accent" : "text-muted-foreground/60"}
                   />
                   <span className="flex-1 truncate text-detail">{folder.name}</span>
-                  <span className="font-mono text-[9px] text-muted-foreground/40">
+                  <span className="font-mono text-label text-muted-foreground/40">
                     {folder.entryCount}
                   </span>
                 </button>
@@ -1412,13 +1412,13 @@ export default function Journal() {
                 }
               }}
               placeholder="Folder name"
-              className="mx-1 bg-foreground/[0.04] border border-foreground/[0.1] rounded-lg px-2 py-1 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50"
+              className="mx-1 bg-foreground/[0.04] border border-hairline rounded-lg px-2 py-1 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50"
             />
           ) : (
             <button
               type="button"
               onClick={() => setIsAddingFolder(true)}
-              className="w-full flex items-center gap-2 rounded-lg px-3 py-1.5 text-left font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.05]"
+              className="w-full flex items-center gap-2 rounded-lg px-3 py-1.5 text-left font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.05]"
             >
               <PlusIcon size="sm" />
               New folder
@@ -1426,7 +1426,7 @@ export default function Journal() {
           )}
         </div>
 
-        <div className="px-3 py-2.5 border-b border-foreground/[0.08] space-y-2">
+        <div className="px-3 py-2.5 border-b border-hairline space-y-2">
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/40 pointer-events-none">
               <SearchGlyphIcon />
@@ -1436,14 +1436,14 @@ export default function Journal() {
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Search entries…"
-              className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg pl-9 pr-2 py-1.5 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50 transition-colors"
+              className="w-full bg-foreground/[0.04] border border-hairline rounded-lg pl-9 pr-2 py-1.5 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50 transition-colors"
             />
           </div>
           <div className="flex items-center gap-3 px-1">
             <button
               type="button"
               onClick={() => setFiltersOpen((open) => !open)}
-              className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground hover:text-foreground"
+              className="inline-flex items-center gap-1 font-mono text-label uppercase tracking-caps-3 text-muted-foreground hover:text-foreground"
             >
               {filtersOpen ? "Hide filters" : "Filters"}
               {filtersOpen ? <ChevronUpIcon size="sm" /> : <ChevronDownIcon size="sm" />}
@@ -1452,13 +1452,13 @@ export default function Journal() {
               <button
                 type="button"
                 onClick={clearFilters}
-                className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60 hover:text-destructive"
+                className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60 hover:text-destructive"
               >
                 Clear
               </button>
             )}
             {hasActiveFilters && (
-              <span className="ml-auto font-mono text-[9px] text-muted-foreground/40">
+              <span className="ml-auto font-mono text-label text-muted-foreground/40">
                 {filteredEntries.length}/{entries.length}
               </span>
             )}
@@ -1468,7 +1468,7 @@ export default function Journal() {
               <select
                 value={moodFilter}
                 onChange={(event) => setMoodFilter(event.target.value)}
-                className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-2 py-1 text-[10px] text-muted-foreground outline-none"
+                className="w-full bg-foreground/[0.04] border border-hairline rounded-lg px-2 py-1 text-caption text-muted-foreground outline-none"
               >
                 <option value="">All moods</option>
                 {availableMoods.map((moodOption) => (
@@ -1482,14 +1482,14 @@ export default function Journal() {
                   type="date"
                   value={dateFrom}
                   onChange={(event) => setDateFrom(event.target.value)}
-                  className="flex-1 min-w-0 bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-1.5 py-1 text-[10px] text-muted-foreground outline-none"
+                  className="flex-1 min-w-0 bg-foreground/[0.04] border border-hairline rounded-lg px-1.5 py-1 text-caption text-muted-foreground outline-none"
                 />
                 <span className="text-muted-foreground/30">–</span>
                 <input
                   type="date"
                   value={dateTo}
                   onChange={(event) => setDateTo(event.target.value)}
-                  className="flex-1 min-w-0 bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-1.5 py-1 text-[10px] text-muted-foreground outline-none"
+                  className="flex-1 min-w-0 bg-foreground/[0.04] border border-hairline rounded-lg px-1.5 py-1 text-caption text-muted-foreground outline-none"
                 />
               </div>
             </div>
@@ -1506,14 +1506,14 @@ export default function Journal() {
           ) : entries.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-4 py-10 text-muted-foreground/30">
               <PencilGlyphIcon className="size-5" />
-              <p className="text-center font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground/40">
+              <p className="text-center font-mono text-caption tracking-caps-4 uppercase text-muted-foreground/40">
                 No entries yet
               </p>
             </div>
           ) : filteredEntries.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-4 py-10 text-muted-foreground/30">
               <SearchGlyphIcon />
-              <p className="text-center font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground/40">
+              <p className="text-center font-mono text-caption tracking-caps-4 uppercase text-muted-foreground/40">
                 No matching entries
               </p>
             </div>
@@ -1535,13 +1535,13 @@ export default function Journal() {
                       <EntryCoverThumbnail entry={entry} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/75">
+                          <span className="font-mono text-label tracking-caps-4 uppercase text-muted-foreground/75">
                             {formatEntryDate(entry.entryDate)}
                           </span>
                           {entry.mood && (
                             <span
                               className={cn(
-                                "rounded-full border px-1.5 py-0 text-[9px] uppercase tracking-[0.08em] truncate",
+                                "rounded-full border px-1.5 py-0 text-label uppercase tracking-caps-1 truncate",
                                 moodPillClass(entry.mood),
                               )}
                             >
@@ -1549,7 +1549,7 @@ export default function Journal() {
                             </span>
                           )}
                           {entry.attachments.length > 0 && (
-                            <span className="ml-auto font-mono text-[9px] text-muted-foreground/40 shrink-0">
+                            <span className="ml-auto font-mono text-label text-muted-foreground/40 shrink-0">
                               {entry.attachments.length} ⊕
                             </span>
                           )}
@@ -1585,7 +1585,7 @@ export default function Journal() {
             <button
               type="button"
               onClick={() => setEntryLimit((limit) => Math.min(MAX_ENTRY_LIMIT, limit + ENTRY_PAGE_SIZE))}
-              className="w-full mt-1 py-2.5 rounded-lg font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]"
+              className="w-full mt-1 py-2.5 rounded-lg font-mono text-label uppercase tracking-caps-3 text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]"
             >
               Load more
             </button>
@@ -1594,7 +1594,7 @@ export default function Journal() {
       </aside>
 
       {/* Canvas — write or read */}
-      <main className="flex-1 min-w-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
+      <main className="flex-1 min-w-0 rounded-xl border border-hairline bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
         {error && (
           <div className="mx-8 mt-4 border border-destructive/30 bg-destructive/10 px-3 py-2 text-detail text-destructive animate-fade-in">
             {error}
@@ -1611,7 +1611,7 @@ export default function Journal() {
                   <button
                     type="button"
                     onClick={() => void clearCoverAttachment(selectedEntry.id)}
-                    className="absolute top-11 right-11 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
+                    className="absolute top-11 right-11 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-hairline px-2 py-1 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-destructive"
                   >
                     <XIcon size="sm" />
                     Remove cover
@@ -1621,13 +1621,13 @@ export default function Journal() {
               <div className="px-8 py-10">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="font-mono text-[10px] tracking-[0.22em] uppercase text-muted-foreground/80">
+                  <p className="font-mono text-caption tracking-caps-4 uppercase text-muted-foreground/80">
                     {formatEntryDateLong(selectedEntry.entryDate)}
                   </p>
                   {selectedEntry.mood && (
                     <span
                       className={cn(
-                        "mt-2 inline-block rounded-full border px-2.5 py-0.5 text-[9px] uppercase tracking-[0.16em]",
+                        "mt-2 inline-block rounded-full border px-2.5 py-0.5 text-label uppercase tracking-caps-3",
                         moodPillClass(selectedEntry.mood),
                       )}
                     >
@@ -1648,7 +1648,7 @@ export default function Journal() {
                     <KebabGlyphIcon />
                   </button>
                   {entryMenuOpen && (
-                    <div className="absolute right-0 top-full mt-1 z-40 w-48 rounded-lg border border-foreground/[0.1] bg-card shadow-xl animate-fade-in overflow-hidden">
+                    <div className="absolute right-0 top-full mt-1 z-40 w-48 rounded-lg border border-hairline bg-card shadow-xl animate-fade-in overflow-hidden">
                       <button
                         type="button"
                         onClick={() => {
@@ -1772,7 +1772,7 @@ export default function Journal() {
                               <button
                                 type="button"
                                 onClick={() => void setCoverAttachment(selectedEntry.id, attachment.id)}
-                                className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 rounded-lg bg-background/80 border border-foreground/[0.1] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+                                className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 rounded-lg bg-background/80 border border-hairline px-1.5 py-0.5 font-mono text-micro uppercase tracking-caps-2 text-muted-foreground hover:text-foreground"
                               >
                                 <StarGlyphIcon className="size-3" />
                                 Set cover
@@ -1781,7 +1781,7 @@ export default function Journal() {
                             <button
                               type="button"
                               onClick={() => void handleOpenAttachment(attachment)}
-                              className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/60 hover:text-foreground"
+                              className="font-mono text-label uppercase tracking-caps-2 text-muted-foreground/60 hover:text-foreground"
                             >
                               {attachment.filename || attachment.kind} ·{" "}
                               {formatFileSize(attachment.sizeBytes)}
@@ -1802,13 +1802,13 @@ export default function Journal() {
                               key={attachment.id}
                               type="button"
                               onClick={() => void handleOpenAttachment(attachment)}
-                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-hairline bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-hairline-strong"
                             >
                               <Icon size="sm" className="shrink-0" />
                               <span className="truncate">
                                 {attachment.filename || attachment.kind}
                               </span>
-                              <span className="font-mono text-[9px] text-muted-foreground/50">
+                              <span className="font-mono text-label text-muted-foreground/50">
                                 {formatFileSize(attachment.sizeBytes)}
                               </span>
                             </button>
@@ -1827,7 +1827,7 @@ export default function Journal() {
             <div className="flex-1 min-h-0 overflow-y-auto">
               <div className="max-w-3xl mx-auto px-8 pt-10 pb-4 h-full flex flex-col">
                 <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex items-center gap-1.5 rounded-full bg-foreground/[0.06] border border-foreground/[0.1] px-2.5 py-1 font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/90 hover:text-foreground hover:border-foreground/[0.15] transition-colors">
+                  <label className="inline-flex items-center gap-1.5 rounded-full bg-foreground/[0.06] border border-hairline px-2.5 py-1 font-mono text-caption tracking-caps-2 uppercase text-muted-foreground/90 hover:text-foreground hover:border-hairline-strong transition-colors">
                     <CalendarGlyphIcon className="size-3.5" />
                     <input
                       type="date"
@@ -1842,10 +1842,10 @@ export default function Journal() {
                     onChange={(event) => setMood(event.target.value)}
                     placeholder="Mood"
                     maxLength={80}
-                    className="rounded-full bg-foreground/[0.06] border border-foreground/[0.1] px-2.5 py-1 font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/90 placeholder:text-muted-foreground/40 outline-none w-28 hover:border-foreground/[0.15] focus:border-accent/50 transition-colors"
+                    className="rounded-full bg-foreground/[0.06] border border-hairline px-2.5 py-1 font-mono text-caption tracking-caps-2 uppercase text-muted-foreground/90 placeholder:text-muted-foreground/40 outline-none w-28 hover:border-hairline-strong focus:border-accent/50 transition-colors"
                   />
                   {folders.length > 0 && (
-                    <label className="inline-flex items-center gap-1.5 rounded-full bg-foreground/[0.06] border border-foreground/[0.1] px-2.5 py-1 font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/90 hover:text-foreground hover:border-foreground/[0.15] transition-colors">
+                    <label className="inline-flex items-center gap-1.5 rounded-full bg-foreground/[0.06] border border-hairline px-2.5 py-1 font-mono text-caption tracking-caps-2 uppercase text-muted-foreground/90 hover:text-foreground hover:border-hairline-strong transition-colors">
                       <FolderGlyphIcon className="size-3.5" />
                       <select
                         value={entryFolderId ?? ""}
@@ -1867,13 +1867,13 @@ export default function Journal() {
                     <button
                       type="button"
                       onClick={cancelEdit}
-                      className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground hover:text-destructive"
+                      className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground hover:text-destructive"
                     >
                       Cancel
                     </button>
                   )}
                   {wordCount > 0 && (
-                    <span className="ml-auto font-mono text-[9px] tracking-[0.16em] uppercase text-muted-foreground/40">
+                    <span className="ml-auto font-mono text-label tracking-caps-3 uppercase text-muted-foreground/40">
                       {wordCount} {wordCount === 1 ? "word" : "words"}
                     </span>
                   )}
@@ -1894,12 +1894,12 @@ export default function Journal() {
                       <img
                         src={pendingCoverPreviewUrl}
                         alt=""
-                        className="w-full h-48 rounded-xl border border-foreground/[0.08] object-cover"
+                        className="w-full h-48 rounded-xl border border-hairline object-cover"
                       />
                       <button
                         type="button"
                         onClick={() => setPendingCoverFile(null)}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
+                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-hairline px-2 py-1 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-destructive"
                       >
                         <XIcon size="sm" />
                         Remove
@@ -1911,7 +1911,7 @@ export default function Journal() {
                       <button
                         type="button"
                         onClick={() => selectedEntry && void clearCoverAttachment(selectedEntry.id)}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
+                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-hairline px-2 py-1 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-destructive"
                       >
                         <XIcon size="sm" />
                         Remove cover
@@ -1921,10 +1921,10 @@ export default function Journal() {
                     <button
                       type="button"
                       onClick={() => coverFileInputRef.current?.click()}
-                      className="w-full h-12 rounded-xl border border-dashed border-foreground/[0.12] flex items-center justify-center gap-2 text-muted-foreground/60 hover:text-foreground hover:border-foreground/25 transition-colors"
+                      className="w-full h-12 rounded-xl border border-dashed border-hairline flex items-center justify-center gap-2 text-muted-foreground/60 hover:text-foreground hover:border-foreground/25 transition-colors"
                     >
                       <ImageIcon size="sm" />
-                      <span className="font-mono text-[10px] uppercase tracking-[0.14em]">
+                      <span className="font-mono text-caption uppercase tracking-caps-2">
                         Add cover image
                       </span>
                     </button>
@@ -1953,18 +1953,18 @@ export default function Journal() {
                   <EditorContent editor={editor} />
                   {isDraggingFile && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-background/80 pointer-events-none">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
+                      <p className="font-mono text-caption uppercase tracking-caps-4 text-accent">
                         Drop to attach
                       </p>
                     </div>
                   )}
                   {slashMenu && (
                     <div
-                      className="absolute z-40 w-56 rounded-lg border border-foreground/[0.1] bg-card shadow-xl animate-fade-in overflow-hidden"
+                      className="absolute z-40 w-56 rounded-lg border border-hairline bg-card shadow-xl animate-fade-in overflow-hidden"
                       style={{ top: slashMenu.top, left: slashMenu.left }}
                     >
                       {filteredSlashCommands.length === 0 ? (
-                        <p className="px-3 py-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
+                        <p className="px-3 py-2 font-mono text-label uppercase tracking-caps-2 text-muted-foreground/50">
                           No matching commands
                         </p>
                       ) : (
@@ -1987,7 +1987,7 @@ export default function Journal() {
                               >
                                 {command.icon}
                                 <span className="flex-1 truncate">{command.label}</span>
-                                <span className="font-mono text-[9px] text-muted-foreground/40">
+                                <span className="font-mono text-label text-muted-foreground/40">
                                   {command.hint}
                                 </span>
                               </button>
@@ -2000,8 +2000,8 @@ export default function Journal() {
                 </div>
 
                 {isEditingSelected && selectedEntry && selectedEntry.attachments.length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-foreground/[0.08]">
-                    <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/50 mb-2">
+                  <div className="mt-4 pt-4 border-t border-hairline">
+                    <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/50 mb-2">
                       Existing attachments
                     </p>
                     <div className="flex flex-wrap gap-1.5">
@@ -2012,7 +2012,7 @@ export default function Journal() {
                             key={attachment.id}
                             type="button"
                             onClick={() => void handleOpenAttachment(attachment)}
-                            className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                            className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-hairline bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-hairline-strong"
                           >
                             <Icon size="sm" className="shrink-0" />
                             <span className="truncate">
@@ -2028,10 +2028,10 @@ export default function Journal() {
             </div>
 
             {/* Bottom toolbar */}
-            <div className="border-t border-foreground/[0.08]">
+            <div className="border-t border-hairline">
               <div className="max-w-3xl mx-auto px-8 py-3 space-y-2">
                 {recording && (
-                  <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em] text-destructive">
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 font-mono text-label uppercase tracking-caps-3 text-destructive">
                     <span>{speechAvailable ? "Recording / transcribing" : "Recording"}</span>
                     {liveTranscript && (
                       <span className="ml-2 normal-case tracking-normal text-foreground/70">
@@ -2048,12 +2048,12 @@ export default function Journal() {
                       return (
                         <span
                           key={`${file.name}-${index}`}
-                          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground"
+                          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-hairline bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground"
                         >
                           <PendingFilePreview file={file} />
                           <Icon size="sm" className="shrink-0" />
                           <span className="truncate">{file.name}</span>
-                          <span className="font-mono text-[9px] text-muted-foreground/50">
+                          <span className="font-mono text-label text-muted-foreground/50">
                             {formatFileSize(file.size)}
                           </span>
                           <button
@@ -2072,7 +2072,7 @@ export default function Journal() {
 
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex flex-wrap gap-2">
-                    <label className="inline-flex items-center rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] cursor-pointer px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-mono text-muted-foreground hover:text-foreground hover:border-foreground/[0.15] transition-colors">
+                    <label className="inline-flex items-center rounded-lg border border-hairline bg-foreground/[0.03] cursor-pointer px-3 py-2 text-label uppercase tracking-caps-2 font-mono text-muted-foreground hover:text-foreground hover:border-hairline-strong transition-colors">
                       <FileIcon size="sm" className="mr-2" />
                       Attach
                       <input
@@ -2101,10 +2101,10 @@ export default function Journal() {
                       type="button"
                       onClick={() => void (recording ? stopRecording() : startRecording())}
                       className={cn(
-                        "inline-flex items-center rounded-lg border px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-mono transition-colors",
+                        "inline-flex items-center rounded-lg border px-3 py-2 text-label uppercase tracking-caps-2 font-mono transition-colors",
                         recording
                           ? "border-destructive/40 text-destructive bg-destructive/10"
-                          : "border-foreground/[0.08] bg-foreground/[0.03] text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]",
+                          : "border-hairline bg-foreground/[0.03] text-muted-foreground hover:text-foreground hover:border-hairline-strong",
                       )}
                     >
                       <MicIcon size="sm" className="mr-2" />
@@ -2116,7 +2116,7 @@ export default function Journal() {
                     onClick={handleSave}
                     disabled={!canSave || saving}
                     className={cn(
-                      "rounded-lg px-5 py-2 text-[9px] uppercase tracking-[0.12em] font-mono font-semibold transition-all",
+                      "rounded-lg px-5 py-2 text-label uppercase tracking-caps-2 font-mono font-semibold transition-all",
                       !canSave || saving
                         ? "bg-foreground/[0.06] text-muted-foreground/50 cursor-not-allowed"
                         : "bg-accent text-accent-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] hover:brightness-110 active:scale-95",
@@ -2137,7 +2137,7 @@ export default function Journal() {
           onClick={() => setPendingDeleteId(null)}
         >
           <div
-            className="rounded-xl border border-foreground/[0.1] bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
+            className="rounded-xl border border-hairline bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
             onClick={(event) => event.stopPropagation()}
           >
             <p className="text-body text-foreground">Delete this diary entry?</p>
@@ -2146,14 +2146,14 @@ export default function Journal() {
               <button
                 type="button"
                 onClick={() => setPendingDeleteId(null)}
-                className="rounded-lg border border-foreground/[0.08] px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                className="rounded-lg border border-hairline px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-foreground hover:border-hairline-strong"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void confirmDelete()}
-                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10"
+                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-destructive hover:bg-destructive/10"
               >
                 Delete
               </button>
@@ -2168,7 +2168,7 @@ export default function Journal() {
           onClick={() => setPendingDeleteFolderId(null)}
         >
           <div
-            className="rounded-xl border border-foreground/[0.1] bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
+            className="rounded-xl border border-hairline bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
             onClick={(event) => event.stopPropagation()}
           >
             <p className="text-body text-foreground">Delete this folder?</p>
@@ -2179,14 +2179,14 @@ export default function Journal() {
               <button
                 type="button"
                 onClick={() => setPendingDeleteFolderId(null)}
-                className="rounded-lg border border-foreground/[0.08] px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                className="rounded-lg border border-hairline px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-foreground hover:border-hairline-strong"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void confirmDeleteFolder()}
-                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10"
+                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-destructive hover:bg-destructive/10"
               >
                 Delete
               </button>

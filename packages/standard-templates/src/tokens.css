@@ -21,6 +21,12 @@
   --accent-2-foreground: oklch(1.0000 0 0);
   --destructive: oklch(0.5771 0.2152 27.3250);
   --destructive-foreground: oklch(1.0000 0 0);
+  --success: oklch(0.4800 0.1300 152.0000);
+  --success-foreground: oklch(1.0000 0 0);
+  --warning: oklch(0.4900 0.1400 72.0000);
+  --warning-foreground: oklch(1.0000 0 0);
+  /* One step dimmer than --muted-foreground, for de-emphasised UI chrome. */
+  --subtle-foreground: oklch(0.6100 0.0120 85.0000);
   --border: oklch(0.8434 0.0231 87.1621);
   --input: oklch(0.8434 0.0231 87.1621);
   --ring: oklch(0.6594 0.2086 17.0300);
@@ -78,6 +84,12 @@
   --accent-2-foreground: oklch(1.0000 0 0);
   --destructive: oklch(0.6368 0.2078 25.3313);
   --destructive-foreground: oklch(1.0000 0 0);
+  --success: oklch(0.7200 0.1450 152.0000);
+  --success-foreground: oklch(0.1913 0 0);
+  --warning: oklch(0.7900 0.1450 78.0000);
+  --warning-foreground: oklch(0.1913 0 0);
+  /* One step dimmer than --muted-foreground, for de-emphasised UI chrome. */
+  --subtle-foreground: oklch(0.4600 0.0100 82.0000);
   --border: oklch(0.2931 0 0);
   --input: oklch(0.2931 0 0);
   --ring: oklch(0.6594 0.2086 17.0300);
@@ -134,6 +146,11 @@
   --color-accent-2-foreground: var(--accent-2-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -155,8 +172,10 @@
   --font-mono: var(--font-mono);
   --font-serif: var(--font-serif);
 
-  --radius-sm: calc(var(--radius) - 6px);
-  --radius-md: calc(var(--radius) - 4px);
+  /* max() guards the subtractive steps: --radius is 0px, so the raw calc()
+     yields a negative length that browsers discard as invalid. */
+  --radius-sm: max(0px, calc(var(--radius) - 6px));
+  --radius-md: max(0px, calc(var(--radius) - 4px));
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 8px);
@@ -176,6 +195,47 @@
   --tracking-wide: calc(var(--tracking-normal) + 0.025em);
   --tracking-wider: calc(var(--tracking-normal) + 0.05em);
   --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+
+  /* ── Caps tracking scale ──────────────────────────────────────────────
+     The tracking-tight…widest ramp above tops out at 0.11em, far too tight
+     for the uppercase mono labels this UI is built from. These five steps
+     are that vocabulary; use them instead of arbitrary tracking-[…em]. */
+  --tracking-caps-1: 0.10em;
+  --tracking-caps-2: 0.14em;
+  --tracking-caps-3: 0.18em;
+  --tracking-caps-4: 0.22em;
+  --tracking-caps-5: 0.30em;
+
+  /* ── Type scale ───────────────────────────────────────────────────────
+     Declared here rather than as plain .text-* classes so they behave like
+     real Tailwind utilities (variants, ordering, arbitrary-value overrides). */
+  --text-nano: 0.4375rem;   /*  7px */
+  --text-micro: 0.5rem;     /*  8px */
+  --text-label: 0.5625rem;  /*  9px */
+  --text-caption: 0.625rem; /* 10px */
+  --text-detail: 0.6875rem; /* 11px */
+  --text-body: 0.75rem;     /* 12px */
+  --text-ui: 0.875rem;      /* 14px */
+  --text-title: 1rem;       /* 16px */
+
+  /* ── Hairlines ────────────────────────────────────────────────────────
+     Translucent rules that read correctly over the atmosphere layer, where
+     the opaque --border token would not. Three steps, not fifteen. */
+  --color-hairline-faint: color-mix(in oklch, var(--foreground) 6%, transparent);
+  --color-hairline: color-mix(in oklch, var(--foreground) 9%, transparent);
+  --color-hairline-strong: color-mix(in oklch, var(--foreground) 16%, transparent);
+
+  /* ── HUD metrics ──────────────────────────────────────────────────────
+     The floating HUD bar is 4rem tall; content that must clear it starts at
+     --spacing-hud-gap. Replaces per-page pt-16 / pt-20 / top-[84px] guesses. */
+  --spacing-hud: 4rem;
+  --spacing-hud-gap: 5rem;
+
+  /* ── Motion ───────────────────────────────────────────────────────────── */
+  --ease-hud: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── Glass ────────────────────────────────────────────────────────────── */
+  --blur-glass: 40px;
 }
 
 @layer base {
@@ -188,14 +248,34 @@
   }
 }
 
-/* ── Type scale ── */
-.text-micro   { font-size: 0.5rem; }
-.text-label   { font-size: 0.5625rem; }
-.text-caption { font-size: 0.625rem; }
-.text-detail  { font-size: 0.6875rem; }
-.text-body    { font-size: 0.75rem; }
-.text-ui      { font-size: 0.875rem; }
-.text-title   { font-size: 1rem; }
+/* The type scale now lives in @theme inline above, as --text-*, so that the
+   text-micro…text-title utilities support variants and ordering like any
+   other Tailwind utility. */
+
+/* ── Focus ────────────────────────────────────────────────────────────────
+   A visible keyboard focus ring, applied once, globally. Nav and controls
+   previously drove their affordances from mouse events only, leaving
+   keyboard users with no indication of position. */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────
+   This UI leans on motion — pulses, glows, blinking cursors, the lift. For a
+   viewer who has asked the OS for less of it, collapse the decoration rather
+   than removing the states themselves: everything still changes, it just
+   arrives immediately. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* ── Selection ── */
 ::selection {
@@ -210,12 +290,12 @@
 
 /* ── Global transition easing ── */
 input, textarea, button, a {
-  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-timing-function: var(--ease-hud);
 }
 
 /* ── Utility classes ── */
 .hw-btn {
-  @apply inline-flex items-center justify-center font-mono uppercase tracking-[0.22em] border border-border bg-card rounded-none transition-all;
+  @apply inline-flex items-center justify-center font-mono uppercase tracking-caps-4 border border-border bg-card rounded-none transition-all;
 }
 .hw-btn:hover { @apply border-muted-foreground/30 bg-secondary; }
 .hw-btn:active { @apply translate-y-[1px]; }
@@ -225,7 +305,124 @@ input, textarea, button, a {
 
 .hw-module { @apply bg-card border border-border rounded-none; }
 
-.hw-label { @apply font-mono text-[9px] uppercase tracking-[0.25em] text-muted-foreground; }
+.hw-label { @apply font-mono text-label uppercase tracking-caps-4 text-muted-foreground; }
+
+/* ── Glass ────────────────────────────────────────────────────────────────
+   The single definition of the floating translucent surface. Previously this
+   was copy-pasted as a local `const glass` in 13 files, with the blur drifting
+   across 24/32/36/40/44px and the shadow across four different ramps. */
+.hw-glass {
+  background: color-mix(in oklch, var(--background) 25%, transparent);
+  backdrop-filter: blur(var(--blur-glass));
+  -webkit-backdrop-filter: blur(var(--blur-glass));
+  border: 1px solid var(--color-hairline);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+}
+/* Deeper shadow for surfaces that float well above the page, e.g. the chat
+   composer and modal panels. */
+.hw-glass-raised {
+  box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.28);
+}
+
+/* The dashboard node card. Softer and slightly rounded — the canvas is the one
+   place this UI departs from the zero-radius rule, deliberately, so the cards
+   read as objects on a surface rather than regions of the page. */
+.hw-glass-panel {
+  background: color-mix(in oklch, var(--background) 25%, transparent);
+  backdrop-filter: blur(var(--blur-glass));
+  -webkit-backdrop-filter: blur(var(--blur-glass));
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 4px 28px rgba(0, 0, 0, 0.18);
+}
+
+/* ── Lift ─────────────────────────────────────────────────────────────────
+   The signature offset-and-drop-shadow affordance: the element steps toward
+   the viewer and casts a hard shadow *away* from the screen edge it is docked
+   to, which is why there is a direction per variant rather than one lift.
+
+   Declared in CSS so it responds to :focus-visible as well as :hover. The
+   eight hand-rolled onMouseEnter/onMouseLeave implementations this replaces
+   were mouse-only — the primary navigation had no keyboard affordance at all.
+
+   `data-lifted="true"` holds the lifted state, for the active nav item. */
+[class*="hw-lift"] {
+  transition: transform 150ms var(--ease-hud), box-shadow 150ms var(--ease-hud);
+}
+
+/* Up-left: for elements docked to the bottom/right of the screen. */
+.hw-lift:hover,
+.hw-lift:focus-visible,
+.hw-lift:has(:focus-visible),
+.hw-lift[data-lifted="true"],
+.hw-lift[aria-current="page"] {
+  transform: translate(-2px, -4px);
+  box-shadow:
+    2px 4px 0 var(--accent-dark),
+    4px 8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
+}
+
+/* Down-right: for elements docked to the top-left corner. */
+.hw-lift-dr:hover,
+.hw-lift-dr:focus-visible,
+.hw-lift-dr:has(:focus-visible),
+.hw-lift-dr[data-lifted="true"],
+.hw-lift-dr[aria-current="page"] {
+  transform: translate(2px, 4px);
+  box-shadow:
+    -2px -4px 0 var(--accent-dark),
+    -4px -8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
+}
+
+/* Up-right: for elements docked to the bottom-left corner. */
+.hw-lift-ur:hover,
+.hw-lift-ur:focus-visible,
+.hw-lift-ur:has(:focus-visible),
+.hw-lift-ur[data-lifted="true"],
+.hw-lift-ur[aria-current="page"] {
+  transform: translate(2px, -4px);
+  box-shadow:
+    -2px 4px 0 var(--accent-dark),
+    -4px 8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
+}
+
+/* Rightward, for items in a vertical rail (settings nav, memory list). */
+.hw-lift-x:hover,
+.hw-lift-x:focus-visible,
+.hw-lift-x:has(:focus-visible) {
+  transform: translateX(6px);
+  box-shadow: -2px 2px 0 rgba(0, 0, 0, 0.30), -3px 3px 0 rgba(0, 0, 0, 0.15);
+}
+.hw-lift-x[data-lifted="true"],
+.hw-lift-x[aria-current="page"] {
+  transform: translateX(12px);
+  box-shadow:
+    -2px 2px 0 var(--accent-dark),
+    -4px 4px 0 color-mix(in oklch, var(--accent-dark) 55%, transparent);
+}
+
+/* Accent-shadowed rail variant, for list rows on the atmosphere layer. */
+.hw-lift-x-accent:hover,
+.hw-lift-x-accent:focus-visible,
+.hw-lift-x-accent:has(:focus-visible) {
+  transform: translateX(6px);
+  box-shadow:
+    -2px 2px 0 var(--accent-dark),
+    -4px 4px 0 color-mix(in oklch, var(--accent-dark) 50%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="hw-lift"] {
+    transition: none;
+  }
+  [class*="hw-lift"]:hover,
+  [class*="hw-lift"]:focus-visible,
+  [class*="hw-lift"]:has(:focus-visible),
+  [class*="hw-lift"][data-lifted="true"],
+  [class*="hw-lift"][aria-current="page"] {
+    transform: none;
+  }
+}
 
 /* ── Animations ── */
 @keyframes thinking-dot {

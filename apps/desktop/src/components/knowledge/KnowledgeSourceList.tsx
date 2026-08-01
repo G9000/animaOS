@@ -20,15 +20,15 @@ export default function KnowledgeSourceList({
     <section className="flex h-full min-h-0 flex-col border-r border-border bg-card/35">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
         <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/45">
+          <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/45">
             Sources
           </p>
-          <p className="font-mono text-[9px] text-muted-foreground/30">
+          <p className="font-mono text-label text-muted-foreground/30">
             {sources.length} indexed
           </p>
         </div>
         {loading && (
-          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/40">
+          <span className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/40">
             Loading
           </span>
         )}
@@ -36,7 +36,7 @@ export default function KnowledgeSourceList({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {sources.length === 0 && !loading ? (
-          <div className="px-4 py-6 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/35">
+          <div className="px-4 py-6 font-mono text-caption uppercase tracking-caps-3 text-muted-foreground/35">
             No sources
           </div>
         ) : (
@@ -59,11 +59,11 @@ export default function KnowledgeSourceList({
                     <p className="truncate text-sm font-medium text-foreground">
                       {source.title || source.sourceUri}
                     </p>
-                    <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground/35">
+                    <p className="mt-1 truncate font-mono text-label text-muted-foreground/35">
                       {source.kind} / {source.status}
                     </p>
                   </div>
-                  <span className="shrink-0 font-mono text-[9px] text-muted-foreground/30">
+                  <span className="shrink-0 font-mono text-label text-muted-foreground/30">
                     #{source.id}
                   </span>
                 </div>
@@ -72,7 +72,7 @@ export default function KnowledgeSourceList({
                 <button
                   type="button"
                   onClick={() => onCompile(source.id)}
-                  className="inline-flex items-center gap-1 border border-border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/60 hover:border-primary/40 hover:text-primary"
+                  className="inline-flex items-center gap-1 border border-border px-2 py-1 font-mono text-label uppercase tracking-caps-2 text-muted-foreground/60 hover:border-primary/40 hover:text-primary"
                   title="Queue compile"
                 >
                   <Icons.Refresh />

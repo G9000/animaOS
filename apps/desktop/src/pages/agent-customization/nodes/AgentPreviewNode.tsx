@@ -80,22 +80,22 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
       <NodeShell title="Biography" icon={<DocumentIcon size="sm" className="text-foreground/25" />} onClose={onClose} required className="w-[340px]">
         <div className="p-4 space-y-4">
           <div className="flex items-center gap-3">
-            <div className="h-12 w-12 shrink-0 overflow-hidden border border-foreground/[0.08] bg-foreground/[0.04]">
+            <div className="h-12 w-12 shrink-0 overflow-hidden border border-hairline bg-foreground/[0.04]">
               <img src={avatarUrl} alt={agentName} className="h-full w-full object-cover" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[14px] font-semibold leading-snug text-foreground truncate">
+              <p className="text-ui font-semibold leading-snug text-foreground truncate">
                 {agentName || "Anima"}
               </p>
               {(dominantEmotion || relationship) && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {dominantEmotion && (
-                    <span className="font-mono text-[7px] tracking-[0.18em] uppercase px-1.5 py-0.5 border border-accent/35 text-accent/70">
+                    <span className="font-mono text-nano tracking-caps-3 uppercase px-1.5 py-0.5 border border-accent/35 text-accent/70">
                       {dominantEmotion}
                     </span>
                   )}
                   {relationship && (
-                    <span className="font-mono text-[7px] tracking-[0.16em] uppercase px-1.5 py-0.5 bg-foreground/[0.04] text-foreground/40 border border-foreground/[0.06]">
+                    <span className="font-mono text-nano tracking-caps-3 uppercase px-1.5 py-0.5 bg-foreground/[0.04] text-foreground/40 border border-hairline-faint">
                       {relationship}
                     </span>
                   )}
@@ -109,10 +109,10 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
               className="pl-3"
               style={{ borderLeft: "2px solid color-mix(in oklch, var(--accent) 32%, transparent)" }}
             >
-              <h3 className="font-mono text-[7.5px] tracking-[0.26em] uppercase text-accent/55 mb-1.5">
+              <h3 className="font-mono text-[7.5px] tracking-caps-4 uppercase text-accent/55 mb-1.5">
                 Core Identity
               </h3>
-              <p className="text-[11px] leading-relaxed text-foreground/60 line-clamp-3">
+              <p className="text-detail leading-relaxed text-foreground/60 line-clamp-3">
                 {excerpt(identity, "Identity has not been written yet.")}
               </p>
             </section>
@@ -121,10 +121,10 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
               className="pl-3"
               style={{ borderLeft: "2px solid color-mix(in oklch, var(--accent) 20%, transparent)" }}
             >
-              <h3 className="font-mono text-[7.5px] tracking-[0.26em] uppercase text-accent/45 mb-1.5">
+              <h3 className="font-mono text-[7.5px] tracking-caps-4 uppercase text-accent/45 mb-1.5">
                 Voice & Persona
               </h3>
-              <p className="text-[11px] leading-relaxed text-foreground/60 line-clamp-3">
+              <p className="text-detail leading-relaxed text-foreground/60 line-clamp-3">
                 {excerpt(persona, "Voice and persona have not been written yet.")}
               </p>
             </section>
@@ -133,7 +133,7 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
               className="flex items-center justify-between gap-3 pt-2.5"
               style={{ borderTop: "1px solid color-mix(in oklch, var(--foreground) 6%, transparent)" }}
             >
-              <span className="font-mono text-[7.5px] tracking-[0.26em] uppercase text-foreground/25">
+              <span className="font-mono text-[7.5px] tracking-caps-4 uppercase text-foreground/25">
                 Agent Birthday
               </span>
               <span className="font-mono text-[9.5px] text-foreground/50 text-right">
@@ -147,8 +147,8 @@ export function AgentPreviewNode({ data, id }: NodeProps<BiographyPreviewNode>) 
                 style={{ borderTop: "1px solid color-mix(in oklch, var(--foreground) 6%, transparent)" }}
               >
                 {optionalProfileSections.map((section) => (
-                  <section key={section.title} className="pl-3 border-l border-foreground/[0.08]">
-                    <h3 className="font-mono text-[7.5px] tracking-[0.22em] uppercase text-foreground/35 mb-1">
+                  <section key={section.title} className="pl-3 border-l border-hairline">
+                    <h3 className="font-mono text-[7.5px] tracking-caps-4 uppercase text-foreground/35 mb-1">
                       {section.title}
                     </h3>
                     <p className="text-[10.5px] leading-relaxed text-foreground/55 line-clamp-2">

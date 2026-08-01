@@ -264,15 +264,15 @@ function MessagePills({ pills }: { pills?: ChatMessage["pills"] }) {
           >
             {filePill ? (
               <>
-                <span className="font-mono text-[8px] uppercase tracking-[0.15em] text-foreground/65">
+                <span className="font-mono text-micro uppercase tracking-caps-2 text-foreground/65">
                   {prefix}
                 </span>
-                <span className="max-w-[240px] truncate text-[11px] leading-none">
+                <span className="max-w-[240px] truncate text-detail leading-none">
                   {pill.label}
                 </span>
               </>
             ) : (
-              <span className="font-mono text-[8px] uppercase tracking-[0.15em]">
+              <span className="font-mono text-micro uppercase tracking-caps-2">
                 {pill.label}
               </span>
             )}
@@ -362,7 +362,7 @@ function AttachmentImage({
 
   if (missing || !src) {
     return (
-      <div className="aspect-video border border-primary-foreground/20 bg-primary-foreground/10 font-mono text-[9px] tracking-wider text-primary-foreground/60 flex items-center justify-center">
+      <div className="aspect-video border border-primary-foreground/20 bg-primary-foreground/10 font-mono text-label tracking-wider text-primary-foreground/60 flex items-center justify-center">
         IMAGE MISSING
       </div>
     );
@@ -375,20 +375,20 @@ function AttachmentImage({
       <img
         src={src}
         alt={attachment.filename || "Attached image"}
-        className="h-20 w-auto max-w-[140px] object-cover border border-foreground/[0.08]"
+        className="h-20 w-auto max-w-[140px] object-cover border border-hairline"
       />
       {canManage && (
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-background/85 px-1 py-1 opacity-0 transition-opacity group-hover/image:opacity-100">
           <button
             type="button"
-            className="font-mono text-[8px] uppercase tracking-[0.12em] text-foreground/70 hover:text-foreground"
+            className="font-mono text-micro uppercase tracking-caps-2 text-foreground/70 hover:text-foreground"
             onClick={() => onRemove?.(messageId, attachment)}
           >
             remove
           </button>
           <button
             type="button"
-            className="font-mono text-[8px] uppercase tracking-[0.12em] text-destructive/80 hover:text-destructive"
+            className="font-mono text-micro uppercase tracking-caps-2 text-destructive/80 hover:text-destructive"
             onClick={() => onForget?.(messageId, attachment)}
           >
             forget
@@ -1694,18 +1694,18 @@ export default function Chat() {
                 <button
                   type="button"
                   onClick={handleDebugInAnimus}
-                  className="font-mono text-[9px] tracking-[0.18em] uppercase text-yellow-400/70 hover:text-yellow-400 border border-yellow-400/30 hover:border-yellow-400/60 px-3 py-1.5 bg-yellow-400/5 hover:bg-yellow-400/10 transition-all"
+                  className="font-mono text-label tracking-caps-3 uppercase text-yellow-400/70 hover:text-yellow-400 border border-yellow-400/30 hover:border-yellow-400/60 px-3 py-1.5 bg-yellow-400/5 hover:bg-yellow-400/10 transition-all"
                 >
                   ⬡ DEBUG IN ANIMUS
                 </button>
-                <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                   sends trace as context
                 </span>
               </div>
             )}
 
           {error && (
-            <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-[11px] tracking-wider">
+            <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-detail tracking-wider">
               ERR: {error}
             </div>
           )}

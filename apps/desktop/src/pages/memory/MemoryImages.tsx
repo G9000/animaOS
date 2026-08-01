@@ -130,10 +130,10 @@ function ImageDetail({
     return (
       <div className="h-full flex items-center justify-center px-8 text-center">
         <div className="space-y-3">
-          <div className="mx-auto size-12 border border-foreground/[0.08] bg-foreground/[0.03] grid place-items-center text-foreground/25">
+          <div className="mx-auto size-12 border border-hairline bg-foreground/[0.03] grid place-items-center text-foreground/25">
             <ImageIcon size="sm" />
           </div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-foreground/35">
+          <p className="font-mono text-caption uppercase tracking-caps-4 text-foreground/35">
             Select an image
           </p>
         </div>
@@ -143,8 +143,8 @@ function ImageDetail({
 
   return (
     <div className="h-full min-h-0 flex flex-col">
-      <div className="shrink-0 flex items-center justify-between border-b border-foreground/[0.08] px-4 py-3">
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-foreground/40">
+      <div className="shrink-0 flex items-center justify-between border-b border-hairline px-4 py-3">
+        <span className="font-mono text-caption uppercase tracking-caps-4 text-foreground/40">
           Detail
         </span>
         <button
@@ -158,7 +158,7 @@ function ImageDetail({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        <div className="w-full overflow-hidden border border-foreground/[0.08] bg-foreground/[0.03]">
+        <div className="w-full overflow-hidden border border-hairline bg-foreground/[0.03]">
           <AuthImage
             src={image.url}
             alt={imageTitle(image)}
@@ -170,73 +170,73 @@ function ImageDetail({
           <h2 className="text-xl font-light tracking-[-0.02em] text-foreground break-words">
             {imageTitle(image)}
           </h2>
-          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/35">
+          <p className="font-mono text-caption uppercase tracking-caps-3 text-foreground/35">
             {image.source} / {formatImageDate(image.createdAt)}
           </p>
         </div>
 
-        <div className="grid gap-2 font-mono text-[10px] text-foreground/45">
+        <div className="grid gap-2 font-mono text-caption text-foreground/45">
           {imageReferenceCount(image) > 1 && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Memories</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Memories</span>
               <span className="text-right">{imageReferenceCount(image)}</span>
             </div>
           )}
-          <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-            <span className="uppercase tracking-[0.16em] text-foreground/25">Source</span>
+          <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+            <span className="uppercase tracking-caps-3 text-foreground/25">Source</span>
             <span className="text-right truncate">{sourceLabel(image)}</span>
           </div>
           {image.filename && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">File</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">File</span>
               <span className="text-right truncate">{image.filename}</span>
             </div>
           )}
           {image.mimeType && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Type</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Type</span>
               <span className="text-right truncate">{image.mimeType}</span>
             </div>
           )}
           {image.sizeBytes != null && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Size</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Size</span>
               <span className="text-right">{formatByteSize(image.sizeBytes)}</span>
             </div>
           )}
           {image.threadId != null && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Thread</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Thread</span>
               <span className="text-right">{image.threadId}</span>
             </div>
           )}
           {image.messageId != null && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Message</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Message</span>
               <span className="text-right">{image.messageId}</span>
             </div>
           )}
           {image.entryId != null && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Entry</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Entry</span>
               <span className="text-right">{image.entryId}</span>
             </div>
           )}
           {image.retentionState && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">State</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">State</span>
               <span className="text-right truncate">{image.retentionState}</span>
             </div>
           )}
           {image.sha256 && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Fingerprint</span>
-              <span className="text-right font-mono text-[9px] truncate">{image.sha256}</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Fingerprint</span>
+              <span className="text-right font-mono text-label truncate">{image.sha256}</span>
             </div>
           )}
           {image.assetId != null && (
-            <div className="flex items-center justify-between gap-4 border-b border-foreground/[0.06] py-2">
-              <span className="uppercase tracking-[0.16em] text-foreground/25">Asset</span>
+            <div className="flex items-center justify-between gap-4 border-b border-hairline-faint py-2">
+              <span className="uppercase tracking-caps-3 text-foreground/25">Asset</span>
               <span className="text-right">{image.assetId}</span>
             </div>
           )}
@@ -246,7 +246,7 @@ function ImageDetail({
           <button
             type="button"
             onClick={() => onOpenSource(image)}
-            className="inline-flex items-center gap-2 border border-foreground/[0.12] bg-foreground/[0.04] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.08]"
+            className="inline-flex items-center gap-2 border border-hairline bg-foreground/[0.04] px-3 py-2 font-mono text-caption uppercase tracking-caps-3 text-foreground/60 hover:text-foreground hover:bg-foreground/[0.08]"
           >
             {imageReferenceCount(image) > 1 ? "Open latest source" : "Open source"}
             <ArrowRightIcon size="sm" />
@@ -256,7 +256,7 @@ function ImageDetail({
               type="button"
               disabled={forgetting}
               onClick={() => onForget(image)}
-              className="border border-destructive/20 bg-destructive/5 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-destructive/75 hover:text-destructive hover:bg-destructive/10 disabled:opacity-45"
+              className="border border-destructive/20 bg-destructive/5 px-3 py-2 font-mono text-caption uppercase tracking-caps-3 text-destructive/75 hover:text-destructive hover:bg-destructive/10 disabled:opacity-45"
             >
               {forgetting ? "Forgetting" : "Forget"}
             </button>
@@ -266,10 +266,10 @@ function ImageDetail({
         {image.references.length > 1 && (
           <div className="space-y-2 pt-1">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/35">
+              <h3 className="font-mono text-caption uppercase tracking-caps-3 text-foreground/35">
                 Related sources
               </h3>
-              <span className="font-mono text-[10px] text-foreground/25">
+              <span className="font-mono text-caption text-foreground/25">
                 {image.references.length}
               </span>
             </div>
@@ -279,17 +279,17 @@ function ImageDetail({
                   key={`${reference.id}:${index}`}
                   type="button"
                   onClick={() => onOpenSource(reference)}
-                  className="group flex min-w-0 items-center justify-between gap-3 border border-foreground/[0.08] bg-foreground/[0.025] px-3 py-2 text-left hover:border-foreground/[0.18] hover:bg-foreground/[0.05]"
+                  className="group flex min-w-0 items-center justify-between gap-3 border border-hairline bg-foreground/[0.025] px-3 py-2 text-left hover:border-hairline-strong hover:bg-foreground/[0.05]"
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-[11px] text-foreground/70">
+                    <span className="block truncate text-detail text-foreground/70">
                       {sourceReferenceLabel(reference)}
                     </span>
-                    <span className="mt-0.5 block truncate font-mono text-[9px] uppercase tracking-[0.12em] text-foreground/35">
+                    <span className="mt-0.5 block truncate font-mono text-label uppercase tracking-caps-2 text-foreground/35">
                       {sourceReferenceDetail(reference)}
                     </span>
                     {metadataString(reference) && (
-                      <span className="mt-0.5 block truncate font-mono text-[8px] text-foreground/30">
+                      <span className="mt-0.5 block truncate font-mono text-micro text-foreground/30">
                         {metadataString(reference)}
                       </span>
                     )}
@@ -399,13 +399,13 @@ export default function MemoryImages() {
   }, []);
 
   return (
-    <div className="h-full pt-16 overflow-hidden">
+    <div className="h-full pt-hud overflow-hidden">
       <div className="flex h-full min-h-0 bg-background/10">
         <section className="min-w-0 flex-1 flex flex-col">
-          <header className="shrink-0 border-b border-foreground/[0.08] bg-background/35 backdrop-blur-[32px] px-5 py-4">
+          <header className="shrink-0 border-b border-hairline bg-background/35 backdrop-blur-[32px] px-5 py-4">
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div className="space-y-1">
-                <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-foreground/35">
+                <div className="flex items-center gap-2 font-mono text-caption uppercase tracking-caps-4 text-foreground/35">
                   <ImageIcon size="sm" />
                   Memory / Images
                 </div>
@@ -419,17 +419,17 @@ export default function MemoryImages() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Search images"
-                  className="h-9 w-48 border border-foreground/[0.10] bg-background/40 px-3 font-mono text-[11px] text-foreground outline-none placeholder:text-foreground/25 focus:border-accent/45"
+                  className="h-9 w-48 border border-hairline bg-background/40 px-3 font-mono text-detail text-foreground outline-none placeholder:text-foreground/25 focus:border-accent/45"
                 />
 
-                <div className="flex border border-foreground/[0.10] bg-background/30">
+                <div className="flex border border-hairline bg-background/30">
                   {SOURCE_FILTERS.map((candidate) => (
                     <button
                       key={candidate}
                       type="button"
                       onClick={() => setSource(candidate)}
                       className={cn(
-                        "h-9 px-3 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors",
+                        "h-9 px-3 font-mono text-caption uppercase tracking-caps-2 transition-colors",
                         source === candidate
                           ? "bg-accent text-accent-foreground"
                           : "text-foreground/40 hover:text-foreground hover:bg-foreground/[0.05]",
@@ -443,14 +443,14 @@ export default function MemoryImages() {
                   ))}
                 </div>
 
-                <div className="flex border border-foreground/[0.10] bg-background/30">
+                <div className="flex border border-hairline bg-background/30">
                   {DENSITIES.map((candidate) => (
                     <button
                       key={candidate}
                       type="button"
                       onClick={() => setDensity(candidate)}
                       className={cn(
-                        "h-9 px-3 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors",
+                        "h-9 px-3 font-mono text-caption uppercase tracking-caps-2 transition-colors",
                         density === candidate
                           ? "bg-foreground text-background"
                           : "text-foreground/40 hover:text-foreground hover:bg-foreground/[0.05]",
@@ -465,7 +465,7 @@ export default function MemoryImages() {
           </header>
 
           {error && (
-            <div className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-5 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-destructive/80">
+            <div className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-5 py-2 font-mono text-caption uppercase tracking-caps-3 text-destructive/80">
               {error}
             </div>
           )}
@@ -476,17 +476,17 @@ export default function MemoryImages() {
                 {Array.from({ length: 18 }).map((_, index) => (
                   <div
                     key={index}
-                    className="aspect-square animate-pulse bg-foreground/[0.04] border border-foreground/[0.06]"
+                    className="aspect-square animate-pulse bg-foreground/[0.04] border border-hairline-faint"
                   />
                 ))}
               </div>
             ) : filteredImages.length === 0 ? (
               <div className="h-full min-h-[320px] grid place-items-center">
                 <div className="text-center space-y-3">
-                  <div className="mx-auto size-12 border border-foreground/[0.08] bg-foreground/[0.03] grid place-items-center text-foreground/25">
+                  <div className="mx-auto size-12 border border-hairline bg-foreground/[0.03] grid place-items-center text-foreground/25">
                     <ImageIcon size="sm" />
                   </div>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-foreground/35">
+                  <p className="font-mono text-caption uppercase tracking-caps-4 text-foreground/35">
                     No images
                   </p>
                 </div>
@@ -505,7 +505,7 @@ export default function MemoryImages() {
                         "group relative aspect-square overflow-hidden border bg-foreground/[0.03] text-left transition-colors",
                         selected
                           ? "border-accent"
-                          : "border-foreground/[0.08] hover:border-foreground/[0.22]",
+                          : "border-hairline hover:border-hairline-strong",
                       )}
                     >
                       <AuthImage
@@ -517,7 +517,7 @@ export default function MemoryImages() {
                       <div className="absolute left-2 top-2 flex gap-1">
                         <span
                           className={cn(
-                            "px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] backdrop-blur",
+                            "px-1.5 py-0.5 font-mono text-micro uppercase tracking-caps-2 backdrop-blur",
                             image.source === "chat"
                               ? "bg-accent/85 text-accent-foreground"
                               : "bg-foreground/85 text-background",
@@ -527,15 +527,15 @@ export default function MemoryImages() {
                         </span>
                       </div>
                       {imageReferenceCount(image) > 1 && (
-                        <span className="absolute right-2 top-2 bg-background/85 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-foreground/70 backdrop-blur">
+                        <span className="absolute right-2 top-2 bg-background/85 px-1.5 py-0.5 font-mono text-micro uppercase tracking-caps-2 text-foreground/70 backdrop-blur">
                           {imageReferenceCount(image)} memories
                         </span>
                       )}
                       <div className="absolute inset-x-0 bottom-0 p-2 opacity-0 transition-opacity group-hover:opacity-100">
-                        <p className="truncate font-mono text-[10px] text-foreground">
+                        <p className="truncate font-mono text-caption text-foreground">
                           {imageTitle(image)}
                         </p>
-                        <p className="mt-0.5 truncate font-mono text-[8px] uppercase tracking-[0.12em] text-foreground/55">
+                        <p className="mt-0.5 truncate font-mono text-micro uppercase tracking-caps-2 text-foreground/55">
                           {formatImageDate(image.createdAt)}
                         </p>
                       </div>
@@ -547,7 +547,7 @@ export default function MemoryImages() {
           </main>
         </section>
 
-        <aside className="hidden w-[360px] shrink-0 border-l border-foreground/[0.08] bg-background/30 backdrop-blur-[32px] xl:block">
+        <aside className="hidden w-[360px] shrink-0 border-l border-hairline bg-background/30 backdrop-blur-[32px] xl:block">
           <ImageDetail
             image={selectedImage}
             forgetting={forgettingAssetId === selectedImage?.assetId}

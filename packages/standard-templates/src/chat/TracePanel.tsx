@@ -33,19 +33,19 @@ export function TracePanel({ events }: TracePanelProps) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3 mb-1">
-        <div className="font-mono text-[9px] text-yellow-500/50 tracking-widest">
+        <div className="font-mono text-label text-yellow-500/50 tracking-widest">
           TRACE ({events.length})
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => void handleCopy("json")}
-            className="font-mono text-[9px] text-yellow-500/40 hover:text-yellow-500 tracking-wider transition-colors"
+            className="font-mono text-label text-yellow-500/40 hover:text-yellow-500 tracking-wider transition-colors"
           >
             {copyState === "json" ? "COPIED" : "COPY JSON"}
           </button>
           <button
             onClick={() => void handleCopy("text")}
-            className="font-mono text-[9px] text-yellow-500/40 hover:text-yellow-500 tracking-wider transition-colors"
+            className="font-mono text-label text-yellow-500/40 hover:text-yellow-500 tracking-wider transition-colors"
           >
             {copyState === "text" ? "COPIED" : "COPY TEXT"}
           </button>
@@ -81,12 +81,12 @@ function TraceEntry({ event }: { event: TraceEvent }) {
         };
 
     return (
-      <div className="font-mono text-[11px]">
+      <div className="font-mono text-detail">
         <button
           onClick={() => setExpanded((v) => !v)}
           className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
         >
-          <span className="text-cyan-400/70 text-[9px]">STEP</span>
+          <span className="text-cyan-400/70 text-label">STEP</span>
           <span className="text-muted-foreground/70">
             #{event.stepIndex ?? 0}
           </span>
@@ -94,12 +94,12 @@ function TraceEntry({ event }: { event: TraceEvent }) {
             {isRequest ? "request" : "result"}
           </span>
           <span className="text-muted-foreground/45">{summary}</span>
-          <span className="text-muted-foreground/30 text-[9px] ml-auto">
+          <span className="text-muted-foreground/30 text-label ml-auto">
             {expanded ? "▼" : "▶"}
           </span>
         </button>
         {expanded && (
-          <pre className="text-[10px] text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-48 whitespace-pre-wrap break-words">
+          <pre className="text-caption text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-48 whitespace-pre-wrap break-words">
             {formatJson(details)}
           </pre>
         )}
@@ -109,8 +109,8 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "warning") {
     return (
-      <div className="font-mono text-[10px] text-amber-400/70 flex items-start gap-2 px-1 py-0.5">
-        <span className="text-[9px]">WARN</span>
+      <div className="font-mono text-caption text-amber-400/70 flex items-start gap-2 px-1 py-0.5">
+        <span className="text-label">WARN</span>
         <span className="text-amber-300/80">
           #{event.stepIndex ?? 0} {event.code}
         </span>
@@ -123,19 +123,19 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "tool_call") {
     return (
-      <div className="font-mono text-[11px]">
+      <div className="font-mono text-detail">
         <button
           onClick={() => setExpanded((v) => !v)}
           className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
         >
-          <span className="text-yellow-500/70 text-[9px]">CALL</span>
+          <span className="text-yellow-500/70 text-label">CALL</span>
           <span className="text-muted-foreground">{event.name}</span>
-          <span className="text-muted-foreground/30 text-[9px] ml-auto">
+          <span className="text-muted-foreground/30 text-label ml-auto">
             {expanded ? "▼" : "▶"}
           </span>
         </button>
         {expanded && event.arguments != null && (
-          <pre className="text-[10px] text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-40 whitespace-pre-wrap break-words">
+          <pre className="text-caption text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-40 whitespace-pre-wrap break-words">
             {formatJson(event.arguments)}
           </pre>
         )}
@@ -145,23 +145,23 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "tool_return") {
     return (
-      <div className="font-mono text-[11px]">
+      <div className="font-mono text-detail">
         <button
           onClick={() => setExpanded((v) => !v)}
           className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
         >
           <span
-            className={`text-[9px] ${event.isError ? "text-destructive" : "text-emerald-500/70"}`}
+            className={`text-label ${event.isError ? "text-destructive" : "text-emerald-500/70"}`}
           >
             {event.isError ? "ERR" : "RET"}
           </span>
           <span className="text-muted-foreground">{event.name}</span>
-          <span className="text-muted-foreground/30 text-[9px] ml-auto">
+          <span className="text-muted-foreground/30 text-label ml-auto">
             {expanded ? "▼" : "▶"}
           </span>
         </button>
         {expanded && event.output && (
-          <pre className="text-[10px] text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-40 whitespace-pre-wrap break-words">
+          <pre className="text-caption text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-40 whitespace-pre-wrap break-words">
             {event.output}
           </pre>
         )}
@@ -171,8 +171,8 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "usage") {
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
-        <span className="text-blue-400/60 text-[9px]">TOKENS</span>
+      <div className="font-mono text-caption text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
+        <span className="text-blue-400/60 text-label">TOKENS</span>
         <span>{event.promptTokens ?? 0}in</span>
         <span>{event.completionTokens ?? 0}out</span>
         {event.reasoningTokens ? (
@@ -190,8 +190,8 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "timing") {
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
-        <span className="text-blue-400/60 text-[9px]">TIME</span>
+      <div className="font-mono text-caption text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
+        <span className="text-blue-400/60 text-label">TIME</span>
         {event.stepIndex != null && <span>#{event.stepIndex}</span>}
         {event.ttftMs != null && <span>ttft:{event.ttftMs}ms</span>}
         {event.llmDurationMs != null && (
@@ -210,12 +210,12 @@ function TraceEntry({ event }: { event: TraceEvent }) {
       : null;
 
     return (
-      <div className="font-mono text-[11px]">
+      <div className="font-mono text-detail">
         <button
           onClick={() => setExpanded((value) => !value)}
           className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
         >
-          <span className="text-emerald-500/60 text-[9px]">DONE</span>
+          <span className="text-emerald-500/60 text-label">DONE</span>
           {event.provider && (
             <span className="text-muted-foreground/60">{event.provider}</span>
           )}
@@ -238,7 +238,7 @@ function TraceEntry({ event }: { event: TraceEvent }) {
             </span>
           )}
           {event.retrieval && (
-            <span className="text-muted-foreground/30 text-[9px] ml-auto">
+            <span className="text-muted-foreground/30 text-label ml-auto">
               {expanded ? "▼" : "▶"}
             </span>
           )}
@@ -254,22 +254,22 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "approval_pending") {
     return (
-      <div className="font-mono text-[11px]">
+      <div className="font-mono text-detail">
         <button
           onClick={() => setExpanded((v) => !v)}
           className="flex items-center gap-1.5 text-left w-full hover:bg-input/30 px-1 py-0.5 -mx-1 transition-colors"
         >
-          <span className="text-orange-400/70 text-[9px]">WAIT</span>
+          <span className="text-orange-400/70 text-label">WAIT</span>
           <span className="text-muted-foreground">{event.name}</span>
           {event.runId != null && (
             <span className="text-muted-foreground/30">run:{event.runId}</span>
           )}
-          <span className="text-muted-foreground/30 text-[9px] ml-auto">
+          <span className="text-muted-foreground/30 text-label ml-auto">
             {expanded ? "▼" : "▶"}
           </span>
         </button>
         {expanded && (
-          <pre className="text-[10px] text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-40 whitespace-pre-wrap break-words">
+          <pre className="text-caption text-muted-foreground/50 bg-input/20 px-2 py-1.5 mt-0.5 overflow-x-auto max-h-40 whitespace-pre-wrap break-words">
             {formatJson({
               runId: event.runId,
               name: event.name,
@@ -284,8 +284,8 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "cancelled") {
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
-        <span className="text-rose-400/70 text-[9px]">CANCEL</span>
+      <div className="font-mono text-caption text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
+        <span className="text-rose-400/70 text-label">CANCEL</span>
         {event.runId != null && <span>run:{event.runId}</span>}
       </div>
     );
@@ -293,8 +293,8 @@ function TraceEntry({ event }: { event: TraceEvent }) {
 
   if (event.type === "memory_state") {
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
-        <span className="text-indigo-400/60 text-[9px]">MEMORY</span>
+      <div className="font-mono text-caption text-muted-foreground/40 flex items-center gap-2 px-1 py-0.5">
+        <span className="text-indigo-400/60 text-label">MEMORY</span>
         <span>updated</span>
       </div>
     );

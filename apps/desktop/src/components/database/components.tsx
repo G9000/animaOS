@@ -19,12 +19,12 @@ export function StatCard({
     >
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-[11px] text-muted-foreground uppercase tracking-wide">
+          <p className="text-detail text-muted-foreground uppercase tracking-wide">
             {title}
           </p>
           <p className="text-2xl font-semibold mt-1">{value}</p>
           {subtitle && (
-            <p className="text-[11px] text-muted-foreground/60 mt-0.5">{subtitle}</p>
+            <p className="text-detail text-muted-foreground/60 mt-0.5">{subtitle}</p>
           )}
         </div>
         <div className="text-muted-foreground/40">{icon}</div>
@@ -45,7 +45,7 @@ export function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+      className={`px-2.5 py-1 text-detail rounded border transition-colors ${
         active
           ? "bg-card border-border text-foreground"
           : "border-transparent text-muted-foreground hover:text-foreground"
@@ -134,7 +134,7 @@ export function Button({
   };
 
   const sizes = {
-    sm: "px-2 py-1 text-[10px]",
+    sm: "px-2 py-1 text-caption",
     md: "px-3 py-1.5 text-xs",
   };
 

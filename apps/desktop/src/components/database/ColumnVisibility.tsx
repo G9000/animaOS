@@ -26,18 +26,18 @@ export function ColumnVisibilityPanel({
 
       <div className="absolute right-0 top-full mt-1 w-48 bg-card border border-border rounded-none z-50 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
         <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-          <span className="text-[11px] font-medium">Toggle Columns</span>
+          <span className="text-detail font-medium">Toggle Columns</span>
           <div className="flex gap-1">
             <button
               onClick={onShowAll}
-              className="text-[10px] text-primary hover:underline"
+              className="text-caption text-primary hover:underline"
             >
               All
             </button>
             <span className="text-muted-foreground">|</span>
             <button
               onClick={onHideAll}
-              className="text-[10px] text-primary hover:underline"
+              className="text-caption text-primary hover:underline"
             >
               None
             </button>

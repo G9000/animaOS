@@ -1,5 +1,6 @@
 import { forwardRef, useState } from "react";
 import { cn } from "../utils/cn";
+import { glass } from "../styles";
 import { Button } from "../primitives/Button";
 import { EyeIcon } from "../icons/EyeIcon";
 import { EyeOffIcon } from "../icons/EyeOffIcon";
@@ -42,14 +43,14 @@ export const StandardInput = forwardRef<HTMLInputElement, StandardInputProps>(
     return (
       <div
         className={cn(
-          "bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]",
+          glass,
           className,
         )}
       >
         <div className="bg-accent px-2 py-1">
           <p
             key={label}
-            className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+            className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase animate-fade-in"
           >
             {label}
           </p>

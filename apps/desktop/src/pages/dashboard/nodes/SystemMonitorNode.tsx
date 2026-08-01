@@ -91,16 +91,16 @@ function StatRow({
   const hasSecondary = hint || secondary;
 
   return (
-    <div className="flex items-start gap-3 px-4 py-3 border-b border-foreground/[0.04] last:border-0">
+    <div className="flex items-start gap-3 px-4 py-3 border-b border-hairline-faint last:border-0">
       <span className={cn("shrink-0 mt-[3px]", color)}>{icon}</span>
 
       <div className="flex-1 min-w-0 flex flex-col gap-2">
         {/* Primary row: label left, value right */}
         <div className="flex items-baseline justify-between gap-3">
-          <span className="font-mono text-[8px] tracking-[0.25em] uppercase text-foreground/30 leading-none shrink-0">
+          <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30 leading-none shrink-0">
             {label}
           </span>
-          <span className={cn("font-mono text-[12px] leading-none tabular-nums", color)}>
+          <span className={cn("font-mono text-body leading-none tabular-nums", color)}>
             {value}
           </span>
         </div>
@@ -108,11 +108,11 @@ function StatRow({
         {/* Secondary row: hint left, secondary right */}
         {hasSecondary && (
           <div className="flex items-baseline justify-between gap-3 -mt-0.5">
-            <span className="font-mono text-[7px] text-foreground/20 leading-none truncate">
+            <span className="font-mono text-nano text-foreground/20 leading-none truncate">
               {hint ?? ""}
             </span>
             {secondary && (
-              <span className="font-mono text-[8px] text-foreground/30 leading-none tabular-nums">
+              <span className="font-mono text-micro text-foreground/30 leading-none tabular-nums">
                 {secondary}
               </span>
             )}

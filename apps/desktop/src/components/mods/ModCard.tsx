@@ -38,7 +38,7 @@ export default function ModCard({
       }`}
     >
       <div className="flex items-center justify-between mb-2">
-        <span className="font-mono text-[10px] tracking-widest uppercase text-foreground">
+        <span className="font-mono text-caption tracking-widest uppercase text-foreground">
           {id}
         </span>
         <StatusBadge status={status} />
@@ -46,29 +46,29 @@ export default function ModCard({
 
       <div className="flex flex-wrap gap-1 min-h-[18px]">
         {hasConfigSchema && (
-          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+          <span className="font-mono text-nano tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
             CFG
           </span>
         )}
         {hasSetupGuide && (
-          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+          <span className="font-mono text-nano tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
             SETUP
           </span>
         )}
         {toolsCount > 0 && (
-          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+          <span className="font-mono text-nano tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
             TOOLS {toolsCount}
           </span>
         )}
         {canUninstall && (
-          <span className="font-mono text-[7px] tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
+          <span className="font-mono text-nano tracking-widest text-muted-foreground/40 border border-border px-1.5 py-0.5">
             USER
           </span>
         )}
       </div>
 
       <div className="flex items-center justify-between mt-3">
-        <span className="font-mono text-[8px] text-muted-foreground/40">v{version}</span>
+        <span className="font-mono text-micro text-muted-foreground/40">v{version}</span>
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -88,7 +88,7 @@ export default function ModCard({
         </button>
       </div>
       {error && (
-        <div className="font-mono text-[8px] text-destructive mt-2 truncate" title={error}>
+        <div className="font-mono text-micro text-destructive mt-2 truncate" title={error}>
           {error}
         </div>
       )}

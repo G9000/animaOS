@@ -1,7 +1,6 @@
 import { type ReactNode, type RefObject } from "react";
-import { type AttachedImageItem, type AttachedDocumentItem, PromptInput, ChevronRightIcon, cn } from "@anima/standard-templates";
+import { type AttachedImageItem, type AttachedDocumentItem, PromptInput, ChevronRightIcon, cn, glassRaised as glass } from "@anima/standard-templates";
 
-const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]";
 
 interface ChatLayoutProps {
   children: ReactNode;
@@ -54,7 +53,7 @@ export function ChatLayout({
           <button
             onClick={onToggleSidebar}
             title="Show threads"
-            className={cn(glass, "absolute top-[84px] left-3 z-50 px-2 py-1 flex items-center justify-center text-foreground/40 hover:text-foreground transition-colors uppercase text-sm")}
+            className={cn(glass, "absolute top-[calc(var(--spacing-hud-gap)+0.25rem)] left-3 z-50 px-2 py-1 flex items-center justify-center text-foreground/40 hover:text-foreground transition-colors uppercase text-sm")}
           >
             Show threads
             <ChevronRightIcon size="sm" className="mt-0.5" />
@@ -65,7 +64,7 @@ export function ChatLayout({
         <div
           ref={scrollContainerRef}
           onScroll={onScroll}
-          className="flex-1 overflow-y-auto overscroll-contain px-3 md:px-5 lg:px-8 pt-20 scroll-smooth"
+          className="flex-1 overflow-y-auto overscroll-contain px-3 md:px-5 lg:px-8 pt-hud-gap scroll-smooth"
         >
           {/* Inner wrapper carries the bottom padding so scrollHeight includes it (avoids Chrome overflow+padding bug) */}
           <div className="max-w-5xl mx-auto w-full space-y-2 pb-[500px]">
@@ -77,7 +76,7 @@ export function ChatLayout({
         {showScrollButton && (
           <button
             onClick={onScrollToBottom}
-            className={cn(glass, "absolute left-1/2 -translate-x-1/2 bottom-24 md:bottom-28 z-20 font-mono text-[9px] px-3 py-1.5 text-foreground/50 hover:text-foreground transition-colors tracking-[0.2em] uppercase")}
+            className={cn(glass, "absolute left-1/2 -translate-x-1/2 bottom-24 md:bottom-28 z-20 font-mono text-label px-3 py-1.5 text-foreground/50 hover:text-foreground transition-colors tracking-caps-4 uppercase")}
           >
             LATEST ↓
           </button>
@@ -100,7 +99,7 @@ export function ChatLayout({
             />
             <div className="mt-2 h-4 flex items-center justify-center">
               {streaming && (
-                <span className="font-mono text-[8px] text-accent/50 tracking-[0.2em] uppercase animate-pulse">
+                <span className="font-mono text-micro text-accent/50 tracking-caps-4 uppercase animate-pulse">
                   processing...
                 </span>
               )}

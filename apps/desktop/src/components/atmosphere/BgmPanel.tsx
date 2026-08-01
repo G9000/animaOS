@@ -30,16 +30,16 @@ export function BgmPanel({ bgm, className }: BgmPanelProps) {
             t.id === bgm.currentId ? "text-accent" : "text-muted-foreground hover:text-foreground",
           )}
         >
-          <span className="font-mono text-[9px] w-3 shrink-0">
+          <span className="font-mono text-label w-3 shrink-0">
             {t.id === bgm.currentId ? "●" : "○"}
           </span>
           <div className="flex items-baseline gap-1.5 flex-1 min-w-0">
             {t.trackNum && (
-              <span className="font-mono text-[7.5px] tracking-[0.1em] opacity-50 shrink-0">
+              <span className="font-mono text-[7.5px] tracking-caps-1 opacity-50 shrink-0">
                 {t.trackNum}
               </span>
             )}
-            <span className="font-mono text-[8px] tracking-[0.12em] uppercase truncate">
+            <span className="font-mono text-micro tracking-caps-2 uppercase truncate">
               {t.name}
             </span>
           </div>
@@ -59,14 +59,14 @@ export function BgmPanel({ bgm, className }: BgmPanelProps) {
       <div className="px-4 py-1 flex flex-col gap-1">
         <button
           onClick={() => fileRef.current?.click()}
-          className="font-mono text-[8px] tracking-[0.14em] uppercase text-muted-foreground hover:text-foreground text-left py-1.5 transition-colors"
+          className="font-mono text-micro tracking-caps-2 uppercase text-muted-foreground hover:text-foreground text-left py-1.5 transition-colors"
         >
           ↑ add your own audio
         </button>
         <input ref={fileRef} type="file" accept="audio/*" className="hidden" onChange={handleFile} />
         <button
           onClick={bgm.resetBgm}
-          className="font-mono text-[8px] tracking-[0.14em] uppercase text-muted-foreground/70 hover:text-muted-foreground text-left py-1.5 transition-colors"
+          className="font-mono text-micro tracking-caps-2 uppercase text-muted-foreground/70 hover:text-muted-foreground text-left py-1.5 transition-colors"
         >
           ↺ reset to defaults
         </button>

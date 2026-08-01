@@ -26,7 +26,7 @@ export function SchemaView({
           Columns ({schemaColumns.length})
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-[12px]">
+          <table className="w-full text-body">
             <thead className="bg-card">
               <tr className="text-muted-foreground">
                 <th className="px-4 py-2 text-left">Name</th>
@@ -71,7 +71,7 @@ export function SchemaView({
             {schemaIndexes.map((idx) => (
               <span
                 key={idx}
-                className="px-2 py-1 text-[11px] bg-input border border-border rounded"
+                className="px-2 py-1 text-detail bg-input border border-border rounded"
               >
                 {idx}
               </span>

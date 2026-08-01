@@ -67,10 +67,10 @@ export function ChatInput({
           onClick={onToggleCollapse}
           className="w-full flex items-center justify-between px-4 py-1.5 group hover:bg-card/80 transition-colors"
         >
-          <span className="font-mono text-[9px] tracking-widest text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors">
+          <span className="font-mono text-label tracking-widest text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors">
             INPUT
           </span>
-          <span className="font-mono text-[9px] text-muted-foreground/25 group-hover:text-muted-foreground/50 transition-colors">
+          <span className="font-mono text-label text-muted-foreground/25 group-hover:text-muted-foreground/50 transition-colors">
             {collapsed ? "▲" : "▼"}
           </span>
         </button>
@@ -94,7 +94,7 @@ export function ChatInput({
             )}
           >
             {/* Prompt indicator */}
-            <div className="font-mono text-[11px] text-primary/50 pt-1 select-none shrink-0 tracking-wider">
+            <div className="font-mono text-detail text-primary/50 pt-1 select-none shrink-0 tracking-wider">
               &gt;_
             </div>
 
@@ -117,7 +117,7 @@ export function ChatInput({
               onClick={onSubmit}
               disabled={!canSubmit}
               className={cn(
-                "font-mono text-[10px] tracking-widest px-3 py-1.5 border transition-all duration-150 shrink-0 self-end",
+                "font-mono text-caption tracking-widest px-3 py-1.5 border transition-all duration-150 shrink-0 self-end",
                 canSubmit
                   ? "border-primary/60 text-primary hover:bg-primary/5"
                   : "border-border text-muted-foreground/30",
@@ -129,11 +129,11 @@ export function ChatInput({
 
           {/* Helper text */}
           <div className="mt-1.5 px-1 flex items-center justify-between">
-            <span className="font-mono text-[9px] text-muted-foreground/25 tracking-wider">
+            <span className="font-mono text-label text-muted-foreground/25 tracking-wider">
               ENTER to send · SHIFT+ENTER for newline
             </span>
             {disabled && (
-              <span className="font-mono text-[9px] text-primary/40 tracking-wider animate-pulse">
+              <span className="font-mono text-label text-primary/40 tracking-wider animate-pulse">
                 PROCESSING...
               </span>
             )}

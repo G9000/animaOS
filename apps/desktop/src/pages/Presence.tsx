@@ -147,26 +147,26 @@ export default function Presence() {
   };
 
   return (
-    <div className="h-full overflow-y-auto pt-16">
+    <div className="h-full overflow-y-auto pt-hud">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-6 py-8">
         <header className="flex flex-col gap-4 border-b border-border pb-6 md:flex-row md:items-end md:justify-between">
           <div className="space-y-2">
-            <h1 className="font-mono text-sm uppercase tracking-[0.18em]">
+            <h1 className="font-mono text-sm uppercase tracking-caps-3">
               PRESENCE
             </h1>
-            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground/50">
+            <p className="font-mono text-caption uppercase tracking-caps-4 text-muted-foreground/50">
               SURFACES, SIGNALS, AND DEFAULT INTENT
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/55">
+            <span className="font-mono text-caption uppercase tracking-caps-3 text-muted-foreground/55">
               {loading ? "Syncing" : `${activeCount}/6 Active`}
             </span>
             <button
               type="button"
               onClick={handleSave}
               disabled={saving || loading || notLoaded}
-              className="border border-primary bg-input px-5 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-foreground transition-colors hover:bg-background disabled:opacity-45"
+              className="border border-primary bg-input px-5 py-2 font-mono text-caption uppercase tracking-caps-3 text-foreground transition-colors hover:bg-background disabled:opacity-45"
             >
               {saving ? "Saving" : saved ? "Saved" : "Save"}
             </button>
@@ -189,7 +189,7 @@ export default function Presence() {
                 <span className="block text-sm text-foreground">
                   {config.enabled ? "Available" : "Paused"}
                 </span>
-                <span className="block font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/50">
+                <span className="block font-mono text-caption uppercase tracking-caps-3 text-muted-foreground/50">
                   Master State
                 </span>
               </span>
@@ -263,7 +263,7 @@ export default function Presence() {
                     disabled={notLoaded || !config.enabled || !config.initiativeEnabled}
                     onChange={(value) => updateDraft({ quietHoursStart: value })}
                   />
-                  <span className="font-mono text-[10px] text-muted-foreground/40">
+                  <span className="font-mono text-caption text-muted-foreground/40">
                     TO
                   </span>
                   <HourSelect
@@ -287,7 +287,7 @@ export default function Presence() {
                       type="button"
                       disabled={notLoaded || !config.enabled}
                       onClick={() => updateDraft({ dreamSharing: option.value })}
-                      className={`px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors disabled:opacity-45 ${
+                      className={`px-3 py-1.5 font-mono text-caption uppercase tracking-caps-3 transition-colors disabled:opacity-45 ${
                         config.dreamSharing === option.value
                           ? "bg-primary/15 text-foreground"
                           : "text-muted-foreground hover:text-foreground"
@@ -302,10 +302,10 @@ export default function Presence() {
 
             <section className="space-y-3">
               <div className="flex items-center justify-between gap-3">
-                <h2 className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                <h2 className="font-mono text-detail uppercase tracking-caps-3 text-muted-foreground">
                   Default Direction
                 </h2>
-                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/40">
+                <span className="font-mono text-caption uppercase tracking-caps-3 text-muted-foreground/40">
                   {(config.customInstruction ?? "").length}/500
                 </span>
               </div>
@@ -341,7 +341,7 @@ function ControlGroup({
 }) {
   return (
     <section className="space-y-3">
-      <h2 className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+      <h2 className="font-mono text-detail uppercase tracking-caps-3 text-muted-foreground">
         {title}
       </h2>
       <div className="divide-y divide-border border-y border-border">

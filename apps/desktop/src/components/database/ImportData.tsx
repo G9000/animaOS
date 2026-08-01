@@ -253,7 +253,7 @@ export function ImportData({ tableName, columns, onImport }: ImportDataProps) {
                   </div>
 
                   <div className="border border-border rounded overflow-hidden max-h-48 overflow-auto">
-                    <table className="w-full text-[11px]">
+                    <table className="w-full text-detail">
                       <thead className="bg-input sticky top-0">
                         <tr>
                           <th className="px-2 py-1 text-left w-16">Status</th>

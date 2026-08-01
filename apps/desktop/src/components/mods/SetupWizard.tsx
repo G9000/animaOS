@@ -51,7 +51,7 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
             {/* Step indicator */}
             <div className="flex flex-col items-center">
               <div
-                className={`w-6 h-6 rounded-none flex items-center justify-center text-[10px] font-mono ${
+                className={`w-6 h-6 rounded-none flex items-center justify-center text-caption font-mono ${
                   isDone
                     ? "bg-success text-black"
                     : isActive
@@ -68,14 +68,14 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
 
             {/* Step content */}
             <div className={`flex-1 pb-6 ${isDone ? "opacity-50" : ""}`}>
-              <div className="font-mono text-[9px] tracking-widest text-muted-foreground/60 uppercase mb-1">
+              <div className="font-mono text-label tracking-widest text-muted-foreground/60 uppercase mb-1">
                 STEP {step.step} — {step.title}
               </div>
 
               {isActive && (
                 <div className="mt-2 space-y-3">
                   {step.instructions && (
-                    <p className="font-mono text-[10px] text-muted-foreground/50 leading-relaxed">
+                    <p className="font-mono text-caption text-muted-foreground/50 leading-relaxed">
                       {step.instructions}
                     </p>
                   )}
@@ -88,7 +88,7 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
                           placeholder={field.label}
                           value={String(values[step.field!] ?? "")}
                           onChange={(e) => set(step.field!, e.target.value)}
-                          className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
+                          className="w-full bg-input border border-border px-2 py-1.5 font-mono text-caption text-foreground focus:border-primary/50 outline-none"
                         />
                       ) : field.type === "enum" ? (
                         <div className="flex gap-1">
@@ -96,7 +96,7 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
                             <button
                               key={opt}
                               onClick={() => set(step.field!, opt)}
-                              className={`font-mono text-[9px] px-2 py-1 border transition-colors ${
+                              className={`font-mono text-label px-2 py-1 border transition-colors ${
                                 values[step.field!] === opt
                                   ? "border-primary text-primary"
                                   : "border-border text-muted-foreground/40 hover:text-foreground"
@@ -112,7 +112,7 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
                           placeholder={field.label}
                           value={String(values[step.field!] ?? "")}
                           onChange={(e) => set(step.field!, e.target.value)}
-                          className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
+                          className="w-full bg-input border border-border px-2 py-1.5 font-mono text-caption text-foreground focus:border-primary/50 outline-none"
                         />
                       )}
                     </div>
@@ -126,7 +126,7 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
                         healthStatus === "checking" ? "checking" : "stopped"
                       } />
                       {healthStatus === "fail" && (
-                        <span className="font-mono text-[8px] text-destructive">
+                        <span className="font-mono text-micro text-destructive">
                           Connection failed. Check your token.
                         </span>
                       )}
@@ -135,7 +135,7 @@ export default function SetupWizard({ steps, schema, onComplete, onHealthCheck }
 
                   <button
                     onClick={handleNext}
-                    className="font-mono text-[9px] tracking-wider text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors"
+                    className="font-mono text-label tracking-wider text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors"
                   >
                     {i === steps.length - 1 ? "FINISH" : "NEXT"}
                   </button>

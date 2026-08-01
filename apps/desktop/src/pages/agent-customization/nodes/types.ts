@@ -112,7 +112,7 @@ export type Section = "identity" | "soul" | "persona" | "user_directive";
 export const TA = [
   "nodrag nowheel w-full resize-y",
   "bg-secondary/40 border border-border/40",
-  "px-3 py-2.5 font-mono text-[11px] leading-relaxed text-foreground/75",
+  "px-3 py-2.5 font-mono text-detail leading-relaxed text-foreground/75",
   "outline-none focus:border-border transition-colors",
   "placeholder:text-muted-foreground/30 disabled:opacity-40",
 ].join(" ");

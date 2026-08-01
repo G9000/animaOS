@@ -338,7 +338,7 @@ function PieChart({ data }: { data: ChartData }) {
 function StatCard({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="p-3 bg-input rounded border border-border/50 text-center">
-      <div className="text-[10px] text-muted-foreground uppercase">{label}</div>
+      <div className="text-caption text-muted-foreground uppercase">{label}</div>
       <div className="text-lg font-semibold mt-1">{value}</div>
     </div>
   );

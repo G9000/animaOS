@@ -31,7 +31,7 @@ export function CellRenderer({
         type="text"
         value={editValue ?? ""}
         onChange={(e) => onEditChange?.(e.target.value)}
-        className="w-full min-w-[60px] bg-input border border-border rounded px-1.5 py-0.5 text-[12px] outline-none focus:border-primary/40"
+        className="w-full min-w-[60px] bg-input border border-border rounded px-1.5 py-0.5 text-body outline-none focus:border-primary/40"
         autoFocus
       />
     );
@@ -40,14 +40,14 @@ export function CellRenderer({
   // Null/undefined/empty handling
   if (value === null)
     return (
-      <span className="text-muted-foreground/40 italic text-[11px]">NULL</span>
+      <span className="text-muted-foreground/40 italic text-detail">NULL</span>
     );
   if (value === undefined)
     return (
-      <span className="text-muted-foreground/40 italic text-[11px]">undefined</span>
+      <span className="text-muted-foreground/40 italic text-detail">undefined</span>
     );
   if (value === "")
-    return <span className="text-muted-foreground/30 text-[11px]">(empty)</span>;
+    return <span className="text-muted-foreground/30 text-detail">(empty)</span>;
 
   const str = String(value);
 
@@ -56,7 +56,7 @@ export function CellRenderer({
     return (
       <div className="flex items-center gap-1.5">
         <span
-          className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 border border-amber-500/30 cursor-help"
+          className="inline-flex items-center gap-1 text-caption px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 border border-amber-500/30 cursor-help"
           title="Encrypted data - decryption key not available"
         >
           <Icons.Lock />
@@ -78,11 +78,11 @@ export function CellRenderer({
             onClick={onToggleExpand}
             className="text-left w-full hover:text-primary transition-colors"
           >
-            <span className="text-primary/60 text-[10px] mr-1">
+            <span className="text-primary/60 text-caption mr-1">
               {isExpanded ? "▼" : "▶"} JSON
             </span>
             {isExpanded ? (
-              <pre className="mt-1 text-[10px] text-muted-foreground/80 whitespace-pre-wrap break-all font-mono">
+              <pre className="mt-1 text-caption text-muted-foreground/80 whitespace-pre-wrap break-all font-mono">
                 {formatted}
               </pre>
             ) : (
@@ -107,7 +107,7 @@ export function CellRenderer({
           className="text-left hover:text-primary transition-colors truncate"
         >
           {str.slice(0, 80)}…
-          <span className="text-muted-foreground/50 text-[10px] ml-1">
+          <span className="text-muted-foreground/50 text-caption ml-1">
             [+{str.length - 80}]
           </span>
         </button>
@@ -122,7 +122,7 @@ export function CellRenderer({
         {str}
         <button
           onClick={onToggleExpand}
-          className="text-muted-foreground/50 text-[10px] ml-2 hover:text-primary"
+          className="text-muted-foreground/50 text-caption ml-2 hover:text-primary"
         >
           collapse
         </button>

@@ -1,6 +1,6 @@
 import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { cn, Button, StandardInput, InfoIcon } from "@anima/standard-templates";
+import { cn, Button, StandardInput, InfoIcon, glass } from "@anima/standard-templates";
 import { PersonaTemplateCards } from "../../components/PersonaTemplateCards";
 import { S, TEMPLATES, HINTS } from "./constants";
 import { useWelcomeScreen } from "./useWelcomeScreen";
@@ -60,8 +60,6 @@ export default function Init() {
     step !== S.CONFIRM &&
     !done;
 
-  const glass =
-    "bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]";
 
   const hint = (text: string) => (
     <div className={cn(glass, "border-accent px-3 py-1.5 animate-fade-in flex items-center gap-2")}>
@@ -94,7 +92,7 @@ export default function Init() {
                 <div className="bg-accent px-2">
                   <p
                     key={lastQuestion.id}
-                    className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+                    className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase animate-fade-in"
                   >
                     {lastQuestion.text}
                   </p>
@@ -105,9 +103,9 @@ export default function Init() {
           <div ref={bottomRef}>
             {savingProfile ? (
               <div className="flex gap-1.5 justify-center items-center animate-fade-in">
-                <span className="w-1 h-1 bg-text-subtle animate-pulse" />
-                <span className="w-1 h-1 bg-text-subtle animate-pulse [animation-delay:150ms]" />
-                <span className="w-1 h-1 bg-text-subtle animate-pulse [animation-delay:300ms]" />
+                <span className="w-1 h-1 bg-subtle-foreground animate-pulse" />
+                <span className="w-1 h-1 bg-subtle-foreground animate-pulse [animation-delay:150ms]" />
+                <span className="w-1 h-1 bg-subtle-foreground animate-pulse [animation-delay:300ms]" />
               </div>
             ) : (
               <PersonaTemplateCards
@@ -150,7 +148,7 @@ export default function Init() {
               <div className="bg-accent px-2">
                 <p
                   key={lastQuestion.id}
-                  className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+                  className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase animate-fade-in"
                 >
                   {lastQuestion.text}
                 </p>
@@ -182,7 +180,7 @@ export default function Init() {
             <div className="bg-accent px-2">
               <p
                 key={lastQuestion.id}
-                className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in"
+                className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase animate-fade-in"
               >
                 {lastQuestion.text}
               </p>
@@ -228,7 +226,7 @@ export default function Init() {
       }
     >
       <Link
-        className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+        className="absolute right-6 top-6 z-20 font-mono text-caption uppercase tracking-caps-3 text-muted-foreground hover:text-foreground"
         to="/daemon"
       >
         daemon recovery

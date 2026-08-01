@@ -189,13 +189,13 @@ export default function Tasks() {
   ).length;
 
   return (
-    <div className="h-full overflow-y-auto pt-16">
+    <div className="h-full overflow-y-auto pt-hud">
       <div className="max-w-2xl mx-auto px-6 py-10 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="font-mono text-sm tracking-wider text-foreground">TASKS</h1>
-            <p className="font-mono text-[9px] text-muted-foreground/40 mt-0.5 tracking-wider">
+            <p className="font-mono text-label text-muted-foreground/40 mt-0.5 tracking-wider">
               {openCount} OPEN
               {overdueCount > 0 && (
                 <span className="text-destructive ml-1.5">
@@ -213,7 +213,7 @@ export default function Tasks() {
               if (!showCreate)
                 setTimeout(() => createInputRef.current?.focus(), 50);
             }}
-            className="font-mono px-3 py-1.5 text-[9px] tracking-wider border border-border text-muted-foreground hover:text-primary hover:border-primary/30 transition-colors"
+            className="font-mono px-3 py-1.5 text-label tracking-wider border border-border text-muted-foreground hover:text-primary hover:border-primary/30 transition-colors"
           >
             {showCreate ? "CANCEL" : "+ NEW"}
           </button>
@@ -235,7 +235,7 @@ export default function Tasks() {
             />
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
                   PRI:
                 </span>
                 {[0, 1, 2].map((p) => (
@@ -243,7 +243,7 @@ export default function Tasks() {
                     key={p}
                     type="button"
                     onClick={() => setNewPriority(p)}
-                    className={`font-mono px-2 py-0.5 text-[9px] tracking-wider transition-colors ${
+                    className={`font-mono px-2 py-0.5 text-label tracking-wider transition-colors ${
                       newPriority === p
                         ? p === 2
                           ? "bg-destructive/10 text-destructive border border-destructive/30"
@@ -261,12 +261,12 @@ export default function Tasks() {
               <button
                 type="submit"
                 disabled={!newText.trim()}
-                className="font-mono px-4 py-1.5 text-[9px] tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] transition-colors disabled:opacity-20"
+                className="font-mono px-4 py-1.5 text-label tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] transition-colors disabled:opacity-20"
               >
                 ADD TASK
               </button>
             </div>
-            <p className="font-mono text-[8px] text-muted-foreground/20 tracking-wider">
+            <p className="font-mono text-micro text-muted-foreground/20 tracking-wider">
               TIP: INCLUDE TIME LIKE "IN 30 MIN", "AT 3PM", "NEXT MONDAY" — REMINDERS AUTO-SET
             </p>
           </form>
@@ -278,7 +278,7 @@ export default function Tasks() {
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className={`font-mono px-3 py-1.5 text-[9px] tracking-wider transition-colors border-b-2 -mb-px ${
+              className={`font-mono px-3 py-1.5 text-label tracking-wider transition-colors border-b-2 -mb-px ${
                 filter === f
                   ? "border-primary text-foreground"
                   : "border-transparent text-muted-foreground/30 hover:text-muted-foreground/60"
@@ -294,13 +294,13 @@ export default function Tasks() {
         {/* Task list */}
         {loading ? (
           <div className="flex justify-center py-12">
-            <span className="font-mono text-[10px] text-muted-foreground/30 animate-pulse tracking-wider">
+            <span className="font-mono text-caption text-muted-foreground/30 animate-pulse tracking-wider">
               LOADING...
             </span>
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
-            <p className="font-mono text-[10px] text-muted-foreground/30 tracking-wider">
+            <p className="font-mono text-caption text-muted-foreground/30 tracking-wider">
               {filter === "open"
                 ? "NO OPEN TASKS"
                 : filter === "done"
@@ -346,7 +346,7 @@ export default function Tasks() {
                     />
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                        <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                           PRI:
                         </span>
                         {[0, 1, 2].map((p) => (
@@ -354,7 +354,7 @@ export default function Tasks() {
                             key={p}
                             type="button"
                             onClick={() => setEditPriority(p)}
-                            className={`font-mono px-1.5 py-0.5 text-[8px] tracking-wider transition-colors ${
+                            className={`font-mono px-1.5 py-0.5 text-micro tracking-wider transition-colors ${
                               editPriority === p
                                 ? p === 2
                                   ? "bg-destructive/10 text-destructive"
@@ -369,7 +369,7 @@ export default function Tasks() {
                         ))}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                        <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                           DUE:
                         </span>
                         <input
@@ -378,27 +378,27 @@ export default function Tasks() {
                           onChange={(e) => setEditDueDate(e.target.value)}
                           onKeyDown={handleEditKeyDown}
                           placeholder="e.g. tomorrow at 3pm"
-                          className="bg-transparent border border-border px-2 py-0.5 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/20 outline-none w-44 focus:border-text-muted/30"
+                          className="bg-transparent border border-border px-2 py-0.5 font-mono text-caption text-foreground placeholder:text-muted-foreground/20 outline-none w-44 focus:border-text-muted/30"
                         />
                       </div>
                     </div>
                     <div className="flex gap-2 pt-1">
                       <button
                         onClick={saveEdit}
-                        className="font-mono px-3 py-1 text-[9px] tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] transition-colors"
+                        className="font-mono px-3 py-1 text-label tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] transition-colors"
                       >
                         SAVE
                       </button>
                       <button
                         onClick={cancelEdit}
-                        className="font-mono px-3 py-1 text-[9px] tracking-wider text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                        className="font-mono px-3 py-1 text-label tracking-wider text-muted-foreground/40 hover:text-muted-foreground transition-colors"
                       >
                         CANCEL
                       </button>
                       {editDueDate && (
                         <button
                           onClick={() => setEditDueDate("")}
-                          className="font-mono px-2 py-1 text-[8px] tracking-wider text-muted-foreground/20 hover:text-destructive transition-colors"
+                          className="font-mono px-2 py-1 text-micro tracking-wider text-muted-foreground/20 hover:text-destructive transition-colors"
                         >
                           CLEAR DUE
                         </button>
@@ -422,7 +422,7 @@ export default function Tasks() {
                     </div>
                     {task.dueDate && (
                       <p
-                        className={`font-mono text-[9px] mt-0.5 tracking-wider ${
+                        className={`font-mono text-label mt-0.5 tracking-wider ${
                           task.done
                             ? "text-muted-foreground/20"
                             : isOverdue(task.dueDate)
@@ -441,7 +441,7 @@ export default function Tasks() {
                       </p>
                     )}
                     {task.done && task.completedAt && (
-                      <p className="font-mono text-[8px] text-muted-foreground/15 mt-0.5 tracking-wider">
+                      <p className="font-mono text-micro text-muted-foreground/15 mt-0.5 tracking-wider">
                         COMPLETED{" "}
                         {new Date(task.completedAt).toLocaleDateString(
                           "en-US",
@@ -458,7 +458,7 @@ export default function Tasks() {
                     {!task.done && (
                       <button
                         onClick={() => startEdit(task)}
-                        className="font-mono px-1.5 py-0.5 text-[8px] tracking-wider text-muted-foreground/30 hover:text-muted-foreground transition-colors"
+                        className="font-mono px-1.5 py-0.5 text-micro tracking-wider text-muted-foreground/30 hover:text-muted-foreground transition-colors"
                         title="Edit"
                       >
                         EDIT
@@ -466,7 +466,7 @@ export default function Tasks() {
                     )}
                     <button
                       onClick={() => handleDelete(task.id)}
-                      className="font-mono px-1.5 py-0.5 text-[8px] tracking-wider text-muted-foreground/30 hover:text-destructive transition-colors"
+                      className="font-mono px-1.5 py-0.5 text-micro tracking-wider text-muted-foreground/30 hover:text-destructive transition-colors"
                       title="Delete"
                     >
                       DEL
