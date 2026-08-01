@@ -478,9 +478,9 @@ PR #127 implementation head `70d22b7c` passed all required checks and received a
 clean exact-head Codex review, but later exact-head reviews exposed multi-login
 Runtime-index selection, stale-span payload lifecycle, eval-reset live-vector
 eviction, concurrent legacy-sealing, mixed semantic-dimension, and linked
-legacy-tree root gaps. All six test-first follow-ups are implemented; Task 3
-remains reopened until refreshed exact-head CI/review, while PCF-004 and PCF-005
-remain dependency-ineligible and unclaimed.
+legacy-tree root and failed-config-persistence gaps. All seven test-first
+follow-ups are implemented; Task 3 remains reopened until refreshed exact-head
+CI/review, while PCF-004 and PCF-005 remain dependency-ineligible and unclaimed.
 
 ## Task 4: Diary, folders, drafts, and notes vertical slice
 
