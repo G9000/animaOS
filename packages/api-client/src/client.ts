@@ -11,6 +11,8 @@ import type {
   CorefsCredentialResponse,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
+  CoreFSRotationResponse,
+  CoreFSSecurityStatus,
   ConfirmRecoveryCredentialResponse,
   PrepareRecoveryCredentialResponse,
   PrepareCorefsRecoveryCredentialResponse,
@@ -703,6 +705,13 @@ export function createApiClient(options: ApiClientOptions) {
         request<CoreFsOperationResponse>("/corefs/operation", {
           method: "POST",
           body: payload,
+        }),
+      securityStatus: () =>
+        request<CoreFSSecurityStatus>("/corefs/security/status"),
+      rotateRootKey: (currentPassword: string, recoveryPhrase: string) =>
+        request<CoreFSRotationResponse>("/corefs/security/rotate", {
+          method: "POST",
+          body: { currentPassword, recoveryPhrase },
         }),
     },
     chat: {

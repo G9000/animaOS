@@ -1012,6 +1012,34 @@ mod python {
             };
             corefs_wire_to_py(py, snapshot.search_readiness(state))
         }
+
+        fn rotate_frk_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            pending_keys: &PyCorefsSubkeys,
+            expected_generation: u64,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let keyring = anima_corefs::rotation::FrkKeyring::new(
+                retained_keys.iter().map(|keys| &keys.inner),
+            )
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            let outcome = self
+                .coordinator
+                .rotate_frk(&keyring, &pending_keys.inner, expected_generation, |_| {
+                    Ok(())
+                })
+                .map_err(corefs_commit_error)?;
+            json_value_to_py(
+                py,
+                json!({
+                    "generation": outcome.generation(),
+                    "catalogHash": outcome.catalog_hash(),
+                    "recoveryPending": outcome.recovery_pending(),
+                }),
+            )
+        }
     }
 
     #[pyclass(name = "CorefsSubkeys")]

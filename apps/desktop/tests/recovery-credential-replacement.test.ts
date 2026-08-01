@@ -47,6 +47,7 @@ describe("recovery credential replacement", () => {
       currentRecoveryPhrase: "current phrase words",
       currentPassword: "current-password",
       scope: "full",
+      replacePending: false,
     });
     expect(requests[1]?.url).toBe("http://anima.test/api/auth/recovery-credential/confirm");
     expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({

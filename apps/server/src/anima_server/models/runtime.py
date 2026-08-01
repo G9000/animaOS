@@ -29,7 +29,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSON
@@ -38,16 +40,15 @@ from sqlalchemy.dialects.postgresql import TIMESTAMP as _PG_TIMESTAMP
 # TIMESTAMPTZ shorthand — ``TIMESTAMP(timezone=True)`` is the portable
 # spelling that works across all SQLAlchemy versions & PG backends.
 TIMESTAMPTZ = _PG_TIMESTAMP(timezone=True)
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, object_session, relationship
+from sqlalchemy.orm.attributes import set_committed_value
 
 from anima_server.db.runtime_base import RuntimeBase
 
 
 class RuntimeThread(RuntimeBase):
     __tablename__ = "runtime_threads"
-    __table_args__ = (
-        Index("ix_runtime_threads_user_status", "user_id", "status"),
-    )
+    __table_args__ = (Index("ix_runtime_threads_user_status", "user_id", "status"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -190,12 +191,8 @@ class RuntimeWorkflowRun(RuntimeBase):
     input_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    retry_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
-    )
-    max_retries: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("3")
-    )
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3"))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -336,6 +333,12 @@ class RuntimeDocumentChunk(RuntimeBase):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_char_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -902,9 +905,7 @@ class RuntimeStep(RuntimeBase):
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     response_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    tool_calls_json: Mapped[list[dict[str, object]] | None] = mapped_column(
-        JSON, nullable=True
-    )
+    tool_calls_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
     usage_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -914,6 +915,43 @@ class RuntimeStep(RuntimeBase):
     )
 
     run: Mapped[RuntimeRun] = relationship(back_populates="steps")
+
+
+@event.listens_for(RuntimeStep, "load")
+def _hydrate_sealed_runtime_step(
+    step: RuntimeStep,
+    _context: object,
+) -> None:
+    runtime_db = object_session(step)
+    if runtime_db is None or step.id is None:
+        return
+    owner_id = runtime_db.scalar(
+        select(RuntimeThread.user_id).where(RuntimeThread.id == step.thread_id)
+    )
+    if owner_id is None:
+        raise ValueError("sealed Runtime step owner is missing")
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="runtime_step",
+        row_id=int(step.id),
+        owner_id=int(owner_id),
+    )
+    if payload is None:
+        return
+    request_json = payload.get("request_json")
+    response_json = payload.get("response_json")
+    tool_calls_json = payload.get("tool_calls_json")
+    if not isinstance(request_json, dict):
+        raise ValueError("sealed Runtime step request is invalid")
+    if not isinstance(response_json, dict):
+        raise ValueError("sealed Runtime step response is invalid")
+    if tool_calls_json is not None and not isinstance(tool_calls_json, list):
+        raise ValueError("sealed Runtime step tool calls are invalid")
+    set_committed_value(step, "request_json", request_json)
+    set_committed_value(step, "response_json", response_json)
+    set_committed_value(step, "tool_calls_json", tool_calls_json)
 
 
 class RuntimeMessage(RuntimeBase):
@@ -994,10 +1032,40 @@ class RuntimeMessage(RuntimeBase):
         ):
             return True
         return (
-            self.role == "tool"
-            and self.tool_name is not None
-            and self.tool_name != "send_message"
+            self.role == "tool" and self.tool_name is not None and self.tool_name != "send_message"
         )
+
+
+@event.listens_for(RuntimeMessage, "load")
+def _hydrate_sealed_runtime_message(
+    message: RuntimeMessage,
+    _context: object,
+) -> None:
+    runtime_db = object_session(message)
+    if runtime_db is None or message.id is None:
+        return
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        runtime_db,
+        row_type="runtime_message",
+        row_id=int(message.id),
+        owner_id=int(message.user_id),
+    )
+    if payload is None:
+        return
+    content_text = payload.get("content_text")
+    content_json = payload.get("content_json")
+    tool_args_json = payload.get("tool_args_json")
+    if content_text is not None and not isinstance(content_text, str):
+        raise ValueError("sealed Runtime message text is invalid")
+    if content_json is not None and not isinstance(content_json, dict):
+        raise ValueError("sealed Runtime message content JSON is invalid")
+    if tool_args_json is not None and not isinstance(tool_args_json, dict):
+        raise ValueError("sealed Runtime message tool arguments are invalid")
+    set_committed_value(message, "content_text", content_text)
+    set_committed_value(message, "content_json", content_json)
+    set_committed_value(message, "tool_args_json", tool_args_json)
 
 
 class RuntimeImageMessageLink(RuntimeBase):
@@ -1057,9 +1125,7 @@ class RuntimeBackgroundTaskRun(RuntimeBase):
     """Tracked background task execution for debugging and monitoring."""
 
     __tablename__ = "runtime_background_task_runs"
-    __table_args__ = (
-        Index("ix_runtime_bg_task_runs_user_status", "user_id", "status"),
-    )
+    __table_args__ = (Index("ix_runtime_bg_task_runs_user_status", "user_id", "status"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(

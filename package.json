@@ -23,6 +23,7 @@
     "lint:desktop": "node ./scripts/run-nx.cjs lint desktop",
     "test": "node ./scripts/run-uv.cjs run --project apps/server pytest",
     "test:server": "node ./scripts/run-uv.cjs run --project apps/server pytest",
+    "test:desktop": "bun test apps/desktop/tests",
     "test:anima-mod": "cd apps/anima-mod && bun test",
     "start:anima-mod": "cd apps/anima-mod && bun run start",
     "dev:animus": "cargo run -p animus",

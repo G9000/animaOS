@@ -33,7 +33,6 @@ from anima_server.models import (
     RuntimeBackgroundTaskRun,
     RuntimeDocument,
     RuntimeDocumentChunk,
-    RuntimeEmbedding,
     RuntimeMessage,
     RuntimeRun,
     RuntimeStep,
@@ -63,6 +62,10 @@ from anima_server.models.runtime_memory import (
     ProfileUpdateCandidate,
     PromotionJournal,
     RuntimeSessionNote,
+)
+from anima_server.services.corefs.sealed_runtime import (
+    delete_all_sealed_runtime_records_for_owner,
+    delete_runtime_embedding_records,
 )
 
 
@@ -100,23 +103,46 @@ def _reset_runtime_state(
     user_id: int,
     deleted: dict[str, int],
 ) -> None:
+    delete_all_sealed_runtime_records_for_owner(db, owner_id=user_id)
     thread_ids = select(RuntimeThread.id).where(RuntimeThread.user_id == user_id)
-    workflow_run_ids = select(RuntimeWorkflowRun.id).where(
-        RuntimeWorkflowRun.user_id == user_id
-    )
+    workflow_run_ids = select(RuntimeWorkflowRun.id).where(RuntimeWorkflowRun.user_id == user_id)
 
-    _delete(db, deleted, "runtime_session_notes", delete(RuntimeSessionNote).where(RuntimeSessionNote.user_id == user_id))
-    _delete(db, deleted, "current_emotions", delete(CurrentEmotion).where(CurrentEmotion.user_id == user_id))
-    _delete(db, deleted, "working_context", delete(WorkingContext).where(WorkingContext.user_id == user_id))
-    _delete(db, deleted, "active_intentions", delete(ActiveIntention).where(ActiveIntention.user_id == user_id))
-    _delete(db, deleted, "affect_state", delete(AffectStateRow).where(AffectStateRow.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "runtime_session_notes",
+        delete(RuntimeSessionNote).where(RuntimeSessionNote.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "current_emotions",
+        delete(CurrentEmotion).where(CurrentEmotion.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "working_context",
+        delete(WorkingContext).where(WorkingContext.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "active_intentions",
+        delete(ActiveIntention).where(ActiveIntention.user_id == user_id),
+    )
+    _delete(
+        db, deleted, "affect_state", delete(AffectStateRow).where(AffectStateRow.user_id == user_id)
+    )
     _delete(
         db,
         deleted,
         "presence_catchup",
         delete(PresenceCatchup).where(PresenceCatchup.user_id == user_id),
     )
-    _delete(db, deleted, "drive_states", delete(DriveStateRow).where(DriveStateRow.user_id == user_id))
+    _delete(
+        db, deleted, "drive_states", delete(DriveStateRow).where(DriveStateRow.user_id == user_id)
+    )
     _delete(
         db,
         deleted,
@@ -149,27 +175,65 @@ def _reset_runtime_state(
         "runtime_workflow_runs",
         delete(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == user_id),
     )
-    _delete(db, deleted, "runtime_steps", delete(RuntimeStep).where(RuntimeStep.thread_id.in_(thread_ids)))
-    _delete(db, deleted, "runtime_messages", delete(RuntimeMessage).where(RuntimeMessage.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "runtime_steps",
+        delete(RuntimeStep).where(RuntimeStep.thread_id.in_(thread_ids)),
+    )
+    _delete(
+        db,
+        deleted,
+        "runtime_messages",
+        delete(RuntimeMessage).where(RuntimeMessage.user_id == user_id),
+    )
     _delete(db, deleted, "runtime_runs", delete(RuntimeRun).where(RuntimeRun.user_id == user_id))
-    _delete(db, deleted, "runtime_threads", delete(RuntimeThread).where(RuntimeThread.user_id == user_id))
-    _delete(db, deleted, "pending_memory_ops", delete(PendingMemoryOp).where(PendingMemoryOp.user_id == user_id))
-    _delete(db, deleted, "memory_candidates", delete(MemoryCandidate).where(MemoryCandidate.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "runtime_threads",
+        delete(RuntimeThread).where(RuntimeThread.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "pending_memory_ops",
+        delete(PendingMemoryOp).where(PendingMemoryOp.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "memory_candidates",
+        delete(MemoryCandidate).where(MemoryCandidate.user_id == user_id),
+    )
     _delete(
         db,
         deleted,
         "profile_update_candidates",
         delete(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == user_id),
     )
-    _delete(db, deleted, "promotion_journal", delete(PromotionJournal).where(PromotionJournal.user_id == user_id))
-    _delete(db, deleted, "memory_access_log", delete(MemoryAccessLog).where(MemoryAccessLog.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "promotion_journal",
+        delete(PromotionJournal).where(PromotionJournal.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "memory_access_log",
+        delete(MemoryAccessLog).where(MemoryAccessLog.user_id == user_id),
+    )
     _delete(
         db,
         deleted,
         "memory_retrieval_feedback",
         delete(MemoryRetrievalFeedback).where(MemoryRetrievalFeedback.user_id == user_id),
     )
-    _delete(db, deleted, "runtime_embeddings", delete(RuntimeEmbedding).where(RuntimeEmbedding.user_id == user_id))
+    deleted["runtime_embeddings"] = delete_runtime_embedding_records(
+        db,
+        owner_id=user_id,
+    )
     _delete(
         db,
         deleted,
@@ -188,8 +252,18 @@ def _reset_soul_state(
     memory_item_ids = select(MemoryItem.id).where(MemoryItem.user_id == user_id)
     memory_claim_ids = select(MemoryClaim.id).where(MemoryClaim.user_id == user_id)
 
-    _delete(db, deleted, "agent_steps", delete(AgentStep).where(AgentStep.thread_id.in_(agent_thread_ids)))
-    _delete(db, deleted, "agent_messages", delete(AgentMessage).where(AgentMessage.thread_id.in_(agent_thread_ids)))
+    _delete(
+        db,
+        deleted,
+        "agent_steps",
+        delete(AgentStep).where(AgentStep.thread_id.in_(agent_thread_ids)),
+    )
+    _delete(
+        db,
+        deleted,
+        "agent_messages",
+        delete(AgentMessage).where(AgentMessage.thread_id.in_(agent_thread_ids)),
+    )
     _delete(db, deleted, "agent_runs", delete(AgentRun).where(AgentRun.user_id == user_id))
     _delete(db, deleted, "agent_threads", delete(AgentThread).where(AgentThread.user_id == user_id))
     _delete(
@@ -208,9 +282,7 @@ def _reset_soul_state(
         db,
         deleted,
         "experience_cluster_state",
-        delete(ExperienceClusterState).where(
-            ExperienceClusterState.user_id == user_id
-        ),
+        delete(ExperienceClusterState).where(ExperienceClusterState.user_id == user_id),
     )
     _delete(
         db,
@@ -245,8 +317,15 @@ def _reset_soul_state(
     )
     _delete(db, deleted, "kg_relations", delete(KGRelation).where(KGRelation.user_id == user_id))
     _delete(db, deleted, "kg_entities", delete(KGEntity).where(KGEntity.user_id == user_id))
-    _delete(db, deleted, "memory_vectors", delete(MemoryVector).where(MemoryVector.user_id == user_id))
-    _delete(db, deleted, "memory_item_tags", delete(MemoryItemTag).where(MemoryItemTag.user_id == user_id))
+    _delete(
+        db, deleted, "memory_vectors", delete(MemoryVector).where(MemoryVector.user_id == user_id)
+    )
+    _delete(
+        db,
+        deleted,
+        "memory_item_tags",
+        delete(MemoryItemTag).where(MemoryItemTag.user_id == user_id),
+    )
     # IL5 ledger before claims/items: SQLite FKs aren't enforced, so these
     # rows would orphan and (tombstone_item_id being unique) could collide
     # with reused rowids on a later distillation.
@@ -291,14 +370,36 @@ def _reset_soul_state(
         .where(MemoryItem.superseded_by.in_(memory_item_ids))
         .values(superseded_by=None),
     )
-    _delete(db, deleted, "memory_episodes", delete(MemoryEpisode).where(MemoryEpisode.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "memory_episodes",
+        delete(MemoryEpisode).where(MemoryEpisode.user_id == user_id),
+    )
     _delete(db, deleted, "memory_items", delete(MemoryItem).where(MemoryItem.user_id == user_id))
 
     _delete(db, deleted, "tasks", delete(Task).where(Task.user_id == user_id))
-    _delete(db, deleted, "emotional_signals", delete(EmotionalSignal).where(EmotionalSignal.user_id == user_id))
-    _delete(db, deleted, "self_model_blocks", delete(SelfModelBlock).where(SelfModelBlock.user_id == user_id))
-    _delete(db, deleted, "identity_blocks", delete(IdentityBlock).where(IdentityBlock.user_id == user_id))
-    _delete(db, deleted, "growth_log", delete(GrowthLogEntry).where(GrowthLogEntry.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "emotional_signals",
+        delete(EmotionalSignal).where(EmotionalSignal.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "self_model_blocks",
+        delete(SelfModelBlock).where(SelfModelBlock.user_id == user_id),
+    )
+    _delete(
+        db,
+        deleted,
+        "identity_blocks",
+        delete(IdentityBlock).where(IdentityBlock.user_id == user_id),
+    )
+    _delete(
+        db, deleted, "growth_log", delete(GrowthLogEntry).where(GrowthLogEntry.user_id == user_id)
+    )
     _delete(
         db,
         deleted,
@@ -311,7 +412,12 @@ def _reset_soul_state(
         "background_task_runs",
         delete(BackgroundTaskRun).where(BackgroundTaskRun.user_id == user_id),
     )
-    _delete(db, deleted, "forget_audit_log", delete(ForgetAuditLog).where(ForgetAuditLog.user_id == user_id))
+    _delete(
+        db,
+        deleted,
+        "forget_audit_log",
+        delete(ForgetAuditLog).where(ForgetAuditLog.user_id == user_id),
+    )
 
 
 def _delete(

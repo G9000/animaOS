@@ -186,6 +186,32 @@ def test_session_store_restores_unlock_and_sqlcipher_without_db_viewer_state(
     assert restored.get_db_viewer_verified_at(token) is None
 
 
+def test_restored_session_reconstructs_runtime_index_from_sqlcipher_key(
+    tmp_path: Path,
+) -> None:
+    snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
+    snapshot.write(_payload(token="restored-token"))
+    sentinel_index = SimpleNamespace()
+    calls: list[tuple[object | None, bytes | None]] = []
+
+    def runtime_index_factory(
+        corefs_keys: object | None,
+        sqlcipher_key: bytes | None,
+    ) -> object:
+        calls.append((corefs_keys, sqlcipher_key))
+        return sentinel_index
+
+    restored = UnlockSessionStore(
+        snapshot=snapshot,
+        runtime_index_factory=runtime_index_factory,  # type: ignore[arg-type]
+    )
+
+    session = restored.resolve("restored-token")
+    assert session is not None
+    assert session.runtime_index is sentinel_index
+    assert calls == [(None, b"k" * 32)]
+
+
 def test_session_store_does_not_restore_session_that_had_corefs_keys(
     tmp_path: Path,
 ) -> None:
@@ -224,7 +250,11 @@ def test_session_store_does_not_restore_legacy_session_without_corefs_marker(
     restored = UnlockSessionStore(snapshot=snapshot)
 
     assert restored.resolve("legacy-token") is None
-    assert snapshot.load() == {"version": 1, "sessions": [], "sqlcipherKey": payload["sqlcipherKey"]}
+    assert snapshot.load() == {
+        "version": 1,
+        "sessions": [],
+        "sqlcipherKey": payload["sqlcipherKey"],
+    }
 
 
 def test_session_store_discards_expired_snapshot_sessions(tmp_path: Path) -> None:
@@ -240,7 +270,11 @@ def test_session_store_discards_expired_snapshot_sessions(tmp_path: Path) -> Non
     restored = UnlockSessionStore(snapshot=snapshot)
 
     assert restored.resolve("expired-token") is None
-    assert snapshot.load() == {"version": 1, "sessions": [], "sqlcipherKey": payload["sqlcipherKey"]}
+    assert snapshot.load() == {
+        "version": 1,
+        "sessions": [],
+        "sqlcipherKey": payload["sqlcipherKey"],
+    }
 
 
 def test_session_store_persists_revocation_and_clear(tmp_path: Path) -> None:
@@ -378,6 +412,10 @@ def test_global_store_restores_snapshot_during_module_import(tmp_path: Path) -> 
     environment = os.environ.copy()
     environment[DEV_SESSION_STATE_PATH_ENV] = str(snapshot.path)
     environment[DEV_SESSION_KEY_ENV] = base64.b64encode(b"s" * 32).decode("ascii")
+    environment["ANIMA_DATA_DIR"] = str(tmp_path / "portable" / ".anima")
+    environment["ANIMA_RUNTIME_INSTANCE_DATA_DIR"] = str(
+        tmp_path / "runtime" / "instance-a"
+    )
 
     result = subprocess.run(
         [
@@ -446,6 +484,72 @@ def test_corefs_keys_create_one_server_owned_native_session(
         (str(tmp_path / "server-core"), "server-core-id"),
         (str(tmp_path / "server-core"), "server-core-id"),
     ]
+
+
+def test_revoking_rotated_token_alias_keeps_shared_session_open() -> None:
+    native_sessions: list[SimpleNamespace] = []
+
+    def factory() -> SimpleNamespace:
+        native_session = SimpleNamespace(begin_calls=0, close_calls=0)
+
+        def begin_close() -> None:
+            native_session.begin_calls += 1
+
+        def close() -> None:
+            native_session.close_calls += 1
+
+        native_session.begin_close = begin_close
+        native_session.close = close
+        native_sessions.append(native_session)
+        return native_session
+
+    store = UnlockSessionStore(corefs_session_factory=factory)
+    old_token = store.create(31, {"memories": b"a" * 32}, corefs_keys=object())
+    new_token = store.replace_user(
+        31,
+        {"memories": b"b" * 32},
+        corefs_keys=object(),
+        preserve_existing_tokens=True,
+    )
+    replacement = store.resolve(new_token)
+
+    assert replacement is not None
+    assert store.resolve(old_token) is replacement
+    assert native_sessions[0].begin_calls == 1
+    assert native_sessions[0].close_calls == 1
+
+    store.revoke(old_token)
+
+    assert store.resolve(new_token) is replacement
+    assert native_sessions[1].begin_calls == 0
+    assert native_sessions[1].close_calls == 0
+
+    store.revoke(new_token)
+
+    assert native_sessions[1].begin_calls == 1
+    assert native_sessions[1].close_calls == 1
+
+
+def test_replace_user_prepares_replacement_before_publication() -> None:
+    order: list[str] = []
+    store = UnlockSessionStore()
+    old_token = store.create(31, {"memories": b"a" * 32})
+    original = store.resolve(old_token)
+
+    def prepare(_session) -> None:
+        order.append("prepared")
+        assert store.resolve(old_token) is original
+
+    token = store.replace_user(
+        31,
+        {"memories": b"b" * 32},
+        before_publish=prepare,
+    )
+    order.append("returned")
+
+    assert store.resolve(token) is not None
+    assert store.resolve(old_token) is None
+    assert order == ["prepared", "returned"]
 
 
 def test_native_session_without_begin_close_is_rejected_before_publication() -> None:
@@ -540,11 +644,7 @@ def _snapshot_tokens(snapshot: _FailingSnapshot) -> set[str]:
     assert payload is not None
     sessions = payload["sessions"]
     assert isinstance(sessions, list)
-    return {
-        str(session["token"])
-        for session in sessions
-        if isinstance(session, dict)
-    }
+    return {str(session["token"]) for session in sessions if isinstance(session, dict)}
 
 
 @pytest.mark.asyncio
@@ -564,9 +664,7 @@ async def test_native_close_detaches_token_before_extended_wait(
         token,
         native_session,
         expires_at=(
-            datetime.now(UTC) - timedelta(seconds=1)
-            if operation == "expiry_purge"
-            else None
+            datetime.now(UTC) - timedelta(seconds=1) if operation == "expiry_purge" else None
         ),
     )
 
@@ -616,7 +714,6 @@ async def test_native_close_does_not_block_store_or_async_event_loop(
     native_session = _BlockingNativeSession()
     _attach_native_session(store, token, native_session)
     monkeypatch.setattr(auth_route, "unlock_session_store", store)
-    monkeypatch.setattr(auth_route, "clear_sqlcipher_key", lambda: None)
     monkeypatch.setattr(auth_route, "dispose_all_user_engines", lambda: None)
     request = SimpleNamespace(headers={"x-anima-unlock": token})
 
@@ -651,6 +748,39 @@ async def test_native_close_does_not_block_store_or_async_event_loop(
         await asyncio.wait_for(logout_task, timeout=3)
 
     assert native_session.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_logout_rotation_alias_keeps_sqlcipher_key_and_user_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.api.routes import auth as auth_route
+
+    store = UnlockSessionStore()
+    old_token = store.create(44, {"memories": b"m" * 32})
+    replacement_token = store.replace_user(
+        44,
+        {"memories": b"n" * 32},
+        preserve_existing_tokens=True,
+    )
+    store.set_sqlcipher_key(b"sqlcipher-key")
+    dispose_calls: list[bool] = []
+    monkeypatch.setattr(auth_route, "unlock_session_store", store)
+    monkeypatch.setattr(
+        auth_route,
+        "dispose_all_user_engines",
+        lambda: dispose_calls.append(True),
+    )
+
+    response = await auth_route.logout(  # type: ignore[arg-type]
+        SimpleNamespace(headers={"x-anima-unlock": old_token})
+    )
+
+    assert response == {"success": True}
+    assert store.resolve(old_token) is None
+    assert store.resolve(replacement_token) is not None
+    assert store.get_sqlcipher_key() == b"sqlcipher-key"
+    assert dispose_calls == []
 
 
 @pytest.mark.asyncio
@@ -761,7 +891,6 @@ async def test_cancelled_logout_still_finishes_native_close_and_zeroes_deks(
     native_session = _BlockingNativeSession()
     attached = _attach_native_session(store, token, native_session)
     monkeypatch.setattr(auth_route, "unlock_session_store", store)
-    monkeypatch.setattr(auth_route, "clear_sqlcipher_key", lambda: None)
     monkeypatch.setattr(auth_route, "dispose_all_user_engines", lambda: None)
     request = SimpleNamespace(headers={"x-anima-unlock": token})
 
@@ -847,16 +976,12 @@ def test_async_code_does_not_call_sync_unlock_accessors() -> None:
             for statement in function.body:
                 visitor.visit(statement)
             for node in visitor.calls:
-                if (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id
-                    in {
-                        "get_active_dek",
-                        "get_active_deks",
-                        "require_unlocked_session",
-                        "require_unlocked_user",
-                    }
-                ):
+                if isinstance(node.func, ast.Name) and node.func.id in {
+                    "get_active_dek",
+                    "get_active_deks",
+                    "require_unlocked_session",
+                    "require_unlocked_user",
+                }:
                     forbidden_calls.append(
                         f"{path.relative_to(source_dir)}:"
                         f"{node.lineno}:{function.name}:{node.func.id}"

@@ -22,7 +22,7 @@ def main() -> int:
     parser.add_argument(
         "--release-root",
         type=Path,
-        default=Path("apps/desktop/src-tauri/resources/.anima"),
+        default=Path("apps/desktop/src-tauri/resources/runtime"),
     )
     args = parser.parse_args()
     root = args.root.resolve()
@@ -50,7 +50,7 @@ def main() -> int:
         errors.append(f"cannot inspect Tauri resource mapping: {error}")
     else:
         if not resource_map_includes_legal_tree(resources):
-            errors.append("Tauri resource map does not include resources/.anima/legal/")
+            errors.append("Tauri resource map does not include resources/runtime/legal/")
 
     if errors:
         print("CoreFS release notice check failed:", file=sys.stderr)
@@ -71,9 +71,9 @@ def resource_map_includes_legal_tree(resources: object) -> bool:
     for source, destination in resources.items():
         source = str(source).replace("\\", "/").rstrip("/")
         destination = str(destination).replace("\\", "/").rstrip("/")
-        if source in {"resources/.anima", "resources/.anima/legal"} and destination in {
-            ".anima",
-            ".anima/legal",
+        if source in {"resources/runtime", "resources/runtime/legal"} and destination in {
+            "runtime",
+            "runtime/legal",
         }:
             return True
     return False

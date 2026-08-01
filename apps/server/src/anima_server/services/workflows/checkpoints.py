@@ -7,6 +7,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeWorkflowCheckpoint, RuntimeWorkflowRun
+from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.workflows.state import (
     CheckpointStatus,
     WorkflowResumePoint,
@@ -31,12 +32,20 @@ def start_workflow(
         workflow_type=workflow_type,
         status="created",
         current_state="created",
-        input_json=input_json,
+        input_json=None,
+        result_json=None,
+        error_json=None,
         retry_count=0,
         max_retries=max_retries,
     )
-    db.add(run)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_workflow_run",
+        owner_id=user_id,
+        payload={"input_json": input_json, "result_json": None, "error_json": None},
+        placeholders={"input_json": None, "result_json": None, "error_json": None},
+    )
     return run
 
 
@@ -82,13 +91,24 @@ def append_checkpoint(
         checkpoint_index=int(latest_index or 0) + 1,
         state_name=state_name,
         status=status,
-        input_json=input_json,
-        output_json=output_json,
+        input_json=None,
+        output_json=None,
         artifact_refs_json=artifact_refs_json,
         idempotency_key=idempotency_key,
-        error_json=error_json,
+        error_json=None,
     )
-    db.add(checkpoint)
+    seal_runtime_fields(
+        db,
+        row=checkpoint,
+        row_type="runtime_workflow_checkpoint",
+        owner_id=int(run.user_id),
+        payload={
+            "input_json": input_json,
+            "output_json": output_json,
+            "error_json": error_json,
+        },
+        placeholders={"input_json": None, "output_json": None, "error_json": None},
+    )
 
     _apply_checkpoint_status(
         run,
@@ -97,8 +117,23 @@ def append_checkpoint(
         error_json=error_json,
         pause_on_failure=pause_on_failure,
     )
-    db.add(run)
-    db.flush()
+    next_error_json = (
+        error_json
+        if status == "failed" and error_json is not None
+        else run.error_json
+    )
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_workflow_run",
+        owner_id=int(run.user_id),
+        payload={
+            "input_json": run.input_json,
+            "result_json": run.result_json,
+            "error_json": next_error_json,
+        },
+        placeholders={"input_json": None, "result_json": None, "error_json": None},
+    )
     return checkpoint
 
 
@@ -138,7 +173,22 @@ def mark_workflow_awaiting_input(
     if state_name is not None:
         run.current_state = state_name
     if result_json is not None:
-        run.result_json = result_json
+        seal_runtime_fields(
+            db,
+            row=run,
+            row_type="runtime_workflow_run",
+            owner_id=int(run.user_id),
+            payload={
+                "input_json": run.input_json,
+                "result_json": result_json,
+                "error_json": run.error_json,
+            },
+            placeholders={
+                "input_json": None,
+                "result_json": None,
+                "error_json": None,
+            },
+        )
     run.updated_at = datetime.now(UTC)
     db.add(run)
     db.flush()
@@ -154,7 +204,22 @@ def mark_workflow_completed(
     now = datetime.now(UTC)
     run.status = "completed"
     if result_json is not None:
-        run.result_json = result_json
+        seal_runtime_fields(
+            db,
+            row=run,
+            row_type="runtime_workflow_run",
+            owner_id=int(run.user_id),
+            payload={
+                "input_json": run.input_json,
+                "result_json": result_json,
+                "error_json": run.error_json,
+            },
+            placeholders={
+                "input_json": None,
+                "result_json": None,
+                "error_json": None,
+            },
+        )
     run.completed_at = now
     run.updated_at = now
     db.add(run)
@@ -170,12 +235,20 @@ def mark_workflow_failed(
 ) -> RuntimeWorkflowRun:
     now = datetime.now(UTC)
     run.status = "failed"
-    if error_json is not None:
-        run.error_json = error_json
     run.completed_at = now
     run.updated_at = now
-    db.add(run)
-    db.flush()
+    seal_runtime_fields(
+        db,
+        row=run,
+        row_type="runtime_workflow_run",
+        owner_id=int(run.user_id),
+        payload={
+            "input_json": run.input_json,
+            "result_json": run.result_json,
+            "error_json": error_json if error_json is not None else run.error_json,
+        },
+        placeholders={"input_json": None, "result_json": None, "error_json": None},
+    )
     return run
 
 
@@ -209,8 +282,6 @@ def _apply_checkpoint_status(
     elif status == "failed":
         run.status = "paused" if pause_on_failure else "failed"
         run.current_state = state_name
-        if error_json is not None:
-            run.error_json = error_json
         if not pause_on_failure:
             run.completed_at = now
 

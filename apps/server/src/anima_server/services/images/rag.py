@@ -15,6 +15,7 @@ from anima_server.models.runtime import (
     RuntimeMessage,
 )
 from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.services.corefs.sealed_runtime import load_runtime_embedding_vector
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.indexing import EmbeddingFn
 
@@ -98,7 +99,16 @@ def search_image_annotations_by_embedding(
 
     scored: list[tuple[float, RuntimeImageAnnotation, RuntimeImageAsset]] = []
     for annotation, asset, embedding in rows:
-        similarity = _cosine_similarity(query_embedding, list(embedding.embedding))
+        stored_vector = load_runtime_embedding_vector(
+            runtime_db,
+            owner_id=user_id,
+            source_type="image_annotation",
+            source_id=int(annotation.id),
+            persisted_embedding=embedding.embedding,
+        )
+        if stored_vector is None:
+            continue
+        similarity = _cosine_similarity(query_embedding, stored_vector)
         scored.append((similarity, annotation, asset))
     scored.sort(key=lambda item: item[0], reverse=True)
 

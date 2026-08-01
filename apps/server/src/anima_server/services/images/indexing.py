@@ -9,8 +9,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeImageAnnotation, RuntimeImageAsset
 from anima_server.models.runtime_embedding import RuntimeEmbedding
-from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.corefs.sealed_runtime import (
+    persist_runtime_embedding,
+    seal_runtime_fields,
+)
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.extractors import ImageCaptioner, ImageTextExtractor
@@ -219,6 +222,14 @@ def _upsert_active_annotation(
             existing.updated_at = now
             runtime_db.add(existing)
             runtime_db.flush()
+        seal_runtime_fields(
+            runtime_db,
+            row=existing,
+            row_type="runtime_image_annotation",
+            owner_id=user_id,
+            payload={"content_text": content_text},
+            placeholders={"content_text": ""},
+        )
         return existing
 
     stale = list(
@@ -241,13 +252,19 @@ def _upsert_active_annotation(
         user_id=user_id,
         image_asset_id=image_asset_id,
         annotation_kind=annotation_kind,
-        content_text=content_text,
+        content_text="",
         content_hash=content_hash,
         source_model=source_model,
         status="active",
     )
-    runtime_db.add(annotation)
-    runtime_db.flush()
+    seal_runtime_fields(
+        runtime_db,
+        row=annotation,
+        row_type="runtime_image_annotation",
+        owner_id=user_id,
+        payload={"content_text": content_text},
+        placeholders={"content_text": ""},
+    )
     return annotation
 
 
@@ -265,31 +282,30 @@ def _upsert_runtime_embedding(
             RuntimeEmbedding.source_id == annotation.id,
         )
     )
-    checksum = compute_embedding_checksum(embedding)
     if existing is None:
-        runtime_db.add(
-            RuntimeEmbedding(
-                user_id=user_id,
-                source_type="image_annotation",
-                source_id=annotation.id,
-                content_hash=annotation.content_hash,
-                embedding_checksum=checksum,
-                embedding=embedding,
-                content_preview=annotation.content_text[:200],
-                category="image",
-                importance=3,
-            )
+        existing = RuntimeEmbedding(
+            user_id=user_id,
+            source_type="image_annotation",
+            source_id=annotation.id,
+            content_hash=annotation.content_hash,
+            embedding_checksum=None,
+            embedding=None,
+            content_preview="",
+            category="image",
+            importance=3,
         )
-        return
-
-    existing.content_hash = annotation.content_hash
-    existing.embedding_checksum = checksum
-    existing.embedding = embedding
-    existing.content_preview = annotation.content_text[:200]
-    existing.category = "image"
-    existing.importance = 3
-    existing.updated_at = datetime.now(UTC)
-    runtime_db.add(existing)
+    else:
+        existing.content_hash = annotation.content_hash
+        existing.category = "image"
+        existing.importance = 3
+        existing.updated_at = datetime.now(UTC)
+    persist_runtime_embedding(
+        runtime_db,
+        row=existing,
+        owner_id=user_id,
+        embedding=embedding,
+        content=annotation.content_text,
+    )
 
 
 def _all_active_annotations_embedded(

@@ -44,6 +44,9 @@ from anima_server.services.agent.embedding_resolution import (
     DEFAULT_EMBEDDING_MODELS,
 )
 from anima_server.services.agent.embedding_resolution import (
+    resolve_embedding_base_url as _resolve_shared_embedding_base_url,
+)
+from anima_server.services.agent.embedding_resolution import (
     resolve_embedding_model as _resolve_shared_embedding_model,
 )
 from anima_server.services.agent.embedding_resolution import (
@@ -57,16 +60,6 @@ from anima_server.services.agent.text_processing import prepare_embedding_text
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_EMBEDDING_BASE_URLS: dict[str, str] = {
-    "ollama": "http://127.0.0.1:11434",
-    "openrouter": "https://openrouter.ai/api/v1",
-    "moonshot": "https://api.moonshot.cn/v1",
-    "vllm": "http://127.0.0.1:8000/v1",
-    "openai": "https://api.openai.com/v1",
-    "anthropic": "https://api.anthropic.com/v1",
-    "doubleword": "https://api.doubleword.ai/v1",
-}
 
 _EMBEDDING_API_KEY_ENV: dict[str, str] = {
     "doubleword": "DOUBLEWORD_API_KEY",
@@ -172,37 +165,8 @@ def _resolve_embedding_model() -> str:
 
 
 def _resolve_embedding_base_url() -> str:
-    """Resolve the base URL for the active embedding provider."""
-    provider = _resolve_embedding_provider()
-    if provider == "fastembed":
-        # In-process ONNX backend — no HTTP endpoint of any kind.
-        return ""
-    configured = _setting_text(getattr(settings, "agent_embedding_base_url", ""))
-    if configured:
-        return configured.removesuffix("/v1") if provider == "ollama" else configured
-
-    configured_agent = _setting_text(getattr(settings, "agent_base_url", ""))
-    chat_provider = _setting_text(getattr(settings, "agent_provider", ""))
-    # Reuse the configured local-server URL (agent_base_url) only when the
-    # resolved embedding provider IS the chat provider — mirrors the
-    # same-provider rule ``_resolve_embedding_api_key`` uses for its legacy
-    # key piggyback. That's the one case where agent_base_url is actually
-    # known to point at *this* provider's server: either no embedding
-    # provider was named explicitly (legacy piggyback — the resolved
-    # provider mirrors the chat provider) or the embedding provider was
-    # named explicitly but happens to match the chat provider (e.g. both
-    # "ollama"). When an explicit LOCAL embedding provider (ollama/vllm)
-    # DIFFERS from the chat provider (e.g. chat=vllm, embedding=ollama),
-    # agent_base_url is the CHAT server's address, not this provider's —
-    # reusing it would send that provider's requests to the wrong endpoint
-    # (e.g. POSTing ollama's /api/embed to a vLLM port). Fall through to
-    # that provider's own default base URL instead.
-    if configured_agent and provider == chat_provider:
-        if provider == "openrouter":
-            return _DEFAULT_EMBEDDING_BASE_URLS[provider]
-        return configured_agent.removesuffix("/v1") if provider == "ollama" else configured_agent
-
-    return _DEFAULT_EMBEDDING_BASE_URLS[provider]
+    """Resolve the base URL through the shared dependency-leaf contract."""
+    return _resolve_shared_embedding_base_url(settings)
 
 
 def _validate_embedding_provider_configuration(provider: str) -> None:
