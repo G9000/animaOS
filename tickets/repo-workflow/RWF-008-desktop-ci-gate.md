@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-08-02 02:35 MYT
-- Updated: 2026-08-02 02:35 MYT
+- Updated: 2026-08-02 03:05 MYT
 - Started: 2026-08-02 02:35 MYT
 - Completed:
 
@@ -54,15 +54,27 @@ to run three commands locally.
   Baseline verified on merged `main` first: 109/109 desktop tests pass,
   `tsc --noEmit` clean, build clean — so the gate starts green.
 
+- 2026-08-02 03:05 MYT - PR #133 review round 1 (P1): the path filter missed
+  `anima-auth-contracts` — api-client depends on it and re-exports its
+  types to the desktop, so a contract change could break the desktop
+  typecheck without triggering the gate. Added; and rather than leave the
+  list hand-maintained (this is the same class of miss that cost #129
+  three rounds), `apps/desktop/tests/ci-path-filter.test.ts` now derives
+  the desktop's transitive workspace-dependency closure from package.json
+  files and fails when the workflow omits a member — so the gate polices
+  its own trigger list. Verified it fails when a package is removed.
+
 ## Validation
 
 - Commands:
-  - `bun test tests/` (apps/desktop) — 109 passed, 0 failed
+  - `bun test tests/` (apps/desktop) — 111 passed, 0 failed (incl. the 2
+    new path-filter closure tests)
   - `bunx tsc --noEmit` (apps/desktop) — clean
   - `bun run build` (apps/desktop, the exact command the workflow runs) —
     pass, 2026-08-02 02:36 MYT
 - Changed paths:
   - `.github/workflows/desktop-tests.yml` (new)
+  - `apps/desktop/tests/ci-path-filter.test.ts` (new)
 - Notes:
   - The workflow is exercised for the first time by this ticket's own PR
     (it triggers on its own path).
