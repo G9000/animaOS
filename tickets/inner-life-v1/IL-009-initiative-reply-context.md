@@ -1,18 +1,18 @@
 # IL-009 - Carry initiative context into the Reply round-trip
 
-- Status: backlog
+- Status: done
 - Priority: P3
 - Scope: `apps/desktop/src/components/InitiativeOverlay.tsx`, `apps/desktop/src/pages/chat`
 - Parent: none
 - Depends on: `IL-008`
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-28 19:29 MYT
-- Started:
-- Completed:
+- Updated: 2026-08-02 02:11 MYT
+- Started: 2026-07-30 17:14 MYT
+- Completed: 2026-08-02 02:11 MYT
 
 ## Goal
 
@@ -57,8 +57,194 @@ rather than blocking IL-008 on it.
 - 2026-07-28 16:59 MYT - Codex review round 2 on PR #123: added the template-required `Spec`/`Updated`/`Started`/`Completed` lifecycle fields.
 - 2026-07-28 19:29 MYT - Codex review round 5 on PR #123: detached from `IL-000` (`Parent: none`) — the v1 parent is `done` and a backlog child inside its acceptance-bearing table made the tracker inconsistent. Lineage: filed from the IL-008 final review; IL-000 lists this under "Follow-ups Beyond v1 Scope".
 
+- 2026-07-30 17:14 MYT - Claimed and started by Claude (branch
+  `il-009-initiative-reply-context`).
+- 2026-07-30 17:23 MYT - Implemented via the chat page's existing
+  seeded-thread contract: Reply now navigates with
+  `initiativeReplyState(current)` (new pure helper in
+  `lib/initiativeReply.ts`) — the initiative text renders verbatim as the
+  opening assistant message of a fresh thread AND rides into the user's
+  first send as context messages, so it is visible to the user and
+  available to the model. State is captured before the async ack so the
+  overlay advancing to the next pending row mid-flight can't swap the
+  seeded text. 3 tests.
+
+- 2026-07-30 18:39 MYT - PR #131 review round 1 (two P1s). (1) Reopened:
+  the 17:23 MYT completion had recorded validation via a scripted edit
+  whose pattern missed this file's single-line Validation format, so the
+  ticket was certified done with `not run yet` on disk — prior completion
+  timestamp preserved here per the reopen routine; re-closed at this
+  entry's timestamp with the evidence actually recorded below. (2) Fixed
+  the in-place navigation gap: Reply while Chat is ALREADY mounted only
+  updated location.state, which mount-time refs never re-read — the ack
+  succeeded and the text vanished. Chat now classifies each navigation
+  (`classifySeedNavigation`, pure + tested) and applies seed state once
+  per location.key, deferring mid-stream arrivals until the stream
+  settles rather than dropping them or swapping the thread live.
+
+- 2026-07-30 19:38 MYT - PR #131 review round 2 (P1 + P2), completion
+  re-stamped: (1) an in-place seed navigation now CLOSES the active
+  server-side thread first (mirrors handleNewThread) — clearing only the
+  client refs let the first reply's get_or_create_thread land in the
+  still-active old conversation; the fresh thread is created on first
+  send. (2) Seed contexts ACCUMULATE (`mergeSeedContexts`, pure +
+  tested): a second Reply during the same stream, or while the first
+  seeded thread is still unsent, adds its message instead of discarding
+  the previously acked initiative's text. 25 desktop tests green.
+
+- 2026-07-30 20:43 MYT - PR #131 review round 3 (P1), completion
+  re-stamped: the in-place seed's thread closure was fire-and-forget, so
+  a fast submit (e.g. an existing draft) could still reach the server
+  while the old thread was active. Sends are now gated on the in-flight
+  closure (ref-guarded, with a one-moment notice) until the close
+  settles.
+
+- 2026-07-30 21:59 MYT - PR #131 review round 4 (3 P1s), completion
+  re-stamped: (1) handleSubmit consumed the seed refs BEFORE sendMessage
+  could reject — a guard rejection then retried on the non-seed path and
+  the model never saw the acked initiative; sendMessage now returns
+  whether the send actually proceeded and the refs are consumed only on
+  acceptance. (2) A FAILED thread close silently cleared the rotation
+  guard, so the next reply landed in the still-active old thread; the
+  guard is now a pending-close id that sendMessage itself re-settles
+  (retry-on-next-send) before any reply is routed — self-healing for
+  latency AND failure. (3) The AGENTS.md validation gate ran on an
+  isolated server (:8899, temp data dir): GET /health ok; critical-flow
+  smoke — auth register+login, memory item create/list, settings
+  (presence GET/PUT round-trip incl. initiativeEnabled), chat history +
+  brief greeting, initiatives poll — all pass, recorded below.
+
+- 2026-07-30 23:43 MYT - PR #131 review round 5 (P1 + 2 P2), completion
+  re-stamped: (1) submissions are serialized by a synchronous in-flight
+  latch — the close-await yields before `streaming` is set, so a double
+  submit previously passed every guard twice and started two streams;
+  (2) handleSubmit now consumes only the seed PREFIX it actually sent —
+  a Reply merging mid-send stays queued instead of being discarded by
+  the unconditional clear; (3) the recorded `bun run build` evidence was
+  from the round-2 head — re-run and recorded on THIS final head.
+
+- 2026-07-31 00:36 MYT - PR #131 review round 6 (P1 + P2), completion
+  re-stamped: (1) settleSeedClose memoizes its in-flight promise — the
+  eager close and the send guard now share ONE POST instead of racing
+  two concurrent closes into duplicate on_thread_close side effects;
+  (2) abandoning the seeded reply (selecting another thread / New
+  Thread) clears the pending-close guard with one final best-effort
+  close — except when re-opening the very thread the close targets —
+  so a persistently failing close can no longer wedge unrelated
+  conversations. Build re-run on this head: pass.
+
+- 2026-07-31 03:03 MYT - PR #131 review round 7 (2 P1s), completion
+  re-stamped: (1) the MOUNT seed path (Reply from another route) now
+  registers the active server thread for closure exactly like the
+  in-place path — it previously only cleared client state, so the first
+  submit mixed the reply into the old conversation; (2) New Thread now
+  ADOPTS a pending seed close instead of abandoning it (its semantics
+  want the old conversation closed anyway) — abandoning left the old
+  thread active with a usable composer. Build re-run on this head: pass.
+
+- 2026-07-31 13:35 MYT - PR #131 review round 8 (2 P1s), completion re-stamped:
+  (1) abandoning a seed no longer bypasses the memoized close — it
+  reuses the in-flight request (retrying only if that one definitively
+  failed, which is sequential rather than concurrent), so selecting
+  another thread mid-close can't duplicate on_thread_close; (2) a mount
+  seed whose /threads request FAILED no longer treats 'no active thread'
+  as proven — it flags discovery as unknown and the send guard re-runs
+  discovery (registering any needed close) before routing the reply,
+  rejecting with a retry message while it stays unknown.
+
+- 2026-08-01 21:02 MYT - PR #131 review round 9 (P1): the discovery guard only closed
+  AFTER /threads resolved, so a mount seed left an unsafe window — 
+  seedActiveRef is live immediately and a fast submit during startup
+  streamed with no threadId, letting the server pick the still-active
+  old thread. The guard now STARTS closed for mount seeds
+  (locationState.seedThread) and opens only when discovery actually
+  succeeds; in-place seeds clear it since they know the thread id
+  synchronously. Build re-run on this head: pass.
+
+- 2026-08-01 21:26 MYT - PR #131 review round 10 (P1): the round-8 close memoization
+  held a bare promise, so thread A's in-flight request could settle (or
+  fail) on behalf of a newly pending thread B — B's close skipped while
+  A stayed active, or A's retry closing B. The in-flight close is now
+  keyed by thread id: reuse only on a match, the success path clears the
+  pending marker only if it still points at that thread, and
+  `classifySeedCloseAbandon` takes `inFlightThreadId` so the association
+  is part of the tested contract. (The round's second thread — mount-seed
+  discovery init — was reviewed at 4350044, the Update-branch head that
+  predates the round-9 fix; no code change needed.)
+
+- 2026-08-01 22:04 MYT - PR #131 review round 11 (P1): a send suspended on the
+  discovery/close awaits resumed without rechecking intent — if the user
+  selected another thread or pressed New Thread meanwhile, it posted the
+  captured seed with a stale thread id, creating a hidden conversation
+  and yanking the UI there when the trace returned. A conversation-intent
+  epoch is bumped by every visible-conversation change (thread select,
+  New Thread, new seed) and compared after the awaits; a mismatch aborts
+  the send and leaves the draft for a deliberate resend.
+
+- 2026-08-02 00:55 MYT - PR #131 review round 12 (P1): re-opening the very thread whose
+  eager close is in flight cleared the send guard while the close kept
+  running — a submit could then start against a thread that was about to
+  be closed, so the close committed mid-turn and archival ran while the
+  turn was still writing (later messages landing outside the archived
+  transcript). handleSelectThread now awaits that in-flight close before
+  loading the thread, and a `threadSettleRef` gate makes sendMessage wait
+  on any in-flight thread-state transition before routing anything.
+
+- 2026-08-02 01:45 MYT - PR #131 review round 13 (P1): selecting a thread whose close
+  was in flight and submitting immediately left both operations waking
+  from the SAME settle promise — the send could resume first and route
+  with the pre-selection thread id (null), storing the turn in a
+  different conversation and letting the trace switch the UI there. Two
+  fixes: handleSelectThread now claims the selection (ref + state) BEFORE
+  awaiting, and the stream request routes from `currentThreadIdRef.current`
+  instead of the render-closure `currentThreadId`, which goes stale across
+  every await sendMessage performs (settle, discovery, close).
+
+- 2026-08-02 01:57 MYT - PR #131 review round 14 (2 P1s): (1) in-place seeds cleared
+  the discovery guard unconditionally, but an already-MOUNTED /chat that
+  is still hydrating doesn't know its live thread — Reply + a quick
+  submit then bypassed both guards. The clear is now conditional on the
+  initial /threads request having resolved (`threadsHydratedRef`).
+  (2) The in-flight close was a single {threadId, promise} slot, so a
+  close for T2 erased the record of an unfinished close for T1 and
+  re-selecting T1 permitted a send while its close was still running.
+  In-flight closes are now a per-thread Map, with one `closeThreadOnce`
+  entry point that de-duplicates per thread.
+
+- 2026-08-02 02:11 MYT - PR #131 review round 15 (2 P1s, both fallout of round 13's
+  ref routing): (1) a thread selection suspended on an in-flight close
+  could be superseded by a newer selection, then resume and load ITS
+  messages while `currentThreadIdRef` targeted the newer thread — UI
+  showing one conversation while replies went to another. Each selection
+  now carries its own epoch and returns if superseded, both after the
+  close wait and after the message fetch. (2) `sendMessage` re-checked
+  the epoch after the settle/discovery/close awaits but then awaited
+  FileReader for image attachments; a slow read let a thread switch
+  land, and routing from the live ref carried the draft into the new
+  conversation. The epoch is re-checked after attachment conversion,
+  before any UI state is consumed or the stream starts.
+
 ## Validation
 
-- Commands: not run yet.
-- Changed paths: none.
-- Notes: none.
+- Commands:
+  - `bun test tests/initiativeReply.test.ts tests/initiativePoller.test.ts` —
+    30 pass (15 IL-009 tests + the 15 poller regressions)
+  - `bunx tsc --noEmit` — clean
+  - `bun run build` (Nx server + desktop, cargo check) — pass on the
+    FINAL head (round 15), 2026-08-02 02:11 MYT
+- Changed paths:
+  - `apps/desktop/src/lib/initiativeReply.ts` (new)
+  - `apps/desktop/src/components/InitiativeOverlay.tsx`
+  - `apps/desktop/src/pages/chat/Chat.tsx`
+  - `apps/desktop/tests/initiativeReply.test.ts` (new)
+  - Validation gate (2026-07-30 21:59 MYT, isolated server :8899):
+    `GET /health` -> status ok; smoke: auth (register + login), memory
+    (create + list), settings (presence GET/PUT), chat (history + brief),
+    initiatives poll — all green. Desktop suite: 25/25 owned tests (the
+    3 failing files — layout-nav, layout-top-nav, recovery-credential —
+    fail identically without this branch's changes; pre-existing drift).
+- Notes:
+  - Server suite untouched (no server files in this branch's diff).
+  - Residual risk: a seed navigation arriving mid-stream is deferred, not
+    applied instantly — deliberate (applying would swap the thread under a
+    live stream; dropping would lose the acked text).

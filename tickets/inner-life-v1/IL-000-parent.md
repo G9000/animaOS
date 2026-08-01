@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-07-31 14:59 MYT
+- Updated: 2026-08-02 02:20 MYT
 - Started: 2026-07-15 16:55 MYT
 - Completed: 2026-07-29 12:35 MYT
 
@@ -32,7 +32,7 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 
 ## Follow-ups Beyond v1 Scope
 
-- `IL-009` - Initiative reply context carry-over (`backlog`, depends on `IL-008`): optional polish filed from the IL-008 final review. Tracked as a standalone follow-up, not a child of this closed v1 parent — the v1 acceptance ("all child tickets done") is judged over the child table above.
+- `IL-009` - Initiative reply context carry-over (`done` 2026-08-02, PR #131 merged as `503fb4a`, depends on `IL-008`): optional polish filed from the IL-008 final review. Tracked as a standalone follow-up, not a child of this closed v1 parent — the v1 acceptance ("all child tickets done") is judged over the child table above.
 - `IL-010` - Ambient dream-sharing consumer (`in_progress`, PR #130 under review, depends on `IL-007`, `IL-008`): filed from IL-008 review round 10 when the Ambient option was withdrawn pending a real consumer; the greeting weave now consumes the mode and the selector offers Ambient again.
 - `IL-011` - Return acknowledgment: grounded held-thought greeting + reconnect energy texture (`done` 2026-07-29, PR #128, depends on `IL-002`, `IL-003`).
 - `IL-012` - Mood-congruent reconsolidation target (`done` 2026-07-29, PR #128, depends on `IL-006`).
