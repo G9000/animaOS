@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-28 16:13 MYT
-- Updated: 2026-07-31 13:35 MYT
+- Updated: 2026-08-01 21:02 MYT
 - Started: 2026-07-30 17:14 MYT
-- Completed: 2026-07-31 13:35 MYT
+- Completed: 2026-08-01 21:02 MYT
 
 ## Goal
 
@@ -152,6 +152,15 @@ rather than blocking IL-008 on it.
   discovery (registering any needed close) before routing the reply,
   rejecting with a retry message while it stays unknown.
 
+- 2026-08-01 21:02 MYT - PR #131 review round 9 (P1): the discovery guard only closed
+  AFTER /threads resolved, so a mount seed left an unsafe window — 
+  seedActiveRef is live immediately and a fast submit during startup
+  streamed with no threadId, letting the server pick the still-active
+  old thread. The guard now STARTS closed for mount seeds
+  (locationState.seedThread) and opens only when discovery actually
+  succeeds; in-place seeds clear it since they know the thread id
+  synchronously. Build re-run on this head: pass.
+
 ## Validation
 
 - Commands:
@@ -159,7 +168,7 @@ rather than blocking IL-008 on it.
     29 pass (14 IL-009 tests + the 15 poller regressions)
   - `bunx tsc --noEmit` — clean
   - `bun run build` (Nx server + desktop, cargo check) — pass on the
-    FINAL head (round 8), 2026-07-31 13:35 MYT
+    FINAL head (round 9), 2026-08-01 21:02 MYT
 - Changed paths:
   - `apps/desktop/src/lib/initiativeReply.ts` (new)
   - `apps/desktop/src/components/InitiativeOverlay.tsx`

@@ -621,10 +621,17 @@ export default function Chat() {
     }
     void api.threads.close(abandoned).catch(() => {});
   };
-  // Set when a seed mounted but the /threads request FAILED: an absent
-  // active thread is then unknown, not proven absent (PR #131 round 8).
-  // The send guard re-runs discovery before routing any reply.
-  const seedNeedsThreadDiscoveryRef = useRef(false);
+  // Whether an active server thread is still UNDISCOVERED for a seeded
+  // reply. Starts true for a MOUNT seed (PR #131 round 9): seedActiveRef is
+  // live immediately, but /threads is still in flight — a fast submit in
+  // that window would stream with no threadId and let the server pick the
+  // user's still-active old thread. Cleared once discovery succeeds; left
+  // true when it fails (PR #131 round 8), since "no active thread" is then
+  // unknown rather than proven. The send guard re-runs discovery before
+  // routing any reply while this is set.
+  const seedNeedsThreadDiscoveryRef = useRef(
+    locationState?.seedThread === true,
+  );
   const settleSeedDiscovery = async (): Promise<boolean> => {
     if (!seedNeedsThreadDiscoveryRef.current) return true;
     try {
@@ -653,6 +660,9 @@ export default function Chat() {
     // get_or_create_thread land in the still-active old conversation
     // (PR #131 round 2). The new thread is created on first send.
     const threadToClose = currentThreadIdRef.current;
+    // In-place seeds know the live thread id synchronously, so nothing is
+    // undiscovered here (the mount path is the async case).
+    seedNeedsThreadDiscoveryRef.current = false;
     pendingContextRef.current = merged;
     seedActiveRef.current = true;
     resumeThreadIdRef.current = null;
@@ -763,16 +773,18 @@ export default function Chat() {
       // get_or_create_thread mixes the seeded reply into that old
       // conversation. The send guard settles the close before any send.
       if (seedActiveRef.current) {
-        if (active) {
-          pendingSeedCloseRef.current = active.id;
-          void settleSeedClose();
-        } else if (!threadsRes) {
-          // The /threads request FAILED — "no active thread" is unknown,
-          // not proven (PR #131 round 8). Seeding proceeds so the user sees
-          // the initiative, but the send guard re-runs discovery (and any
-          // needed close) before the reply can be routed.
-          seedNeedsThreadDiscoveryRef.current = true;
+        if (threadsRes) {
+          // Discovery succeeded: what it found (an active thread, or
+          // genuinely none) is authoritative, so the guard opens.
+          seedNeedsThreadDiscoveryRef.current = false;
+          if (active) {
+            pendingSeedCloseRef.current = active.id;
+            void settleSeedClose();
+          }
         }
+        // On a FAILED /threads the guard stays true (round 8). Seeding
+        // proceeds either way so the user sees the initiative; the send
+        // guard settles discovery and any needed close before routing.
         seedFreshThread(pendingContextRef.current);
         return;
       }
