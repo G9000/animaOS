@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 17:43 MYT
+- Updated: 2026-08-02 17:55 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -221,6 +221,27 @@ is its own ticket:
   away, and on unmount; the round-8 approval timer bounds it, since an
   expired approval withdraws the dream and tears the effect down.
 
+- 2026-08-02 17:55 MYT - PR #135 review round 10 (three P1s, Codex, all real):
+  (1) Every client-side deadline was still an absolute SERVER instant
+  compared against `Date.now()`, so a device clock running behind extended
+  the window by exactly its error. The claim token is the server's claim
+  instant and `ambientDreamExpiresAt` is that instant plus the TTL, so their
+  difference is a pure duration; `anchorClaimDeadline` re-expresses the
+  deadline in device time the moment a response arrives, and every later
+  comparison measures elapsed local time. Network latency shortens the
+  window slightly — the safe direction.
+  (2) The receipt backoff stopped after ~88s while the claim had eight
+  minutes left, so a connection returning in between never delivered the
+  receipt and the dream was re-offered after the user had read it. The
+  schedule now repeats its final interval until the claim deadline: the
+  claim, not the attempt count, is the bound.
+  (3) An element with one pixel inside the viewport still reports as
+  intersecting, and `elementFromPoint` returns null outside the viewport —
+  which the hit test read as "unobscured". Samples outside the viewport are
+  now discarded rather than counted as clear, at least one must remain, and
+  a null inside the viewport counts as covered (the recheck timer makes a
+  wrong "no" recoverable; a wrong "yes" consumes the dream for good).
+
 ## Validation
 
 - Commands:
@@ -230,7 +251,7 @@ is its own ticket:
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
     0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
     the round-5/6 desktop-only changes
-  - `bun test tests/` (apps/desktop) — 140 passed, 0 failed (2026-08-02 17:03 MYT)
+  - `bun test tests/` (apps/desktop) — 142 passed, 0 failed (2026-08-02 17:55 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`

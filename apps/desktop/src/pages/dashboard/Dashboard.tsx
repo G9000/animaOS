@@ -27,6 +27,7 @@ import type { GalleryImage } from "./nodes/node-types";
 import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
+  anchorClaimDeadline,
   clearOneShotGreetings,
   deliverDreamReceipt,
   displayableGreeting,
@@ -193,16 +194,21 @@ export default function Dashboard() {
   // view long after an initiative had re-offered the same narrative. When
   // the timer fires the dream is withheld and the effect below re-confirms.
   useEffect(() => {
-    if (approvedClaim === null) return;
-    const expiresAt = brief?.ambientDreamExpiresAt;
+    if (approvedClaim === null || !brief?.ambientDream) return;
+    const expiresAt = brief.ambientDreamExpiresAt;
     const parsed = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     if (!Number.isFinite(parsed)) return;
+    // The deadline was re-expressed in DEVICE time when the response
+    // arrived (`anchorClaimDeadline`), so this subtraction measures elapsed
+    // local time rather than the offset between two clocks — a device clock
+    // running behind the server used to push this timer PAST the real
+    // deadline (PR #135 review).
     const timer = setTimeout(
       () => setApprovedClaim(null),
       Math.max(0, parsed - Date.now()),
     );
     return () => clearTimeout(timer);
-  }, [approvedClaim, brief?.ambientDreamExpiresAt]);
+  }, [approvedClaim, brief?.ambientDream, brief?.ambientDreamExpiresAt]);
 
   // Confirmation happens HERE and nowhere else, and only while the page is
   // visible (PR #135 review, P1). Confirming at fetch time was wrong twice
@@ -314,8 +320,10 @@ export default function Dashboard() {
           // No confirmation here: the dream stays withheld until the
           // visibility-gated effect above confirms it, so a greeting
           // fetched into a hidden window neither shows nor reserves it.
-          setBrief(g);
-          setCachedGreeting(user.id, g);
+          // The claim deadline is re-expressed in device time on arrival.
+          const arrived = anchorClaimDeadline(g);
+          setBrief(arrived);
+          setCachedGreeting(user.id, arrived);
         })
         .catch(() => {
           if (!active) return;

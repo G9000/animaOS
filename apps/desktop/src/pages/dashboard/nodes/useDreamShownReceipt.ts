@@ -20,8 +20,8 @@ import { useEffect, useRef } from "react";
  *   fixed-position surfaces above the canvas — the gallery lightbox, and an
  *   initiative card owned by the Layout, not the Dashboard. Rather than
  *   enumerate them, the element the ref is attached to is hit-tested at
- *   three points down its own height; anything else on top means the text
- *   is not being read. The ref belongs on the element that renders the
+ *   three points down its own height, each of which must lie inside the
+ *   viewport; anything else on top means the text is not being read. The ref belongs on the element that renders the
  *   greeting TEXT, not the whole card: an overlay can cover the sentence
  *   while the card's centre stays clear.
  *
@@ -63,16 +63,32 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
       if (!box || box.width === 0 || box.height === 0) return true;
       if (typeof document.elementFromPoint !== "function") return true;
       const x = box.left + box.width / 2;
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      if (x < 0 || x > viewportWidth) return false;
       // Sample down the text's own height: a corner overlay can cover the
       // last line of a greeting while leaving its middle clear.
-      return [0.15, 0.5, 0.85].every((fraction) => {
-        const topmost = document.elementFromPoint(x, box.top + box.height * fraction);
-        if (topmost === null) return true;
+      let sampled = 0;
+      for (const fraction of [0.15, 0.5, 0.85]) {
+        const y = box.top + box.height * fraction;
+        // Off-screen samples say nothing about occlusion — an element with
+        // one pixel inside the viewport still counts as intersecting, and
+        // `elementFromPoint` answers null outside it (PR #135 review). They
+        // are not counted rather than counted as clear.
+        if (y < 0 || y > viewportHeight) continue;
+        sampled += 1;
+        const topmost = document.elementFromPoint(x, y);
         // Our own subtree, or a container that wraps it (the canvas pane can
         // swallow the hit): not occluded. Anything else — a lightbox, the
         // initiative card — is stacked on top, so the text is not readable.
-        return element.contains(topmost) || topmost.contains(element);
-      });
+        // Null inside the viewport means something non-elemental is there;
+        // treat it as covered. The recheck timer below makes a wrong "no"
+        // recoverable, whereas a wrong "yes" consumes the dream for good.
+        if (topmost === null) return false;
+        if (!element.contains(topmost) && !topmost.contains(element)) return false;
+      }
+      // Every sample fell outside the viewport: the text is not being read.
+      return sampled > 0;
     };
 
     const reportOnce = () => {

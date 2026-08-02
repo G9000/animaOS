@@ -245,10 +245,13 @@ describe("confirming the claim before voicing (PR #135 review round 3)", () => {
       ambientDreamExpiresAt: new Date(T0 + 600_000).toISOString(),
       ...overrides,
     });
+  // A renewal the server would send: the token IS the claim instant and
+  // expiresAt is that instant plus the server's TTL (here 10 minutes).
+  const RENEWED_TOKEN = "2026-08-02T06:05:00.000Z";
   const ok = (token: string) => ({
     confirmed: true,
     claimToken: token,
-    expiresAt: new Date(T0 + 900_000).toISOString(),
+    expiresAt: new Date(Date.parse(token) + 600_000).toISOString(),
   });
   const refused = { confirmed: false, claimToken: null, expiresAt: null };
 
@@ -260,12 +263,28 @@ describe("confirming the claim before voicing (PR #135 review round 3)", () => {
   });
 
   test("a confirmed claim is voiced and carries the RENEWED token", async () => {
-    const shown = await voiceableGreeting(dreamy(), async () => ok("renewed"));
+    const shown = await voiceableGreeting(dreamy(), async () => ok(RENEWED_TOKEN));
     expect(shown.ambientDream).toBe(true);
     expect(shown.message).toContain("I dreamt");
     // The ack must use the renewed token, not the spent one.
-    expect(shown.ambientDreamClaimToken).toBe("renewed");
-    expect(shown.ambientDreamExpiresAt).toBe(new Date(T0 + 900_000).toISOString());
+    expect(shown.ambientDreamClaimToken).toBe(RENEWED_TOKEN);
+    // The deadline is re-expressed in DEVICE time on arrival (round 10), so
+    // a device clock offset from the server cannot extend the window: it is
+    // the server's TTL counted from now, not the server's absolute instant.
+    expect(shown.ambientDreamExpiresAt).toBe(new Date(T0 + 600_000).toISOString());
+  });
+
+  test("a skewed device clock cannot extend the claim window (round 10)", async () => {
+    // Server timestamps an hour ahead of this device: comparing the absolute
+    // deadline against Date.now() would have granted an extra hour of
+    // display. Only the DURATION between the two server stamps is used.
+    const skewed = {
+      confirmed: true,
+      claimToken: "2026-08-02T07:05:00.000Z",
+      expiresAt: "2026-08-02T07:15:00.000Z",
+    };
+    const shown = await voiceableGreeting(dreamy(), async () => skewed);
+    expect(shown.ambientDreamExpiresAt).toBe(new Date(T0 + 600_000).toISOString());
   });
 
   test("a refused claim degrades to the dream-free copy", async () => {
@@ -467,8 +486,30 @@ describe("dream receipts survive a dropped request (PR #135 review round 5)", ()
     expect(attempts).toBe(1);
   });
 
-  test("the backoff is exhausted rather than looping forever", async () => {
-    const h = harness(3_600_000);
+  test("retries continue at the final interval until the deadline (round 10)", async () => {
+    // A connection that returns after the backoff list is exhausted but
+    // while the claim is still live must still deliver the receipt — the
+    // claim, not the attempt count, is the bound.
+    const h = harness(600_000); // a full default TTL
+    let attempts = 0;
+    const delivered = await deliverDreamReceipt(
+      async () => {
+        attempts += 1;
+        if (attempts < 8) throw new Error("offline");
+        return { acknowledged: true };
+      },
+      { deadline: h.deadline, now: h.now, wait: h.wait },
+    );
+    expect(delivered).toBe(true);
+    expect(attempts).toBe(8);
+    // The schedule walks the list, then repeats its last interval.
+    const last = ACK_RETRY_DELAYS_MS[ACK_RETRY_DELAYS_MS.length - 1];
+    expect(h.waited.slice(0, ACK_RETRY_DELAYS_MS.length)).toEqual(ACK_RETRY_DELAYS_MS);
+    expect(h.waited.slice(ACK_RETRY_DELAYS_MS.length)).toEqual([last, last, last]);
+  });
+
+  test("retrying still stops at the claim deadline, not before or after", async () => {
+    const h = harness(600_000);
     let attempts = 0;
     const delivered = await deliverDreamReceipt(
       async () => {
@@ -478,8 +519,14 @@ describe("dream receipts survive a dropped request (PR #135 review round 5)", ()
       { deadline: h.deadline, now: h.now, wait: h.wait },
     );
     expect(delivered).toBe(false);
-    expect(attempts).toBe(ACK_RETRY_DELAYS_MS.length + 1);
-    expect(h.waited).toEqual(ACK_RETRY_DELAYS_MS);
+    // Every wait fitted inside the claim, and the run ended because the next
+    // one would not have.
+    const total = h.waited.reduce((sum, ms) => sum + ms, 0);
+    expect(total).toBeLessThan(600_000);
+    expect(total + ACK_RETRY_DELAYS_MS[ACK_RETRY_DELAYS_MS.length - 1]).toBeGreaterThanOrEqual(
+      600_000,
+    );
+    expect(attempts).toBe(h.waited.length + 1);
   });
 });
 

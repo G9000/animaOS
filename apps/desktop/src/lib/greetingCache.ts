@@ -93,10 +93,56 @@ type OneShotEntry = {
   expiresAt?: number;
 };
 
+/** How long a claim lives, in ms, taken from two SERVER timestamps
+ * (PR #135 review, P1).
+ *
+ * The claim token is the instant the server took the claim and
+ * `ambientDreamExpiresAt` is that instant plus the server's TTL, so their
+ * difference is the TTL itself — a duration, free of any comparison between
+ * the device clock and the server's. Comparing the absolute deadline
+ * against `Date.now()` was skewed by exactly the device's clock error, in
+ * the unsafe direction whenever that clock runs behind.
+ *
+ * Falls back to {@link ONESHOT_FALLBACK_TTL_MS} when either timestamp is
+ * missing or the pair is implausible. */
+export function claimTtlMs(greeting: Greeting): number {
+  const startsAt = greeting.ambientDreamClaimToken
+    ? Date.parse(greeting.ambientDreamClaimToken)
+    : Number.NaN;
+  const endsAt = greeting.ambientDreamExpiresAt
+    ? Date.parse(greeting.ambientDreamExpiresAt)
+    : Number.NaN;
+  const ttl = endsAt - startsAt;
+  if (!Number.isFinite(ttl) || ttl <= 0 || ttl > MAX_PLAUSIBLE_TTL_MS) {
+    return ONESHOT_FALLBACK_TTL_MS;
+  }
+  return ttl;
+}
+
+/** A claim longer than this is not credible and is treated as missing —
+ * a guard against a malformed pair silently granting an endless lifetime. */
+const MAX_PLAUSIBLE_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Re-express a greeting's claim deadline in DEVICE time (PR #135 review).
+ *
+ * Called the moment a response arrives, so the remaining lifetime is the
+ * server's TTL counted from the device's own clock. Every later comparison
+ * then measures elapsed local time rather than the offset between two
+ * clocks. Network latency shortens the window slightly, which is the safe
+ * direction: the client stops trusting the claim a little before the server
+ * does, never after.
+ */
+export function anchorClaimDeadline(greeting: Greeting, now = Date.now()): Greeting {
+  if (!greeting.ambientDream || !greeting.ambientDreamClaimToken) return greeting;
+  return {
+    ...greeting,
+    ambientDreamExpiresAt: new Date(now + claimTtlMs(greeting)).toISOString(),
+  };
+}
+
 /** Epoch ms at which a stashed dream-bearing greeting stops being safe to
- * show. The server states the deadline because the TTL is its
- * configuration; a malformed or missing value falls back to the stash time
- * plus {@link ONESHOT_FALLBACK_TTL_MS}. */
+ * show — already expressed in device time by {@link anchorClaimDeadline}. */
 function oneShotExpiryFor(greeting: Greeting, now: number): number {
   const stated = greeting.ambientDreamExpiresAt;
   if (stated) {
@@ -176,13 +222,16 @@ export function stashOneShotGreeting(
   if (!live) return; // logged out or locked
   if (originUnlockToken !== undefined && originUnlockToken !== live) return;
   const now = Date.now();
-  const expiresAt = oneShotExpiryFor(greeting, now);
+  // Anchor the deadline to THIS device's clock (PR #135 review): the stash
+  // may be read minutes later, and a skewed clock must not extend it.
+  const anchored = anchorClaimDeadline(greeting, now);
+  const expiresAt = oneShotExpiryFor(anchored, now);
   // Already past the claim deadline when it arrived (a very slow response):
   // storing it would only queue a duplicate disclosure.
   if (expiresAt <= now) return;
   writeOneShotQueue([
     ...readOneShotQueue(),
-    { greeting, userId, expiresAt },
+    { greeting: anchored, userId, expiresAt },
   ]);
 }
 
@@ -284,11 +333,13 @@ export async function voiceableGreeting(
   try {
     const answer = await confirm(greeting.ambientDreamId, token);
     if (!answer.confirmed || !answer.claimToken) return dreamFreeGreeting(greeting);
-    return {
+    // Anchored to the device clock on arrival, so the renewed deadline is a
+    // duration counted locally rather than a cross-clock comparison.
+    return anchorClaimDeadline({
       ...greeting,
       ambientDreamClaimToken: answer.claimToken,
       ambientDreamExpiresAt: answer.expiresAt,
-    };
+    });
   } catch {
     return dreamFreeGreeting(greeting);
   }
@@ -354,8 +405,13 @@ export async function deliverDreamReceipt(
       // the claim was superseded. Retrying cannot change it.
       return result.acknowledged;
     } catch {
-      const delay = delaysMs[attempt];
-      // Out of attempts, or the next one would land after the claim lapsed.
+      // Past the end of the schedule the last interval repeats, so a
+      // connection that returns minutes later still delivers the receipt
+      // (PR #135 review): the claim, not the attempt count, is the bound.
+      const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)];
+      // The next attempt would land after the claim lapsed — by then the
+      // server may have re-offered the dream, so a late receipt would
+      // surface a claim that is no longer ours.
       if (delay === undefined || now() + delay >= deadline) return false;
       await wait(delay);
     }
