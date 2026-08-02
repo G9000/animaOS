@@ -772,6 +772,8 @@ mod tests {
         let node = Node {
             path: LogicalPath::parse("Notes/object.bin").unwrap(),
             stable_id: OBJECT_ID.to_owned(),
+            parent_id: None,
+            role: None,
             object: Some(ObjectNode {
                 revision: 1,
                 kind: ObjectKind::Note,

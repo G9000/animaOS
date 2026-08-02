@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -277,6 +278,208 @@ def test_inactive_catalog_is_idempotent_and_publishes_atomically() -> None:
     with pytest.raises(RuntimeError, match="publication failed"):
         second.publish(fail)
     assert published == [first]
+
+
+def test_legacy_names_are_portable_unique_and_preserve_exact_display_metadata() -> None:
+    first_attachment = LegacyDiaryAttachment(
+        id=101,
+        entry_id=10,
+        kind="file",
+        mime_type="text/plain",
+        data=b"first",
+        sha256=hashlib.sha256(b"first").hexdigest(),
+        filename="same/name.txt",
+        caption=None,
+    )
+    second_attachment = LegacyDiaryAttachment(
+        id=102,
+        entry_id=11,
+        kind="file",
+        mime_type="text/plain",
+        data=b"second",
+        sha256=hashlib.sha256(b"second").hexdigest(),
+        filename="same/name.txt",
+        caption=None,
+    )
+    decomposed_name = "Cafe\u0301"
+    catalog = build_inactive_diary_catalog(
+        user_id=7,
+        folders=(
+            LegacyDiaryFolder(id=1, name="Duplicate", parent_id=None, order=0),
+            LegacyDiaryFolder(id=2, name="Duplicate", parent_id=None, order=1),
+            LegacyDiaryFolder(id=3, name="path/to\\folder", parent_id=None, order=2),
+            LegacyDiaryFolder(id=4, name=decomposed_name, parent_id=None, order=3),
+            LegacyDiaryFolder(id=5, name="..", parent_id=None, order=4),
+        ),
+        entries=(
+            LegacyDiaryEntry(
+                id=10,
+                entry_date="2026-08-02",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(first_attachment,),
+            ),
+            LegacyDiaryEntry(
+                id=11,
+                entry_date="2026-08-03",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(second_attachment,),
+            ),
+        ),
+    )
+
+    legacy_folders = [
+        catalog.folder(migration_opaque_id("diary-folder", str(folder_id)))
+        for folder_id in range(1, 6)
+    ]
+    sibling_names = [folder.name for folder in legacy_folders]
+    assert len(sibling_names) == len(set(sibling_names))
+    assert all(name not in {".", ".."} for name in sibling_names)
+    assert all("/" not in name and "\\" not in name for name in sibling_names)
+    assert all(unicodedata.normalize("NFC", name) == name for name in sibling_names)
+    assert legacy_folders[3].name == "Caf\u00e9"
+    assert [folder.metadata["displayName"] for folder in legacy_folders] == [
+        "Duplicate",
+        "Duplicate",
+        "path/to\\folder",
+        decomposed_name,
+        "..",
+    ]
+    assert [folder.metadata["originalName"] for folder in legacy_folders] == [
+        "Duplicate",
+        "Duplicate",
+        "path/to\\folder",
+        decomposed_name,
+        "..",
+    ]
+
+    attachment_ids = [
+        migration_opaque_id("diary-attachment", "101"),
+        migration_opaque_id("diary-attachment", "102"),
+    ]
+    attachments = [catalog.object(stable_id) for stable_id in attachment_ids]
+    assert len({item.name for item in attachments}) == 2
+    assert all("/" not in item.name and "\\" not in item.name for item in attachments)
+    assert [item.metadata["displayName"] for item in attachments] == [
+        "same/name.txt",
+        "same/name.txt",
+    ]
+    assert [item.metadata["originalName"] for item in attachments] == [
+        "same/name.txt",
+        "same/name.txt",
+    ]
+
+    rerun = build_inactive_diary_catalog(
+        user_id=7,
+        folders=(
+            LegacyDiaryFolder(id=1, name="Duplicate", parent_id=None, order=0),
+            LegacyDiaryFolder(id=2, name="Duplicate", parent_id=None, order=1),
+            LegacyDiaryFolder(id=3, name="path/to\\folder", parent_id=None, order=2),
+            LegacyDiaryFolder(id=4, name=decomposed_name, parent_id=None, order=3),
+            LegacyDiaryFolder(id=5, name="..", parent_id=None, order=4),
+        ),
+        entries=(
+            LegacyDiaryEntry(
+                id=10,
+                entry_date="2026-08-02",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(first_attachment,),
+            ),
+            LegacyDiaryEntry(
+                id=11,
+                entry_date="2026-08-03",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(second_attachment,),
+            ),
+        ),
+    )
+    assert rerun.catalog_hash == catalog.catalog_hash
+    assert [(item.stable_id, item.name) for item in rerun.folders] == [
+        (item.stable_id, item.name) for item in catalog.folders
+    ]
+    assert [(item.stable_id, item.name) for item in rerun.objects] == [
+        (item.stable_id, item.name) for item in catalog.objects
+    ]
+
+
+def test_mapped_legacy_names_publish_read_back_and_rerun_natively(tmp_path: Path) -> None:
+    data = b"portable"
+    attachment = LegacyDiaryAttachment(
+        id=201,
+        entry_id=20,
+        kind="file",
+        mime_type="application/octet-stream",
+        data=data,
+        sha256=hashlib.sha256(data).hexdigest(),
+        filename="../portable.bin",
+        caption=None,
+        created_at="2026-08-02T00:00:00Z",
+    )
+    catalog = build_inactive_diary_catalog(
+        user_id=20,
+        folders=(
+            LegacyDiaryFolder(id=20, name="bad/name", parent_id=None, order=0),
+        ),
+        entries=(
+            LegacyDiaryEntry(
+                id=20,
+                entry_date="2026-08-02",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=20,
+                cover_attachment_id=None,
+                attachments=(attachment,),
+                created_at="2026-08-02T00:00:00Z",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+    session = anima_core.CorefsSession(str(tmp_path / "core"), "portable-writing-names")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+
+    first = catalog.publish_native(corefs_session=session, keys=keys)
+    prepared = read_prepared_writing_objects(
+        session=SimpleNamespace(corefs_session=session, corefs_keys=keys)
+    )
+    attachment_id = migration_opaque_id("diary-attachment", "201")
+    native_attachment = next(item for item in prepared if item.stable_id == attachment_id)
+    assert native_attachment.content == data
+    assert "/" not in catalog.object(attachment_id).name
+
+    revisions = {item.stable_id: item.revision for item in prepared}
+    rerun = catalog.with_expected_revisions(revisions)
+    second = rerun.publish_native(
+        corefs_session=session,
+        keys=keys,
+        expected_head=(int(first["generation"]), str(first["catalogHash"])),
+    )
+    assert second["published"] is False
+    assert session.validation_snapshot(keys) == {
+        "generation": int(first["generation"]),
+        "catalogHash": str(first["catalogHash"]),
+    }
+    assert catalog.object(attachment_id).stable_id == attachment_id
 
 
 def test_legacy_folder_policy_is_carried_into_native_descendant_policy() -> None:

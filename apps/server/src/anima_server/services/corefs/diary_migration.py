@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -24,6 +25,90 @@ from anima_server.services.corefs.formats import (
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 logger = logging.getLogger(__name__)
+
+_MAX_PORTABLE_NAME_BYTES = 255
+
+
+def _truncate_portable_name(value: str, suffix: str = "") -> str:
+    """Bound a portable component without splitting a Unicode scalar."""
+    available = _MAX_PORTABLE_NAME_BYTES - len(suffix.encode("utf-8"))
+    if available <= 0:
+        raise ValueError("Portable name suffix exceeds the CoreFS limit.")
+    prefix = value
+    while len(prefix.encode("utf-8")) > available:
+        prefix = prefix[:-1]
+    return f"{prefix}{suffix}"
+
+
+def _portable_name_base(value: str, *, stable_id: str) -> str:
+    """Encode a legacy display name into one valid deterministic CoreFS component."""
+    normalized = unicodedata.normalize("NFC", value)
+    encoded = "".join(
+        (
+            "".join(f"~{byte:02X}" for byte in character.encode("utf-8"))
+            if character in {"/", "\\"} or unicodedata.category(character) == "Cc"
+            else character
+        )
+        for character in normalized
+    )
+    if encoded in {"", ".", ".."}:
+        encoded = (
+            "".join(f"~{byte:02X}" for byte in normalized.encode("utf-8"))
+            or f"item-{stable_id}"
+        )
+    if len(encoded.encode("utf-8")) > _MAX_PORTABLE_NAME_BYTES:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+        encoded = _truncate_portable_name(encoded, f"~{digest}")
+    return encoded
+
+
+def _portable_catalog_names(
+    folders: list[InactiveFolder],
+    objects: list[InactiveObject],
+) -> tuple[list[InactiveFolder], list[InactiveObject]]:
+    """Normalize all components and deterministically disambiguate siblings."""
+    entries = [
+        ("folder", index, item.parent_id, item.stable_id, item.name)
+        for index, item in enumerate(folders)
+    ] + [
+        ("object", index, item.parent_id, item.stable_id, item.name)
+        for index, item in enumerate(objects)
+    ]
+    bases = {
+        (kind, index): _portable_name_base(name, stable_id=stable_id)
+        for kind, index, _parent_id, stable_id, name in entries
+    }
+    groups: dict[tuple[str | None, str], list[tuple[str, int, str]]] = {}
+    for kind, index, parent_id, stable_id, _name in entries:
+        groups.setdefault((parent_id, bases[(kind, index)]), []).append(
+            (kind, index, stable_id)
+        )
+    names = dict(bases)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for kind, index, stable_id in members:
+            names[(kind, index)] = _truncate_portable_name(
+                bases[(kind, index)], f"~{stable_id}"
+            )
+
+    # A legacy base may itself equal another member's disambiguated spelling.
+    # In that rare case suffix every component with its globally unique stable
+    # identity, which makes sibling uniqueness unconditional and deterministic.
+    resulting = [
+        (parent_id, names[(kind, index)])
+        for kind, index, parent_id, _stable_id, _name in entries
+    ]
+    if len(resulting) != len(set(resulting)):
+        for kind, index, _parent_id, stable_id, _name in entries:
+            names[(kind, index)] = _truncate_portable_name(
+                bases[(kind, index)], f"~{stable_id}"
+            )
+
+    return (
+        [replace(item, name=names[("folder", index)]) for index, item in enumerate(folders)],
+        [replace(item, name=names[("object", index)]) for index, item in enumerate(objects)],
+    )
 
 
 def _native_folder_policy(value: str) -> str:
@@ -339,6 +424,8 @@ def build_inactive_diary_catalog(
                 policy=native_policy,
                 metadata={
                     "legacyId": folder.id,
+                    "displayName": folder.name,
+                    "originalName": folder.name,
                     "order": folder.order,
                     "policy": folder.policy,
                     "createdAt": folder.created_at,
@@ -394,6 +481,8 @@ def build_inactive_diary_catalog(
                     metadata={
                         "legacyId": attachment.id,
                         "legacyEntryId": attachment.entry_id,
+                        "displayName": attachment.filename,
+                        "originalName": attachment.filename,
                         "kind": attachment.kind,
                         "caption": attachment.caption,
                         "filename": attachment.filename,
@@ -553,6 +642,7 @@ def build_inactive_diary_catalog(
             )
         )
 
+    converted_folders, objects = _portable_catalog_names(converted_folders, objects)
     all_child_pairs = [
         *((folder.parent_id, folder.stable_id) for folder in converted_folders),
         *((item.parent_id, item.stable_id) for item in objects),
