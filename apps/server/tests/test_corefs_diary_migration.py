@@ -151,6 +151,117 @@ def test_public_draft_schema_round_trips_four_byte_unicode_through_native_bounda
     assert native.validation_snapshot(keys) == before
 
 
+def test_restart_rebuild_preserves_extracted_draft_attachment_exactly_and_is_a_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class EmptyDb:
+        def scalars(self, _statement: object) -> EmptyDb:
+            return self
+
+        def all(self) -> list[object]:
+            return []
+
+    monkeypatch.setattr("anima_server.services.core.update_core_manifest", lambda _mutator: None)
+    root = tmp_path / "core"
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    first_session = anima_core.CorefsSession(str(root), "draft-attachment-rebuild")
+    image = b"restart-safe-image"
+    body = '<p><img src="data:image/png;base64,' + base64.b64encode(image).decode() + '"></p>'
+    first = prepare_diary_validation_catalog(
+        session=SimpleNamespace(
+            user_id=41,
+            corefs_session=first_session,
+            corefs_keys=keys,
+        ),
+        db=EmptyDb(),
+        staged_drafts=(
+            LegacyDiaryDraft(
+                id="restart-draft",
+                target_entry_id=None,
+                body=body,
+                content_type="text/html",
+                updated_at="2026-08-02T00:00:00Z",
+                native_metadata={},  # pre-source-count validation envelope
+            ),
+        ),
+    )
+    media_id = migration_opaque_id("diary-inline-media", hashlib.sha256(image).hexdigest())
+    before = read_prepared_writing_objects(
+        session=SimpleNamespace(corefs_session=first_session, corefs_keys=keys)
+    )
+    attachment_before = next(item for item in before if item.stable_id == media_id)
+
+    del first_session
+    restarted = anima_core.CorefsSession(str(root), "draft-attachment-rebuild")
+    second = prepare_diary_validation_catalog(
+        session=SimpleNamespace(
+            user_id=41,
+            corefs_session=restarted,
+            corefs_keys=keys,
+        ),
+        db=EmptyDb(),
+    )
+    after = read_prepared_writing_objects(
+        session=SimpleNamespace(corefs_session=restarted, corefs_keys=keys)
+    )
+    attachment_after = next(item for item in after if item.stable_id == media_id)
+
+    assert second.published is False
+    assert second.generation == first.generation
+    assert attachment_after == attachment_before
+    draft = decode_draft_document(next(item.content for item in after if item.kind == "draft"))
+    assert f"corefs://object/{media_id}" in draft.body
+
+
+def test_rebuild_rejects_dangling_and_foreign_draft_corefs_references() -> None:
+    dangling_id = migration_opaque_id("missing", "attachment")
+    draft = LegacyDiaryDraft(
+        id="unsafe-reference",
+        target_entry_id=None,
+        body=f'<img src="corefs://object/{dangling_id}">',
+        content_type="text/html",
+        updated_at="2026-08-02T00:00:00Z",
+    )
+    with pytest.raises(ValueError, match="dangling"):
+        build_inactive_diary_catalog(
+            user_id=1,
+            folders=(),
+            entries=(),
+            drafts=(draft,),
+        )
+
+    existing = build_inactive_diary_catalog(
+        user_id=1,
+        folders=(),
+        entries=(),
+        notes=(
+            LegacyNote(
+                id="foreign",
+                title=None,
+                body="# Not media",
+                content_type="text/markdown",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+    note = next(item for item in existing.objects if item.kind == "note")
+    foreign_draft = LegacyDiaryDraft(
+        id="foreign-reference",
+        target_entry_id=None,
+        body=f'<img src="corefs://object/{note.stable_id}">',
+        content_type="text/html",
+        updated_at="2026-08-02T00:00:00Z",
+    )
+    with pytest.raises(ValueError, match="foreign"):
+        build_inactive_diary_catalog(
+            user_id=1,
+            folders=(),
+            entries=(),
+            drafts=(foreign_draft,),
+            preserved_objects=(note,),
+        )
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -693,6 +804,9 @@ def test_native_publication_wrapper_sends_bounded_metadata_and_separate_binary_p
     payload = json.loads(session.calls[0][1])
     assert session.calls[0][2] == [item.content for item in catalog.objects]
     assert all("contentBase64" not in item for item in payload["objects"])
+    assert [item.get("sourceCharacterCount") for item in payload["objects"]] == [
+        len("<p>separate bytes</p>")
+    ]
     assert [item["contentIndex"] for item in payload["objects"]] == list(
         range(len(catalog.objects))
     )

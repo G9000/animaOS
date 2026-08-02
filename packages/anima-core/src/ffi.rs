@@ -281,6 +281,7 @@ mod python {
         content_index: Option<usize>,
         created_at: String,
         updated_at: String,
+        source_character_count: Option<usize>,
         expected_revision: Option<u64>,
         #[serde(default)]
         references: Vec<String>,
@@ -401,6 +402,7 @@ mod python {
                         content,
                         created_at: object.created_at,
                         updated_at: object.updated_at,
+                        source_character_count: object.source_character_count,
                         expected_revision: object.expected_revision,
                         references: object.references,
                         policy: validation_batch_policy(&object.policy)?,

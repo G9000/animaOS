@@ -31,9 +31,12 @@ const DRAFT_CONTENT_TYPE: &str = "application/vnd.anima.draft+json;version=1";
 const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
 const ALLOWED_ROLES: [&str; 2] = ["core.journal", "core.notes"];
 pub const MAX_WRITING_BODY_CHARS: usize = 20_000_000;
-// The public contract is character-based. Reserve the worst-case four UTF-8
-// bytes per scalar plus bounded canonical JSON fields and escaping overhead.
-pub const MAX_WRITING_DOCUMENT_BYTES: usize = 82 * 1024 * 1024;
+// Canonical HTML and JSON can expand one public source scalar to six ASCII
+// bytes (for example an apostrophe becomes `&#x27;` or a control becomes a
+// JSON `\u0000` escape). The fixed allowance covers the bounded format fields.
+pub const MAX_WRITING_CANONICAL_EXPANSION: usize = 6;
+pub const MAX_WRITING_DOCUMENT_BYTES: usize =
+    MAX_WRITING_BODY_CHARS * MAX_WRITING_CANONICAL_EXPANSION + 1024 * 1024;
 pub const MAX_WRITING_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,6 +76,7 @@ pub struct ValidationBatchObject {
     pub content: Vec<u8>,
     pub created_at: String,
     pub updated_at: String,
+    pub source_character_count: Option<usize>,
     pub expected_revision: Option<u64>,
     pub references: Vec<String>,
     pub policy: ValidationBatchPolicy,
@@ -738,6 +742,12 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
         object.kind,
         ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note
     ) {
+        let source_character_count =
+            object
+                .source_character_count
+                .ok_or(ValidationBatchError::Invalid(
+                    "writing source character count is required",
+                ))?;
         let document: Value = serde_json::from_slice(&object.content)
             .map_err(|_| ValidationBatchError::Invalid("writing document is not valid JSON"))?;
         let body_field = if object.kind == ObjectKind::Diary {
@@ -745,15 +755,49 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
         } else {
             "body"
         };
-        if document
+        let canonical_count = document
             .get(body_field)
             .and_then(Value::as_str)
-            .is_some_and(|body| body.chars().count() > MAX_WRITING_BODY_CHARS)
-        {
-            return Err(ValidationBatchError::Invalid(
-                "writing body exceeds the public character limit",
-            ));
-        }
+            .ok_or(ValidationBatchError::Invalid(
+                "writing body field is missing",
+            ))?
+            .chars()
+            .count();
+        validate_writing_character_counts(
+            source_character_count,
+            canonical_count,
+            MAX_WRITING_BODY_CHARS,
+            MAX_WRITING_CANONICAL_EXPANSION,
+        )?;
+    } else if object.source_character_count.is_some() {
+        return Err(ValidationBatchError::Invalid(
+            "binary attachment cannot declare a source character count",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_writing_character_counts(
+    source_count: usize,
+    canonical_count: usize,
+    public_limit: usize,
+    expansion_limit: usize,
+) -> Result<(), ValidationBatchError> {
+    if source_count > public_limit {
+        return Err(ValidationBatchError::Invalid(
+            "writing source character count is invalid",
+        ));
+    }
+    let canonical_limit =
+        source_count
+            .checked_mul(expansion_limit)
+            .ok_or(ValidationBatchError::Invalid(
+                "writing character count overflow",
+            ))?;
+    if canonical_count > canonical_limit {
+        return Err(ValidationBatchError::Invalid(
+            "canonical writing body exceeds bounded source expansion",
+        ));
     }
     Ok(())
 }
@@ -872,6 +916,13 @@ mod tests {
             .to_owned()
     }
 
+    #[test]
+    fn injected_character_limit_accepts_worst_html_escaping_and_rejects_one_more() {
+        assert!(validate_writing_character_counts(7, 42, 7, 6).is_ok());
+        assert!(validate_writing_character_counts(8, 8, 7, 6).is_err());
+        assert!(validate_writing_character_counts(7, 43, 7, 6).is_err());
+    }
+
     fn batch(mode: ValidationBatchMode, content: &[u8], revision: Option<u64>) -> ValidationBatch {
         let root = native_id("folder", "root");
         let journal = native_id("folder", "journal");
@@ -913,10 +964,11 @@ mod tests {
                 content: content.to_vec(),
                 created_at: "2026-08-02T00:00:00Z".into(),
                 updated_at: "2026-08-02T00:00:00Z".into(),
+                source_character_count: Some(6),
                 expected_revision: revision,
                 references: vec![],
                 policy: ValidationBatchPolicy::Inherit,
-                metadata: BTreeMap::new(),
+                metadata: BTreeMap::from([("sourceCharacterCount".into(), Value::from(6))]),
             }],
         }
     }
@@ -934,6 +986,7 @@ mod tests {
             content: b"same body".to_vec(),
             created_at: "2026-08-02T00:00:00Z".into(),
             updated_at: "2026-08-02T00:00:00Z".into(),
+            source_character_count: None,
             expected_revision: Some(1),
             references: vec![],
             policy: ValidationBatchPolicy::Inherit,

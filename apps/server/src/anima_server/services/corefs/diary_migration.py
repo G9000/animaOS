@@ -179,6 +179,7 @@ class LegacyDiaryDraft:
     target_stable_id: str | None = None
     created_at: str | None = None
     native_metadata: dict[str, Any] | None = None
+    source_character_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,7 @@ class LegacyNote:
     stable_id: str | None = None
     created_at: str | None = None
     native_metadata: dict[str, Any] | None = None
+    source_character_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +226,7 @@ class InactiveObject:
     references: tuple[str, ...] = ()
     policy: str = "inherit"
     metadata: dict[str, Any] = field(default_factory=dict)
+    source_character_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +283,7 @@ class InactiveWritingCatalog:
                     "contentIndex": index,
                     "createdAt": item.created_at,
                     "updatedAt": item.updated_at,
+                    "sourceCharacterCount": item.source_character_count,
                     "expectedRevision": item.expected_revision,
                     "references": list(item.references),
                     "policy": item.policy,
@@ -321,6 +325,7 @@ def build_inactive_diary_catalog(
     drafts: Iterable[LegacyDiaryDraft] = (),
     notes: Iterable[LegacyNote] = (),
     preserved_folders: Iterable[InactiveFolder] = (),
+    preserved_objects: Iterable[InactiveObject] = (),
 ) -> InactiveWritingCatalog:
     """Build deterministic validation-catalog input without changing active authority."""
     legacy_folders = tuple(sorted(folders, key=lambda item: (item.order, item.id)))
@@ -335,6 +340,7 @@ def build_inactive_diary_catalog(
             raise ValueError("Legacy diary folder parent is missing.")
 
     preserved = tuple(preserved_folders)
+    preserved_by_id = {item.stable_id: item for item in preserved_objects}
     preserved_roles = {item.role: item for item in preserved if item.role is not None}
     journal_preserved = preserved_roles.get("core.journal")
     notes_preserved = preserved_roles.get("core.notes")
@@ -563,6 +569,7 @@ def build_inactive_diary_catalog(
                     "createdAt": entry.created_at,
                     "updatedAt": entry.updated_at,
                 },
+                source_character_count=len(entry.body),
             )
         )
 
@@ -574,6 +581,16 @@ def build_inactive_diary_catalog(
             else None
         )
         draft_inline_ids: list[str] = []
+        existing_reference_ids = tuple(
+            dict.fromkeys(re.findall(r"corefs://object/([0-7][0-9A-HJKMNP-TV-Z]{25})", draft.body))
+        )
+        for reference_id in existing_reference_ids:
+            preserved_object = preserved_by_id.get(reference_id)
+            if preserved_object is None:
+                raise ValueError("Draft contains a dangling CoreFS attachment reference.")
+            if preserved_object.kind != "attachment":
+                raise ValueError("Draft contains a foreign CoreFS object reference.")
+            add_object(preserved_object)
 
         def reference_draft_inline(
             mime_type: str,
@@ -624,9 +641,18 @@ def build_inactive_diary_catalog(
                 updated_at=draft.updated_at,
                 references=(
                     *((target_id,) if target_id is not None else ()),
+                    *existing_reference_ids,
                     *draft_inline_ids,
                 ),
                 metadata=draft.native_metadata,
+                source_character_count=(
+                    draft.source_character_count
+                    if draft.source_character_count is not None
+                    else len(draft.body)
+                ),
+                persist_source_character_count=(
+                    draft.native_metadata is None or "sourceCharacterCount" in draft.native_metadata
+                ),
             )
         )
 
@@ -650,6 +676,14 @@ def build_inactive_diary_catalog(
                 created_at=note.created_at or note.updated_at,
                 updated_at=note.updated_at,
                 metadata=note.native_metadata,
+                source_character_count=(
+                    note.source_character_count
+                    if note.source_character_count is not None
+                    else len(note.body)
+                ),
+                persist_source_character_count=(
+                    note.native_metadata is None or "sourceCharacterCount" in note.native_metadata
+                ),
             )
         )
 
@@ -694,7 +728,12 @@ def _object(
     references: tuple[str, ...] = (),
     policy: str = "inherit",
     metadata: dict[str, Any] | None = None,
+    source_character_count: int | None = None,
+    persist_source_character_count: bool = True,
 ) -> InactiveObject:
+    authenticated_metadata = dict(metadata or {})
+    if source_character_count is not None and persist_source_character_count:
+        authenticated_metadata["sourceCharacterCount"] = source_character_count
     return InactiveObject(
         stable_id=stable_id,
         parent_id=parent_id,
@@ -710,7 +749,8 @@ def _object(
         expected_revision=expected_revision,
         references=references,
         policy=policy,
-        metadata=metadata or {},
+        metadata=authenticated_metadata,
+        source_character_count=source_character_count,
     )
 
 
@@ -752,6 +792,7 @@ def _catalog_hash(
                 "references": list(item.references),
                 "policy": item.policy,
                 "metadata": item.metadata,
+                "sourceCharacterCount": item.source_character_count,
             }
             for item in objects
         ],
@@ -767,7 +808,9 @@ class DiaryMigrationError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class PreparedWritingObject:
     stable_id: str
+    parent_id: str
     path: str
+    name: str
     kind: str
     revision: int
     content_hash: str
@@ -775,6 +818,8 @@ class PreparedWritingObject:
     created_at: str
     updated_at: str
     metadata: dict[str, Any]
+    content_type: str
+    body_encoding: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -893,6 +938,7 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             if entry.get("kind") != "file":
                 continue
             kind = entry.get("objectKind")
+            parent_id = entry.get("parentId")
             revision = entry.get("revision")
             content_hash = entry.get("contentHash")
             created_at = entry.get("createdAt")
@@ -901,6 +947,7 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             if (
                 not isinstance(path, str)
                 or not isinstance(stable_id, str)
+                or not isinstance(parent_id, str)
                 or not isinstance(kind, str)
                 or isinstance(revision, bool)
                 or not isinstance(revision, int)
@@ -917,10 +964,25 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             )
             if hashlib.sha256(content).hexdigest() != content_hash:
                 raise DiaryMigrationError("Prepared object hash did not verify.")
+            stat = _wire_result(
+                logical.stat_v1(
+                    corefs_session=session.corefs_session,
+                    keys=session.corefs_keys,
+                    selected=selected,
+                    path=path,
+                ),
+                selected.generation,
+            )
+            content_type = stat.get("contentType")
+            body_encoding = stat.get("bodyEncoding")
+            if not isinstance(content_type, str) or body_encoding not in {"utf-8", "binary"}:
+                raise DiaryMigrationError("Invalid prepared CoreFS envelope identity.")
             values.append(
                 PreparedWritingObject(
                     stable_id=stable_id,
+                    parent_id=parent_id,
                     path=path,
+                    name=path.rsplit("/", 1)[-1],
                     kind=kind,
                     revision=revision,
                     content_hash=content_hash,
@@ -928,6 +990,8 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
                     created_at=created_at,
                     updated_at=updated_at,
                     metadata=dict(metadata),
+                    content_type=content_type,
+                    body_encoding=str(body_encoding),
                 )
             )
         next_cursor = result.get("nextCursor")
@@ -937,6 +1001,18 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             raise DiaryMigrationError("Invalid prepared CoreFS walk cursor.")
         cursor = str(next_cursor["after"])
     return PreparedWritingSnapshot(folders=tuple(folders), objects=tuple(values))
+
+
+def _source_character_count(item: PreparedWritingObject, canonical_body: str) -> int:
+    value = item.metadata.get("sourceCharacterCount")
+    if value is None:
+        # Compatibility for validation heads created before PCF-004 persisted
+        # the explicit source count. Those heads already enforced a 20M
+        # canonical-body ceiling, so the authenticated body count is bounded.
+        return len(canonical_body)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise DiaryMigrationError("Prepared writing source character count is invalid.")
+    return value
 
 
 def prepare_diary_validation_catalog(
@@ -1008,6 +1084,7 @@ def prepare_diary_validation_catalog(
                 target_stable_id=decoded.target_id,
                 created_at=item.created_at,
                 native_metadata=item.metadata,
+                source_character_count=_source_character_count(item, decoded.body),
             )
         elif item.kind == "note":
             decoded_note = decode_note_document(item.content)
@@ -1020,6 +1097,7 @@ def prepare_diary_validation_catalog(
                 stable_id=decoded_note.stable_id,
                 created_at=item.created_at,
                 native_metadata=item.metadata,
+                source_character_count=_source_character_count(item, decoded_note.body),
             )
     for draft in staged_drafts:
         existing_drafts[migration_opaque_id("diary-draft", draft.id)] = draft
@@ -1126,6 +1204,26 @@ def prepare_diary_validation_catalog(
                 policy="user-write" if item.role is not None else "inherit",
             )
             for item in current_folders
+        ),
+        preserved_objects=tuple(
+            InactiveObject(
+                stable_id=item.stable_id,
+                parent_id=item.parent_id,
+                name=item.name,
+                kind=item.kind,
+                content_type=item.content_type,
+                content=item.content,
+                content_hash=item.content_hash,
+                source_hash=item.content_hash,
+                body_encoding=item.body_encoding,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+                expected_revision=item.revision,
+                policy="inherit",
+                metadata=item.metadata,
+            )
+            for item in current
+            if item.kind == "attachment"
         ),
     )
     revisions = {item.stable_id: item.revision for item in current}

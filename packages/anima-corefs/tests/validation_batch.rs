@@ -35,6 +35,10 @@ fn public_writing_character_limit_accepts_worst_case_utf8_and_rejects_one_more_a
         "html": "\u{10ffff}".repeat(MAX_WRITING_BODY_CHARS),
     }))
     .unwrap();
+    diary.source_character_count = Some(MAX_WRITING_BODY_CHARS);
+    diary
+        .metadata
+        .insert("sourceCharacterCount".into(), json!(MAX_WRITING_BODY_CHARS));
     let first = coordinator.apply_validation_batch(&keys, accepted).unwrap();
     let before = fs::read(root.join("fs").join("VALIDATION_HEAD")).unwrap();
 
@@ -54,6 +58,11 @@ fn public_writing_character_limit_accepts_worst_case_utf8_and_rejects_one_more_a
         "html": "x".repeat(MAX_WRITING_BODY_CHARS + 1),
     }))
     .unwrap();
+    diary.source_character_count = Some(MAX_WRITING_BODY_CHARS + 1);
+    diary.metadata.insert(
+        "sourceCharacterCount".into(),
+        json!(MAX_WRITING_BODY_CHARS + 1),
+    );
     assert!(matches!(
         coordinator.apply_validation_batch(&keys, rejected),
         Err(ValidationBatchError::Invalid(_))
@@ -125,6 +134,7 @@ fn initial_batch() -> ValidationBatch {
                 content: b"png".to_vec(),
                 created_at: "2026-08-02T00:00:00Z".into(),
                 updated_at: "2026-08-02T00:00:00Z".into(),
+                source_character_count: None,
                 expected_revision: None,
                 references: vec![],
                 policy: ValidationBatchPolicy::Inherit,
@@ -137,13 +147,14 @@ fn initial_batch() -> ValidationBatch {
                 kind: ObjectKind::Diary,
                 content_type: "application/vnd.anima.diary+json;version=1".into(),
                 body_encoding: BodyEncoding::Utf8,
-                content: br#"{"format":"anima.diary","version":1}"#.to_vec(),
+                content: br#"{"format":"anima.diary","version":1,"html":""}"#.to_vec(),
                 created_at: "2026-08-02T00:00:00Z".into(),
                 updated_at: "2026-08-02T00:00:00Z".into(),
+                source_character_count: Some(64),
                 expected_revision: None,
                 references: vec![attachment],
                 policy: ValidationBatchPolicy::Deny,
-                metadata: Default::default(),
+                metadata: [("sourceCharacterCount".into(), json!(64))].into(),
             },
             ValidationBatchObject {
                 stable_id: native_id("draft", "1"),
@@ -152,13 +163,14 @@ fn initial_batch() -> ValidationBatch {
                 kind: ObjectKind::Draft,
                 content_type: "application/vnd.anima.draft+json;version=1".into(),
                 body_encoding: BodyEncoding::Utf8,
-                content: br#"{"format":"anima.draft","version":1}"#.to_vec(),
+                content: br#"{"format":"anima.draft","version":1,"body":""}"#.to_vec(),
                 created_at: "2026-08-02T00:00:00Z".into(),
                 updated_at: "2026-08-02T00:00:00Z".into(),
+                source_character_count: Some(64),
                 expected_revision: None,
                 references: vec![],
                 policy: ValidationBatchPolicy::Inherit,
-                metadata: Default::default(),
+                metadata: [("sourceCharacterCount".into(), json!(64))].into(),
             },
             ValidationBatchObject {
                 stable_id: native_id("note", "1"),
@@ -167,13 +179,14 @@ fn initial_batch() -> ValidationBatch {
                 kind: ObjectKind::Note,
                 content_type: "application/vnd.anima.note+json;version=1".into(),
                 body_encoding: BodyEncoding::Utf8,
-                content: br#"{"format":"anima.note","version":1}"#.to_vec(),
+                content: br#"{"format":"anima.note","version":1,"body":""}"#.to_vec(),
                 created_at: "2026-08-02T00:00:00Z".into(),
                 updated_at: "2026-08-02T00:00:00Z".into(),
+                source_character_count: Some(64),
                 expected_revision: None,
                 references: vec![],
                 policy: ValidationBatchPolicy::Deny,
-                metadata: Default::default(),
+                metadata: [("sourceCharacterCount".into(), json!(64))].into(),
             },
         ],
     }
