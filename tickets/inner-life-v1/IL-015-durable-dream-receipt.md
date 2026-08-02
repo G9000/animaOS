@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 17:03 MYT
+- Updated: 2026-08-02 17:43 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -207,6 +207,19 @@ is its own ticket:
   occlusion. A dream this client already ACKNOWLEDGED is exempt from both
   new expiries: it is durably surfaced and the user has read it, so leaving
   it on screen discloses nothing new.
+
+- 2026-08-02 17:43 MYT - PR #135 review round 9 (two P1s, Codex, both refinements of
+  round 8's hit test): (1) the check sampled the CARD's centre, so a corner
+  overlay covering only the dream sentence still read as unobscured — the
+  receipt ref now lives on the element rendering the greeting text itself,
+  and three points are sampled down its height. (2) A greeting that happened
+  to be covered when it first appeared would never be acknowledged at all,
+  because dismissing a Layout-owned overlay changes neither the intersection
+  nor the node's props — the harmful direction, since the claim then lapses
+  and the narrative can be re-disclosed. Occlusion is now re-checked on a
+  1s timer while a receipt is still owed, stopping on success, on panning
+  away, and on unmount; the round-8 approval timer bounds it, since an
+  expired approval withdraws the dream and tears the effect down.
 
 ## Validation
 

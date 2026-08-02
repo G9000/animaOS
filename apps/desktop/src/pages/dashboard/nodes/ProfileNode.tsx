@@ -44,10 +44,13 @@ export function ProfileNode({ data }: NodeProps<ProfileNode>) {
     Boolean(brief?.ambientDream) &&
     !briefLoading &&
     currentThought === brief?.message;
-  const profileRef = useDreamShownReceipt(dreamVisible, onDreamShown);
+  const profileRef = useDreamShownReceipt<HTMLParagraphElement>(
+    dreamVisible,
+    onDreamShown,
+  );
 
   return (
-    <div ref={profileRef} className="group relative w-80 overflow-visible">
+    <div className="group relative w-80 overflow-visible">
 
       {/* Close — floats above card, fades in on hover */}
       <button
@@ -118,7 +121,10 @@ export function ProfileNode({ data }: NodeProps<ProfileNode>) {
               {briefLoading ? (
                 <DotLoader />
               ) : currentThought ? (
-                <p className="text-[11px] italic text-foreground/58 leading-relaxed">
+                <p
+                  ref={profileRef}
+                  className="text-[11px] italic text-foreground/58 leading-relaxed"
+                >
                   {currentThought}
                 </p>
               ) : (

@@ -19,18 +19,27 @@ import { useEffect, useRef } from "react";
  * - UNOBSCURED: an observer cannot see occlusion, and the app renders
  *   fixed-position surfaces above the canvas — the gallery lightbox, and an
  *   initiative card owned by the Layout, not the Dashboard. Rather than
- *   enumerate them, the element under the greeting's own centre point is
- *   hit-tested; anything else on top means the greeting is not being seen.
+ *   enumerate them, the element the ref is attached to is hit-tested at
+ *   three points down its own height; anything else on top means the text
+ *   is not being read. The ref belongs on the element that renders the
+ *   greeting TEXT, not the whole card: an overlay can cover the sentence
+ *   while the card's centre stays clear.
+ *
+ * Occlusion is re-checked on a slow timer while a receipt is still owed,
+ * because nothing re-renders when a Layout-owned overlay is dismissed —
+ * without it, a greeting that happened to be covered when it first appeared
+ * would never be acknowledged at all, which is the harmful direction: the
+ * claim lapses and the narrative can be disclosed again.
  *
  * Nothing is queued or deferred. If the greeting is not really visible no
  * receipt is owed, the claim simply lapses, and the dream is offered again —
  * the correct failure for this feature.
  */
-export function useDreamShownReceipt(
+export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
   shown: boolean,
   report?: () => void,
-): React.RefObject<HTMLDivElement | null> {
-  const ref = useRef<HTMLDivElement | null>(null);
+): React.RefObject<T | null> {
+  const ref = useRef<T | null>(null);
 
   useEffect(() => {
     if (!shown || !report) return;
@@ -41,43 +50,66 @@ export function useDreamShownReceipt(
     if (!element) return;
 
     let reported = false;
+    let recheck: ReturnType<typeof setInterval> | undefined;
+    const stopRechecking = () => {
+      if (recheck !== undefined) clearInterval(recheck);
+      recheck = undefined;
+    };
+
     const isOnTop = () => {
       // No geometry (jsdom, display:none): fall back to the coarser checks
       // rather than never acknowledging anything.
       const box = element.getBoundingClientRect?.();
       if (!box || box.width === 0 || box.height === 0) return true;
       if (typeof document.elementFromPoint !== "function") return true;
-      const topmost = document.elementFromPoint(
-        box.left + box.width / 2,
-        box.top + box.height / 2,
-      );
-      if (topmost === null) return true;
-      // Our own subtree, or a container that wraps it (the canvas pane can
-      // swallow the hit): not occluded. Anything else — a lightbox, the
-      // initiative card — is stacked on top, so the greeting is not seen.
-      return element.contains(topmost) || topmost.contains(element);
+      const x = box.left + box.width / 2;
+      // Sample down the text's own height: a corner overlay can cover the
+      // last line of a greeting while leaving its middle clear.
+      return [0.15, 0.5, 0.85].every((fraction) => {
+        const topmost = document.elementFromPoint(x, box.top + box.height * fraction);
+        if (topmost === null) return true;
+        // Our own subtree, or a container that wraps it (the canvas pane can
+        // swallow the hit): not occluded. Anything else — a lightbox, the
+        // initiative card — is stacked on top, so the text is not readable.
+        return element.contains(topmost) || topmost.contains(element);
+      });
     };
+
     const reportOnce = () => {
-      if (reported || document.visibilityState !== "visible") return;
-      if (!isOnTop()) return;
+      if (reported || document.visibilityState !== "visible") return false;
+      if (!isOnTop()) return false;
       reported = true;
+      stopRechecking();
       report();
+      return true;
+    };
+
+    // Covered right now? Keep looking. Dismissing a Layout-owned overlay
+    // changes neither the intersection nor this node's props, so nothing
+    // else would ever ask again.
+    const reportWhenClear = () => {
+      if (reportOnce() || recheck !== undefined) return;
+      recheck = setInterval(reportOnce, 1_000);
     };
 
     if (typeof IntersectionObserver === "undefined") {
       // No observer (older webview, test renderer): fall back to the page
       // visibility rule rather than never acknowledging anything.
-      reportOnce();
-      return;
+      reportWhenClear();
+      return stopRechecking;
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) reportOnce();
+        if (entries.some((entry) => entry.isIntersecting)) reportWhenClear();
+        else stopRechecking(); // panned away: stop until it comes back
       },
       { threshold: 0.01 },
     );
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      stopRechecking();
+    };
   }, [shown, report]);
 
   return ref;

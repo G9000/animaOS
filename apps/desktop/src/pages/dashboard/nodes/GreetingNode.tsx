@@ -18,10 +18,13 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
   // surfaced that nothing on screen ever displayed, the exact loss IL-015
   // exists to prevent.
   const dreamVisible = Boolean(brief?.ambientDream) && !briefLoading;
-  const greetingRef = useDreamShownReceipt(dreamVisible, onDreamShown);
+  const greetingRef = useDreamShownReceipt<HTMLParagraphElement>(
+    dreamVisible,
+    onDreamShown,
+  );
 
   return (
-    <div ref={greetingRef} className="group relative w-72 overflow-visible">
+    <div className="group relative w-72 overflow-visible">
 
       {/* Close */}
       <button
@@ -48,8 +51,13 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
               </span>
             )}
 
-            {/* Message */}
-            <p className="text-[17px] font-sans text-foreground/85 leading-snug">
+            {/* Message — the receipt ref goes HERE, on the text itself, so
+                an overlay covering the sentence is not missed by a check
+                against the whole card (PR #135 review). */}
+            <p
+              ref={greetingRef}
+              className="text-[17px] font-sans text-foreground/85 leading-snug"
+            >
               {message}
             </p>
 
