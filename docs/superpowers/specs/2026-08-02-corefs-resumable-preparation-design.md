@@ -11,7 +11,7 @@
 
 ## 1. Decision
 
-CoreFS will add one authenticated, encrypted, session-scoped preparation protocol for large converter writes. Object bodies are encrypted and durably recorded in bounded batches without changing `fs/VALIDATION_HEAD`. After all source objects and the final logical catalog intent have been verified, one exact-head finalization publishes the complete inactive catalog in a single validation generation.
+CoreFS will add one authenticated, encrypted, Core-scoped preparation protocol operated through an unlock session for large converter writes. Object bodies are encrypted and durably recorded one bounded object at a time without changing `fs/VALIDATION_HEAD`. After all source objects and the final logical catalog intent have been verified under a source mutation fence, one exact-head finalization publishes the complete inactive catalog in a single validation generation.
 
 The protocol persists only encrypted preparation state and already encrypted immutable objects. It never writes plaintext content, never makes a partial graph visible, never changes authoritative `fs/HEAD`, and never unfreezes public CoreFS mutation before PCF-008.
 
@@ -22,7 +22,7 @@ The user approved this persistent protocol instead of either:
 
 ## 2. Goals
 
-1. Migrate a valid CoreFS corpus larger than 1 GiB with peak memory bounded by one object chunk, one bounded preparation batch, and bounded catalog metadata.
+1. Migrate a valid CoreFS corpus larger than 1 GiB with peak memory bounded by one object input, one encryption chunk, and separately bounded catalog/preparation metadata.
 2. Resume safely after process crash, application restart, or clean session shutdown.
 3. Publish exactly one complete next `VALIDATION_HEAD` generation after all prepared objects and source state are verified.
 4. Preserve exact validation-head CAS, object revision preconditions, stable IDs, authenticated metadata, and existing public-mutation freeze.
@@ -47,7 +47,8 @@ The user approved this persistent protocol instead of either:
 7. A crash may leave unreachable encrypted files, but it cannot expose a partial logical graph or lose legacy authority.
 8. FRK activation cannot proceed while an active preparation references the current FRK generation.
 9. Session close waits only for the currently bounded native call. No required correctness state exists solely in process memory between calls.
-10. Finalization does not reread or materialize object bodies; it uses authenticated persisted descriptors and bounded catalog metadata.
+10. Finalization may stream each encrypted envelope to recheck its ciphertext hash, but it never decrypts or materializes plaintext bodies.
+11. The source inventory generation and digest are rechecked while a SQLCipher write fence excludes every legacy writing mutation through validation-pointer publication.
 
 ## 5. Physical Layout
 
@@ -56,15 +57,19 @@ The user approved this persistent protocol instead of either:
   PREPARATION_HEAD
   preparations/
     <opaque-preparation-id>/
+      manifests/
+        <sequence>-<segment>-<ciphertext-hash>.prep-manifest.acore
       snapshots/
         <sequence>-<ciphertext-hash>.prep.acore
       receipts/
         <opaque-receipt-id>.prep-receipt.acore
+      quarantine/
+        <pointer-hash>.prep-pointer
 ```
 
 `PREPARATION_HEAD` is a small pointer analogous to `HEAD`: it contains only an opaque preparation ID, snapshot sequence, encrypted snapshot hash, envelope version, and required FRK version. It reveals no logical names, counts, source identifiers, or content hashes. The pointer is accepted only after the referenced encrypted snapshot is reopened, authenticated, and matched to the pointer.
 
-Only one active `PREPARATION_HEAD` exists per single-owner Core. Immutable historical snapshots and receipts remain non-authoritative retention inventory until PCF-010 safely prunes them.
+Only one active `PREPARATION_HEAD` exists per single-owner Core. Immutable descriptor/intent manifest segments let a small authoritative snapshot reference preparation metadata without combining the entire final catalog and all larger prepared descriptors into one plaintext envelope. Immutable historical manifests, snapshots, receipts, and quarantined pointers remain non-authoritative retention inventory until PCF-010 safely prunes them.
 
 ## 6. Cryptographic Domain
 
@@ -83,7 +88,7 @@ Prepared object envelopes continue using the normal per-object DEK, object AAD, 
 
 ## 7. Preparation Snapshot V1
 
-The decrypted snapshot is bounded to the same maximum plaintext size as a final catalog. If its descriptors cannot fit, the final CoreFS catalog could not fit either and preparation fails before publication.
+The decrypted head snapshot and every encrypted manifest segment have independent plaintext ceilings. The total number and size of manifest segments are derived from the maximum valid catalog entry count plus the worst-case closed descriptor and final-intent encodings. CoreFS rejects a preparation before publication if those explicit ceilings are exceeded. A valid final catalog is never assumed to fit a same-sized preparation snapshot because prepared descriptors contain additional fields.
 
 ```json
 {
@@ -102,18 +107,20 @@ The decrypted snapshot is bounded to the same maximum plaintext size as a final 
   "source": {
     "ownerId": "<opaque-owner-id>",
     "inventoryVersion": 1,
+    "mutationGeneration": 42,
     "inventoryDigest": "..."
   },
   "totals": {
     "objects": 120,
     "plaintextBytes": 2147483648
   },
-  "prepared": [],
-  "finalIntent": null
+  "manifestRoot": "...",
+  "manifestSegments": [],
+  "finalIntentRoot": null
 }
 ```
 
-Each `prepared` record contains:
+Each prepared-descriptor record in an authenticated manifest segment contains:
 
 - stable object ID, revision, kind, and object-key epoch;
 - opaque physical object name;
@@ -124,7 +131,7 @@ Each `prepared` record contains:
 - source fingerprint and converter format version; and
 - preparation ordinal.
 
-The descriptor schema is closed and length-bounded. Unknown fields, duplicate stable IDs, duplicate physical names, non-monotonic ordinals, wrong revisions, or mismatched hashes fail closed.
+The descriptor schema is closed and length-bounded. The head snapshot authenticates the ordered segment IDs, ciphertext hashes, per-segment counts, cumulative count/size, and a Merkle-style manifest root. Unknown fields, missing/reordered segments, duplicate stable IDs, duplicate physical names, non-monotonic ordinals, wrong revisions, or mismatched hashes fail closed. Final intent uses separately bounded authenticated segments and a distinct root so it can be reconstructed without duplicating the complete graph inside the head snapshot.
 
 ## 8. State Machine
 
@@ -134,66 +141,68 @@ The descriptor schema is closed and length-bounded. Unknown fields, duplicate st
 
 - an explicit expected validation head tuple, or explicit initial `None/None`;
 - scope `pcf004-writing-v1`;
-- owner/source identity and inventory digest; and
+- owner/source identity, monotonic mutation generation, and inventory digest; and
 - the current unlocked FRK version.
 
-If no active pointer exists, CoreFS creates a `collecting` snapshot and atomically publishes `PREPARATION_HEAD`. If a pointer exists, CoreFS authenticates it and returns the current state only when scope, owner, Core, FRK version, expected validation tuple, and source identity match. Otherwise it returns a typed conflict; it never replaces the active preparation implicitly.
+If no active pointer exists, CoreFS creates a `collecting` snapshot and atomically publishes `PREPARATION_HEAD`. If a pointer exists, CoreFS authenticates it and returns the current state only when scope, owner, Core, FRK version, expected validation tuple, and source identity match. A newer source mutation generation is reconciled through an exact-CAS snapshot transition rather than treated as a second owner. Other mismatches return a typed conflict; the protocol never replaces the active preparation implicitly.
 
-### 8.2 Prepare a bounded batch
+### 8.2 Prepare one bounded object
 
-`prepare_batch_v1` requires exact preparation sequence/hash CAS and accepts a bounded iterator of object requests. Python streams one legacy body or attachment at a time into the native call; PyO3 must not first collect the complete corpus into `list[bytes]` or `Vec<Vec<u8>>`.
+`prepare_object_v1` requires exact preparation sequence/hash CAS and accepts exactly one closed metadata request plus one object body as a bounded Python bytes-like value or native streaming reader. The migration coordinator loops at Python level. PyO3 never constructs the existing whole-graph `ValidationBatch`, `list[bytes]`, `Vec<Vec<u8>>`, or an intermediate encrypted `Vec<u8>`.
 
 For each object, CoreFS:
 
 1. validates IDs, revision, kind/content-type pairing, authenticated metadata, source fingerprint, and object-specific size limits;
-2. streams envelope encryption through the existing chunked writer;
+2. streams envelope encryption directly into the staged immutable file through the existing chunked writer;
 3. fsyncs and strictly reopens the immutable encrypted object;
 4. creates the closed prepared descriptor; and
 5. zeroizes transient plaintext and DEK material.
 
-After the bounded batch succeeds, CoreFS writes a complete next encrypted preparation snapshot and atomically CAS-replaces `PREPARATION_HEAD`. A crash before pointer replacement leaves the prior snapshot authoritative and any newly written object unreachable. Retrying is safe and may create another unreachable ciphertext, but cannot duplicate a logical object in the active preparation.
+After the object succeeds, CoreFS writes or extends a bounded immutable descriptor manifest, writes the small next encrypted preparation snapshot, and atomically CAS-replaces `PREPARATION_HEAD`. A crash before pointer replacement leaves the prior snapshot authoritative and any newly written object/manifest unreachable. Retrying is safe and may create another unreachable ciphertext, but cannot duplicate a logical object in the active preparation. Hard per-object, per-manifest, segment-count, and cumulative descriptor ceilings are checked before the new pointer is published.
 
 ### 8.3 Reconcile changing legacy source
 
-Legacy SQLCipher remains authoritative before PCF-008. The converter therefore records a source fingerprint per logical object and a complete source inventory digest.
+Legacy SQLCipher remains authoritative before PCF-008. The writing schema therefore maintains a monotonic source mutation generation that every diary, note, draft, and related attachment mutation increments in the same SQLCipher transaction. The converter records that generation, a source fingerprint per logical object, and a complete source inventory digest from one consistent read transaction.
 
-Before sealing, Python recomputes the inventory in a short consistent SQLCipher read transaction. If it changed, the converter prepares only added or changed objects, marks removed source objects absent from the final intent, and publishes another preparation snapshot. It repeats until the recomputed inventory matches the snapshot. It never finalizes a mixture of two unverified source inventories.
+Before sealing, Python recomputes the generation and inventory in a short consistent SQLCipher read transaction. If either changed, the converter prepares only added or changed objects, removes stale logical descriptors from the active manifest root, marks removed source objects absent from the final intent, and publishes another preparation snapshot. Physical ciphertext removed from the active root remains retention-managed garbage. Reconciliation repeats until both generation and digest match the snapshot; it never finalizes a mixture of two source generations.
 
 ### 8.4 Seal final intent
 
-`seal_preparation_v1` requires exact preparation CAS and the verified source inventory digest. It validates the complete folder/object graph, stable roles, policies, names, references, revision preconditions, and descriptor coverage.
+`seal_preparation_v1` requires exact preparation CAS plus the verified source mutation generation and inventory digest. It validates the complete folder/object graph, stable roles, policies, names, references, revision preconditions, and descriptor coverage.
 
 The next encrypted `ready` snapshot contains the complete bounded logical catalog intent, its canonical intent digest, the exact expected validation head, and the descriptors it references. It contains no body plaintext.
 
-Once ready, object preparation is closed. Any source change requires an explicit return to `collecting` through a new CAS snapshot, not an in-place mutation.
+Once ready, object preparation is closed. A detected source change requires an explicit return to `collecting` through a new CAS snapshot, not an in-place mutation.
 
 ### 8.5 Finalize once
 
-`finalize_preparation_v1` acquires the existing Core-wide commit lock and an active session operation guard. Under that authority it:
+The Python coordinator first acquires its keyed migration mutex and a SQLCipher `BEGIN IMMEDIATE` transaction, which excludes every legacy writing mutation across processes. It recomputes the source mutation generation and inventory digest under that write fence. A mismatch returns to collection without calling native finalization. On a match, `finalize_preparation_v1` acquires the existing Core-wide commit lock and an active session operation guard while the SQLCipher fence remains held. Under that authority it:
 
 1. reloads and authenticates `PREPARATION_HEAD` and the `ready` snapshot;
 2. reloads the exact expected `VALIDATION_HEAD` tuple;
 3. reconstructs prepared revision tokens from encrypted descriptors;
-4. safe-opens and verifies every referenced immutable encrypted object by size, ciphertext hash, object-key binding, wrapped-DEK record, revision, and envelope metadata digest;
+4. safe-opens and boundedly streams every referenced immutable encrypted envelope to verify size and ciphertext hash, then verifies object-key binding, wrapped-DEK record, revision, and authenticated envelope-metadata digest without decrypting its plaintext body;
 5. builds and validates the complete next catalog from the sealed intent;
 6. calls exactly one existing validation initialize/advance transaction; and
 7. verifies the published validation catalog has the sealed canonical intent digest.
 
-No object body is loaded during finalization. The validation catalog and preparation metadata remain within their existing bounded plaintext limits.
+No plaintext object body is decrypted or materialized during finalization. Ciphertext is reread sequentially with one fixed-size buffer. The validation catalog, descriptor manifests, and preparation metadata remain within their explicit independent plaintext limits. V1 deliberately holds the SQLCipher write fence through this integrity pass and pointer publication; this favors a simple cross-store correctness boundary over writer latency. PCF-008 may optimize the fence with an anchored native validation lease only if it preserves the same no-write interval and crash semantics.
 
 ### 8.6 Complete the crash seam
 
-`VALIDATION_HEAD` publication and `PREPARATION_HEAD` clearing cannot be one filesystem rename. Recovery therefore uses the sealed intent as a receipt:
+`VALIDATION_HEAD` publication and `PREPARATION_HEAD` clearing cannot be one filesystem rename. Recovery therefore uses the sealed intent as a receipt. Completion and abandonment receipt IDs are deterministic keyed digests of preparation ID, terminal state, and final snapshot hash:
 
 - crash before validation publication: `ready` remains active and finalization retries;
-- crash after validation publication but before preparation completion: recovery loads `VALIDATION_HEAD`, authenticates its catalog, compares generation/predecessor and canonical intent digest, then writes an encrypted `completed` receipt and clears `PREPARATION_HEAD` without republishing;
+- crash after validation publication but before preparation completion: recovery loads `VALIDATION_HEAD`, authenticates its catalog, compares generation/predecessor and canonical intent digest, then creates or authenticates the deterministic encrypted `completed` receipt and clears `PREPARATION_HEAD` without republishing;
 - a different validation head: typed conflict, no implicit overwrite or clear.
 
-Clearing means an atomic remove/replace protocol with parent-directory durability matching existing pointer publication rules. A completed receipt is immutable and contains only encrypted audit/recovery facts.
+Clearing means an atomic remove/replace protocol with parent-directory durability matching existing pointer publication rules. If the deterministic receipt already exists, retry must safe-open it and require an exact authenticated match; a mismatch fails closed. A completed receipt is immutable and contains only encrypted audit/recovery facts.
 
 ## 9. Abandonment and Garbage
 
-Abandonment is explicit and exact-CAS. `abandon_preparation_v1` writes an encrypted `abandoned` receipt naming the final authenticated preparation snapshot, then clears `PREPARATION_HEAD`. It never deletes prepared objects synchronously.
+Abandonment is explicit and exact-CAS. `abandon_preparation_v1` creates or authenticates the deterministic encrypted `abandoned` receipt naming the final authenticated preparation snapshot, then clears `PREPARATION_HEAD`. A crash or retry at either write seam follows the same existing-receipt rules as completion. It never deletes prepared objects synchronously.
+
+A corrupt, replayed, wrong-Core, or otherwise unauthenticatable `PREPARATION_HEAD` cannot use normal abandonment. An explicit operator-only `quarantine_preparation_v1` path acquires the Core commit lock, requires the byte-exact expected pointer hash, durably preserves the original pointer bytes in the preparation quarantine, writes an authenticated quarantine receipt under the active preparation subkey, and only then clears the live pointer by byte-exact CAS. Quarantine does not assert that unknown prepared objects are abandoned and makes the entire affected preparation subtree ineligible for GC. All possibly required FRK generations remain retained until PCF-010 or a later recovery proves the inventory safe.
 
 Prepared and crash-orphaned objects are eligible for PCF-010 pruning only when authenticated inventory proves they are referenced by none of:
 
@@ -206,18 +215,18 @@ This intentionally prefers bounded encrypted garbage over accidental content los
 
 ## 10. FRK and Object-Key Rotation
 
-FRK activation returns a typed `PreparationActive` error while `PREPARATION_HEAD` exists. The user or migration coordinator must resume/finalize or explicitly abandon the preparation first. V1 does not rewrap an in-flight preparation journal.
+FRK activation returns a typed `PreparationActive` error whenever `PREPARATION_HEAD` exists, including when it is corrupt or unauthenticatable. The user or migration coordinator must resume/finalize or explicitly abandon an authenticated preparation first. A corrupt pointer requires the operator-only quarantine transition. V1 does not rewrap an in-flight preparation journal.
 
-This rule prevents a preparation snapshot from straddling FRK generations and avoids persisting multiple decrypt-capable keyrings solely for migration. After rotation, a new preparation uses the active FRK version. Old FRKs remain governed by existing retained-catalog and backup gates; preparation snapshots and receipts join that authenticated retention inventory before PCF-010 retirement.
+This rule prevents a preparation snapshot from straddling FRK generations and avoids persisting multiple decrypt-capable keyrings solely for migration. After normal completion or abandonment, a new preparation uses the active FRK version. Quarantine permits later activation only while conservatively retaining all possibly required old FRKs and forbids their retirement. Preparation manifests, snapshots, receipts, and quarantine inventory join the authenticated retention gates before PCF-010 retirement.
 
 Targeted object-key rotation ignores unreachable prepared objects. Once an object becomes referenced by `VALIDATION_HEAD`, normal catalog-bound rotation rules apply.
 
 ## 11. Session and Concurrency Semantics
 
-- Every begin, batch, seal, finalize, complete, and abandon call acquires the existing `CorefsSession` operation guard.
+- Every begin, object-prepare, seal, finalize, complete, abandon, and quarantine call acquires the existing `CorefsSession` operation guard.
 - `begin_close` rejects new calls; `close` waits only for the current bounded call and then releases leases.
 - No native preparation handle or raw key must survive between calls.
-- The Core-wide writer lock serializes pointer CAS and final publication, but body streaming does not hold the lock. Only the short preparation-snapshot publication is locked after a batch.
+- The Core-wide writer lock serializes pointer CAS and final publication, but one-object body encryption does not hold the lock. Only the short manifest/snapshot pointer publication is locked after each object.
 - One active preparation per Core avoids ambiguous ownership. Exact pointer CAS rejects concurrent draft import, unlock migration, or retry races; the caller reloads, merges source state, and retries.
 - A callback failure after durable snapshot publication reports committed progress rather than rolling back the pointer in memory.
 
@@ -225,7 +234,7 @@ Targeted object-key rotation ignores unreachable prepared objects. Once an objec
 
 PyO3 exposes the protocol only on the long-lived `CorefsSession`; top-level public mutations stay frozen.
 
-The boundary uses streaming readers or one bounded Python bytes-like object per object. It must not accept the whole corpus as one JSON/base64 payload or materialize all bodies before checking a total. Metadata is canonical bounded JSON; binary content is passed separately from metadata.
+The boundary adds a new one-object preparation input rather than adapting `ValidationBatchObject` or `ValidationBatch`. It uses a native streaming reader or one bounded Python bytes-like object per call, with the size ceiling checked before allocation/copy wherever the Python buffer protocol permits. It must not accept the whole corpus as one JSON/base64 payload, materialize all bodies before checking a total, or build an intermediate encrypted byte vector. Metadata is canonical bounded JSON; binary content is passed separately and streamed directly to the staged file.
 
 Python owns:
 
@@ -260,6 +269,7 @@ The native boundary returns typed errors for:
 - final intent mismatch;
 - finalization already completed with a different intent;
 - active preparation blocking FRK rotation; and
+- preparation quarantined or quarantine CAS/receipt mismatch; and
 - session closing/closed.
 
 Errors are safe to retry only when explicitly classified retryable. Corrupt or mismatched authenticated state fails closed and requires operator-visible recovery; it is never reclassified as a missing head.
@@ -268,20 +278,20 @@ Errors are safe to retry only when explicitly classified retryable. Corrupt or m
 
 Required tests include:
 
-1. a logical corpus above 1 GiB prepared with test-sized bounded batches while peak retained body memory stays below the configured batch ceiling;
+1. a logical corpus above 1 GiB prepared one bounded object at a time while peak retained body memory stays below the configured per-object ceiling;
 2. eleven individually valid maximum-size attachments accepted without aggregate rejection or whole-corpus materialization;
-3. crash injection before/after object write, preparation snapshot write, preparation pointer replace, validation catalog write, validation pointer replace, completion receipt, and preparation pointer clear;
+3. crash injection before/after object write, descriptor/intent manifest write, preparation snapshot write, preparation pointer replace, validation catalog write, validation pointer replace, completion/abandon receipt, and preparation pointer clear;
 4. restart from every crash seam with either safe resume or idempotent completion;
 5. exact preparation and validation CAS conflicts;
-6. source changes during collection and immediately before seal;
+6. source changes during collection, after seal, and immediately before validation-pointer publication, proving the SQLCipher mutation fence rejects stale finalization;
 7. corrupt, missing, replayed, wrong-Core, wrong-FRK, and stale preparation snapshots;
 8. descriptor tampering, missing object, ciphertext replacement, wrong wrapped DEK, and envelope metadata mismatch;
-9. no body reread during finalization and no complete-corpus `Vec<Vec<u8>>`/Python-list materialization;
-10. bounded memory and prompt `begin_close`/`close` behavior at batch boundaries;
+9. bounded ciphertext streaming during finalization with no plaintext decryption/materialization and no complete-corpus `Vec<Vec<u8>>`/Python-list materialization;
+10. bounded memory, immediate rejection of new work after `begin_close`, and `close` draining only the active per-object or finalization call;
 11. finalization publishes exactly one validation generation and never changes authoritative `HEAD`;
 12. crash-after-validation-publication completes without a second generation;
-13. explicit abandonment leaves encrypted objects unreachable and records retention inventory;
-14. FRK rotation rejects active preparation and succeeds after completion/abandonment;
+13. explicit abandonment is idempotent across both receipt/clear crash seams, leaves encrypted objects unreachable, and records retention inventory;
+14. FRK rotation rejects active or corrupt preparation state, succeeds after completion/abandonment, and permits activation after quarantine only while old-FRK retirement remains blocked;
 15. retained preparation snapshots prevent unsafe FRK retirement and PCF-010 GC;
 16. unchanged reruns reuse prepared descriptors and exact source fingerprints without rewriting bodies;
 17. draft import and unlock migration conflict/retry without losing either source; and
@@ -289,13 +299,14 @@ Required tests include:
 
 ## 15. Rollout
 
-1. Add preparation cryptographic format, pointer, and failure-injection tests behind private converter APIs.
-2. Add bounded object preparation and restart recovery.
-3. Add sealed intent and exact-head finalization.
-4. Add abandonment, retention inventory, rotation exclusion, and session-close coverage.
-5. Replace the current whole-corpus PCF-004 transport with the preparation protocol.
-6. Re-run PCF-004 conversion, API, desktop, native, recovery, and large-corpus validation.
-7. Keep `VALIDATION_HEAD` inactive and public mutation frozen until PCF-008.
+1. Add separate preparation snapshot/manifest cryptographic formats, pointer, and failure-injection tests behind private converter APIs.
+2. Add the SQLCipher writing mutation generation/fence and prove every legacy writer participates.
+3. Add one-object bounded preparation and restart recovery without the current whole-graph containers.
+4. Add sealed intent and exact-head finalization under the source write fence.
+5. Add deterministic completion/abandonment, corrupt-head quarantine, retention inventory, rotation exclusion, and session-close coverage.
+6. Replace the current whole-corpus PCF-004 transport with the preparation protocol.
+7. Re-run PCF-004 conversion, API, desktop, native, recovery, and large-corpus validation.
+8. Keep `VALIDATION_HEAD` inactive and public mutation frozen until PCF-008.
 
 ## 16. Acceptance
 
@@ -304,6 +315,7 @@ The preparation protocol is accepted only when:
 - legitimate writing corpora above 1 GiB prepare with bounded peak memory;
 - every crash seam resumes or completes without partial visibility;
 - one final exact-CAS operation publishes the complete inactive catalog;
+- no legacy writing mutation can cross the verified source generation-to-validation-publication fence;
 - no plaintext, raw DEK, logical path, or private content leaks to disk, Runtime, or logs;
 - active preparation safely gates FRK rotation and retained-state cleanup;
 - session shutdown is bounded at per-call boundaries;

@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-4-diary-folders-drafts-and-notes-vertical-slice`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 17:10 MYT
+- Updated: 2026-08-02 17:24 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -46,6 +46,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-02 04:19 MYT - The first native integration pass proved the planned converter entry point did not exist: public mutation is intentionally frozen, the sequential crate-private shadow mutator cannot atomically publish a writing graph, and PyO3 exposes read/validation only. Removed the parallel encrypted-filesystem prototype, retained the green portable codec/migration groundwork in `7ac84178`, and corrected Task 4 to add one sealed session-scoped validation-batch API, deterministic native IDs, exact-head CAS, and role resolution while leaving public mutation frozen until PCF-008.
 - 2026-08-02 17:01 MYT - Completed the bounded PCF-004 implementation and repeated independent specification/quality loops through `e30179bb`. Atomic inactive-catalog publication, production SQLCipher preparation, metadata/API parity, portable names, draft/media staging, sanitizer parity, stable-role lifecycle, exact reruns, 100 MiB attachments, and the public 20,000,000-character contract are green. Blocked on a material native security-protocol decision for legitimate writing corpora above 1 GiB: current Python/PyO3/Rust transport materializes the whole corpus, while prepared object tokens contain wrapped DEKs and physical identities only in memory. Safe bounded preparation requires an authenticated persistent preparation journal/head, restart recovery, abandonment/GC, rotation, and session-close semantics followed by one exact-head atomic finalization. Do not weaken atomicity or raise/remove bounds without an approved design.
 - 2026-08-02 17:10 MYT - User approved the recommended authenticated persistent preparation protocol, clearing the design-decision blocker. Resumed PCF-004 without changing its original `Started:` timestamp and drafted the repository spec for bounded per-object preparation, encrypted `PREPARATION_HEAD` state, exact-CAS single-generation finalization, crash recovery, explicit abandonment, retention-gated GC, rotation exclusion, and bounded session close. Implementation remains gated on independent written-spec review and user approval of the committed document.
+- 2026-08-02 17:24 MYT - Independent written-spec audit found six material gaps in the first committed draft `40021e63`: source changes after seal, corrupt-head rotation deadlock, preparation descriptors exceeding catalog-sized snapshots, ciphertext verification contradicting no-reread wording, abandonment crash idempotence, and accidental reuse of whole-graph PyO3 containers. The design now uses a SQLCipher source mutation fence, separately bounded encrypted manifests, explicit bounded ciphertext revalidation, deterministic terminal receipts, operator-only corrupt-head quarantine with old-FRK retention, and a new one-object native input. A focused re-review remains before user document approval.
 
 ## Validation
 

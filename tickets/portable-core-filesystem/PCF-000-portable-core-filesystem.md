@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 17:10 MYT
+- Updated: 2026-08-02 17:24 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -334,6 +334,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-02 04:19 MYT - PCF-004 native integration exposed a missing sealed converter boundary: public CoreFS mutation correctly remains frozen, while the crate-private sequential shadow mutator cannot publish the diary/folder/media graph in one validation generation. The invalid parallel draft-store prototype was removed; green codec/migration groundwork remains in `7ac84178`, and the approved Task 4 plan now includes a session-scoped atomic validation-batch API, deterministic native IDs, exact-head CAS, and read-only stable-role resolution. PCF-004 remains `in_progress`; PCF-005 is unchanged.
 - 2026-08-02 17:01 MYT - PCF-004's bounded implementation and repeated independent specification/quality fixes are locally green through `e30179bb`, but the child is blocked on a material native protocol decision for legitimate writing corpora above 1 GiB. Safe bounded-memory conversion while retaining one atomic validation publication requires authenticated persistent prepared-object state, exact-head finalization, restart recovery, abandonment/GC, rotation, and session-close semantics; current prepared tokens keep wrapped DEKs and physical identities only in memory. This parent remains `in_progress` because PCF-005 is independently eligible; do not weaken PCF-004 atomicity or transport bounds without an approved design.
 - 2026-08-02 17:10 MYT - The user approved PCF-004's recommended authenticated persistent preparation protocol, clearing the decision blocker. The child and parent row returned to `in_progress`, the original child `Started:` timestamp is preserved, and the new written design is undergoing independent review before the required user document-approval and implementation-plan gates.
+- 2026-08-02 17:24 MYT - PCF-004's first independent written-spec audit rejected six material protocol gaps rather than generating style churn. The child design now closes the source-seal race, descriptor-snapshot scaling error, ciphertext-validation wording conflict, abandonment recovery seam, corrupt-preparation rotation deadlock, and whole-graph PyO3 reuse risk; the parent row remains `in_progress` pending focused re-review and user document approval.
 
 ## Validation
 
