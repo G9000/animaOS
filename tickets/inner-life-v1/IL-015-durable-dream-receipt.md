@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 18:32 MYT
+- Updated: 2026-08-03 00:09 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -253,6 +253,17 @@ is its own ticket:
   reaches it already anchored, and re-anchoring handed it a fresh full TTL
   it never had.
 
+- 2026-08-03 00:09 MYT - PR #135 review round 12 (P1, Codex): the hit test skipped
+  off-viewport samples and accepted a single clear one, so a greeting panned
+  half off screen could be acknowledged while the dream sentence — appended
+  at the end — sat below the edge. All three samples (5%, 50%, 95% of the
+  text element's height) must now be inside the viewport and resolve to the
+  greeting, so the WHOLE text block has to be readable. Deliberately not
+  done by splitting the sentence into its own element: that would mean
+  locating it inside the message string, which the static-greeting path does
+  not necessarily append at the end. A false "not visible" stays recoverable
+  through the recheck timer.
+
 ## Validation
 
 - Commands:
@@ -262,7 +273,7 @@ is its own ticket:
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
     0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
     the round-5/6 desktop-only changes
-  - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-02 18:32 MYT)
+  - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-03 00:09 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`

@@ -20,8 +20,10 @@ import { useEffect, useRef } from "react";
  *   fixed-position surfaces above the canvas — the gallery lightbox, and an
  *   initiative card owned by the Layout, not the Dashboard. Rather than
  *   enumerate them, the element the ref is attached to is hit-tested at
- *   three points down its own height, each of which must lie inside the
- *   viewport; anything else on top means the text is not being read. The ref belongs on the element that renders the
+ *   three points spanning its own height. All three must lie inside the
+ *   viewport and resolve to the greeting: a dream sentence sitting just
+ *   below the fold is not being read, and anything stacked on top means the
+ *   text is not being read either. The ref belongs on the element that renders the
  *   greeting TEXT, not the whole card: an overlay can cover the sentence
  *   while the card's centre stays clear.
  *
@@ -68,15 +70,16 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
       if (x < 0 || x > viewportWidth) return false;
       // Sample down the text's own height: a corner overlay can cover the
       // last line of a greeting while leaving its middle clear.
-      let sampled = 0;
-      for (const fraction of [0.15, 0.5, 0.85]) {
+      for (const fraction of [0.05, 0.5, 0.95]) {
         const y = box.top + box.height * fraction;
-        // Off-screen samples say nothing about occlusion — an element with
-        // one pixel inside the viewport still counts as intersecting, and
-        // `elementFromPoint` answers null outside it (PR #135 review). They
-        // are not counted rather than counted as clear.
-        if (y < 0 || y > viewportHeight) continue;
-        sampled += 1;
+        // EVERY sample must be on screen, top to bottom (PR #135 review).
+        // The dream sentence is appended to the greeting, so accepting a
+        // partially visible paragraph would acknowledge a dream whose own
+        // sentence was still below the edge. Requiring the whole text block
+        // covers that without having to locate the sentence inside the
+        // string — which the static-greeting path does not append at the
+        // end anyway.
+        if (y < 0 || y > viewportHeight) return false;
         const topmost = document.elementFromPoint(x, y);
         // Our own subtree, or a container that wraps it (the canvas pane can
         // swallow the hit): not occluded. Anything else — a lightbox, the
@@ -87,8 +90,7 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
         if (topmost === null) return false;
         if (!element.contains(topmost) && !topmost.contains(element)) return false;
       }
-      // Every sample fell outside the viewport: the text is not being read.
-      return sampled > 0;
+      return true;
     };
 
     const reportOnce = () => {
