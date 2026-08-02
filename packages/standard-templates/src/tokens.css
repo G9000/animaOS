@@ -256,9 +256,11 @@
    A visible keyboard focus ring, applied once, globally. Nav and controls
    previously drove their affordances from mouse events only, leaving
    keyboard users with no indication of position. */
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
 /* ── Reduced motion ───────────────────────────────────────────────────────
@@ -278,153 +280,169 @@
 }
 
 /* ── Selection ── */
-::selection {
-  background: color-mix(in oklch, var(--accent) 20%, transparent);
+@layer base {
+  ::selection {
+    background: color-mix(in oklch, var(--accent) 20%, transparent);
+  }
 }
 
 /* ── Scrollbar — thin, minimal ── */
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+@layer base {
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+}
 
 /* ── Global transition easing ── */
-input, textarea, button, a {
-  transition-timing-function: var(--ease-hud);
+@layer base {
+  input, textarea, button, a {
+    transition-timing-function: var(--ease-hud);
+  }
 }
 
-/* ── Utility classes ── */
-.hw-btn {
-  @apply inline-flex items-center justify-center font-mono uppercase tracking-caps-4 border border-border bg-card rounded-none transition-all;
-}
-.hw-btn:hover { @apply border-muted-foreground/30 bg-secondary; }
-.hw-btn:active { @apply translate-y-[1px]; }
+/* ── Component classes ────────────────────────────────────────────────────
+   These MUST stay inside @layer components. Tailwind's layer order is
+   theme, base, components, utilities — declaring them here keeps consumer
+   utilities winning, which is how they behaved back when `glass` was just a
+   string of utility classes. Move any of them out of the layer and they
+   become unoverridable: an unlayered rule beats every layered one regardless
+   of specificity or source order, which silently kills things like
+   `cn(glass, "border-accent")`. */
+@layer components {
+  .hw-btn {
+    @apply inline-flex items-center justify-center font-mono uppercase tracking-caps-4 border border-border bg-card rounded-none transition-all;
+  }
+  .hw-btn:hover { @apply border-muted-foreground/30 bg-secondary; }
+  .hw-btn:active { @apply translate-y-[1px]; }
 
-.hw-inset { @apply bg-input border border-border rounded-none; }
-.dark .hw-inset { box-shadow: inset 1px 1px 2px rgba(0,0,0,0.15); }
+  .hw-inset { @apply bg-input border border-border rounded-none; }
+  .dark .hw-inset { box-shadow: inset 1px 1px 2px rgba(0,0,0,0.15); }
 
-.hw-module { @apply bg-card border border-border rounded-none; }
+  .hw-module { @apply bg-card border border-border rounded-none; }
 
-.hw-label { @apply font-mono text-label uppercase tracking-caps-4 text-muted-foreground; }
+  .hw-label { @apply font-mono text-label uppercase tracking-caps-4 text-muted-foreground; }
 
-/* ── Glass ────────────────────────────────────────────────────────────────
-   The single definition of the floating translucent surface. Previously this
-   was copy-pasted as a local `const glass` in 13 files, with the blur drifting
-   across 24/32/36/40/44px and the shadow across four different ramps. */
-.hw-glass {
-  background: color-mix(in oklch, var(--background) 25%, transparent);
-  backdrop-filter: blur(var(--blur-glass));
-  -webkit-backdrop-filter: blur(var(--blur-glass));
-  border: 1px solid var(--color-hairline);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
-}
-/* Deeper shadow for surfaces that float well above the page, e.g. the chat
-   composer and modal panels. */
-.hw-glass-raised {
-  box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.28);
-}
+  /* ── Glass ────────────────────────────────────────────────────────────────
+     The single definition of the floating translucent surface. Previously this
+     was copy-pasted as a local `const glass` in 13 files, with the blur drifting
+     across 24/32/36/40/44px and the shadow across four different ramps. */
+  .hw-glass {
+    background: color-mix(in oklch, var(--background) 25%, transparent);
+    backdrop-filter: blur(var(--blur-glass));
+    -webkit-backdrop-filter: blur(var(--blur-glass));
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  }
+  /* Deeper shadow for surfaces that float well above the page, e.g. the chat
+     composer and modal panels. */
+  .hw-glass-raised {
+    box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.28);
+  }
 
-/* The dashboard node card. Softer and slightly rounded — the canvas is the one
-   place this UI departs from the zero-radius rule, deliberately, so the cards
-   read as objects on a surface rather than regions of the page. */
-.hw-glass-panel {
-  background: color-mix(in oklch, var(--background) 25%, transparent);
-  backdrop-filter: blur(var(--blur-glass));
-  -webkit-backdrop-filter: blur(var(--blur-glass));
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-xl);
-  box-shadow: 0 4px 28px rgba(0, 0, 0, 0.18);
-}
+  /* The dashboard node card. Softer and slightly rounded — the canvas is the one
+     place this UI departs from the zero-radius rule, deliberately, so the cards
+     read as objects on a surface rather than regions of the page. */
+  .hw-glass-panel {
+    background: color-mix(in oklch, var(--background) 25%, transparent);
+    backdrop-filter: blur(var(--blur-glass));
+    -webkit-backdrop-filter: blur(var(--blur-glass));
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 4px 28px rgba(0, 0, 0, 0.18);
+  }
 
-/* ── Lift ─────────────────────────────────────────────────────────────────
-   The signature offset-and-drop-shadow affordance: the element steps toward
-   the viewer and casts a hard shadow *away* from the screen edge it is docked
-   to, which is why there is a direction per variant rather than one lift.
+  /* ── Lift ─────────────────────────────────────────────────────────────────
+     The signature offset-and-drop-shadow affordance: the element steps toward
+     the viewer and casts a hard shadow *away* from the screen edge it is docked
+     to, which is why there is a direction per variant rather than one lift.
 
-   Declared in CSS so it responds to :focus-visible as well as :hover. The
-   eight hand-rolled onMouseEnter/onMouseLeave implementations this replaces
-   were mouse-only — the primary navigation had no keyboard affordance at all.
+     Declared in CSS so it responds to :focus-visible as well as :hover. The
+     eight hand-rolled onMouseEnter/onMouseLeave implementations this replaces
+     were mouse-only — the primary navigation had no keyboard affordance at all.
 
-   `data-lifted="true"` holds the lifted state, for the active nav item. */
-[class*="hw-lift"] {
-  transition: transform 150ms var(--ease-hud), box-shadow 150ms var(--ease-hud);
-}
-
-/* Up-left: for elements docked to the bottom/right of the screen. */
-.hw-lift:hover,
-.hw-lift:focus-visible,
-.hw-lift:has(:focus-visible),
-.hw-lift[data-lifted="true"],
-.hw-lift[aria-current="page"] {
-  transform: translate(-2px, -4px);
-  box-shadow:
-    2px 4px 0 var(--accent-dark),
-    4px 8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
-}
-
-/* Down-right: for elements docked to the top-left corner. */
-.hw-lift-dr:hover,
-.hw-lift-dr:focus-visible,
-.hw-lift-dr:has(:focus-visible),
-.hw-lift-dr[data-lifted="true"],
-.hw-lift-dr[aria-current="page"] {
-  transform: translate(2px, 4px);
-  box-shadow:
-    -2px -4px 0 var(--accent-dark),
-    -4px -8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
-}
-
-/* Up-right: for elements docked to the bottom-left corner. */
-.hw-lift-ur:hover,
-.hw-lift-ur:focus-visible,
-.hw-lift-ur:has(:focus-visible),
-.hw-lift-ur[data-lifted="true"],
-.hw-lift-ur[aria-current="page"] {
-  transform: translate(2px, -4px);
-  box-shadow:
-    -2px 4px 0 var(--accent-dark),
-    -4px 8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
-}
-
-/* Rightward, for items in a vertical rail (settings nav, memory list). */
-.hw-lift-x:hover,
-.hw-lift-x:focus-visible,
-.hw-lift-x:has(:focus-visible) {
-  transform: translateX(6px);
-  box-shadow: -2px 2px 0 rgba(0, 0, 0, 0.30), -3px 3px 0 rgba(0, 0, 0, 0.15);
-}
-.hw-lift-x[data-lifted="true"],
-.hw-lift-x[aria-current="page"] {
-  transform: translateX(12px);
-  box-shadow:
-    -2px 2px 0 var(--accent-dark),
-    -4px 4px 0 color-mix(in oklch, var(--accent-dark) 55%, transparent);
-}
-
-/* Accent-shadowed rail variant, for list rows on the atmosphere layer. */
-.hw-lift-x-accent:hover,
-.hw-lift-x-accent:focus-visible,
-.hw-lift-x-accent:has(:focus-visible) {
-  transform: translateX(6px);
-  box-shadow:
-    -2px 2px 0 var(--accent-dark),
-    -4px 4px 0 color-mix(in oklch, var(--accent-dark) 50%, transparent);
-}
-
-@media (prefers-reduced-motion: reduce) {
+     `data-lifted="true"` holds the lifted state, for the active nav item. */
   [class*="hw-lift"] {
-    transition: none;
+    transition: transform 150ms var(--ease-hud), box-shadow 150ms var(--ease-hud);
   }
-  [class*="hw-lift"]:hover,
-  [class*="hw-lift"]:focus-visible,
-  [class*="hw-lift"]:has(:focus-visible),
-  [class*="hw-lift"][data-lifted="true"],
-  [class*="hw-lift"][aria-current="page"] {
-    transform: none;
+
+  /* Up-left: for elements docked to the bottom/right of the screen. */
+  .hw-lift:hover,
+  .hw-lift:focus-visible,
+  .hw-lift:has(:focus-visible),
+  .hw-lift[data-lifted="true"],
+  .hw-lift[aria-current="page"] {
+    transform: translate(-2px, -4px);
+    box-shadow:
+      2px 4px 0 var(--accent-dark),
+      4px 8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
   }
+
+  /* Down-right: for elements docked to the top-left corner. */
+  .hw-lift-dr:hover,
+  .hw-lift-dr:focus-visible,
+  .hw-lift-dr:has(:focus-visible),
+  .hw-lift-dr[data-lifted="true"],
+  .hw-lift-dr[aria-current="page"] {
+    transform: translate(2px, 4px);
+    box-shadow:
+      -2px -4px 0 var(--accent-dark),
+      -4px -8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
+  }
+
+  /* Up-right: for elements docked to the bottom-left corner. */
+  .hw-lift-ur:hover,
+  .hw-lift-ur:focus-visible,
+  .hw-lift-ur:has(:focus-visible),
+  .hw-lift-ur[data-lifted="true"],
+  .hw-lift-ur[aria-current="page"] {
+    transform: translate(2px, -4px);
+    box-shadow:
+      -2px 4px 0 var(--accent-dark),
+      -4px 8px 0 color-mix(in oklch, var(--accent-dark) 40%, transparent);
+  }
+
+  /* Rightward, for items in a vertical rail (settings nav, memory list). */
+  .hw-lift-x:hover,
+  .hw-lift-x:focus-visible,
+  .hw-lift-x:has(:focus-visible) {
+    transform: translateX(6px);
+    box-shadow: -2px 2px 0 rgba(0, 0, 0, 0.30), -3px 3px 0 rgba(0, 0, 0, 0.15);
+  }
+  .hw-lift-x[data-lifted="true"],
+  .hw-lift-x[aria-current="page"] {
+    transform: translateX(12px);
+    box-shadow:
+      -2px 2px 0 var(--accent-dark),
+      -4px 4px 0 color-mix(in oklch, var(--accent-dark) 55%, transparent);
+  }
+
+  /* Accent-shadowed rail variant, for list rows on the atmosphere layer. */
+  .hw-lift-x-accent:hover,
+  .hw-lift-x-accent:focus-visible,
+  .hw-lift-x-accent:has(:focus-visible) {
+    transform: translateX(6px);
+    box-shadow:
+      -2px 2px 0 var(--accent-dark),
+      -4px 4px 0 color-mix(in oklch, var(--accent-dark) 50%, transparent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [class*="hw-lift"] {
+      transition: none;
+    }
+    [class*="hw-lift"]:hover,
+    [class*="hw-lift"]:focus-visible,
+    [class*="hw-lift"]:has(:focus-visible),
+    [class*="hw-lift"][data-lifted="true"],
+    [class*="hw-lift"][aria-current="page"] {
+      transform: none;
+    }
+  }
+
+  /* ── Animations ── */
 }
 
-/* ── Animations ── */
 @keyframes thinking-dot {
   0%, 70%, 100% { opacity: 0.2; transform: translateY(0px); }
   35%           { opacity: 0.85; transform: translateY(-4px); }
