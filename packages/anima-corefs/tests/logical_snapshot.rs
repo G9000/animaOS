@@ -262,6 +262,18 @@ fn walk_list_and_glob_are_deterministic_and_generation_bound() {
     );
     assert_eq!(first.generation, 1);
     assert!(first.next_cursor.is_some());
+    assert_eq!(first.entries[0].parent_id.as_deref(), Some(ROOT_ID));
+    assert_eq!(first.entries[0].role, None);
+    assert_eq!(first.entries[1].parent_id.as_deref(), Some(NOTES_ID));
+    assert_eq!(
+        first.entries[1].created_at.as_deref(),
+        Some("2026-07-17T00:00:00Z")
+    );
+    assert_eq!(
+        first.entries[1].updated_at.as_deref(),
+        Some("2026-07-17T00:00:00Z")
+    );
+    assert_eq!(first.entries[1].metadata, Some(BTreeMap::new()));
 
     let second = snapshot
         .walk(

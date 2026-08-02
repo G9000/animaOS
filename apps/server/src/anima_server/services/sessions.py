@@ -664,7 +664,7 @@ class UnlockSessionStore:
 
     def _notify_session_published(self, session: UnlockSession) -> None:
         callback = self._on_session_published
-        if callback is None or session.runtime_index is None:
+        if callback is None:
             return
         try:
             callback(session)

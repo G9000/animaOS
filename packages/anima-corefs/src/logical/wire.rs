@@ -87,11 +87,16 @@ fn walk_entry_value(entry: &LogicalWalkEntry) -> Value {
     json!({
         "path": path_value(&entry.path),
         "stableId": entry.stable_id,
+        "parentId": entry.parent_id,
+        "role": entry.role,
         "revision": entry.revision,
         "contentHash": entry.content_hash,
         "kind": entry_kind(entry.kind),
         "objectKind": object_kind(entry.object_kind),
         "depth": entry.depth,
+        "createdAt": entry.created_at,
+        "updatedAt": entry.updated_at,
+        "metadata": entry.metadata,
     })
 }
 

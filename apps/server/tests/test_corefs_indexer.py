@@ -388,6 +388,23 @@ def test_unlock_session_publish_callback_receives_new_session() -> None:
         store.revoke(token)
 
 
+def test_unlock_session_publish_callback_runs_without_runtime_index() -> None:
+    published = []
+    store = UnlockSessionStore(
+        runtime_index_factory=lambda _keys, _key: None,
+        on_session_published=published.append,
+    )
+
+    token = store.create(8, {"memories": b"m" * 32})
+    try:
+        session = store.resolve(token)
+        assert session is not None
+        assert session.runtime_index is None
+        assert published == [session]
+    finally:
+        store.revoke(token)
+
+
 def test_legacy_unlock_session_still_creates_runtime_sealing_index() -> None:
     index = CoreFSProgressiveIndex("core-index")
     index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")

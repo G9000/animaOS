@@ -3,9 +3,14 @@ from __future__ import annotations
 from anima_server.config import settings
 from anima_server.db.session import get_user_session_factory
 from anima_server.services.corefs.diary_migration import (
+    InactiveFolder,
+    LegacyDiaryDraft,
     LegacyNote,
+    build_inactive_diary_catalog,
+    migration_opaque_id,
     prepare_diary_validation_catalog,
     read_prepared_writing_objects,
+    read_prepared_writing_snapshot,
     resolve_prepared_role,
 )
 from anima_server.services.corefs.formats import decode_draft_document, decode_note_document
@@ -510,3 +515,139 @@ def test_note_is_read_back_through_authorized_stable_role() -> None:
         decoded = decode_note_document(note.content)
         assert decoded.title == "Native"
         assert decoded.body == "# encrypted note"
+
+
+def test_unlock_lifecycle_rerun_preserves_native_layout_and_is_a_noop() -> None:
+    with managed_test_client("anima-corefs-lifecycle-noop-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        token = str(reg["unlockToken"])
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        draft_id = migration_opaque_id("native", "lifecycle-draft")
+        note_id = migration_opaque_id("native", "lifecycle-note")
+        with get_user_session_factory(user_id)() as db:
+            prepare_diary_validation_catalog(
+                session=session,
+                db=db,
+                staged_drafts=(
+                    LegacyDiaryDraft(
+                        id="lifecycle-draft",
+                        target_entry_id=None,
+                        body="<p>native draft</p>",
+                        content_type="text/html",
+                        updated_at="2026-08-01T02:00:00Z",
+                        stable_id=draft_id,
+                        created_at="2026-08-01T01:00:00Z",
+                        native_metadata={"origin": "lifecycle"},
+                    ),
+                ),
+                staged_notes=(
+                    LegacyNote(
+                        id="lifecycle-note",
+                        title="Native note",
+                        body="# native",
+                        content_type="text/markdown",
+                        updated_at="2026-08-01T04:00:00Z",
+                        stable_id=note_id,
+                        created_at="2026-08-01T03:00:00Z",
+                        native_metadata={"origin": "lifecycle"},
+                    ),
+                ),
+            )
+
+        prepared = read_prepared_writing_snapshot(session=session)
+        journal = next(item for item in prepared.folders if item.role == "core.journal")
+        notes = next(item for item in prepared.folders if item.role == "core.notes")
+        preserved = tuple(
+            InactiveFolder(
+                stable_id=item.stable_id,
+                parent_id=(journal.stable_id if item.role == "core.notes" else item.parent_id),
+                name=(
+                    "Renamed Journal"
+                    if item.role == "core.journal"
+                    else "Moved Notes"
+                    if item.role == "core.notes"
+                    else item.name
+                ),
+                order=0,
+                role=item.role,
+                owner="user",
+                agent_access="write",
+                policy="user-write" if item.role is not None else "inherit",
+            )
+            for item in prepared.folders
+        )
+        draft = next(item for item in prepared.objects if item.stable_id == draft_id)
+        note = next(item for item in prepared.objects if item.stable_id == note_id)
+        decoded_draft = decode_draft_document(draft.content)
+        decoded_note = decode_note_document(note.content)
+        moved = build_inactive_diary_catalog(
+            user_id=user_id,
+            folders=(),
+            entries=(),
+            drafts=(
+                LegacyDiaryDraft(
+                    id=draft_id,
+                    target_entry_id=None,
+                    body=decoded_draft.body,
+                    content_type=decoded_draft.content_type,
+                    updated_at=draft.updated_at,
+                    stable_id=draft_id,
+                    metadata=decoded_draft.metadata,
+                    target_stable_id=decoded_draft.target_id,
+                    created_at=draft.created_at,
+                    native_metadata=draft.metadata,
+                ),
+            ),
+            notes=(
+                LegacyNote(
+                    id=note_id,
+                    title=decoded_note.title,
+                    body=decoded_note.body,
+                    content_type=decoded_note.content_type,
+                    updated_at=note.updated_at,
+                    stable_id=note_id,
+                    created_at=note.created_at,
+                    native_metadata=note.metadata,
+                ),
+            ),
+            preserved_folders=preserved,
+        ).with_expected_revisions({draft_id: draft.revision, note_id: note.revision})
+        head = session.corefs_session.validation_snapshot(session.corefs_keys)
+        moved_result = moved.publish_native(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            expected_head=(int(head["generation"]), str(head["catalogHash"])),
+        )
+        assert moved_result["published"] is True
+
+        with get_user_session_factory(user_id)() as db:
+            rerun = prepare_diary_validation_catalog(session=session, db=db)
+        assert rerun.published is False
+        assert rerun.generation == moved_result["generation"]
+        after = read_prepared_writing_snapshot(session=session)
+        after_journal = next(item for item in after.folders if item.role == "core.journal")
+        after_notes = next(item for item in after.folders if item.role == "core.notes")
+        assert (after_journal.stable_id, after_journal.name, after_journal.parent_id) == (
+            journal.stable_id,
+            "Renamed Journal",
+            journal.parent_id,
+        )
+        assert (after_notes.stable_id, after_notes.name, after_notes.parent_id) == (
+            notes.stable_id,
+            "Moved Notes",
+            journal.stable_id,
+        )
+        after_draft = next(item for item in after.objects if item.stable_id == draft_id)
+        after_note = next(item for item in after.objects if item.stable_id == note_id)
+        assert (after_draft.created_at, after_draft.updated_at, after_draft.metadata) == (
+            "2026-08-01T01:00:00Z",
+            "2026-08-01T02:00:00Z",
+            {"origin": "lifecycle"},
+        )
+        assert (after_note.created_at, after_note.updated_at, after_note.metadata) == (
+            "2026-08-01T03:00:00Z",
+            "2026-08-01T04:00:00Z",
+            {"origin": "lifecycle"},
+        )

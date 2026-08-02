@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from anima_server.services.corefs.diary_migration import (
+    InactiveFolder,
     LegacyDiaryAttachment,
     LegacyDiaryDraft,
     LegacyDiaryEntry,
@@ -249,6 +250,24 @@ def test_inactive_catalog_is_idempotent_and_publishes_atomically() -> None:
     assert published == [first]
 
 
+def test_legacy_folder_policy_is_carried_into_native_descendant_policy() -> None:
+    catalog = build_inactive_diary_catalog(
+        user_id=7,
+        folders=(
+            LegacyDiaryFolder(id=1, name="Private", parent_id=None, order=0, policy="deny"),
+            LegacyDiaryFolder(id=2, name="Child", parent_id=1, order=0, policy="inherit"),
+            LegacyDiaryFolder(id=3, name="Read only", parent_id=None, order=1, policy="read"),
+            LegacyDiaryFolder(id=4, name="Unknown", parent_id=None, order=2, policy="surprise"),
+        ),
+        entries=(),
+    )
+
+    assert catalog.folder(migration_opaque_id("diary-folder", "1")).policy == "deny"
+    assert catalog.folder(migration_opaque_id("diary-folder", "2")).policy == "inherit"
+    # The validation converter cannot represent lowered write access. Fail closed.
+    assert catalog.folder(migration_opaque_id("diary-folder", "3")).policy == "deny"
+    assert catalog.folder(migration_opaque_id("diary-folder", "4")).policy == "deny"
+
 def test_native_publication_wrapper_emits_one_complete_strict_batch() -> None:
     catalog = build_inactive_diary_catalog(
         user_id=8,
@@ -413,3 +432,86 @@ def test_python_rerun_hydrates_current_native_revisions() -> None:
     draft_id = migration_opaque_id("diary-draft", "draft")
     rerun = catalog.with_expected_revisions({draft_id: 3})
     assert rerun.object(draft_id).expected_revision == 3
+
+
+def test_rerun_preserves_native_role_placement_and_object_envelope_fields() -> None:
+    root_id = migration_opaque_id("existing", "root")
+    journal_id = migration_opaque_id("existing", "journal")
+    notes_id = migration_opaque_id("existing", "notes")
+    preserved = (
+        InactiveFolder(
+            stable_id=journal_id,
+            parent_id=root_id,
+            name="My Journal",
+            order=0,
+            role="core.journal",
+            owner="user",
+            agent_access="write",
+            policy="user-write",
+        ),
+        InactiveFolder(
+            stable_id=notes_id,
+            parent_id=journal_id,
+            name="Reference Notes",
+            order=1,
+            role="core.notes",
+            owner="user",
+            agent_access="write",
+            policy="user-write",
+        ),
+    )
+    catalog = build_inactive_diary_catalog(
+        user_id=1,
+        folders=(),
+        entries=(),
+        drafts=(
+            LegacyDiaryDraft(
+                id="native-draft",
+                target_entry_id=None,
+                body="<p>same</p>",
+                content_type="text/html",
+                updated_at="2026-08-01T02:00:00Z",
+                stable_id=migration_opaque_id("existing", "draft"),
+                created_at="2026-08-01T01:00:00Z",
+                native_metadata={"origin": "authenticated"},
+            ),
+        ),
+        notes=(
+            LegacyNote(
+                id="native-note",
+                title="Same",
+                body="# same",
+                content_type="text/markdown",
+                updated_at="2026-08-01T04:00:00Z",
+                stable_id=migration_opaque_id("existing", "note"),
+                created_at="2026-08-01T03:00:00Z",
+                native_metadata={"origin": "authenticated"},
+            ),
+        ),
+        preserved_folders=preserved,
+    )
+
+    journal = catalog.folder_for_role("core.journal")
+    notes = catalog.folder_for_role("core.notes")
+    assert (journal.stable_id, journal.name, journal.parent_id) == (
+        journal_id,
+        "My Journal",
+        root_id,
+    )
+    assert (notes.stable_id, notes.name, notes.parent_id) == (
+        notes_id,
+        "Reference Notes",
+        journal_id,
+    )
+    draft = catalog.object(migration_opaque_id("existing", "draft"))
+    note = catalog.object(migration_opaque_id("existing", "note"))
+    assert (draft.created_at, draft.updated_at, draft.metadata) == (
+        "2026-08-01T01:00:00Z",
+        "2026-08-01T02:00:00Z",
+        {"origin": "authenticated"},
+    )
+    assert (note.created_at, note.updated_at, note.metadata) == (
+        "2026-08-01T03:00:00Z",
+        "2026-08-01T04:00:00Z",
+        {"origin": "authenticated"},
+    )

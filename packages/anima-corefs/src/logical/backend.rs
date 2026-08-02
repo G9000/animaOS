@@ -65,6 +65,8 @@ pub(super) struct ObjectNode {
 pub(super) struct Node {
     pub path: LogicalPath,
     pub stable_id: String,
+    pub parent_id: Option<String>,
+    pub role: Option<String>,
     pub object: Option<ObjectNode>,
 }
 
@@ -194,6 +196,11 @@ impl CoreFsReadSnapshot {
                 Node {
                     path,
                     stable_id: entry.stable_id().as_str().to_owned(),
+                    parent_id: entry.parent_id().map(|value| value.as_str().to_owned()),
+                    role: entry
+                        .common_for_internal_mutation()
+                        .role_for_internal_mutation()
+                        .map(|value| value.as_str().to_owned()),
                     object,
                 },
             );
@@ -581,6 +588,8 @@ impl CoreFsObjectReader {
         let node = Node {
             path: self.node_path.clone(),
             stable_id: self.stable_id.clone(),
+            parent_id: None,
+            role: None,
             object: Some(self.object.clone()),
         };
         self.stream = open_object_stream(&self.objects_dir, &self.core_id, &node, &self.object)

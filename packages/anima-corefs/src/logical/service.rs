@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anima_file_tools::{
     glob, grep, read_stream, walk_page, BackendKind, BackendPath, EntryKind, FileToolError,
     GlobCursor, GlobRequest, GrepCursor, GrepMode, GrepRequest, OperationControl, ReadOptions,
@@ -6,6 +8,7 @@ use anima_file_tools::{
 
 use crate::crypto::ObjectKind;
 use crate::envelope::BodyEncoding;
+use serde_json::Value;
 
 use super::backend::{CoreFsReadSnapshot, LogicalError, Node};
 use super::wire::logical_list_page_size;
@@ -102,11 +105,16 @@ pub struct LogicalWalkOptions {
 pub struct LogicalWalkEntry {
     pub path: LogicalPath,
     pub stable_id: String,
+    pub parent_id: Option<String>,
+    pub role: Option<String>,
     pub revision: Option<u64>,
     pub content_hash: Option<String>,
     pub kind: EntryKind,
     pub object_kind: Option<ObjectKind>,
     pub depth: usize,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub metadata: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -523,19 +531,29 @@ impl CoreFsReadSnapshot {
         let entries = page
             .entries
             .into_iter()
-            .map(|entry| {
+            .map(|entry| -> Result<LogicalWalkEntry, LogicalError> {
                 let node = &self.nodes[entry.path.as_str()];
-                LogicalWalkEntry {
+                let metadata = if node.object.is_some() {
+                    Some(self.authenticated_metadata(node)?)
+                } else {
+                    None
+                };
+                Ok(LogicalWalkEntry {
                     path: node.path.clone(),
                     stable_id: node.stable_id.clone(),
+                    parent_id: node.parent_id.clone(),
+                    role: node.role.clone(),
                     revision: node.revision(),
                     content_hash: node.content_hash().map(str::to_owned),
                     kind: entry.kind,
                     object_kind: node.object_kind(),
                     depth: entry.depth,
-                }
+                    created_at: metadata.as_ref().map(|value| value.created_at.clone()),
+                    updated_at: metadata.as_ref().map(|value| value.updated_at.clone()),
+                    metadata: metadata.map(|value| value.metadata),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let errors = page
             .errors
             .into_iter()

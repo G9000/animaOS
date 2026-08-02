@@ -26,6 +26,17 @@ _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 logger = logging.getLogger(__name__)
 
 
+def _native_folder_policy(value: str) -> str:
+    """Lower legacy access into the validation converter's safe policy set."""
+    normalized = value.strip().lower()
+    if normalized == "inherit":
+        return "inherit"
+    # Native PCF-004 validation has no read-only representation. Explicit
+    # deny, lowered access, and unrecognized legacy values therefore fail
+    # closed instead of silently inheriting write access.
+    return "deny"
+
+
 def migration_opaque_id(domain: str, source_key: str | bytes) -> str:
     """Return the native converter's deterministic domain-separated ID."""
     source = source_key.encode() if isinstance(source_key, str) else source_key
@@ -99,6 +110,8 @@ class LegacyDiaryDraft:
     stable_id: str | None = None
     metadata: dict[str, Any] | None = None
     target_stable_id: str | None = None
+    created_at: str | None = None
+    native_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +122,8 @@ class LegacyNote:
     content_type: str
     updated_at: str
     stable_id: str | None = None
+    created_at: str | None = None
+    native_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +251,7 @@ def build_inactive_diary_catalog(
     entries: Iterable[LegacyDiaryEntry],
     drafts: Iterable[LegacyDiaryDraft] = (),
     notes: Iterable[LegacyNote] = (),
+    preserved_folders: Iterable[InactiveFolder] = (),
 ) -> InactiveWritingCatalog:
     """Build deterministic validation-catalog input without changing active authority."""
     legacy_folders = tuple(sorted(folders, key=lambda item: (item.order, item.id)))
@@ -249,14 +265,29 @@ def build_inactive_diary_catalog(
         if folder.parent_id is not None and folder.parent_id not in folder_ids:
             raise ValueError("Legacy diary folder parent is missing.")
 
+    preserved = tuple(preserved_folders)
+    preserved_roles = {item.role: item for item in preserved if item.role is not None}
+    journal_preserved = preserved_roles.get("core.journal")
+    notes_preserved = preserved_roles.get("core.notes")
     core_root_id = migration_opaque_id("core-folder", "root")
-    journal_id = migration_opaque_id("core-folder-role", "core.journal")
-    notes_id = migration_opaque_id("core-folder-role", "core.notes")
+    journal_id = (
+        journal_preserved.stable_id
+        if journal_preserved is not None
+        else migration_opaque_id("core-folder-role", "core.journal")
+    )
+    notes_id = (
+        notes_preserved.stable_id
+        if notes_preserved is not None
+        else migration_opaque_id("core-folder-role", "core.notes")
+    )
+    preserved_root = next((item for item in preserved if item.parent_id is None), None)
+    if preserved_root is not None:
+        core_root_id = preserved_root.stable_id
     converted_folders: list[InactiveFolder] = [
         InactiveFolder(
             stable_id=core_root_id,
             parent_id=None,
-            name="Core",
+            name=preserved_root.name if preserved_root is not None else "Core",
             order=0,
             role=None,
             owner="user",
@@ -265,8 +296,12 @@ def build_inactive_diary_catalog(
         ),
         InactiveFolder(
             stable_id=journal_id,
-            parent_id=core_root_id,
-            name="Journal",
+            parent_id=(
+                journal_preserved.parent_id
+                if journal_preserved is not None
+                else core_root_id
+            ),
+            name=journal_preserved.name if journal_preserved is not None else "Journal",
             order=0,
             role="core.journal",
             owner="user",
@@ -275,8 +310,8 @@ def build_inactive_diary_catalog(
         ),
         InactiveFolder(
             stable_id=notes_id,
-            parent_id=core_root_id,
-            name="Notes",
+            parent_id=(notes_preserved.parent_id if notes_preserved is not None else core_root_id),
+            name=notes_preserved.name if notes_preserved is not None else "Notes",
             order=1,
             role="core.notes",
             owner="user",
@@ -285,6 +320,7 @@ def build_inactive_diary_catalog(
         ),
     ]
     for folder in legacy_folders:
+        native_policy = _native_folder_policy(folder.policy)
         converted_folders.append(
             InactiveFolder(
                 stable_id=migration_opaque_id("diary-folder", str(folder.id)),
@@ -297,8 +333,8 @@ def build_inactive_diary_catalog(
                 order=folder.order,
                 role=None,
                 owner="user",
-                agent_access="write",
-                policy="inherit",
+                agent_access=("write" if native_policy == "inherit" else "none"),
+                policy=native_policy,
                 metadata={
                     "legacyId": folder.id,
                     "order": folder.order,
@@ -485,9 +521,10 @@ def build_inactive_diary_catalog(
                 ),
                 source_hash=hashlib.sha256(draft.body.encode()).hexdigest(),
                 body_encoding="utf-8",
-                created_at=draft.updated_at,
+                created_at=draft.created_at or draft.updated_at,
                 updated_at=draft.updated_at,
                 references=(target_id,) if target_id is not None else (),
+                metadata=draft.native_metadata,
             )
         )
 
@@ -508,8 +545,9 @@ def build_inactive_diary_catalog(
                 ),
                 source_hash=hashlib.sha256(note.body.encode()).hexdigest(),
                 body_encoding="utf-8",
-                created_at=note.updated_at,
+                created_at=note.created_at or note.updated_at,
                 updated_at=note.updated_at,
+                metadata=note.native_metadata,
             )
         )
 
@@ -631,6 +669,24 @@ class PreparedWritingObject:
     revision: int
     content_hash: str
     content: bytes
+    created_at: str
+    updated_at: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedWritingFolder:
+    stable_id: str
+    parent_id: str | None
+    path: str
+    name: str
+    role: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedWritingSnapshot:
+    folders: tuple[PreparedWritingFolder, ...]
+    objects: tuple[PreparedWritingObject, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,6 +712,11 @@ def resolve_prepared_role(*, session: Any, role: str) -> dict[str, object]:
 
 def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObject, ...]:
     """Read authenticated inactive writing objects without changing route authority."""
+    return read_prepared_writing_snapshot(session=session).objects
+
+
+def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
+    """Read authenticated inactive folders and writing objects at one generation."""
     from anima_server.services.corefs import logical
 
     if session.corefs_session is None or session.corefs_keys is None:
@@ -665,6 +726,27 @@ def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObjec
         keys=session.corefs_keys,
     )
     values: list[PreparedWritingObject] = []
+    root = _wire_result(
+        logical.stat_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=selected,
+            path="",
+        ),
+        selected.generation,
+    )
+    root_id = root.get("stableId")
+    if root.get("kind") != "directory" or not isinstance(root_id, str):
+        raise DiaryMigrationError("Invalid prepared CoreFS root entry.")
+    folders: list[PreparedWritingFolder] = [
+        PreparedWritingFolder(
+            stable_id=root_id,
+            parent_id=None,
+            path="",
+            name="Core",
+            role=None,
+        )
+    ]
     cursor: str | None = None
     while True:
         raw = logical.walk_v1(
@@ -674,20 +756,45 @@ def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObjec
             root="",
             cursor_after=cursor,
             page_size=100,
-            include_directories=False,
+            include_directories=True,
         )
         result = _wire_result(raw, selected.generation)
         entries = result.get("entries")
         if not isinstance(entries, list):
             raise DiaryMigrationError("Invalid prepared CoreFS walk response.")
         for entry in entries:
-            if not isinstance(entry, dict) or entry.get("kind") != "file":
+            if not isinstance(entry, dict):
                 continue
             path = entry.get("path")
             stable_id = entry.get("stableId")
+            if entry.get("kind") == "directory":
+                parent_id = entry.get("parentId")
+                role = entry.get("role")
+                if (
+                    not isinstance(path, str)
+                    or not isinstance(stable_id, str)
+                    or (parent_id is not None and not isinstance(parent_id, str))
+                    or (role is not None and not isinstance(role, str))
+                ):
+                    raise DiaryMigrationError("Invalid prepared CoreFS directory entry.")
+                folders.append(
+                    PreparedWritingFolder(
+                        stable_id=stable_id,
+                        parent_id=parent_id,
+                        path=path,
+                        name=path.rsplit("/", 1)[-1] if path else "Core",
+                        role=role,
+                    )
+                )
+                continue
+            if entry.get("kind") != "file":
+                continue
             kind = entry.get("objectKind")
             revision = entry.get("revision")
             content_hash = entry.get("contentHash")
+            created_at = entry.get("createdAt")
+            updated_at = entry.get("updatedAt")
+            metadata = entry.get("metadata")
             if (
                 not isinstance(path, str)
                 or not isinstance(stable_id, str)
@@ -695,6 +802,9 @@ def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObjec
                 or isinstance(revision, bool)
                 or not isinstance(revision, int)
                 or not isinstance(content_hash, str)
+                or not isinstance(created_at, str)
+                or not isinstance(updated_at, str)
+                or not isinstance(metadata, dict)
             ):
                 raise DiaryMigrationError("Invalid prepared CoreFS walk entry.")
             content = _read_prepared_bytes(
@@ -712,6 +822,9 @@ def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObjec
                     revision=revision,
                     content_hash=content_hash,
                     content=content,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    metadata=dict(metadata),
                 )
             )
         next_cursor = result.get("nextCursor")
@@ -720,7 +833,7 @@ def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObjec
         if not isinstance(next_cursor, dict) or not isinstance(next_cursor.get("after"), str):
             raise DiaryMigrationError("Invalid prepared CoreFS walk cursor.")
         cursor = str(next_cursor["after"])
-    return tuple(values)
+    return PreparedWritingSnapshot(folders=tuple(folders), objects=tuple(values))
 
 
 def prepare_diary_validation_catalog(
@@ -746,12 +859,16 @@ def prepare_diary_validation_catalog(
     staged_drafts = tuple(staged_drafts)
     staged_notes = tuple(staged_notes)
     current: tuple[PreparedWritingObject, ...]
+    current_folders: tuple[PreparedWritingFolder, ...]
     try:
-        current = read_prepared_writing_objects(session=session)
+        prepared_snapshot = read_prepared_writing_snapshot(session=session)
+        current = prepared_snapshot.objects
+        current_folders = prepared_snapshot.folders
         head_value = session.corefs_session.validation_snapshot(session.corefs_keys)
         expected_head = (int(head_value["generation"]), str(head_value["catalogHash"]))
     except ValueError:
         current = ()
+        current_folders = ()
         expected_head = None
     allowed_kinds = {"diary", "attachment", "draft", "note"}
     unknown = sorted({item.kind for item in current if item.kind not in allowed_kinds})
@@ -771,10 +888,12 @@ def prepare_diary_validation_catalog(
                 target_entry_id=None,
                 body=decoded.body,
                 content_type=decoded.content_type,
-                updated_at=_now_iso(),
+                updated_at=item.updated_at,
                 stable_id=decoded.stable_id,
                 metadata=decoded.metadata,
                 target_stable_id=decoded.target_id,
+                created_at=item.created_at,
+                native_metadata=item.metadata,
             )
         elif item.kind == "note":
             decoded_note = decode_note_document(item.content)
@@ -783,8 +902,10 @@ def prepare_diary_validation_catalog(
                 title=decoded_note.title,
                 body=decoded_note.body,
                 content_type=decoded_note.content_type,
-                updated_at=_now_iso(),
+                updated_at=item.updated_at,
                 stable_id=decoded_note.stable_id,
+                created_at=item.created_at,
+                native_metadata=item.metadata,
             )
     for draft in staged_drafts:
         existing_drafts[migration_opaque_id("diary-draft", draft.id)] = draft
@@ -879,6 +1000,19 @@ def prepare_diary_validation_catalog(
         entries=legacy_entries,
         drafts=tuple(existing_drafts.values()),
         notes=tuple(existing_notes.values()),
+        preserved_folders=tuple(
+            InactiveFolder(
+                stable_id=item.stable_id,
+                parent_id=item.parent_id,
+                name=item.name,
+                order=0,
+                role=item.role,
+                owner="user",
+                agent_access="write",
+                policy="user-write" if item.role is not None else "inherit",
+            )
+            for item in current_folders
+        ),
     )
     revisions = {item.stable_id: item.revision for item in current}
     catalog = catalog.with_expected_revisions(revisions)
