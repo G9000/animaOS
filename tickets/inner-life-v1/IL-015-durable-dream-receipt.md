@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 16:06 MYT
+- Updated: 2026-08-02 16:46 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -171,6 +171,26 @@ is its own ticket:
   greeting for good. The receipt path reads the DISPLAYED greeting, so a
   withheld dream is never acknowledged either.
 
+- 2026-08-02 16:46 MYT - PR #135 review round 7 (two P1s, Codex, both real):
+  (1) Round 6 re-confirmed on reveal only when the claim had EXPIRED, so an
+  opt-out made from another window while this one was hidden went unnoticed
+  and the dream appeared on reveal even though the server would have refused
+  it. Confirmation now happens in exactly one place — a visibility-gated
+  effect — and never at fetch time. A hidden Dashboard therefore neither
+  shows a dream nor reserves one, and EVERY hidden-to-visible transition
+  asks again, carrying the server's consent check with it. Display requires
+  the server to have approved this exact claim generation
+  (`approvedClaimToken`), so an approval earned by an earlier claim cannot
+  authorise a later one, and the loader is held while a dream-bearing
+  greeting awaits its first confirmation so the sentence is never seen
+  appearing late.
+  (2) Page visibility is not element visibility: the dashboard is a pannable
+  canvas, so both greeting surfaces can be mounted, in a foreground window,
+  and completely off screen — or behind the full-screen lightbox. Receipts
+  are now gated on an IntersectionObserver against the node's own element,
+  and withheld entirely while an overlay (lightbox, thread preview, episode
+  reader) covers the canvas, since occlusion is not observable.
+
 ## Validation
 
 - Commands:
@@ -180,7 +200,7 @@ is its own ticket:
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
     0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
     the round-5/6 desktop-only changes
-  - `bun test tests/` (apps/desktop) — 138 passed, 0 failed (2026-08-02 16:06 MYT)
+  - `bun test tests/` (apps/desktop) — 139 passed, 0 failed (2026-08-02 16:46 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
@@ -198,6 +218,7 @@ is its own ticket:
   - `apps/desktop/src/pages/dashboard/nodes/ProfileNode.tsx`
   - `apps/desktop/src/pages/dashboard/nodes/useDreamShownReceipt.ts` (new)
   - `apps/desktop/src/hooks/usePageVisible.ts` (new)
+  - `apps/desktop/src/pages/dashboard/layout.ts`
   - `apps/desktop/tests/greetingCache.test.ts`
   - `apps/server/tests/test_inner_life_ambient_dream.py`
 - Notes:

@@ -483,18 +483,20 @@ describe("dream receipts survive a dropped request (PR #135 review round 5)", ()
   });
 });
 
-describe("a hidden window never holds a voiceable dream (PR #135 review round 6)", () => {
+describe("a dream reaches the screen only when visible, live and approved", () => {
   const realNow = Date.now;
   const T0 = 1_800_000_000_000;
+  const TOKEN = "2026-08-02T06:00:00+00:00";
   const live = () =>
     greeting({
       message: "hi there. I dreamt about something recently.",
       handoffMessage: "hi there.",
       ambientDream: true,
       ambientDreamId: 42,
-      ambientDreamClaimToken: "2026-08-02T06:00:00+00:00",
+      ambientDreamClaimToken: TOKEN,
       ambientDreamExpiresAt: new Date(T0 + 600_000).toISOString(),
     });
+  const approved = { pageVisible: true, approvedClaimToken: TOKEN };
 
   beforeEach(() => {
     Date.now = () => T0;
@@ -503,36 +505,63 @@ describe("a hidden window never holds a voiceable dream (PR #135 review round 6)
     Date.now = realNow;
   });
 
-  test("the dream is withheld while the page is hidden", () => {
+  test("withheld while the page is hidden (PR #135 round 6)", () => {
     // Nothing dream-bearing is painted into a window the user cannot see,
     // so there is no stale frame to expose on reveal.
-    const shown = displayableGreeting(live(), false);
+    const shown = displayableGreeting(live(), {
+      ...approved,
+      pageVisible: false,
+    });
     expect(shown?.ambientDream).toBe(false);
     expect(shown?.message).toBe("hi there.");
   });
 
-  test("a lapsed claim is withheld even while visible", () => {
+  test("withheld when the claim has lapsed, even while visible", () => {
     const stale = { ...live(), ambientDreamExpiresAt: new Date(T0 - 1).toISOString() };
-    expect(displayableGreeting(stale, true)?.ambientDream).toBe(false);
+    expect(displayableGreeting(stale, approved)?.ambientDream).toBe(false);
   });
 
-  test("a live claim on a visible page is shown untouched", () => {
+  test("withheld until the server has approved THIS claim (PR #135 round 7)", () => {
+    // Confirmation is what re-checks consent, so an unconfirmed dream must
+    // not reach the screen — and an approval earned by an earlier claim
+    // cannot authorise a later one.
+    expect(
+      displayableGreeting(live(), { pageVisible: true, approvedClaimToken: null })
+        ?.ambientDream,
+    ).toBe(false);
+    expect(
+      displayableGreeting(live(), {
+        pageVisible: true,
+        approvedClaimToken: "2026-08-02T05:00:00+00:00",
+      })?.ambientDream,
+    ).toBe(false);
+  });
+
+  test("shown untouched when visible, live and approved", () => {
     const g = live();
-    expect(displayableGreeting(g, true)).toBe(g);
+    expect(displayableGreeting(g, approved)).toBe(g);
   });
 
-  test("ordinary greetings are unaffected by visibility", () => {
+  test("ordinary greetings are unaffected", () => {
     const plain = greeting({ message: "morning" });
-    expect(displayableGreeting(plain, false)).toBe(plain);
-    expect(displayableGreeting(null, true)).toBeNull();
+    expect(displayableGreeting(plain, { pageVisible: false, approvedClaimToken: null }))
+      .toBe(plain);
+    expect(displayableGreeting(null, approved)).toBeNull();
   });
 
   test("a withheld dream owes no receipt", () => {
     // The ack path reads the DISPLAYED greeting, so a dream held back for
-    // being hidden or stale can never be marked surfaced.
-    expect(dreamReceiptKey(displayableGreeting(live(), false))).toBeNull();
-    expect(dreamReceiptKey(displayableGreeting(live(), true))).toBe(
-      "42:2026-08-02T06:00:00+00:00",
-    );
+    // being hidden, stale or unapproved can never be marked surfaced.
+    expect(
+      dreamReceiptKey(
+        displayableGreeting(live(), { ...approved, pageVisible: false }),
+      ),
+    ).toBeNull();
+    expect(
+      dreamReceiptKey(
+        displayableGreeting(live(), { pageVisible: true, approvedClaimToken: null }),
+      ),
+    ).toBeNull();
+    expect(dreamReceiptKey(displayableGreeting(live(), approved))).toBe(`42:${TOKEN}`);
   });
 });

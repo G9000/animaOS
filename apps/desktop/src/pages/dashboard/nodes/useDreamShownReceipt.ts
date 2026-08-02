@@ -1,30 +1,65 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 /**
  * Report that a dream-bearing greeting is on screen (IL-015 / PR #135
- * review, P1).
+ * review, P1). Returns a ref the node must attach to the element that
+ * actually renders the greeting.
  *
- * Two things have to be true before a dream may be acknowledged, because an
- * acknowledgement marks it surfaced forever: it must have been RENDERED
- * (this effect runs after the commit that put the text on screen, and the
- * node calling it can be closed by the user), and the page must actually be
- * VISIBLE — a React effect runs even when the Dashboard mounted in a
- * background window, and consuming a dream nobody could see is the exact
- * loss IL-015 exists to prevent.
+ * An acknowledgement marks a dream surfaced forever, so it may only be sent
+ * for a dream the user could really see. Three things have to hold, and each
+ * one has already been shown to leak a repeat on its own:
  *
- * The Dashboard already withholds the dream itself while the page is hidden
- * or the claim has lapsed, and re-confirms on reveal; the visibility check
- * here is the second, independent guard on the same rule. Nothing is
- * deferred or queued: if the page is not visible, no receipt is owed, and
- * the claim simply lapses so the dream is offered again.
+ * - RENDERED: this effect runs after the commit that put the text on screen,
+ *   and the node calling it can be closed by the user.
+ * - The page is VISIBLE: effects run even when the Dashboard mounted in a
+ *   background window.
+ * - The element is ON SCREEN: the dashboard is a pannable canvas, so a
+ *   mounted node can sit well outside the viewport. Page visibility is not
+ *   element visibility, so intersection is observed directly.
+ *
+ * Occlusion by an overlay (the gallery lightbox, a modal) is not observable
+ * here; the Dashboard withholds `report` while one is open.
+ *
+ * Nothing is queued or deferred. If the greeting is not really visible no
+ * receipt is owed, the claim simply lapses, and the dream is offered again —
+ * the correct failure for this feature.
  */
-export function useDreamShownReceipt(shown: boolean, report?: () => void): void {
+export function useDreamShownReceipt(
+  shown: boolean,
+  report?: () => void,
+): React.RefObject<HTMLDivElement | null> {
+  const ref = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     if (!shown || !report) return;
     // No document (static render): nothing was painted, so nothing is
     // reported — never guess in the direction of consuming a dream.
     if (typeof document === "undefined") return;
-    if (document.visibilityState !== "visible") return;
-    report();
+    const element = ref.current;
+    if (!element) return;
+
+    let reported = false;
+    const reportOnce = () => {
+      if (reported || document.visibilityState !== "visible") return;
+      reported = true;
+      report();
+    };
+
+    if (typeof IntersectionObserver === "undefined") {
+      // No observer (older webview, test renderer): fall back to the page
+      // visibility rule rather than never acknowledging anything.
+      reportOnce();
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) reportOnce();
+      },
+      { threshold: 0.01 },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [shown, report]);
+
+  return ref;
 }

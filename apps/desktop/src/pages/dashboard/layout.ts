@@ -55,8 +55,9 @@ export interface DashboardCallbacks {
   onExploreMemory: (episodeId: number) => void;
   onCloseNode: (id: string) => void;
   /** Reported by whichever node actually rendered a dream-bearing greeting
-   * (IL-015 / PR #135 review). */
-  onDreamShown: () => void;
+   * (IL-015 / PR #135 review). Undefined while an overlay covers the canvas:
+   * nothing behind it counts as seen, so no receipt is owed. */
+  onDreamShown?: () => void;
   onImageClick: (images: GalleryImage[], index: number) => void;
   onPreviewThread: (threadId: number) => void;
   onOpenThread: (threadId: number) => void;

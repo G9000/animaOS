@@ -44,10 +44,10 @@ export function ProfileNode({ data }: NodeProps<ProfileNode>) {
     Boolean(brief?.ambientDream) &&
     !briefLoading &&
     currentThought === brief?.message;
-  useDreamShownReceipt(dreamVisible, onDreamShown);
+  const profileRef = useDreamShownReceipt(dreamVisible, onDreamShown);
 
   return (
-    <div className="group relative w-80 overflow-visible">
+    <div ref={profileRef} className="group relative w-80 overflow-visible">
 
       {/* Close — floats above card, fades in on hover */}
       <button

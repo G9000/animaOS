@@ -18,10 +18,10 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
   // surfaced that nothing on screen ever displayed, the exact loss IL-015
   // exists to prevent.
   const dreamVisible = Boolean(brief?.ambientDream) && !briefLoading;
-  useDreamShownReceipt(dreamVisible, onDreamShown);
+  const greetingRef = useDreamShownReceipt(dreamVisible, onDreamShown);
 
   return (
-    <div className="group relative w-72 overflow-visible">
+    <div ref={greetingRef} className="group relative w-72 overflow-visible">
 
       {/* Close */}
       <button

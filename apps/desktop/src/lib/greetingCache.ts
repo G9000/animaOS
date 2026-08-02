@@ -366,19 +366,31 @@ export async function deliverDreamReceipt(
  * What the UI may actually SHOW, as opposed to what was fetched
  * (IL-015 / PR #135 review, P1).
  *
- * A greeting rendered into a hidden window can outlive its server-side
- * claim. Revealing that stale frame would disclose a dream the server has
- * already re-offered to another channel, so the dream is withheld while the
- * page is hidden or the claim has lapsed — the caller re-confirms on reveal
- * and restores it only if the claim is still ours. Withholding rather than
- * hiding-after-the-fact matters: nothing dream-bearing is ever painted into
- * a window the user cannot see, so there is no stale frame to expose.
+ * Three conditions, all required, because each one alone has already been
+ * shown to leak a repeat:
+ *
+ * 1. The page is VISIBLE. A greeting rendered into a hidden window can
+ *    outlive its claim; revealing that stale frame would disclose a dream
+ *    the server has since re-offered. Withholding beats hiding after the
+ *    fact — nothing dream-bearing is ever painted where it cannot be seen,
+ *    so there is no stale frame to expose.
+ * 2. The claim has not locally lapsed — a cheap pre-filter.
+ * 3. The claim generation has been CONFIRMED with the server for display
+ *    (`approvedClaimToken`). Confirmation is what checks continuing consent
+ *    and current ownership, and it must match this exact generation: an
+ *    approval earned by an earlier claim can never authorise a later one.
  */
 export function displayableGreeting(
   greeting: Greeting | null,
-  pageVisible: boolean,
+  options: { pageVisible: boolean; approvedClaimToken: string | null },
 ): Greeting | null {
   if (!greeting?.ambientDream) return greeting;
+  const { pageVisible, approvedClaimToken } = options;
   if (!pageVisible || dreamClaimExpired(greeting)) return dreamFreeGreeting(greeting);
+  if (
+    !greeting.ambientDreamClaimToken ||
+    greeting.ambientDreamClaimToken !== approvedClaimToken
+  )
+    return dreamFreeGreeting(greeting);
   return greeting;
 }
