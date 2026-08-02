@@ -1,109 +1,67 @@
-# IL-014 — Sub-threshold moment crystallization (design)
+# IL-014 — Sub-threshold moment crystallization: already delivered by IL-004
 
 - Ticket: `tickets/inner-life-v1/IL-014-subthreshold-crystallization.md`
-- Status: **proposed — awaiting approval.** No implementation ticket should be
-  cut until the four tensions below are accepted or amended.
+- Status: **investigated — no work required. IL-014 closed as delivered.**
 - Date: 2026-08-02
-- Depends on: IL-004 (latent traces), IL-005 (distillation)
 
-## The behavior we want
+## Finding
 
-Today a conversational moment either clears the memory-extraction bar or
-vanishes. That loses a real texture of long relationships: many individually
-forgettable moments that share a shape — "we keep joking about the neighbour's
-dog", "they go quiet whenever work comes up" — should eventually become **one**
-remembered thing, without any single one of them having been worth keeping.
+IL-014 was filed from the Inner Life v1.1 comparative analysis as "the last
+unstolen idea": many individually forgettable moments that share a shape
+should eventually become one remembered thing.
 
-The companion should be able to say *"you mention the boat a lot"* without ever
-having decided, in the moment, that any particular boat mention was memorable.
+**That capability already exists.** It is IL-004, shipped 2026-07-18.
 
-## Mechanism
+IL-004's goal, verbatim:
 
-A bounded per-user buffer of sub-threshold moments, and a crystallization pass
-that collapses a themed cluster into a single `MemoryItem`.
+> Stop silently dropping sub-threshold memory candidates: accumulate them as
+> weighted latent traces per topic and synthesize a fully-provenanced memory
+> when cumulative weight crosses the crystallization threshold.
 
-1. **Admission.** Extraction already scores candidate moments. Moments scoring
-   below the extraction threshold but above a floor (a genuine signal, not
-   noise) get a buffer row: theme key, salience estimate, timestamp, and a
-   short content excerpt.
-2. **Theme key.** Reuse IL-004's latent-topic key derivation
-   (`derive_topic_key`) rather than inventing a second clustering scheme —
-   crucially, it is already field-encrypted and already participates in
-   right-to-forget.
-3. **Crystallization.** When one theme's accumulated salience crosses a
-   threshold, the buffer rows for that theme collapse into a single
-   `MemoryItem` with `source="crystallized"` and provenance recording the
-   contributing row count and time span. The rows are deleted in the same
-   transaction.
-4. **Decay.** Buffer rows age out on the IL-004 leak schedule, so a theme that
-   stops recurring never crystallizes.
+The ticket was filed without first checking whether the behavior existed, and
+an earlier revision of this document proposed building it. That was wrong; the
+document is kept as the record of why IL-014 is being closed rather than
+implemented.
 
-## The four tensions (why this needs approval, not just implementation)
+## Evidence
 
-### 1. Right to forget
+| IL-014 proposed | IL-004 ships | Where |
+| --- | --- | --- |
+| Admit below-threshold moments | `fold_to_trace` decision for score ∈ [0.25·θp, θp) | `soul_writer.plan_candidate_promotion` |
+| Theme key | `LatentTrace.topic_key` from `derive_topic_key` | `models/agent_runtime.py`, `claims.py` |
+| Accumulating salience | `weight ← min(1, weight + 0.5·s)`, weekly ×0.98 decay, per-user cap | `inner_life/latent.py` |
+| Collapse into one memory | `crystallize_due_traces` → `MemoryItem(source="latent_crystallization")` with contributing evidence | `latent_traces.py` |
+| Soul store, field-encrypted | Soul store; `topic_key` is a derived identifier, not content | `models/agent_runtime.py` |
+| Vault export/import | `latentTraces` in the snapshot and both scope allowlists | `services/vault.py` |
+| Right-to-forget | Explicit forget deletes matching traces and scrubs `evidence_refs`; crystallization re-validates refs at synthesis | `forgetting.py`, `latent_traces.py` |
 
-Buffer rows hold conversational content below the user's visibility threshold —
-they are, in effect, memories the user has not been shown and cannot browse.
+## The tension that turned out not to exist
 
-**Proposal:** buffer rows are derived data with the same standing as dreams.
-`forget_memory` must scrub buffer rows whose theme key matches the forgotten
-content, and a crystallized item must carry provenance that the forget path can
-match, exactly like `dream_journal.source_refs`. A crystallized item is a normal
-`MemoryItem` and is forgettable normally.
+The blocking question in the earlier draft was whether the pre-crystallization
+buffer should be visible to the user, since it would accumulate conversational
+content the user had not seen.
 
-**Open question for approval:** should buffer rows be *visible* to the user
-(a "forming impressions" view) before they crystallize? Invisible accumulation
-of conversational content is the part most likely to feel like surveillance if
-it were ever surfaced unexpectedly — and the IL-011 held-thought work set a
-precedent that the companion only claims what it can show grounding for.
+IL-004 answered it more cleanly than either option on offer: **it stores no
+content at all.** `LatentTrace.evidence_refs` holds identifiers only —
+candidate id, source message ids, content hash — "never copied text", per the
+model docstring. There is no hidden content to expose, so no consent surface is
+needed and the invisible/visible trade-off is moot.
 
-### 2. Encryption boundary
+## Genuine deltas (small, optional)
 
-Buffer content is user content. It must be field-encrypted with the same
-`DOMAIN_MEMORIES` DEK as every other content column, and every read path needs
-an active-DEK gate (`df` fails open — the mistake IL-010 had to fix twice).
+Stated honestly rather than used to justify the ticket:
 
-**Proposal:** buffer lives in the **soul** store, not the runtime store.
-It is not rebuildable — discarding it loses real signal — and the runtime store
-is explicitly the rebuildable tier.
+1. **Grouping.** The reference idea accumulated purely by volume and collapsed
+   into one synthetic "burst" memory; IL-004 groups by topic. IL-004's version
+   is better — a topic-coherent memory beats an arbitrary bundle. **No change
+   wanted.**
+2. **Session spread.** IL-004 lets weight accumulate within a single
+   conversation, so one long rambling session can crystallize a "pattern" that
+   is really a single occasion. Requiring contributions from ≥2 distinct
+   sessions would make a crystallized memory mean "recurring" rather than
+   "discussed at length". Filed separately as `IL-016`; genuinely small.
 
-### 3. Confabulation risk
+## Outcome
 
-A crystallized memory is a claim the user never made: *"you mention the boat a
-lot"* is an inference over moments none of which were individually notable. If
-the clustering is loose, the companion asserts a pattern that isn't there — the
-exact failure mode the IL-003 material rule and IL-011 grounding rules exist to
-prevent.
-
-**Proposal:** crystallization requires (a) at least N distinct moments —
-suggest 3, matching the "one is chance, two coincidence, three a pattern"
-heuristic already used elsewhere in the drive work — (b) spread over at least
-two distinct sessions, so a single rambling conversation can't manufacture a
-pattern, and (c) the crystallized text states its own basis ("you've brought
-this up a few times") rather than asserting a fact.
-
-### 4. Evaluation before default-on
-
-**Proposal:** ship behind a config flag defaulting OFF, with an eval over
-recorded conversations measuring precision (are crystallized items ones a human
-would agree with?) before it becomes default behavior. IL-010 shipped
-default-off for the same reason and that was the right call.
-
-## What this does NOT do
-
-- No LLM call at admission time. Admission is arithmetic over the extraction
-  score that already exists; only crystallization may involve generation, and
-  only over already-buffered material.
-- No change to the extraction threshold itself. This is strictly additive
-  below the existing bar.
-
-## Recommendation
-
-The mechanism is sound and the value is real — it is the one idea from the
-comparative analysis that the current system has no analogue for. But it is
-also the only one that **accumulates user content the user has not seen**, and
-that is a product decision, not an engineering one.
-
-I'd want an explicit answer on tension #1 (visible or invisible buffer) before
-writing code, because it changes the schema (a user-facing view needs stable
-ids and a read API) and the consent surface (a Presence toggle).
+- `IL-014` → done, closed as delivered by IL-004. No code written.
+- `IL-016` filed for the session-spread refinement.
