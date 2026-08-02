@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-03 01:13 MYT
+- Updated: 2026-08-03 02:02 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -307,14 +307,28 @@ is its own ticket:
   a very fast pan can leave a gap — the cost is a missing receipt, which
   means the dream is re-offered rather than consumed unseen.
 
+- 2026-08-03 02:02 MYT - PR #135 review round 16 (two P1s, Codex):
+  (1) SERVER, and the more serious: IL-003's post-delivery marker re-ran the
+  offerable query instead of using the dream the message was GENERATED from.
+  If the voiced dream is acknowledged through the ambient channel during the
+  LLM call, that query returns the NEXT offerable dream and marks it
+  surfaced — burning one nobody voiced. `gather_drive_material` now reports
+  the row it used via `source_ids`, `_fire` returns it, and the marker pins
+  on that id (still under the offerable predicate, so a live claim is never
+  stolen). The regression test was verified to FAIL against the old marker
+  before being accepted.
+  (2) All three occlusion probes shared the horizontal centre, so an overlay
+  pinned to one side covered the ends of every line while the middle stayed
+  clear. Probes are now a 3x3 grid across the visible span.
+
 ## Validation
 
 - Commands:
   - `pytest tests/test_inner_life_ambient_dream.py` — 44 passed (2026-08-03 00:45 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full server suite (`pytest tests/ -p no:randomly`) — **3376 passed,
-    0 failed, 2 skipped, 11 deselected** in 14m34s, run 2026-08-03 01:03 MYT
+  - Full server suite (`pytest tests/ -p no:randomly`) — **3377 passed,
+    0 failed, 2 skipped, 11 deselected** in 14m30s, run 2026-08-03 02:02 MYT
   - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-03 00:09 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
@@ -322,6 +336,7 @@ is its own ticket:
   - `apps/server/alembic_core/versions/20260802_0001_dream_claim_receipt.py` (new)
   - `apps/server/src/anima_server/services/agent/proactive.py`
   - `apps/server/src/anima_server/services/agent/inner_life/initiative.py`
+  - `apps/server/tests/test_inner_life_initiative.py`
   - `apps/server/src/anima_server/api/routes/chat.py`
   - `apps/server/src/anima_server/config.py`
   - `packages/api-client/src/client.ts`, `packages/api-client/src/types.ts`

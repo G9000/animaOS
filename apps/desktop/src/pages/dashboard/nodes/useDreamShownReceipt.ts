@@ -19,7 +19,7 @@ import { useEffect, useRef } from "react";
  * - UNOBSCURED: an observer cannot see occlusion, and the app renders
  *   fixed-position surfaces above the canvas — the gallery lightbox, and an
  *   initiative card owned by the Layout, not the Dashboard. Rather than
- *   enumerate them, three points spanning the visible part of the element
+ *   enumerate them, a 3x3 grid spanning the visible part of the element
  *   must resolve to the greeting itself, and the visible parts are
  *   ACCUMULATED across checks until they cover the whole text. A dream
  *   sentence still below the fold has not been read, and a block taller
@@ -84,20 +84,23 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
       const bottom = Math.min(box.bottom, viewportHeight);
       if (bottom <= top) return false;
 
-      const x = box.left + box.width / 2;
-      // Sample down the visible span: a corner overlay can cover the last
-      // line of a greeting while leaving its middle clear.
+      // Probe a grid, not a column (PR #135 review): an overlay pinned to
+      // one side covers the ends of every line while leaving the horizontal
+      // centre clear, and words under it are just as unread.
       for (const fraction of [0.05, 0.5, 0.95]) {
         const y = top + (bottom - top) * fraction;
-        const topmost = document.elementFromPoint(x, y);
-        // Our own subtree, or a container that wraps it (the canvas pane can
-        // swallow the hit): not occluded. Anything else — a lightbox, the
-        // initiative card — is stacked on top, so the text is not readable.
-        // Null means something non-elemental is there; treat it as covered.
-        // The recheck timer makes a wrong "no" recoverable, whereas a wrong
-        // "yes" consumes the dream for good.
-        if (topmost === null) return false;
-        if (!element.contains(topmost) && !topmost.contains(element)) return false;
+        for (const across of [0.05, 0.5, 0.95]) {
+          const x = box.left + box.width * across;
+          const topmost = document.elementFromPoint(x, y);
+          // Our own subtree, or a container that wraps it (the canvas pane
+          // can swallow the hit): not occluded. Anything else — a lightbox,
+          // the initiative card — is stacked on top, so the text is not
+          // readable. Null means something non-elemental is there; treat it
+          // as covered. The recheck timer makes a wrong "no" recoverable,
+          // whereas a wrong "yes" consumes the dream for good.
+          if (topmost === null) return false;
+          if (!element.contains(topmost) && !topmost.contains(element)) return false;
+        }
       }
 
       // This span was readable: fold it into what has been seen.

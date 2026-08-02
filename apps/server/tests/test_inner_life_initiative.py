@@ -3330,3 +3330,77 @@ def test_dream_attempt_marker_does_not_clobber_the_drive_delta_reference() -> No
         stored = row.updated_at if row.updated_at.tzinfo else row.updated_at.replace(tzinfo=UTC)
         assert stored == t0  # the Δt reference belongs to the tick alone
     engine.dispose()
+
+
+def test_initiative_surfaces_the_dream_it_voiced_not_the_next_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR #135 review, P1): the post-delivery marker re-ran the
+    offerable query instead of using the dream the message was generated
+    from. If the voiced dream is acknowledged through the ambient channel
+    during the LLM call, that second query returns the NEXT offerable dream
+    and marks it surfaced — burning a dream nobody ever voiced."""
+    from anima_server.models import DreamJournal
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    with soul_factory() as db_:
+        db_.add_all(
+            [
+                DreamJournal(
+                    user_id=1, narrative="the newer dream", share_worthy=True,
+                    surfaced=False, source_refs={}, affect_delta={},
+                    dreamt_at=datetime(2026, 1, 2, tzinfo=UTC),
+                ),
+                DreamJournal(
+                    user_id=1, narrative="the older dream", share_worthy=True,
+                    surfaced=False, source_refs={}, affect_delta={},
+                    dreamt_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+            ]
+        )
+        db_.commit()
+    with soul_factory() as db_:
+        cfg = get_or_create_presence_config(db_, 1)
+        cfg.dream_sharing = "ambient"
+        db_.commit()
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"dream_residue": 0.9})
+
+    voiced: list[str] = []
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        voiced.append(material)
+        # Mid-generation, the ambient channel's late acknowledgement lands
+        # for the very dream this initiative is voicing.
+        row = soul_db.scalars(
+            select(DreamJournal).where(DreamJournal.narrative == material)
+        ).one()
+        row.claimed_at = datetime(2026, 1, 3, 7, 59, tzinfo=UTC)
+        soul_db.flush()
+        acknowledge_dream(
+            soul_db, user_id=1, dream_id=row.id, token=claim_token(row.claimed_at)
+        )
+        soul_db.commit()
+        return f"about: {material}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+    tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1,
+        local_now=datetime(2026, 1, 3, 8, 0, tzinfo=UTC),
+    )
+
+    assert voiced == ["the newer dream"]
+    with soul_factory() as db_:
+        rows = {r.narrative: r.surfaced for r in db_.scalars(select(DreamJournal)).all()}
+    # The voiced dream was surfaced by the acknowledgement; the other one was
+    # never spoken and must still be waiting its turn.
+    assert rows["the newer dream"] is True
+    assert rows["the older dream"] is False

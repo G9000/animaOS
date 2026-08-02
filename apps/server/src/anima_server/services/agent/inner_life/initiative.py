@@ -759,6 +759,7 @@ def gather_drive_material(
     pattern_marker: datetime | None = None,
     pattern_marker_id: int | None = None,
     dream_sharing: str = "on_ask",
+    source_ids: dict[str, int] | None = None,
 ) -> str:
     """The SPECIFIC accumulated material behind the firing drive — the
     concrete foresight item / pattern finding, not just "a drive fired".
@@ -810,6 +811,13 @@ def gather_drive_material(
         )
         if row is None:
             return ""
+        # Report WHICH dream this material came from (PR #135 review, P1):
+        # the caller marks that exact row surfaced after delivery. Re-running
+        # this query later can return a different row — the first may have
+        # been acknowledged through the ambient channel meanwhile — and would
+        # then burn a dream nobody voiced.
+        if source_ids is not None:
+            source_ids["dream_id"] = row.id
         return df(user_id, row.narrative, table="dream_journal", field="narrative")
     return ""
 
@@ -905,7 +913,6 @@ async def generate_initiative_message(
 # Edge: fire (generate + log + deliver), savepoint-isolated
 # ---------------------------------------------------------------------------
 
-
 def _fire(
     soul_db: Session,
     runtime_db: Session,
@@ -917,10 +924,12 @@ def _fire(
     pattern_marker: datetime | None = None,
     pattern_marker_id: int | None = None,
     dream_sharing: str = "on_ask",
-) -> tuple[bool, InitiativeLog | None]:
+) -> tuple[bool, InitiativeLog | None, int | None]:
     """Attempt generation, ALWAYS write one provenance row (success or a
     logged failed attempt), and deliver on success. Returns ``(delivered,
-    log_row)``: ``delivered`` is whether a real message was fired and the
+    log_row, dream_source_id)`` — the third being the dream row this fire
+    actually voiced, so the caller marks THAT one surfaced rather than
+    whatever the offerable query returns afterwards (PR #135 review): ``delivered`` is whether a real message was fired and the
     delivery adapter accepted it — the caller only resets drive pressure and
     ``last_fired_at`` when it is True. ``log_row`` is the pending (uncommitted)
     provenance row so the caller can flip ``delivered`` to True only *after*
@@ -932,11 +941,13 @@ def _fire(
     per-user session, which commits once at the end (mirrors IL-006's
     per-item savepoint isolation in ``retrieval_feedback.py``).
     """
+    source_ids: dict[str, int] = {}
     material = gather_drive_material(
         soul_db, user_id=user_id, drive=decision.drive, now=now,
         pattern_marker=pattern_marker, pattern_marker_id=pattern_marker_id,
-        dream_sharing=dream_sharing,
+        dream_sharing=dream_sharing, source_ids=source_ids,
     )
+    dream_source_id = source_ids.get("dream_id")
     # No material -> no fire. A material-backed drive (unresolved_thread /
     # pattern_insight / dream_residue) can cross threshold and then lose its
     # source between accumulation and this tick (the MemoryItem is superseded
@@ -951,7 +962,7 @@ def _fire(
         logger.debug(
             "No material for drive %s user %s — skipping fire", decision.drive, user_id
         )
-        return False, None
+        return False, None, dream_source_id
     affect_line = _resolve_affect_line(runtime_db, user_id=user_id, now=now)
 
     try:
@@ -1012,10 +1023,10 @@ def _fire(
         logger.warning(
             "Initiative provenance log failed for user %s", user_id, exc_info=True
         )
-        return False, None
+        return False, None, dream_source_id
 
     if text is None or log_row is None:
-        return False, log_row
+        return False, log_row, dream_source_id
 
     try:
         with runtime_db.begin_nested():
@@ -1033,14 +1044,13 @@ def _fire(
             decision.drive,
             exc_info=True,
         )
-        return False, log_row
+        return False, log_row, dream_source_id
 
     # NB: ``log_row.delivered`` is intentionally left False here. The caller
     # flips it to True only after the runtime store commit persists the
     # ``PendingInitiative`` row, so the provenance log can never over-claim a
     # delivery that a failed runtime commit never actually made durable.
-    return result.delivered, log_row
-
+    return result.delivered, log_row, dream_source_id
 
 # ---------------------------------------------------------------------------
 # Edge: per-user presence-tick sibling
@@ -1191,7 +1201,7 @@ def tick_initiative_for_user(
                 runtime_db.commit()
                 return True
 
-            fired, log_row = _fire(
+            fired, log_row, dream_source_id = _fire(
                 soul_db,
                 runtime_db,
                 user_id=user_id,
@@ -1232,19 +1242,23 @@ def tick_initiative_for_user(
                     )
                     row.pattern_insight_surfaced_at = marker_at
                     row.pattern_insight_surfaced_id = marker_id
-                if decision.drive == DRIVE_DREAM_RESIDUE:
+                if decision.drive == DRIVE_DREAM_RESIDUE and dream_source_id:
                     # Mark the just-voiced dream surfaced so it stops re-raising
                     # dream_residue (mirrors pattern_insight's surface marker).
-                    # Same offerable predicate the material query used, so
-                    # the row marked is the row voiced — and a dream claimed
-                    # by an in-flight greeting is never stolen (IL-015).
+                    # Pinned to the row the message was GENERATED from (PR #135
+                    # review, P1): re-running the offerable query here could
+                    # return a different dream — the first may have been
+                    # acknowledged through the ambient channel during the LLM
+                    # call — and would burn one nobody voiced. The offerable
+                    # predicate is still applied on top, so a dream claimed by
+                    # an in-flight greeting is never stolen (IL-015).
                     # Initiative delivery IS confirmed delivery (the client
                     # polls and acks the PendingInitiative), so this sets
                     # `surfaced` directly rather than taking a claim.
                     dream_row = soul_db.scalar(
-                        offerable_dream_query(user_id)
-                        .order_by(DreamJournal.dreamt_at.desc())
-                        .limit(1)
+                        offerable_dream_query(user_id).where(
+                            DreamJournal.id == dream_source_id
+                        )
                     )
                     if dream_row is not None:
                         dream_row.surfaced = True
