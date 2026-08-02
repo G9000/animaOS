@@ -164,6 +164,14 @@ mark[data-tone="lilac"] {
 .tiptap :first-child {
   margin-top: 0;
 }
+/* Reserves a left gutter for the block drag handle (Task 7) so it never
+   overlaps text. Scoped to `.tiptap.ProseMirror` (both classes land on the
+   same element — ProseMirror's own base class plus ours) rather than a bare
+   `.ProseMirror` selector, since the diary is the only Tiptap instance in
+   this app today but a bare selector would silently leak to any future one. */
+.tiptap.ProseMirror {
+  padding-left: 2rem;
+}
 .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
@@ -239,9 +247,14 @@ mark[data-tone="lilac"] {
 }
 
 /* Selection bubble menu (Task 6) — positioned by @tiptap/react/menus'
-   BubbleMenu via floating-ui, so only its inner chrome needs styling. */
+   BubbleMenu via floating-ui, so only its inner chrome needs styling.
+   z-index is explicit (rather than left at auto) because the block drag
+   handle (Task 7, below) sets its own wrapper to z-index: 10 inline via the
+   underlying @tiptap/extension-drag-handle plugin; a selection in progress
+   should always win if the two ever visually coincide. */
 .diary-bubble-menu {
   @apply flex items-center gap-1 rounded-lg border border-foreground/[0.1] bg-card px-1.5 py-1 shadow-xl;
+  z-index: 30;
 }
 
 .diary-bubble-menu-group {
@@ -282,6 +295,79 @@ mark[data-tone="lilac"] {
 
 .diary-bubble-menu-tone-mint {
   background-color: var(--diary-tone-mint);
+}
+
+/* Block drag handle (Task 7) — mounted via @tiptap/extension-drag-handle-react's
+   <DragHandle>, which portals `.diary-drag-handle` (this class) to a
+   position:absolute element it manages itself, appended as a sibling of
+   `.tiptap` inside `.diary-editor-shell`. It floats over the hovered block
+   in the left gutter reserved by `.tiptap.ProseMirror`'s padding above, and
+   stays fully transparent until the editor itself is hovered, so it doesn't
+   compete visually with the text or with the selection bubble menu. */
+.diary-drag-handle {
+  @apply flex items-start gap-0.5;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  /* Below .diary-bubble-menu's z-index: 30 — see the comment there. */
+  z-index: 20;
+}
+
+.diary-editor-shell:hover .diary-drag-handle {
+  opacity: 1;
+}
+
+/* While the block-actions menu is open, keep the handle visible even if the
+   cursor drifts off the tracked node (e.g. moving down into the menu). */
+.diary-drag-handle:has(.diary-drag-handle-menu) {
+  opacity: 1;
+}
+
+.diary-drag-handle-buttons {
+  @apply flex items-center gap-0.5;
+}
+
+.diary-drag-handle-btn {
+  @apply flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent text-muted-foreground/70 transition-colors cursor-pointer;
+}
+
+.diary-drag-handle-btn:hover {
+  @apply bg-secondary/60 text-foreground;
+}
+
+.diary-drag-handle-btn.is-active {
+  @apply bg-secondary text-foreground;
+}
+
+.diary-drag-handle-grip {
+  cursor: grab;
+}
+
+.diary-drag-handle[data-dragging="true"] .diary-drag-handle-grip {
+  cursor: grabbing;
+}
+
+.diary-drag-handle-menu {
+  @apply absolute left-0 top-full mt-1 w-40 rounded-lg border border-foreground/[0.1] bg-card py-1 shadow-xl overflow-visible;
+}
+
+/* `.text-detail` (font-size) comes from @anima/standard-templates/tokens.css
+   as a plain CSS class, not a Tailwind utility — same reasoning as
+   `.diary-slash-menu-item` above, so it's applied via a literal className in
+   BlockDragHandle.tsx rather than through @apply here. */
+.diary-drag-handle-menu-item {
+  @apply w-full flex items-center gap-2 px-3 py-1.5 text-left text-muted-foreground transition-colors bg-transparent border-0 cursor-pointer whitespace-nowrap;
+}
+
+.diary-drag-handle-menu-item:hover {
+  @apply bg-secondary/50 text-foreground;
+}
+
+.diary-drag-handle-submenu-trigger {
+  @apply relative;
+}
+
+.diary-drag-handle-submenu {
+  @apply absolute left-full top-0 ml-1 w-44 rounded-lg border border-foreground/[0.1] bg-card py-1 shadow-xl;
 }
 
 .diary-bubble-menu-tone-lilac {

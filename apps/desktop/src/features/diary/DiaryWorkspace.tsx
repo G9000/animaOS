@@ -25,6 +25,7 @@ import { canSaveDiaryEntry, resolveDiaryBody } from "./lib/snapshot";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
 import { createDiaryExtensions } from "./editor/extensions";
 import { DiaryBubbleMenu } from "./editor/BubbleMenu";
+import { BlockDragHandle } from "./editor/BlockDragHandle";
 import { Glyph } from "./editor/glyphIcons";
 
 const MAX_ENTRY_LIMIT = 200;
@@ -1647,13 +1648,14 @@ export default function DiaryWorkspace() {
 
                 <div
                   ref={editorWrapperRef}
-                  className="relative mt-4 flex-1 min-h-[40vh] cursor-text"
+                  className="diary-editor-shell relative mt-4 flex-1 min-h-[40vh] cursor-text"
                   onClick={() => editor?.commands.focus()}
                   onDragOver={handleComposerDragOver}
                   onDragLeave={handleComposerDragLeave}
                   onDrop={handleComposerDrop}
                 >
                   <DiaryBubbleMenu editor={editor} />
+                  <BlockDragHandle editor={editor} />
                   <EditorContent editor={editor} />
                   {isDraggingFile && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-background/80 pointer-events-none">

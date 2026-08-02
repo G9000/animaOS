@@ -157,3 +157,28 @@ export function LinkGlyphIcon() {
     </Glyph>
   );
 }
+
+// Block drag handle glyphs (Task 7) — same stroke-only, size-4, square-join
+// language as the rest of this file's icons.
+export function GripGlyphIcon() {
+  return (
+    <Glyph>
+      <circle cx="9" cy="6" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="18" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="6" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="18" r="1.2" fill="currentColor" stroke="none" />
+    </Glyph>
+  );
+}
+
+export function EllipsisGlyphIcon() {
+  return (
+    <Glyph>
+      <circle cx="5.5" cy="12" r="1.3" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" />
+      <circle cx="18.5" cy="12" r="1.3" fill="currentColor" stroke="none" />
+    </Glyph>
+  );
+}
