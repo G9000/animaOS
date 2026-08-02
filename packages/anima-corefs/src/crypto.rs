@@ -20,6 +20,7 @@ pub const OBJECT_WRAP_ALGORITHM: &str = "aes-256-gcm";
 pub const OBJECT_WRAP_LABEL: &[u8] = b"anima-corefs-object-wrap-v1";
 pub const CATALOG_LABEL: &[u8] = b"anima-corefs-catalog-v1";
 pub const SEARCH_LABEL: &[u8] = b"anima-corefs-search-v1";
+pub const PREPARATION_LABEL: &[u8] = b"anima-corefs-preparation-v1";
 pub const CREDENTIAL_SALT_LENGTH: usize = 16;
 pub const CREDENTIAL_TIME_COST: u32 = 3;
 pub const CREDENTIAL_MEMORY_COST_KIB: u32 = 64 * 1024;
@@ -171,6 +172,7 @@ pub struct FrkSubkeys {
     object_wrap: SecretBytes,
     catalog: SecretBytes,
     search: SecretBytes,
+    preparation: SecretBytes,
 }
 
 impl FrkSubkeys {
@@ -188,6 +190,10 @@ impl FrkSubkeys {
 
     pub fn search(&self) -> &SecretBytes {
         &self.search
+    }
+
+    pub fn preparation(&self) -> &SecretBytes {
+        &self.preparation
     }
 }
 
@@ -208,6 +214,14 @@ pub fn derive_corefs_subkeys(frk: &SecretBytes, version: u32) -> Result<FrkSubke
         object_wrap: hkdf_subkey(frk, OBJECT_WRAP_LABEL)?,
         catalog: hkdf_subkey(frk, CATALOG_LABEL)?,
         search: hkdf_subkey(frk, SEARCH_LABEL)?,
+        preparation: hkdf_subkey(
+            frk,
+            format!(
+                "{}:frk-version={version}",
+                String::from_utf8_lossy(PREPARATION_LABEL)
+            )
+            .as_bytes(),
+        )?,
     })
 }
 
@@ -898,6 +912,7 @@ mod tests {
         let frk = SecretBytes::new(vec![0x42; 32]).unwrap();
         let first = derive_corefs_subkeys(&frk, 3).unwrap();
         let second = derive_corefs_subkeys(&frk, 3).unwrap();
+        let next_generation = derive_corefs_subkeys(&frk, 4).unwrap();
 
         assert_eq!(first.frk_version(), 3);
         assert_eq!(
@@ -907,6 +922,20 @@ mod tests {
         assert_ne!(first.object_wrap().as_slice(), first.catalog().as_slice());
         assert_ne!(first.object_wrap().as_slice(), first.search().as_slice());
         assert_ne!(first.catalog().as_slice(), first.search().as_slice());
+        assert_eq!(
+            first.preparation().as_slice(),
+            second.preparation().as_slice()
+        );
+        assert_ne!(
+            first.preparation().as_slice(),
+            first.object_wrap().as_slice()
+        );
+        assert_ne!(first.preparation().as_slice(), first.catalog().as_slice());
+        assert_ne!(first.preparation().as_slice(), first.search().as_slice());
+        assert_ne!(
+            first.preparation().as_slice(),
+            next_generation.preparation().as_slice()
+        );
     }
 
     #[test]

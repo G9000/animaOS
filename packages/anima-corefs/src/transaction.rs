@@ -3,6 +3,8 @@
 #[cfg_attr(not(test), allow(dead_code))]
 mod cache;
 mod converter;
+#[allow(dead_code)]
+mod preparation;
 // The lease contract is integrated incrementally by the following implementation tasks.
 #[allow(dead_code)]
 mod object_lease;
@@ -6015,5 +6017,7 @@ mod cache_tests;
 mod failure_tests;
 #[cfg(test)]
 mod object_lease_tests;
+#[cfg(test)]
+mod preparation_tests;
 #[cfg(feature = "session-test-seams")]
 pub mod session_test_support;
