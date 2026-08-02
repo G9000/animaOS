@@ -23,14 +23,33 @@ import {
 } from "./lib/speech";
 import { canSaveDiaryEntry, resolveDiaryBody } from "./lib/snapshot";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
+import { hasNonTextNode, isDiscardablePage } from "./lib/pageLifecycle";
 import { createDiaryExtensions } from "./editor/extensions";
 import { DiaryBubbleMenu } from "./editor/BubbleMenu";
 import { BlockDragHandle } from "./editor/BlockDragHandle";
 import { Glyph } from "./editor/glyphIcons";
+import { useAutosave } from "./hooks/useAutosave";
+import { PageHeader, useAttachmentBlobUrl } from "./panels/PageHeader";
 
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
 const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
+
+// Used when the editor has no text and no attachments back it, but the
+// entry still needs a non-empty `body` to satisfy the server's
+// `min_length=1` validation on both create and update.
+const ATTACHMENT_ONLY_BODY_FALLBACK = "Attachment-only diary entry.";
+
+// A brand-new page is now created immediately (see lib/pageLifecycle.ts —
+// "creating a page now POSTs immediately"), before the user has typed
+// anything, so `body` needs *some* non-empty value that also survives the
+// server's strip-then-require-non-empty validation (a whitespace-only
+// string collapses to null server-side and would fail). A zero-width
+// space is not classified as whitespace by that strip, and renders as
+// nothing if this placeholder is ever momentarily visible (e.g. the page
+// gets deleted by the untitled-page cleanup before any real content
+// replaces it).
+const BLANK_ENTRY_BODY = "​";
 
 const DIARY_PROSE_CLASS = cn(
   "prose max-w-none",
@@ -59,17 +78,6 @@ function formatEntryDate(dateStr: string): string {
     month: "short",
     day: "numeric",
     year: date.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined,
-  });
-}
-
-function formatEntryDateLong(dateStr: string): string {
-  const date = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return dateStr;
-  return date.toLocaleDateString(undefined, {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
   });
 }
 
@@ -119,25 +127,6 @@ function FolderGlyphIcon({ className }: { className?: string } = {}) {
   return (
     <Glyph className={className}>
       <path d="M4 6h5l2 2h9v11H4V6Z" />
-    </Glyph>
-  );
-}
-
-function KebabGlyphIcon({ className }: { className?: string } = {}) {
-  return (
-    <Glyph className={className}>
-      <circle cx="12" cy="5" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="19" r="1.4" fill="currentColor" stroke="none" />
-    </Glyph>
-  );
-}
-
-function CalendarGlyphIcon({ className }: { className?: string } = {}) {
-  return (
-    <Glyph className={className}>
-      <rect x="4" y="5" width="16" height="15" rx="0" />
-      <path d="M4 9.5h16M8 3v4M16 3v4" />
     </Glyph>
   );
 }
@@ -193,6 +182,10 @@ function moodPillClass(mood: string): string {
   return MOOD_PILL_CLASSES[hash % MOOD_PILL_CLASSES.length];
 }
 
+function isPreviewableAttachment(kind: string): boolean {
+  return kind === "image" || kind === "audio" || kind === "video";
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -200,10 +193,6 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
     reader.readAsDataURL(file);
   });
-}
-
-function isPreviewableAttachment(kind: string): boolean {
-  return kind === "image" || kind === "audio" || kind === "video";
 }
 
 const MARKDOWN_LINE_PATTERNS = [
@@ -229,54 +218,21 @@ function looksLikeMarkdown(text: string): boolean {
   return MARKDOWN_INLINE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function useFileObjectUrl(file: File | null): string | null {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!file) {
-      setUrl(null);
-      return;
-    }
-    const objectUrl = URL.createObjectURL(file);
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [file]);
-
-  return url;
-}
-
-function useAttachmentBlobUrl(
-  attachment: { entryId: number; id: number } | null | undefined,
-  onError?: (message: string) => void,
-): string | null {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!attachment) {
-      setUrl(null);
-      return;
-    }
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    api.diary
-      .downloadAttachment(attachment.entryId, attachment.id)
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          onError?.(err instanceof Error ? err.message : "Failed to load attachment.");
-        }
-      });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [attachment?.entryId, attachment?.id, onError]);
-
-  return url;
+// The one place the editor's ProseMirror doc is walked to decide whether it
+// carries content that isn't plain text. Delegates the actual "does this
+// set of node names count as non-text" decision to pageLifecycle's
+// `hasNonTextNode`, which is pure and unit-tested against plain string
+// lists — this function is just the Tiptap-specific adapter that collects
+// the node names to feed it. See the CAUTION comment on isDiscardablePage
+// for why this matters: bodyPlainText alone (e.g. editor.getText()) is ""
+// for a page whose only content is an image, an empty table, a divider, or
+// an empty callout/details/task item.
+function editorHasNonTextContent(ed: Editor): boolean {
+  const nodeTypeNames = new Set<string>();
+  ed.state.doc.descendants((node) => {
+    nodeTypeNames.add(node.type.name);
+  });
+  return hasNonTextNode(nodeTypeNames);
 }
 
 function AttachmentPreview({
@@ -315,21 +271,6 @@ function AttachmentPreview({
   );
 }
 
-function CoverBanner({
-  attachment,
-  onError,
-}: {
-  attachment: DiaryAttachmentData;
-  onError: (message: string) => void;
-}) {
-  const url = useAttachmentBlobUrl(attachment, onError);
-
-  if (!url) {
-    return <div className="w-full h-56 rounded-xl bg-secondary/40 animate-pulse" />;
-  }
-  return <img src={url} alt="" className="w-full h-56 rounded-xl object-cover" />;
-}
-
 function EntryCoverThumbnail({ entry }: { entry: DiaryEntryData }) {
   const cover =
     entry.coverAttachmentId != null
@@ -345,47 +286,16 @@ function EntryCoverThumbnail({ entry }: { entry: DiaryEntryData }) {
   );
 }
 
-function PendingFilePreview({ file }: { file: File }) {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!file.type.startsWith("image/") && !file.type.startsWith("audio/")) return;
-    const objectUrl = URL.createObjectURL(file);
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [file]);
-
-  if (!url) return null;
-  if (file.type.startsWith("image/")) {
-    return (
-      <img
-        src={url}
-        alt={file.name}
-        className="h-10 w-10 shrink-0 rounded-md object-cover border border-foreground/[0.08]"
-      />
-    );
-  }
-  return <audio controls src={url} className="h-8 max-w-[180px]" />;
-}
-
 export default function DiaryWorkspace() {
   const { user } = useAuth();
   const [entries, setEntries] = useState<DiaryEntryData[]>([]);
   const [entryLimit, setEntryLimit] = useState(ENTRY_PAGE_SIZE);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [creatingEntry, setCreatingEntry] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [isEditingSelected, setIsEditingSelected] = useState(false);
-  const [entryDate, setEntryDate] = useState(todayISODate);
-  const [title, setTitle] = useState("");
   const [bodyText, setBodyText] = useState("");
-  const [editorHasContent, setEditorHasContent] = useState(false);
-  const [mood, setMood] = useState("");
-  const [entryFolderId, setEntryFolderId] = useState<number | null>(null);
-  const [files, setFiles] = useState<File[]>([]);
-  const [pendingCoverFile, setPendingCoverFile] = useState<File | null>(null);
-  const coverFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [speechAvailable, setSpeechAvailable] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
@@ -403,9 +313,6 @@ export default function DiaryWorkspace() {
   const [editingFolderId, setEditingFolderId] = useState<number | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<number | null>(null);
-  const [entryMenuOpen, setEntryMenuOpen] = useState(false);
-  const [entryMenuFolderOpen, setEntryMenuFolderOpen] = useState(false);
-  const entryMenuRef = useRef<HTMLDivElement | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -414,9 +321,34 @@ export default function DiaryWorkspace() {
   const editorWrapperRef = useRef<HTMLDivElement | null>(null);
   const hiddenImageInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Kept fresh every render (not via an effect) so that plain React effect
+  // cleanups — which otherwise close over stale values from whenever they
+  // were registered — always see the latest entry/title/content snapshot.
+  // Mirrors the existing `editorRef.current = editor;` pattern below.
+  const selectedEntryRef = useRef<DiaryEntryData | null>(null);
+  const titleRef = useRef("");
+  // The last body HTML this component itself fed INTO the editor via
+  // setContent. Compared against onUpdate's output as a defense-in-depth
+  // guard against a save loop, on top of loading content with
+  // `{ emitUpdate: false }` (which should already suppress onUpdate for
+  // programmatic loads).
+  const lastLoadedBodyRef = useRef<string | null>(null);
+  // Kept in sync on every edit and every load — see syncEditorContent —
+  // so the untitled-page cleanup can read a fresh snapshot without ever
+  // touching a possibly-already-destroyed editor instance from an unmount
+  // cleanup.
+  const lastContentSnapshotRef = useRef<{ bodyPlainText: string; hasNonTextContent: boolean }>({
+    bodyPlainText: "",
+    hasNonTextContent: false,
+  });
+
   const syncEditorContent = (ed: Editor) => {
-    setBodyText(ed.getText());
-    setEditorHasContent(!ed.isEmpty);
+    const plainText = ed.getText();
+    setBodyText(plainText);
+    lastContentSnapshotRef.current = {
+      bodyPlainText: plainText,
+      hasNonTextContent: editorHasNonTextContent(ed),
+    };
   };
 
   const editor = useEditor({
@@ -437,7 +369,20 @@ export default function DiaryWorkspace() {
             .filter((file): file is File => file !== null);
           if (imageFiles.length > 0) {
             event.preventDefault();
-            setFiles((current) => [...current, ...imageFiles]);
+            // Matches the pre-Task-11 behavior: pasted image FILES (e.g.
+            // copied from Finder) become attachments, same as the "Attach"
+            // button — distinct from pasting/dropping into the composer as
+            // an inline embed. `editorProps.handlePaste` is captured once
+            // at editor creation (unlike onUpdate, it is not kept live by
+            // @tiptap/react), so this deliberately reads `selectedEntryRef`
+            // and calls `uploadAttachmentFile` rather than closing over
+            // `selectedEntry`/`handleFilesSelected` directly — both of
+            // those are fresh-per-render closures that would otherwise be
+            // frozen at whatever render first created the editor.
+            const entryId = selectedEntryRef.current?.id;
+            if (entryId != null) {
+              for (const file of imageFiles) void uploadAttachmentFile(entryId, file);
+            }
             return true;
           }
         }
@@ -460,47 +405,43 @@ export default function DiaryWorkspace() {
     },
     onUpdate: ({ editor: e }) => {
       syncEditorContent(e);
+
+      const html = sanitizeDiaryHtml(e.getHTML());
+      // Guard against feeding the editor's own output back in as a user
+      // change: setContent (used when loading an entry) is called with
+      // `{ emitUpdate: false }` so it should not reach onUpdate at all;
+      // this comparison is a second, cheap line of defense against a
+      // save loop if that ever stops being true.
+      if (html === lastLoadedBodyRef.current) return;
+
+      const entry = selectedEntryRef.current;
+      if (!entry) return;
+
+      const plainText = e.getText();
+      const eligible = canSaveDiaryEntry({
+        editorHasContent: !e.isEmpty,
+        plainText,
+        attachmentCount: entry.attachments.length,
+        hasPendingCover: false,
+      });
+      if (!eligible) return;
+
+      const body =
+        resolveDiaryBody({ editorIsEmpty: e.isEmpty, editorHtml: html, plainText }) ??
+        ATTACHMENT_ONLY_BODY_FALLBACK;
+      schedule({ title: titleRef.current, body });
     },
   });
   const editorRef = useRef<Editor | null>(editor);
   editorRef.current = editor;
 
-  const insertInlineImage = async (file: File) => {
-    if (!file.type.startsWith("image/")) return;
-    if (file.size > MAX_INLINE_IMAGE_BYTES) {
-      setError(
-        `"${file.name}" is too large to embed inline (max ${formatFileSize(MAX_INLINE_IMAGE_BYTES)}). Use Attach for large files instead.`,
-      );
-      return;
-    }
-    try {
-      const dataUrl = await fileToDataUrl(file);
-      editorRef.current?.chain().focus().setImage({ src: dataUrl, alt: file.name }).run();
-      if (editorRef.current) syncEditorContent(editorRef.current);
-    } catch {
-      setError(`Failed to embed "${file.name}".`);
-    }
-  };
-
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedId) ?? null,
     [entries, selectedId],
   );
-  const coverAttachment = useMemo(() => {
-    if (!selectedEntry?.coverAttachmentId) return null;
-    return (
-      selectedEntry.attachments.find((a) => a.id === selectedEntry.coverAttachmentId) ?? null
-    );
-  }, [selectedEntry]);
-  const pendingCoverPreviewUrl = useFileObjectUrl(pendingCoverFile);
-  const composerCoverAttachment = isEditingSelected ? coverAttachment : null;
+  selectedEntryRef.current = selectedEntry;
+
   const wordCount = useMemo(() => countWords(bodyText), [bodyText]);
-  const canSave = canSaveDiaryEntry({
-    editorHasContent,
-    plainText: bodyText,
-    attachmentCount: files.length,
-    hasPendingCover: pendingCoverFile !== null,
-  });
 
   const availableMoods = useMemo(() => {
     const moods = new Set<string>();
@@ -562,23 +503,6 @@ export default function DiaryWorkspace() {
   }, [user?.id]);
 
   useEffect(() => {
-    setEntryMenuOpen(false);
-    setEntryMenuFolderOpen(false);
-  }, [selectedId]);
-
-  useEffect(() => {
-    if (!entryMenuOpen) return;
-    const handleClickOutside = (event: MouseEvent) => {
-      if (entryMenuRef.current && !entryMenuRef.current.contains(event.target as Node)) {
-        setEntryMenuOpen(false);
-        setEntryMenuFolderOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [entryMenuOpen]);
-
-  useEffect(() => {
     setSpeechAvailable(getSpeechRecognitionConstructor() !== null);
     return () => {
       recognitionRef.current?.abort();
@@ -604,72 +528,170 @@ export default function DiaryWorkspace() {
     }
   }, [user?.id]);
 
-  const releaseRecordingResources = () => {
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-    mediaRecorderRef.current = null;
-    recognitionRef.current = null;
+  // --- Autosave -------------------------------------------------------
+  //
+  // `save` is a fresh closure every render, but the scheduler it feeds is
+  // only (re)created when `entryId` changes (see useAutosave's doc
+  // comment) — so the entry id this closure captures via `selectedEntry`
+  // is frozen for the scheduler's whole lifetime, and a save queued
+  // against one entry can never be redirected to whatever entry is
+  // selected by the time it actually flushes.
+  const autosaveEntryId = selectedEntry?.id ?? null;
+  const {
+    schedule,
+    flush,
+    retry,
+    status: saveStatus,
+  } = useAutosave<{ title: string; body: string }>({
+    entryId: autosaveEntryId,
+    save: async (payload) => {
+      const entryId = autosaveEntryId;
+      if (entryId == null) return;
+      const trimmedTitle = payload.title.trim();
+      const updated = await api.diary.update(entryId, {
+        body: payload.body,
+        title: trimmedTitle || undefined,
+        clearTitle: !trimmedTitle,
+      });
+      setEntries((current) => current.map((e) => (e.id === updated.id ? updated : e)));
+    },
+  });
+
+  // A page the user created but never touched (per lib/pageLifecycle.ts).
+  // Always flushes any pending autosave first so the decision is made
+  // against fully up-to-date state, then deletes if still discardable.
+  // Never call this against the entry the user is currently editing —
+  // only against the one being left (a switch target, or on unmount).
+  const evaluateAndMaybeDiscard = async (entry: DiaryEntryData) => {
+    await flush();
+    const snapshot = lastContentSnapshotRef.current;
+    const discardable = isDiscardablePage({
+      title: titleRef.current,
+      bodyPlainText: snapshot.bodyPlainText,
+      attachmentCount: entry.attachments.length,
+      coverAttachmentId: entry.coverAttachmentId,
+      hasNonTextContent: snapshot.hasNonTextContent,
+    });
+    if (!discardable) return;
+    try {
+      await api.diary.delete(entry.id);
+      setEntries((current) => current.filter((e) => e.id !== entry.id));
+    } catch {
+      // Best-effort cleanup only — a failed delete just leaves an empty
+      // page behind, which is no worse than before this cleanup existed.
+    }
   };
 
-  const resetComposer = () => {
+  // Load the selected entry's content into the editor. Keyed on the id
+  // alone (not the whole `selectedEntry` object) so an unrelated update —
+  // e.g. an attachment upload replacing the entry in `entries` — never
+  // re-triggers this and clobbers in-progress typing.
+  useEffect(() => {
+    if (!editor || !selectedEntry) return;
+    const html = sanitizeDiaryHtml(
+      isHtmlBody(selectedEntry.body) ? selectedEntry.body : escapeHtmlForEditor(selectedEntry.body),
+    );
+    lastLoadedBodyRef.current = html;
+    // emitUpdate: false is the primary guard against a save loop — this
+    // programmatic load must never be mistaken for a user edit and
+    // scheduled straight back to the server.
+    editor.commands.setContent(html, { emitUpdate: false });
+    syncEditorContent(editor);
+    titleRef.current = selectedEntry.title ?? "";
+    window.setTimeout(() => editor.commands.focus("end"), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEntry?.id]);
+
+  // Untitled-page cleanup on true component unmount (e.g. navigating away
+  // from the diary route entirely). The per-entry-switch case is handled
+  // imperatively in selectEntry/startNewEntry, below.
+  useEffect(() => {
+    return () => {
+      const entry = selectedEntryRef.current;
+      if (entry) void evaluateAndMaybeDiscard(entry);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const insertInlineImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    if (file.size > MAX_INLINE_IMAGE_BYTES) {
+      setError(
+        `"${file.name}" is too large to embed inline (max ${formatFileSize(MAX_INLINE_IMAGE_BYTES)}). Use Attach for large files instead.`,
+      );
+      return;
+    }
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      editorRef.current?.chain().focus().setImage({ src: dataUrl, alt: file.name }).run();
+      if (editorRef.current) syncEditorContent(editorRef.current);
+    } catch {
+      setError(`Failed to embed "${file.name}".`);
+    }
+  };
+
+  const stopAnyActiveRecording = () => {
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.stop();
     }
     recognitionRef.current?.abort();
     setRecording(false);
     setLiveTranscript("");
-    setTitle("");
-    setBodyText("");
-    setEditorHasContent(false);
-    editorRef.current?.commands.clearContent();
-    setMood("");
-    setEntryFolderId(null);
-    setFiles([]);
-    setPendingCoverFile(null);
-    setEntryDate(todayISODate());
   };
 
-  const startNewEntry = () => {
-    setSelectedId(null);
-    setIsEditingSelected(false);
-    resetComposer();
-    setEntryFolderId(activeFolderId);
-    window.setTimeout(() => editorRef.current?.commands.focus("end"), 0);
+  const startNewEntry = async () => {
+    if (user?.id == null || creatingEntry) return;
+    const leaving = selectedEntryRef.current;
+    stopAnyActiveRecording();
+    setCreatingEntry(true);
+    setError(null);
+    try {
+      if (leaving) await evaluateAndMaybeDiscard(leaving);
+      const created = await api.diary.create(user.id, {
+        entryDate: todayISODate(),
+        title: null,
+        body: BLANK_ENTRY_BODY,
+        mood: null,
+        folderId: activeFolderId,
+      });
+      setEntries((current) => [created, ...current]);
+      setSelectedId(created.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create diary entry.");
+    } finally {
+      setCreatingEntry(false);
+    }
   };
 
-  const selectEntry = (entryId: number) => {
-    if (entryId === selectedId && !isEditingSelected) return;
-    setIsEditingSelected(false);
-    resetComposer();
+  const selectEntry = async (entryId: number) => {
+    if (entryId === selectedId) return;
+    const leaving = selectedEntryRef.current;
+    stopAnyActiveRecording();
+    if (leaving) await evaluateAndMaybeDiscard(leaving);
     setSelectedId(entryId);
   };
 
-  const startEditEntry = () => {
-    if (!selectedEntry) return;
-    setTitle(selectedEntry.title ?? "");
-    setMood(selectedEntry.mood ?? "");
-    setEntryDate(selectedEntry.entryDate);
-    const html =
-      (isHtmlBody(selectedEntry.body)
-        ? selectedEntry.body
-        : escapeHtmlForEditor(selectedEntry.body));
-    editorRef.current?.commands.setContent(html);
-    if (editorRef.current) syncEditorContent(editorRef.current);
-    setFiles([]);
-    setPendingCoverFile(null);
-    setEntryFolderId(selectedEntry.folderId);
-    setIsEditingSelected(true);
-    window.setTimeout(() => editorRef.current?.commands.focus("end"), 0);
-  };
-
-  const cancelEdit = () => {
-    setIsEditingSelected(false);
-    resetComposer();
+  const uploadAttachmentFile = async (entryId: number, file: File) => {
+    try {
+      const uploaded = await api.diary.uploadAttachment(entryId, file);
+      setEntries((current) =>
+        current.map((entry) =>
+          entry.id === entryId
+            ? { ...entry, attachments: [...entry.attachments, uploaded] }
+            : entry,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to attach "${file.name}".`);
+    }
   };
 
   const handleFilesSelected = (selected: FileList | null) => {
-    if (!selected || selected.length === 0) return;
-    setFiles((current) => [...current, ...Array.from(selected)]);
+    if (!selected || selected.length === 0 || !selectedEntry) return;
+    const entryId = selectedEntry.id;
+    for (const file of Array.from(selected)) {
+      void uploadAttachmentFile(entryId, file);
+    }
   };
 
   const handleInlineImageFilesSelected = (selected: FileList | null) => {
@@ -677,10 +699,6 @@ export default function DiaryWorkspace() {
     for (const file of Array.from(selected)) {
       void insertInlineImage(file);
     }
-  };
-
-  const removeSelectedFile = (index: number) => {
-    setFiles((current) => current.filter((_, i) => i !== index));
   };
 
   const handleComposerDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -745,8 +763,15 @@ export default function DiaryWorkspace() {
     }
   };
 
+  const releaseRecordingResources = () => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    recognitionRef.current = null;
+  };
+
   const startRecording = async () => {
-    if (recording) return;
+    if (recording || !selectedEntry) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("Audio recording is not available in this environment.");
       return;
@@ -778,12 +803,13 @@ export default function DiaryWorkspace() {
       recorder.onstop = () => {
         const chunks = recordedChunksRef.current;
         const mimeType = recorder.mimeType || requestedMimeType || "audio/webm";
-        if (chunks.length > 0) {
+        const entryId = selectedEntryRef.current?.id ?? null;
+        if (chunks.length > 0 && entryId != null) {
           const blob = new Blob(chunks, { type: mimeType });
           const file = new File([blob], buildRecordingFilename(new Date(), mimeType), {
             type: mimeType,
           });
-          setFiles((current) => [...current, file]);
+          void uploadAttachmentFile(entryId, file);
         }
         recordedChunksRef.current = [];
         setRecording(false);
@@ -811,68 +837,6 @@ export default function DiaryWorkspace() {
     releaseRecordingResources();
   };
 
-  const handleSave = async () => {
-    if (user?.id == null || !canSave || saving) return;
-    if (recording) {
-      stopRecording();
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    const editingEntry = isEditingSelected ? selectedEntry : null;
-    try {
-      const currentEditor = editorRef.current;
-      const bodyValue =
-        resolveDiaryBody({
-          editorIsEmpty: currentEditor?.isEmpty ?? bodyText.trim().length === 0,
-          editorHtml: currentEditor?.getHTML() ?? "",
-          plainText: bodyText,
-        }) ?? "Attachment-only diary entry.";
-
-      let savedId: number;
-      if (editingEntry) {
-        const updated = await api.diary.update(editingEntry.id, {
-          entryDate,
-          body: bodyValue,
-          title: title.trim() || undefined,
-          clearTitle: !title.trim(),
-          mood: mood.trim() || undefined,
-          clearMood: !mood.trim(),
-          folderId: entryFolderId ?? undefined,
-          clearFolder: entryFolderId == null,
-        });
-        savedId = updated.id;
-      } else {
-        const created = await api.diary.create(user.id, {
-          entryDate,
-          title: title.trim() || null,
-          body: bodyValue,
-          mood: mood.trim() || null,
-          folderId: entryFolderId,
-        });
-        savedId = created.id;
-      }
-
-      for (const file of files) {
-        await api.diary.uploadAttachment(savedId, file);
-      }
-
-      if (pendingCoverFile) {
-        const coverUpload = await api.diary.uploadAttachment(savedId, pendingCoverFile);
-        await api.diary.update(savedId, { coverAttachmentId: coverUpload.id });
-      }
-
-      setIsEditingSelected(false);
-      resetComposer();
-      await Promise.all([loadEntries(), loadFolders()]);
-      setSelectedId(savedId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save diary entry.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleDelete = async (entryId: number) => {
     if (deletingEntryId !== null) return;
     setDeletingEntryId(entryId);
@@ -882,7 +846,6 @@ export default function DiaryWorkspace() {
       setEntries((current) => current.filter((entry) => entry.id !== entryId));
       if (selectedId === entryId) {
         setSelectedId(null);
-        setIsEditingSelected(false);
       }
       await Promise.all([loadEntries(false), loadFolders()]);
     } catch (err) {
@@ -940,6 +903,65 @@ export default function DiaryWorkspace() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove cover image.");
     }
+  };
+
+  const handleCoverFileSelected = async (file: File) => {
+    if (!selectedEntry) return;
+    try {
+      const uploaded = await api.diary.uploadAttachment(selectedEntry.id, file);
+      // setCoverAttachment's PATCH response is the server's authoritative
+      // entry, which already includes this upload in its attachments array
+      // (the upload committed first) — do not also append `uploaded`
+      // locally, or it ends up duplicated.
+      await setCoverAttachment(selectedEntry.id, uploaded.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set cover image.");
+    }
+  };
+
+  const handleDateChange = async (entryDate: string) => {
+    if (!selectedEntry || entryDate === selectedEntry.entryDate) return;
+    try {
+      const updated = await api.diary.update(selectedEntry.id, { entryDate });
+      setEntries((current) => current.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update the entry date.");
+    }
+  };
+
+  const handleMoodChange = async (mood: string) => {
+    if (!selectedEntry) return;
+    const trimmed = mood.trim();
+    if (trimmed === (selectedEntry.mood ?? "")) return;
+    try {
+      const updated = await api.diary.update(selectedEntry.id, {
+        mood: trimmed || undefined,
+        clearMood: !trimmed,
+      });
+      setEntries((current) => current.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update mood.");
+    }
+  };
+
+  const handleTitleChange = (newTitle: string) => {
+    titleRef.current = newTitle;
+    const ed = editorRef.current;
+    const entry = selectedEntryRef.current;
+    if (!ed || !entry) return;
+    const html = sanitizeDiaryHtml(ed.getHTML());
+    const plainText = ed.getText();
+    const eligible = canSaveDiaryEntry({
+      editorHasContent: !ed.isEmpty,
+      plainText,
+      attachmentCount: entry.attachments.length,
+      hasPendingCover: false,
+    });
+    if (!eligible) return;
+    const body =
+      resolveDiaryBody({ editorIsEmpty: ed.isEmpty, editorHtml: html, plainText }) ??
+      ATTACHMENT_ONLY_BODY_FALLBACK;
+    schedule({ title: newTitle, body });
   };
 
   const createFolder = async () => {
@@ -1017,9 +1039,10 @@ export default function DiaryWorkspace() {
           </div>
           <button
             type="button"
-            onClick={startNewEntry}
+            onClick={() => void startNewEntry()}
+            disabled={creatingEntry}
             title="New entry"
-            className="h-9 w-9 flex items-center justify-center rounded-lg bg-accent text-accent-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] hover:brightness-110 transition-all active:scale-95"
+            className="h-9 w-9 flex items-center justify-center rounded-lg bg-accent text-accent-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] hover:brightness-110 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <PlusIcon size="sm" />
           </button>
@@ -1227,7 +1250,7 @@ export default function DiaryWorkspace() {
                 <li key={entry.id}>
                   <button
                     type="button"
-                    onClick={() => selectEntry(entry.id)}
+                    onClick={() => void selectEntry(entry.id)}
                     className={cn(
                       "group/entry w-full text-left rounded-lg px-3 py-2.5 transition-all",
                       selectedId === entry.id
@@ -1297,7 +1320,7 @@ export default function DiaryWorkspace() {
         </div>
       </aside>
 
-      {/* Canvas — write or read */}
+      {/* Canvas — always editable */}
       <main className="flex-1 min-w-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
         {error && (
           <div className="mx-8 mt-4 border border-destructive/30 bg-destructive/10 px-3 py-2 text-detail text-destructive animate-fade-in">
@@ -1305,346 +1328,26 @@ export default function DiaryWorkspace() {
           </div>
         )}
 
-        {selectedEntry && !isEditingSelected ? (
-          /* Read mode */
-          <div className="flex-1 overflow-y-auto">
-            <div key={selectedEntry.id} className="max-w-3xl mx-auto animate-fade-in">
-              {coverAttachment && (
-                <div className="relative group px-8 pt-8">
-                  <CoverBanner attachment={coverAttachment} onError={setError} />
-                  <button
-                    type="button"
-                    onClick={() => void clearCoverAttachment(selectedEntry.id)}
-                    className="absolute top-11 right-11 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
-                  >
-                    <XIcon size="sm" />
-                    Remove cover
-                  </button>
-                </div>
-              )}
-              <div className="px-8 py-10">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="font-mono text-[10px] tracking-[0.22em] uppercase text-muted-foreground/80">
-                    {formatEntryDateLong(selectedEntry.entryDate)}
-                  </p>
-                  {selectedEntry.mood && (
-                    <span
-                      className={cn(
-                        "mt-2 inline-block rounded-full border px-2.5 py-0.5 text-[9px] uppercase tracking-[0.16em]",
-                        moodPillClass(selectedEntry.mood),
-                      )}
-                    >
-                      {selectedEntry.mood}
-                    </span>
-                  )}
-                </div>
-                <div className="relative shrink-0" ref={entryMenuRef}>
-                  <button
-                    type="button"
-                    onClick={() => setEntryMenuOpen((open) => !open)}
-                    title="Entry actions"
-                    className={cn(
-                      "text-muted-foreground/50 hover:text-foreground",
-                      entryMenuOpen && "text-foreground",
-                    )}
-                  >
-                    <KebabGlyphIcon />
-                  </button>
-                  {entryMenuOpen && (
-                    <div className="absolute right-0 top-full mt-1 z-40 w-48 rounded-lg border border-foreground/[0.1] bg-card shadow-xl animate-fade-in overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEntryMenuOpen(false);
-                          startEditEntry();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-left text-detail text-muted-foreground hover:bg-secondary hover:text-foreground"
-                      >
-                        <PencilGlyphIcon className="size-3.5" />
-                        Edit
-                      </button>
-                      {folders.length > 0 && (
-                        <div className="border-t border-border">
-                          <button
-                            type="button"
-                            onClick={() => setEntryMenuFolderOpen((open) => !open)}
-                            className="w-full flex items-center gap-2 px-3 py-2 text-left text-detail text-muted-foreground hover:bg-secondary hover:text-foreground"
-                          >
-                            <FolderGlyphIcon className="size-3.5" />
-                            <span className="flex-1 truncate">
-                              {selectedEntry.folderId != null
-                                ? (folders.find((f) => f.id === selectedEntry.folderId)?.name ??
-                                  "Move to folder")
-                                : "Move to folder"}
-                            </span>
-                            {entryMenuFolderOpen ? (
-                              <ChevronUpIcon size="sm" />
-                            ) : (
-                              <ChevronDownIcon size="sm" />
-                            )}
-                          </button>
-                          {entryMenuFolderOpen && (
-                            <div className="bg-secondary/30 max-h-40 overflow-y-auto animate-fade-in">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEntryMenuOpen(false);
-                                  void moveEntryToFolder(selectedEntry.id, null);
-                                }}
-                                className={cn(
-                                  "w-full px-3 py-1.5 pl-9 text-left text-detail hover:bg-secondary",
-                                  selectedEntry.folderId == null
-                                    ? "text-foreground"
-                                    : "text-muted-foreground",
-                                )}
-                              >
-                                No folder
-                              </button>
-                              {folders.map((folder) => (
-                                <button
-                                  key={folder.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setEntryMenuOpen(false);
-                                    void moveEntryToFolder(selectedEntry.id, folder.id);
-                                  }}
-                                  className={cn(
-                                    "w-full px-3 py-1.5 pl-9 text-left text-detail hover:bg-secondary truncate",
-                                    selectedEntry.folderId === folder.id
-                                      ? "text-foreground"
-                                      : "text-muted-foreground",
-                                  )}
-                                >
-                                  {folder.name}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEntryMenuOpen(false);
-                          setPendingDeleteId(selectedEntry.id);
-                        }}
-                        disabled={deletingEntryId === selectedEntry.id}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-left text-detail text-destructive border-t border-border hover:bg-destructive/10 disabled:opacity-50"
-                      >
-                        <XIcon size="sm" />
-                        Delete
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {selectedEntry.title && (
-                <h2 className="mt-4 font-['Playfair_Display'] text-3xl md:text-4xl font-semibold tracking-tight text-foreground">
-                  {selectedEntry.title}
-                </h2>
-              )}
-
-              {isHtmlBody(selectedEntry.body) ? (
-                <div
-                  className={cn(DIARY_PROSE_CLASS, "mt-5 text-base leading-loose")}
-                  dangerouslySetInnerHTML={{ __html: sanitizeDiaryHtml(selectedEntry.body) }}
-                />
-              ) : (
-                <p className="mt-5 whitespace-pre-wrap text-base leading-loose text-foreground">
-                  {selectedEntry.body}
-                </p>
-              )}
-
-              {selectedEntry.attachments.length > 0 && (
-                <div className="mt-8 space-y-4">
-                  {selectedEntry.attachments.filter(
-                    (a) => isPreviewableAttachment(a.kind) && a.id !== selectedEntry.coverAttachmentId,
-                  ).length > 0 && (
-                    <div className="flex flex-wrap gap-3">
-                      {selectedEntry.attachments
-                        .filter(
-                          (attachment) =>
-                            isPreviewableAttachment(attachment.kind) &&
-                            attachment.id !== selectedEntry.coverAttachmentId,
-                        )
-                        .map((attachment) => (
-                          <div key={attachment.id} className="relative group space-y-1">
-                            <AttachmentPreview attachment={attachment} onError={setError} />
-                            {attachment.kind === "image" && (
-                              <button
-                                type="button"
-                                onClick={() => void setCoverAttachment(selectedEntry.id, attachment.id)}
-                                className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 rounded-lg bg-background/80 border border-foreground/[0.1] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
-                              >
-                                <StarGlyphIcon className="size-3" />
-                                Set cover
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => void handleOpenAttachment(attachment)}
-                              className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/60 hover:text-foreground"
-                            >
-                              {attachment.filename || attachment.kind} ·{" "}
-                              {formatFileSize(attachment.sizeBytes)}
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                  )}
-                  {selectedEntry.attachments.filter((a) => !isPreviewableAttachment(a.kind)).length >
-                    0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedEntry.attachments
-                        .filter((attachment) => !isPreviewableAttachment(attachment.kind))
-                        .map((attachment) => {
-                          const Icon = attachmentIcon(attachment.kind);
-                          return (
-                            <button
-                              key={attachment.id}
-                              type="button"
-                              onClick={() => void handleOpenAttachment(attachment)}
-                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
-                            >
-                              <Icon size="sm" className="shrink-0" />
-                              <span className="truncate">
-                                {attachment.filename || attachment.kind}
-                              </span>
-                              <span className="font-mono text-[9px] text-muted-foreground/50">
-                                {formatFileSize(attachment.sizeBytes)}
-                              </span>
-                            </button>
-                          );
-                        })}
-                    </div>
-                  )}
-                </div>
-              )}
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Write mode (new entry or editing selected entry) */
+        {selectedEntry ? (
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="flex-1 min-h-0 overflow-y-auto">
               <div className="max-w-3xl mx-auto px-8 pt-10 pb-4 h-full flex flex-col">
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex items-center gap-1.5 rounded-full bg-foreground/[0.06] border border-foreground/[0.1] px-2.5 py-1 font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/90 hover:text-foreground hover:border-foreground/[0.15] transition-colors">
-                    <CalendarGlyphIcon className="size-3.5" />
-                    <input
-                      type="date"
-                      value={entryDate}
-                      onChange={(event) => setEntryDate(event.target.value)}
-                      className="bg-transparent outline-none cursor-pointer"
-                    />
-                  </label>
-                  <input
-                    type="text"
-                    value={mood}
-                    onChange={(event) => setMood(event.target.value)}
-                    placeholder="Mood"
-                    maxLength={80}
-                    className="rounded-full bg-foreground/[0.06] border border-foreground/[0.1] px-2.5 py-1 font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/90 placeholder:text-muted-foreground/40 outline-none w-28 hover:border-foreground/[0.15] focus:border-accent/50 transition-colors"
-                  />
-                  {folders.length > 0 && (
-                    <label className="inline-flex items-center gap-1.5 rounded-full bg-foreground/[0.06] border border-foreground/[0.1] px-2.5 py-1 font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/90 hover:text-foreground hover:border-foreground/[0.15] transition-colors">
-                      <FolderGlyphIcon className="size-3.5" />
-                      <select
-                        value={entryFolderId ?? ""}
-                        onChange={(event) =>
-                          setEntryFolderId(event.target.value ? Number(event.target.value) : null)
-                        }
-                        className="bg-transparent outline-none cursor-pointer max-w-28"
-                      >
-                        <option value="">No folder</option>
-                        {folders.map((folder) => (
-                          <option key={folder.id} value={folder.id}>
-                            {folder.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  {isEditingSelected && (
-                    <button
-                      type="button"
-                      onClick={cancelEdit}
-                      className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground hover:text-destructive"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  {wordCount > 0 && (
-                    <span className="ml-auto font-mono text-[9px] tracking-[0.16em] uppercase text-muted-foreground/40">
-                      {wordCount} {wordCount === 1 ? "word" : "words"}
-                    </span>
-                  )}
-                </div>
-
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  placeholder="Untitled entry"
-                  maxLength={200}
-                  className="mt-6 w-full bg-transparent font-['Playfair_Display'] text-3xl md:text-4xl font-semibold tracking-tight text-foreground placeholder:text-muted-foreground/25 outline-none"
+                <PageHeader
+                  key={selectedEntry.id}
+                  entry={selectedEntry}
+                  folders={folders}
+                  saveStatus={saveStatus}
+                  onRetry={() => void retry()}
+                  onTitleChange={handleTitleChange}
+                  onToggleDrawer={() => setDrawerOpen((open) => !open)}
+                  drawerOpen={drawerOpen}
+                  onDateChange={(date) => void handleDateChange(date)}
+                  onMoodChange={(mood) => void handleMoodChange(mood)}
+                  onFolderChange={(folderId) => void moveEntryToFolder(selectedEntry.id, folderId)}
+                  onCoverFileSelected={(file) => void handleCoverFileSelected(file)}
+                  onRemoveCover={() => void clearCoverAttachment(selectedEntry.id)}
+                  onAttachmentError={setError}
                 />
-
-                <div className="mt-4">
-                  {pendingCoverFile && pendingCoverPreviewUrl ? (
-                    <div className="relative group">
-                      <img
-                        src={pendingCoverPreviewUrl}
-                        alt=""
-                        className="w-full h-48 rounded-xl border border-foreground/[0.08] object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPendingCoverFile(null)}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
-                      >
-                        <XIcon size="sm" />
-                        Remove
-                      </button>
-                    </div>
-                  ) : composerCoverAttachment ? (
-                    <div className="relative group">
-                      <CoverBanner attachment={composerCoverAttachment} onError={setError} />
-                      <button
-                        type="button"
-                        onClick={() => selectedEntry && void clearCoverAttachment(selectedEntry.id)}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
-                      >
-                        <XIcon size="sm" />
-                        Remove cover
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => coverFileInputRef.current?.click()}
-                      className="w-full h-12 rounded-xl border border-dashed border-foreground/[0.12] flex items-center justify-center gap-2 text-muted-foreground/60 hover:text-foreground hover:border-foreground/25 transition-colors"
-                    >
-                      <ImageIcon size="sm" />
-                      <span className="font-mono text-[10px] uppercase tracking-[0.14em]">
-                        Add cover image
-                      </span>
-                    </button>
-                  )}
-                  <input
-                    ref={coverFileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) setPendingCoverFile(file);
-                      event.target.value = "";
-                    }}
-                  />
-                </div>
 
                 <div
                   ref={editorWrapperRef}
@@ -1666,29 +1369,81 @@ export default function DiaryWorkspace() {
                   )}
                 </div>
 
-                {isEditingSelected && selectedEntry && selectedEntry.attachments.length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-foreground/[0.08]">
-                    <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/50 mb-2">
-                      Existing attachments
+                {drawerOpen && (
+                  <div className="mt-4 pt-4 border-t border-foreground/[0.08] space-y-4">
+                    <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/50">
+                      Attachments
                     </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedEntry.attachments.map((attachment) => {
-                        const Icon = attachmentIcon(attachment.kind);
-                        return (
-                          <button
-                            key={attachment.id}
-                            type="button"
-                            onClick={() => void handleOpenAttachment(attachment)}
-                            className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
-                          >
-                            <Icon size="sm" className="shrink-0" />
-                            <span className="truncate">
-                              {attachment.filename || attachment.kind}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {selectedEntry.attachments.length === 0 ? (
+                      <p className="text-detail text-muted-foreground/50">No attachments yet.</p>
+                    ) : (
+                      <>
+                        {selectedEntry.attachments.filter(
+                          (a) =>
+                            isPreviewableAttachment(a.kind) && a.id !== selectedEntry.coverAttachmentId,
+                        ).length > 0 && (
+                          <div className="flex flex-wrap gap-3">
+                            {selectedEntry.attachments
+                              .filter(
+                                (attachment) =>
+                                  isPreviewableAttachment(attachment.kind) &&
+                                  attachment.id !== selectedEntry.coverAttachmentId,
+                              )
+                              .map((attachment) => (
+                                <div key={attachment.id} className="relative group space-y-1">
+                                  <AttachmentPreview attachment={attachment} onError={setError} />
+                                  {attachment.kind === "image" && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void setCoverAttachment(selectedEntry.id, attachment.id)
+                                      }
+                                      className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 rounded-lg bg-background/80 border border-foreground/[0.1] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+                                    >
+                                      <StarGlyphIcon className="size-3" />
+                                      Set cover
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleOpenAttachment(attachment)}
+                                    className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/60 hover:text-foreground"
+                                  >
+                                    {attachment.filename || attachment.kind} ·{" "}
+                                    {formatFileSize(attachment.sizeBytes)}
+                                  </button>
+                                </div>
+                              ))}
+                          </div>
+                        )}
+                        {selectedEntry.attachments.filter((a) => !isPreviewableAttachment(a.kind))
+                          .length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedEntry.attachments
+                              .filter((attachment) => !isPreviewableAttachment(attachment.kind))
+                              .map((attachment) => {
+                                const Icon = attachmentIcon(attachment.kind);
+                                return (
+                                  <button
+                                    key={attachment.id}
+                                    type="button"
+                                    onClick={() => void handleOpenAttachment(attachment)}
+                                    className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                                  >
+                                    <Icon size="sm" className="shrink-0" />
+                                    <span className="truncate">
+                                      {attachment.filename || attachment.kind}
+                                    </span>
+                                    <span className="font-mono text-[9px] text-muted-foreground/50">
+                                      {formatFileSize(attachment.sizeBytes)}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1705,35 +1460,6 @@ export default function DiaryWorkspace() {
                         {liveTranscript}
                       </span>
                     )}
-                  </div>
-                )}
-
-                {files.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {files.map((file, index) => {
-                      const Icon = attachmentIcon(file.type.split("/", 1)[0]);
-                      return (
-                        <span
-                          key={`${file.name}-${index}`}
-                          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground"
-                        >
-                          <PendingFilePreview file={file} />
-                          <Icon size="sm" className="shrink-0" />
-                          <span className="truncate">{file.name}</span>
-                          <span className="font-mono text-[9px] text-muted-foreground/50">
-                            {formatFileSize(file.size)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeSelectedFile(index)}
-                            title="Remove"
-                            className="text-muted-foreground/50 hover:text-foreground"
-                          >
-                            <XIcon size="sm" />
-                          </button>
-                        </span>
-                      );
-                    })}
                   </div>
                 )}
 
@@ -1778,21 +1504,22 @@ export default function DiaryWorkspace() {
                       {recording ? "Stop" : "Record"}
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={!canSave || saving}
-                    className={cn(
-                      "rounded-lg px-5 py-2 text-[9px] uppercase tracking-[0.12em] font-mono font-semibold transition-all",
-                      !canSave || saving
-                        ? "bg-foreground/[0.06] text-muted-foreground/50 cursor-not-allowed"
-                        : "bg-accent text-accent-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] hover:brightness-110 active:scale-95",
-                    )}
-                  >
-                    {saving ? "Saving" : isEditingSelected ? "Save changes" : "Save entry"}
-                  </button>
+                  {wordCount > 0 && (
+                    <span className="font-mono text-[9px] tracking-[0.16em] uppercase text-muted-foreground/40">
+                      {wordCount} {wordCount === 1 ? "word" : "words"}
+                    </span>
+                  )}
                 </div>
               </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-2 text-muted-foreground/30">
+              <PencilGlyphIcon className="size-6" />
+              <p className="text-center font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground/40">
+                {creatingEntry ? "Creating…" : "Select an entry, or start a new one"}
+              </p>
             </div>
           </div>
         )}

@@ -93,3 +93,98 @@ describe("callout node", () => {
     expect(pass1).toContain('data-tone="info"');
   });
 });
+
+// Task 11 / carried-forward Task 10 review hazard: a page whose only
+// content is a pasted image (or an empty table, divider, callout, details,
+// task item) must never be deleted by the untitled-page cleanup, even
+// though its *text* content strips to "". This exercises the real Tiptap
+// schema (via generateJSON, the same technique the round-trip tests above
+// use) rather than a hand-written node-name list, so it proves the actual
+// node type name Tiptap assigns to an image ("image") is what
+// NON_TEXT_NODE_TYPES expects — not just that the pure predicate is
+// internally consistent.
+const { hasNonTextNode, isDiscardablePage } = await import(
+  "../src/features/diary/lib/pageLifecycle"
+);
+
+// Mirrors what `editor.state.doc.descendants(...)` collects in
+// DiaryWorkspace.tsx's editorHasNonTextContent: every node type name
+// anywhere in the document, gathered by walking the same JSONContent tree
+// generateJSON produces.
+function collectNodeTypeNames(node: { type?: string; content?: unknown[] }): Set<string> {
+  const names = new Set<string>();
+  const walk = (n: { type?: string; content?: unknown[] }) => {
+    if (n.type) names.add(n.type);
+    if (Array.isArray(n.content)) {
+      for (const child of n.content) walk(child as { type?: string; content?: unknown[] });
+    }
+  };
+  walk(node);
+  return names;
+}
+
+describe("image-only page is not discardable (Task 10 review hazard)", () => {
+  test("an image-only document has empty plain text but a non-text node", () => {
+    const doc = generateJSON('<p><img src="data:image/png;base64,AAAA" alt="memory"></p>', extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    // The hazard: stripping tags / editor.getText() gives "" for this doc.
+    const bodyPlainText = generateHTML(doc, extensions).replace(/<[^>]+>/g, "");
+    expect(bodyPlainText.trim()).toBe("");
+
+    // But the schema really does name the node "image", so the structural
+    // scan catches what the text strip misses.
+    expect(nodeTypeNames.has("image")).toBe(true);
+    expect(hasNonTextNode(nodeTypeNames)).toBe(true);
+  });
+
+  test("isDiscardablePage keeps an image-only page (hasNonTextContent true overrides empty text)", () => {
+    const doc = generateJSON('<p><img src="data:image/png;base64,AAAA" alt="memory"></p>', extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    const discardable = isDiscardablePage({
+      title: null,
+      bodyPlainText: "", // what editor.getText() would report
+      attachmentCount: 0, // inline images are not upload attachments
+      coverAttachmentId: null,
+      hasNonTextContent: hasNonTextNode(nodeTypeNames),
+    });
+
+    expect(discardable).toBe(false);
+  });
+
+  test("a genuinely empty paragraph-only document IS discardable", () => {
+    const doc = generateJSON("<p></p>", extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    expect(hasNonTextNode(nodeTypeNames)).toBe(false);
+    expect(
+      isDiscardablePage({
+        title: null,
+        bodyPlainText: "",
+        attachmentCount: 0,
+        coverAttachmentId: null,
+        hasNonTextContent: hasNonTextNode(nodeTypeNames),
+      }),
+    ).toBe(true);
+  });
+
+  test("an empty (untyped-into) table is not discardable either", () => {
+    const doc = generateJSON(
+      "<table><tbody><tr><td><p></p></td><td><p></p></td></tr></tbody></table>",
+      extensions,
+    );
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    expect(nodeTypeNames.has("table")).toBe(true);
+    expect(
+      isDiscardablePage({
+        title: null,
+        bodyPlainText: "",
+        attachmentCount: 0,
+        coverAttachmentId: null,
+        hasNonTextContent: hasNonTextNode(nodeTypeNames),
+      }),
+    ).toBe(false);
+  });
+});
