@@ -8,9 +8,11 @@ mod python {
     // PyO3 0.22 generated wrappers trigger this false positive for `PyResult` returns.
     #![allow(clippy::useless_conversion)]
 
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use pyo3::prelude::*;
     use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
     use pyo3::IntoPy;
+    use serde::Deserialize;
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::io::{self, Read, Write};
@@ -229,6 +231,148 @@ mod python {
             }
             error => pyo3::exceptions::PyValueError::new_err(error.to_string()),
         }
+    }
+
+    fn corefs_validation_batch_error(
+        error: anima_corefs::transaction::ValidationBatchError,
+    ) -> PyErr {
+        match error {
+            anima_corefs::transaction::ValidationBatchError::Commit(
+                anima_corefs::transaction::CommitError::Io(error),
+            ) => pyo3::exceptions::PyOSError::new_err(error.to_string()),
+            error => pyo3::exceptions::PyValueError::new_err(error.to_string()),
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ValidationBatchWire {
+        #[serde(default)]
+        initialize: bool,
+        expected_generation: Option<u64>,
+        expected_catalog_hash: Option<String>,
+        folders: Vec<ValidationBatchFolderWire>,
+        objects: Vec<ValidationBatchObjectWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ValidationBatchFolderWire {
+        stable_id: String,
+        parent_id: Option<String>,
+        name: String,
+        role: Option<String>,
+        policy: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ValidationBatchObjectWire {
+        stable_id: String,
+        parent_id: String,
+        name: String,
+        kind: String,
+        content_type: String,
+        body_encoding: String,
+        content_base64: String,
+        created_at: String,
+        updated_at: String,
+        expected_revision: Option<u64>,
+        #[serde(default)]
+        references: Vec<String>,
+        policy: String,
+    }
+
+    fn validation_batch_policy(
+        value: &str,
+    ) -> PyResult<anima_corefs::transaction::ValidationBatchPolicy> {
+        match value {
+            "user-write" => Ok(anima_corefs::transaction::ValidationBatchPolicy::UserWrite),
+            "inherit" => Ok(anima_corefs::transaction::ValidationBatchPolicy::Inherit),
+            "deny" => Ok(anima_corefs::transaction::ValidationBatchPolicy::Deny),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "validation batch policy must be user-write, inherit, or deny",
+            )),
+        }
+    }
+
+    fn decode_validation_batch_json(
+        batch_json: &str,
+    ) -> PyResult<anima_corefs::transaction::ValidationBatch> {
+        enforce_corefs_catalog_plaintext_limit(batch_json.len())?;
+        let wire: ValidationBatchWire = serde_json::from_str(batch_json)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let mode =
+            match (
+                wire.initialize,
+                wire.expected_generation,
+                wire.expected_catalog_hash,
+            ) {
+                (true, None, None) => anima_corefs::transaction::ValidationBatchMode::Initialize,
+                (false, Some(generation), Some(catalog_hash)) => {
+                    anima_corefs::transaction::ValidationBatchMode::Expect {
+                        generation,
+                        catalog_hash,
+                    }
+                }
+                _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                    "validation batch requires explicit initialization or an exact expected head",
+                )),
+            };
+        let folders = wire
+            .folders
+            .into_iter()
+            .map(|folder| {
+                Ok(anima_corefs::transaction::ValidationBatchFolder {
+                    stable_id: folder.stable_id,
+                    parent_id: folder.parent_id,
+                    name: folder.name,
+                    role: folder.role,
+                    policy: validation_batch_policy(&folder.policy)?,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let objects = wire
+            .objects
+            .into_iter()
+            .map(|object| {
+                let kind = anima_corefs::crypto::ObjectKind::parse(&object.kind)
+                    .map_err(corefs_value_error)?;
+                let body_encoding = match object.body_encoding.as_str() {
+                    "utf-8" => anima_corefs::envelope::BodyEncoding::Utf8,
+                    "binary" => anima_corefs::envelope::BodyEncoding::Binary,
+                    _ => {
+                        return Err(pyo3::exceptions::PyValueError::new_err(
+                            "validation object bodyEncoding must be utf-8 or binary",
+                        ))
+                    }
+                };
+                let content = BASE64.decode(&object.content_base64).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "validation object contentBase64 is invalid",
+                    )
+                })?;
+                Ok(anima_corefs::transaction::ValidationBatchObject {
+                    stable_id: object.stable_id,
+                    parent_id: object.parent_id,
+                    name: object.name,
+                    kind,
+                    content_type: object.content_type,
+                    body_encoding,
+                    content,
+                    created_at: object.created_at,
+                    updated_at: object.updated_at,
+                    expected_revision: object.expected_revision,
+                    references: object.references,
+                    policy: validation_batch_policy(&object.policy)?,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(anima_corefs::transaction::ValidationBatch {
+            mode,
+            folders,
+            objects,
+        })
     }
 
     fn corefs_logical_error(error: anima_corefs::logical::LogicalError) -> PyErr {
@@ -711,6 +855,51 @@ mod python {
                     "generation": head.generation(),
                     "catalogHash": head.catalog_hash(),
                 }),
+            )
+        }
+
+        fn validation_batch_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            batch_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let batch = decode_validation_batch_json(batch_json)?;
+            let outcome = py
+                .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
+                .map_err(corefs_validation_batch_error)?;
+            let head = outcome.snapshot().head();
+            json_value_to_py(
+                py,
+                json!({
+                    "generation": head.generation(),
+                    "catalogHash": head.catalog_hash(),
+                    "published": outcome.published(),
+                }),
+            )
+        }
+
+        fn resolve_validation_role_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            role: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let resolved = py
+                .allow_threads(|| self.coordinator.resolve_validation_role(&keys.inner, role))
+                .map_err(corefs_validation_batch_error)?;
+            json_value_to_py(
+                py,
+                match resolved {
+                    Some(value) => json!({
+                        "generation": value.generation,
+                        "catalogHash": value.catalog_hash,
+                        "stableId": value.stable_id,
+                    }),
+                    None => Value::Null,
+                },
             )
         }
 
@@ -1300,6 +1489,13 @@ mod python {
             inner: anima_corefs::crypto::derive_corefs_subkeys(&frk.inner, frk_version)
                 .map_err(corefs_value_error)?,
         })
+    }
+
+    #[pyfunction]
+    fn corefs_migration_id_v1(domain: &str, source_key: &[u8]) -> PyResult<String> {
+        anima_corefs::id::OpaqueId::derive_migration(domain, source_key)
+            .map(|value| value.as_str().to_owned())
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     #[pyfunction]
@@ -3683,6 +3879,7 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_wrap_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_unwrap_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_derive_subkeys, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_migration_id_v1, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_generate_object_dek, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_wrap_object_dek, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_unwrap_object_dek, m)?)?;
@@ -4041,6 +4238,72 @@ mod python {
                 });
                 let second = session.coordinator_for_test();
                 assert!(Arc::ptr_eq(&first, &second));
+            }
+
+            #[test]
+            fn validation_converter_bindings_are_session_accounted_and_resolve_roles() {
+                let (_root, session) = native_session("validation-converter", "ffi-converter");
+                let keys = PyCorefsSubkeys {
+                    inner: derive_corefs_subkeys(&SecretBytes::new(vec![0x6a; 32]).unwrap(), 1)
+                        .unwrap(),
+                };
+                let root_id = OpaqueId::derive_migration("folder", b"root").unwrap();
+                let journal_id = OpaqueId::derive_migration("folder", b"journal").unwrap();
+                let notes_id = OpaqueId::derive_migration("folder", b"notes").unwrap();
+                let batch = json!({
+                    "initialize": true,
+                    "folders": [
+                        {"stableId": root_id.as_str(), "parentId": null, "name": "Core", "role": null, "policy": "user-write"},
+                        {"stableId": journal_id.as_str(), "parentId": root_id.as_str(), "name": "Journal", "role": "core.journal", "policy": "user-write"},
+                        {"stableId": notes_id.as_str(), "parentId": root_id.as_str(), "name": "Notes", "role": "core.notes", "policy": "user-write"}
+                    ],
+                    "objects": []
+                })
+                .to_string();
+
+                with_python(|py| {
+                    let outcome = session.validation_batch_v1(py, &keys, &batch).unwrap();
+                    let outcome = outcome.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        outcome
+                            .get_item("generation")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        1
+                    );
+                    assert!(outcome
+                        .get_item("published")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap());
+                    let role = session
+                        .resolve_validation_role_v1(py, &keys, "core.journal")
+                        .unwrap();
+                    let role = role.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        role.get_item("stableId")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        journal_id.as_str()
+                    );
+                });
+                assert_eq!(session.active_operations_for_test(), 0);
+            }
+
+            #[test]
+            fn validation_converter_rejects_oversized_batches_before_json_decode() {
+                let oversized = " ".repeat(anima_corefs::catalog::MAX_CATALOG_PLAINTEXT_SIZE + 1);
+                with_python(|_| {
+                    let error = decode_validation_batch_json(&oversized).unwrap_err();
+                    assert!(error
+                        .to_string()
+                        .contains("CoreFS catalog limit exceeded: catalog plaintext"));
+                });
             }
 
             #[test]

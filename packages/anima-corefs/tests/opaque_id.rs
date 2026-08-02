@@ -61,3 +61,17 @@ fn metadata_and_catalog_decode_reject_noncanonical_stable_ids() {
         Err(CatalogError::InvalidFormat("stable ID"))
     ));
 }
+
+#[test]
+fn migration_ids_are_deterministic_native_and_domain_separated() {
+    let first = OpaqueId::derive_migration("diary-entry", b"42").unwrap();
+    let repeated = OpaqueId::derive_migration("diary-entry", b"42").unwrap();
+    let attachment = OpaqueId::derive_migration("diary-attachment", b"42").unwrap();
+
+    assert_eq!(first, repeated);
+    assert_ne!(first, attachment);
+    assert_eq!(first.as_str().len(), 26);
+    assert_eq!(OpaqueId::parse(first.as_str()).unwrap(), first);
+    assert!(OpaqueId::derive_migration("", b"42").is_err());
+    assert!(OpaqueId::derive_migration("diary-entry", b"").is_err());
+}

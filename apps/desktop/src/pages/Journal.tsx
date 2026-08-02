@@ -884,21 +884,6 @@ export default function Journal() {
     };
   }, []);
 
-  // Remove drafts written by older builds. Diary content must stay in the
-  // encrypted diary service, not in browser storage.
-  useEffect(() => {
-    if (user?.id == null) return;
-    const prefix = `anima:diary:draft:${user.id}:`;
-    try {
-      for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
-        const key = window.localStorage.key(index);
-        if (key?.startsWith(prefix)) window.localStorage.removeItem(key);
-      }
-    } catch {
-      // Browser storage can be unavailable in restricted environments.
-    }
-  }, [user?.id]);
-
   const releaseRecordingResources = () => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     mediaStreamRef.current = null;

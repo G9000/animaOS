@@ -1,0 +1,808 @@
+//! Sealed, validation-only graph converter used before authoritative cutover.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Cursor;
+
+use sha2::{Digest, Sha256};
+
+use super::{
+    CatalogPrecondition, CommitConflict, CommitError, CoreCommitCoordinator,
+    PreparedObjectRevision, ValidationSnapshot,
+};
+use crate::catalog::{
+    CatalogEntryCommon, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
+    ObjectLifecycle, MAX_CATALOG_ENTRIES,
+};
+use crate::crypto::{generate_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKind};
+use crate::envelope::{
+    write_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION, MAX_BODY_LENGTH,
+};
+use crate::folders::{FolderOwner, FolderRole, PortableName};
+use crate::id::OpaqueId;
+use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
+
+const DIARY_CONTENT_TYPE: &str = "application/vnd.anima.diary+json;version=1";
+const DRAFT_CONTENT_TYPE: &str = "application/vnd.anima.draft+json;version=1";
+const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
+const ALLOWED_ROLES: [&str; 2] = ["core.journal", "core.notes"];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidationBatchMode {
+    Initialize,
+    Expect {
+        generation: u64,
+        catalog_hash: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidationBatchPolicy {
+    UserWrite,
+    Inherit,
+    Deny,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidationBatchFolder {
+    pub stable_id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub role: Option<String>,
+    pub policy: ValidationBatchPolicy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidationBatchObject {
+    pub stable_id: String,
+    pub parent_id: String,
+    pub name: String,
+    pub kind: ObjectKind,
+    pub content_type: String,
+    pub body_encoding: BodyEncoding,
+    pub content: Vec<u8>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub expected_revision: Option<u64>,
+    pub references: Vec<String>,
+    pub policy: ValidationBatchPolicy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidationBatch {
+    pub mode: ValidationBatchMode,
+    pub folders: Vec<ValidationBatchFolder>,
+    pub objects: Vec<ValidationBatchObject>,
+}
+
+#[derive(Debug)]
+pub struct ValidationBatchOutcome {
+    snapshot: ValidationSnapshot,
+    published: bool,
+}
+
+impl ValidationBatchOutcome {
+    pub fn snapshot(&self) -> &ValidationSnapshot {
+        &self.snapshot
+    }
+
+    pub const fn published(&self) -> bool {
+        self.published
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedValidationRole {
+    pub generation: u64,
+    pub catalog_hash: String,
+    pub stable_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ValidationBatchError {
+    #[error("invalid validation batch: {0}")]
+    Invalid(&'static str),
+    #[error("expected validation head does not match the current head")]
+    HeadMismatch,
+    #[error("validation batch commit failed: {0}")]
+    Commit(#[from] CommitError),
+    #[error("validation batch catalog failed: {0}")]
+    Catalog(#[from] CatalogError),
+}
+
+impl From<CommitConflict> for ValidationBatchError {
+    fn from(value: CommitConflict) -> Self {
+        Self::Commit(value.into())
+    }
+}
+
+#[derive(Clone)]
+struct ValidatedFolder {
+    id: OpaqueId,
+    parent_id: Option<OpaqueId>,
+    name: PortableName,
+    role: Option<FolderRole>,
+    policy: ValidationBatchPolicy,
+    owner: FolderOwner,
+    access: AnimaAccess,
+}
+
+#[derive(Clone)]
+struct ValidatedObject {
+    id: OpaqueId,
+    parent_id: OpaqueId,
+    name: PortableName,
+    source: ValidationBatchObject,
+    owner: FolderOwner,
+    access: AnimaAccess,
+}
+
+impl CoreCommitCoordinator {
+    /// Converts one complete writing graph into at most one validation generation.
+    ///
+    /// This is deliberately separate from the public logical mutation facade,
+    /// which remains frozen until the global PCF-008 authority cutover.
+    pub fn apply_validation_batch(
+        &self,
+        keys: &FrkSubkeys,
+        batch: ValidationBatch,
+    ) -> Result<ValidationBatchOutcome, ValidationBatchError> {
+        self.apply_validation_batch_inner(keys, batch, || Ok(()))
+    }
+
+    fn apply_validation_batch_inner<F>(
+        &self,
+        keys: &FrkSubkeys,
+        batch: ValidationBatch,
+        preparation_barrier: F,
+    ) -> Result<ValidationBatchOutcome, ValidationBatchError>
+    where
+        F: FnOnce() -> Result<(), ValidationBatchError>,
+    {
+        let current = self.load_validation_snapshot(keys)?;
+        match (&batch.mode, current.as_ref()) {
+            (ValidationBatchMode::Initialize, None) => {}
+            (ValidationBatchMode::Initialize, Some(_)) => {
+                return Err(ValidationBatchError::HeadMismatch)
+            }
+            (
+                ValidationBatchMode::Expect {
+                    generation,
+                    catalog_hash,
+                },
+                Some(snapshot),
+            ) if snapshot.head().generation() == *generation
+                && snapshot.head().catalog_hash() == catalog_hash => {}
+            (ValidationBatchMode::Expect { .. }, _) => {
+                return Err(ValidationBatchError::HeadMismatch)
+            }
+        }
+
+        // Complete structural/content validation occurs before any immutable
+        // encrypted revision is prepared.
+        let (folders, objects) = validate_batch(&batch)?;
+        if let Some(snapshot) = current.as_ref() {
+            if graph_is_identical(snapshot.catalog(), &folders, &objects) {
+                return Ok(ValidationBatchOutcome {
+                    snapshot: self
+                        .load_validation_snapshot(keys)?
+                        .ok_or(ValidationBatchError::HeadMismatch)?,
+                    published: false,
+                });
+            }
+        }
+
+        let (entries, prepared) = self.prepare_validation_graph(
+            keys,
+            current.as_ref().map(ValidationSnapshot::catalog),
+            folders,
+            objects,
+        )?;
+        // Publication is intentionally separated from preparation. A failed
+        // preparation phase may leave unreachable immutable revisions, but it
+        // must never make them authoritative through VALIDATION_HEAD.
+        preparation_barrier()?;
+        let snapshot = match current.as_ref() {
+            None => self.initialize_validation_snapshot(keys, &prepared, move |generation| {
+                CatalogGeneration::new(generation, entries)
+            })?,
+            Some(selected) => {
+                let preconditions = full_graph_preconditions(selected.catalog(), &entries)?;
+                self.advance_validation_snapshot(
+                    keys,
+                    selected,
+                    &prepared,
+                    &preconditions,
+                    move |_current, generation| CatalogGeneration::new(generation, entries),
+                )?
+            }
+        };
+        Ok(ValidationBatchOutcome {
+            snapshot,
+            published: true,
+        })
+    }
+
+    pub fn resolve_validation_role(
+        &self,
+        keys: &FrkSubkeys,
+        role: &str,
+    ) -> Result<Option<ResolvedValidationRole>, ValidationBatchError> {
+        if !ALLOWED_ROLES.contains(&role) {
+            return Err(ValidationBatchError::Invalid("unsupported stable role"));
+        }
+        let Some(snapshot) = self.load_validation_snapshot(keys)? else {
+            return Ok(None);
+        };
+        let mut matches = snapshot.catalog().entries().iter().filter(|entry| {
+            entry
+                .common_for_internal_mutation()
+                .role_for_internal_mutation()
+                .is_some_and(|value| value.as_str() == role)
+        });
+        let Some(entry) = matches.next() else {
+            return Ok(None);
+        };
+        if matches.next().is_some() {
+            return Err(ValidationBatchError::Invalid("duplicate stable role"));
+        }
+        Ok(Some(ResolvedValidationRole {
+            generation: snapshot.head().generation(),
+            catalog_hash: snapshot.head().catalog_hash().to_owned(),
+            stable_id: entry.stable_id().as_str().to_owned(),
+        }))
+    }
+
+    fn prepare_validation_graph(
+        &self,
+        keys: &FrkSubkeys,
+        current: Option<&CatalogGeneration>,
+        folders: Vec<ValidatedFolder>,
+        objects: Vec<ValidatedObject>,
+    ) -> Result<(Vec<CatalogGenerationEntry>, Vec<PreparedObjectRevision>), ValidationBatchError>
+    {
+        let current_by_id: BTreeMap<_, _> = current
+            .into_iter()
+            .flat_map(CatalogGeneration::entries)
+            .map(|entry| (entry.stable_id().as_str(), entry))
+            .collect();
+        let mut entries = Vec::with_capacity(folders.len() + objects.len());
+        let mut prepared = Vec::new();
+        for folder in folders {
+            let mut common = CatalogEntryCommon::new(
+                folder.id,
+                folder.parent_id,
+                folder.name,
+                folder.owner,
+                folder.access,
+            )
+            .with_policy_override_for_internal_mutation(local_policy(folder.policy));
+            if let Some(role) = folder.role {
+                common = common.with_role_for_internal_mutation(role);
+            }
+            entries.push(CatalogGenerationEntry::folder(common));
+        }
+        for object in objects {
+            let current_entry = current_by_id.get(object.id.as_str()).copied();
+            let current_object = current_entry.and_then(CatalogGenerationEntry::object_payload);
+            let digest = hex_digest(&object.source.content);
+            let unchanged = current_entry.is_some_and(|entry| {
+                entry.parent_id() == Some(&object.parent_id)
+                    && entry.name() == &object.name
+                    && current_object.is_some_and(|value| {
+                        value.kind() == object.source.kind
+                            && value.content_hash().as_str() == digest
+                            && object.source.expected_revision == Some(value.revision())
+                    })
+            });
+            let catalog_object = if unchanged {
+                current_object
+                    .expect("unchanged objects have a payload")
+                    .clone()
+            } else {
+                let revision = match current_object {
+                    Some(value) => {
+                        if object.source.expected_revision != Some(value.revision()) {
+                            return Err(ValidationBatchError::Invalid(
+                                "object revision precondition mismatch",
+                            ));
+                        }
+                        value
+                            .revision()
+                            .checked_add(1)
+                            .ok_or(ValidationBatchError::Invalid("object revision exhausted"))?
+                    }
+                    None => {
+                        if object.source.expected_revision.is_some() {
+                            return Err(ValidationBatchError::Invalid(
+                                "new object cannot have an expected revision",
+                            ));
+                        }
+                        1
+                    }
+                };
+                let key_epoch = current_object.map_or(1, |value| value.object_key_epoch());
+                let object_key = generate_object_dek().map_err(CommitError::from)?;
+                let aad = ObjectBaseAad::new(
+                    self.core_id.as_str(),
+                    object.id.as_str(),
+                    object.source.kind,
+                    ENVELOPE_VERSION,
+                    key_epoch,
+                    revision,
+                )
+                .map_err(CommitError::from)?;
+                let metadata = EnvelopeMetadata::for_body(
+                    object.source.kind.as_str(),
+                    object.id.as_str(),
+                    revision,
+                    &object.source.created_at,
+                    &object.source.updated_at,
+                    &object.source.content_type,
+                    BTreeMap::new(),
+                    object.source.body_encoding,
+                    &object.source.content,
+                )
+                .map_err(CommitError::from)?;
+                let mut encrypted = Vec::new();
+                write_envelope(
+                    &mut encrypted,
+                    &object_key,
+                    &aad,
+                    &metadata,
+                    &mut Cursor::new(&object.source.content),
+                )
+                .map_err(CommitError::from)?;
+                let token = self.prepare_object_revision(
+                    keys,
+                    &object_key,
+                    &aad,
+                    &mut Cursor::new(encrypted),
+                )?;
+                let value = CatalogObject::new(
+                    revision,
+                    token.physical_name().clone(),
+                    token.content_hash().clone(),
+                    object.source.kind,
+                    token.wrapped_dek().clone(),
+                    ObjectLifecycle::Live,
+                )?;
+                prepared.push(token);
+                value
+            };
+            let common = CatalogEntryCommon::new(
+                object.id,
+                Some(object.parent_id),
+                object.name,
+                object.owner,
+                object.access,
+            )
+            .with_policy_override_for_internal_mutation(local_policy(object.source.policy));
+            entries.push(CatalogGenerationEntry::object(common, catalog_object));
+        }
+        Ok((entries, prepared))
+    }
+}
+
+fn validate_batch(
+    batch: &ValidationBatch,
+) -> Result<(Vec<ValidatedFolder>, Vec<ValidatedObject>), ValidationBatchError> {
+    if batch.folders.is_empty() {
+        return Err(ValidationBatchError::Invalid("folder graph is empty"));
+    }
+    if batch.folders.len().saturating_add(batch.objects.len()) > MAX_CATALOG_ENTRIES {
+        return Err(ValidationBatchError::Invalid(
+            "batch exceeds the catalog entry limit",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut folder_inputs = BTreeMap::new();
+    let mut role_counts = BTreeMap::<&str, usize>::new();
+    for folder in &batch.folders {
+        let id = OpaqueId::parse(&folder.stable_id)
+            .map_err(|_| ValidationBatchError::Invalid("invalid folder ID"))?;
+        if !ids.insert(id.as_str().to_owned()) {
+            return Err(ValidationBatchError::Invalid("duplicate stable ID"));
+        }
+        if let Some(role) = folder.role.as_deref() {
+            if !ALLOWED_ROLES.contains(&role) {
+                return Err(ValidationBatchError::Invalid("unsupported stable role"));
+            }
+            *role_counts.entry(role).or_default() += 1;
+        }
+        folder_inputs.insert(id.as_str().to_owned(), folder);
+    }
+    if ALLOWED_ROLES
+        .iter()
+        .any(|role| role_counts.get(role).copied() != Some(1))
+    {
+        return Err(ValidationBatchError::Invalid(
+            "core.journal and core.notes must each be bound exactly once",
+        ));
+    }
+    for object in &batch.objects {
+        let id = OpaqueId::parse(&object.stable_id)
+            .map_err(|_| ValidationBatchError::Invalid("invalid object ID"))?;
+        if !ids.insert(id.as_str().to_owned()) {
+            return Err(ValidationBatchError::Invalid("duplicate stable ID"));
+        }
+        validate_kind_and_content(object)?;
+    }
+
+    let object_ids: BTreeSet<_> = batch
+        .objects
+        .iter()
+        .map(|item| item.stable_id.as_str())
+        .collect();
+    for object in &batch.objects {
+        if !folder_inputs.contains_key(&object.parent_id) {
+            return Err(ValidationBatchError::Invalid(
+                "object parent is not a folder",
+            ));
+        }
+        if object
+            .references
+            .iter()
+            .any(|reference| !object_ids.contains(reference.as_str()))
+        {
+            return Err(ValidationBatchError::Invalid("object reference is missing"));
+        }
+    }
+
+    let mut effective = BTreeMap::new();
+    let mut visiting = BTreeSet::new();
+    for id in folder_inputs.keys() {
+        resolve_folder_policy(id, &folder_inputs, &mut effective, &mut visiting)?;
+    }
+    let mut folders = Vec::with_capacity(batch.folders.len());
+    for folder in &batch.folders {
+        let (owner, access) = effective[folder.stable_id.as_str()];
+        if folder.role.is_some() && folder.policy != ValidationBatchPolicy::UserWrite {
+            return Err(ValidationBatchError::Invalid(
+                "stable writing roots require explicit user/write policy",
+            ));
+        }
+        folders.push(ValidatedFolder {
+            id: OpaqueId::parse(&folder.stable_id).expect("validated ID"),
+            parent_id: folder
+                .parent_id
+                .as_deref()
+                .map(OpaqueId::parse)
+                .transpose()
+                .map_err(|_| ValidationBatchError::Invalid("invalid parent ID"))?,
+            name: PortableName::parse(&folder.name)
+                .map_err(|_| ValidationBatchError::Invalid("invalid folder name"))?,
+            role: folder
+                .role
+                .as_deref()
+                .map(FolderRole::parse_existing)
+                .transpose()
+                .map_err(|_| ValidationBatchError::Invalid("invalid stable role"))?,
+            policy: folder.policy,
+            owner,
+            access,
+        });
+    }
+    let mut objects = Vec::with_capacity(batch.objects.len());
+    for object in &batch.objects {
+        if object.policy == ValidationBatchPolicy::UserWrite {
+            return Err(ValidationBatchError::Invalid(
+                "descendant objects must inherit or deny policy",
+            ));
+        }
+        let (owner, parent_access) = effective[object.parent_id.as_str()];
+        let access = if object.policy == ValidationBatchPolicy::Deny {
+            AnimaAccess::None
+        } else {
+            parent_access
+        };
+        objects.push(ValidatedObject {
+            id: OpaqueId::parse(&object.stable_id).expect("validated ID"),
+            parent_id: OpaqueId::parse(&object.parent_id)
+                .map_err(|_| ValidationBatchError::Invalid("invalid parent ID"))?,
+            name: PortableName::parse(&object.name)
+                .map_err(|_| ValidationBatchError::Invalid("invalid object name"))?,
+            source: object.clone(),
+            owner,
+            access,
+        });
+    }
+    Ok((folders, objects))
+}
+
+fn resolve_folder_policy<'a>(
+    id: &'a str,
+    folders: &BTreeMap<String, &'a ValidationBatchFolder>,
+    effective: &mut BTreeMap<&'a str, (FolderOwner, AnimaAccess)>,
+    visiting: &mut BTreeSet<&'a str>,
+) -> Result<(FolderOwner, AnimaAccess), ValidationBatchError> {
+    if let Some(value) = effective.get(id) {
+        return Ok(*value);
+    }
+    if !visiting.insert(id) {
+        return Err(ValidationBatchError::Invalid(
+            "folder graph contains a cycle",
+        ));
+    }
+    let folder = folders
+        .get(id)
+        .ok_or(ValidationBatchError::Invalid("folder parent is missing"))?;
+    let value = match (folder.parent_id.as_deref(), folder.policy) {
+        (None, ValidationBatchPolicy::UserWrite) => (FolderOwner::User, AnimaAccess::Write),
+        (None, _) => {
+            return Err(ValidationBatchError::Invalid(
+                "catalog root requires explicit user/write policy",
+            ))
+        }
+        (Some(parent), ValidationBatchPolicy::UserWrite) => {
+            if folder.role.is_none() {
+                return Err(ValidationBatchError::Invalid(
+                    "only stable writing roots may override user/write",
+                ));
+            }
+            if !folders.contains_key(parent) {
+                return Err(ValidationBatchError::Invalid("folder parent is missing"));
+            }
+            (FolderOwner::User, AnimaAccess::Write)
+        }
+        (Some(parent), policy) => {
+            let (owner, access) = resolve_folder_policy(parent, folders, effective, visiting)?;
+            (
+                owner,
+                if policy == ValidationBatchPolicy::Deny {
+                    AnimaAccess::None
+                } else {
+                    access
+                },
+            )
+        }
+    };
+    visiting.remove(id);
+    effective.insert(id, value);
+    Ok(value)
+}
+
+fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), ValidationBatchError> {
+    if object.content.len() as u64 > MAX_BODY_LENGTH
+        || object.content_type.len() > 255
+        || object.created_at.len() > 128
+        || object.updated_at.len() > 128
+        || object.references.len() > MAX_CATALOG_ENTRIES
+    {
+        return Err(ValidationBatchError::Invalid(
+            "object metadata or body exceeds converter limits",
+        ));
+    }
+    let valid = match object.kind {
+        ObjectKind::Diary => {
+            object.content_type == DIARY_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Draft => {
+            object.content_type == DRAFT_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Note => {
+            object.content_type == NOTE_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Attachment => {
+            !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Binary
+        }
+        _ => false,
+    };
+    if !valid || object.created_at.is_empty() || object.updated_at.is_empty() {
+        return Err(ValidationBatchError::Invalid(
+            "unsupported kind/content type/encoding",
+        ));
+    }
+    Ok(())
+}
+
+fn graph_is_identical(
+    current: &CatalogGeneration,
+    folders: &[ValidatedFolder],
+    objects: &[ValidatedObject],
+) -> bool {
+    if current.entries().len() != folders.len() + objects.len() {
+        return false;
+    }
+    let folder_matches = folders.iter().all(|folder| {
+        current.entries().iter().any(|entry| {
+            entry.is_folder()
+                && entry.stable_id() == &folder.id
+                && entry.parent_id() == folder.parent_id.as_ref()
+                && entry.name() == &folder.name
+                && entry
+                    .common_for_internal_mutation()
+                    .role_for_internal_mutation()
+                    == folder.role.as_ref()
+                && entry
+                    .common_for_internal_mutation()
+                    .policy_override_for_internal_mutation()
+                    == local_policy(folder.policy)
+        })
+    });
+    folder_matches
+        && objects.iter().all(|object| {
+            current.entries().iter().any(|entry| {
+                entry.stable_id() == &object.id
+                    && entry.parent_id() == Some(&object.parent_id)
+                    && entry.name() == &object.name
+                    && entry.object_payload().is_some_and(|payload| {
+                        payload.kind() == object.source.kind
+                            && payload.content_hash().as_str() == hex_digest(&object.source.content)
+                            && object.source.expected_revision == Some(payload.revision())
+                    })
+                    && entry
+                        .common_for_internal_mutation()
+                        .policy_override_for_internal_mutation()
+                        == local_policy(object.source.policy)
+            })
+        })
+}
+
+fn full_graph_preconditions(
+    current: &CatalogGeneration,
+    next: &[CatalogGenerationEntry],
+) -> Result<Vec<CatalogPrecondition>, ValidationBatchError> {
+    let mut values = Vec::new();
+    for entry in current.entries() {
+        values.push(match entry.object_payload() {
+            Some(object) => {
+                CatalogPrecondition::object(current, entry.stable_id(), object.revision())?
+            }
+            None => CatalogPrecondition::folder(current, entry.stable_id())?,
+        });
+    }
+    for entry in next {
+        let current_entry = current
+            .entries()
+            .iter()
+            .find(|existing| existing.stable_id() == entry.stable_id());
+        if current_entry.is_some_and(|existing| {
+            existing.parent_id() == entry.parent_id() && existing.name() == entry.name()
+        }) {
+            continue;
+        }
+        let Some(parent) = entry.parent_id() else {
+            continue;
+        };
+        let parent_is_current = current
+            .entries()
+            .iter()
+            .any(|existing| existing.stable_id() == parent && existing.is_folder());
+        let destination_occupied = current.entries().iter().any(|existing| {
+            existing.parent_id() == Some(parent) && existing.name() == entry.name()
+        });
+        if parent_is_current && !destination_occupied {
+            values.push(CatalogPrecondition::vacant(
+                current,
+                parent,
+                entry.name().clone(),
+            )?);
+        }
+    }
+    Ok(values)
+}
+
+fn local_policy(value: ValidationBatchPolicy) -> LocalFolderPolicy {
+    match value {
+        ValidationBatchPolicy::UserWrite => LocalFolderPolicy::new(
+            Some(FolderOwner::User),
+            LocalAnimaAccess::Allow(AnimaAccess::Write),
+        ),
+        ValidationBatchPolicy::Inherit => LocalFolderPolicy::inherit(),
+        ValidationBatchPolicy::Deny => LocalFolderPolicy::new(None, LocalAnimaAccess::Deny),
+    }
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::crypto::{derive_corefs_subkeys, SecretBytes};
+
+    use super::*;
+
+    fn native_id(domain: &str, value: &str) -> String {
+        OpaqueId::derive_migration(domain, value.as_bytes())
+            .unwrap()
+            .as_str()
+            .to_owned()
+    }
+
+    fn batch(mode: ValidationBatchMode, content: &[u8], revision: Option<u64>) -> ValidationBatch {
+        let root = native_id("folder", "root");
+        let journal = native_id("folder", "journal");
+        ValidationBatch {
+            mode,
+            folders: vec![
+                ValidationBatchFolder {
+                    stable_id: root.clone(),
+                    parent_id: None,
+                    name: "Core".into(),
+                    role: None,
+                    policy: ValidationBatchPolicy::UserWrite,
+                },
+                ValidationBatchFolder {
+                    stable_id: journal.clone(),
+                    parent_id: Some(root.clone()),
+                    name: "Journal".into(),
+                    role: Some("core.journal".into()),
+                    policy: ValidationBatchPolicy::UserWrite,
+                },
+                ValidationBatchFolder {
+                    stable_id: native_id("folder", "notes"),
+                    parent_id: Some(root),
+                    name: "Notes".into(),
+                    role: Some("core.notes".into()),
+                    policy: ValidationBatchPolicy::UserWrite,
+                },
+            ],
+            objects: vec![ValidationBatchObject {
+                stable_id: native_id("diary", "1"),
+                parent_id: journal,
+                name: "entry.diary.json".into(),
+                kind: ObjectKind::Diary,
+                content_type: DIARY_CONTENT_TYPE.into(),
+                body_encoding: BodyEncoding::Utf8,
+                content: content.to_vec(),
+                created_at: "2026-08-02T00:00:00Z".into(),
+                updated_at: "2026-08-02T00:00:00Z".into(),
+                expected_revision: revision,
+                references: vec![],
+                policy: ValidationBatchPolicy::Inherit,
+            }],
+        }
+    }
+
+    #[test]
+    fn preparation_failure_preserves_validation_head_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-preparation-failure-{}-{}",
+            std::process::id(),
+            native_id("fixture", "preparation-failure")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let coordinator = CoreCommitCoordinator::new(&root, "core-preparation-failure").unwrap();
+        let keys = derive_corefs_subkeys(&SecretBytes::new(vec![0x5c; 32]).unwrap(), 1).unwrap();
+        let first = coordinator
+            .apply_validation_batch(
+                &keys,
+                batch(ValidationBatchMode::Initialize, b"first", None),
+            )
+            .unwrap();
+        let head_path = root.join("fs").join("VALIDATION_HEAD");
+        let before = fs::read(&head_path).unwrap();
+        let mode = ValidationBatchMode::Expect {
+            generation: first.snapshot().head().generation(),
+            catalog_hash: first.snapshot().head().catalog_hash().to_owned(),
+        };
+
+        let error = coordinator
+            .apply_validation_batch_inner(&keys, batch(mode, b"second", Some(1)), || {
+                Err(ValidationBatchError::Invalid(
+                    "injected preparation failure",
+                ))
+            })
+            .unwrap_err();
+        assert!(matches!(error, ValidationBatchError::Invalid(_)));
+        assert_eq!(fs::read(&head_path).unwrap(), before);
+        assert_eq!(
+            coordinator
+                .load_validation_snapshot(&keys)
+                .unwrap()
+                .unwrap()
+                .head(),
+            first.snapshot().head()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}

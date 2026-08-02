@@ -14,8 +14,10 @@ from urllib.parse import urlsplit
 
 DIARY_FORMAT_VERSION = 1
 NOTE_FORMAT_VERSION = 1
+DRAFT_FORMAT_VERSION = 1
 DIARY_CONTENT_TYPE = "application/vnd.anima.diary+json;version=1"
 NOTE_CONTENT_TYPE = "application/vnd.anima.note+json;version=1"
+DRAFT_CONTENT_TYPE = "application/vnd.anima.draft+json;version=1"
 MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024
 ALLOWED_INLINE_MEDIA_TYPES = frozenset({"image/gif", "image/jpeg", "image/png", "image/webp"})
 ALLOWED_DIARY_TAGS = frozenset(
@@ -49,6 +51,7 @@ _DATA_IMAGE_RE = re.compile(
     r"^data:(image/[a-z0-9.+-]+);base64,([a-zA-Z0-9+/=\r\n]+)$",
     re.IGNORECASE,
 )
+_OPAQUE_ID_RE = re.compile(r"[0-7][0-9A-HJKMNP-TV-Z]{25}")
 
 
 class CoreFormatError(ValueError):
@@ -80,6 +83,15 @@ class NoteDocument:
     format_version: int
     stable_id: str
     title: str | None
+    content_type: str
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
+class DraftDocument:
+    format_version: int
+    stable_id: str
+    target_id: str | None
     content_type: str
     body: str
 
@@ -143,6 +155,8 @@ def encode_diary_document(
         media_reference_factory=media_reference_factory,
     )
     _validate_stable_id(stable_id)
+    if folder_id is not None:
+        _validate_stable_id(folder_id)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", entry_date):
         raise CoreFormatError("Diary entry date must use YYYY-MM-DD.")
     references = tuple(attachment_uris)
@@ -218,10 +232,53 @@ def decode_note_document(data: bytes) -> NoteDocument:
     content_type = _required_string(payload, "contentType")
     if content_type not in {"text/html", "text/markdown"}:
         raise CoreFormatError("Notes must use Markdown or sanitized HTML.")
+    stable_id = _required_string(payload, "stableId")
+    _validate_stable_id(stable_id)
     return NoteDocument(
         format_version=NOTE_FORMAT_VERSION,
-        stable_id=_required_string(payload, "stableId"),
+        stable_id=stable_id,
         title=_optional_string(payload, "title"),
+        content_type=content_type,
+        body=_required_string(payload, "body", allow_empty=True),
+    )
+
+
+def encode_draft_document(
+    *, stable_id: str, target_id: str | None, content_type: str, body: str
+) -> bytes:
+    _validate_stable_id(stable_id)
+    if target_id is not None:
+        _validate_stable_id(target_id)
+    if content_type == "text/html":
+        body = canonicalize_diary_html(body).html
+    elif content_type != "text/markdown":
+        raise CoreFormatError("Drafts must use Markdown or sanitized HTML.")
+    return _canonical_json(
+        {
+            "format": "anima.draft",
+            "version": DRAFT_FORMAT_VERSION,
+            "stableId": stable_id,
+            "targetId": target_id,
+            "contentType": content_type,
+            "body": body,
+        }
+    )
+
+
+def decode_draft_document(data: bytes) -> DraftDocument:
+    payload = _decode_object(data, expected_format="anima.draft", version=DRAFT_FORMAT_VERSION)
+    stable_id = _required_string(payload, "stableId")
+    _validate_stable_id(stable_id)
+    target_id = _optional_string(payload, "targetId")
+    if target_id is not None:
+        _validate_stable_id(target_id)
+    content_type = _required_string(payload, "contentType")
+    if content_type not in {"text/html", "text/markdown"}:
+        raise CoreFormatError("Drafts must use Markdown or sanitized HTML.")
+    return DraftDocument(
+        format_version=DRAFT_FORMAT_VERSION,
+        stable_id=stable_id,
+        target_id=target_id,
         content_type=content_type,
         body=_required_string(payload, "body", allow_empty=True),
     )
@@ -318,13 +375,21 @@ class _DiarySanitizer(HTMLParser):
 
 def _validate_corefs_uri(value: str) -> None:
     parsed = urlsplit(value)
-    if parsed.scheme != "corefs" or not parsed.netloc or not parsed.path.strip("/"):
+    stable_id = parsed.path.removeprefix("/")
+    if (
+        parsed.scheme != "corefs"
+        or parsed.netloc != "object"
+        or "/" in stable_id
+        or _OPAQUE_ID_RE.fullmatch(stable_id) is None
+        or parsed.query
+        or parsed.fragment
+    ):
         raise CoreFormatError("Portable media references must be stable CoreFS URIs.")
 
 
 def _validate_stable_id(value: str) -> None:
-    if not value or len(value) > 128 or any(character.isspace() for character in value):
-        raise CoreFormatError("Portable writing objects require a stable ID.")
+    if _OPAQUE_ID_RE.fullmatch(value) is None:
+        raise CoreFormatError("Portable writing objects require a native opaque ID.")
 
 
 def _canonical_json(payload: dict[str, Any]) -> bytes:

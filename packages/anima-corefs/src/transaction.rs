@@ -2,9 +2,15 @@
 
 #[cfg_attr(not(test), allow(dead_code))]
 mod cache;
+mod converter;
 // The lease contract is integrated incrementally by the following implementation tasks.
 #[allow(dead_code)]
 mod object_lease;
+
+pub use converter::{
+    ResolvedValidationRole, ValidationBatch, ValidationBatchError, ValidationBatchFolder,
+    ValidationBatchMode, ValidationBatchObject, ValidationBatchOutcome, ValidationBatchPolicy,
+};
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};

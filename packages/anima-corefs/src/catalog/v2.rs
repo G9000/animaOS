@@ -515,6 +515,10 @@ impl CatalogEntryCommon {
         self.role.as_ref()
     }
 
+    pub(crate) fn policy_override_for_internal_mutation(&self) -> LocalFolderPolicy {
+        self.policy_override
+    }
+
     pub(crate) fn moved_for_internal_mutation(
         mut self,
         parent_id: OpaqueId,

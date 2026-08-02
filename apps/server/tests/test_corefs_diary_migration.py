@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 
 import pytest
 from anima_server.services.corefs.diary_migration import (
     LegacyDiaryAttachment,
+    LegacyDiaryDraft,
     LegacyDiaryEntry,
     LegacyDiaryFolder,
+    LegacyNote,
     build_inactive_diary_catalog,
+    migration_opaque_id,
 )
 from anima_server.services.corefs.formats import (
     CoreFormatError,
@@ -19,33 +23,37 @@ from anima_server.services.corefs.formats import (
 
 
 def test_diary_codec_preserves_tiptap_markup_and_rejects_executable_html() -> None:
+    entry_id = migration_opaque_id("test", "entry-7")
+    folder_id = migration_opaque_id("test", "folder-3")
+    cover_id = migration_opaque_id("test", "cover-1")
+    file_id = migration_opaque_id("test", "file-1")
     document = encode_diary_document(
-        stable_id="entry-7",
+        stable_id=entry_id,
         entry_date="2026-08-02",
         title="Private",
         mood="calm",
-        folder_id="folder-3",
+        folder_id=folder_id,
         html=(
             '<h2>Title</h2><blockquote><p onclick="bad()"><strong>Private</strong> '
-            '<em>note</em></p></blockquote><ul><li>memory</li></ul>'
+            "<em>note</em></p></blockquote><ul><li>memory</li></ul>"
             '<a href="javascript:bad()">link</a><script>bad()</script>'
         ),
-        cover_uri="corefs://object/cover-1",
-        attachment_uris=("corefs://object/file-1",),
+        cover_uri=f"corefs://object/{cover_id}",
+        attachment_uris=(f"corefs://object/{file_id}",),
     )
 
     decoded = decode_diary_document(document)
 
     assert decoded.format_version == 1
-    assert decoded.stable_id == "entry-7"
+    assert decoded.stable_id == entry_id
     assert decoded.html.startswith("<h2>Title</h2>")
     assert "<blockquote><p><strong>Private</strong> <em>note</em></p></blockquote>" in decoded.html
     assert "<ul><li>memory</li></ul>" in decoded.html
     assert "onclick" not in decoded.html
     assert "javascript:" not in decoded.html
     assert "<script" not in decoded.html
-    assert decoded.cover_uri == "corefs://object/cover-1"
-    assert decoded.attachment_uris == ("corefs://object/file-1",)
+    assert decoded.cover_uri == f"corefs://object/{cover_id}"
+    assert decoded.attachment_uris == (f"corefs://object/{file_id}",)
 
 
 def test_inline_media_is_validated_deduplicated_and_replaced() -> None:
@@ -55,7 +63,7 @@ def test_inline_media_is_validated_deduplicated_and_replaced() -> None:
 
     def publish(mime_type: str, data: bytes, sha256: str) -> str:
         seen.append((mime_type, data, sha256))
-        return f"corefs://object/{sha256}"
+        return f"corefs://object/{migration_opaque_id('inline', sha256)}"
 
     result = canonicalize_diary_html(
         f'<p><img src="data:image/png;base64,{encoded}"></p>'
@@ -66,8 +74,9 @@ def test_inline_media_is_validated_deduplicated_and_replaced() -> None:
     digest = hashlib.sha256(png).hexdigest()
     assert len(seen) == 1
     assert seen[0] == ("image/png", png, digest)
-    assert result.html.count(f"corefs://object/{digest}") == 2
-    assert result.media_uris == (f"corefs://object/{digest}",)
+    object_id = migration_opaque_id("inline", digest)
+    assert result.html.count(f"corefs://object/{object_id}") == 2
+    assert result.media_uris == (f"corefs://object/{object_id}",)
     assert "data:" not in result.html
 
 
@@ -88,6 +97,19 @@ def test_invalid_inline_media_fails_before_publication(source: str) -> None:
         )
 
     assert published == []
+
+
+def test_diary_codec_rejects_non_native_corefs_uri_ids() -> None:
+    with pytest.raises(CoreFormatError, match="stable CoreFS URIs"):
+        encode_diary_document(
+            stable_id=migration_opaque_id("test", "entry"),
+            entry_date="2026-08-02",
+            title=None,
+            mood=None,
+            folder_id=None,
+            html="<p>safe</p>",
+            cover_uri="corefs://object/legacy-display-id",
+        )
 
 
 def test_plain_text_is_escaped_into_html_paragraphs() -> None:
@@ -142,15 +164,20 @@ def test_inactive_catalog_preserves_empty_folders_ids_hashes_and_roles() -> None
     notes = catalog.folder_for_role("core.notes")
     assert (journal.owner, journal.agent_access) == ("user", "write")
     assert (notes.owner, notes.agent_access) == ("user", "write")
-    assert catalog.folder("diary-folder-5").name == "Empty"
-    assert catalog.folder("diary-folder-5").children == ()
-    entry = catalog.object("diary-entry-9")
-    assert entry.parent_id == "diary-folder-6"
+    empty_id = migration_opaque_id("diary-folder", "5")
+    travel_id = migration_opaque_id("diary-folder", "6")
+    entry_id = migration_opaque_id("diary-entry", "9")
+    cover_id = migration_opaque_id("diary-attachment", "31")
+    attachment_id = migration_opaque_id("diary-attachment", "32")
+    assert catalog.folder(empty_id).name == "Empty"
+    assert catalog.folder(empty_id).children == ()
+    entry = catalog.object(entry_id)
+    assert entry.parent_id == travel_id
     assert entry.content_hash == hashlib.sha256(entry.content).hexdigest()
-    assert catalog.object("diary-attachment-31").source_hash == cover.sha256
-    assert catalog.object("diary-attachment-32").source_hash == attachment.sha256
-    assert b"corefs://object/diary-attachment-31" in entry.content
-    assert b"corefs://object/diary-attachment-32" in entry.content
+    assert catalog.object(cover_id).source_hash == cover.sha256
+    assert catalog.object(attachment_id).source_hash == attachment.sha256
+    assert f"corefs://object/{cover_id}".encode() in entry.content
+    assert f"corefs://object/{attachment_id}".encode() in entry.content
 
 
 def test_inactive_catalog_is_idempotent_and_publishes_atomically() -> None:
@@ -173,3 +200,74 @@ def test_inactive_catalog_is_idempotent_and_publishes_atomically() -> None:
     with pytest.raises(RuntimeError, match="publication failed"):
         second.publish(fail)
     assert published == [first]
+
+
+def test_native_publication_wrapper_emits_one_complete_strict_batch() -> None:
+    catalog = build_inactive_diary_catalog(
+        user_id=8,
+        folders=(),
+        entries=(),
+    )
+
+    class Session:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, str]] = []
+
+        def validation_batch_v1(self, keys: object, payload: str) -> dict[str, object]:
+            self.calls.append((keys, payload))
+            return {"generation": 1, "catalogHash": "a" * 64, "published": True}
+
+    session = Session()
+    keys = object()
+    result = catalog.publish_native(corefs_session=session, keys=keys)
+
+    assert result["published"] is True
+    assert len(session.calls) == 1
+    assert session.calls[0][0] is keys
+    payload = json.loads(session.calls[0][1])
+    assert payload["initialize"] is True
+    assert {folder["role"] for folder in payload["folders"]} >= {
+        "core.journal",
+        "core.notes",
+    }
+    assert all(len(folder["stableId"]) == 26 for folder in payload["folders"])
+
+
+def test_inactive_catalog_includes_native_drafts_and_generic_notes() -> None:
+    catalog = build_inactive_diary_catalog(
+        user_id=9,
+        folders=(),
+        entries=(),
+        drafts=(
+            LegacyDiaryDraft(
+                id="browser-draft-1",
+                target_entry_id=None,
+                body="<p>unsaved</p>",
+                content_type="text/html",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+        notes=(
+            LegacyNote(
+                id="note-1",
+                title="Private",
+                body="# Native note",
+                content_type="text/markdown",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+
+    draft = catalog.object(migration_opaque_id("diary-draft", "browser-draft-1"))
+    note = catalog.object(migration_opaque_id("note", "note-1"))
+    assert (draft.kind, draft.content_type, draft.body_encoding) == (
+        "draft",
+        "application/vnd.anima.draft+json;version=1",
+        "utf-8",
+    )
+    assert (note.kind, note.content_type, note.body_encoding) == (
+        "note",
+        "application/vnd.anima.note+json;version=1",
+        "utf-8",
+    )
+    assert note.parent_id == catalog.folder_for_role("core.notes").stable_id
