@@ -12,10 +12,7 @@ import {
 import type { DiaryAttachmentData, DiaryEntryData, DiaryFolderData } from "@anima/api-client";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import TiptapImage from "@tiptap/extension-image";
 import { marked } from "marked";
-import { Placeholder } from "@tiptap/extensions";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../lib/api";
 import {
@@ -26,13 +23,12 @@ import {
 } from "./lib/speech";
 import { canSaveDiaryEntry, resolveDiaryBody } from "./lib/snapshot";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
+import { createDiaryExtensions } from "./editor/extensions";
+import { Glyph } from "./editor/glyphIcons";
 
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
 const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
-
-const INLINE_IMAGE_CLASS =
-  "rounded-xl border border-border/60 shadow-lg max-h-[32rem] w-auto max-w-full mx-auto block object-contain";
 
 const DIARY_PROSE_CLASS = cn(
   "prose max-w-none",
@@ -85,94 +81,6 @@ function attachmentIcon(kind: string) {
   if (kind === "image") return ImageIcon;
   if (kind === "audio") return MicIcon;
   return FileIcon;
-}
-
-function Glyph({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="square"
-      strokeLinejoin="miter"
-      className={cn("size-4 shrink-0", className)}
-      aria-hidden="true"
-    >
-      {children}
-    </svg>
-  );
-}
-
-function ParagraphGlyphIcon() {
-  return (
-    <Glyph>
-      <path d="M4 6h16M4 12h16M4 18h10" />
-    </Glyph>
-  );
-}
-
-function HeadingGlyphIcon({ level }: { level: 1 | 2 | 3 }) {
-  return (
-    <Glyph>
-      <path d="M5 5v14M13 5v14M5 12h8" />
-      <text x="15" y="18" fontSize="8.5" fontFamily="ui-monospace, monospace" fill="currentColor" stroke="none">
-        {level}
-      </text>
-    </Glyph>
-  );
-}
-
-function BulletListGlyphIcon() {
-  return (
-    <Glyph>
-      <circle cx="5" cy="6" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="5" cy="12" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="5" cy="18" r="1.1" fill="currentColor" stroke="none" />
-      <path d="M9.5 6h10M9.5 12h10M9.5 18h10" />
-    </Glyph>
-  );
-}
-
-function OrderedListGlyphIcon() {
-  return (
-    <Glyph>
-      <text x="2" y="8" fontSize="7" fontFamily="ui-monospace, monospace" fill="currentColor" stroke="none">
-        1
-      </text>
-      <text x="2" y="14.5" fontSize="7" fontFamily="ui-monospace, monospace" fill="currentColor" stroke="none">
-        2
-      </text>
-      <text x="2" y="21" fontSize="7" fontFamily="ui-monospace, monospace" fill="currentColor" stroke="none">
-        3
-      </text>
-      <path d="M9.5 6h10M9.5 12.5h10M9.5 19h10" />
-    </Glyph>
-  );
-}
-
-function QuoteGlyphIcon() {
-  return (
-    <Glyph>
-      <path d="M6 8.5c-1.4 0-2.5 1.2-2.5 3.5S4.6 15.5 6 15.5M14 8.5c-1.4 0-2.5 1.2-2.5 3.5s1.1 3.5 2.5 3.5" />
-    </Glyph>
-  );
-}
-
-function CodeGlyphIcon() {
-  return (
-    <Glyph>
-      <path d="M9 7L4 12l5 5M15 7l5 5-5 5" />
-    </Glyph>
-  );
-}
-
-function DividerGlyphIcon() {
-  return (
-    <Glyph>
-      <path d="M5 12h14" />
-    </Glyph>
-  );
 }
 
 function PencilGlyphIcon({ className }: { className?: string }) {
@@ -295,105 +203,6 @@ function fileToDataUrl(file: File): Promise<string> {
 function isPreviewableAttachment(kind: string): boolean {
   return kind === "image" || kind === "audio" || kind === "video";
 }
-
-interface SlashRange {
-  from: number;
-  to: number;
-}
-
-interface SlashMenuState extends SlashRange {
-  query: string;
-  top: number;
-  left: number;
-}
-
-interface SlashCommandItem {
-  id: string;
-  label: string;
-  hint: string;
-  icon: React.ReactNode;
-  run: (editor: Editor, range: SlashRange) => void;
-}
-
-const SLASH_COMMANDS: SlashCommandItem[] = [
-  {
-    id: "paragraph",
-    label: "Text",
-    hint: "",
-    icon: <ParagraphGlyphIcon />,
-    run: (editor, range) => editor.chain().focus().deleteRange(range).setParagraph().run(),
-  },
-  {
-    id: "h1",
-    label: "Heading 1",
-    hint: "#",
-    icon: <HeadingGlyphIcon level={1} />,
-    run: (editor, range) =>
-      editor.chain().focus().deleteRange(range).setNode("heading", { level: 1 }).run(),
-  },
-  {
-    id: "h2",
-    label: "Heading 2",
-    hint: "##",
-    icon: <HeadingGlyphIcon level={2} />,
-    run: (editor, range) =>
-      editor.chain().focus().deleteRange(range).setNode("heading", { level: 2 }).run(),
-  },
-  {
-    id: "h3",
-    label: "Heading 3",
-    hint: "###",
-    icon: <HeadingGlyphIcon level={3} />,
-    run: (editor, range) =>
-      editor.chain().focus().deleteRange(range).setNode("heading", { level: 3 }).run(),
-  },
-  {
-    id: "bullet",
-    label: "Bullet list",
-    hint: "-",
-    icon: <BulletListGlyphIcon />,
-    run: (editor, range) => editor.chain().focus().deleteRange(range).toggleBulletList().run(),
-  },
-  {
-    id: "ordered",
-    label: "Numbered list",
-    hint: "1.",
-    icon: <OrderedListGlyphIcon />,
-    run: (editor, range) => editor.chain().focus().deleteRange(range).toggleOrderedList().run(),
-  },
-  {
-    id: "quote",
-    label: "Quote",
-    hint: ">",
-    icon: <QuoteGlyphIcon />,
-    run: (editor, range) => editor.chain().focus().deleteRange(range).toggleBlockquote().run(),
-  },
-  {
-    id: "code",
-    label: "Code block",
-    hint: "```",
-    icon: <CodeGlyphIcon />,
-    run: (editor, range) => editor.chain().focus().deleteRange(range).toggleCodeBlock().run(),
-  },
-  {
-    id: "divider",
-    label: "Divider",
-    hint: "---",
-    icon: <DividerGlyphIcon />,
-    run: (editor, range) => editor.chain().focus().deleteRange(range).setHorizontalRule().run(),
-  },
-  {
-    id: "image",
-    label: "Image",
-    hint: "",
-    icon: <ImageIcon size="sm" />,
-    // Special-cased by the caller: opens the file picker instead of running
-    // an editor command directly, since inserting requires an async file read.
-    run: (editor, range) => editor.chain().focus().deleteRange(range).run(),
-  },
-];
-
-const SLASH_TRIGGER_RE = /(?:^|\s)\/([a-zA-Z0-9]*)$/;
 
 const MARKDOWN_LINE_PATTERNS = [
   /^#{1,6}\s+\S/, // heading
@@ -595,8 +404,6 @@ export default function DiaryWorkspace() {
   const [entryMenuOpen, setEntryMenuOpen] = useState(false);
   const [entryMenuFolderOpen, setEntryMenuFolderOpen] = useState(false);
   const entryMenuRef = useRef<HTMLDivElement | null>(null);
-  const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
-  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -605,85 +412,19 @@ export default function DiaryWorkspace() {
   const editorWrapperRef = useRef<HTMLDivElement | null>(null);
   const hiddenImageInputRef = useRef<HTMLInputElement | null>(null);
 
-  const syncSlashMenu = (ed: Editor) => {
-    const wrapperEl = editorWrapperRef.current;
-    if (!wrapperEl) {
-      setSlashMenu(null);
-      return;
-    }
-    const { from } = ed.state.selection;
-    const textBefore = ed.state.doc.textBetween(Math.max(0, from - 40), from, "\n", "\n");
-    const match = SLASH_TRIGGER_RE.exec(textBefore);
-    if (!match) {
-      setSlashMenu(null);
-      return;
-    }
-    const query = match[1];
-    const slashStart = from - query.length - 1;
-    const coords = ed.view.coordsAtPos(from);
-    const wrapperRect = wrapperEl.getBoundingClientRect();
-    setSlashActiveIndex(0);
-    setSlashMenu({
-      from: slashStart,
-      to: from,
-      query,
-      top: coords.bottom - wrapperRect.top + 4,
-      left: Math.max(0, coords.left - wrapperRect.left),
-    });
-  };
-
   const syncEditorContent = (ed: Editor) => {
     setBodyText(ed.getText());
     setEditorHasContent(!ed.isEmpty);
   };
 
   const editor = useEditor({
-    extensions: [
-      StarterKit,
-      TiptapImage.configure({
-        allowBase64: true,
-        HTMLAttributes: { class: INLINE_IMAGE_CLASS },
-      }),
-      Placeholder.configure({
-        placeholder: "Write your thoughts… ( '/' for commands · drop or paste an image )",
-      }),
-    ],
+    extensions: createDiaryExtensions({
+      placeholder: "Write your thoughts… ( '/' for commands · drop or paste an image )",
+      onImageRequest: () => hiddenImageInputRef.current?.click(),
+    }),
     editorProps: {
       attributes: {
         class: cn("tiptap", DIARY_PROSE_CLASS, "min-h-[40vh] text-base leading-loose"),
-      },
-      handleKeyDown: (_view, event) => {
-        const menu = slashMenuRef.current;
-        if (!menu) return false;
-        const commands = slashCommandsRef.current;
-        if (event.key === "ArrowDown") {
-          setSlashActiveIndex((index) => (commands.length ? (index + 1) % commands.length : 0));
-          return true;
-        }
-        if (event.key === "ArrowUp") {
-          setSlashActiveIndex((index) =>
-            commands.length ? (index - 1 + commands.length) % commands.length : 0,
-          );
-          return true;
-        }
-        if (event.key === "Enter" || event.key === "Tab") {
-          const command = commands[slashActiveIndexRef.current];
-          if (command && editorRef.current) {
-            if (command.id === "image") {
-              editorRef.current.chain().focus().deleteRange(menu).run();
-              hiddenImageInputRef.current?.click();
-            } else {
-              command.run(editorRef.current, menu);
-            }
-          }
-          setSlashMenu(null);
-          return true;
-        }
-        if (event.key === "Escape") {
-          setSlashMenu(null);
-          return true;
-        }
-        return false;
       },
       handlePaste: (_view, event) => {
         const items = event.clipboardData?.items;
@@ -717,48 +458,10 @@ export default function DiaryWorkspace() {
     },
     onUpdate: ({ editor: e }) => {
       syncEditorContent(e);
-      syncSlashMenu(e);
-    },
-    onSelectionUpdate: ({ editor: e }) => {
-      syncSlashMenu(e);
-    },
-    onBlur: () => {
-      setSlashMenu(null);
     },
   });
   const editorRef = useRef<Editor | null>(editor);
   editorRef.current = editor;
-
-  const filteredSlashCommands = useMemo(() => {
-    if (!slashMenu) return [];
-    const query = slashMenu.query.toLowerCase();
-    if (!query) return SLASH_COMMANDS;
-    return SLASH_COMMANDS.filter((command) => command.label.toLowerCase().includes(query));
-  }, [slashMenu]);
-
-  const slashMenuRef = useRef<SlashMenuState | null>(slashMenu);
-  slashMenuRef.current = slashMenu;
-  const slashCommandsRef = useRef<SlashCommandItem[]>(filteredSlashCommands);
-  slashCommandsRef.current = filteredSlashCommands;
-  const slashActiveIndexRef = useRef(slashActiveIndex);
-  slashActiveIndexRef.current = Math.min(
-    slashActiveIndex,
-    Math.max(filteredSlashCommands.length - 1, 0),
-  );
-
-  const runSlashCommand = (command: SlashCommandItem) => {
-    const ed = editorRef.current;
-    const menu = slashMenuRef.current;
-    if (!ed || !menu) return;
-    if (command.id === "image") {
-      ed.chain().focus().deleteRange(menu).run();
-      setSlashMenu(null);
-      hiddenImageInputRef.current?.click();
-      return;
-    }
-    command.run(ed, menu);
-    setSlashMenu(null);
-  };
 
   const insertInlineImage = async (file: File) => {
     if (!file.type.startsWith("image/")) return;
@@ -922,7 +625,6 @@ export default function DiaryWorkspace() {
     setFiles([]);
     setPendingCoverFile(null);
     setEntryDate(todayISODate());
-    setSlashMenu(null);
   };
 
   const startNewEntry = () => {
@@ -1956,45 +1658,6 @@ export default function DiaryWorkspace() {
                       <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
                         Drop to attach
                       </p>
-                    </div>
-                  )}
-                  {slashMenu && (
-                    <div
-                      className="absolute z-40 w-56 rounded-lg border border-foreground/[0.1] bg-card shadow-xl animate-fade-in overflow-hidden"
-                      style={{ top: slashMenu.top, left: slashMenu.left }}
-                    >
-                      {filteredSlashCommands.length === 0 ? (
-                        <p className="px-3 py-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
-                          No matching commands
-                        </p>
-                      ) : (
-                        <ul className="py-1">
-                          {filteredSlashCommands.map((command, index) => (
-                            <li key={command.id}>
-                              <button
-                                type="button"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  runSlashCommand(command);
-                                }}
-                                onMouseEnter={() => setSlashActiveIndex(index)}
-                                className={cn(
-                                  "w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-detail transition-colors",
-                                  index === slashActiveIndexRef.current
-                                    ? "bg-secondary text-foreground"
-                                    : "text-muted-foreground hover:bg-secondary/50",
-                                )}
-                              >
-                                {command.icon}
-                                <span className="flex-1 truncate">{command.label}</span>
-                                <span className="font-mono text-[9px] text-muted-foreground/40">
-                                  {command.hint}
-                                </span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
                     </div>
                   )}
                 </div>

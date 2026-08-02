@@ -1,3 +1,4 @@
+import { Extension } from "@tiptap/core";
 import type { Extensions } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Placeholder } from "@tiptap/extensions";
@@ -8,11 +9,50 @@ import { Details, DetailsContent, DetailsSummary } from "@tiptap/extension-detai
 import Highlight from "@tiptap/extension-highlight";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { createLowlight, common } from "lowlight";
+import Suggestion from "@tiptap/suggestion";
+import { SLASH_COMMANDS, filterSlashCommands } from "./slashCommands";
+import { createSlashRenderer } from "./SlashMenu";
 
 const lowlight = createLowlight(common);
 
+interface SlashCommandsOptions {
+  onImageRequest?: () => void;
+}
+
+// The slash-menu commands themselves have no editor commands to insert an
+// image synchronously (the actual insertion needs an async file read /
+// upload), so the "image" item is special-cased: it deletes the trigger text
+// and defers to onImageRequest, which the host wires to its file picker.
+const SlashCommands = Extension.create<SlashCommandsOptions>({
+  name: "diarySlashCommands",
+  addOptions() {
+    return { onImageRequest: undefined };
+  },
+  addProseMirrorPlugins() {
+    return [
+      Suggestion({
+        editor: this.editor,
+        char: "/",
+        startOfLine: false,
+        allowSpaces: false,
+        items: ({ query }) => filterSlashCommands(SLASH_COMMANDS, query),
+        command: ({ editor, range, props }) => {
+          if (props.id === "image") {
+            editor.chain().focus().deleteRange(range).run();
+            this.options.onImageRequest?.();
+            return;
+          }
+          props.run(editor, range);
+        },
+        render: createSlashRenderer,
+      }),
+    ];
+  },
+});
+
 export interface DiaryExtensionOptions {
   placeholder?: string;
+  onImageRequest?: () => void;
 }
 
 export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Extensions {
@@ -51,5 +91,6 @@ export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Exte
       },
     }).configure({ multicolor: false }),
     CodeBlockLowlight.configure({ lowlight }),
+    SlashCommands.configure({ onImageRequest: options.onImageRequest }),
   ];
 }

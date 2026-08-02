@@ -169,3 +169,41 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
 .prose :where(td):not(:where([class~="not-prose"] *)) {
   @apply border border-border px-3 py-2;
 }
+
+/* Slash command menu (Tiptap Suggestion popup) — mounted imperatively
+   outside React's tree, so it carries its own positioned root. */
+.diary-slash-menu {
+  @apply absolute z-40 w-56 rounded-lg border border-foreground/[0.1] bg-card shadow-xl overflow-hidden;
+  position: absolute;
+}
+
+.diary-slash-menu-empty {
+  @apply px-3 py-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50;
+}
+
+.diary-slash-menu-list {
+  @apply py-1 m-0 list-none;
+}
+
+/* `.text-detail` (font-size) comes from @anima/standard-templates/tokens.css
+   as a plain CSS class, not a Tailwind utility, so it's applied via a literal
+   className in SlashMenu.tsx rather than through @apply here. */
+.diary-slash-menu-item {
+  @apply w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-muted-foreground transition-colors bg-transparent border-0 cursor-pointer;
+}
+
+.diary-slash-menu-item:hover {
+  @apply bg-secondary/50;
+}
+
+.diary-slash-menu-item.is-selected {
+  @apply bg-secondary text-foreground;
+}
+
+.diary-slash-menu-item-label {
+  @apply flex-1 truncate;
+}
+
+.diary-slash-menu-item-hint {
+  @apply font-mono text-[9px] text-muted-foreground/40;
+}
