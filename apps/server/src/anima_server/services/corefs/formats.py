@@ -9,8 +9,13 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+_SANITIZER_CONTRACT = json.loads(
+    Path(__file__).with_name("writing-sanitizer-v1.json").read_text(encoding="utf-8")
+)
 
 DIARY_FORMAT_VERSION = 1
 NOTE_FORMAT_VERSION = 1
@@ -18,40 +23,22 @@ DRAFT_FORMAT_VERSION = 1
 DIARY_CONTENT_TYPE = "application/vnd.anima.diary+json;version=1"
 NOTE_CONTENT_TYPE = "application/vnd.anima.note+json;version=1"
 DRAFT_CONTENT_TYPE = "application/vnd.anima.draft+json;version=1"
-MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024
-ALLOWED_INLINE_MEDIA_TYPES = frozenset({"image/gif", "image/jpeg", "image/png", "image/webp"})
-ALLOWED_DIARY_TAGS = frozenset(
-    {
-        "a",
-        "blockquote",
-        "br",
-        "code",
-        "em",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "hr",
-        "img",
-        "li",
-        "ol",
-        "p",
-        "pre",
-        "s",
-        "strong",
-        "ul",
-    }
-)
-ALLOWED_DIARY_ATTRIBUTES = frozenset({"alt", "class", "href", "rel", "src", "target", "title"})
+WRITING_SANITIZER_CONTRACT = "anima-writing-html-v1"
+MAX_INLINE_MEDIA_BYTES = int(_SANITIZER_CONTRACT["maxInlineMediaBytes"])
+ALLOWED_INLINE_MEDIA_TYPES = frozenset(_SANITIZER_CONTRACT["allowedInlineMediaTypes"])
+ALLOWED_DIARY_TAGS = frozenset(_SANITIZER_CONTRACT["allowedTags"])
+ALLOWED_DIARY_ATTRIBUTES = frozenset(_SANITIZER_CONTRACT["allowedAttributes"])
 _VOID_TAGS = frozenset({"br", "hr", "img"})
-_DROP_CONTENT_TAGS = frozenset({"iframe", "object", "script", "style", "svg", "template"})
+_DROP_CONTENT_TAGS = frozenset(_SANITIZER_CONTRACT["dropContentTags"])
 _DATA_IMAGE_RE = re.compile(
     r"^data:(image/[a-z0-9.+-]+);base64,([a-zA-Z0-9+/=\r\n]+)$",
     re.IGNORECASE,
 )
 _OPAQUE_ID_RE = re.compile(r"[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_DATA_URL_ATTRIBUTE_RE = re.compile(
+    r"\b(?:href|src)\s*=\s*(?:[\"']\s*)?data:",
+    re.IGNORECASE,
+)
 
 
 class CoreFormatError(ValueError):
@@ -76,6 +63,12 @@ class DiaryDocument:
     cover_uri: str | None
     attachment_uris: tuple[str, ...]
     inline_media_uris: tuple[str, ...]
+    legacy_id: int | None
+    legacy_folder_id: int | None
+    source: str | None
+    created_at: str | None
+    updated_at: str | None
+    attachment_metadata: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +87,7 @@ class DraftDocument:
     target_id: str | None
     content_type: str
     body: str
+    metadata: dict[str, Any]
 
 
 MediaReferenceFactory = Callable[[str, bytes, str], str]
@@ -131,7 +125,7 @@ def canonicalize_diary_html(
         uris[digest] = uri
 
     sanitized = parser.render(uris)
-    if "data:" in sanitized.lower():
+    if _DATA_URL_ATTRIBUTE_RE.search(sanitized):
         raise CoreFormatError("Canonical diary HTML cannot contain data URLs.")
     return CanonicalDiaryHtml(html=sanitized, media_uris=tuple(uris.values()))
 
@@ -148,6 +142,12 @@ def encode_diary_document(
     attachment_uris: tuple[str, ...] = (),
     media_reference_factory: MediaReferenceFactory | None = None,
     legacy_plain_text: bool = False,
+    legacy_id: int | None = None,
+    legacy_folder_id: int | None = None,
+    source: str | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+    attachment_metadata: tuple[dict[str, Any], ...] = (),
 ) -> bytes:
     canonical = canonicalize_diary_html(
         html,
@@ -176,6 +176,13 @@ def encode_diary_document(
         "coverUri": cover_uri,
         "attachmentUris": list(references),
         "inlineMediaUris": list(canonical.media_uris),
+        "legacyId": legacy_id,
+        "legacyFolderId": legacy_folder_id,
+        "source": source,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "attachments": list(attachment_metadata),
+        "sanitizer": WRITING_SANITIZER_CONTRACT,
     }
     return _canonical_json(payload)
 
@@ -185,7 +192,7 @@ def decode_diary_document(data: bytes) -> DiaryDocument:
     stable_id = _required_string(payload, "stableId")
     _validate_stable_id(stable_id)
     html_body = _required_string(payload, "html", allow_empty=True)
-    if "data:" in html_body.lower():
+    if _DATA_URL_ATTRIBUTE_RE.search(html_body):
         raise CoreFormatError("Canonical diary HTML cannot contain data URLs.")
     attachment_uris = _string_tuple(payload, "attachmentUris")
     inline_media_uris = _string_tuple(payload, "inlineMediaUris")
@@ -205,6 +212,12 @@ def decode_diary_document(data: bytes) -> DiaryDocument:
         cover_uri=cover_uri,
         attachment_uris=attachment_uris,
         inline_media_uris=inline_media_uris,
+        legacy_id=_optional_int(payload, "legacyId"),
+        legacy_folder_id=_optional_int(payload, "legacyFolderId"),
+        source=_optional_string(payload, "source"),
+        created_at=_optional_string(payload, "createdAt"),
+        updated_at=_optional_string(payload, "updatedAt"),
+        attachment_metadata=_object_tuple(payload, "attachments"),
     )
 
 
@@ -223,6 +236,7 @@ def encode_note_document(
         "title": title,
         "contentType": content_type,
         "body": body,
+        "sanitizer": WRITING_SANITIZER_CONTRACT,
     }
     return _canonical_json(payload)
 
@@ -244,7 +258,12 @@ def decode_note_document(data: bytes) -> NoteDocument:
 
 
 def encode_draft_document(
-    *, stable_id: str, target_id: str | None, content_type: str, body: str
+    *,
+    stable_id: str,
+    target_id: str | None,
+    content_type: str,
+    body: str,
+    metadata: dict[str, Any] | None = None,
 ) -> bytes:
     _validate_stable_id(stable_id)
     if target_id is not None:
@@ -261,6 +280,8 @@ def encode_draft_document(
             "targetId": target_id,
             "contentType": content_type,
             "body": body,
+            "metadata": metadata or {},
+            "sanitizer": WRITING_SANITIZER_CONTRACT,
         }
     )
 
@@ -281,6 +302,7 @@ def decode_draft_document(data: bytes) -> DraftDocument:
         target_id=target_id,
         content_type=content_type,
         body=_required_string(payload, "body", allow_empty=True),
+        metadata=_object(payload, "metadata"),
     )
 
 
@@ -429,3 +451,26 @@ def _string_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise CoreFormatError(f"Portable writing field {key} must be a string list.")
     return tuple(value)
+
+
+def _object_tuple(payload: dict[str, Any], key: str) -> tuple[dict[str, Any], ...]:
+    value = payload.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise CoreFormatError(f"Portable writing field {key} must be an object list.")
+    return tuple(value)
+
+
+def _object(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    value = payload.get(key, {})
+    if not isinstance(value, dict):
+        raise CoreFormatError(f"Portable writing field {key} must be an object.")
+    return value
+
+
+def _optional_int(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CoreFormatError(f"Portable writing field {key} must be an integer or null.")
+    return value

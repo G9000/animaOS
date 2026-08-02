@@ -41,6 +41,7 @@ fn folders() -> Vec<ValidationBatchFolder> {
             name: "Core".into(),
             role: None,
             policy: ValidationBatchPolicy::UserWrite,
+            metadata: Default::default(),
         },
         ValidationBatchFolder {
             stable_id: native_id("folder", "journal"),
@@ -48,6 +49,7 @@ fn folders() -> Vec<ValidationBatchFolder> {
             name: "Journal".into(),
             role: Some("core.journal".into()),
             policy: ValidationBatchPolicy::UserWrite,
+            metadata: Default::default(),
         },
         ValidationBatchFolder {
             stable_id: native_id("folder", "notes"),
@@ -55,6 +57,7 @@ fn folders() -> Vec<ValidationBatchFolder> {
             name: "Notes".into(),
             role: Some("core.notes".into()),
             policy: ValidationBatchPolicy::UserWrite,
+            metadata: Default::default(),
         },
     ]
 }
@@ -78,6 +81,7 @@ fn initial_batch() -> ValidationBatch {
                 expected_revision: None,
                 references: vec![],
                 policy: ValidationBatchPolicy::Inherit,
+                metadata: Default::default(),
             },
             ValidationBatchObject {
                 stable_id: native_id("diary", "1"),
@@ -92,6 +96,7 @@ fn initial_batch() -> ValidationBatch {
                 expected_revision: None,
                 references: vec![attachment],
                 policy: ValidationBatchPolicy::Deny,
+                metadata: Default::default(),
             },
             ValidationBatchObject {
                 stable_id: native_id("draft", "1"),
@@ -106,6 +111,7 @@ fn initial_batch() -> ValidationBatch {
                 expected_revision: None,
                 references: vec![],
                 policy: ValidationBatchPolicy::Inherit,
+                metadata: Default::default(),
             },
             ValidationBatchObject {
                 stable_id: native_id("note", "1"),
@@ -120,6 +126,7 @@ fn initial_batch() -> ValidationBatch {
                 expected_revision: None,
                 references: vec![],
                 policy: ValidationBatchPolicy::Deny,
+                metadata: Default::default(),
             },
         ],
     }

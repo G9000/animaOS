@@ -241,7 +241,6 @@ def managed_test_client(
     sys.modules.pop("anima_server.main", None)
 
     with (
-        patch("anima_server.services.core.ensure_core_manifest", lambda: None),
         patch("anima_server.services.core.acquire_core_lock", lambda: True),
         patch("anima_server.config.load_persisted_runtime_settings", lambda: None),
         patch("anima_server.db.user_store.ensure_per_user_databases_ready", lambda: None),

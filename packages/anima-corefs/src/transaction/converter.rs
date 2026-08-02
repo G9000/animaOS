@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -10,14 +11,14 @@ use super::{
     PreparedObjectRevision, ValidationSnapshot,
 };
 use crate::catalog::{
-    CatalogEntryCommon, CatalogError, CatalogGeneration, CatalogGenerationEntry, CatalogObject,
-    ObjectLifecycle, MAX_CATALOG_ENTRIES,
+    CatalogClientMetadata, CatalogEntryCommon, CatalogError, CatalogGeneration,
+    CatalogGenerationEntry, CatalogObject, ObjectLifecycle, MAX_CATALOG_ENTRIES,
 };
 use crate::crypto::{generate_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKind};
 use crate::envelope::{
     write_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION, MAX_BODY_LENGTH,
 };
-use crate::folders::{FolderOwner, FolderRole, PortableName};
+use crate::folders::{ClientId, FolderOwner, FolderRole, PortableName};
 use crate::id::OpaqueId;
 use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
 
@@ -49,6 +50,7 @@ pub struct ValidationBatchFolder {
     pub name: String,
     pub role: Option<String>,
     pub policy: ValidationBatchPolicy,
+    pub metadata: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +67,7 @@ pub struct ValidationBatchObject {
     pub expected_revision: Option<u64>,
     pub references: Vec<String>,
     pub policy: ValidationBatchPolicy,
+    pub metadata: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +127,7 @@ struct ValidatedFolder {
     policy: ValidationBatchPolicy,
     owner: FolderOwner,
     access: AnimaAccess,
+    metadata: CatalogClientMetadata,
 }
 
 #[derive(Clone)]
@@ -134,6 +138,7 @@ struct ValidatedObject {
     source: ValidationBatchObject,
     owner: FolderOwner,
     access: AnimaAccess,
+    metadata: CatalogClientMetadata,
 }
 
 impl CoreCommitCoordinator {
@@ -275,7 +280,8 @@ impl CoreCommitCoordinator {
                 folder.owner,
                 folder.access,
             )
-            .with_policy_override_for_internal_mutation(local_policy(folder.policy));
+            .with_policy_override_for_internal_mutation(local_policy(folder.policy))
+            .with_client_metadata(folder.metadata);
             if let Some(role) = folder.role {
                 common = common.with_role_for_internal_mutation(role);
             }
@@ -338,7 +344,7 @@ impl CoreCommitCoordinator {
                     &object.source.created_at,
                     &object.source.updated_at,
                     &object.source.content_type,
-                    BTreeMap::new(),
+                    object.source.metadata.clone(),
                     object.source.body_encoding,
                     &object.source.content,
                 )
@@ -376,7 +382,8 @@ impl CoreCommitCoordinator {
                 object.owner,
                 object.access,
             )
-            .with_policy_override_for_internal_mutation(local_policy(object.source.policy));
+            .with_policy_override_for_internal_mutation(local_policy(object.source.policy))
+            .with_client_metadata(object.metadata);
             entries.push(CatalogGenerationEntry::object(common, catalog_object));
         }
         Ok((entries, prepared))
@@ -480,6 +487,7 @@ fn validate_batch(
             policy: folder.policy,
             owner,
             access,
+            metadata: validation_metadata(&folder.metadata)?,
         });
     }
     let mut objects = Vec::with_capacity(batch.objects.len());
@@ -504,6 +512,7 @@ fn validate_batch(
             source: object.clone(),
             owner,
             access,
+            metadata: validation_metadata(&object.metadata)?,
         });
     }
     Ok((folders, objects))
@@ -617,6 +626,10 @@ fn graph_is_identical(
                     .common_for_internal_mutation()
                     .policy_override_for_internal_mutation()
                     == local_policy(folder.policy)
+                && entry
+                    .common_for_internal_mutation()
+                    .client_metadata_for_internal_mutation()
+                    == &folder.metadata
         })
     });
     folder_matches
@@ -634,8 +647,26 @@ fn graph_is_identical(
                         .common_for_internal_mutation()
                         .policy_override_for_internal_mutation()
                         == local_policy(object.source.policy)
+                    && entry
+                        .common_for_internal_mutation()
+                        .client_metadata_for_internal_mutation()
+                        == &object.metadata
             })
         })
+}
+
+fn validation_metadata(
+    metadata: &BTreeMap<String, Value>,
+) -> Result<CatalogClientMetadata, ValidationBatchError> {
+    let writer = ClientId::parse("pcf004")
+        .map_err(|_| ValidationBatchError::Invalid("invalid migration metadata writer"))?;
+    CatalogClientMetadata::new(
+        &writer,
+        metadata
+            .iter()
+            .map(|(key, value)| (format!("client:pcf004:{key}"), value.clone())),
+    )
+    .map_err(ValidationBatchError::from)
 }
 
 fn full_graph_preconditions(
@@ -730,6 +761,7 @@ mod tests {
                     name: "Core".into(),
                     role: None,
                     policy: ValidationBatchPolicy::UserWrite,
+                    metadata: BTreeMap::new(),
                 },
                 ValidationBatchFolder {
                     stable_id: journal.clone(),
@@ -737,6 +769,7 @@ mod tests {
                     name: "Journal".into(),
                     role: Some("core.journal".into()),
                     policy: ValidationBatchPolicy::UserWrite,
+                    metadata: BTreeMap::from([("order".into(), Value::from(0))]),
                 },
                 ValidationBatchFolder {
                     stable_id: native_id("folder", "notes"),
@@ -744,6 +777,7 @@ mod tests {
                     name: "Notes".into(),
                     role: Some("core.notes".into()),
                     policy: ValidationBatchPolicy::UserWrite,
+                    metadata: BTreeMap::new(),
                 },
             ],
             objects: vec![ValidationBatchObject {
@@ -759,6 +793,7 @@ mod tests {
                 expected_revision: revision,
                 references: vec![],
                 policy: ValidationBatchPolicy::Inherit,
+                metadata: BTreeMap::new(),
             }],
         }
     }
@@ -779,6 +814,26 @@ mod tests {
                 batch(ValidationBatchMode::Initialize, b"first", None),
             )
             .unwrap();
+        let journal = first
+            .snapshot()
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| {
+                entry
+                    .common_for_internal_mutation()
+                    .role_for_internal_mutation()
+                    .is_some_and(|role| role.as_str() == "core.journal")
+            })
+            .unwrap();
+        assert_eq!(
+            journal
+                .common_for_internal_mutation()
+                .client_metadata_for_internal_mutation()
+                .values()
+                .get("client:pcf004:order"),
+            Some(&Value::from(0))
+        );
         let head_path = root.join("fs").join("VALIDATION_HEAD");
         let before = fs::read(&head_path).unwrap();
         let mode = ValidationBatchMode::Expect {

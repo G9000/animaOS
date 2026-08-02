@@ -1,0 +1,23 @@
+{
+  "id": "anima-writing-html-v1",
+  "allowedTags": [
+    "a", "blockquote", "br", "code", "em", "h1", "h2", "h3", "h4", "h5", "h6",
+    "hr", "img", "li", "ol", "p", "pre", "s", "strong", "ul"
+  ],
+  "allowedAttributes": ["alt", "class", "href", "rel", "src", "target", "title"],
+  "dropContentTags": ["iframe", "object", "script", "style", "svg", "template"],
+  "allowedInlineMediaTypes": ["image/gif", "image/jpeg", "image/png", "image/webp"],
+  "maxInlineMediaBytes": 10485760,
+  "goldens": [
+    {
+      "name": "executable-markup",
+      "input": "<p onclick=\"bad()\">safe</p><script>bad()</script><a href=\"javascript:bad()\">link</a>",
+      "output": "<p>safe</p><a>link</a>"
+    },
+    {
+      "name": "literal-data-prose",
+      "input": "<p>The data: prefix is ordinary prose.</p>",
+      "output": "<p>The data: prefix is ordinary prose.</p>"
+    }
+  ]
+}

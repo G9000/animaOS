@@ -519,6 +519,10 @@ impl CatalogEntryCommon {
         self.policy_override
     }
 
+    pub(crate) fn client_metadata_for_internal_mutation(&self) -> &CatalogClientMetadata {
+        &self.client_metadata
+    }
+
     pub(crate) fn moved_for_internal_mutation(
         mut self,
         parent_id: OpaqueId,

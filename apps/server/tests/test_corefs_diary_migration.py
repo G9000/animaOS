@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from anima_server.services.corefs.diary_migration import (
@@ -118,6 +119,24 @@ def test_plain_text_is_escaped_into_html_paragraphs() -> None:
     assert result.html == "<p>first &lt;private&gt;</p><p>second &amp; final</p>"
 
 
+def test_literal_data_prose_survives_but_data_url_attributes_do_not() -> None:
+    result = canonicalize_diary_html("<p>The data: prefix is ordinary prose.</p>")
+    assert result.html == "<p>The data: prefix is ordinary prose.</p>"
+
+    with pytest.raises(CoreFormatError):
+        canonicalize_diary_html('<img src="data:text/plain;base64,QQ==">')
+
+
+def test_server_matches_shared_versioned_sanitizer_goldens() -> None:
+    contract = json.loads(
+        Path("apps/server/src/anima_server/services/corefs/writing-sanitizer-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for golden in contract["goldens"]:
+        assert canonicalize_diary_html(golden["input"]).html == golden["output"]
+
+
 def test_inactive_catalog_preserves_empty_folders_ids_hashes_and_roles() -> None:
     cover = LegacyDiaryAttachment(
         id=31,
@@ -178,6 +197,34 @@ def test_inactive_catalog_preserves_empty_folders_ids_hashes_and_roles() -> None
     assert catalog.object(attachment_id).source_hash == attachment.sha256
     assert f"corefs://object/{cover_id}".encode() in entry.content
     assert f"corefs://object/{attachment_id}".encode() in entry.content
+    decoded = decode_diary_document(entry.content)
+    assert decoded.legacy_id == 9
+    assert decoded.legacy_folder_id == 6
+    assert decoded.source == "user"
+    assert decoded.attachment_metadata == (
+        {
+            "caption": None,
+            "createdAt": None,
+            "filename": "cover.png",
+            "kind": "image",
+            "legacyId": 31,
+            "mimeType": "image/png",
+            "sha256": cover.sha256,
+            "stableId": cover_id,
+        },
+        {
+            "caption": "scan",
+            "createdAt": None,
+            "filename": "private.pdf",
+            "kind": "file",
+            "legacyId": 32,
+            "mimeType": "application/pdf",
+            "sha256": attachment.sha256,
+            "stableId": attachment_id,
+        },
+    )
+    assert [catalog.folder(empty_id).order, catalog.folder(travel_id).order] == [0, 1]
+    assert catalog.folder(travel_id).policy == "inherit"
 
 
 def test_inactive_catalog_is_idempotent_and_publishes_atomically() -> None:
@@ -271,3 +318,98 @@ def test_inactive_catalog_includes_native_drafts_and_generic_notes() -> None:
         "utf-8",
     )
     assert note.parent_id == catalog.folder_for_role("core.notes").stable_id
+
+
+def test_attachment_only_and_cover_only_entries_are_not_dropped() -> None:
+    cover = LegacyDiaryAttachment(
+        id=1,
+        entry_id=10,
+        kind="image",
+        mime_type="image/png",
+        data=b"cover",
+        sha256=hashlib.sha256(b"cover").hexdigest(),
+        filename="cover.png",
+        caption="cover caption",
+    )
+    file = LegacyDiaryAttachment(
+        id=2,
+        entry_id=11,
+        kind="file",
+        mime_type="application/pdf",
+        data=b"pdf",
+        sha256=hashlib.sha256(b"pdf").hexdigest(),
+        filename="only.pdf",
+        caption=None,
+    )
+    catalog = build_inactive_diary_catalog(
+        user_id=1,
+        folders=(),
+        entries=(
+            LegacyDiaryEntry(
+                id=10,
+                entry_date="2026-08-02",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=1,
+                attachments=(cover,),
+            ),
+            LegacyDiaryEntry(
+                id=11,
+                entry_date="2026-08-03",
+                title=None,
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(file,),
+            ),
+        ),
+    )
+    cover_entry = decode_diary_document(
+        catalog.object(migration_opaque_id("diary-entry", "10")).content
+    )
+    attachment_entry = decode_diary_document(
+        catalog.object(migration_opaque_id("diary-entry", "11")).content
+    )
+    assert cover_entry.html == ""
+    assert cover_entry.cover_uri is not None
+    assert attachment_entry.html == ""
+    assert attachment_entry.attachment_uris == (
+        f"corefs://object/{migration_opaque_id('diary-attachment', '2')}",
+    )
+
+
+def test_oversized_inline_image_fails_before_catalog_publication() -> None:
+    encoded = base64.b64encode(b"oversized").decode()
+    published: list[object] = []
+    with pytest.raises(CoreFormatError):
+        canonicalize_diary_html(
+            f'<img src="data:image/png;base64,{encoded}">',
+            max_inline_media_bytes=1,
+            media_reference_factory=lambda *_: published.append(object()) or "unused",
+        )
+    assert published == []
+
+
+def test_python_rerun_hydrates_current_native_revisions() -> None:
+    catalog = build_inactive_diary_catalog(
+        user_id=1,
+        folders=(),
+        entries=(),
+        drafts=(
+            LegacyDiaryDraft(
+                id="draft",
+                target_entry_id=None,
+                body="<p>safe</p>",
+                content_type="text/html",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+    draft_id = migration_opaque_id("diary-draft", "draft")
+    rerun = catalog.with_expected_revisions({draft_id: 3})
+    assert rerun.object(draft_id).expected_revision == 3

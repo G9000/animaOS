@@ -3,9 +3,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from anima_server.services.corefs.formats import (
     DIARY_CONTENT_TYPE,
@@ -17,6 +23,7 @@ from anima_server.services.corefs.formats import (
 )
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+logger = logging.getLogger(__name__)
 
 
 def migration_opaque_id(domain: str, source_key: str | bytes) -> str:
@@ -49,6 +56,8 @@ class LegacyDiaryFolder:
     name: str
     parent_id: int | None
     order: int
+    created_at: str | None = None
+    policy: str = "inherit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +70,7 @@ class LegacyDiaryAttachment:
     sha256: str
     filename: str | None
     caption: str | None
+    created_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +84,9 @@ class LegacyDiaryEntry:
     folder_id: int | None
     cover_attachment_id: int | None
     attachments: tuple[LegacyDiaryAttachment, ...]
+    source: str = "user"
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +96,9 @@ class LegacyDiaryDraft:
     body: str
     content_type: str
     updated_at: str
+    stable_id: str | None = None
+    metadata: dict[str, Any] | None = None
+    target_stable_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +108,7 @@ class LegacyNote:
     body: str
     content_type: str
     updated_at: str
+    stable_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +122,7 @@ class InactiveFolder:
     agent_access: str
     policy: str
     children: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +141,7 @@ class InactiveObject:
     expected_revision: int | None = None
     references: tuple[str, ...] = ()
     policy: str = "inherit"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +183,7 @@ class InactiveWritingCatalog:
                     "name": item.name,
                     "role": item.role,
                     "policy": item.policy,
+                    "metadata": item.metadata,
                 }
                 for item in self.folders
             ],
@@ -181,6 +201,7 @@ class InactiveWritingCatalog:
                     "expectedRevision": item.expected_revision,
                     "references": list(item.references),
                     "policy": item.policy,
+                    "metadata": item.metadata,
                 }
                 for item in self.objects
             ],
@@ -193,6 +214,19 @@ class InactiveWritingCatalog:
             keys, json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
         return dict(result)
+
+    def with_expected_revisions(
+        self,
+        revisions: dict[str, int],
+    ) -> InactiveWritingCatalog:
+        """Bind current native revisions before an exact-head rerun."""
+        return replace(
+            self,
+            objects=tuple(
+                replace(item, expected_revision=revisions.get(item.stable_id))
+                for item in self.objects
+            ),
+        )
 
 
 def build_inactive_diary_catalog(
@@ -265,6 +299,12 @@ def build_inactive_diary_catalog(
                 owner="user",
                 agent_access="write",
                 policy="inherit",
+                metadata={
+                    "legacyId": folder.id,
+                    "order": folder.order,
+                    "policy": folder.policy,
+                    "createdAt": folder.created_at,
+                },
             )
         )
 
@@ -307,8 +347,21 @@ def build_inactive_diary_catalog(
                     content=attachment.data,
                     source_hash=attachment.sha256,
                     body_encoding="binary",
-                    created_at=f"{entry.entry_date}T00:00:00Z",
-                    updated_at=f"{entry.entry_date}T00:00:00Z",
+                    created_at=attachment.created_at
+                    or entry.created_at
+                    or f"{entry.entry_date}T00:00:00Z",
+                    updated_at=attachment.created_at
+                    or entry.updated_at
+                    or f"{entry.entry_date}T00:00:00Z",
+                    metadata={
+                        "legacyId": attachment.id,
+                        "legacyEntryId": attachment.entry_id,
+                        "kind": attachment.kind,
+                        "caption": attachment.caption,
+                        "filename": attachment.filename,
+                        "sha256": attachment.sha256,
+                        "createdAt": attachment.created_at,
+                    },
                 )
             )
             attachment_uris.append(f"corefs://object/{stable_id}")
@@ -319,6 +372,8 @@ def build_inactive_diary_catalog(
             digest: str,
             parent_id: str = entry_parent_id,
             entry_date: str = entry.entry_date,
+            entry_created_at: str | None = entry.created_at,
+            entry_updated_at: str | None = entry.updated_at,
             reference_ids: list[str] = inline_reference_ids,
         ) -> str:
             stable_id = migration_opaque_id("diary-inline-media", digest)
@@ -332,8 +387,8 @@ def build_inactive_diary_catalog(
                     content=data,
                     source_hash=digest,
                     body_encoding="binary",
-                    created_at=f"{entry_date}T00:00:00Z",
-                    updated_at=f"{entry_date}T00:00:00Z",
+                    created_at=entry_created_at or f"{entry_date}T00:00:00Z",
+                    updated_at=entry_updated_at or f"{entry_date}T00:00:00Z",
                 )
             )
             reference_ids.append(stable_id)
@@ -359,6 +414,24 @@ def build_inactive_diary_catalog(
             attachment_uris=tuple(attachment_uris),
             media_reference_factory=reference_inline,
             legacy_plain_text=not entry.body_is_html,
+            legacy_id=entry.id,
+            legacy_folder_id=entry.folder_id,
+            source=entry.source,
+            created_at=entry.created_at,
+            updated_at=entry.updated_at,
+            attachment_metadata=tuple(
+                {
+                    "legacyId": attachment.id,
+                    "stableId": migration_opaque_id("diary-attachment", str(attachment.id)),
+                    "kind": attachment.kind,
+                    "mimeType": attachment.mime_type,
+                    "filename": attachment.filename,
+                    "caption": attachment.caption,
+                    "sha256": attachment.sha256,
+                    "createdAt": attachment.created_at,
+                }
+                for attachment in attachments
+            ),
         )
         add_object(
             _object(
@@ -370,21 +443,31 @@ def build_inactive_diary_catalog(
                 content=content,
                 source_hash=hashlib.sha256(entry.body.encode()).hexdigest(),
                 body_encoding="utf-8",
-                created_at=f"{entry.entry_date}T00:00:00Z",
-                updated_at=f"{entry.entry_date}T00:00:00Z",
+                created_at=entry.created_at or f"{entry.entry_date}T00:00:00Z",
+                updated_at=entry.updated_at or f"{entry.entry_date}T00:00:00Z",
                 references=(
                     *(uri.rsplit("/", 1)[-1] for uri in attachment_uris),
                     *inline_reference_ids,
                 ),
+                metadata={
+                    "legacyId": entry.id,
+                    "legacyFolderId": entry.folder_id,
+                    "source": entry.source,
+                    "createdAt": entry.created_at,
+                    "updatedAt": entry.updated_at,
+                },
             )
         )
 
     for draft in legacy_drafts:
-        stable_id = migration_opaque_id("diary-draft", draft.id)
+        stable_id = draft.stable_id or migration_opaque_id("diary-draft", draft.id)
         target_id = (
-            migration_opaque_id("diary-entry", str(draft.target_entry_id))
-            if draft.target_entry_id is not None
-            else None
+            draft.target_stable_id
+            or (
+                migration_opaque_id("diary-entry", str(draft.target_entry_id))
+                if draft.target_entry_id is not None
+                else None
+            )
         )
         add_object(
             _object(
@@ -398,6 +481,7 @@ def build_inactive_diary_catalog(
                     target_id=target_id,
                     content_type=draft.content_type,
                     body=draft.body,
+                    metadata=draft.metadata,
                 ),
                 source_hash=hashlib.sha256(draft.body.encode()).hexdigest(),
                 body_encoding="utf-8",
@@ -408,7 +492,7 @@ def build_inactive_diary_catalog(
         )
 
     for note in legacy_notes:
-        stable_id = migration_opaque_id("note", note.id)
+        stable_id = note.stable_id or migration_opaque_id("note", note.id)
         add_object(
             _object(
                 stable_id=stable_id,
@@ -468,6 +552,7 @@ def _object(
     expected_revision: int | None = None,
     references: tuple[str, ...] = (),
     policy: str = "inherit",
+    metadata: dict[str, Any] | None = None,
 ) -> InactiveObject:
     return InactiveObject(
         stable_id=stable_id,
@@ -484,6 +569,7 @@ def _object(
         expected_revision=expected_revision,
         references=references,
         policy=policy,
+        metadata=metadata or {},
     )
 
 
@@ -505,6 +591,7 @@ def _catalog_hash(
                 "agentAccess": item.agent_access,
                 "policy": item.policy,
                 "children": list(item.children),
+                "metadata": item.metadata,
             }
             for item in folders
         ],
@@ -523,9 +610,455 @@ def _catalog_hash(
                 "expectedRevision": item.expected_revision,
                 "references": list(item.references),
                 "policy": item.policy,
+                "metadata": item.metadata,
             }
             for item in objects
         ],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+class DiaryMigrationError(RuntimeError):
+    """Raised when the inactive writing catalog cannot be proven equivalent."""
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedWritingObject:
+    stable_id: str
+    path: str
+    kind: str
+    revision: int
+    content_hash: str
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class DiaryMigrationResult:
+    generation: int
+    catalog_hash: str
+    published: bool
+    source_counts: dict[str, int]
+    source_hash: str
+    stable_id: str | None = None
+    revision: int | None = None
+
+
+def resolve_prepared_role(*, session: Any, role: str) -> dict[str, object]:
+    """Resolve an inactive stable role only through an authorized unlock session."""
+    if session.corefs_session is None or session.corefs_keys is None:
+        raise DiaryMigrationError("CoreFS prepared access requires an unlocked session.")
+    value = session.corefs_session.resolve_validation_role_v1(session.corefs_keys, role)
+    if not isinstance(value, dict):
+        raise DiaryMigrationError(f"Prepared role {role} is unavailable.")
+    return dict(value)
+
+
+def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObject, ...]:
+    """Read authenticated inactive writing objects without changing route authority."""
+    from anima_server.services.corefs import logical
+
+    if session.corefs_session is None or session.corefs_keys is None:
+        raise DiaryMigrationError("CoreFS prepared access requires an unlocked session.")
+    selected = logical.select_validation_snapshot(
+        corefs_session=session.corefs_session,
+        keys=session.corefs_keys,
+    )
+    values: list[PreparedWritingObject] = []
+    cursor: str | None = None
+    while True:
+        raw = logical.walk_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=selected,
+            root="",
+            cursor_after=cursor,
+            page_size=100,
+            include_directories=False,
+        )
+        result = _wire_result(raw, selected.generation)
+        entries = result.get("entries")
+        if not isinstance(entries, list):
+            raise DiaryMigrationError("Invalid prepared CoreFS walk response.")
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("kind") != "file":
+                continue
+            path = entry.get("path")
+            stable_id = entry.get("stableId")
+            kind = entry.get("objectKind")
+            revision = entry.get("revision")
+            content_hash = entry.get("contentHash")
+            if (
+                not isinstance(path, str)
+                or not isinstance(stable_id, str)
+                or not isinstance(kind, str)
+                or isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or not isinstance(content_hash, str)
+            ):
+                raise DiaryMigrationError("Invalid prepared CoreFS walk entry.")
+            content = _read_prepared_bytes(
+                session=session,
+                selected=selected,
+                path=path,
+            )
+            if hashlib.sha256(content).hexdigest() != content_hash:
+                raise DiaryMigrationError("Prepared object hash did not verify.")
+            values.append(
+                PreparedWritingObject(
+                    stable_id=stable_id,
+                    path=path,
+                    kind=kind,
+                    revision=revision,
+                    content_hash=content_hash,
+                    content=content,
+                )
+            )
+        next_cursor = result.get("nextCursor")
+        if next_cursor is None:
+            break
+        if not isinstance(next_cursor, dict) or not isinstance(next_cursor.get("after"), str):
+            raise DiaryMigrationError("Invalid prepared CoreFS walk cursor.")
+        cursor = str(next_cursor["after"])
+    return tuple(values)
+
+
+def prepare_diary_validation_catalog(
+    *,
+    session: Any,
+    db: Session,
+    staged_drafts: Iterable[LegacyDiaryDraft] = (),
+    staged_notes: Iterable[LegacyNote] = (),
+) -> DiaryMigrationResult:
+    """Convert SQLCipher diary state into the inactive authenticated catalog.
+
+    Legacy SQLCipher remains authoritative until PCF-008. This routine only
+    advances the native validation head and records a non-secret checkpoint.
+    """
+    from anima_server.models import DiaryAttachment, DiaryEntry, DiaryFolder
+    from anima_server.services.corefs.formats import decode_draft_document, decode_note_document
+    from anima_server.services.data_crypto import df
+    from anima_server.services.diary import read_attachment_blob
+
+    if session.corefs_session is None or session.corefs_keys is None:
+        raise DiaryMigrationError("Diary migration requires an unlocked CoreFS session.")
+
+    staged_drafts = tuple(staged_drafts)
+    staged_notes = tuple(staged_notes)
+    current: tuple[PreparedWritingObject, ...]
+    try:
+        current = read_prepared_writing_objects(session=session)
+        head_value = session.corefs_session.validation_snapshot(session.corefs_keys)
+        expected_head = (int(head_value["generation"]), str(head_value["catalogHash"]))
+    except ValueError:
+        current = ()
+        expected_head = None
+    allowed_kinds = {"diary", "attachment", "draft", "note"}
+    unknown = sorted({item.kind for item in current if item.kind not in allowed_kinds})
+    if unknown:
+        raise DiaryMigrationError(
+            "Writing validation batch cannot replace unrelated prepared families: "
+            + ", ".join(unknown)
+        )
+
+    existing_drafts: dict[str, LegacyDiaryDraft] = {}
+    existing_notes: dict[str, LegacyNote] = {}
+    for item in current:
+        if item.kind == "draft":
+            decoded = decode_draft_document(item.content)
+            existing_drafts[decoded.stable_id] = LegacyDiaryDraft(
+                id=decoded.stable_id,
+                target_entry_id=None,
+                body=decoded.body,
+                content_type=decoded.content_type,
+                updated_at=_now_iso(),
+                stable_id=decoded.stable_id,
+                metadata=decoded.metadata,
+                target_stable_id=decoded.target_id,
+            )
+        elif item.kind == "note":
+            decoded_note = decode_note_document(item.content)
+            existing_notes[decoded_note.stable_id] = LegacyNote(
+                id=decoded_note.stable_id,
+                title=decoded_note.title,
+                body=decoded_note.body,
+                content_type=decoded_note.content_type,
+                updated_at=_now_iso(),
+                stable_id=decoded_note.stable_id,
+            )
+    for draft in staged_drafts:
+        existing_drafts[migration_opaque_id("diary-draft", draft.id)] = draft
+    for note in staged_notes:
+        existing_notes[note.stable_id or migration_opaque_id("note", note.id)] = note
+
+    folder_rows = list(
+        db.scalars(
+            select(DiaryFolder)
+            .where(DiaryFolder.user_id == session.user_id)
+            .order_by(DiaryFolder.created_at, DiaryFolder.id)
+        ).all()
+    )
+    attachment_rows = list(
+        db.scalars(
+            select(DiaryAttachment)
+            .where(DiaryAttachment.user_id == session.user_id)
+            .order_by(DiaryAttachment.created_at, DiaryAttachment.id)
+        ).all()
+    )
+    attachments_by_entry: dict[int, list[DiaryAttachment]] = {}
+    legacy_attachments: dict[int, LegacyDiaryAttachment] = {}
+    for row in attachment_rows:
+        blob = read_attachment_blob(user_id=session.user_id, attachment=row)
+        legacy = LegacyDiaryAttachment(
+            id=row.id,
+            entry_id=row.entry_id,
+            kind=row.kind,
+            mime_type=row.mime_type,
+            data=blob.data,
+            sha256=row.sha256,
+            filename=df(
+                session.user_id,
+                row.original_filename,
+                table="diary_attachments",
+                field="original_filename",
+            )
+            or None,
+            caption=df(
+                session.user_id,
+                row.caption,
+                table="diary_attachments",
+                field="caption",
+            )
+            or None,
+            created_at=_timestamp(row.created_at),
+        )
+        legacy_attachments[row.id] = legacy
+        attachments_by_entry.setdefault(row.entry_id, []).append(row)
+
+    entry_rows = list(
+        db.scalars(
+            select(DiaryEntry)
+            .options(selectinload(DiaryEntry.attachments))
+            .where(DiaryEntry.user_id == session.user_id)
+            .order_by(DiaryEntry.id)
+        ).all()
+    )
+    legacy_entries: list[LegacyDiaryEntry] = []
+    for row in entry_rows:
+        body = df(session.user_id, row.body, table="diary_entries", field="body")
+        legacy_entries.append(
+            LegacyDiaryEntry(
+                id=row.id,
+                entry_date=row.entry_date,
+                title=df(session.user_id, row.title, table="diary_entries", field="title") or None,
+                body=body,
+                body_is_html=bool(re.match(r"\s*<", body)),
+                mood=df(session.user_id, row.mood, table="diary_entries", field="mood") or None,
+                folder_id=row.folder_id,
+                cover_attachment_id=row.cover_attachment_id,
+                attachments=tuple(legacy_attachments[item.id] for item in row.attachments),
+                source=row.source,
+                created_at=_timestamp(row.created_at),
+                updated_at=_timestamp(row.updated_at),
+            )
+        )
+
+    legacy_folders = tuple(
+        LegacyDiaryFolder(
+            id=row.id,
+            name=df(session.user_id, row.name, table="diary_folders", field="name") or row.name,
+            parent_id=None,
+            order=index,
+            created_at=_timestamp(row.created_at),
+        )
+        for index, row in enumerate(folder_rows)
+    )
+    catalog = build_inactive_diary_catalog(
+        user_id=session.user_id,
+        folders=legacy_folders,
+        entries=legacy_entries,
+        drafts=tuple(existing_drafts.values()),
+        notes=tuple(existing_notes.values()),
+    )
+    revisions = {item.stable_id: item.revision for item in current}
+    catalog = catalog.with_expected_revisions(revisions)
+    result = catalog.publish_native(
+        corefs_session=session.corefs_session,
+        keys=session.corefs_keys,
+        expected_head=expected_head,
+    )
+    verified = read_prepared_writing_objects(session=session)
+    expected_hashes = {item.stable_id: item.content_hash for item in catalog.objects}
+    actual_hashes = {item.stable_id: item.content_hash for item in verified}
+    if expected_hashes != actual_hashes:
+        raise DiaryMigrationError("Prepared diary object count/hash verification failed.")
+    _verify_api_parity(legacy_entries, verified)
+    source_counts = {
+        "folders": len(legacy_folders),
+        "entries": len(legacy_entries),
+        "attachments": len(attachment_rows),
+        "drafts": len(existing_drafts),
+        "notes": len(existing_notes),
+    }
+    source_hash = _source_checkpoint_hash(catalog, source_counts)
+    _write_checkpoint(
+        user_id=session.user_id,
+        generation=int(result["generation"]),
+        catalog_hash=str(result["catalogHash"]),
+        source_counts=source_counts,
+        source_hash=source_hash,
+    )
+    staged_id = (
+        staged_drafts[-1].stable_id or migration_opaque_id("diary-draft", staged_drafts[-1].id)
+        if staged_drafts
+        else None
+    )
+    staged_revision = next(
+        (item.revision for item in verified if item.stable_id == staged_id),
+        None,
+    )
+    return DiaryMigrationResult(
+        generation=int(result["generation"]),
+        catalog_hash=str(result["catalogHash"]),
+        published=bool(result["published"]),
+        source_counts=source_counts,
+        source_hash=source_hash,
+        stable_id=staged_id,
+        revision=staged_revision,
+    )
+
+
+def _read_prepared_bytes(*, session: Any, selected: Any, path: str) -> bytes:
+    from anima_server.services.corefs import logical
+
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        raw = logical.read_chunk_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=selected,
+            path=path,
+            offset=offset,
+            max_bytes=64 * 1024,
+        )
+        if raw is None:
+            break
+        result = _wire_result(raw, selected.generation)
+        encoded = result.get("bytesBase64")
+        if not isinstance(encoded, str) or result.get("offset") != offset:
+            raise DiaryMigrationError("Invalid prepared CoreFS read response.")
+        chunk = base64.b64decode(encoded, validate=True)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        offset += len(chunk)
+    return b"".join(chunks)
+
+
+def _wire_result(raw: bytes, generation: int) -> dict[str, object]:
+    try:
+        payload = json.loads(raw)
+        result = payload["result"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise DiaryMigrationError("Invalid prepared CoreFS response.") from exc
+    if payload.get("version") != "corefs-logical-v1" or not isinstance(result, dict):
+        raise DiaryMigrationError("Invalid prepared CoreFS response.")
+    if result.get("generation") not in {None, generation}:
+        raise DiaryMigrationError("Prepared CoreFS generation changed during verification.")
+    return result
+
+
+def _verify_api_parity(
+    legacy_entries: Iterable[LegacyDiaryEntry],
+    prepared: Iterable[PreparedWritingObject],
+) -> None:
+    from anima_server.services.corefs.formats import decode_diary_document
+
+    by_id = {item.stable_id: item for item in prepared if item.kind == "diary"}
+    for legacy in legacy_entries:
+        item = by_id.get(migration_opaque_id("diary-entry", str(legacy.id)))
+        if item is None:
+            raise DiaryMigrationError("Prepared diary API parity entry is missing.")
+        decoded = decode_diary_document(item.content)
+        if (
+            decoded.legacy_id != legacy.id
+            or decoded.legacy_folder_id != legacy.folder_id
+            or decoded.title != legacy.title
+            or decoded.mood != legacy.mood
+            or decoded.source != legacy.source
+            or decoded.created_at != legacy.created_at
+            or decoded.updated_at != legacy.updated_at
+        ):
+            raise DiaryMigrationError("Prepared diary API parity metadata mismatch.")
+
+
+def _source_checkpoint_hash(
+    catalog: InactiveWritingCatalog,
+    counts: dict[str, int],
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"catalogHash": catalog.catalog_hash, "counts": counts},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+def _write_checkpoint(
+    *,
+    user_id: int,
+    generation: int,
+    catalog_hash: str,
+    source_counts: dict[str, int],
+    source_hash: str,
+) -> None:
+    from anima_server.services.core import update_core_manifest
+
+    def update(manifest: dict[str, object]) -> None:
+        checkpoints = manifest.setdefault("migration_checkpoints", {})
+        if not isinstance(checkpoints, dict):
+            raise DiaryMigrationError("Core migration checkpoint registry is invalid.")
+        checkpoints[f"pcf004:{user_id}"] = {
+            "state": "verified-inactive",
+            "generation": generation,
+            "catalogHash": catalog_hash,
+            "sourceCounts": source_counts,
+            "sourceHash": source_hash,
+            "verifiedAt": _now_iso(),
+            "authoritative": False,
+        }
+
+    update_core_manifest(update)
+
+
+def record_diary_migration_failure(*, user_id: int, error: Exception) -> None:
+    """Journal a private-text-free failed lifecycle attempt for safe retry."""
+    from anima_server.services.core import update_core_manifest
+
+    def update(manifest: dict[str, object]) -> None:
+        checkpoints = manifest.setdefault("migration_checkpoints", {})
+        if not isinstance(checkpoints, dict):
+            return
+        checkpoints[f"pcf004:{user_id}"] = {
+            "state": "retry-required",
+            "errorCode": type(error).__name__,
+            "errorDigest": hashlib.sha256(str(error).encode()).hexdigest(),
+            "attemptedAt": _now_iso(),
+            "authoritative": False,
+        }
+
+    update_core_manifest(update)
+
+
+def _timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")

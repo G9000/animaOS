@@ -976,6 +976,22 @@ def _zero_dek(dek: bytes) -> None:
 # Initialize the process-global store only after every restore helper above is
 # defined. Dev reloads import this module with a snapshot already present.
 def _schedule_published_session_rebuild(session: UnlockSession) -> None:
+    # PCF-004 prepares and verifies the diary-writing shadow catalog only
+    # after both SQLCipher and CoreFS keys are live. Legacy routes remain the
+    # authority until the global PCF-008 cutover marker is accepted.
+    if session.corefs_session is not None and session.corefs_keys is not None:
+        from anima_server.db.session import get_user_session_factory
+        from anima_server.services.corefs.diary_migration import (
+            prepare_diary_validation_catalog,
+            record_diary_migration_failure,
+        )
+
+        try:
+            with get_user_session_factory(session.user_id)() as db:
+                prepare_diary_validation_catalog(session=session, db=db)
+        except Exception as exc:
+            record_diary_migration_failure(user_id=session.user_id, error=exc)
+            logger.exception("PCF-004 inactive diary preparation failed")
     from anima_server.services.corefs.migration import schedule_unlocked_rebuild
 
     schedule_unlocked_rebuild(session)

@@ -14,7 +14,7 @@ mod python {
     use pyo3::IntoPy;
     use serde::Deserialize;
     use serde_json::{json, Value};
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Condvar, Mutex};
@@ -263,6 +263,8 @@ mod python {
         name: String,
         role: Option<String>,
         policy: String,
+        #[serde(default)]
+        metadata: BTreeMap<String, Value>,
     }
 
     #[derive(Deserialize)]
@@ -281,6 +283,8 @@ mod python {
         #[serde(default)]
         references: Vec<String>,
         policy: String,
+        #[serde(default)]
+        metadata: BTreeMap<String, Value>,
     }
 
     fn validation_batch_policy(
@@ -329,6 +333,7 @@ mod python {
                     name: folder.name,
                     role: folder.role,
                     policy: validation_batch_policy(&folder.policy)?,
+                    metadata: folder.metadata,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?;
@@ -365,6 +370,7 @@ mod python {
                     expected_revision: object.expected_revision,
                     references: object.references,
                     policy: validation_batch_policy(&object.policy)?,
+                    metadata: object.metadata,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?;
