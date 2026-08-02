@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 13:27 MYT
+- Updated: 2026-08-02 14:04 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -84,15 +84,31 @@ is its own ticket:
   directly and clears any claim — initiative delivery is confirmed by
   the PendingInitiative poll/ack, so it needs no second receipt.
 
+- 2026-08-02 14:04 MYT - PR #135 review round 2 (P1, Codex, again a REAL regression from
+  this ticket): the Dashboard's one-shot handoff stores a dream-bearing
+  greeting whose fetch resolved after unmount, and that stored copy had no
+  lifetime. Under IL-010 that was safe (the dream was already consumed);
+  under IL-015 it is not — the claim expires, the dream becomes offerable
+  again, and returning to the Dashboard hours later would voice the stored
+  copy on top of whatever channel already spoke it. The greeting response
+  now carries `ambientDreamExpiresAt` (`claimed_at + dream_claim_ttl_minutes`,
+  stated by the server because the TTL is server config); the stash records
+  it, prunes expired entries from sessionStorage on every read, refuses a
+  response that arrives already stale, and the mount falls through to a
+  fresh greeting when the stash died. A live response whose claim expired
+  during a very slow request degrades to the dream-free `handoffMessage`
+  rather than voicing it. Boundary verified in both directions: the client
+  stops showing its copy no LATER than the server starts re-offering.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 30 passed
+  - `pytest tests/test_inner_life_ambient_dream.py` — 34 passed (2026-08-02 14:04 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
   - Full suite (`bun run test`) — **3365 passed, 0 failed, 10 skipped**,
     run 2026-08-02 13:27 MYT
-  - `bun test tests/` (apps/desktop) — 111 passed, 0 failed
+  - `bun test tests/` (apps/desktop) — 118 passed, 0 failed (2026-08-02 14:04 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
@@ -103,6 +119,8 @@ is its own ticket:
   - `apps/server/src/anima_server/config.py`
   - `packages/api-client/src/client.ts`, `packages/api-client/src/types.ts`
   - `apps/desktop/src/pages/dashboard/Dashboard.tsx`
+  - `apps/desktop/src/lib/greetingCache.ts`
+  - `apps/desktop/tests/greetingCache.test.ts`
   - `apps/server/tests/test_inner_life_ambient_dream.py`
 - Notes:
   - IL-010's accepted residual risk is now closed: a greeting whose response

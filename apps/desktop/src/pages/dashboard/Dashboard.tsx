@@ -28,6 +28,7 @@ import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
   clearOneShotGreetings,
+  dreamClaimExpired,
   getCachedGreeting,
   peekOneShotGreeting,
   setCachedGreeting,
@@ -120,10 +121,13 @@ export default function Dashboard() {
     if (user?.id == null || needsSetup !== false) return;
     let active = true;
     // A dream-bearing greeting stashed by an unmounted fetch (below) is
-    // displayed exactly once — but ONLY after re-checking consent against
-    // the freshly loaded presence config (PR #130 review): an opt-out
-    // between the stash and this mount must win, so the stash is discarded
-    // (the dream was consumed server-side; the user asked for silence).
+    // displayed at most once — and only if it is still BOTH consented and
+    // unexpired. Consent: re-checked against the freshly loaded presence
+    // config (PR #130 review), because an opt-out between the stash and
+    // this mount must win. Expiry: the stash dies with the server-side
+    // claim (PR #135 review), because past that deadline the same dream can
+    // be offered through another channel and replaying this copy would
+    // disclose it twice.
     // IL-015: acknowledge only once a dream-bearing greeting is actually
     // DISPLAYED — not when it is fetched or stashed. An unacknowledged claim
     // expires server-side and the dream is offered again, which is exactly
@@ -134,38 +138,26 @@ export default function Dashboard() {
         void api.chat.ackGreetingDream(user.id, g.ambientDreamId).catch(() => {});
       }
     };
-    if (peekOneShotGreeting(user.id)) {
-      void api.presence
-        .get(user.id)
-        .then((cfg) => {
-          // Unmounted before the consent check resolved? LEAVE the queue
-          // intact (PR #130 round 4) — this is the only durable copy of an
-          // already-consumed dream, and the next mount can still render it.
-          if (!active) return;
-          setPresenceConfig(cfg);
-          if (ambientConsentAllows(cfg)) {
-            const oneShot = takeOneShotGreeting(user.id);
-            if (oneShot) {
-              setBrief(oneShot);
-              ackIfDream(oneShot);
-            }
-          } else {
-            // Consent withdrawn: the user asked for silence — discard.
-            clearOneShotGreetings(user.id);
+    // IL-015 (PR #135 review): a claim that expired before its response
+    // landed may already have been re-offered elsewhere, so this copy must
+    // not voice the dream. `handoffMessage` is the same greeting without
+    // the dream sentence — show that instead of nothing.
+    const withVoiceableDream = (g: Greeting): Greeting =>
+      dreamClaimExpired(g)
+        ? {
+            ...g,
+            message: g.handoffMessage ?? g.message,
+            ambientDream: false,
+            ambientDreamId: null,
+            handoffMessage: null,
           }
-        })
-        .catch(() => {
-          // Unknown consent: prefer silence THIS mount, but keep the queue
-          // for a mount that can actually verify consent.
-        });
-      return () => {
-        active = false;
-      };
-    }
-    const cached = getCachedGreeting(user.id);
-    if (cached) {
-      setBrief(cached.greeting);
-    } else {
+        : g;
+    const fetchGreeting = () => {
+      const cached = getCachedGreeting(user.id);
+      if (cached) {
+        setBrief(cached.greeting);
+        return;
+      }
       setBriefLoading(true);
       // Bind the handoff to the session that ASKED for this greeting
       // (PR #130 review): if the user logs out and someone else signs in
@@ -176,16 +168,18 @@ export default function Dashboard() {
         .greeting(user.id)
         .then((g) => {
           if (!active) {
-            // The dream inside was already consumed server-side — hand it
-            // to the next mount instead of discarding it (PR #130 review).
+            // The dream inside is CLAIMED server-side — hand it to the next
+            // mount instead of discarding it (PR #130 review). The stash
+            // carries the claim's expiry and is dropped past it (IL-015).
             if (g.ambientDream) {
               stashOneShotGreeting(user.id, g, originUnlockToken);
             }
             return;
           }
-          setBrief(g);
-          ackIfDream(g);
-          setCachedGreeting(user.id, g);
+          const shown = withVoiceableDream(g);
+          setBrief(shown);
+          ackIfDream(shown);
+          setCachedGreeting(user.id, shown);
         })
         .catch(() => {
           if (!active) return;
@@ -210,7 +204,42 @@ export default function Dashboard() {
         .finally(() => {
           if (active) setBriefLoading(false);
         });
+    };
+    if (peekOneShotGreeting(user.id)) {
+      void api.presence
+        .get(user.id)
+        .then((cfg) => {
+          // Unmounted before the consent check resolved? LEAVE the queue
+          // intact (PR #130 round 4) — this is the only copy of a claimed
+          // dream, and the next mount can still render it.
+          if (!active) return;
+          setPresenceConfig(cfg);
+          if (!ambientConsentAllows(cfg)) {
+            // Consent withdrawn: the user asked for silence — discard.
+            clearOneShotGreetings(user.id);
+            return;
+          }
+          const oneShot = takeOneShotGreeting(user.id);
+          if (oneShot) {
+            setBrief(oneShot);
+            ackIfDream(oneShot);
+            return;
+          }
+          // The stash expired between the peek and the take (its claim went
+          // stale): there is nothing safe to replay, so ask for a fresh
+          // greeting. The dream was never acknowledged, so it is offerable
+          // again and may simply come back in that response.
+          fetchGreeting();
+        })
+        .catch(() => {
+          // Unknown consent: prefer silence THIS mount, but keep the queue
+          // for a mount that can actually verify consent.
+        });
+      return () => {
+        active = false;
+      };
     }
+    fetchGreeting();
     return () => {
       active = false;
     };

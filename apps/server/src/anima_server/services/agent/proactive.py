@@ -25,6 +25,7 @@ from anima_server.config import settings
 from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
 from anima_server.services.agent.inner_life.dream_receipt import (
     claim_cutoff,
+    claim_expires_at,
     offerable_dream_query,
     release_claim,
 )
@@ -94,6 +95,12 @@ class GreetingResult:
     # Set only when this greeting actually voices a dream; the claim expires
     # and the dream is re-offered if no acknowledgement arrives.
     ambient_dream_id: int | None = None
+    # IL-015 (PR #135 review, P1): the instant that claim goes stale. A
+    # client that STORES this greeting instead of showing it immediately
+    # must discard the stored copy at this deadline — past it the server may
+    # offer the same narrative again, and replaying the stored one would
+    # disclose the dream twice.
+    ambient_dream_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -309,7 +316,7 @@ def _finalize_ambient_dream(
     *,
     user_id: int,
     message: str,
-) -> tuple[str, GreetingContext, str | None, int | None]:
+) -> _VoicedDream:
     """Decide and APPLY the dream's voicing atomically w.r.t. consent
     updates (PR #130 review rounds 9-10).
 
@@ -321,18 +328,19 @@ def _finalize_ambient_dream(
     per-user ``presence_consent_lock`` the config PUT holds through its
     commit, so the two are mutually exclusive.
 
-    Returns ``(message, ctx, handoff_message)``: on consent the dream
-    sentence is appended and the pre-append text becomes the handoff copy;
-    on withdrawal the claim is RELEASED (the dream stays available for a
-    later greeting) — the server knows the narrative never reached the
-    user, the opposite trade from IL-015's unknowable client receipt.
+    On consent the dream sentence is appended, the pre-append text becomes
+    the handoff copy, and the claim's expiry travels with the response so a
+    client that stores it can drop the copy when the claim goes stale. On
+    withdrawal the claim is RELEASED (the dream stays available for a later
+    greeting) — the server knows the narrative never reached the user, the
+    opposite trade from IL-015's unknowable client receipt.
 
     Residual window, unavoidable and shared with
     ``delivery.list_and_mark_delivered``: an opt-out committing while the
     HTTP response is already in flight. No server-side ordering removes it.
     """
     if claim is None or not ctx.ambient_dream:
-        return message, ctx, None, None
+        return _VoicedDream(message=message, ctx=ctx)
 
     from anima_server.services.presence_config import presence_consent_lock
 
@@ -342,11 +350,12 @@ def _finalize_ambient_dream(
         if values.enabled and values.dream_sharing == "ambient":
             # Append INSIDE the lock: an opt-out can no longer slip between
             # the check and the hand-off.
-            return (
-                f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}",
-                ctx,
-                message,
-                claim.dream_id,
+            return _VoicedDream(
+                message=f"{message} {_ambient_dream_sentence(ctx.ambient_dream)}",
+                ctx=ctx,
+                handoff_message=message,
+                dream_id=claim.dream_id,
+                expires_at=claim_expires_at(claim.claimed_at),
             )
         _release_ambient_dream_claim(db, dream_id=claim.dream_id)
         logger.info(
@@ -354,7 +363,9 @@ def _finalize_ambient_dream(
             "dream released unvoiced",
             user_id,
         )
-        return message, dataclasses.replace(ctx, ambient_dream=None), None, None
+        return _VoicedDream(
+            message=message, ctx=dataclasses.replace(ctx, ambient_dream=None)
+        )
 
 
 def _dream_free_static_greeting(ctx: GreetingContext) -> str | None:
@@ -383,6 +394,22 @@ class AmbientDreamClaim:
 
     dream_id: int
     narrative: str
+    # When the claim was taken — the client's copy must not outlive
+    # ``claim_expires_at(claimed_at)`` (PR #135 review).
+    claimed_at: datetime
+
+
+@dataclass(frozen=True)
+class _VoicedDream:
+    """Outcome of the consent-locked voicing decision in
+    ``_finalize_ambient_dream`` — a record rather than a widening tuple, so
+    the three call sites cannot silently swap two fields."""
+
+    message: str
+    ctx: GreetingContext
+    handoff_message: str | None = None
+    dream_id: int | None = None
+    expires_at: datetime | None = None
 
 
 def _release_ambient_dream_claim(db: Session, *, dream_id: int) -> None:
@@ -534,7 +561,9 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | 
             db.rollback()
             return None
 
-    return AmbientDreamClaim(dream_id=claimed.id, narrative=narrative[:240])
+    return AmbientDreamClaim(
+        dream_id=claimed.id, narrative=narrative[:240], claimed_at=claim_at
+    )
 
 
 def _reset_dream_residue_after_surfacing(
@@ -1162,14 +1191,15 @@ async def generate_greeting(
 
     if settings.agent_provider == "scaffold":
         base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
-        message, ctx, handoff, dream_id = _finalize_ambient_dream(
+        voiced = _finalize_ambient_dream(
             db, ctx, dream_claim, user_id=user_id, message=base
         )
         return GreetingResult(
-            message=message,
-            context=ctx,
-            handoff_message=handoff,
-            ambient_dream_id=dream_id,
+            message=voiced.message,
+            context=voiced.ctx,
+            handoff_message=voiced.handoff_message,
+            ambient_dream_id=voiced.dream_id,
+            ambient_dream_expires_at=voiced.expires_at,
         )
 
     # Build the LLM prompt with available context
@@ -1312,16 +1342,17 @@ async def generate_greeting(
             # decision runs under the consent lock, appending the same
             # sentence the static greeting uses while keeping the pre-append
             # text as the LLM-safe handoff copy (PR #130 review).
-            message, ctx, handoff_message, dream_id = _finalize_ambient_dream(
+            voiced = _finalize_ambient_dream(
                 db, ctx, dream_claim, user_id=user_id, message=message
             )
             return GreetingResult(
-                ambient_dream_id=dream_id,
-                message=message,
-                context=ctx,
+                ambient_dream_id=voiced.dream_id,
+                ambient_dream_expires_at=voiced.expires_at,
+                message=voiced.message,
+                context=voiced.ctx,
                 llm_generated=True,
                 pills=pills,
-                handoff_message=handoff_message,
+                handoff_message=voiced.handoff_message,
             )
     except Exception as e:
         logger.debug("LLM greeting generation failed: %s", e)
@@ -1329,15 +1360,16 @@ async def generate_greeting(
 
     # Fallback to static
     base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
-    message, ctx, handoff, dream_id = _finalize_ambient_dream(
+    voiced = _finalize_ambient_dream(
         db, ctx, dream_claim, user_id=user_id, message=base
     )
     return GreetingResult(
-        message=message,
-        context=ctx,
+        message=voiced.message,
+        context=voiced.ctx,
         errors=errors,
-        handoff_message=handoff,
-        ambient_dream_id=dream_id,
+        handoff_message=voiced.handoff_message,
+        ambient_dream_id=voiced.dream_id,
+        ambient_dream_expires_at=voiced.expires_at,
     )
 
 

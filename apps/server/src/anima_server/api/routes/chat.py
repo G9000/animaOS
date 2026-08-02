@@ -375,6 +375,16 @@ async def get_greeting(
         # then the claim expires and the dream is offered again — a dropped
         # response no longer silences it.
         "ambientDreamId": result.ambient_dream_id,
+        # IL-015 (PR #135 review): when the claim behind this greeting goes
+        # stale. A client that STORES the response for a later mount instead
+        # of rendering it now must drop the stored copy at this deadline —
+        # past it the server may re-offer the same narrative, and replaying
+        # the stored greeting would disclose the dream twice.
+        "ambientDreamExpiresAt": (
+            result.ambient_dream_expires_at.isoformat()
+            if result.ambient_dream_expires_at is not None
+            else None
+        ),
         # The same greeting WITHOUT the dream sentence, for surfaces that
         # forward greeting text into an LLM prompt (the dashboard "explore"
         # handoff). Null when `message` is already dream-free.

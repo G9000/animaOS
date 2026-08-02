@@ -733,3 +733,104 @@ def test_acknowledged_dream_is_invisible_to_the_initiative_path(soul_db) -> None
         )
         == ""
     )
+
+
+def test_greeting_states_when_its_claim_expires(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (PR #135 review, P1): the client may STORE a dream-bearing
+    greeting for a later mount, and that stored copy must die with the claim
+    behind it — past the deadline the same dream becomes offerable again, so
+    replaying the stored greeting would disclose it twice. The client cannot
+    compute the deadline (the TTL is server config), so the response carries
+    it."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+    before = datetime.now(UTC)
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+
+    assert result.ambient_dream_id is not None
+    expires_at = result.ambient_dream_expires_at
+    assert expires_at is not None
+    ttl = timedelta(minutes=settings.dream_claim_ttl_minutes)
+    # The stated deadline is exactly the claim's: claimed_at + TTL, and the
+    # claim was taken during this call.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    claimed_at = row.claimed_at
+    if claimed_at.tzinfo is None:
+        claimed_at = claimed_at.replace(tzinfo=UTC)
+    assert expires_at == claimed_at + ttl
+    assert before + ttl <= expires_at <= datetime.now(UTC) + ttl
+
+
+def test_expiry_is_the_same_instant_the_server_re_offers_the_dream(soul_db) -> None:
+    """The deadline handed to the client must not be looser than the one the
+    server enforces, or a stored greeting could still be voiced after another
+    channel took the dream."""
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_expires_at,
+        offerable_dream_query,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    deadline = claim_expires_at(claim.claimed_at)
+
+    # Up to and including the stated deadline the claim still suppresses
+    # re-offering; only past it does the dream become offerable again. The
+    # client therefore stops showing its stored copy no LATER than the server
+    # starts re-offering — never the reverse, which is the direction that
+    # would allow a double disclosure.
+    assert soul_db.scalars(offerable_dream_query(user_id, now=deadline)).first() is None
+    assert (
+        soul_db.scalars(
+            offerable_dream_query(user_id, now=deadline + timedelta(microseconds=1))
+        ).first()
+        is not None
+    )
+
+
+def test_no_dream_means_no_expiry(soul_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db, dream_sharing="off")
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+    assert result.ambient_dream_expires_at is None
+
+
+def test_released_claim_reports_no_expiry(
+    soul_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consent withdrawn mid-generation releases the claim unvoiced — there
+    is nothing for the client to store, so there is no deadline either."""
+    import asyncio
+
+    from anima_server.config import settings
+    from anima_server.services.agent.proactive import generate_greeting
+
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    user_id = _seed(soul_db)
+
+    def optout_mid_generation(runtime_db, *, user_id):
+        cfg = get_or_create_presence_config(soul_db, user_id)
+        cfg.dream_sharing = "off"
+        soul_db.commit()
+
+    monkeypatch.setattr(
+        proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation
+    )
+    result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
+
+    assert result.ambient_dream_id is None
+    assert result.ambient_dream_expires_at is None
+    assert "boat you restored" not in result.message

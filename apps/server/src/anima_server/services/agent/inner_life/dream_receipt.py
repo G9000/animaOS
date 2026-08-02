@@ -42,10 +42,21 @@ def claim_cutoff(now: datetime | None = None) -> datetime:
     return reference - timedelta(minutes=settings.dream_claim_ttl_minutes)
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+def claim_expires_at(claimed_at: datetime) -> datetime:
+    """When a claim taken at ``claimed_at`` goes stale and may be re-offered.
+
+    Handed to the client with the greeting (PR #135 review, P1): a
+    dream-bearing response the browser stores for later — the Dashboard's
+    one-shot handoff — must not outlive the claim behind it. Past this
+    instant the server may offer the same narrative through an initiative
+    or a fresh greeting, so replaying the stored copy would disclose it
+    twice. The client cannot compute the deadline itself; the TTL is server
+    configuration, so the server states it.
+    """
+    reference = (
+        claimed_at if claimed_at.tzinfo is not None else claimed_at.replace(tzinfo=UTC)
+    )
+    return reference + timedelta(minutes=settings.dream_claim_ttl_minutes)
 
 
 def offerable_dream_query(user_id: int, *, now: datetime | None = None):

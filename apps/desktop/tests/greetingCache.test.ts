@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Greeting } from "@anima/api-client";
 
 import { setUnlockToken, clearUnlockToken } from "../src/lib/api";
 import {
   ambientConsentAllows,
+  dreamClaimExpired,
+  ONESHOT_FALLBACK_TTL_MS,
   getCachedGreeting,
   peekOneShotGreeting,
   purgeGreetingStorage,
@@ -148,5 +150,78 @@ describe("origin-session binding (PR #130 round 9)", () => {
     clearUnlockToken();
     stashOneShotGreeting(7, greeting({ ambientDream: true }), null);
     expect(peekOneShotGreeting(7)).toBe(false);
+  });
+});
+
+describe("stashed dreams die with their server claim (PR #135 review)", () => {
+  // Time is faked rather than slept through: these deadlines are minutes
+  // long and the assertions are about ordering, not duration.
+  const realNow = Date.now;
+  const at = (ms: number) => {
+    Date.now = () => ms;
+  };
+  const T0 = 1_800_000_000_000;
+  const dream = (expiresAt: string | null | undefined, message = "dreamy") =>
+    greeting({ ambientDream: true, ambientDreamId: 42, message, ambientDreamExpiresAt: expiresAt });
+
+  beforeEach(() => at(T0));
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  test("a stash held past the claim deadline is dropped, not replayed", () => {
+    // The dream was CLAIMED, not surfaced: once the claim expires the server
+    // may voice the same narrative through an initiative or a fresh
+    // greeting, so replaying this copy would disclose it twice.
+    stashOneShotGreeting(7, dream(new Date(T0 + 60_000).toISOString()));
+    expect(peekOneShotGreeting(7)).toBe(true);
+
+    at(T0 + 59_000);
+    expect(peekOneShotGreeting(7)).toBe(true); // still inside the claim
+
+    at(T0 + 61_000);
+    expect(peekOneShotGreeting(7)).toBe(false);
+    expect(takeOneShotGreeting(7)).toBeNull();
+  });
+
+  test("an expired entry is purged from storage, not merely hidden", () => {
+    stashOneShotGreeting(7, dream(new Date(T0 + 60_000).toISOString()));
+    at(T0 + 61_000);
+    peekOneShotGreeting(7);
+    expect(store.get("anima_dashboard_greeting_oneshot")).toBeUndefined();
+  });
+
+  test("only the expired entry is dropped — live siblings survive", () => {
+    stashOneShotGreeting(7, dream(new Date(T0 + 60_000).toISOString(), "early"));
+    stashOneShotGreeting(7, dream(new Date(T0 + 600_000).toISOString(), "late"));
+    at(T0 + 61_000);
+    expect(takeOneShotGreeting(7)?.message).toBe("late");
+  });
+
+  test("a response that arrives already expired is never stashed", () => {
+    stashOneShotGreeting(7, dream(new Date(T0 - 1_000).toISOString()));
+    expect(peekOneShotGreeting(7)).toBe(false);
+  });
+
+  test("no stated deadline falls back to a bounded lifetime", () => {
+    // An older server (or a lost field) must not produce an immortal stash.
+    stashOneShotGreeting(7, dream(undefined));
+    expect(peekOneShotGreeting(7)).toBe(true);
+    at(T0 + ONESHOT_FALLBACK_TTL_MS + 1);
+    expect(peekOneShotGreeting(7)).toBe(false);
+  });
+
+  test("an unparseable deadline falls back rather than expiring instantly", () => {
+    stashOneShotGreeting(7, dream("not a date"));
+    expect(takeOneShotGreeting(7)?.message).toBe("dreamy");
+  });
+
+  test("dreamClaimExpired only ever fires for dream-bearing greetings", () => {
+    const past = new Date(T0 - 1).toISOString();
+    expect(dreamClaimExpired(dream(past))).toBe(true);
+    expect(dreamClaimExpired(dream(new Date(T0 + 1).toISOString()))).toBe(false);
+    // A plain greeting carries no claim, so it never expires — even if some
+    // stale expiry field rode along.
+    expect(dreamClaimExpired(greeting({ ambientDreamExpiresAt: past }))).toBe(false);
   });
 });

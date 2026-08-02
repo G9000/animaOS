@@ -66,21 +66,83 @@ export function setCachedGreeting(userId: number, greeting: Greeting): void {
   }
 }
 
-// IL-010 (PR #130 review): durable handoff for a dream-bearing greeting that
-// arrives after the Dashboard unmounted. The response has already consumed
-// the dream server-side; discarding it would silence the dream forever, so
-// the success handler stashes it here and the next Dashboard mount displays
-// it exactly once.
+// IL-010 (PR #130 review): handoff for a dream-bearing greeting that arrives
+// after the Dashboard unmounted. The dream is CLAIMED server-side, so the
+// success handler stashes the response here and the next Dashboard mount
+// displays it exactly once — but only while the claim is still live
+// (IL-015 / PR #135 review): past the claim deadline the server may offer
+// the same dream through another channel, so the stash is dropped instead.
 export const GREETING_ONESHOT_KEY = "anima_dashboard_greeting_oneshot";
 
-type OneShotEntry = { greeting: Greeting; userId: number };
+/**
+ * Fallback lifetime for a stashed dream whose response carried no
+ * `ambientDreamExpiresAt` (PR #135 review) — an older server, or a field
+ * lost in transit. Deliberately conservative: the real deadline is the
+ * server's `dream_claim_ttl_minutes` (default 10), and expiring a shade
+ * early only costs a re-offer, while expiring late risks voicing the same
+ * dream through two channels.
+ */
+export const ONESHOT_FALLBACK_TTL_MS = 10 * 60 * 1000;
 
+type OneShotEntry = {
+  greeting: Greeting;
+  userId: number;
+  /** Epoch ms after which this entry must not be displayed — the server's
+   * claim deadline. Entries stashed before this field existed have none and
+   * are treated as already expired rather than shown unbounded. */
+  expiresAt?: number;
+};
+
+/** Epoch ms at which a stashed dream-bearing greeting stops being safe to
+ * show. The server states the deadline because the TTL is its
+ * configuration; a malformed or missing value falls back to the stash time
+ * plus {@link ONESHOT_FALLBACK_TTL_MS}. */
+function oneShotExpiryFor(greeting: Greeting, now: number): number {
+  const stated = greeting.ambientDreamExpiresAt;
+  if (stated) {
+    const parsed = Date.parse(stated);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return now + ONESHOT_FALLBACK_TTL_MS;
+}
+
+/** Whether a dream-bearing greeting arrived (or was held) past the deadline
+ * of the claim behind it — after which the server may offer the same dream
+ * through another channel, so this copy must not be voiced. Greetings
+ * carrying no dream are never expired. */
+export function dreamClaimExpired(
+  greeting: Greeting,
+  now: number = Date.now(),
+): boolean {
+  if (!greeting.ambientDream) return false;
+  return oneShotExpiryFor(greeting, now) <= now;
+}
+
+function isLive(entry: OneShotEntry, now: number): boolean {
+  return typeof entry.expiresAt === "number" && entry.expiresAt > now;
+}
+
+/** Reads the queue with expired entries dropped, persisting the prune.
+ *
+ * A stashed greeting outliving its server-side claim is a duplicate
+ * disclosure, not just a stale UI (PR #135 review, P1): once the claim
+ * expires the dream becomes offerable again, so an initiative or a fresh
+ * greeting can voice it while this copy still sits in sessionStorage.
+ * Dropping it is now cheap — under IL-015 an unacknowledged dream is NOT
+ * consumed, so the server simply offers it again.
+ */
 function readOneShotQueue(): OneShotEntry[] {
   try {
     const raw = sessionStorage.getItem(GREETING_ONESHOT_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as OneShotEntry[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    const now = Date.now();
+    const live = (parsed as OneShotEntry[]).filter((entry) =>
+      isLive(entry, now),
+    );
+    if (live.length !== parsed.length) writeOneShotQueue(live);
+    return live;
   } catch {
     return [];
   }
@@ -113,7 +175,15 @@ export function stashOneShotGreeting(
   const live = getUnlockToken();
   if (!live) return; // logged out or locked
   if (originUnlockToken !== undefined && originUnlockToken !== live) return;
-  writeOneShotQueue([...readOneShotQueue(), { greeting, userId }]);
+  const now = Date.now();
+  const expiresAt = oneShotExpiryFor(greeting, now);
+  // Already past the claim deadline when it arrived (a very slow response):
+  // storing it would only queue a duplicate disclosure.
+  if (expiresAt <= now) return;
+  writeOneShotQueue([
+    ...readOneShotQueue(),
+    { greeting, userId, expiresAt },
+  ]);
 }
 
 /** Drop every pending handoff and the greeting cache — called when the
