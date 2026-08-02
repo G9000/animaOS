@@ -4,7 +4,7 @@ use std::{
     io::{self, Cursor},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
@@ -24,12 +24,12 @@ use super::preparation::{
     PreparationBeginRequest, PreparationCas, PreparationError, PreparationHeadRecord,
     PreparationIdentity, PreparationOpenDisposition, PreparationPageLimits,
     PreparationPublicationTarget, PreparationReceipt, PreparationReceiptOutcome,
-    PreparationReconciliationRequest, PreparationReferenceKind, PreparationSegmentReference,
-    PreparationSnapshot, PreparationState, PreparationTestLimits, PrepareObjectDisposition,
-    PrepareObjectRequest, PreparedObjectDescriptor, PreparedObjectDescriptorSegment,
-    WrappedObjectDekWire, MAX_FINAL_INTENT_ENTRY_BYTES,
+    PreparationReconciliationCursor, PreparationReconciliationRequest, PreparationReferenceKind,
+    PreparationSegmentReference, PreparationSnapshot, PreparationState, PreparationTestLimits,
+    PrepareObjectDisposition, PrepareObjectRequest, PreparedObjectDescriptor,
+    PreparedObjectDescriptorSegment, WrappedObjectDekWire, MAX_FINAL_INTENT_ENTRY_BYTES,
 };
-use super::CoreCommitCoordinator;
+use super::{CoreCommitCoordinator, PreparationTestInstrumentation};
 
 const CORE_ID: &str = "01J00000000000000000000001";
 const OTHER_CORE_ID: &str = "01J00000000000000000000002";
@@ -165,6 +165,7 @@ fn descriptor_segment() -> PreparedObjectDescriptorSegment {
             content_type: "application/vnd.anima.diary+json;version=1".to_owned(),
             body_encoding: "utf-8".to_owned(),
             body_length: 1024,
+            logical_body_length: None,
             created_at: "2026-08-02T00:00:00Z".to_owned(),
             updated_at: "2026-08-02T00:00:00Z".to_owned(),
             source_character_count: Some(5),
@@ -1192,6 +1193,8 @@ mod prepare_object {
         let limits = PreparationTestLimits {
             descriptor_segment_items: 2,
             max_object_plaintext_bytes: 1024,
+            logical_plaintext_bytes: None,
+            instrumentation: None,
         };
         let mut ciphertext_total = 0_u64;
         for index in 0..3_u8 {
@@ -1226,7 +1229,7 @@ mod prepare_object {
                     },
                     &request,
                     &mut Cursor::new(&body),
-                    limits,
+                    limits.clone(),
                 )
                 .unwrap();
             ciphertext_total = ciphertext_total
@@ -1253,7 +1256,10 @@ mod prepare_object {
             .unwrap();
         assert_eq!(first_page.items.len(), 1);
         assert_eq!(first_page.descriptor_segment_roots.len(), 1);
-        assert_eq!(first_page.next_cursor, Some(1));
+        assert_eq!(
+            first_page.next_cursor,
+            Some(PreparationReconciliationCursor { position: 1 })
+        );
         let first = &first_page.items[0];
         assert_eq!(first.kind, ObjectKind::Diary);
         assert_eq!(
@@ -1477,38 +1483,231 @@ mod prepare_object {
             Err(PreparationError::LimitExceeded("reconciliation page"))
         ));
     }
+
+    #[test]
+    fn reconciliation_count_limit_applies_across_items_missing_and_conflicting_identities() {
+        let test_core = TestCore::new("prepare-page-count");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let body = br#"{"html":"hello"}"#;
+        coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &object_request(body),
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+        let conflicting = PreparationIdentity {
+            object_id: STABLE_ID.to_owned(),
+            revision: 1,
+            content_sha256: HASH_A.to_owned(),
+        };
+        let missing = (0..3_u8)
+            .map(|index| PreparationIdentity {
+                object_id: crate::id::OpaqueId::derive_migration(
+                    "prepare-page-count-missing",
+                    &[index],
+                )
+                .unwrap()
+                .as_str()
+                .to_owned(),
+                revision: 1,
+                content_sha256: HASH_A.to_owned(),
+            })
+            .collect::<Vec<_>>();
+
+        let expected = std::iter::once(conflicting.clone())
+            .chain(missing.clone())
+            .collect::<Vec<_>>();
+        let mut cursor = None;
+        let mut cursor_positions = std::collections::HashSet::new();
+        let mut item_ids = Vec::new();
+        let mut missing_ids = Vec::new();
+        let mut conflicting_ids = Vec::new();
+        loop {
+            let page = coordinator
+                .reconcile_prepared_objects(
+                    &keys(3),
+                    &PreparationReconciliationRequest {
+                        cursor,
+                        limits: PreparationPageLimits {
+                            max_items: 1,
+                            max_bytes: 4096,
+                        },
+                        expected: expected.clone(),
+                    },
+                )
+                .unwrap();
+            assert!(
+                page.items.len() + page.missing.len() + page.conflicting.len() <= 1,
+                "one page returned more classifications than its unified item budget: {page:?}"
+            );
+            let encoded = serde_json::to_vec(&page).unwrap();
+            assert_eq!(encoded.len(), page.encoded_bytes as usize);
+            assert!(encoded.len() <= 4096);
+            item_ids.extend(page.items.into_iter().map(|item| item.object_id));
+            missing_ids.extend(page.missing.into_iter().map(|identity| identity.object_id));
+            conflicting_ids.extend(
+                page.conflicting
+                    .into_iter()
+                    .map(|identity| identity.object_id),
+            );
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            assert!(
+                cursor_positions.insert(next.position),
+                "reconciliation cursor failed to progress"
+            );
+            cursor = Some(next);
+        }
+        assert_eq!(item_ids, vec![STABLE_ID.to_owned()]);
+        assert_eq!(conflicting_ids, vec![conflicting.object_id]);
+        assert_eq!(
+            missing_ids,
+            missing
+                .into_iter()
+                .map(|identity| identity.object_id)
+                .collect::<Vec<_>>()
+        );
+
+        let spacious = coordinator
+            .reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: expected.clone(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            coordinator.reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: spacious.encoded_bytes - 1,
+                    },
+                    expected,
+                },
+            ),
+            Err(PreparationError::LimitExceeded("reconciliation item"))
+        ));
+    }
+
+    #[test]
+    fn reconciliation_authenticates_matching_identity_only_when_its_page_is_processed() {
+        let test_core = TestCore::new("prepare-page-auth");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let mut status = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let mut second_identity = None;
+        let mut second_path = None;
+        for index in 0..2_u8 {
+            let before = std::fs::read_dir(test_core.root.join("objects"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<std::collections::HashSet<_>>();
+            let body = format!(r#"{{"html":"entry-{index}"}}"#).into_bytes();
+            let mut request = object_request(&body);
+            request.object_id =
+                crate::id::OpaqueId::derive_migration("prepare-page-auth", &[index])
+                    .unwrap()
+                    .as_str()
+                    .to_owned();
+            request.name = format!("entry-{index}.diary.json");
+            status = coordinator
+                .prepare_object(
+                    &keys(3),
+                    &PreparationCas {
+                        pointer_sha256: status.pointer_sha256,
+                        snapshot_sequence: status.snapshot_sequence,
+                    },
+                    &request,
+                    &mut Cursor::new(&body),
+                )
+                .unwrap()
+                .status;
+            if index == 1 {
+                second_identity = Some(PreparationIdentity {
+                    object_id: request.object_id,
+                    revision: request.revision,
+                    content_sha256: request.content_sha256,
+                });
+                second_path = std::fs::read_dir(test_core.root.join("objects"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| !before.contains(path));
+            }
+        }
+        let second_path = second_path.expect("second object publication");
+        let mut encoded = std::fs::read(&second_path).unwrap();
+        *encoded.last_mut().unwrap() ^= 0x01;
+        std::fs::write(&second_path, encoded).unwrap();
+
+        let expected = vec![second_identity.unwrap()];
+        let first = coordinator
+            .reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: expected.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(first.items.len(), 1);
+        assert!(first.missing.is_empty());
+        assert!(first.conflicting.is_empty());
+        assert!(first.next_cursor.is_some());
+        assert!(matches!(
+            coordinator.reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: first.next_cursor,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: expected.clone(),
+                },
+            ),
+            Err(PreparationError::Commit(_))
+        ));
+        assert!(matches!(
+            coordinator.reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: Some(PreparationReconciliationCursor { position: 2 }),
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected,
+                },
+            ),
+            Err(PreparationError::Commit(_))
+        ));
+    }
 }
 
 mod bounded_large_corpus {
     use super::*;
-
-    struct TrackedBody {
-        cursor: Cursor<Vec<u8>>,
-        active: Arc<AtomicUsize>,
-    }
-
-    impl TrackedBody {
-        fn new(body: Vec<u8>, active: Arc<AtomicUsize>, maximum: &AtomicUsize) -> Self {
-            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-            maximum.fetch_max(current, Ordering::SeqCst);
-            Self {
-                cursor: Cursor::new(body),
-                active,
-            }
-        }
-    }
-
-    impl io::Read for TrackedBody {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            self.cursor.read(buffer)
-        }
-    }
-
-    impl Drop for TrackedBody {
-        fn drop(&mut self) {
-            self.active.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
 
     #[test]
     fn bounded_large_corpus_owns_one_body_and_fixed_buffers_instead_of_a_corpus_vector() {
@@ -1522,11 +1721,12 @@ mod bounded_large_corpus {
         let mut status = coordinator
             .begin_or_resume_preparation(&keys(3), &begin_request())
             .unwrap();
-        let active = Arc::new(AtomicUsize::new(0));
-        let maximum = AtomicUsize::new(0);
+        let instrumentation = Arc::new(PreparationTestInstrumentation::default());
         let limits = PreparationTestLimits {
             descriptor_segment_items: 2,
             max_object_plaintext_bytes: TEST_ATTACHMENT_BYTES as u64,
+            logical_plaintext_bytes: Some(MODELLED_ATTACHMENT_BYTES),
+            instrumentation: Some(Arc::clone(&instrumentation)),
         };
 
         for index in 0..OBJECTS {
@@ -1542,7 +1742,7 @@ mod bounded_large_corpus {
             request.content_type = "application/octet-stream".to_owned();
             request.body_encoding = BodyEncoding::Binary;
             request.source_character_count = None;
-            let mut body = TrackedBody::new(bytes, Arc::clone(&active), &maximum);
+            let mut body = Cursor::new(bytes);
             status = coordinator
                 .prepare_object_with_limits(
                     &keys(3),
@@ -1552,20 +1752,38 @@ mod bounded_large_corpus {
                     },
                     &request,
                     &mut body,
-                    limits,
+                    limits.clone(),
                 )
                 .unwrap()
                 .status;
-            drop(body);
         }
 
         assert_eq!(status.total_objects, u32::from(OBJECTS));
         assert_eq!(
             status.total_plaintext_bytes,
-            TEST_ATTACHMENT_BYTES as u64 * u64::from(OBJECTS)
+            MODELLED_ATTACHMENT_BYTES * u64::from(OBJECTS)
         );
-        assert_eq!(maximum.load(Ordering::SeqCst), 1);
-        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(status.total_plaintext_bytes > 1024 * 1024 * 1024);
+        assert_eq!(instrumentation.peak_live_objects(), 1);
+        assert_eq!(
+            instrumentation.peak_plaintext_body_bytes(),
+            TEST_ATTACHMENT_BYTES
+        );
+        assert_eq!(
+            instrumentation.peak_encryption_chunk_bytes(),
+            TEST_ATTACHMENT_BYTES
+        );
+        assert_eq!(
+            instrumentation.peak_copy_buffer_bytes(),
+            super::super::COPY_BUFFER_SIZE
+        );
+        assert!(
+            instrumentation.peak_live_bytes()
+                <= TEST_ATTACHMENT_BYTES + super::super::COPY_BUFFER_SIZE,
+            "preparation retained more than one body plus its fixed buffer: {} bytes",
+            instrumentation.peak_live_bytes()
+        );
+        assert_eq!(instrumentation.live_bytes(), 0);
         assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
     }
 }

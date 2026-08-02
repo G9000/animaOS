@@ -24,6 +24,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
@@ -70,6 +72,8 @@ use crate::crypto::{
     OBJECT_KEY_ENVELOPE_VERSION,
 };
 use crate::crypto::{FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes};
+#[cfg(test)]
+use crate::envelope::BODY_CHUNK_PLAINTEXT_SIZE;
 use crate::envelope::{
     read_envelope, rotate_object_key_envelope, write_envelope, EnvelopeError, EnvelopeMetadata,
     MAX_ENVELOPE_SIZE,
@@ -98,6 +102,136 @@ const CUTOVER_COMPLETE_FILE: &str = "CUTOVER_COMPLETE";
 const COMMIT_LOCK_FILE: &str = "commit.lock";
 #[cfg(any(unix, test))]
 const COMMIT_LOCK_FILE_MODE: u32 = 0o600;
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(super) struct PreparationTestInstrumentation {
+    live_bytes: AtomicUsize,
+    peak_live_bytes: AtomicUsize,
+    live_objects: AtomicUsize,
+    peak_live_objects: AtomicUsize,
+    live_plaintext_body_bytes: AtomicUsize,
+    peak_plaintext_body_bytes: AtomicUsize,
+    live_encryption_chunk_bytes: AtomicUsize,
+    peak_encryption_chunk_bytes: AtomicUsize,
+    live_copy_buffer_bytes: AtomicUsize,
+    peak_copy_buffer_bytes: AtomicUsize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum PreparationTestAllocation {
+    PlaintextBody,
+    EncryptionChunk,
+    CopyBuffer,
+}
+
+#[cfg(test)]
+pub(super) struct PreparationTestAllocationGuard<'a> {
+    instrumentation: &'a PreparationTestInstrumentation,
+    allocation: PreparationTestAllocation,
+    bytes: usize,
+}
+
+#[cfg(test)]
+impl PreparationTestInstrumentation {
+    fn retain(
+        &self,
+        allocation: PreparationTestAllocation,
+        bytes: usize,
+    ) -> PreparationTestAllocationGuard<'_> {
+        let live = self.live_bytes.fetch_add(bytes, AtomicOrdering::SeqCst) + bytes;
+        self.peak_live_bytes.fetch_max(live, AtomicOrdering::SeqCst);
+        let (category_live, category_peak) = match allocation {
+            PreparationTestAllocation::PlaintextBody => {
+                let objects = self.live_objects.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                self.peak_live_objects
+                    .fetch_max(objects, AtomicOrdering::SeqCst);
+                (
+                    &self.live_plaintext_body_bytes,
+                    &self.peak_plaintext_body_bytes,
+                )
+            }
+            PreparationTestAllocation::EncryptionChunk => (
+                &self.live_encryption_chunk_bytes,
+                &self.peak_encryption_chunk_bytes,
+            ),
+            PreparationTestAllocation::CopyBuffer => {
+                (&self.live_copy_buffer_bytes, &self.peak_copy_buffer_bytes)
+            }
+        };
+        let category = category_live.fetch_add(bytes, AtomicOrdering::SeqCst) + bytes;
+        category_peak.fetch_max(category, AtomicOrdering::SeqCst);
+        PreparationTestAllocationGuard {
+            instrumentation: self,
+            allocation,
+            bytes,
+        }
+    }
+
+    pub(super) fn retain_plaintext_body(&self, bytes: usize) -> PreparationTestAllocationGuard<'_> {
+        self.retain(PreparationTestAllocation::PlaintextBody, bytes)
+    }
+
+    fn retain_encryption_chunk(&self, bytes: usize) -> PreparationTestAllocationGuard<'_> {
+        self.retain(PreparationTestAllocation::EncryptionChunk, bytes)
+    }
+
+    fn retain_copy_buffer(&self) -> PreparationTestAllocationGuard<'_> {
+        self.retain(PreparationTestAllocation::CopyBuffer, COPY_BUFFER_SIZE)
+    }
+
+    pub(super) fn live_bytes(&self) -> usize {
+        self.live_bytes.load(AtomicOrdering::SeqCst)
+    }
+
+    pub(super) fn peak_live_bytes(&self) -> usize {
+        self.peak_live_bytes.load(AtomicOrdering::SeqCst)
+    }
+
+    pub(super) fn peak_live_objects(&self) -> usize {
+        self.peak_live_objects.load(AtomicOrdering::SeqCst)
+    }
+
+    pub(super) fn peak_plaintext_body_bytes(&self) -> usize {
+        self.peak_plaintext_body_bytes.load(AtomicOrdering::SeqCst)
+    }
+
+    pub(super) fn peak_encryption_chunk_bytes(&self) -> usize {
+        self.peak_encryption_chunk_bytes
+            .load(AtomicOrdering::SeqCst)
+    }
+
+    pub(super) fn peak_copy_buffer_bytes(&self) -> usize {
+        self.peak_copy_buffer_bytes.load(AtomicOrdering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl Drop for PreparationTestAllocationGuard<'_> {
+    fn drop(&mut self) {
+        let (category_live, decrement_objects) = match self.allocation {
+            PreparationTestAllocation::PlaintextBody => {
+                (&self.instrumentation.live_plaintext_body_bytes, true)
+            }
+            PreparationTestAllocation::EncryptionChunk => {
+                (&self.instrumentation.live_encryption_chunk_bytes, false)
+            }
+            PreparationTestAllocation::CopyBuffer => {
+                (&self.instrumentation.live_copy_buffer_bytes, false)
+            }
+        };
+        category_live.fetch_sub(self.bytes, AtomicOrdering::SeqCst);
+        self.instrumentation
+            .live_bytes
+            .fetch_sub(self.bytes, AtomicOrdering::SeqCst);
+        if decrement_objects {
+            self.instrumentation
+                .live_objects
+                .fetch_sub(1, AtomicOrdering::SeqCst);
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessIdentity {
@@ -1953,6 +2087,7 @@ impl CoreCommitCoordinator {
         aad: &ObjectBaseAad,
         metadata: &EnvelopeMetadata,
         body: &mut R,
+        #[cfg(test)] instrumentation: Option<&PreparationTestInstrumentation>,
         hook: &mut H,
     ) -> Result<PreparedObjectRevision, CommitError>
     where
@@ -1967,13 +2102,25 @@ impl CoreCommitCoordinator {
             create_temporary_in(&self.objects_dir, OsStr::new("object"))?;
         hook(PublicationPhase::TemporaryCreated)?;
         let result = (|| {
+            #[cfg(test)]
+            let encryption_chunk = instrumentation.map(|instrumentation| {
+                let bytes = metadata.body_length.min(BODY_CHUNK_PLAINTEXT_SIZE as u64) as usize;
+                instrumentation.retain_encryption_chunk(bytes)
+            });
             write_envelope(&mut staged, object_key, aad, metadata, body)?;
+            #[cfg(test)]
+            drop(encryption_chunk);
             hook(PublicationPhase::PayloadWritten)?;
             staged.sync_all()?;
             hook(PublicationPhase::PayloadSynced)?;
             staged.seek(SeekFrom::Start(0))?;
+            #[cfg(test)]
+            let copy_buffer =
+                instrumentation.map(PreparationTestInstrumentation::retain_copy_buffer);
             let (encoded_size, encrypted_hash) =
                 copy_bounded(&mut staged, &mut io::sink(), MAX_ENVELOPE_SIZE)?;
+            #[cfg(test)]
+            drop(copy_buffer);
             self.finalize_staged_object_revision(
                 keys,
                 object_key,

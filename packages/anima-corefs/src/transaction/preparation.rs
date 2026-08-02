@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{self, Read};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::{
@@ -11,7 +13,7 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use cap_std::fs::Dir;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -210,23 +212,33 @@ pub(super) struct PreparationPageLimits {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PreparationReconciliationRequest {
-    pub(super) cursor: Option<u64>,
+    pub(super) cursor: Option<PreparationReconciliationCursor>,
     pub(super) limits: PreparationPageLimits,
     pub(super) expected: Vec<PreparationIdentity>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PreparationReconciliationCursor {
+    pub(super) position: u64,
+}
+
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct PreparationTestLimits {
     pub(super) descriptor_segment_items: usize,
     pub(super) max_object_plaintext_bytes: u64,
+    pub(super) logical_plaintext_bytes: Option<u64>,
+    pub(super) instrumentation: Option<Arc<super::PreparationTestInstrumentation>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PreparedObjectMetadata {
     pub(super) object_id: String,
     pub(super) revision: u64,
     pub(super) object_key_epoch: u32,
+    #[serde(serialize_with = "serialize_object_kind")]
     pub(super) kind: ObjectKind,
     pub(super) parent_id: String,
     pub(super) name: String,
@@ -238,6 +250,7 @@ pub(super) struct PreparedObjectMetadata {
     pub(super) updated_at: String,
     pub(super) source_character_count: Option<usize>,
     pub(super) references: Vec<String>,
+    #[serde(serialize_with = "serialize_validation_policy")]
     pub(super) policy: super::converter::ValidationBatchPolicy,
     pub(super) stable_role: Option<String>,
     pub(super) graph_metadata: BTreeMap<String, Value>,
@@ -247,7 +260,8 @@ pub(super) struct PreparedObjectMetadata {
     pub(super) ciphertext_bytes: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PreparationReconciliationPage {
     pub(super) prepared_count: u32,
     pub(super) total_plaintext_bytes: u64,
@@ -257,8 +271,25 @@ pub(super) struct PreparationReconciliationPage {
     pub(super) items: Vec<PreparedObjectMetadata>,
     pub(super) missing: Vec<PreparationIdentity>,
     pub(super) conflicting: Vec<PreparationIdentity>,
-    pub(super) next_cursor: Option<u64>,
+    pub(super) next_cursor: Option<PreparationReconciliationCursor>,
     pub(super) encoded_bytes: u32,
+}
+
+fn serialize_object_kind<S>(value: &ObjectKind, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(value.as_str())
+}
+
+fn serialize_validation_policy<S>(
+    value: &super::converter::ValidationBatchPolicy,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(policy_name(*value))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -443,6 +474,9 @@ pub(super) struct PreparedObjectDescriptor {
     pub(super) content_type: String,
     pub(super) body_encoding: String,
     pub(super) body_length: u64,
+    #[cfg(test)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) logical_body_length: Option<u64>,
     pub(super) created_at: String,
     pub(super) updated_at: String,
     pub(super) source_character_count: Option<u64>,
@@ -1506,6 +1540,10 @@ impl super::CoreCommitCoordinator {
             body,
             MAX_SEGMENT_ITEMS,
             u64::MAX,
+            #[cfg(test)]
+            None,
+            #[cfg(test)]
+            None,
             &mut |_, _| Ok(()),
         )
     }
@@ -1526,6 +1564,8 @@ impl super::CoreCommitCoordinator {
             body,
             limits.descriptor_segment_items,
             limits.max_object_plaintext_bytes,
+            limits.logical_plaintext_bytes,
+            limits.instrumentation.as_deref(),
             &mut |_, _| Ok(()),
         )
     }
@@ -1550,6 +1590,8 @@ impl super::CoreCommitCoordinator {
             body,
             MAX_SEGMENT_ITEMS,
             u64::MAX,
+            None,
+            None,
             hook,
         )
     }
@@ -1562,6 +1604,8 @@ impl super::CoreCommitCoordinator {
         body: &mut R,
         descriptor_segment_items: usize,
         max_object_plaintext_bytes: u64,
+        #[cfg(test)] logical_plaintext_bytes: Option<u64>,
+        #[cfg(test)] instrumentation: Option<&super::PreparationTestInstrumentation>,
         hook: &mut F,
     ) -> Result<PrepareObjectOutcome, PreparationError>
     where
@@ -1596,6 +1640,14 @@ impl super::CoreCommitCoordinator {
             drop(commit_lock);
         }
 
+        #[cfg(test)]
+        let _plaintext_body = instrumentation
+            .map(|instrumentation| {
+                usize::try_from(request.body_length)
+                    .map(|bytes| instrumentation.retain_plaintext_body(bytes))
+            })
+            .transpose()
+            .map_err(|_| PreparationError::LimitExceeded("test plaintext body"))?;
         let metadata = envelope_metadata_for_request(request)?;
         let envelope_metadata_sha256 = envelope_metadata_sha256(&metadata)?;
         let object_key = generate_object_dek().map_err(super::CommitError::from)?;
@@ -1614,11 +1666,19 @@ impl super::CoreCommitCoordinator {
             &aad,
             &metadata,
             body,
+            #[cfg(test)]
+            instrumentation,
             &mut |phase| hook(PreparationPublicationTarget::Object, phase),
         )?;
         self.validate_prepared_revision_file(&prepared)?;
-        let descriptor =
-            descriptor_from_prepared(request, &prepared, &envelope_metadata_sha256, 0)?;
+        let descriptor = descriptor_from_prepared(
+            request,
+            &prepared,
+            &envelope_metadata_sha256,
+            0,
+            #[cfg(test)]
+            logical_plaintext_bytes,
+        )?;
 
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
@@ -1668,9 +1728,13 @@ impl super::CoreCommitCoordinator {
             return Err(PreparationError::LimitExceeded("total objects"));
         }
         next_snapshot.total_objects = next_total_objects;
+        #[cfg(not(test))]
+        let accounted_plaintext_bytes = request.body_length;
+        #[cfg(test)]
+        let accounted_plaintext_bytes = logical_plaintext_bytes.unwrap_or(request.body_length);
         next_snapshot.total_plaintext_bytes = next_snapshot
             .total_plaintext_bytes
-            .checked_add(request.body_length)
+            .checked_add(accounted_plaintext_bytes)
             .ok_or(PreparationError::LimitExceeded("total plaintext bytes"))?;
         next_snapshot.total_ciphertext_bytes = next_snapshot
             .total_ciphertext_bytes
@@ -1948,6 +2012,7 @@ fn descriptor_from_prepared(
     prepared: &super::PreparedObjectRevision,
     envelope_metadata_sha256: &str,
     preparation_ordinal: u64,
+    #[cfg(test)] logical_body_length: Option<u64>,
 ) -> Result<PreparedObjectDescriptor, PreparationError> {
     let wrapped = prepared
         .wrapped_dek
@@ -1967,6 +2032,8 @@ fn descriptor_from_prepared(
         content_type: request.content_type.clone(),
         body_encoding: body_encoding_name(request.body_encoding).to_owned(),
         body_length: request.body_length,
+        #[cfg(test)]
+        logical_body_length,
         created_at: request.created_at.clone(),
         updated_at: request.updated_at.clone(),
         source_character_count: request
@@ -2223,14 +2290,14 @@ fn validate_reconciliation_request(
             return Err(PreparationError::InvalidFormat("reconciliation identity"));
         }
     }
-    bounded_json_to_vec(&request.expected, request.limits.max_bytes as usize).map_err(|error| {
-        match error {
+    bounded_json_to_vec(&request.expected, MAX_RECONCILIATION_PAGE_BYTES as usize).map_err(
+        |error| match error {
             BoundedJsonError::LimitExceeded => {
-                PreparationError::LimitExceeded("reconciliation page")
+                PreparationError::LimitExceeded("reconciliation request")
             }
             BoundedJsonError::Json(error) => PreparationError::Json(error),
-        }
-    })?;
+        },
+    )?;
     Ok(())
 }
 
@@ -2241,95 +2308,151 @@ fn reconciliation_page(
     keys: &FrkSubkeys,
     request: &PreparationReconciliationRequest,
 ) -> Result<PreparationReconciliationPage, PreparationError> {
-    let cursor = request.cursor.unwrap_or(0);
-    if cursor > u64::from(loaded.snapshot.total_objects) {
+    let prepared_count = u64::from(loaded.snapshot.total_objects);
+    let expected_count = u64::try_from(request.expected.len())
+        .map_err(|_| PreparationError::LimitExceeded("reconciliation request"))?;
+    let sequence_length = prepared_count
+        .checked_add(expected_count)
+        .ok_or(PreparationError::LimitExceeded("reconciliation cursor"))?;
+    let mut position = request.cursor.as_ref().map_or(0, |cursor| cursor.position);
+    if position > sequence_length {
         return Err(PreparationError::InvalidFormat("reconciliation cursor"));
     }
-    let mut expected: BTreeMap<_, _> = request
-        .expected
-        .iter()
-        .map(|identity| (identity.object_id.as_str(), (identity, None::<bool>)))
-        .collect();
-    let mut items = Vec::new();
-    let mut descriptor_segment_roots = Vec::new();
-    let mut encoded_bytes = 0_usize;
-    let mut next_cursor = None;
-    for reference in &loaded.snapshot.manifest_segments {
-        let segment = read_descriptor_segment(layout, &loaded.snapshot, keys, reference)?;
-        let mut included_segment = false;
-        for descriptor in &segment.descriptors {
-            if let Some((identity, state)) = expected.get_mut(descriptor.stable_id.as_str()) {
-                *state = Some(
-                    descriptor.revision == identity.revision
-                        && descriptor.content_sha256 == identity.content_sha256,
-                );
-            }
-            if descriptor.preparation_ordinal < cursor || next_cursor.is_some() {
-                continue;
-            }
-            if items.len() >= request.limits.max_items as usize {
-                next_cursor = Some(descriptor.preparation_ordinal);
-                continue;
-            }
-            let metadata = descriptor_metadata(descriptor)?;
-            let item_bytes = serde_json::to_vec(descriptor)?.len();
-            let root_bytes = if included_segment {
-                0
-            } else {
-                reference.ciphertext_sha256.len()
-            };
-            if encoded_bytes
-                .checked_add(item_bytes)
-                .and_then(|value| value.checked_add(root_bytes))
-                .is_none_or(|value| value > request.limits.max_bytes as usize)
-            {
-                if items.is_empty() {
-                    return Err(PreparationError::LimitExceeded("reconciliation item"));
-                }
-                next_cursor = Some(descriptor.preparation_ordinal);
-                continue;
-            }
-            let prepared = prepared_revision_from_descriptor(descriptor)?;
-            coordinator.validate_prepared_revision_file(&prepared)?;
-            encoded_bytes += item_bytes + root_bytes;
-            if !included_segment {
-                descriptor_segment_roots.push(reference.ciphertext_sha256.clone());
-                included_segment = true;
-            }
-            items.push(metadata);
-        }
-    }
-    let mut missing = Vec::new();
-    let mut conflicting = Vec::new();
-    for (_, (identity, state)) in expected {
-        match state {
-            None => missing.push(identity.clone()),
-            Some(false) => conflicting.push(identity.clone()),
-            Some(true) => {}
-        }
-    }
-    let missing_bytes = serde_json::to_vec(&missing)?.len();
-    let conflicting_bytes = serde_json::to_vec(&conflicting)?.len();
-    encoded_bytes = encoded_bytes
-        .checked_add(missing_bytes)
-        .and_then(|value| value.checked_add(conflicting_bytes))
-        .ok_or(PreparationError::LimitExceeded("reconciliation page"))?;
-    if encoded_bytes > request.limits.max_bytes as usize {
-        return Err(PreparationError::LimitExceeded("reconciliation page"));
-    }
-    Ok(PreparationReconciliationPage {
+    let mut page = PreparationReconciliationPage {
         prepared_count: loaded.snapshot.total_objects,
         total_plaintext_bytes: loaded.snapshot.total_plaintext_bytes,
         total_ciphertext_bytes: loaded.snapshot.total_ciphertext_bytes,
         descriptor_manifest_root_sha256: loaded.snapshot.manifest_root_sha256.clone(),
-        descriptor_segment_roots,
-        items,
-        missing,
-        conflicting,
-        next_cursor,
-        encoded_bytes: u32::try_from(encoded_bytes)
-            .map_err(|_| PreparationError::LimitExceeded("reconciliation page"))?,
-    })
+        descriptor_segment_roots: Vec::new(),
+        items: Vec::new(),
+        missing: Vec::new(),
+        conflicting: Vec::new(),
+        next_cursor: (position < sequence_length)
+            .then_some(PreparationReconciliationCursor { position }),
+        encoded_bytes: 0,
+    };
+    let mut consumed = 0_u32;
+    while position < sequence_length && consumed < request.limits.max_items {
+        let mut candidate = page.clone();
+        let mut prepared_to_authenticate = None;
+        if position < prepared_count {
+            let (descriptor, segment_root) =
+                descriptor_at_ordinal(layout, &loaded.snapshot, keys, position)?;
+            candidate.items.push(descriptor_metadata(&descriptor)?);
+            if !candidate.descriptor_segment_roots.contains(&segment_root) {
+                candidate.descriptor_segment_roots.push(segment_root);
+            }
+            prepared_to_authenticate = Some(prepared_revision_from_descriptor(&descriptor)?);
+        } else {
+            let expected_index = usize::try_from(position - prepared_count)
+                .map_err(|_| PreparationError::InvalidFormat("reconciliation cursor"))?;
+            let identity = request
+                .expected
+                .get(expected_index)
+                .ok_or(PreparationError::InvalidFormat("reconciliation cursor"))?;
+            match descriptor_for_identity(layout, &loaded.snapshot, keys, &identity.object_id)? {
+                None => candidate.missing.push(identity.clone()),
+                Some(descriptor)
+                    if descriptor.revision == identity.revision
+                        && descriptor.content_sha256 == identity.content_sha256 =>
+                {
+                    prepared_to_authenticate =
+                        Some(prepared_revision_from_descriptor(&descriptor)?);
+                }
+                Some(_) => candidate.conflicting.push(identity.clone()),
+            }
+        }
+
+        let next_position = position
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("reconciliation cursor"))?;
+        candidate.next_cursor =
+            (next_position < sequence_length).then_some(PreparationReconciliationCursor {
+                position: next_position,
+            });
+        candidate = encode_reconciliation_page(candidate)?;
+        if candidate.encoded_bytes > request.limits.max_bytes {
+            if consumed == 0 {
+                return Err(PreparationError::LimitExceeded("reconciliation item"));
+            }
+            break;
+        }
+        if let Some(prepared) = prepared_to_authenticate {
+            coordinator.validate_prepared_revision_file(&prepared)?;
+        }
+        page = candidate;
+        position = next_position;
+        consumed += 1;
+    }
+
+    page = encode_reconciliation_page(page)?;
+    if page.encoded_bytes > request.limits.max_bytes {
+        return Err(PreparationError::LimitExceeded("reconciliation page"));
+    }
+    Ok(page)
+}
+
+fn descriptor_at_ordinal(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+    ordinal: u64,
+) -> Result<(PreparedObjectDescriptor, String), PreparationError> {
+    let mut first_ordinal = 0_u64;
+    for reference in &snapshot.manifest_segments {
+        let next_ordinal = first_ordinal
+            .checked_add(u64::from(reference.item_count))
+            .ok_or(PreparationError::CorruptSnapshot)?;
+        if ordinal >= next_ordinal {
+            first_ordinal = next_ordinal;
+            continue;
+        }
+        let segment = read_descriptor_segment(layout, snapshot, keys, reference)?;
+        if let Some(descriptor) = segment
+            .descriptors
+            .into_iter()
+            .find(|descriptor| descriptor.preparation_ordinal == ordinal)
+        {
+            return Ok((descriptor, reference.ciphertext_sha256.clone()));
+        }
+        return Err(PreparationError::CorruptSnapshot);
+    }
+    Err(PreparationError::CorruptSnapshot)
+}
+
+fn descriptor_for_identity(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+    object_id: &str,
+) -> Result<Option<PreparedObjectDescriptor>, PreparationError> {
+    for reference in &snapshot.manifest_segments {
+        let segment = read_descriptor_segment(layout, snapshot, keys, reference)?;
+        if let Some(descriptor) = segment
+            .descriptors
+            .into_iter()
+            .find(|descriptor| descriptor.stable_id == object_id)
+        {
+            return Ok(Some(descriptor));
+        }
+    }
+    Ok(None)
+}
+
+fn encode_reconciliation_page(
+    mut page: PreparationReconciliationPage,
+) -> Result<PreparationReconciliationPage, PreparationError> {
+    for _ in 0..8 {
+        let encoded_bytes = u32::try_from(serde_json::to_vec(&page)?.len())
+            .map_err(|_| PreparationError::LimitExceeded("reconciliation page"))?;
+        if page.encoded_bytes == encoded_bytes {
+            return Ok(page);
+        }
+        page.encoded_bytes = encoded_bytes;
+    }
+    Err(PreparationError::InvalidFormat(
+        "reconciliation page encoding",
+    ))
 }
 
 pub(super) fn manifest_root(references: &[PreparationSegmentReference]) -> String {
@@ -2603,8 +2726,14 @@ fn validate_referenced_segments(
                     segment_index: reference.segment_index,
                 },
             )?;
+            #[cfg(not(test))]
+            let descriptor_body_length = descriptor.body_length;
+            #[cfg(test)]
+            let descriptor_body_length = descriptor
+                .logical_body_length
+                .unwrap_or(descriptor.body_length);
             descriptor_plaintext_total = descriptor_plaintext_total
-                .checked_add(descriptor.body_length)
+                .checked_add(descriptor_body_length)
                 .ok_or(PreparationError::CorruptReferencedRecord {
                     kind: PreparationReferenceKind::Descriptor,
                     segment_index: reference.segment_index,
