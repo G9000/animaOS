@@ -95,13 +95,13 @@ git -c commit.gpgsign=false commit -m "corefs: define encrypted preparation reco
 - Modify: `packages/anima-corefs/src/transaction/preparation_tests.rs`
 - Modify: `packages/anima-corefs/src/transaction.rs`
 
-- [ ] **Step 1: Write failing begin/resume recovery tests**
+- [x] **Step 1: Write failing begin/resume recovery tests**
 
 Cover: no pointer; one active preparation; caller supplies the same source identity; competing begin; stale snapshot replay; missing snapshot; corrupt/torn pointer; wrong Core; wrong FRK generation; missing descriptor/intent segment; and restart after each immutable-record and pointer-publication boundary. Assert that missing/corrupt state fails closed and never silently begins an empty replacement.
 
 Use a test-only publication hook to enumerate deterministic crash points. The authoritative state after restart must be either the prior complete snapshot or the complete next snapshot.
 
-- [ ] **Step 2: Add the Core-scoped storage layout and state machine**
+- [x] **Step 2: Add the Core-scoped storage layout and state machine**
 
 Implement fixed names:
 
@@ -116,11 +116,11 @@ Implement fixed names:
 
 The head contains only bounded authenticated routing facts and the current encrypted snapshot hash. Begin takes the expected validation-head identity, source-generation number, source-inventory digest, and source schema/version. Resume returns typed state plus reconciliation cursors; it never accepts caller-supplied prepared tokens.
 
-- [ ] **Step 3: Serialize mutations through the existing kernel lock**
+- [x] **Step 3: Serialize mutations through the existing kernel lock**
 
 Place begin/resume/head transitions under the same rooted lock discipline used by validation commits. Re-read and authenticate `PREPARATION_HEAD` after acquiring the lock before every mutation. A state transition must require the exact prior pointer hash and exact prior snapshot number.
 
-- [ ] **Step 4: Run focused crash/recovery coverage**
+- [x] **Step 4: Run focused crash/recovery coverage**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::begin_resume -- --nocapture
@@ -130,7 +130,7 @@ cargo test -p anima-corefs --lib --no-fail-fast
 
 Expected: all preparation and existing transaction tests pass.
 
-- [ ] **Step 5: Commit begin/resume**
+- [x] **Step 5: Commit begin/resume**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/preparation.rs packages/anima-corefs/src/transaction/preparation_tests.rs
