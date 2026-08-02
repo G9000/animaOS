@@ -13,8 +13,10 @@ import {
   isDiscardablePage,
   isSignificantEdit,
   resolveBodyForSave,
+  snapshotBelongsToEntry,
 } from "./lib/pageLifecycle";
 import { isHtmlBody, escapeHtmlForEditor, formatFileSize } from "./lib/textFormat";
+import { handleInstanceTornDown } from "./lib/editorHandoff";
 import { Glyph } from "./editor/glyphIcons";
 import { DiaryEditor } from "./editor/DiaryEditor";
 import { useAutosave } from "./hooks/useAutosave";
@@ -120,9 +122,34 @@ export default function DiaryWorkspace() {
   // handleEditorReady) so the untitled-page cleanup can read a fresh
   // snapshot without ever touching a possibly-already-destroyed editor
   // instance from an unmount cleanup.
-  const lastContentSnapshotRef = useRef<{ bodyPlainText: string; hasNonTextContent: boolean }>({
+  //
+  // Task 12 review, Finding 2: `entryId` tags WHICH entry this snapshot
+  // describes. DiaryEditor's `create` (and therefore the first real
+  // syncEditorContent call for a newly selected entry, via
+  // handleEditorReady) can land a macrotask after the entry switch itself
+  // — confirmed against the installed @tiptap/react sources. If the user
+  // switches away again before that `create` fires,
+  // `lastContentSnapshotRef` would otherwise still hold data belonging to
+  // a DIFFERENT entry, and evaluateAndMaybeDiscard must never evaluate one
+  // entry's discardability against another entry's content. Tagging the
+  // data with the entry id it was captured from, and having
+  // evaluateAndMaybeDiscard refuse to trust a mismatched tag, makes this
+  // safe regardless of timing: the guard doesn't care WHEN the snapshot
+  // was written, only WHETHER it is tagged as belonging to the entry being
+  // evaluated.
+  //
+  // `hasNonTextContent` defaults to `true`, not `false` (Finding 1b):
+  // "unavailable" must fail toward "keep the page", never toward "looks
+  // discardable" — the same reasoning applies to every input that feeds
+  // isDiscardablePage.
+  const lastContentSnapshotRef = useRef<{
+    entryId: number | null;
+    bodyPlainText: string;
+    hasNonTextContent: boolean;
+  }>({
+    entryId: null,
     bodyPlainText: "",
-    hasNonTextContent: false,
+    hasNonTextContent: true,
   });
 
   const selectedEntry = useMemo(
@@ -145,25 +172,36 @@ export default function DiaryWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEntry?.id]);
 
-  const syncEditorContent = (ed: Editor) => {
+  const syncEditorContent = (ed: Editor, entryId: number) => {
     const plainText = ed.getText();
     setBodyText(plainText);
     lastContentSnapshotRef.current = {
+      entryId,
       bodyPlainText: plainText,
       hasNonTextContent: editorHasNonTextContent(ed),
     };
   };
 
-  // Fired by DiaryEditor's own onCreate/onDestroy (see the doc comment on
-  // DiaryEditorProps.onEditorReady). Reproduces the pre-Task-12
-  // `editorRef.current = editor` assignment, plus — because DiaryEditor now
-  // mounts with `content: initialHtml` as a construction option rather than
-  // an imperative `setContent` call, which never fires `onUpdate` — this is
-  // the only place a freshly mounted editor's real doc state (word count,
-  // non-text-content snapshot) gets captured for the untitled-page cleanup.
-  const handleEditorReady = (ed: Editor | null) => {
+  // Fired by DiaryEditor's own onCreate (see the doc comment on
+  // DiaryEditorProps.onEditorReady — always a live, non-null instance).
+  // Reproduces the pre-Task-12 `editorRef.current = editor` assignment,
+  // plus — because DiaryEditor now mounts with `content: initialHtml` as a
+  // construction option rather than an imperative `setContent` call, which
+  // never fires `onUpdate` — this is the only place a freshly mounted
+  // editor's real doc state (word count, non-text-content snapshot) gets
+  // captured for the untitled-page cleanup.
+  const handleEditorReady = (ed: Editor, entryId: number) => {
     editorRef.current = ed;
-    if (ed) syncEditorContent(ed);
+    syncEditorContent(ed, entryId);
+  };
+
+  // Task 12 review, Finding 1: identity-aware teardown, factored into the
+  // pure (and unit-tested — see tests/diary-editor-handoff.test.ts)
+  // `handleInstanceTornDown`. `ed` here is the SAME instance DiaryEditor
+  // captured in its own onCreate — not necessarily "whatever is currently
+  // selected".
+  const handleEditorDestroyed = (ed: Editor) => {
+    handleInstanceTornDown(editorRef, ed);
   };
 
   // Reset the refs the autosave/discard machinery reads whenever the
@@ -199,9 +237,10 @@ export default function DiaryWorkspace() {
   const voiceRecorder = useVoiceRecorder({
     onFinalTranscript: (text) => {
       const ed = editorRef.current;
-      if (ed) {
+      const entryId = selectedEntryRef.current?.id;
+      if (ed && entryId != null) {
         ed.commands.insertContentAt(ed.state.doc.content.size, text);
-        syncEditorContent(ed);
+        syncEditorContent(ed, entryId);
       }
     },
     onRecordingComplete: (file) => {
@@ -243,9 +282,25 @@ export default function DiaryWorkspace() {
   // against fully up-to-date state, then deletes if still discardable.
   // Never call this against the entry the user is currently editing —
   // only against the one being left (a switch target, or on unmount).
+  //
+  // Fix round 1, Finding 3 (Task 11): on the true-unmount path this
+  // `flush()` call is only a real barrier because useAutosave's own
+  // teardown does not null its scheduler ref before flushing (see the
+  // comment in hooks/useAutosave.ts) — `flush` here reaches the live
+  // scheduler for whichever entry is being left regardless of which of
+  // the two unmount-time cleanups (this one, or useAutosave's own) happens
+  // to run first, rather than silently resolving instantly against a null
+  // ref. That invariant cost a fix round to establish; it still holds
+  // here unchanged.
   const evaluateAndMaybeDiscard = async (entry: DiaryEntryData) => {
     await flush();
     const snapshot = lastContentSnapshotRef.current;
+    // Task 12 review, Finding 2: refuse to evaluate against a snapshot
+    // that isn't tagged as belonging to THIS entry — see the doc comment
+    // on lastContentSnapshotRef. No snapshot yet for this entry is treated
+    // the same as Finding 1b's fail-safe direction: keep the page rather
+    // than delete on unverified grounds.
+    if (!snapshotBelongsToEntry(snapshot.entryId, entry.id)) return;
     const discardable = isDiscardablePage({
       title: titleRef.current,
       bodyPlainText: snapshot.bodyPlainText,
@@ -276,12 +331,16 @@ export default function DiaryWorkspace() {
   const handleEditorChange = (html: string, plainText: string) => {
     setBodyText(plainText);
     const ed = editorRef.current;
+    const entry = selectedEntryRef.current;
     lastContentSnapshotRef.current = {
+      entryId: entry?.id ?? null,
       bodyPlainText: plainText,
-      hasNonTextContent: ed ? editorHasNonTextContent(ed) : false,
+      // Finding 1b (fail-safe): a missing editor must never make a page
+      // look discardable — "unavailable" defaults to "assume it might
+      // carry non-text content", not "assume it doesn't".
+      hasNonTextContent: ed ? editorHasNonTextContent(ed) : true,
     };
 
-    const entry = selectedEntryRef.current;
     if (!entry) return;
 
     // Fix round 1, Finding 1 (CRITICAL, Task 11): only skip a true no-op
@@ -335,7 +394,8 @@ export default function DiaryWorkspace() {
     try {
       const dataUrl = await fileToDataUrl(file);
       editorRef.current?.chain().focus().setImage({ src: dataUrl, alt: file.name }).run();
-      if (editorRef.current) syncEditorContent(editorRef.current);
+      const entryId = selectedEntryRef.current?.id;
+      if (editorRef.current && entryId != null) syncEditorContent(editorRef.current, entryId);
     } catch {
       setError(`Failed to embed "${file.name}".`);
     }
@@ -539,6 +599,7 @@ export default function DiaryWorkspace() {
                       return uploaded?.id ?? null;
                     }}
                     onEditorReady={handleEditorReady}
+                    onEditorDestroyed={handleEditorDestroyed}
                   />
                   {isDraggingFile && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-background/80 pointer-events-none">

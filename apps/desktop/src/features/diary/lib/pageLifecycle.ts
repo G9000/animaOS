@@ -108,6 +108,33 @@ export function isDiscardablePage(input: DiscardablePageInput): boolean {
   );
 }
 
+/**
+ * Task 12 review, Finding 2: guards `isDiscardablePage` against being
+ * evaluated with a content snapshot that describes a DIFFERENT entry than
+ * the one being judged.
+ *
+ * The caller (DiaryWorkspace's `evaluateAndMaybeDiscard`) captures its
+ * content snapshot from DiaryEditor's `create` callback, which — because
+ * DiaryEditor mounts with `content` as a construction option rather than
+ * an imperative `setContent` call — can be deferred behind a macrotask
+ * relative to the entry switch itself (confirmed against the installed
+ * @tiptap/react sources). If the user switches away again before that
+ * fires, the most recent snapshot the caller holds still describes some
+ * OTHER entry. Evaluating THIS entry's discardability against THAT data
+ * would be judging the wrong entry's content — e.g. deleting an
+ * image-only entry because the stale snapshot happened to read empty.
+ *
+ * This predicate is intentionally timing-agnostic: it decides purely from
+ * the tag written alongside the snapshot data (see
+ * DiaryWorkspace.tsx's `lastContentSnapshotRef`), never from when that
+ * data was written — so it cannot be defeated by any particular ordering
+ * of async callbacks, only by the tag itself being wrong (which the
+ * writer, not this reader, is responsible for keeping accurate).
+ */
+export function snapshotBelongsToEntry(snapshotEntryId: number | null, entryId: number): boolean {
+  return snapshotEntryId === entryId;
+}
+
 export interface SignificantEditInput {
   // The HTML most recently loaded into (or persisted from) the editor for
   // this entry.

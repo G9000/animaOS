@@ -65,15 +65,38 @@ export interface DiaryEditorProps {
   // component. Rather than re-plumb each of those through new one-off
   // callback props (and risk changing their behavior), this mirrors the
   // pre-Task-12 `editorRef.current = editor` assignment: the parent is
-  // handed the instance once at creation and again (as null) at teardown.
+  // handed the instance once at creation and told again at teardown.
   // `editor/` still never imports the API client — this only ever crosses
   // the Editor object itself, never a network call.
-  onEditorReady?: (editor: Editor | null) => void;
+  //
+  // Task 12 review, Finding 1: `onEditorReady` is called ONLY on create
+  // (always with a live, non-null instance, plus this component's own
+  // fixed `entryId` — see below). Teardown is reported through the
+  // separate `onEditorDestroyed` callback, passing the SAME instance that
+  // is going away, instead of the previous `onEditorReady(null)` pattern.
+  // That mattered because Tiptap's own create/destroy ordering across a
+  // keyed remount is NOT guaranteed: the reviewer reproduced the
+  // INCOMING editor's `create` firing before the OUTGOING editor's
+  // `destroy` (both are scheduled via independent timers deep in
+  // @tiptap/react's EditorInstanceManager). A parent that just does
+  // `editorRef.current = editor ?? null` on every call would have the
+  // outgoing editor's stale teardown null out the ref AFTER the new one
+  // already populated it. Passing the actual instance on both ends lets
+  // the parent compare identity (`if (editorRef.current === destroyed)
+  // editorRef.current = null`) instead of trusting arrival order — correct
+  // regardless of which of the two timers fires first.
+  onEditorReady?: (editor: Editor, entryId: number) => void;
+  onEditorDestroyed?: (editor: Editor) => void;
 }
 
 export function DiaryEditor(props: DiaryEditorProps) {
-  const { onChange, onImageRequest, onImagePaste, onEditorReady } = props;
+  const { onChange, onImageRequest, onImagePaste, onEditorReady, onEditorDestroyed, entryId } = props;
   const editorRef = useRef<Editor | null>(null);
+  // Captured once in onCreate and read in onDestroy, rather than closing
+  // over the `editor` variable produced by this same useEditor(...) call
+  // (which would be a forward reference to a binding that doesn't exist
+  // yet while these options are being constructed).
+  const createdInstanceRef = useRef<Editor | null>(null);
 
   const editor = useEditor({
     extensions: createDiaryExtensions({
@@ -119,11 +142,13 @@ export function DiaryEditor(props: DiaryEditorProps) {
       },
     },
     onCreate: ({ editor: created }) => {
-      onEditorReady?.(created);
+      createdInstanceRef.current = created;
+      onEditorReady?.(created, entryId);
       window.setTimeout(() => created.commands.focus("end"), 0);
     },
     onDestroy: () => {
-      onEditorReady?.(null);
+      const instance = createdInstanceRef.current;
+      if (instance) onEditorDestroyed?.(instance);
     },
     onUpdate: ({ editor: updated }) => {
       const html = sanitizeDiaryHtml(updated.getHTML());
