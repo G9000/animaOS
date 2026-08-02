@@ -210,7 +210,7 @@ class InactiveWritingCatalog:
                     "kind": item.kind,
                     "contentType": item.content_type,
                     "bodyEncoding": item.body_encoding,
-                    "contentBase64": base64.b64encode(item.content).decode(),
+                    "contentIndex": index,
                     "createdAt": item.created_at,
                     "updatedAt": item.updated_at,
                     "expectedRevision": item.expected_revision,
@@ -218,15 +218,17 @@ class InactiveWritingCatalog:
                     "policy": item.policy,
                     "metadata": item.metadata,
                 }
-                for item in self.objects
+                for index, item in enumerate(self.objects)
             ],
         }
         if expected_head is not None:
             payload["initialize"] = False
             payload["expectedGeneration"] = expected_head[0]
             payload["expectedCatalogHash"] = expected_head[1]
-        result = corefs_session.validation_batch_v1(
-            keys, json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        result = corefs_session.validation_batch_parts_v1(
+            keys,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            [item.content for item in self.objects],
         )
         return dict(result)
 

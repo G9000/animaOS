@@ -15,6 +15,12 @@ describe("diary HTML sanitizer", () => {
       expect(sanitizeDiaryHtml(golden.input)).toBe(golden.output);
     }
   });
+
+  test("matches the shared data URI preview policy", () => {
+    for (const golden of sanitizerContract.dataGoldens) {
+      expect(sanitizeDiaryHtml(golden.input), golden.name).toBe(golden.desktopOutput);
+    }
+  });
   test("removes executable HTML from imported or API-provided diary bodies", () => {
     const clean = sanitizeDiaryHtml(
       '<p onclick="alert(1)">safe</p><script>alert(2)</script><img src="x" onerror="alert(3)"><a href="javascript:alert(4)">link</a>',

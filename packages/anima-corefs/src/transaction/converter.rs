@@ -1,6 +1,7 @@
 //! Sealed, validation-only graph converter used before authoritative cutover.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::io::Cursor;
 
 use serde_json::Value;
@@ -14,9 +15,12 @@ use crate::catalog::{
     CatalogClientMetadata, CatalogEntryCommon, CatalogError, CatalogGeneration,
     CatalogGenerationEntry, CatalogObject, ObjectLifecycle, MAX_CATALOG_ENTRIES,
 };
-use crate::crypto::{generate_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKind};
+use crate::crypto::{
+    generate_object_dek, unwrap_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKeyAad, ObjectKind,
+};
 use crate::envelope::{
-    write_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION, MAX_BODY_LENGTH,
+    read_envelope, write_envelope, BodyEncoding, EnvelopeMetadata, ENVELOPE_VERSION,
+    MAX_BODY_LENGTH,
 };
 use crate::folders::{ClientId, FolderOwner, FolderRole, PortableName};
 use crate::id::OpaqueId;
@@ -26,6 +30,8 @@ const DIARY_CONTENT_TYPE: &str = "application/vnd.anima.diary+json;version=1";
 const DRAFT_CONTENT_TYPE: &str = "application/vnd.anima.draft+json;version=1";
 const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
 const ALLOWED_ROLES: [&str; 2] = ["core.journal", "core.notes"];
+pub const MAX_WRITING_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_WRITING_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ValidationBatchMode {
@@ -186,7 +192,7 @@ impl CoreCommitCoordinator {
         // encrypted revision is prepared.
         let (folders, objects) = validate_batch(&batch)?;
         if let Some(snapshot) = current.as_ref() {
-            if graph_is_identical(snapshot.catalog(), &folders, &objects) {
+            if self.graph_is_identical(keys, snapshot.catalog(), &folders, &objects)? {
                 return Ok(ValidationBatchOutcome {
                     snapshot: self
                         .load_validation_snapshot(keys)?
@@ -291,6 +297,9 @@ impl CoreCommitCoordinator {
             let current_entry = current_by_id.get(object.id.as_str()).copied();
             let current_object = current_entry.and_then(CatalogGenerationEntry::object_payload);
             let digest = hex_digest(&object.source.content);
+            let authenticated_metadata = current_object
+                .map(|value| self.authenticated_object_metadata(keys, &object.id, value))
+                .transpose()?;
             let unchanged = current_entry.is_some_and(|entry| {
                 entry.parent_id() == Some(&object.parent_id)
                     && entry.name() == &object.name
@@ -298,6 +307,14 @@ impl CoreCommitCoordinator {
                         value.kind() == object.source.kind
                             && value.content_hash().as_str() == digest
                             && object.source.expected_revision == Some(value.revision())
+                            && authenticated_metadata.as_ref().is_some_and(|metadata| {
+                                envelope_identity_matches_source(
+                                    metadata,
+                                    &object.id,
+                                    value.revision(),
+                                    &object.source,
+                                )
+                            })
                     })
             });
             let catalog_object = if unchanged {
@@ -387,6 +404,113 @@ impl CoreCommitCoordinator {
             entries.push(CatalogGenerationEntry::object(common, catalog_object));
         }
         Ok((entries, prepared))
+    }
+
+    fn authenticated_object_metadata(
+        &self,
+        keys: &FrkSubkeys,
+        object_id: &OpaqueId,
+        object: &CatalogObject,
+    ) -> Result<EnvelopeMetadata, ValidationBatchError> {
+        let base_aad = ObjectBaseAad::new(
+            self.core_id.as_str(),
+            object_id.as_str(),
+            object.kind(),
+            ENVELOPE_VERSION,
+            object.object_key_epoch(),
+            object.revision(),
+        )
+        .map_err(CommitError::from)?;
+        let wrapped = object.wrapped_dek();
+        let object_key_aad = ObjectKeyAad::from_base(base_aad.clone(), wrapped.frk_version())
+            .map_err(CommitError::from)?;
+        let object_key =
+            unwrap_object_dek(keys, &wrapped.to_wrapped_object_dek()?, &object_key_aad)
+                .map_err(CommitError::from)?;
+        let mut file = super::open_regular_file_in(
+            &self.objects_dir,
+            OsStr::new(object.physical_name().as_str()),
+        )
+        .map_err(CommitError::from)?;
+        let authenticated = read_envelope(&mut file, &object_key, &base_aad, &mut std::io::sink())
+            .map_err(CommitError::from)?;
+        if authenticated.metadata.body_sha256 != object.content_hash().as_str() {
+            return Err(CommitError::InvalidObjectRevision.into());
+        }
+        Ok(authenticated.metadata)
+    }
+
+    fn graph_is_identical(
+        &self,
+        keys: &FrkSubkeys,
+        current: &CatalogGeneration,
+        folders: &[ValidatedFolder],
+        objects: &[ValidatedObject],
+    ) -> Result<bool, ValidationBatchError> {
+        if current.entries().len() != folders.len() + objects.len() {
+            return Ok(false);
+        }
+        let folder_matches = folders.iter().all(|folder| {
+            current.entries().iter().any(|entry| {
+                entry.is_folder()
+                    && entry.stable_id() == &folder.id
+                    && entry.parent_id() == folder.parent_id.as_ref()
+                    && entry.name() == &folder.name
+                    && entry
+                        .common_for_internal_mutation()
+                        .role_for_internal_mutation()
+                        == folder.role.as_ref()
+                    && entry
+                        .common_for_internal_mutation()
+                        .policy_override_for_internal_mutation()
+                        == local_policy(folder.policy)
+                    && entry
+                        .common_for_internal_mutation()
+                        .client_metadata_for_internal_mutation()
+                        == &folder.metadata
+            })
+        });
+        if !folder_matches {
+            return Ok(false);
+        }
+        for object in objects {
+            let Some(entry) = current
+                .entries()
+                .iter()
+                .find(|entry| entry.stable_id() == &object.id)
+            else {
+                return Ok(false);
+            };
+            let Some(payload) = entry.object_payload() else {
+                return Ok(false);
+            };
+            if entry.parent_id() != Some(&object.parent_id)
+                || entry.name() != &object.name
+                || payload.kind() != object.source.kind
+                || payload.content_hash().as_str() != hex_digest(&object.source.content)
+                || object.source.expected_revision != Some(payload.revision())
+                || entry
+                    .common_for_internal_mutation()
+                    .policy_override_for_internal_mutation()
+                    != local_policy(object.source.policy)
+                || entry
+                    .common_for_internal_mutation()
+                    .client_metadata_for_internal_mutation()
+                    != &object.metadata
+            {
+                return Ok(false);
+            }
+            let metadata = self.authenticated_object_metadata(keys, &object.id, payload)?;
+            if !envelope_identity_matches_source(
+                &metadata,
+                &object.id,
+                payload.revision(),
+                &object.source,
+            ) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -571,14 +695,20 @@ fn resolve_folder_policy<'a>(
 }
 
 fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), ValidationBatchError> {
-    if object.content.len() as u64 > MAX_BODY_LENGTH
+    let kind_limit = match object.kind {
+        ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note => MAX_WRITING_DOCUMENT_BYTES,
+        ObjectKind::Attachment => MAX_WRITING_ATTACHMENT_BYTES,
+        _ => 0,
+    };
+    if object.content.len() > kind_limit
+        || object.content.len() as u64 > MAX_BODY_LENGTH
         || object.content_type.len() > 255
         || object.created_at.len() > 128
         || object.updated_at.len() > 128
         || object.references.len() > MAX_CATALOG_ENTRIES
     {
         return Err(ValidationBatchError::Invalid(
-            "object metadata or body exceeds converter limits",
+            "object metadata or body exceeds kind-specific converter limits",
         ));
     }
     let valid = match object.kind {
@@ -604,55 +734,24 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
     Ok(())
 }
 
-fn graph_is_identical(
-    current: &CatalogGeneration,
-    folders: &[ValidatedFolder],
-    objects: &[ValidatedObject],
+fn envelope_identity_matches_source(
+    authenticated: &EnvelopeMetadata,
+    object_id: &OpaqueId,
+    revision: u64,
+    source: &ValidationBatchObject,
 ) -> bool {
-    if current.entries().len() != folders.len() + objects.len() {
-        return false;
-    }
-    let folder_matches = folders.iter().all(|folder| {
-        current.entries().iter().any(|entry| {
-            entry.is_folder()
-                && entry.stable_id() == &folder.id
-                && entry.parent_id() == folder.parent_id.as_ref()
-                && entry.name() == &folder.name
-                && entry
-                    .common_for_internal_mutation()
-                    .role_for_internal_mutation()
-                    == folder.role.as_ref()
-                && entry
-                    .common_for_internal_mutation()
-                    .policy_override_for_internal_mutation()
-                    == local_policy(folder.policy)
-                && entry
-                    .common_for_internal_mutation()
-                    .client_metadata_for_internal_mutation()
-                    == &folder.metadata
-        })
-    });
-    folder_matches
-        && objects.iter().all(|object| {
-            current.entries().iter().any(|entry| {
-                entry.stable_id() == &object.id
-                    && entry.parent_id() == Some(&object.parent_id)
-                    && entry.name() == &object.name
-                    && entry.object_payload().is_some_and(|payload| {
-                        payload.kind() == object.source.kind
-                            && payload.content_hash().as_str() == hex_digest(&object.source.content)
-                            && object.source.expected_revision == Some(payload.revision())
-                    })
-                    && entry
-                        .common_for_internal_mutation()
-                        .policy_override_for_internal_mutation()
-                        == local_policy(object.source.policy)
-                    && entry
-                        .common_for_internal_mutation()
-                        .client_metadata_for_internal_mutation()
-                        == &object.metadata
-            })
-        })
+    EnvelopeMetadata::for_body(
+        source.kind.as_str(),
+        object_id.as_str(),
+        revision,
+        &source.created_at,
+        &source.updated_at,
+        &source.content_type,
+        source.metadata.clone(),
+        source.body_encoding,
+        &source.content,
+    )
+    .is_ok_and(|expected| expected == *authenticated)
 }
 
 fn validation_metadata(
@@ -796,6 +895,87 @@ mod tests {
                 metadata: BTreeMap::new(),
             }],
         }
+    }
+
+    #[test]
+    fn envelope_identity_covers_encoding_lifecycle_mime_and_metadata() {
+        let object_id = OpaqueId::parse(&native_id("attachment", "identity")).unwrap();
+        let source = ValidationBatchObject {
+            stable_id: object_id.as_str().to_owned(),
+            parent_id: native_id("folder", "journal"),
+            name: "identity.bin".into(),
+            kind: ObjectKind::Attachment,
+            content_type: "application/octet-stream".into(),
+            body_encoding: BodyEncoding::Binary,
+            content: b"same body".to_vec(),
+            created_at: "2026-08-02T00:00:00Z".into(),
+            updated_at: "2026-08-02T00:00:00Z".into(),
+            expected_revision: Some(1),
+            references: vec![],
+            policy: ValidationBatchPolicy::Inherit,
+            metadata: BTreeMap::new(),
+        };
+        let authenticated = EnvelopeMetadata::for_body(
+            source.kind.as_str(),
+            object_id.as_str(),
+            1,
+            &source.created_at,
+            &source.updated_at,
+            &source.content_type,
+            source.metadata.clone(),
+            source.body_encoding,
+            &source.content,
+        )
+        .unwrap();
+        assert!(envelope_identity_matches_source(
+            &authenticated,
+            &object_id,
+            1,
+            &source
+        ));
+
+        let mut changed = source.clone();
+        changed.body_encoding = BodyEncoding::Utf8;
+        assert!(!envelope_identity_matches_source(
+            &authenticated,
+            &object_id,
+            1,
+            &changed
+        ));
+        changed = source.clone();
+        changed.content_type = "application/vnd.changed".into();
+        assert!(!envelope_identity_matches_source(
+            &authenticated,
+            &object_id,
+            1,
+            &changed
+        ));
+        changed = source.clone();
+        changed.created_at = "2026-08-01T23:59:59Z".into();
+        assert!(!envelope_identity_matches_source(
+            &authenticated,
+            &object_id,
+            1,
+            &changed
+        ));
+        changed = source.clone();
+        changed.updated_at = "2026-08-02T00:00:01Z".into();
+        assert!(!envelope_identity_matches_source(
+            &authenticated,
+            &object_id,
+            1,
+            &changed
+        ));
+        changed = source;
+        changed
+            .metadata
+            .insert("source".into(), Value::from("legacy"));
+        assert!(!envelope_identity_matches_source(
+            &authenticated,
+            &object_id,
+            1,
+            &changed
+        ));
     }
 
     #[test]

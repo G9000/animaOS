@@ -5,8 +5,9 @@ use anima_corefs::envelope::BodyEncoding;
 use anima_corefs::id::OpaqueId;
 use anima_corefs::transaction::{
     CoreCommitCoordinator, ValidationBatch, ValidationBatchError, ValidationBatchFolder,
-    ValidationBatchMode, ValidationBatchObject, ValidationBatchPolicy,
+    ValidationBatchMode, ValidationBatchObject, ValidationBatchPolicy, MAX_WRITING_DOCUMENT_BYTES,
 };
+use serde_json::json;
 
 const CORE_ID: &str = "core-writing-converter";
 
@@ -249,6 +250,73 @@ fn changed_object_requires_revision_precondition_and_publishes_once() {
 }
 
 #[test]
+fn same_body_envelope_field_changes_create_revisions_and_exact_reruns_are_noops() {
+    type Mutation = fn(&mut ValidationBatchObject);
+
+    let cases: [(&str, Mutation); 4] = [
+        ("content-type", |object| {
+            object.content_type = "image/webp".into();
+        }),
+        ("created-at", |object| {
+            object.created_at = "2026-08-01T23:59:59Z".into();
+        }),
+        ("updated-at", |object| {
+            object.updated_at = "2026-08-02T00:00:01Z".into();
+        }),
+        ("metadata", |object| {
+            object.metadata.insert("source".into(), json!("legacy"));
+        }),
+    ];
+
+    for (case, mutate) in cases {
+        let (_root, coordinator) = fixture(case);
+        let keys = keys();
+        let first = coordinator
+            .apply_validation_batch(&keys, initial_batch())
+            .unwrap();
+        let first_head = first.snapshot().head().clone();
+        let mut changed = initial_batch();
+        changed.mode = ValidationBatchMode::Expect {
+            generation: first_head.generation(),
+            catalog_hash: first_head.catalog_hash().to_owned(),
+        };
+        for object in &mut changed.objects {
+            object.expected_revision = Some(1);
+        }
+        mutate(&mut changed.objects[0]);
+
+        let revised = coordinator
+            .apply_validation_batch(&keys, changed.clone())
+            .unwrap();
+        assert!(revised.published(), "{case} change was treated as a no-op");
+        let revised_head = revised.snapshot().head().clone();
+        let attachment = revised
+            .snapshot()
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.stable_id().as_str() == native_id("attachment", "1"))
+            .unwrap();
+        assert_eq!(attachment.object_payload().unwrap().revision(), 2, "{case}");
+
+        changed.mode = ValidationBatchMode::Expect {
+            generation: revised_head.generation(),
+            catalog_hash: revised_head.catalog_hash().to_owned(),
+        };
+        for object in &mut changed.objects {
+            object.expected_revision = Some(if object.stable_id == native_id("attachment", "1") {
+                2
+            } else {
+                1
+            });
+        }
+        let repeated = coordinator.apply_validation_batch(&keys, changed).unwrap();
+        assert!(!repeated.published(), "identical {case} rerun published");
+        assert_eq!(repeated.snapshot().head(), &revised_head, "{case}");
+    }
+}
+
+#[test]
 fn publication_contains_encrypted_note_and_draft_revisions() {
     let (_root, coordinator) = fixture("note-draft");
     let keys = keys();
@@ -280,6 +348,19 @@ fn metadata_limits_and_exact_head_cas_fail_without_publication() {
     oversized.objects[0].content_type = "x".repeat(256);
     assert!(matches!(
         coordinator.apply_validation_batch(&keys, oversized),
+        Err(ValidationBatchError::Invalid(_))
+    ));
+    assert!(!root.join("fs").join("VALIDATION_HEAD").exists());
+
+    let mut oversized_document = initial_batch();
+    let diary = oversized_document
+        .objects
+        .iter_mut()
+        .find(|object| object.kind == ObjectKind::Diary)
+        .unwrap();
+    diary.content = vec![b'x'; MAX_WRITING_DOCUMENT_BYTES + 1];
+    assert!(matches!(
+        coordinator.apply_validation_batch(&keys, oversized_document),
         Err(ValidationBatchError::Invalid(_))
     ));
     assert!(!root.join("fs").join("VALIDATION_HEAD").exists());

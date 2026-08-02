@@ -8,6 +8,17 @@
   "dropContentTags": ["iframe", "object", "script", "style", "svg", "template"],
   "allowedInlineMediaTypes": ["image/gif", "image/jpeg", "image/png", "image/webp"],
   "maxInlineMediaBytes": 10485760,
+  "uriPolicy": {
+    "allowedHrefSchemes": ["http", "https", "mailto"],
+    "allowedSrcSchemes": ["corefs", "http", "https"],
+    "allowRelative": true,
+    "allowSchemeRelative": false,
+    "data": {
+      "canonicalAction": "extract-supported-image",
+      "desktopAction": "preserve-supported-image",
+      "otherwise": "reject"
+    }
+  },
   "goldens": [
     {
       "name": "executable-markup",
@@ -18,6 +29,57 @@
       "name": "literal-data-prose",
       "input": "<p>The data: prefix is ordinary prose.</p>",
       "output": "<p>The data: prefix is ordinary prose.</p>"
+    },
+    {
+      "name": "reject-ftp-href",
+      "input": "<a href=\"ftp://example.test/archive\">archive</a>",
+      "output": "<a>archive</a>"
+    },
+    {
+      "name": "reject-tel-href",
+      "input": "<a href=\"tel:+15551234567\">call</a>",
+      "output": "<a>call</a>"
+    },
+    {
+      "name": "reject-scheme-relative-href-and-src",
+      "input": "<a href=\"//example.test/path\">host</a><img src=\"//example.test/image.png\">",
+      "output": "<a>host</a><img>"
+    },
+    {
+      "name": "preserve-relative-href-and-src",
+      "input": "<a href=\"/journal/today?view=1#note\">today</a><img src=\"../image.png\">",
+      "output": "<a href=\"/journal/today?view=1#note\">today</a><img src=\"../image.png\">"
+    },
+    {
+      "name": "preserve-http-https-and-mailto",
+      "input": "<a href=\"http://example.test\">http</a><a href=\"https://example.test\">https</a><a href=\"mailto:hello@example.test\">mail</a><img src=\"https://example.test/image.png\">",
+      "output": "<a href=\"http://example.test\">http</a><a href=\"https://example.test\">https</a><a href=\"mailto:hello@example.test\">mail</a><img src=\"https://example.test/image.png\">"
+    }
+  ],
+  "dataGoldens": [
+    {
+      "name": "supported-image-data",
+      "input": "<img src=\"data:image/png;base64,AAAA\" alt=\"memory\">",
+      "desktopOutput": "<img src=\"data:image/png;base64,AAAA\" alt=\"memory\">",
+      "canonicalAction": "extract"
+    },
+    {
+      "name": "unsupported-data-type",
+      "input": "<img src=\"data:text/plain;base64,QQ==\">",
+      "desktopOutput": "<img>",
+      "canonicalAction": "reject"
+    },
+    {
+      "name": "malformed-image-data",
+      "input": "<img src=\"data:image/png;base64,not-base64!\">",
+      "desktopOutput": "<img>",
+      "canonicalAction": "reject"
+    },
+    {
+      "name": "data-href-is-never-writing-media",
+      "input": "<a href=\"data:text/html;base64,PHNjcmlwdD4=\">payload</a>",
+      "desktopOutput": "<a>payload</a>",
+      "canonicalAction": "reject"
     }
   ]
 }

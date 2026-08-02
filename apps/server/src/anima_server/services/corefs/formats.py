@@ -28,6 +28,12 @@ MAX_INLINE_MEDIA_BYTES = int(_SANITIZER_CONTRACT["maxInlineMediaBytes"])
 ALLOWED_INLINE_MEDIA_TYPES = frozenset(_SANITIZER_CONTRACT["allowedInlineMediaTypes"])
 ALLOWED_DIARY_TAGS = frozenset(_SANITIZER_CONTRACT["allowedTags"])
 ALLOWED_DIARY_ATTRIBUTES = frozenset(_SANITIZER_CONTRACT["allowedAttributes"])
+_URI_POLICY = _SANITIZER_CONTRACT["uriPolicy"]
+_ALLOWED_HREF_SCHEMES = frozenset(_URI_POLICY["allowedHrefSchemes"])
+_ALLOWED_SRC_SCHEMES = frozenset(_URI_POLICY["allowedSrcSchemes"])
+_ALLOW_RELATIVE_URIS = bool(_URI_POLICY["allowRelative"])
+_ALLOW_SCHEME_RELATIVE_URIS = bool(_URI_POLICY["allowSchemeRelative"])
+_CANONICAL_DATA_ACTION = _URI_POLICY["data"]["canonicalAction"]
 _VOID_TAGS = frozenset({"br", "hr", "img"})
 _DROP_CONTENT_TAGS = frozenset(_SANITIZER_CONTRACT["dropContentTags"])
 _DATA_IMAGE_RE = re.compile(
@@ -364,7 +370,14 @@ class _DiarySanitizer(HTMLParser):
 
     def _safe_url(self, tag: str, name: str, value: str) -> str | None:
         normalized = value.strip()
-        if name == "src" and tag == "img" and normalized.lower().startswith("data:"):
+        parsed = urlsplit(normalized)
+        scheme = parsed.scheme.lower()
+        if (
+            scheme == "data"
+            and _CANONICAL_DATA_ACTION == "extract-supported-image"
+            and name == "src"
+            and tag == "img"
+        ):
             match = _DATA_IMAGE_RE.fullmatch(normalized)
             if match is None:
                 raise CoreFormatError("Malformed inline diary image.")
@@ -377,15 +390,15 @@ class _DiarySanitizer(HTMLParser):
             digest = hashlib.sha256(data).hexdigest()
             self.media_by_hash.setdefault(digest, (mime_type, data))
             return f"__ANIMA_INLINE_MEDIA_{digest}__"
-        parsed = urlsplit(normalized)
-        if parsed.scheme.lower() in {"http", "https"}:
+        if scheme == "data":
+            raise CoreFormatError("Data URLs are only supported for inline diary images.")
+        allowed_schemes = _ALLOWED_HREF_SCHEMES if name == "href" else _ALLOWED_SRC_SCHEMES
+        if scheme in allowed_schemes:
             return normalized
-        if name == "href" and parsed.scheme.lower() == "mailto":
-            return normalized
-        if name == "src" and parsed.scheme.lower() == "corefs":
-            return normalized
-        if not parsed.scheme and not normalized.startswith("//"):
-            return normalized
+        if not scheme:
+            if normalized.startswith("//"):
+                return normalized if _ALLOW_SCHEME_RELATIVE_URIS else None
+            return normalized if _ALLOW_RELATIVE_URIS else None
         return None
 
     def render(self, uris: dict[str, str]) -> str:

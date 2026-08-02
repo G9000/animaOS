@@ -32,6 +32,7 @@ mod python {
     use crate::temporal::TemporalIndex;
 
     const CORE_FS_FFI_IN_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+    const CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT: usize = 1024 * 1024 * 1024;
 
     struct PyBinaryReader<'py> {
         inner: Bound<'py, PyAny>,
@@ -276,7 +277,8 @@ mod python {
         kind: String,
         content_type: String,
         body_encoding: String,
-        content_base64: String,
+        content_base64: Option<String>,
+        content_index: Option<usize>,
         created_at: String,
         updated_at: String,
         expected_revision: Option<u64>,
@@ -302,6 +304,13 @@ mod python {
 
     fn decode_validation_batch_json(
         batch_json: &str,
+    ) -> PyResult<anima_corefs::transaction::ValidationBatch> {
+        decode_validation_batch_parts_json(batch_json, None)
+    }
+
+    fn decode_validation_batch_parts_json(
+        batch_json: &str,
+        content_parts: Option<Vec<Vec<u8>>>,
     ) -> PyResult<anima_corefs::transaction::ValidationBatch> {
         enforce_corefs_catalog_plaintext_limit(batch_json.len())?;
         let wire: ValidationBatchWire = serde_json::from_str(batch_json)
@@ -337,43 +346,68 @@ mod python {
                 })
             })
             .collect::<PyResult<Vec<_>>>()?;
-        let objects = wire
-            .objects
-            .into_iter()
-            .map(|object| {
-                let kind = anima_corefs::crypto::ObjectKind::parse(&object.kind)
-                    .map_err(corefs_value_error)?;
-                let body_encoding = match object.body_encoding.as_str() {
-                    "utf-8" => anima_corefs::envelope::BodyEncoding::Utf8,
-                    "binary" => anima_corefs::envelope::BodyEncoding::Binary,
-                    _ => {
-                        return Err(pyo3::exceptions::PyValueError::new_err(
-                            "validation object bodyEncoding must be utf-8 or binary",
-                        ))
-                    }
-                };
-                let content = BASE64.decode(&object.content_base64).map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "validation object contentBase64 is invalid",
-                    )
-                })?;
-                Ok(anima_corefs::transaction::ValidationBatchObject {
-                    stable_id: object.stable_id,
-                    parent_id: object.parent_id,
-                    name: object.name,
-                    kind,
-                    content_type: object.content_type,
-                    body_encoding,
-                    content,
-                    created_at: object.created_at,
-                    updated_at: object.updated_at,
-                    expected_revision: object.expected_revision,
-                    references: object.references,
-                    policy: validation_batch_policy(&object.policy)?,
-                    metadata: object.metadata,
+        let object_count = wire.objects.len();
+        let part_count = content_parts.as_ref().map_or(0, Vec::len);
+        if content_parts.is_some() && object_count != part_count {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "validation content parts must have one ordered part per object",
+            ));
+        }
+        let objects =
+            wire.objects
+                .into_iter()
+                .enumerate()
+                .map(|(object_index, object)| {
+                    let kind = anima_corefs::crypto::ObjectKind::parse(&object.kind)
+                        .map_err(corefs_value_error)?;
+                    let body_encoding = match object.body_encoding.as_str() {
+                        "utf-8" => anima_corefs::envelope::BodyEncoding::Utf8,
+                        "binary" => anima_corefs::envelope::BodyEncoding::Binary,
+                        _ => {
+                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                "validation object bodyEncoding must be utf-8 or binary",
+                            ))
+                        }
+                    };
+                    let content =
+                        match (object.content_base64, object.content_index) {
+                            (Some(encoded), None) if content_parts.is_none() => {
+                                BASE64.decode(encoded).map_err(|_| {
+                                    pyo3::exceptions::PyValueError::new_err(
+                                        "validation object contentBase64 is invalid",
+                                    )
+                                })?
+                            }
+                            (None, Some(index)) if index == object_index => content_parts
+                                .as_ref()
+                                .and_then(|parts| parts.get(index))
+                                .cloned()
+                                .ok_or_else(|| {
+                                    pyo3::exceptions::PyValueError::new_err(
+                                        "validation object contentIndex is out of range",
+                                    )
+                                })?,
+                            _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                                "validation object requires exactly one matching content transport",
+                            )),
+                        };
+                    Ok(anima_corefs::transaction::ValidationBatchObject {
+                        stable_id: object.stable_id,
+                        parent_id: object.parent_id,
+                        name: object.name,
+                        kind,
+                        content_type: object.content_type,
+                        body_encoding,
+                        content,
+                        created_at: object.created_at,
+                        updated_at: object.updated_at,
+                        expected_revision: object.expected_revision,
+                        references: object.references,
+                        policy: validation_batch_policy(&object.policy)?,
+                        metadata: object.metadata,
+                    })
                 })
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+                .collect::<PyResult<Vec<_>>>()?;
         Ok(anima_corefs::transaction::ValidationBatch {
             mode,
             folders,
@@ -872,6 +906,45 @@ mod python {
         ) -> PyResult<PyObject> {
             let _operation = self.acquire_operation()?;
             let batch = decode_validation_batch_json(batch_json)?;
+            let outcome = py
+                .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
+                .map_err(corefs_validation_batch_error)?;
+            let head = outcome.snapshot().head();
+            json_value_to_py(
+                py,
+                json!({
+                    "generation": head.generation(),
+                    "catalogHash": head.catalog_hash(),
+                    "published": outcome.published(),
+                }),
+            )
+        }
+
+        /// Apply a bounded metadata graph with object bodies carried separately as bytes.
+        ///
+        /// Keeping bodies outside JSON avoids base64 expansion and the catalog plaintext
+        /// ceiling while preserving the strict 16 MiB bound on graph metadata.
+        fn validation_batch_parts_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            batch_json: &str,
+            content_parts: Vec<Vec<u8>>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let aggregate_bytes = content_parts.iter().try_fold(0_usize, |total, part| {
+                total.checked_add(part.len()).ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "validation content parts aggregate size overflow",
+                    )
+                })
+            })?;
+            if aggregate_bytes > CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "validation content parts exceed the 1 GiB aggregate limit",
+                ));
+            }
+            let batch = decode_validation_batch_parts_json(batch_json, Some(content_parts))?;
             let outcome = py
                 .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
                 .map_err(corefs_validation_batch_error)?;
@@ -4268,7 +4341,9 @@ mod python {
                 .to_string();
 
                 with_python(|py| {
-                    let outcome = session.validation_batch_v1(py, &keys, &batch).unwrap();
+                    let outcome = session
+                        .validation_batch_parts_v1(py, &keys, &batch, Vec::new())
+                        .unwrap();
                     let outcome = outcome.bind(py).downcast::<PyDict>().unwrap();
                     assert_eq!(
                         outcome

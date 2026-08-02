@@ -4,7 +4,9 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import anima_core
 import pytest
 from anima_server.services.corefs.diary_migration import (
     InactiveFolder,
@@ -15,6 +17,7 @@ from anima_server.services.corefs.diary_migration import (
     LegacyNote,
     build_inactive_diary_catalog,
     migration_opaque_id,
+    read_prepared_writing_objects,
 )
 from anima_server.services.corefs.formats import (
     CoreFormatError,
@@ -136,6 +139,32 @@ def test_server_matches_shared_versioned_sanitizer_goldens() -> None:
     )
     for golden in contract["goldens"]:
         assert canonicalize_diary_html(golden["input"]).html == golden["output"]
+
+
+def test_server_matches_shared_data_uri_canonicalization_policy() -> None:
+    contract = json.loads(
+        Path("apps/server/src/anima_server/services/corefs/writing-sanitizer-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    published: list[tuple[str, bytes, str]] = []
+
+    def publish(mime_type: str, data: bytes, sha256: str) -> str:
+        published.append((mime_type, data, sha256))
+        return "corefs://object/00000000000000000000000000"
+
+    for golden in contract["dataGoldens"]:
+        if golden["canonicalAction"] == "extract":
+            result = canonicalize_diary_html(
+                golden["input"], media_reference_factory=publish
+            )
+            assert result.html == (
+                '<img src="corefs://object/00000000000000000000000000" alt="memory">'
+            )
+            assert published[-1][0:2] == ("image/png", b"\x00\x00\x00")
+        else:
+            with pytest.raises(CoreFormatError):
+                canonicalize_diary_html(golden["input"], media_reference_factory=publish)
 
 
 def test_inactive_catalog_preserves_empty_folders_ids_hashes_and_roles() -> None:
@@ -268,19 +297,30 @@ def test_legacy_folder_policy_is_carried_into_native_descendant_policy() -> None
     assert catalog.folder(migration_opaque_id("diary-folder", "3")).policy == "deny"
     assert catalog.folder(migration_opaque_id("diary-folder", "4")).policy == "deny"
 
-def test_native_publication_wrapper_emits_one_complete_strict_batch() -> None:
+def test_native_publication_wrapper_sends_bounded_metadata_and_separate_binary_parts() -> None:
     catalog = build_inactive_diary_catalog(
         user_id=8,
         folders=(),
         entries=(),
+        drafts=(
+            LegacyDiaryDraft(
+                id="transport-draft",
+                target_entry_id=None,
+                body="<p>separate bytes</p>",
+                content_type="text/html",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
     )
 
     class Session:
         def __init__(self) -> None:
-            self.calls: list[tuple[object, str]] = []
+            self.calls: list[tuple[object, str, list[bytes]]] = []
 
-        def validation_batch_v1(self, keys: object, payload: str) -> dict[str, object]:
-            self.calls.append((keys, payload))
+        def validation_batch_parts_v1(
+            self, keys: object, payload: str, parts: list[bytes]
+        ) -> dict[str, object]:
+            self.calls.append((keys, payload, parts))
             return {"generation": 1, "catalogHash": "a" * 64, "published": True}
 
     session = Session()
@@ -291,12 +331,104 @@ def test_native_publication_wrapper_emits_one_complete_strict_batch() -> None:
     assert len(session.calls) == 1
     assert session.calls[0][0] is keys
     payload = json.loads(session.calls[0][1])
+    assert session.calls[0][2] == [item.content for item in catalog.objects]
+    assert all("contentBase64" not in item for item in payload["objects"])
+    assert [item["contentIndex"] for item in payload["objects"]] == list(
+        range(len(catalog.objects))
+    )
     assert payload["initialize"] is True
     assert {folder["role"] for folder in payload["folders"]} >= {
         "core.journal",
         "core.notes",
     }
     assert all(len(folder["stableId"]) == 26 for folder in payload["folders"])
+
+
+def test_native_transport_round_trips_100_mib_attachment_and_rejects_oversize(
+    tmp_path: Path,
+) -> None:
+    session = anima_core.CorefsSession(str(tmp_path / "core"), "large-writing-transport")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    limit = 100 * 1024 * 1024
+    attachment_bytes = b"a" * limit
+    attachment = LegacyDiaryAttachment(
+        id=700,
+        entry_id=70,
+        kind="file",
+        mime_type="application/octet-stream",
+        data=attachment_bytes,
+        sha256=hashlib.sha256(attachment_bytes).hexdigest(),
+        filename="valid-100-mib.bin",
+        caption=None,
+        created_at="2026-08-02T00:00:00Z",
+    )
+    catalog = build_inactive_diary_catalog(
+        user_id=70,
+        folders=(),
+        entries=(
+            LegacyDiaryEntry(
+                id=70,
+                entry_date="2026-08-02",
+                title="large",
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(attachment,),
+                created_at="2026-08-02T00:00:00Z",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+
+    first = catalog.publish_native(corefs_session=session, keys=keys)
+    prepared = read_prepared_writing_objects(
+        session=SimpleNamespace(corefs_session=session, corefs_keys=keys)
+    )
+    attachment_id = migration_opaque_id("diary-attachment", "700")
+    native_attachment = next(item for item in prepared if item.stable_id == attachment_id)
+    assert native_attachment.content == attachment_bytes
+
+    head_before = session.validation_snapshot(keys)
+    oversized_bytes = b"b" * (limit + 1)
+    oversized_attachment = LegacyDiaryAttachment(
+        id=701,
+        entry_id=71,
+        kind="file",
+        mime_type="application/octet-stream",
+        data=oversized_bytes,
+        sha256=hashlib.sha256(oversized_bytes).hexdigest(),
+        filename="oversized.bin",
+        caption=None,
+        created_at="2026-08-02T00:00:00Z",
+    )
+    oversized = build_inactive_diary_catalog(
+        user_id=70,
+        folders=(),
+        entries=(
+            LegacyDiaryEntry(
+                id=71,
+                entry_date="2026-08-02",
+                title="oversized",
+                body="",
+                body_is_html=True,
+                mood=None,
+                folder_id=None,
+                cover_attachment_id=None,
+                attachments=(oversized_attachment,),
+                created_at="2026-08-02T00:00:00Z",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="kind-specific converter limits"):
+        oversized.publish_native(
+            corefs_session=session,
+            keys=keys,
+            expected_head=(int(first["generation"]), str(first["catalogHash"])),
+        )
+    assert session.validation_snapshot(keys) == head_before
 
 
 def test_inactive_catalog_includes_native_drafts_and_generic_notes() -> None:
