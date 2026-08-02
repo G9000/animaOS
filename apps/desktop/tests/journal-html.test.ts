@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { JSDOM } from "jsdom";
 import type { WindowLike } from "dompurify";
 
-import { createDiaryHtmlSanitizer } from "../src/pages/journal/html";
+import { createDiaryHtmlSanitizer } from "../src/features/diary/lib/sanitize";
 
 const sanitizeDiaryHtml = createDiaryHtmlSanitizer(
   new JSDOM("").window as unknown as WindowLike,

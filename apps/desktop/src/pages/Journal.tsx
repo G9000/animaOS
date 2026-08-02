@@ -23,9 +23,9 @@ import {
   chooseRecordingMimeType,
   getSpeechRecognitionConstructor,
   type SpeechRecognitionLike,
-} from "./journal/speech";
-import { canSaveDiaryEntry, resolveDiaryBody } from "./journal/content";
-import { createDiaryHtmlSanitizer } from "./journal/html";
+} from "../features/diary/lib/speech";
+import { canSaveDiaryEntry, resolveDiaryBody } from "../features/diary/lib/snapshot";
+import { createDiaryHtmlSanitizer } from "../features/diary/lib/sanitize";
 
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
