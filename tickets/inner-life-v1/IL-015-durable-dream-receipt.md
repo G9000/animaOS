@@ -146,8 +146,8 @@ is its own ticket:
   - `pytest tests/test_inner_life_ambient_dream.py` — 42 passed (2026-08-02 15:19 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full server suite (`pytest tests/ -p no:randomly`) — **3371 passed,
-    0 failed, 2 skipped, 11 deselected** in 14m38s, run 2026-08-02 14:52 MYT
+  - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
+    0 failed, 2 skipped, 11 deselected** in 14m53s, run 2026-08-02 15:34 MYT
   - `bun test tests/` (apps/desktop) — 128 passed, 0 failed (2026-08-02 15:19 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
