@@ -72,16 +72,37 @@ export function createAutosaveScheduler<T>(
   // promise this returns is guaranteed, once it resolves, that no save is
   // in flight AND pending is null — a real barrier, satisfied uniformly
   // whether the caller is the debounce timer, flush(), or retry().
+  //
+  // ORDERING HAZARD — do not remove the leading `await Promise.resolve()`
+  // below. `loopPromise = runLoop()` only works if `runLoop`'s body
+  // cannot reach its final `loopPromise = null` line before that
+  // assignment itself happens. An async function body runs SYNCHRONOUSLY
+  // up to its first `await`; if `pending` is already null when this is
+  // called, a loop body with no leading await would run its while
+  // condition (false), skip straight to `loopPromise = null`, and return
+  // — all *before* `loopPromise = runLoop()` gets a chance to run, since
+  // that assignment only happens once the call expression finishes
+  // evaluating. The correct `null` reset would then get immediately
+  // clobbered by the outer assignment writing a stray non-null (already
+  // resolved) promise over it, permanently "poisoning" loopPromise: every
+  // later schedule()/flush()/retry() would see it as truthy and silently
+  // no-op forever. Forcing a suspend before the loop body touches any
+  // shared state guarantees `loopPromise = runLoop()` always completes
+  // first, no matter how little (or how much) work the loop ends up
+  // doing.
+  const runLoop = async (): Promise<void> => {
+    await Promise.resolve();
+    while (!disposed && pending !== null) {
+      const next = pending;
+      pending = null;
+      await run(next.payload);
+    }
+    loopPromise = null;
+  };
+
   function ensureLoop(): Promise<void> {
     if (loopPromise) return loopPromise;
-    loopPromise = (async () => {
-      while (!disposed && pending !== null) {
-        const next = pending;
-        pending = null;
-        await run(next.payload);
-      }
-      loopPromise = null;
-    })();
+    loopPromise = runLoop();
     return loopPromise;
   }
 
@@ -89,6 +110,12 @@ export function createAutosaveScheduler<T>(
     schedule(payload: T) {
       if (disposed) return;
       pending = { payload };
+      // A new, unsent edit just landed — status must not keep reporting
+      // "saved" for the whole debounce window while it sits unsent
+      // (invariant D). "idle" already exists in SaveStatus for exactly
+      // this "no active save, but not a clean confirmed save either"
+      // case, so no new state is needed.
+      if (status === "saved") setStatus("idle");
       clearTimer();
       timer = setTimeout(() => {
         timer = null;

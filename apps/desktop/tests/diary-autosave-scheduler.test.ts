@@ -219,4 +219,75 @@ describe("autosave scheduler", () => {
     expect(statuses.length).toBe(countAtDispose); // no callbacks after dispose
     expect(statuses).toEqual(["saving"]);
   });
+
+  test("scheduler survives a no-op flush", async () => {
+    const save = mock(async (_: string) => {});
+    const s = createAutosaveScheduler<string>({ save, delayMs: 10 });
+
+    // Nothing has ever been scheduled — flush() must be a true no-op and
+    // must not leave the internal loop in a state that blocks future work.
+    await s.flush();
+    expect(save).toHaveBeenCalledTimes(0);
+
+    s.schedule("two");
+    await s.flush();
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0]).toBe("two");
+    s.dispose();
+  });
+
+  test("scheduler survives a debounce timer firing after the loop already drained its payload", async () => {
+    const save = mock(async (_: string) => {});
+    const s = createAutosaveScheduler<string>({ save, delayMs: 15 });
+
+    s.schedule("first");
+    await tick(5); // debounce has not fired yet; "first" still pending
+
+    // Call flush() (it will drain whatever is pending), and — before it
+    // resolves — schedule a second edit. This arms a fresh debounce timer
+    // for "second" while flush()'s loop is still running/starting;
+    // nobody ever clears that timer once the loop finishes draining.
+    // (Whether "first" ends up sent as its own save call or coalesced
+    // into "second" is incidental to this test — either is consistent
+    // with the "newest payload wins" design — so we only assert on the
+    // latest call, not the exact count.)
+    const flushPromise = s.flush();
+    s.schedule("second");
+    await flushPromise;
+
+    const callsAfterFlush = save.mock.calls.length;
+    expect(callsAfterFlush).toBeGreaterThanOrEqual(1);
+    expect(save.mock.calls[callsAfterFlush - 1][0]).toBe("second");
+
+    // That dangling timer now fires with nothing pending (everything was
+    // already drained above) — the exact trigger for the loop-poisoning
+    // bug.
+    await tick(25);
+
+    // The scheduler must still work afterward: exactly one more save,
+    // for "third".
+    s.schedule("third");
+    await s.flush();
+
+    expect(save).toHaveBeenCalledTimes(callsAfterFlush + 1);
+    expect(save.mock.calls[callsAfterFlush][0]).toBe("third");
+    s.dispose();
+  });
+
+  test("status is never \"saved\" while an edit is pending", async () => {
+    const save = mock(async (_: string) => {});
+    const s = createAutosaveScheduler<string>({ save, delayMs: 20 });
+
+    s.schedule("a");
+    await tick(30); // let it save and settle
+    expect(s.status()).toBe("saved");
+
+    s.schedule("b"); // a new, unsent edit arrives
+    expect(s.status()).not.toBe("saved"); // must not claim "Saved" now
+
+    await s.flush();
+    expect(s.status()).toBe("saved");
+    s.dispose();
+  });
 });
