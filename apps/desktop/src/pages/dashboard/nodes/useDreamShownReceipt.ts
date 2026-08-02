@@ -19,11 +19,13 @@ import { useEffect, useRef } from "react";
  * - UNOBSCURED: an observer cannot see occlusion, and the app renders
  *   fixed-position surfaces above the canvas — the gallery lightbox, and an
  *   initiative card owned by the Layout, not the Dashboard. Rather than
- *   enumerate them, the element's whole bounding box must lie inside the
- *   viewport and three points spanning its height must resolve to the
- *   greeting itself: a dream sentence clipped below the fold is not being
- *   read, and anything stacked on top means the text is not being read
- *   either. The ref belongs on the element that renders the
+ *   enumerate them, three points spanning the visible part of the element
+ *   must resolve to the greeting itself, and the visible parts are
+ *   ACCUMULATED across checks until they cover the whole text. A dream
+ *   sentence still below the fold has not been read, and a block taller
+ *   than the viewport is never wholly on screen at once — so coverage, not
+ *   a single instant, is the test. Anything stacked on top means the text
+ *   is not being read either. The ref belongs on the element that renders the
  *   greeting TEXT, not the whole card: an overlay can cover the sentence
  *   while the card's centre stays clear.
  *
@@ -58,7 +60,15 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
       recheck = undefined;
     };
 
-    const isOnTop = () => {
+    // How much of the text, in its own coordinates, has been seen clearly at
+    // some point. There is no single instant at which an oversized block is
+    // wholly on screen, so coverage ACCUMULATES across checks: the receipt
+    // is owed once every part of the text has been visible and unobscured,
+    // whether that took one frame or a pan (PR #135 review).
+    let seenFrom = Number.POSITIVE_INFINITY;
+    let seenTo = Number.NEGATIVE_INFINITY;
+
+    const wholeTextHasBeenSeen = () => {
       // No geometry (jsdom, display:none): fall back to the coarser checks
       // rather than never acknowledging anything.
       const box = element.getBoundingClientRect?.();
@@ -66,27 +76,15 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
       if (typeof document.elementFromPoint !== "function") return true;
       const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
       const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-      // The WHOLE text block must be inside the viewport, not merely some
-      // sampled points of it (PR #135 review). Sampling left an inset at
-      // each end, so a paragraph clipped just past an edge — losing part of
-      // the appended dream sentence — still passed. Bounds are checked
-      // outright; the samples below are then purely about occlusion.
-      const fits = box.height <= viewportHeight && box.width <= viewportWidth;
-      if (fits) {
-        if (box.top < 0 || box.bottom > viewportHeight) return false;
-        if (box.left < 0 || box.right > viewportWidth) return false;
-      }
-      const x = Math.min(Math.max(box.left + box.width / 2, 0), viewportWidth);
-      // Probe only the part that is actually on screen. For a block that
-      // fits, the bounds check above already proved that is all of it; for
-      // an oversized one, clamping is what makes the exemption usable at
-      // all — fixed fractions of a block taller than the viewport can never
-      // both be inside it, so the receipt would be starved forever and the
-      // dream re-offered even after the user panned through and read it
-      // (PR #135 review).
+      // Horizontally it either fits on screen or it is not being read; there
+      // is no panning story that makes half a line of text legible.
+      if (box.left < 0 || box.right > viewportWidth) return false;
+
       const top = Math.max(box.top, 0);
       const bottom = Math.min(box.bottom, viewportHeight);
       if (bottom <= top) return false;
+
+      const x = box.left + box.width / 2;
       // Sample down the visible span: a corner overlay can cover the last
       // line of a greeting while leaving its middle clear.
       for (const fraction of [0.05, 0.5, 0.95]) {
@@ -95,18 +93,23 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
         // Our own subtree, or a container that wraps it (the canvas pane can
         // swallow the hit): not occluded. Anything else — a lightbox, the
         // initiative card — is stacked on top, so the text is not readable.
-        // Null inside the viewport means something non-elemental is there;
-        // treat it as covered. The recheck timer below makes a wrong "no"
-        // recoverable, whereas a wrong "yes" consumes the dream for good.
+        // Null means something non-elemental is there; treat it as covered.
+        // The recheck timer makes a wrong "no" recoverable, whereas a wrong
+        // "yes" consumes the dream for good.
         if (topmost === null) return false;
         if (!element.contains(topmost) && !topmost.contains(element)) return false;
       }
-      return true;
+
+      // This span was readable: fold it into what has been seen.
+      seenFrom = Math.min(seenFrom, top - box.top);
+      seenTo = Math.max(seenTo, bottom - box.top);
+      // A pixel of slack for sub-pixel layout rounding.
+      return seenFrom <= 1 && seenTo >= box.height - 1;
     };
 
     const reportOnce = () => {
       if (reported || document.visibilityState !== "visible") return false;
-      if (!isOnTop()) return false;
+      if (!wholeTextHasBeenSeen()) return false;
       reported = true;
       stopRechecking();
       report();

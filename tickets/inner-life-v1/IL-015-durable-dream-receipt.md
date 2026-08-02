@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-03 00:44 MYT
+- Updated: 2026-08-03 01:13 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -292,6 +292,20 @@ is its own ticket:
   clamped to the visible span, which is a no-op for a block that fits (its
   full bounds are already required) and makes the exemption real for one
   that does not.
+
+- 2026-08-03 01:13 MYT - PR #135 review round 15 (P1, Codex): clamping the probes to the
+  visible slice let an oversized block be acknowledged while only its TOP
+  was ever on screen — the appended dream sentence never seen. Rounds 13-15
+  were three attempts to special-case blocks taller than the viewport
+  (require full bounds / exempt them / clamp to the visible part), each
+  breaking the other direction. The special case is now gone: visible,
+  unobscured spans ACCUMULATE in the element's own coordinates across
+  checks, and the receipt is owed once the union covers the whole text.
+  A block that fits satisfies that on the first check, exactly as before;
+  one that does not requires the user to actually pan through it. Residual,
+  stated rather than hidden: coverage is sampled on the 1s recheck tick, so
+  a very fast pan can leave a gap — the cost is a missing receipt, which
+  means the dream is re-offered rather than consumed unseen.
 
 ## Validation
 
