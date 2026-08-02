@@ -24,6 +24,7 @@ import {
 import { canSaveDiaryEntry, resolveDiaryBody } from "./lib/snapshot";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
 import { createDiaryExtensions } from "./editor/extensions";
+import { DiaryBubbleMenu } from "./editor/BubbleMenu";
 import { Glyph } from "./editor/glyphIcons";
 
 const MAX_ENTRY_LIMIT = 200;
@@ -1652,6 +1653,7 @@ export default function DiaryWorkspace() {
                   onDragLeave={handleComposerDragLeave}
                   onDrop={handleComposerDrop}
                 >
+                  <DiaryBubbleMenu editor={editor} />
                   <EditorContent editor={editor} />
                   {isDraggingFile && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-background/80 pointer-events-none">

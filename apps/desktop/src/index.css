@@ -127,6 +127,36 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   @apply border-l border-accent/40 pl-4 italic text-muted-foreground;
 }
 
+/* Diary highlight tones (Task 6) — amber/mint/lilac have no equivalent
+   token in tokens.css, so each is a raw oklch hue tuned per theme and
+   blended via color-mix, matching how the rest of this file blends
+   --accent instead of hardcoding hex values. The tone is carried on
+   data-tone (see Highlight.extend() in editor/extensions.ts) since the
+   sanitizer forbids inline style entirely. */
+:root {
+  --diary-tone-amber: oklch(0.82 0.16 85);
+  --diary-tone-mint: oklch(0.82 0.13 165);
+  --diary-tone-lilac: oklch(0.82 0.12 305);
+}
+
+.dark {
+  --diary-tone-amber: oklch(0.62 0.15 85);
+  --diary-tone-mint: oklch(0.6 0.12 165);
+  --diary-tone-lilac: oklch(0.62 0.13 305);
+}
+
+mark[data-tone="amber"] {
+  background-color: color-mix(in oklch, var(--diary-tone-amber) 55%, transparent);
+}
+
+mark[data-tone="mint"] {
+  background-color: color-mix(in oklch, var(--diary-tone-mint) 55%, transparent);
+}
+
+mark[data-tone="lilac"] {
+  background-color: color-mix(in oklch, var(--diary-tone-lilac) 55%, transparent);
+}
+
 /* Tiptap diary editor */
 .tiptap {
   @apply outline-none;
@@ -206,4 +236,54 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
 
 .diary-slash-menu-item-hint {
   @apply font-mono text-[9px] text-muted-foreground/40;
+}
+
+/* Selection bubble menu (Task 6) — positioned by @tiptap/react/menus'
+   BubbleMenu via floating-ui, so only its inner chrome needs styling. */
+.diary-bubble-menu {
+  @apply flex items-center gap-1 rounded-lg border border-foreground/[0.1] bg-card px-1.5 py-1 shadow-xl;
+}
+
+.diary-bubble-menu-group {
+  @apply flex items-center gap-0.5;
+}
+
+.diary-bubble-menu-group + .diary-bubble-menu-group {
+  @apply ml-1 border-l border-border pl-1.5;
+}
+
+.diary-bubble-menu-btn {
+  @apply flex h-7 w-7 items-center justify-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors cursor-pointer;
+}
+
+.diary-bubble-menu-btn:hover {
+  @apply bg-secondary/50 text-foreground;
+}
+
+.diary-bubble-menu-btn.is-active {
+  @apply bg-accent/15 text-accent;
+}
+
+.diary-bubble-menu-tone {
+  @apply h-5 w-5 rounded-full border border-foreground/[0.15] cursor-pointer transition-transform;
+}
+
+.diary-bubble-menu-tone:hover {
+  @apply scale-110;
+}
+
+.diary-bubble-menu-tone.is-active {
+  @apply ring-2 ring-accent ring-offset-1 ring-offset-card;
+}
+
+.diary-bubble-menu-tone-amber {
+  background-color: var(--diary-tone-amber);
+}
+
+.diary-bubble-menu-tone-mint {
+  background-color: var(--diary-tone-mint);
+}
+
+.diary-bubble-menu-tone-lilac {
+  background-color: var(--diary-tone-lilac);
 }

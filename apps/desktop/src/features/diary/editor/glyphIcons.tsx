@@ -122,3 +122,38 @@ export function ToggleGlyphIcon() {
     </Glyph>
   );
 }
+
+// Selection bubble menu glyphs (Task 6) — same stroke-only, size-4, square-join
+// language as the slash menu icons above.
+export function BoldGlyphIcon() {
+  return (
+    <Glyph>
+      <path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z" />
+    </Glyph>
+  );
+}
+
+export function ItalicGlyphIcon() {
+  return (
+    <Glyph>
+      <path d="M13 5h5M6 19h5M14.5 5L9.5 19" />
+    </Glyph>
+  );
+}
+
+export function StrikeGlyphIcon() {
+  return (
+    <Glyph>
+      <path d="M4 12h16M7.5 7c0-1.7 2-3 4.5-3s4.5 1 4.5 2.6M8 17.4c0 1.6 2 2.9 4.5 2.9s4.5-1.3 4.5-3" />
+    </Glyph>
+  );
+}
+
+export function LinkGlyphIcon() {
+  return (
+    <Glyph>
+      <path d="M9.5 14.5l5-5" />
+      <path d="M11 6.5l1.4-1.4a3.5 3.5 0 0 1 5 5L16 11.5M13 17.5l-1.4 1.4a3.5 3.5 0 0 1-5-5L8 12.5" />
+    </Glyph>
+  );
+}
