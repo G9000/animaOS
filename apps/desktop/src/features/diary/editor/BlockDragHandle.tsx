@@ -43,6 +43,68 @@ interface HoveredNode {
   pos: number;
 }
 
+// Finding 1 (Task 7 review, round 1): insertTable/setHorizontalRule replace
+// the whole selection instead of changing the block's type, so running
+// them over a non-empty block silently discards its text. These two are
+// the only Turn-into entries with that shape — everything else is a
+// setNode/toggle command that changes type in place.
+const DESTRUCTIVE_TURN_INTO_IDS = new Set(["table", "divider"]);
+
+// Finding 2: recognizes the hovered node when it is ALREADY the command's
+// target type, so "Turn into X" is idempotent instead of toggling X off
+// (toggleBulletList on a bulletList, toggleBlockquote on a blockquote,
+// etc. would otherwise unwrap it). Only used for the non-destructive
+// commands — table/divider aren't toggles, so "already a table" isn't a
+// meaningful no-op case for them.
+function matchesTargetType(node: ProseMirrorNode, command: SlashCommand): boolean {
+  switch (command.id) {
+    case "paragraph":
+      return node.type.name === "paragraph";
+    case "h1":
+      return node.type.name === "heading" && node.attrs.level === 1;
+    case "h2":
+      return node.type.name === "heading" && node.attrs.level === 2;
+    case "h3":
+      return node.type.name === "heading" && node.attrs.level === 3;
+    case "bullet":
+      return node.type.name === "bulletList";
+    case "ordered":
+      return node.type.name === "orderedList";
+    case "task":
+      return node.type.name === "taskList";
+    case "quote":
+      return node.type.name === "blockquote";
+    case "code":
+      return node.type.name === "codeBlock";
+    case "toggle":
+      return node.type.name === "details";
+    default:
+      return false;
+  }
+}
+
+// Finding 3: @tiptap/extension-drag-handle calls getOuterNode/getOuterDomNode
+// when `nested` isn't enabled (the default here), so hovering text inside a
+// wrapper like blockquote reports the wrapper itself as the hovered node,
+// not its inner paragraph. setNode/toggle commands only ever change the
+// nearest *textblock* ancestor's type — they never strip a surrounding
+// non-textblock wrapper — so running them against the wrapper's own
+// selection leaves the result nested inside it (e.g.
+// <blockquote><h1>...</h1></blockquote> instead of a top-level <h1>).
+// This recognizes that shape (a container whose direct children are all
+// plain textblocks, e.g. blockquote wrapping paragraph(s)) so the caller
+// can lift the content out first. Deliberately narrow: list wrappers
+// (bulletList/orderedList/taskList) hold listItem children, which are
+// themselves containers, not textblocks, so this correctly leaves list
+// conversion untouched — not something any finding asked to change.
+function isSimpleTextblockWrapper(node: ProseMirrorNode): boolean {
+  if (node.isTextblock || node.isAtom || node.childCount === 0) return false;
+  for (let i = 0; i < node.childCount; i += 1) {
+    if (!node.child(i).isTextblock) return false;
+  }
+  return true;
+}
+
 // A button nested inside the handle's own draggable container needs its own
 // `draggable={false}` — the container itself is made draggable by the
 // DragHandle plugin, and per the HTML drag-and-drop spec the nearest
@@ -127,7 +189,73 @@ export function BlockDragHandle({ editor }: { editor: Editor }) {
 
   const handleTurnInto = (command: SlashCommand) => {
     if (!hovered) return;
-    const { node, pos } = hovered;
+    const { node: hoveredNode, pos: hoveredPos } = hovered;
+
+    if (DESTRUCTIVE_TURN_INTO_IDS.has(command.id)) {
+      // Finding 1: only prompt when there's actually something to lose —
+      // an empty block converting to a table/divider has no text for the
+      // dialog's wording to be honest about, and shouldn't interrupt the
+      // user for nothing.
+      if (hoveredNode.textContent.trim().length > 0) {
+        const noun = command.id === "table" ? "a table" : "a divider";
+        const confirmed = window.confirm(
+          `Converting to ${noun} will discard this block's text. Continue?`,
+        );
+        // On cancel: bail out before touching the editor at all, so there's
+        // no partial transaction, no moved selection, no leftover node —
+        // the document is byte-identical to before the click.
+        if (!confirmed) {
+          closeMenus();
+          return;
+        }
+      }
+      // Confirmed (or nothing to lose): replace the whole hovered block,
+      // wrapper included — that's the point of these two conversions, so
+      // no lift/preserve trick applies here.
+      command.run(editor, { from: hoveredPos, to: hoveredPos + hoveredNode.nodeSize });
+      closeMenus();
+      return;
+    }
+
+    // Finding 2: "Turn into X" must always yield X, never toggle away from
+    // it — toggleBulletList()/toggleBlockquote()/etc. are correct as
+    // *toggles* in the slash-menu flow (Task 5), but here the user picked
+    // an explicit target. If the hovered block is already that type, this
+    // is a no-op: do nothing rather than calling a toggle command that
+    // would flip it back to a paragraph.
+    if (matchesTargetType(hoveredNode, command)) {
+      closeMenus();
+      return;
+    }
+
+    let node = hoveredNode;
+    let pos = hoveredPos;
+
+    if (isSimpleTextblockWrapper(node)) {
+      // Finding 3: lift the wrapper's (first) child out to a top-level
+      // position before converting it, so the result isn't left nested
+      // inside the original wrapper.
+      const child = node.firstChild;
+      if (!child) return;
+      const childPos = pos + 1;
+      const from = childPos + 1;
+      const to = Math.max(from, childPos + child.nodeSize - 1);
+      const lifted = editor
+        .chain()
+        .focus()
+        .setTextSelection({ from, to })
+        .lift(child.type.name)
+        .run();
+      if (!lifted) return;
+      // Lifting a single-child wrapper removes exactly its own opening
+      // token, so the child's own start shifts left by one slot, landing
+      // it at the wrapper's old `pos` — verified against a live Editor
+      // instance (see task-7-report.md) rather than assumed.
+      const liftedNode = editor.state.doc.nodeAt(pos);
+      if (!liftedNode) return;
+      node = liftedNode;
+    }
+
     // SlashCommand.run always starts with `deleteRange(range)` — that's
     // correct for the slash-menu flow, where `range` is the typed "/query"
     // text that needs erasing before the block command runs. Reusing it
