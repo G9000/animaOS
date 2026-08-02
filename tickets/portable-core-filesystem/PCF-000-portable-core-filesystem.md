@@ -10,7 +10,7 @@
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 04:19 MYT
+- Updated: 2026-08-02 17:01 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -25,7 +25,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
-| PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
+| PCF-004 | Diary, folders, drafts, and notes | blocked | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
@@ -332,6 +332,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-01 19:49 MYT - Completed PCF-003 and synchronized its parent row after PR #127 head `f0991e38` passed all five required checks. Full GraphQL pagination covered `71` top-level comments, `95` reviews, `112` review threads, every per-thread comment connection, reactions, and current-head checks with zero unresolved non-outdated consequential threads; focused Codex review reported no major issues for exact head `f0991e38bb`. This parent remains `in_progress`; PCF-004 and PCF-005 are dependency-eligible but remain unclaimed in backlog.
 - 2026-08-02 04:06 MYT - Claimed PCF-004 from clean `main` at `51678d08680747d90ff0c03c0e091331456ae837` and synchronized its child row as `in_progress`. Work follows the approved diary/folder/draft/note vertical-slice plan directly in the main checkout per user direction; PCF-005 remains dependency-eligible and unclaimed.
 - 2026-08-02 04:19 MYT - PCF-004 native integration exposed a missing sealed converter boundary: public CoreFS mutation correctly remains frozen, while the crate-private sequential shadow mutator cannot publish the diary/folder/media graph in one validation generation. The invalid parallel draft-store prototype was removed; green codec/migration groundwork remains in `7ac84178`, and the approved Task 4 plan now includes a session-scoped atomic validation-batch API, deterministic native IDs, exact-head CAS, and read-only stable-role resolution. PCF-004 remains `in_progress`; PCF-005 is unchanged.
+- 2026-08-02 17:01 MYT - PCF-004's bounded implementation and repeated independent specification/quality fixes are locally green through `e30179bb`, but the child is blocked on a material native protocol decision for legitimate writing corpora above 1 GiB. Safe bounded-memory conversion while retaining one atomic validation publication requires authenticated persistent prepared-object state, exact-head finalization, restart recovery, abandonment/GC, rotation, and session-close semantics; current prepared tokens keep wrapped DEKs and physical identities only in memory. This parent remains `in_progress` because PCF-005 is independently eligible; do not weaken PCF-004 atomicity or transport bounds without an approved design.
 
 ## Validation
 
