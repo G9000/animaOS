@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust 1.75 (`anima-corefs`, PyO3 `anima-core`), Python 3.12/FastAPI/SQLAlchemy/Alembic/SQLCipher, pytest, Bun workspace validation.
 
+**Plan Review:** Approved on 2026-08-02 after three focused independent passes; all consequential findings were corrected before execution handoff.
+
 ---
 
 ## Governing artifacts and non-negotiable invariants
