@@ -105,6 +105,58 @@ describe("attachment-backed images", () => {
     expect(out).toContain('src="data:image/png;base64,AAAA"');
     expect(out).toContain('data-attachment-id="9"');
   });
+
+  // Fix round 1, Finding 3: this is the actual precedence hazard, distinct
+  // from the two-separate-tags case above. A single <img> carrying BOTH
+  // `src` and `data-attachment-id` used to match the stock image node's
+  // `img[src]` rule (registered first in extensions.ts, and ProseMirror
+  // breaks priority ties by registration order, not by rule
+  // "specificity" — there is no such concept), silently dropping the
+  // attachment id. `priority: 100` on diaryImage's parse rule fixes this.
+  test("a tag carrying both src and data-attachment-id keeps the attachment id", () => {
+    const out = roundTrip('<img src="data:image/png;base64,AAAA" data-attachment-id="5" alt="both">');
+    expect(out).toContain('data-attachment-id="5"');
+  });
+});
+
+const { stripUnresolvedAttachmentImages } = await import(
+  "../src/features/diary/lib/attachmentImages"
+);
+
+// Fix round 1, Finding 2: a diaryImage node with no attachmentId yet
+// (still uploading, or its upload failed) renders to `<img alt="…">` —
+// no `src`, no `data-attachment-id`. Verified below against the REAL
+// schema (not just asserting the strip function's own behavior in
+// isolation) that such a tag matches neither image node's parse rule and
+// so vanishes without a trace on reparse — which is exactly why
+// stripUnresolvedAttachmentImages must remove it BEFORE it ever reaches
+// the saved body, rather than let that silent disappearance happen to
+// already-persisted content.
+describe("unresolved attachment images never persist as a silently-vanishing tag", () => {
+  test("a placeholder with neither src nor data-attachment-id reparses to nothing (the hazard)", () => {
+    const placeholder = '<p><img alt="pic.png"></p>';
+    const reparsed = generateHTML(generateJSON(placeholder, extensions), extensions);
+    expect(reparsed).not.toContain("<img");
+    expect(reparsed).toBe("<p></p>");
+  });
+
+  test("stripUnresolvedAttachmentImages removes that same placeholder before it can be saved", () => {
+    const withPlaceholder = '<p><img alt="pic.png"></p>';
+    const stripped = stripUnresolvedAttachmentImages(withPlaceholder, dom.window.document as any);
+    expect(stripped).not.toContain("<img");
+  });
+
+  test("a resolved attachment image is left untouched", () => {
+    const withId = '<p><img data-attachment-id="7" alt="done"></p>';
+    const stripped = stripUnresolvedAttachmentImages(withId, dom.window.document as any);
+    expect(stripped).toContain('data-attachment-id="7"');
+  });
+
+  test("a legacy base64 image is left untouched", () => {
+    const legacy = '<p><img src="data:image/png;base64,AAAA" alt="old"></p>';
+    const stripped = stripUnresolvedAttachmentImages(legacy, dom.window.document as any);
+    expect(stripped).toContain("data:image/png;base64,AAAA");
+  });
 });
 
 describe("callout node", () => {

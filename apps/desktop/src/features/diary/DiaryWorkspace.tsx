@@ -8,6 +8,7 @@ import type {
 import type { Editor } from "@tiptap/react";
 import { useAuth } from "../../context/AuthContext";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
+import { stripUnresolvedAttachmentImages } from "./lib/attachmentImages";
 import {
   hasNonTextNode,
   isDiscardablePage,
@@ -370,7 +371,13 @@ export default function DiaryWorkspace() {
     // No eligibility gate here (fix round 1, Finding 1, Task 11):
     // PageHeader's title input only calls this from its own onChange,
     // which only fires on a genuine keystroke.
-    const html = sanitizeDiaryHtml(ed.getHTML());
+    //
+    // Task 13 fix round 1, Finding 2: a title-only edit computes its own
+    // saved body independently of DiaryEditor's onUpdate, so it needs the
+    // same stripUnresolvedAttachmentImages pass — otherwise editing the
+    // title while an inline image is still uploading (or has failed)
+    // would persist that placeholder through THIS path instead.
+    const html = stripUnresolvedAttachmentImages(sanitizeDiaryHtml(ed.getHTML()), window.document);
     const plainText = ed.getText();
     const body = resolveBodyForSave({
       editorIsEmpty: ed.isEmpty,

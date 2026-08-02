@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/react";
 import { cn } from "@anima/standard-templates";
 import { marked } from "marked";
 import { createDiaryHtmlSanitizer } from "../lib/sanitize";
+import { stripUnresolvedAttachmentImages } from "../lib/attachmentImages";
 import { createDiaryExtensions } from "./extensions";
 import { DiaryBubbleMenu } from "./BubbleMenu";
 import { BlockDragHandle } from "./BlockDragHandle";
@@ -192,7 +193,14 @@ export function DiaryEditor(props: DiaryEditorProps) {
       if (instance) onEditorDestroyed?.(instance);
     },
     onUpdate: ({ editor: updated }) => {
-      const html = sanitizeDiaryHtml(updated.getHTML());
+      // Fix round 1, Finding 2: strip any diaryImage placeholder that has
+      // no attachmentId yet (still uploading, or its upload failed) before
+      // this html can reach onChange -> autosave. See the doc comment on
+      // stripUnresolvedAttachmentImages for why — the live editor's own
+      // document (and therefore its NodeView, still showing the
+      // uploading/retry UI) is untouched; only the exported HTML string
+      // used for persistence is filtered.
+      const html = stripUnresolvedAttachmentImages(sanitizeDiaryHtml(updated.getHTML()), window.document);
       onChange(html, updated.getText());
     },
   });

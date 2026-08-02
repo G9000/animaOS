@@ -180,11 +180,23 @@ function AttachmentImageView(props: NodeViewProps) {
 // `allowBase64: true` for legacy entries whose bodies already contain
 // `<img src="data:image/png;base64,…">`; every NEW inline image goes
 // through this node instead, backed by the encrypted attachment store
-// rather than an embedded data URL. `parseHTML` below matches
-// `img[data-attachment-id]`, which ProseMirror's schema treats as more
-// specific than the stock node's `img[src]` rule, so a saved body
-// containing both kinds of <img> parses each back into the correct node
-// type.
+// rather than an embedded data URL.
+//
+// Fix round 1, Finding 3: ProseMirror's DOMParser does NOT pick a parse
+// rule by "specificity" the way CSS selectors do — it tries rules in order
+// of `priority` (default 50 for every rule unless set otherwise), and
+// within equal priority, in extension REGISTRATION order. `TiptapImage` is
+// registered before `DiaryImage` in extensions.ts, so without an explicit
+// priority bump here, an `<img>` carrying BOTH `src` and
+// `data-attachment-id` (verified: `<img src="data:…" data-attachment-id="5">`)
+// would match the stock node's `img[src]` rule first and silently drop the
+// attachment id. Coexistence with legacy base64 images does not actually
+// depend on this priority in practice — `diaryImage`'s own `renderHTML`
+// never emits a `src` attribute, so the two rules' match sets never
+// overlap for content this node itself produced — but that was a fragile
+// invariant resting on the wrong stated mechanism, so `priority: 100` is
+// set explicitly to make correct precedence part of the contract rather
+// than an accident of never emitting `src`.
 export const DiaryImage = Node.create<DiaryImageOptions, DiaryImageStorage>({
   name: "diaryImage",
   group: "block",
@@ -233,7 +245,7 @@ export const DiaryImage = Node.create<DiaryImageOptions, DiaryImageStorage>({
   },
 
   parseHTML() {
-    return [{ tag: "img[data-attachment-id]" }];
+    return [{ tag: "img[data-attachment-id]", priority: 100 }];
   },
 
   renderHTML({ HTMLAttributes }) {
