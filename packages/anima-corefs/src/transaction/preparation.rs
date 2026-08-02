@@ -1,8 +1,12 @@
 //! Closed, independently bounded wire records for crash-resumable CoreFS preparation.
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{self, Read};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,6 +55,48 @@ const MAX_SEGMENT_REFERENCES: usize = 1024;
 const MAX_SEGMENT_ITEMS: usize = 1024;
 const MAX_RECONCILIATION_PAGE_ITEMS: u32 = 128;
 const MAX_RECONCILIATION_PAGE_BYTES: u32 = 64 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static RECONCILIATION_INSTRUMENTATION: RefCell<Option<Arc<PreparationReconciliationTestInstrumentation>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(super) struct PreparationReconciliationTestInstrumentation {
+    descriptor_segment_reads: AtomicUsize,
+}
+
+#[cfg(test)]
+impl PreparationReconciliationTestInstrumentation {
+    pub(super) fn descriptor_segment_reads(&self) -> usize {
+        self.descriptor_segment_reads.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+struct ReconciliationInstrumentationGuard(
+    Option<Arc<PreparationReconciliationTestInstrumentation>>,
+);
+
+#[cfg(test)]
+impl ReconciliationInstrumentationGuard {
+    fn install(instrumentation: Arc<PreparationReconciliationTestInstrumentation>) -> Self {
+        let previous =
+            RECONCILIATION_INSTRUMENTATION.with(|active| active.replace(Some(instrumentation)));
+        Self(previous)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReconciliationInstrumentationGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        RECONCILIATION_INSTRUMENTATION.with(|active| {
+            active.replace(previous);
+        });
+    }
+}
 
 pub(super) const MAX_PREPARATION_HEAD_PLAINTEXT_SIZE: usize = 4 * 1024;
 pub(super) const MAX_PREPARATION_SNAPSHOT_PLAINTEXT_SIZE: usize = 64 * 1024;
@@ -202,6 +248,7 @@ pub(super) struct PreparationIdentity {
     pub(super) object_id: String,
     pub(super) revision: u64,
     pub(super) content_sha256: String,
+    pub(super) preparation_ordinal: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1829,20 +1876,42 @@ impl super::CoreCommitCoordinator {
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::Missing)?;
-        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
-        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
-        let layout = open_preparation_layout(&preparations, &loaded.snapshot.preparation_id)?;
+        let (loaded, layout) =
+            self.load_active_preparation_page_locked(&commit_lock, keys, pointer)?;
         let page = reconciliation_page(self, &layout, &loaded, keys, request)?;
         drop(commit_lock);
         Ok(page)
     }
 
+    #[cfg(test)]
+    pub(super) fn reconcile_prepared_objects_with_instrumentation(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationReconciliationRequest,
+        instrumentation: Arc<PreparationReconciliationTestInstrumentation>,
+    ) -> Result<PreparationReconciliationPage, PreparationError> {
+        let _guard = ReconciliationInstrumentationGuard::install(instrumentation);
+        self.reconcile_prepared_objects(keys, request)
+    }
+
     fn load_active_preparation_locked(
+        &self,
+        commit_lock: &super::CoreCommitLock,
+        keys: &FrkSubkeys,
+        pointer: Vec<u8>,
+    ) -> Result<LoadedPreparation, PreparationError> {
+        let (loaded, layout) =
+            self.load_active_preparation_page_locked(commit_lock, keys, pointer)?;
+        validate_referenced_segments(&layout, &loaded.snapshot, keys, &self.core_id)?;
+        Ok(loaded)
+    }
+
+    fn load_active_preparation_page_locked(
         &self,
         _commit_lock: &super::CoreCommitLock,
         keys: &FrkSubkeys,
         pointer: Vec<u8>,
-    ) -> Result<LoadedPreparation, PreparationError> {
+    ) -> Result<(LoadedPreparation, PreparationLayout), PreparationError> {
         let (head, pointer_sha256) = authenticate_pointer(&pointer, keys, &self.core_id)?;
         let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
         let _quarantine = open_required_directory(&self.fs_dir, PREPARATION_QUARANTINE_DIRECTORY)?;
@@ -1873,12 +1942,15 @@ impl super::CoreCommitCoordinator {
         {
             return Err(PreparationError::StaleSnapshotReplay);
         }
-        validate_referenced_segments(&layout, &snapshot, keys, &self.core_id)?;
-        Ok(LoadedPreparation {
-            head,
-            snapshot,
-            pointer_sha256,
-        })
+        validate_reconciliation_snapshot_manifest(&snapshot)?;
+        Ok((
+            LoadedPreparation {
+                head,
+                snapshot,
+                pointer_sha256,
+            },
+            layout,
+        ))
     }
 }
 
@@ -2152,7 +2224,7 @@ fn read_descriptor_segment(
             segment_index: reference.segment_index,
         });
     }
-    PreparedObjectDescriptorSegment::open(
+    let record = PreparedObjectDescriptorSegment::open(
         &encoded,
         keys,
         &snapshot.core_id,
@@ -2161,7 +2233,24 @@ fn read_descriptor_segment(
     .map_err(|_| PreparationError::CorruptReferencedRecord {
         kind: PreparationReferenceKind::Descriptor,
         segment_index: reference.segment_index,
-    })
+    })?;
+    let plaintext_bytes = u32::try_from(record.encode()?.len()).map_err(|_| {
+        PreparationError::CorruptReferencedRecord {
+            kind: PreparationReferenceKind::Descriptor,
+            segment_index: reference.segment_index,
+        }
+    })?;
+    if record.preparation_id != snapshot.preparation_id
+        || record.segment_index != reference.segment_index
+        || u32::try_from(record.descriptors.len()).ok() != Some(reference.item_count)
+        || plaintext_bytes != reference.plaintext_bytes
+    {
+        return Err(PreparationError::CorruptReferencedRecord {
+            kind: PreparationReferenceKind::Descriptor,
+            segment_index: reference.segment_index,
+        });
+    }
+    Ok(record)
 }
 
 fn find_descriptor(
@@ -2283,10 +2372,16 @@ fn validate_reconciliation_request(
         return Err(PreparationError::LimitExceeded("reconciliation page"));
     }
     let mut identities = HashSet::new();
+    let mut ordinals = HashSet::new();
     for identity in &request.expected {
         validate_opaque(&identity.object_id, "object ID")?;
         validate_hash(&identity.content_sha256)?;
-        if identity.revision == 0 || !identities.insert(identity.object_id.as_str()) {
+        if identity.revision == 0
+            || usize::try_from(identity.preparation_ordinal)
+                .map_or(true, |ordinal| ordinal >= MAX_CATALOG_ENTRIES)
+            || !identities.insert(identity.object_id.as_str())
+            || !ordinals.insert(identity.preparation_ordinal)
+        {
             return Err(PreparationError::InvalidFormat("reconciliation identity"));
         }
     }
@@ -2350,16 +2445,25 @@ fn reconciliation_page(
                 .expected
                 .get(expected_index)
                 .ok_or(PreparationError::InvalidFormat("reconciliation cursor"))?;
-            match descriptor_for_identity(layout, &loaded.snapshot, keys, &identity.object_id)? {
-                None => candidate.missing.push(identity.clone()),
-                Some(descriptor)
-                    if descriptor.revision == identity.revision
-                        && descriptor.content_sha256 == identity.content_sha256 =>
+            if identity.preparation_ordinal >= prepared_count {
+                candidate.missing.push(identity.clone());
+            } else {
+                let (descriptor, _) = descriptor_at_ordinal(
+                    layout,
+                    &loaded.snapshot,
+                    keys,
+                    identity.preparation_ordinal,
+                )?;
+                if descriptor.stable_id != identity.object_id {
+                    candidate.missing.push(identity.clone());
+                } else if descriptor.revision == identity.revision
+                    && descriptor.content_sha256 == identity.content_sha256
                 {
                     prepared_to_authenticate =
                         Some(prepared_revision_from_descriptor(&descriptor)?);
+                } else {
+                    candidate.conflicting.push(identity.clone());
                 }
-                Some(_) => candidate.conflicting.push(identity.clone()),
             }
         }
 
@@ -2418,25 +2522,6 @@ fn descriptor_at_ordinal(
         return Err(PreparationError::CorruptSnapshot);
     }
     Err(PreparationError::CorruptSnapshot)
-}
-
-fn descriptor_for_identity(
-    layout: &PreparationLayout,
-    snapshot: &PreparationSnapshot,
-    keys: &FrkSubkeys,
-    object_id: &str,
-) -> Result<Option<PreparedObjectDescriptor>, PreparationError> {
-    for reference in &snapshot.manifest_segments {
-        let segment = read_descriptor_segment(layout, snapshot, keys, reference)?;
-        if let Some(descriptor) = segment
-            .descriptors
-            .into_iter()
-            .find(|descriptor| descriptor.stable_id == object_id)
-        {
-            return Ok(Some(descriptor));
-        }
-    }
-    Ok(None)
 }
 
 fn encode_reconciliation_page(
@@ -2664,6 +2749,24 @@ fn authenticate_pointer(
     Ok((head, sha256_hex(pointer)))
 }
 
+fn validate_reconciliation_snapshot_manifest(
+    snapshot: &PreparationSnapshot,
+) -> Result<(), PreparationError> {
+    let descriptor_count = snapshot
+        .manifest_segments
+        .iter()
+        .try_fold(0_u64, |total, reference| {
+            total.checked_add(u64::from(reference.item_count))
+        })
+        .ok_or(PreparationError::CorruptSnapshot)?;
+    if descriptor_count != u64::from(snapshot.total_objects)
+        || manifest_root(&snapshot.manifest_segments) != snapshot.manifest_root_sha256
+    {
+        return Err(PreparationError::CorruptSnapshot);
+    }
+    Ok(())
+}
+
 fn validate_referenced_segments(
     layout: &PreparationLayout,
     snapshot: &PreparationSnapshot,
@@ -2674,45 +2777,7 @@ fn validate_referenced_segments(
     let mut descriptor_plaintext_total = 0_u64;
     let mut descriptor_ciphertext_total = 0_u64;
     for reference in &snapshot.manifest_segments {
-        let name = format!(
-            "{:020}-{}.prep-manifest.acore",
-            reference.segment_index, reference.ciphertext_sha256
-        );
-        let encoded = read_referenced_record(
-            &layout.descriptors,
-            &name,
-            MAX_DESCRIPTOR_SEGMENT_ENVELOPE_SIZE,
-            PreparationReferenceKind::Descriptor,
-            reference.segment_index,
-        )?;
-        if sha256_hex(&encoded) != reference.ciphertext_sha256 {
-            return Err(PreparationError::CorruptReferencedRecord {
-                kind: PreparationReferenceKind::Descriptor,
-                segment_index: reference.segment_index,
-            });
-        }
-        let record =
-            PreparedObjectDescriptorSegment::open(&encoded, keys, core_id, keys.frk_version())
-                .map_err(|_| PreparationError::CorruptReferencedRecord {
-                    kind: PreparationReferenceKind::Descriptor,
-                    segment_index: reference.segment_index,
-                })?;
-        let plaintext_bytes = u32::try_from(record.encode()?.len()).map_err(|_| {
-            PreparationError::CorruptReferencedRecord {
-                kind: PreparationReferenceKind::Descriptor,
-                segment_index: reference.segment_index,
-            }
-        })?;
-        if record.preparation_id != snapshot.preparation_id
-            || record.segment_index != reference.segment_index
-            || u32::try_from(record.descriptors.len()).ok() != Some(reference.item_count)
-            || plaintext_bytes != reference.plaintext_bytes
-        {
-            return Err(PreparationError::CorruptReferencedRecord {
-                kind: PreparationReferenceKind::Descriptor,
-                segment_index: reference.segment_index,
-            });
-        }
+        let record = read_descriptor_segment(layout, snapshot, keys, reference)?;
         for descriptor in &record.descriptors {
             if descriptor.preparation_ordinal != descriptor_count {
                 return Err(PreparationError::CorruptReferencedRecord {
@@ -2803,6 +2868,16 @@ fn read_referenced_record(
     kind: PreparationReferenceKind,
     segment_index: u32,
 ) -> Result<Vec<u8>, PreparationError> {
+    #[cfg(test)]
+    if kind == PreparationReferenceKind::Descriptor {
+        RECONCILIATION_INSTRUMENTATION.with(|active| {
+            if let Some(instrumentation) = active.borrow().as_ref() {
+                instrumentation
+                    .descriptor_segment_reads
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+        });
+    }
     match super::read_bounded_in(directory, OsStr::new(name), limit) {
         Ok(encoded) => Ok(encoded),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

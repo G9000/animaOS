@@ -24,7 +24,8 @@ use super::preparation::{
     PreparationBeginRequest, PreparationCas, PreparationError, PreparationHeadRecord,
     PreparationIdentity, PreparationOpenDisposition, PreparationPageLimits,
     PreparationPublicationTarget, PreparationReceipt, PreparationReceiptOutcome,
-    PreparationReconciliationCursor, PreparationReconciliationRequest, PreparationReferenceKind,
+    PreparationReconciliationCursor, PreparationReconciliationRequest,
+    PreparationReconciliationTestInstrumentation, PreparationReferenceKind,
     PreparationSegmentReference, PreparationSnapshot, PreparationState, PreparationTestLimits,
     PrepareObjectDisposition, PrepareObjectRequest, PreparedObjectDescriptor,
     PreparedObjectDescriptorSegment, WrappedObjectDekWire, MAX_FINAL_INTENT_ENTRY_BYTES,
@@ -1011,6 +1012,181 @@ mod prepare_object {
         }
     }
 
+    fn segmented_corpus(
+        label: &str,
+    ) -> (TestCore, CoreCommitCoordinator, Vec<PreparationIdentity>) {
+        let test_core = TestCore::new(label);
+        let coordinator = test_core.coordinator(CORE_ID);
+        let mut status = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let limits = PreparationTestLimits {
+            descriptor_segment_items: 2,
+            max_object_plaintext_bytes: 1024,
+            logical_plaintext_bytes: None,
+            instrumentation: None,
+        };
+        let mut identities = Vec::new();
+        for index in 0..8_u8 {
+            let body = format!(r#"{{"html":"segment-{index}"}}"#).into_bytes();
+            let mut request = object_request(&body);
+            request.object_id =
+                crate::id::OpaqueId::derive_migration("reconciliation-segments", &[index])
+                    .unwrap()
+                    .as_str()
+                    .to_owned();
+            request.name = format!("segment-{index}.diary.json");
+            status = coordinator
+                .prepare_object_with_limits(
+                    &keys(3),
+                    &PreparationCas {
+                        pointer_sha256: status.pointer_sha256,
+                        snapshot_sequence: status.snapshot_sequence,
+                    },
+                    &request,
+                    &mut Cursor::new(&body),
+                    limits.clone(),
+                )
+                .unwrap()
+                .status;
+            identities.push(PreparationIdentity {
+                object_id: request.object_id,
+                revision: request.revision,
+                content_sha256: request.content_sha256,
+                preparation_ordinal: u64::from(index),
+            });
+        }
+        (test_core, coordinator, identities)
+    }
+
+    fn active_snapshot(test_core: &TestCore) -> PreparationSnapshot {
+        let pointer = std::fs::read(test_core.fs_path().join("PREPARATION_HEAD")).unwrap();
+        let head = PreparationHeadRecord::open(&pointer, &keys(3), CORE_ID, 3).unwrap();
+        let snapshot_name = format!(
+            "{:020}-{}.prep.acore",
+            head.snapshot_sequence, head.snapshot_ciphertext_sha256
+        );
+        let encoded = std::fs::read(
+            test_core
+                .fs_path()
+                .join("preparations")
+                .join(&head.preparation_id)
+                .join("snapshots")
+                .join(snapshot_name),
+        )
+        .unwrap();
+        PreparationSnapshot::open(&encoded, &keys(3), CORE_ID, 3).unwrap()
+    }
+
+    #[test]
+    fn reconciliation_reads_only_the_segment_for_each_processed_cursor_position() {
+        let (_test_core, coordinator, identities) = segmented_corpus("prepare-page-segment-reads");
+        let prepared_reads = Arc::new(PreparationReconciliationTestInstrumentation::default());
+        let page = coordinator
+            .reconcile_prepared_objects_with_instrumentation(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: Vec::new(),
+                },
+                Arc::clone(&prepared_reads),
+            )
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+
+        let expected_reads = Arc::new(PreparationReconciliationTestInstrumentation::default());
+        let expected = identities.last().unwrap().clone();
+        let page = coordinator
+            .reconcile_prepared_objects_with_instrumentation(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: Some(PreparationReconciliationCursor { position: 8 }),
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: vec![expected],
+                },
+                Arc::clone(&expected_reads),
+            )
+            .unwrap();
+        assert!(page.items.is_empty());
+        assert!(page.missing.is_empty());
+        assert!(page.conflicting.is_empty());
+        assert_eq!(
+            (
+                prepared_reads.descriptor_segment_reads(),
+                expected_reads.descriptor_segment_reads(),
+            ),
+            (1, 1),
+            "reconciliation authenticated unrelated segments for cursor-start and expected-identity pages"
+        );
+    }
+
+    #[test]
+    fn reconciliation_defers_later_segment_corruption_until_that_cursor_position() {
+        let (test_core, coordinator, _identities) =
+            segmented_corpus("prepare-page-late-corruption");
+        let snapshot = active_snapshot(&test_core);
+        let reference = snapshot.manifest_segments.last().unwrap();
+        assert_eq!(reference.segment_index, 3);
+        let descriptor_path = test_core
+            .fs_path()
+            .join("preparations")
+            .join(&snapshot.preparation_id)
+            .join("descriptors")
+            .join(format!(
+                "{:020}-{}.prep-manifest.acore",
+                reference.segment_index, reference.ciphertext_sha256
+            ));
+        let mut encoded = std::fs::read(&descriptor_path).unwrap();
+        *encoded.last_mut().unwrap() ^= 0x01;
+        std::fs::write(&descriptor_path, encoded).unwrap();
+
+        let first_reads = Arc::new(PreparationReconciliationTestInstrumentation::default());
+        let first = coordinator
+            .reconcile_prepared_objects_with_instrumentation(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: Vec::new(),
+                },
+                Arc::clone(&first_reads),
+            )
+            .unwrap();
+        assert_eq!(first.items[0].preparation_ordinal, 0);
+        assert_eq!(first_reads.descriptor_segment_reads(), 1);
+
+        let later_reads = Arc::new(PreparationReconciliationTestInstrumentation::default());
+        assert!(matches!(
+            coordinator.reconcile_prepared_objects_with_instrumentation(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: Some(PreparationReconciliationCursor { position: 6 }),
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 4096,
+                    },
+                    expected: Vec::new(),
+                },
+                Arc::clone(&later_reads),
+            ),
+            Err(PreparationError::CorruptReferencedRecord {
+                kind: PreparationReferenceKind::Descriptor,
+                segment_index: 3,
+            })
+        ));
+        assert_eq!(later_reads.descriptor_segment_reads(), 1);
+    }
+
     #[test]
     fn prepares_first_object_and_accounts_exact_bytes_without_publishing_validation_head() {
         let test_core = TestCore::new("prepare-first-object");
@@ -1438,11 +1614,13 @@ mod prepare_object {
             object_id: STABLE_ID_TWO.to_owned(),
             revision: 1,
             content_sha256: HASH_A.to_owned(),
+            preparation_ordinal: 1,
         };
         let conflicting = PreparationIdentity {
             object_id: STABLE_ID.to_owned(),
             revision: 1,
             content_sha256: HASH_A.to_owned(),
+            preparation_ordinal: 0,
         };
         let page = coordinator
             .reconcile_prepared_objects(
@@ -1507,6 +1685,7 @@ mod prepare_object {
             object_id: STABLE_ID.to_owned(),
             revision: 1,
             content_sha256: HASH_A.to_owned(),
+            preparation_ordinal: 0,
         };
         let missing = (0..3_u8)
             .map(|index| PreparationIdentity {
@@ -1519,6 +1698,7 @@ mod prepare_object {
                 .to_owned(),
                 revision: 1,
                 content_sha256: HASH_A.to_owned(),
+                preparation_ordinal: u64::from(index) + 1,
             })
             .collect::<Vec<_>>();
 
@@ -1645,6 +1825,7 @@ mod prepare_object {
                     object_id: request.object_id,
                     revision: request.revision,
                     content_sha256: request.content_sha256,
+                    preparation_ordinal: 1,
                 });
                 second_path = std::fs::read_dir(test_core.root.join("objects"))
                     .unwrap()
