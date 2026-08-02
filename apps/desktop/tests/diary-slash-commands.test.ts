@@ -25,7 +25,7 @@ describe("slash command filtering", () => {
 
   test("exposes the block types the diary supports", () => {
     const ids = SLASH_COMMANDS.map((c) => c.id);
-    for (const id of ["h1", "h2", "h3", "bullet", "ordered", "task", "quote", "code", "divider", "table", "toggle", "image"]) {
+    for (const id of ["h1", "h2", "h3", "bullet", "ordered", "task", "quote", "code", "divider", "table", "toggle", "callout", "image"]) {
       expect(ids).toContain(id);
     }
   });

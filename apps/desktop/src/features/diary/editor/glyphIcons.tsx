@@ -123,6 +123,17 @@ export function ToggleGlyphIcon() {
   );
 }
 
+// Callout block (Task 8) — same stroke-only, size-4, square-join language.
+export function CalloutGlyphIcon() {
+  return (
+    <Glyph>
+      <rect x="3.5" y="5" width="17" height="14" rx="0" />
+      <path d="M12 9v5" />
+      <circle cx="12" cy="16.5" r="0.6" fill="currentColor" stroke="none" />
+    </Glyph>
+  );
+}
+
 // Selection bubble menu glyphs (Task 6) — same stroke-only, size-4, square-join
 // language as the slash menu icons above.
 export function BoldGlyphIcon() {

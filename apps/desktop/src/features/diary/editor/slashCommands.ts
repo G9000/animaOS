@@ -94,9 +94,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     group: "basic",
     run: (e, r) => e.chain().focus().deleteRange(r).setDetails().run(),
   },
-  // NOTE: a "callout" command (setCallout) is intentionally omitted here.
-  // setCallout does not exist until Task 8 adds the Callout extension —
-  // adding this entry now would fail to typecheck. Task 8 restores it.
+  {
+    id: "callout",
+    label: "Callout",
+    hint: "",
+    group: "basic",
+    run: (e, r) => e.chain().focus().deleteRange(r).setCallout({ tone: "neutral" }).run(),
+  },
   {
     id: "image",
     label: "Image",

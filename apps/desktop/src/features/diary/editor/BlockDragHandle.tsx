@@ -6,6 +6,7 @@ import { cn } from "@anima/standard-templates";
 import { SLASH_COMMANDS, type SlashCommand } from "./slashCommands";
 import {
   BulletListGlyphIcon,
+  CalloutGlyphIcon,
   CodeGlyphIcon,
   DividerGlyphIcon,
   EllipsisGlyphIcon,
@@ -36,6 +37,7 @@ const TURN_INTO_ICONS: Record<string, ReactNode> = {
   divider: <DividerGlyphIcon />,
   table: <TableGlyphIcon />,
   toggle: <ToggleGlyphIcon />,
+  callout: <CalloutGlyphIcon />,
 };
 
 interface HoveredNode {
@@ -78,6 +80,8 @@ function matchesTargetType(node: ProseMirrorNode, command: SlashCommand): boolea
       return node.type.name === "codeBlock";
     case "toggle":
       return node.type.name === "details";
+    case "callout":
+      return node.type.name === "callout";
     default:
       return false;
   }

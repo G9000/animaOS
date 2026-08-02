@@ -79,3 +79,17 @@ describe("diary editor + sanitizer stability", () => {
     });
   }
 });
+
+describe("callout node", () => {
+  test("round-trips through the schema and the sanitizer", () => {
+    const input = '<div data-type="callout" data-tone="info"><p>heads up</p></div>';
+    const out = roundTrip(input);
+    expect(out).toContain('data-type="callout"');
+    expect(out).toContain('data-tone="info"');
+
+    const pass1 = sanitize(roundTrip(input));
+    const pass2 = sanitize(roundTrip(pass1));
+    expect(pass2).toBe(pass1);
+    expect(pass1).toContain('data-tone="info"');
+  });
+});

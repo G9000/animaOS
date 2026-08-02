@@ -157,6 +157,49 @@ mark[data-tone="lilac"] {
   background-color: color-mix(in oklch, var(--diary-tone-lilac) 55%, transparent);
 }
 
+/* Diary callout blocks (Task 8) — same oklch + color-mix idiom as the
+   highlight tones above; a separate variable set (rather than reusing
+   --diary-tone-*) since a callout needs a legible left-rule + tinted
+   background pairing, not a single flat highlight fill. "neutral" (the
+   default, see Callout.tsx) rides on --foreground rather than a fixed hue so
+   it stays a plain, low-contrast gray in both themes; info/warn use the
+   same hues in both themes but a lighter lightness value in dark mode
+   (mirroring --diary-tone-amber/mint/lilac's split above) so the tint reads
+   as a tint rather than a wash against the dark background. The tone is
+   carried on data-tone (Callout.tsx's addAttributes) since the sanitizer
+   forbids inline style entirely. */
+:root {
+  --diary-callout-neutral: var(--foreground);
+  --diary-callout-info: oklch(0.55 0.14 230);
+  --diary-callout-warn: oklch(0.65 0.17 55);
+}
+
+.dark {
+  --diary-callout-neutral: var(--foreground);
+  --diary-callout-info: oklch(0.75 0.12 230);
+  --diary-callout-warn: oklch(0.78 0.15 55);
+}
+
+div[data-type="callout"] {
+  @apply my-3 rounded-md border-0 border-l-4 px-4 py-2;
+  border-left-color: var(--diary-callout-neutral);
+  background-color: color-mix(in oklch, var(--diary-callout-neutral) 8%, transparent);
+}
+
+div[data-type="callout"][data-tone="info"] {
+  border-left-color: var(--diary-callout-info);
+  background-color: color-mix(in oklch, var(--diary-callout-info) 14%, transparent);
+}
+
+div[data-type="callout"][data-tone="warn"] {
+  border-left-color: var(--diary-callout-warn);
+  background-color: color-mix(in oklch, var(--diary-callout-warn) 14%, transparent);
+}
+
+div[data-type="callout"] > *:last-child {
+  margin-bottom: 0;
+}
+
 /* Tiptap diary editor */
 .tiptap {
   @apply outline-none;

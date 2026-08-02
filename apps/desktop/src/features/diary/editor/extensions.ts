@@ -13,6 +13,7 @@ import Suggestion from "@tiptap/suggestion";
 import NodeRange from "@tiptap/extension-node-range";
 import { SLASH_COMMANDS, filterSlashCommands } from "./slashCommands";
 import { createSlashRenderer } from "./SlashMenu";
+import { Callout } from "./nodes/Callout";
 
 const lowlight = createLowlight(common);
 
@@ -92,6 +93,7 @@ export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Exte
       },
     }).configure({ multicolor: false }),
     CodeBlockLowlight.configure({ lowlight }),
+    Callout,
     SlashCommands.configure({ onImageRequest: options.onImageRequest }),
     // Required by BlockDragHandle.tsx (Task 7): DragHandle from
     // @tiptap/extension-drag-handle-react silently no-ops without NodeRange
