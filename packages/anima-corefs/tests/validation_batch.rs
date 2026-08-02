@@ -5,7 +5,8 @@ use anima_corefs::envelope::BodyEncoding;
 use anima_corefs::id::OpaqueId;
 use anima_corefs::transaction::{
     CoreCommitCoordinator, ValidationBatch, ValidationBatchError, ValidationBatchFolder,
-    ValidationBatchMode, ValidationBatchObject, ValidationBatchPolicy, MAX_WRITING_DOCUMENT_BYTES,
+    ValidationBatchMode, ValidationBatchObject, ValidationBatchPolicy, MAX_WRITING_BODY_CHARS,
+    MAX_WRITING_DOCUMENT_BYTES,
 };
 use serde_json::json;
 
@@ -16,6 +17,51 @@ fn native_id(domain: &str, value: &str) -> String {
         .unwrap()
         .as_str()
         .to_owned()
+}
+
+#[test]
+fn public_writing_character_limit_accepts_worst_case_utf8_and_rejects_one_more_atomically() {
+    let (root, coordinator) = fixture("public-writing-character-limit");
+    let keys = keys();
+    let mut accepted = initial_batch();
+    let diary = accepted
+        .objects
+        .iter_mut()
+        .find(|object| object.kind == ObjectKind::Diary)
+        .unwrap();
+    diary.content = serde_json::to_vec(&serde_json::json!({
+        "format": "anima.diary",
+        "version": 1,
+        "html": "\u{10ffff}".repeat(MAX_WRITING_BODY_CHARS),
+    }))
+    .unwrap();
+    let first = coordinator.apply_validation_batch(&keys, accepted).unwrap();
+    let before = fs::read(root.join("fs").join("VALIDATION_HEAD")).unwrap();
+
+    let mut rejected = initial_batch();
+    rejected.mode = ValidationBatchMode::Expect {
+        generation: first.snapshot().head().generation(),
+        catalog_hash: first.snapshot().head().catalog_hash().to_owned(),
+    };
+    let diary = rejected
+        .objects
+        .iter_mut()
+        .find(|object| object.kind == ObjectKind::Diary)
+        .unwrap();
+    diary.content = serde_json::to_vec(&serde_json::json!({
+        "format": "anima.diary",
+        "version": 1,
+        "html": "x".repeat(MAX_WRITING_BODY_CHARS + 1),
+    }))
+    .unwrap();
+    assert!(matches!(
+        coordinator.apply_validation_batch(&keys, rejected),
+        Err(ValidationBatchError::Invalid(_))
+    ));
+    assert_eq!(
+        fs::read(root.join("fs").join("VALIDATION_HEAD")).unwrap(),
+        before
+    );
 }
 
 fn fixture(name: &str) -> (std::path::PathBuf, CoreCommitCoordinator) {
@@ -235,7 +281,8 @@ fn changed_object_requires_revision_precondition_and_publishes_once() {
     for object in &mut changed.objects {
         object.expected_revision = Some(1);
     }
-    changed.objects[1].content = b"changed diary".to_vec();
+    changed.objects[1].content =
+        br#"{"format":"anima.diary","version":1,"html":"changed diary"}"#.to_vec();
     let next = coordinator.apply_validation_batch(&keys, changed).unwrap();
     assert!(next.published());
     assert_eq!(next.snapshot().head().generation(), head.generation() + 1);

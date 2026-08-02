@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import anima_core
 import pytest
+from anima_server.schemas.diary import DIARY_BODY_MAX_LENGTH, DiaryDraftImportRequest
 from anima_server.services.corefs.diary_migration import (
+    DiaryMigrationError,
     InactiveFolder,
     LegacyDiaryAttachment,
     LegacyDiaryDraft,
@@ -18,14 +20,172 @@ from anima_server.services.corefs.diary_migration import (
     LegacyNote,
     build_inactive_diary_catalog,
     migration_opaque_id,
+    prepare_diary_validation_catalog,
     read_prepared_writing_objects,
 )
 from anima_server.services.corefs.formats import (
+    MAX_WRITING_BODY_CHARACTERS,
     CoreFormatError,
     canonicalize_diary_html,
     decode_diary_document,
+    decode_draft_document,
     encode_diary_document,
 )
+from pydantic import ValidationError
+
+
+def test_legacy_local_storage_draft_extracts_and_deduplicates_inline_images() -> None:
+    encoded = base64.b64encode(b"draft-image").decode()
+    catalog = build_inactive_diary_catalog(
+        user_id=1,
+        folders=(),
+        entries=(),
+        drafts=(
+            LegacyDiaryDraft(
+                id="local-storage",
+                target_entry_id=None,
+                body=(
+                    f'<p><img src="data:image/png;base64,{encoded}">'
+                    f'<img src="data:image/png;base64,{encoded}"></p>'
+                ),
+                content_type="text/html",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+    draft_id = migration_opaque_id("diary-draft", "local-storage")
+    media_id = migration_opaque_id("diary-inline-media", hashlib.sha256(b"draft-image").hexdigest())
+    draft = catalog.object(draft_id)
+    decoded = decode_draft_document(draft.content)
+    assert decoded.body.count(f"corefs://object/{media_id}") == 2
+    assert draft.references == (media_id,)
+    assert catalog.object(media_id).content == b"draft-image"
+    assert catalog.object(media_id).metadata["origin"] == "legacy-local-storage-draft"
+
+
+def test_poison_validation_head_is_checkpointed_and_never_reinitialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "core"
+    native = anima_core.CorefsSession(str(root), "poison-writing-head")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    build_inactive_diary_catalog(user_id=7, folders=(), entries=()).publish_native(
+        corefs_session=native, keys=keys
+    )
+    head_path = root / "fs" / "VALIDATION_HEAD"
+    poison = b"authenticated-head-was-corrupted"
+    head_path.write_bytes(poison)
+    manifest: dict[str, object] = {}
+
+    def update(mutator: object) -> None:
+        assert callable(mutator)
+        mutator(manifest)
+
+    monkeypatch.setattr("anima_server.services.core.update_core_manifest", update)
+    with pytest.raises(DiaryMigrationError, match="could not be opened"):
+        prepare_diary_validation_catalog(
+            session=SimpleNamespace(
+                user_id=7,
+                corefs_session=native,
+                corefs_keys=keys,
+            ),
+            db=object(),  # failure occurs before any SQL access
+        )
+    assert head_path.read_bytes() == poison
+    checkpoint = manifest["migration_checkpoints"]["pcf004:7"]  # type: ignore[index]
+    assert checkpoint["state"] == "retry-required"
+    assert checkpoint["authoritative"] is False
+
+
+def test_public_draft_schema_round_trips_four_byte_unicode_through_native_boundary(
+    tmp_path: Path,
+) -> None:
+    assert DIARY_BODY_MAX_LENGTH == MAX_WRITING_BODY_CHARACTERS == 20_000_000
+    html = f"<p>{chr(0x10FFFF) * 1024}</p>"
+    payload = DiaryDraftImportRequest(
+        userId=1,
+        draftId="public-boundary",
+        html=html,
+        title="",
+        mood="",
+        entryDate="2026-08-02",
+        updatedAt="2026-08-02T00:00:00Z",
+    )
+    catalog = build_inactive_diary_catalog(
+        user_id=1,
+        folders=(),
+        entries=(),
+        drafts=(
+            LegacyDiaryDraft(
+                id=payload.draftId,
+                target_entry_id=None,
+                body=payload.html,
+                content_type="text/html",
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+        ),
+    )
+    native = anima_core.CorefsSession(str(tmp_path / "core"), "public-writing-boundary")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    first = catalog.publish_native(corefs_session=native, keys=keys)
+    draft_id = migration_opaque_id("diary-draft", payload.draftId)
+    prepared = read_prepared_writing_objects(
+        session=SimpleNamespace(corefs_session=native, corefs_keys=keys)
+    )
+    decoded = decode_draft_document(
+        next(item.content for item in prepared if item.stable_id == draft_id)
+    )
+    assert decoded.body == html
+    before = native.validation_snapshot(keys)
+    assert before["generation"] == first["generation"]
+    with pytest.raises(ValidationError):
+        DiaryDraftImportRequest(
+            userId=1,
+            draftId="oversized",
+            html="x" * (DIARY_BODY_MAX_LENGTH + 1),
+            title="",
+            mood="",
+            entryDate="2026-08-02",
+            updatedAt="2026-08-02T00:00:00Z",
+        )
+    assert native.validation_snapshot(keys) == before
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<img src="data:image/png;base64,not-base64!">',
+        '<img src="data:image/png;base64,'
+        + base64.b64encode(b"x" * (10 * 1024 * 1024 + 1)).decode()
+        + '">',
+    ],
+    ids=("malformed", "oversized"),
+)
+def test_invalid_legacy_draft_inline_media_fails_before_native_head_change(
+    tmp_path: Path, body: str
+) -> None:
+    session = anima_core.CorefsSession(str(tmp_path / "core"), "draft-inline-failure")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    baseline = build_inactive_diary_catalog(user_id=1, folders=(), entries=())
+    first = baseline.publish_native(corefs_session=session, keys=keys)
+    before = session.validation_snapshot(keys)
+    with pytest.raises(CoreFormatError):
+        build_inactive_diary_catalog(
+            user_id=1,
+            folders=(),
+            entries=(),
+            drafts=(
+                LegacyDiaryDraft(
+                    id="invalid",
+                    target_entry_id=None,
+                    body=body,
+                    content_type="text/html",
+                    updated_at="2026-08-02T00:00:00Z",
+                ),
+            ),
+        )
+    assert session.validation_snapshot(keys) == before
+    assert before["generation"] == first["generation"]
 
 
 def test_diary_codec_preserves_tiptap_markup_and_rejects_executable_html() -> None:
@@ -156,9 +316,7 @@ def test_server_matches_shared_data_uri_canonicalization_policy() -> None:
 
     for golden in contract["dataGoldens"]:
         if golden["canonicalAction"] == "extract":
-            result = canonicalize_diary_html(
-                golden["input"], media_reference_factory=publish
-            )
+            result = canonicalize_diary_html(golden["input"], media_reference_factory=publish)
             assert result.html == (
                 '<img src="corefs://object/00000000000000000000000000" alt="memory">'
             )
@@ -436,9 +594,7 @@ def test_mapped_legacy_names_publish_read_back_and_rerun_natively(tmp_path: Path
     )
     catalog = build_inactive_diary_catalog(
         user_id=20,
-        folders=(
-            LegacyDiaryFolder(id=20, name="bad/name", parent_id=None, order=0),
-        ),
+        folders=(LegacyDiaryFolder(id=20, name="bad/name", parent_id=None, order=0),),
         entries=(
             LegacyDiaryEntry(
                 id=20,
@@ -499,6 +655,7 @@ def test_legacy_folder_policy_is_carried_into_native_descendant_policy() -> None
     # The validation converter cannot represent lowered write access. Fail closed.
     assert catalog.folder(migration_opaque_id("diary-folder", "3")).policy == "deny"
     assert catalog.folder(migration_opaque_id("diary-folder", "4")).policy == "deny"
+
 
 def test_native_publication_wrapper_sends_bounded_metadata_and_separate_binary_parts() -> None:
     catalog = build_inactive_diary_catalog(

@@ -1578,6 +1578,12 @@ mod python {
     }
 
     #[pyfunction]
+    fn corefs_migration_component_v1(value: &str, stable_id: &str) -> PyResult<String> {
+        anima_corefs::logical::map_migration_component(value, stable_id)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyfunction]
     fn corefs_generate_object_dek() -> PyResult<PyCorefsObjectDek> {
         Ok(PyCorefsObjectDek {
             inner: anima_corefs::crypto::generate_object_dek().map_err(corefs_value_error)?,
@@ -3959,6 +3965,7 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_unwrap_root_key, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_derive_subkeys, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_migration_id_v1, m)?)?;
+        m.add_function(wrap_pyfunction!(corefs_migration_component_v1, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_generate_object_dek, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_wrap_object_dek, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_unwrap_object_dek, m)?)?;

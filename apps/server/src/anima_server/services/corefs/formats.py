@@ -24,6 +24,7 @@ DIARY_CONTENT_TYPE = "application/vnd.anima.diary+json;version=1"
 NOTE_CONTENT_TYPE = "application/vnd.anima.note+json;version=1"
 DRAFT_CONTENT_TYPE = "application/vnd.anima.draft+json;version=1"
 WRITING_SANITIZER_CONTRACT = "anima-writing-html-v1"
+MAX_WRITING_BODY_CHARACTERS = 20_000_000
 MAX_INLINE_MEDIA_BYTES = int(_SANITIZER_CONTRACT["maxInlineMediaBytes"])
 ALLOWED_INLINE_MEDIA_TYPES = frozenset(_SANITIZER_CONTRACT["allowedInlineMediaTypes"])
 ALLOWED_DIARY_TAGS = frozenset(_SANITIZER_CONTRACT["allowedTags"])
@@ -155,6 +156,7 @@ def encode_diary_document(
     updated_at: str | None = None,
     attachment_metadata: tuple[dict[str, Any], ...] = (),
 ) -> bytes:
+    _validate_writing_body_length(html)
     canonical = canonicalize_diary_html(
         html,
         legacy_plain_text=legacy_plain_text,
@@ -198,6 +200,7 @@ def decode_diary_document(data: bytes) -> DiaryDocument:
     stable_id = _required_string(payload, "stableId")
     _validate_stable_id(stable_id)
     html_body = _required_string(payload, "html", allow_empty=True)
+    _validate_writing_body_length(html_body)
     if _DATA_URL_ATTRIBUTE_RE.search(html_body):
         raise CoreFormatError("Canonical diary HTML cannot contain data URLs.")
     attachment_uris = _string_tuple(payload, "attachmentUris")
@@ -230,6 +233,7 @@ def decode_diary_document(data: bytes) -> DiaryDocument:
 def encode_note_document(
     *, stable_id: str, title: str | None, content_type: str, body: str
 ) -> bytes:
+    _validate_writing_body_length(body)
     _validate_stable_id(stable_id)
     if content_type == "text/html":
         body = canonicalize_diary_html(body).html
@@ -254,12 +258,14 @@ def decode_note_document(data: bytes) -> NoteDocument:
         raise CoreFormatError("Notes must use Markdown or sanitized HTML.")
     stable_id = _required_string(payload, "stableId")
     _validate_stable_id(stable_id)
+    body = _required_string(payload, "body", allow_empty=True)
+    _validate_writing_body_length(body)
     return NoteDocument(
         format_version=NOTE_FORMAT_VERSION,
         stable_id=stable_id,
         title=_optional_string(payload, "title"),
         content_type=content_type,
-        body=_required_string(payload, "body", allow_empty=True),
+        body=body,
     )
 
 
@@ -270,12 +276,14 @@ def encode_draft_document(
     content_type: str,
     body: str,
     metadata: dict[str, Any] | None = None,
+    media_reference_factory: MediaReferenceFactory | None = None,
 ) -> bytes:
+    _validate_writing_body_length(body)
     _validate_stable_id(stable_id)
     if target_id is not None:
         _validate_stable_id(target_id)
     if content_type == "text/html":
-        body = canonicalize_diary_html(body).html
+        body = canonicalize_diary_html(body, media_reference_factory=media_reference_factory).html
     elif content_type != "text/markdown":
         raise CoreFormatError("Drafts must use Markdown or sanitized HTML.")
     return _canonical_json(
@@ -302,14 +310,21 @@ def decode_draft_document(data: bytes) -> DraftDocument:
     content_type = _required_string(payload, "contentType")
     if content_type not in {"text/html", "text/markdown"}:
         raise CoreFormatError("Drafts must use Markdown or sanitized HTML.")
+    body = _required_string(payload, "body", allow_empty=True)
+    _validate_writing_body_length(body)
     return DraftDocument(
         format_version=DRAFT_FORMAT_VERSION,
         stable_id=stable_id,
         target_id=target_id,
         content_type=content_type,
-        body=_required_string(payload, "body", allow_empty=True),
+        body=body,
         metadata=_object(payload, "metadata"),
     )
+
+
+def _validate_writing_body_length(body: str) -> None:
+    if len(body) > MAX_WRITING_BODY_CHARACTERS:
+        raise CoreFormatError("Writing body exceeds the public 20,000,000-character limit.")
 
 
 class _DiarySanitizer(HTMLParser):

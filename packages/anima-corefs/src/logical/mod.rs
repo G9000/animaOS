@@ -12,7 +12,7 @@ pub use mutation::{
     MutationChange, MutationError, MutationResult, MutationStamp, MutationTarget, PatchAddFormat,
     PublicMutationError, ValidatedContent, CORE_FS_MIGRATION_WRITE_FROZEN,
 };
-pub use path::{LogicalPath, LogicalPathError};
+pub use path::{map_migration_component, LogicalPath, LogicalPathError};
 pub use service::{
     ListCursor, LogicalEntry, LogicalGlobCursor, LogicalGlobPage, LogicalGrepCursor,
     LogicalGrepMatch, LogicalGrepPage, LogicalGrepRequest, LogicalGrepSkipped, LogicalListPage,

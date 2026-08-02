@@ -10,7 +10,7 @@ mod object_lease;
 pub use converter::{
     ResolvedValidationRole, ValidationBatch, ValidationBatchError, ValidationBatchFolder,
     ValidationBatchMode, ValidationBatchObject, ValidationBatchOutcome, ValidationBatchPolicy,
-    MAX_WRITING_ATTACHMENT_BYTES, MAX_WRITING_DOCUMENT_BYTES,
+    MAX_WRITING_ATTACHMENT_BYTES, MAX_WRITING_BODY_CHARS, MAX_WRITING_DOCUMENT_BYTES,
 };
 
 use std::cmp::Ordering;

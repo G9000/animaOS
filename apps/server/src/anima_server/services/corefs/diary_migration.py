@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -42,24 +41,14 @@ def _truncate_portable_name(value: str, suffix: str = "") -> str:
 
 def _portable_name_base(value: str, *, stable_id: str) -> str:
     """Encode a legacy display name into one valid deterministic CoreFS component."""
-    normalized = unicodedata.normalize("NFC", value)
-    encoded = "".join(
-        (
-            "".join(f"~{byte:02X}" for byte in character.encode("utf-8"))
-            if character in {"/", "\\"} or unicodedata.category(character) == "Cc"
-            else character
-        )
-        for character in normalized
-    )
-    if encoded in {"", ".", ".."}:
-        encoded = (
-            "".join(f"~{byte:02X}" for byte in normalized.encode("utf-8"))
-            or f"item-{stable_id}"
-        )
-    if len(encoded.encode("utf-8")) > _MAX_PORTABLE_NAME_BYTES:
-        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-        encoded = _truncate_portable_name(encoded, f"~{digest}")
-    return encoded
+    try:
+        import anima_core  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("Native CoreFS migration component mapping is unavailable.") from exc
+    native = getattr(anima_core, "corefs_migration_component_v1", None)
+    if native is None:
+        raise RuntimeError("Native CoreFS migration component mapping is unavailable.")
+    return str(native(value, stable_id))
 
 
 def _portable_catalog_names(
@@ -80,30 +69,23 @@ def _portable_catalog_names(
     }
     groups: dict[tuple[str | None, str], list[tuple[str, int, str]]] = {}
     for kind, index, parent_id, stable_id, _name in entries:
-        groups.setdefault((parent_id, bases[(kind, index)]), []).append(
-            (kind, index, stable_id)
-        )
+        groups.setdefault((parent_id, bases[(kind, index)]), []).append((kind, index, stable_id))
     names = dict(bases)
     for members in groups.values():
         if len(members) < 2:
             continue
         for kind, index, stable_id in members:
-            names[(kind, index)] = _truncate_portable_name(
-                bases[(kind, index)], f"~{stable_id}"
-            )
+            names[(kind, index)] = _truncate_portable_name(bases[(kind, index)], f"~{stable_id}")
 
     # A legacy base may itself equal another member's disambiguated spelling.
     # In that rare case suffix every component with its globally unique stable
     # identity, which makes sibling uniqueness unconditional and deterministic.
     resulting = [
-        (parent_id, names[(kind, index)])
-        for kind, index, parent_id, _stable_id, _name in entries
+        (parent_id, names[(kind, index)]) for kind, index, parent_id, _stable_id, _name in entries
     ]
     if len(resulting) != len(set(resulting)):
         for kind, index, _parent_id, stable_id, _name in entries:
-            names[(kind, index)] = _truncate_portable_name(
-                bases[(kind, index)], f"~{stable_id}"
-            )
+            names[(kind, index)] = _truncate_portable_name(bases[(kind, index)], f"~{stable_id}")
 
     return (
         [replace(item, name=names[("folder", index)]) for index, item in enumerate(folders)],
@@ -384,9 +366,7 @@ def build_inactive_diary_catalog(
         InactiveFolder(
             stable_id=journal_id,
             parent_id=(
-                journal_preserved.parent_id
-                if journal_preserved is not None
-                else core_root_id
+                journal_preserved.parent_id if journal_preserved is not None else core_root_id
             ),
             name=journal_preserved.name if journal_preserved is not None else "Journal",
             order=0,
@@ -588,13 +568,47 @@ def build_inactive_diary_catalog(
 
     for draft in legacy_drafts:
         stable_id = draft.stable_id or migration_opaque_id("diary-draft", draft.id)
-        target_id = (
-            draft.target_stable_id
-            or (
-                migration_opaque_id("diary-entry", str(draft.target_entry_id))
-                if draft.target_entry_id is not None
-                else None
+        target_id = draft.target_stable_id or (
+            migration_opaque_id("diary-entry", str(draft.target_entry_id))
+            if draft.target_entry_id is not None
+            else None
+        )
+        draft_inline_ids: list[str] = []
+
+        def reference_draft_inline(
+            mime_type: str,
+            data: bytes,
+            digest: str,
+            created_at: str = draft.created_at or draft.updated_at,
+            updated_at: str = draft.updated_at,
+            reference_ids: list[str] = draft_inline_ids,
+        ) -> str:
+            media_id = migration_opaque_id("diary-inline-media", digest)
+            add_object(
+                _object(
+                    stable_id=media_id,
+                    parent_id=journal_id,
+                    name=f"inline-{digest[:12]}",
+                    kind="attachment",
+                    content_type=mime_type,
+                    content=data,
+                    source_hash=digest,
+                    body_encoding="binary",
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    metadata={"origin": "legacy-local-storage-draft"},
+                )
             )
+            reference_ids.append(media_id)
+            return f"corefs://object/{media_id}"
+
+        draft_content = encode_draft_document(
+            stable_id=stable_id,
+            target_id=target_id,
+            content_type=draft.content_type,
+            body=draft.body,
+            metadata=draft.metadata,
+            media_reference_factory=reference_draft_inline,
         )
         add_object(
             _object(
@@ -603,18 +617,15 @@ def build_inactive_diary_catalog(
                 name=f"{stable_id}.draft.json",
                 kind="draft",
                 content_type=DRAFT_CONTENT_TYPE,
-                content=encode_draft_document(
-                    stable_id=stable_id,
-                    target_id=target_id,
-                    content_type=draft.content_type,
-                    body=draft.body,
-                    metadata=draft.metadata,
-                ),
+                content=draft_content,
                 source_hash=hashlib.sha256(draft.body.encode()).hexdigest(),
                 body_encoding="utf-8",
                 created_at=draft.created_at or draft.updated_at,
                 updated_at=draft.updated_at,
-                references=(target_id,) if target_id is not None else (),
+                references=(
+                    *((target_id,) if target_id is not None else ()),
+                    *draft_inline_ids,
+                ),
                 metadata=draft.native_metadata,
             )
         )
@@ -953,15 +964,26 @@ def prepare_diary_validation_catalog(
     current: tuple[PreparedWritingObject, ...]
     current_folders: tuple[PreparedWritingFolder, ...]
     try:
-        prepared_snapshot = read_prepared_writing_snapshot(session=session)
-        current = prepared_snapshot.objects
-        current_folders = prepared_snapshot.folders
         head_value = session.corefs_session.validation_snapshot(session.corefs_keys)
         expected_head = (int(head_value["generation"]), str(head_value["catalogHash"]))
-    except ValueError:
+    except ValueError as exc:
+        if str(exc) != "CoreFS validation snapshot is missing":
+            record_diary_migration_failure(user_id=session.user_id, error=exc)
+            raise DiaryMigrationError("CoreFS validation head could not be opened.") from exc
         current = ()
         current_folders = ()
         expected_head = None
+    except Exception as exc:
+        record_diary_migration_failure(user_id=session.user_id, error=exc)
+        raise DiaryMigrationError("CoreFS validation head could not be opened.") from exc
+    else:
+        try:
+            prepared_snapshot = read_prepared_writing_snapshot(session=session)
+        except Exception as exc:
+            record_diary_migration_failure(user_id=session.user_id, error=exc)
+            raise DiaryMigrationError("CoreFS validation head could not be read safely.") from exc
+        current = prepared_snapshot.objects
+        current_folders = prepared_snapshot.folders
     allowed_kinds = {"diary", "attachment", "draft", "note"}
     unknown = sorted({item.kind for item in current if item.kind not in allowed_kinds})
     if unknown:

@@ -1,4 +1,4 @@
-use anima_corefs::logical::LogicalPath;
+use anima_corefs::logical::{map_migration_component, LogicalPath};
 
 #[test]
 fn logical_paths_are_root_relative_nfc_and_case_sensitive() {
@@ -10,6 +10,31 @@ fn logical_paths_are_root_relative_nfc_and_case_sensitive() {
     assert_ne!(
         LogicalPath::parse("Notes/Case.md").unwrap(),
         LogicalPath::parse("Notes/case.md").unwrap()
+    );
+}
+
+#[test]
+fn legacy_components_map_through_the_same_native_logical_rules() {
+    for source in [
+        ".anima",
+        "objects",
+        "bad/name",
+        "bad\\name",
+        "ambiguous\u{ff0f}name",
+    ] {
+        let mapped = map_migration_component(source, "01J00000000000000000000000").unwrap();
+        assert_ne!(mapped, source);
+        assert!(LogicalPath::parse(&format!("Notes/{mapped}")).is_ok());
+    }
+    assert_eq!(
+        map_migration_component("Cafe\u{301}", "01J00000000000000000000000").unwrap(),
+        "Caf\u{e9}"
+    );
+    assert!(
+        map_migration_component(&"x".repeat(300), "01J00000000000000000000000")
+            .unwrap()
+            .len()
+            <= 255
     );
 }
 

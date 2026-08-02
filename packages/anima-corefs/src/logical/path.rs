@@ -3,6 +3,7 @@ use std::fmt;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::folders::MAX_PORTABLE_NAME_BYTES;
+use sha2::{Digest, Sha256};
 
 const MAX_LOGICAL_PATH_BYTES: usize = 32 * 1024;
 const RESERVED_COMPONENTS: &[&str] = &[
@@ -68,6 +69,55 @@ impl LogicalPath {
         };
         Self::parse(&joined)
     }
+}
+
+/// Maps one untrusted legacy display name into a deterministic logical component.
+///
+/// Migration callers must use this boundary instead of reproducing logical-path
+/// rules in another language. Unsafe characters are byte-escaped, reserved
+/// spellings are escaped, and overlong results receive a stable hash suffix.
+pub fn map_migration_component(value: &str, stable_id: &str) -> Result<String, LogicalPathError> {
+    let normalized: String = value.nfc().collect();
+    let mut mapped = String::new();
+    for character in normalized.chars() {
+        if character == '/'
+            || character == '\\'
+            || character.is_control()
+            || is_ambiguous_path_character(character)
+        {
+            for byte in character.to_string().as_bytes() {
+                mapped.push_str(&format!("~{byte:02X}"));
+            }
+        } else {
+            mapped.push(character);
+        }
+    }
+    if mapped.is_empty() {
+        mapped = format!("item-{stable_id}");
+    }
+    if mapped == "."
+        || mapped == ".."
+        || RESERVED_COMPONENTS
+            .iter()
+            .any(|reserved| mapped.eq_ignore_ascii_case(reserved))
+    {
+        mapped = mapped
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("~{byte:02X}"))
+            .collect();
+    }
+    if mapped.len() > MAX_PORTABLE_NAME_BYTES {
+        let suffix = format!("~{:x}", Sha256::digest(value.as_bytes()));
+        let suffix = &suffix[..17];
+        let available = MAX_PORTABLE_NAME_BYTES - suffix.len();
+        while mapped.len() > available {
+            mapped.pop();
+        }
+        mapped.push_str(suffix);
+    }
+    validate_component(&mapped)?;
+    Ok(mapped)
 }
 
 impl fmt::Display for LogicalPath {

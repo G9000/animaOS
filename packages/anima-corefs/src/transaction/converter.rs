@@ -30,7 +30,10 @@ const DIARY_CONTENT_TYPE: &str = "application/vnd.anima.diary+json;version=1";
 const DRAFT_CONTENT_TYPE: &str = "application/vnd.anima.draft+json;version=1";
 const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
 const ALLOWED_ROLES: [&str; 2] = ["core.journal", "core.notes"];
-pub const MAX_WRITING_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_WRITING_BODY_CHARS: usize = 20_000_000;
+// The public contract is character-based. Reserve the worst-case four UTF-8
+// bytes per scalar plus bounded canonical JSON fields and escaping overhead.
+pub const MAX_WRITING_DOCUMENT_BYTES: usize = 82 * 1024 * 1024;
 pub const MAX_WRITING_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -731,6 +734,27 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
             "unsupported kind/content type/encoding",
         ));
     }
+    if matches!(
+        object.kind,
+        ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note
+    ) {
+        let document: Value = serde_json::from_slice(&object.content)
+            .map_err(|_| ValidationBatchError::Invalid("writing document is not valid JSON"))?;
+        let body_field = if object.kind == ObjectKind::Diary {
+            "html"
+        } else {
+            "body"
+        };
+        if document
+            .get(body_field)
+            .and_then(Value::as_str)
+            .is_some_and(|body| body.chars().count() > MAX_WRITING_BODY_CHARS)
+        {
+            return Err(ValidationBatchError::Invalid(
+                "writing body exceeds the public character limit",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -988,10 +1012,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let coordinator = CoreCommitCoordinator::new(&root, "core-preparation-failure").unwrap();
         let keys = derive_corefs_subkeys(&SecretBytes::new(vec![0x5c; 32]).unwrap(), 1).unwrap();
+        let first_content = br#"{"html":"first"}"#;
         let first = coordinator
             .apply_validation_batch(
                 &keys,
-                batch(ValidationBatchMode::Initialize, b"first", None),
+                batch(ValidationBatchMode::Initialize, first_content, None),
             )
             .unwrap();
         let journal = first
@@ -1021,8 +1046,9 @@ mod tests {
             catalog_hash: first.snapshot().head().catalog_hash().to_owned(),
         };
 
+        let second_content = br#"{"html":"second"}"#;
         let error = coordinator
-            .apply_validation_batch_inner(&keys, batch(mode, b"second", Some(1)), || {
+            .apply_validation_batch_inner(&keys, batch(mode, second_content, Some(1)), || {
                 Err(ValidationBatchError::Invalid(
                     "injected preparation failure",
                 ))
