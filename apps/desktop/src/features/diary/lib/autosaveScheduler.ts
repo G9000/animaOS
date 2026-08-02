@@ -20,13 +20,26 @@ export function createAutosaveScheduler<T>(
   const delayMs = options.delayMs ?? 800;
 
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // The latest payload waiting to be sent. schedule() and a superseded
+  // retry() both just overwrite this — only the newest payload is ever
+  // sent, and this is also how the loop below knows there is more work.
   let pending: { payload: T } | null = null;
-  let inFlight: Promise<void> | null = null;
+  // Non-null exactly while the single drain loop below is active. This is
+  // the ONE thing every entry point (the debounce timer, flush, retry)
+  // awaits, so "waiting on the loop" always means the same promise object
+  // to everyone — there is no separate re-check of `pending` after the
+  // fact that could race the loop's own continuation.
+  let loopPromise: Promise<void> | null = null;
   let failed: { payload: T } | null = null;
   let status: SaveStatus = "idle";
   let disposed = false;
 
   const setStatus = (next: SaveStatus) => {
+    // Once disposed, never invoke the callback again — a save that was
+    // already in flight when dispose() was called may still settle
+    // afterward, and callers (e.g. a React effect) may have already torn
+    // down whatever this callback would update.
+    if (disposed) return;
     if (status === next) return;
     status = next;
     options.onStatusChange?.(next);
@@ -53,18 +66,23 @@ export function createAutosaveScheduler<T>(
     }
   }
 
-  async function drain(): Promise<void> {
-    if (inFlight) {
-      await inFlight;
-      return;
-    }
-    while (pending !== null && !disposed) {
-      const next = pending;
-      pending = null;
-      inFlight = run(next.payload);
-      await inFlight;
-      inFlight = null;
-    }
+  // The single owner of every options.save() call. Its while-condition is
+  // `pending !== null`, so it can never exit (leave loopPromise non-null)
+  // while there is unsent work. That means anything that awaits the
+  // promise this returns is guaranteed, once it resolves, that no save is
+  // in flight AND pending is null — a real barrier, satisfied uniformly
+  // whether the caller is the debounce timer, flush(), or retry().
+  function ensureLoop(): Promise<void> {
+    if (loopPromise) return loopPromise;
+    loopPromise = (async () => {
+      while (!disposed && pending !== null) {
+        const next = pending;
+        pending = null;
+        await run(next.payload);
+      }
+      loopPromise = null;
+    })();
+    return loopPromise;
   }
 
   return {
@@ -74,24 +92,29 @@ export function createAutosaveScheduler<T>(
       clearTimer();
       timer = setTimeout(() => {
         timer = null;
-        void drain();
+        void ensureLoop();
       }, delayMs);
     },
     async flush() {
       if (disposed) return;
       clearTimer();
-      await drain();
-      // A save that finished while another edit was queued leaves work
-      // behind; drain again so flush is a real barrier.
-      if (pending !== null) await drain();
+      // Join the (possibly already-running) loop. Because it never exits
+      // while `pending !== null`, this single await is sufficient: it
+      // covers both "nothing was pending" (the loop resolves immediately)
+      // and "an edit landed mid-flight" (the loop picks it up and keeps
+      // going before resolving).
+      await ensureLoop();
     },
     async retry() {
       if (disposed || failed === null) return;
       const { payload } = failed;
       failed = null;
-      inFlight = run(payload);
-      await inFlight;
-      inFlight = null;
+      // A newer edit already queued always wins over the stale failed
+      // payload; otherwise re-queue the failed payload so it runs through
+      // the same shared loop instead of starting a second, concurrent
+      // save.
+      if (pending === null) pending = { payload };
+      await ensureLoop();
     },
     status() {
       return status;

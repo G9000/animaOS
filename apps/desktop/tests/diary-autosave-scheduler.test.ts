@@ -3,6 +3,16 @@ import { createAutosaveScheduler } from "../src/features/diary/lib/autosaveSched
 
 const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("autosave scheduler", () => {
   test("debounces rapid edits into a single save with the latest payload", async () => {
     const save = mock(async (_: string) => {});
@@ -98,5 +108,115 @@ describe("autosave scheduler", () => {
     await tick(50);
 
     expect(save).toHaveBeenCalledTimes(0);
+  });
+
+  test("flush is a real barrier: it does not resolve until the newest mid-flight edit has finished saving", async () => {
+    const gate1 = deferred<void>();
+    const gate2 = deferred<void>();
+    const calls: string[] = [];
+    const finished: string[] = [];
+    const save = mock(async (payload: string) => {
+      calls.push(payload);
+      if (payload === "X") await gate1.promise;
+      else await gate2.promise;
+      finished.push(payload);
+    });
+    const s = createAutosaveScheduler<string>({ save, delayMs: 5 });
+
+    s.schedule("X");
+    await tick(15); // debounce fires, X starts saving and blocks on gate1
+    expect(calls).toEqual(["X"]);
+
+    s.schedule("Y"); // queued while X is still in flight
+
+    let flushSettled = false;
+    const flushPromise = s.flush().then(() => {
+      flushSettled = true;
+    });
+
+    await tick(10);
+    expect(flushSettled).toBe(false); // X hasn't even resolved yet
+
+    gate1.resolve(); // let X finish; the loop should pick up Y next
+    await tick(10);
+    expect(calls).toEqual(["X", "Y"]); // Y has started
+    expect(finished).toEqual(["X"]); // ...but not finished
+    expect(flushSettled).toBe(false); // flush must still be waiting on Y
+
+    gate2.resolve(); // let Y finish
+    await flushPromise;
+
+    expect(flushSettled).toBe(true);
+    expect(finished).toEqual(["X", "Y"]);
+    s.dispose();
+  });
+
+  test("retry never runs concurrently with an already in-flight scheduled save", async () => {
+    let inFlightCount = 0;
+    let maxInFlight = 0;
+    const seen: string[] = [];
+    const gate = deferred<void>();
+    let attempt = 0;
+    const save = mock(async (payload: string) => {
+      attempt += 1;
+      inFlightCount += 1;
+      maxInFlight = Math.max(maxInFlight, inFlightCount);
+      seen.push(payload);
+      if (payload === "A" && attempt === 1) {
+        inFlightCount -= 1;
+        throw new Error("network");
+      }
+      if (payload === "B") {
+        await gate.promise;
+      }
+      inFlightCount -= 1;
+    });
+    const s = createAutosaveScheduler<string>({ save, delayMs: 5 });
+
+    s.schedule("A");
+    await tick(15); // A's debounce fires and fails
+    expect(s.status()).toBe("error");
+
+    s.schedule("B");
+    await tick(15); // B's debounce fires, B starts saving and blocks on `gate`
+    expect(seen).toEqual(["A", "B"]);
+
+    const retryPromise = s.retry(); // retry() called while B is in flight
+
+    await tick(10);
+    expect(maxInFlight).toBe(1); // retry must not start A concurrently with B
+
+    gate.resolve(); // let B finish
+    await retryPromise;
+
+    expect(maxInFlight).toBe(1);
+    expect(seen).toEqual(["A", "B", "A"]); // A retried only after B finished
+    s.dispose();
+  });
+
+  test("dispose during an in-flight save prevents further onStatusChange calls", async () => {
+    const gate = deferred<void>();
+    const statuses: string[] = [];
+    const save = mock(async (_: string) => {
+      await gate.promise;
+    });
+    const s = createAutosaveScheduler<string>({
+      save,
+      delayMs: 5,
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    s.schedule("x");
+    await tick(15); // debounce fires, save starts ("saving"), blocks on gate
+    expect(statuses).toEqual(["saving"]);
+
+    s.dispose();
+    const countAtDispose = statuses.length;
+
+    gate.resolve(); // let the in-flight save settle after dispose
+    await tick(10);
+
+    expect(statuses.length).toBe(countAtDispose); // no callbacks after dispose
+    expect(statuses).toEqual(["saving"]);
   });
 });
