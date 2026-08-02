@@ -1157,3 +1157,81 @@ def test_confirmation_is_serialized_with_consent_updates(soul_db) -> None:
     lock_at = source.index("with presence_consent_lock(user_id):")
     assert source.index("get_presence_config_values(db, user_id)") > lock_at
     assert source.index("update(DreamJournal)") > lock_at
+
+
+def test_confirm_refuses_an_expired_claim_generation(soul_db) -> None:
+    """Regression (PR #135 review, P1): the confirm matched the claim
+    generation but not its liveness. Between expiry and the next writer the
+    row already satisfies `offerable_dream_query`, so an initiative may have
+    selected the same narrative — renewing there would authorise a second,
+    concurrent disclosure of it."""
+    from anima_server.config import settings
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_token,
+        confirm_claim,
+        offerable_dream_query,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    token = claim_token(claim.claimed_at)
+
+    # The claim lapses; nothing has re-claimed it yet, so the token still
+    # matches the stored value exactly.
+    expired_at = datetime.now(UTC) - timedelta(
+        minutes=settings.dream_claim_ttl_minutes + 1
+    )
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.claimed_at = expired_at
+    soul_db.commit()
+    stale_token = claim_token(expired_at)
+    assert soul_db.scalars(offerable_dream_query(user_id)).first() is not None
+
+    assert (
+        confirm_claim(
+            soul_db, user_id=user_id, dream_id=claim.dream_id, token=stale_token
+        )
+        is None
+    )
+    # And the row is untouched, so whoever claims it next still can.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    assert row.surfaced is False
+    assert soul_db.scalars(offerable_dream_query(user_id)).first() is not None
+    del token
+
+
+def test_a_late_acknowledgement_is_still_honoured(soul_db) -> None:
+    """The deliberate asymmetry (PR #135 review): confirmation authorises a
+    FUTURE disclosure, so an expired generation must lose it. An
+    acknowledgement reports one that already happened — the user has read
+    this narrative — so refusing it moments after the deadline would leave
+    the dream offerable and guarantee it is voiced at them a second time."""
+    from anima_server.config import settings
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+
+    expired_at = datetime.now(UTC) - timedelta(
+        minutes=settings.dream_claim_ttl_minutes + 1
+    )
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.claimed_at = expired_at
+    soul_db.commit()
+
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id,
+            dream_id=claim.dream_id,
+            token=claim_token(expired_at),
+        )
+        is True
+    )
+    soul_db.commit()
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is True

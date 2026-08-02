@@ -163,6 +163,14 @@ def confirm_claim(
                 DreamJournal.user_id == user_id,
                 DreamJournal.surfaced.is_(False),
                 DreamJournal.claimed_at == claimed_at,
+                # The generation must still be LIVE, not merely unchanged
+                # (PR #135 review, P1). Between expiry and the next writer
+                # the row already satisfies `offerable_dream_query`, so an
+                # initiative may have selected the same narrative; renewing
+                # then would authorise a second, concurrent disclosure.
+                # Same cutoff as the offerable predicate, so the two can
+                # never both consider the claim theirs.
+                DreamJournal.claimed_at >= claim_cutoff(renewed_at),
             )
             .values(claimed_at=renewed_at)
         )
@@ -185,6 +193,17 @@ def acknowledge_dream(
     a NEWER greeting's claim, hijacking a disclosure in flight. Sets
     ``surfaced`` (the durable marker every other consumer reads) and clears
     ``claimed_at`` so no expiry logic ever revisits the row.
+
+    Deliberately NOT gated on the claim still being live, unlike
+    ``confirm_claim`` (PR #135 review). The two answer different questions.
+    Confirmation authorises a FUTURE disclosure, so an expired generation
+    must lose. An acknowledgement reports a disclosure that already
+    happened: the user has read this narrative. Refusing a receipt that
+    arrives moments after the deadline would leave the dream offerable and
+    guarantee it is voiced at them a second time — the very repeat this
+    module exists to prevent — while accepting it creates no new disclosure,
+    since a rival claimant already holds its own copy of the narrative
+    either way.
     """
     claimed_at = _parse_claim_token(token)
     if claimed_at is None:

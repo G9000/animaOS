@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-03 00:31 MYT
+- Updated: 2026-08-03 00:44 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -273,15 +273,34 @@ is its own ticket:
   the bounds test, since it could never satisfy it and the receipt would be
   starved forever — which would guarantee the dream is re-offered.
 
+- 2026-08-03 00:44 MYT - PR #135 review round 14 (two P1s, Codex — one of them the first
+  SERVER finding in six rounds, and a real hole):
+  (1) `confirm_claim` matched the claim GENERATION but not its liveness.
+  Between expiry and the next writer the row already satisfies
+  `offerable_dream_query`, so an initiative may have selected the same
+  narrative; renewing there authorised a second, concurrent disclosure. The
+  update now also requires `claimed_at >= claim_cutoff(now)` — the same
+  cutoff the offerable predicate uses, so the two can never both consider
+  the claim theirs. `acknowledge_dream` deliberately does NOT get the same
+  gate: confirmation authorises a FUTURE disclosure, an acknowledgement
+  reports one that already happened, and refusing a receipt that lands
+  moments late would leave the dream offerable and guarantee the repeat this
+  module exists to prevent.
+  (2) The round-13 exemption for text blocks larger than the viewport was
+  unsatisfiable: fixed 5%/95% samples of an oversized block can never both
+  be on screen, so those receipts were starved forever. Probes are now
+  clamped to the visible span, which is a no-op for a block that fits (its
+  full bounds are already required) and makes the exemption real for one
+  that does not.
+
 ## Validation
 
 - Commands:
-  - `pytest tests/test_inner_life_ambient_dream.py` — 42 passed (2026-08-02 15:19 MYT)
+  - `pytest tests/test_inner_life_ambient_dream.py` — 44 passed (2026-08-03 00:45 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
-    0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
-    the round-5/6 desktop-only changes
+  - Full server suite (`pytest tests/ -p no:randomly`) — **3376 passed,
+    0 failed, 2 skipped, 11 deselected** in 14m34s, run 2026-08-03 01:03 MYT
   - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-03 00:09 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)

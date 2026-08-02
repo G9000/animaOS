@@ -76,16 +76,21 @@ export function useDreamShownReceipt<T extends HTMLElement = HTMLElement>(
         if (box.top < 0 || box.bottom > viewportHeight) return false;
         if (box.left < 0 || box.right > viewportWidth) return false;
       }
-      const x = box.left + box.width / 2;
-      if (x < 0 || x > viewportWidth) return false;
-      // Sample down the text's own height: a corner overlay can cover the
-      // last line of a greeting while leaving its middle clear.
+      const x = Math.min(Math.max(box.left + box.width / 2, 0), viewportWidth);
+      // Probe only the part that is actually on screen. For a block that
+      // fits, the bounds check above already proved that is all of it; for
+      // an oversized one, clamping is what makes the exemption usable at
+      // all — fixed fractions of a block taller than the viewport can never
+      // both be inside it, so the receipt would be starved forever and the
+      // dream re-offered even after the user panned through and read it
+      // (PR #135 review).
+      const top = Math.max(box.top, 0);
+      const bottom = Math.min(box.bottom, viewportHeight);
+      if (bottom <= top) return false;
+      // Sample down the visible span: a corner overlay can cover the last
+      // line of a greeting while leaving its middle clear.
       for (const fraction of [0.05, 0.5, 0.95]) {
-        const y = box.top + box.height * fraction;
-        // A block too large for the viewport can never be fully inside it;
-        // requiring that would starve the receipt forever and guarantee the
-        // dream is re-offered. There, the sampled points carry the check.
-        if (y < 0 || y > viewportHeight) return false;
+        const y = top + (bottom - top) * fraction;
         const topmost = document.elementFromPoint(x, y);
         // Our own subtree, or a container that wraps it (the canvas pane can
         // swallow the hit): not occluded. Anything else — a lightbox, the
