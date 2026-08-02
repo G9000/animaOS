@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 04:10 MYT
+- Updated: 2026-08-02 13:27 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -72,20 +72,33 @@ is its own ticket:
   `ambientDreamId` on the greeting response. Client: acks on DISPLAY —
   not on fetch or stash — in both the fresh-fetch and one-shot paths.
 
+- 2026-08-02 13:27 MYT - PR #135 review round 1 (P1, regression introduced by this
+  ticket): making the greeting path claim-without-surfacing left IL-003's
+  three dream_residue paths still selecting on `surfaced` alone, so an
+  initiative tick overlapping an unacknowledged greeting could voice the
+  SAME dream through a second channel — duplicate disclosure of intimate
+  content. All three (grow signal, material, post-fire marking) now use
+  `offerable_dream_query`, so a live claim is invisible to initiatives
+  while an EXPIRED claim is re-admitted (a greeting that never landed
+  doesn't cost the dream). The initiative marking path sets `surfaced`
+  directly and clears any claim — initiative delivery is confirmed by
+  the PendingInitiative poll/ack, so it needs no second receipt.
+
 ## Validation
 
 - Commands:
-  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 28 passed
+  - `uv run pytest tests/test_inner_life_ambient_dream.py` — 30 passed
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full suite (`bun run test`) — **3363 passed, 0 failed, 10 skipped**,
-    run 2026-08-02 04:52 MYT
+  - Full suite (`bun run test`) — **3365 passed, 0 failed, 10 skipped**,
+    run 2026-08-02 13:27 MYT
   - `bun test tests/` (apps/desktop) — 111 passed, 0 failed
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
   - `apps/server/alembic_core/versions/20260802_0001_dream_claim_receipt.py` (new)
   - `apps/server/src/anima_server/services/agent/proactive.py`
+  - `apps/server/src/anima_server/services/agent/inner_life/initiative.py`
   - `apps/server/src/anima_server/api/routes/chat.py`
   - `apps/server/src/anima_server/config.py`
   - `packages/api-client/src/client.ts`, `packages/api-client/src/types.ts`

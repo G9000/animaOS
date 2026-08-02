@@ -52,6 +52,9 @@ from anima_server.services.agent.inner_life.delivery import (
     InitiativeDelivery,
     PendingInitiativeDelivery,
 )
+from anima_server.services.agent.inner_life.dream_receipt import (
+    offerable_dream_query,
+)
 from anima_server.services.agent.inner_life.drives import (
     DRIVE_DREAM_RESIDUE,
     DRIVE_NAMES,
@@ -668,14 +671,16 @@ def resolve_drive_signals(
     # initiative: suppress the grow signal (gather_drive_material returns "" in
     # that case too, so any pressure that accumulated while it was on is reset
     # by the material-less-drive guard instead of firing).
+    # IL-015: a dream a greeting has CLAIMED but not yet had acknowledged is
+    # mid-disclosure through the ambient channel — the initiative path must
+    # not select it too, or the same intimate narrative is voiced twice by
+    # two different surfaces. offerable_dream_query excludes live claims and
+    # re-admits expired ones, so a greeting that never landed still lets the
+    # initiative speak later.
     dream_residue_present = dream_sharing != "off" and (
         soul_db.scalar(
-            select(DreamJournal.id)
-            .where(
-                DreamJournal.user_id == user_id,
-                DreamJournal.share_worthy.is_(True),
-                DreamJournal.surfaced.is_(False),
-            )
+            offerable_dream_query(user_id)
+            .with_only_columns(DreamJournal.id)
             .limit(1)
         )
         is not None
@@ -796,14 +801,10 @@ def gather_drive_material(
         # guard resets any lingering dream_residue instead of firing it.
         if dream_sharing == "off":
             return ""
-        # The newest share-worthy, unsurfaced IL7 dream (see inner_life.dream_edge).
+        # The newest share-worthy, unsurfaced IL7 dream that is not currently
+        # claimed by an in-flight ambient greeting (IL-015).
         row = soul_db.scalar(
-            select(DreamJournal)
-            .where(
-                DreamJournal.user_id == user_id,
-                DreamJournal.share_worthy.is_(True),
-                DreamJournal.surfaced.is_(False),
-            )
+            offerable_dream_query(user_id)
             .order_by(DreamJournal.dreamt_at.desc())
             .limit(1)
         )
@@ -1234,18 +1235,20 @@ def tick_initiative_for_user(
                 if decision.drive == DRIVE_DREAM_RESIDUE:
                     # Mark the just-voiced dream surfaced so it stops re-raising
                     # dream_residue (mirrors pattern_insight's surface marker).
+                    # Same offerable predicate the material query used, so
+                    # the row marked is the row voiced — and a dream claimed
+                    # by an in-flight greeting is never stolen (IL-015).
+                    # Initiative delivery IS confirmed delivery (the client
+                    # polls and acks the PendingInitiative), so this sets
+                    # `surfaced` directly rather than taking a claim.
                     dream_row = soul_db.scalar(
-                        select(DreamJournal)
-                        .where(
-                            DreamJournal.user_id == user_id,
-                            DreamJournal.share_worthy.is_(True),
-                            DreamJournal.surfaced.is_(False),
-                        )
+                        offerable_dream_query(user_id)
                         .order_by(DreamJournal.dreamt_at.desc())
                         .limit(1)
                     )
                     if dream_row is not None:
                         dream_row.surfaced = True
+                        dream_row.claimed_at = None
                 # IL-013: every drive that qualified (raw pressure >= theta)
                 # but lost this DELIVERED fire accrues one loss toward its
                 # future ranking boost; the winner's history clears. Gate

@@ -670,3 +670,66 @@ def test_no_dream_means_no_dream_id(soul_db, monkeypatch: pytest.MonkeyPatch) ->
     user_id = _seed(soul_db, dream_sharing="off")
     result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
     assert result.ambient_dream_id is None
+
+
+def test_initiative_cannot_consume_a_live_greeting_claim(soul_db) -> None:
+    """Regression (PR #135 review, P1): IL-015 made the greeting path claim
+    without surfacing, but IL-003's dream_residue paths still selected on
+    `surfaced` alone — so an initiative tick overlapping an unacknowledged
+    greeting could voice the SAME intimate dream through a second channel.
+    All three initiative paths now use the offerable predicate."""
+    from anima_server.config import settings
+    from anima_server.services.agent.inner_life import initiative as il
+
+    user_id = _seed(soul_db)
+    now = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+
+    # Before any claim the initiative path can see the dream.
+    assert il.gather_drive_material(
+        soul_db, user_id=user_id, drive="dream_residue", now=now, dream_sharing="ambient"
+    ).strip()
+
+    # A greeting claims it — disclosure is in flight through the ambient
+    # channel and the initiative must not duplicate it.
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    assert soul_db.scalars(select(DreamJournal)).one().surfaced is False  # claim only
+    assert (
+        il.gather_drive_material(
+            soul_db, user_id=user_id, drive="dream_residue", now=now,
+            dream_sharing="ambient",
+        )
+        == ""
+    )
+
+    # Once the claim expires (the greeting never landed), the initiative may
+    # speak it — the dream isn't lost to the failed delivery.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.claimed_at = datetime.now(UTC) - timedelta(
+        minutes=settings.dream_claim_ttl_minutes + 1
+    )
+    soul_db.commit()
+    assert il.gather_drive_material(
+        soul_db, user_id=user_id, drive="dream_residue", now=now, dream_sharing="ambient"
+    ).strip()
+
+
+def test_acknowledged_dream_is_invisible_to_the_initiative_path(soul_db) -> None:
+    """The converse: a dream the ambient channel actually delivered must
+    never be re-voiced as an initiative."""
+    from anima_server.services.agent.inner_life import initiative as il
+    from anima_server.services.agent.inner_life.dream_receipt import acknowledge_dream
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id)
+    soul_db.commit()
+
+    assert (
+        il.gather_drive_material(
+            soul_db, user_id=user_id, drive="dream_residue",
+            now=datetime(2026, 7, 30, 12, 0, tzinfo=UTC), dream_sharing="ambient",
+        )
+        == ""
+    )
