@@ -305,9 +305,14 @@ export default function Dashboard() {
       // before this resolves, the late callback must not write A's
       // decrypted dream into B's storage.
       const originUnlockToken = getUnlockToken();
+      // Stamped before the request: greeting generation can take seconds,
+      // and the server's claim is taken during it, so counting the claim's
+      // life from here can only under-estimate it (PR #135 review).
+      const requestedAt = Date.now();
       api.chat
         .greeting(user.id)
-        .then((g) => {
+        .then((raw) => {
+          const g = anchorClaimDeadline(raw, requestedAt);
           if (!active) {
             // The dream inside is CLAIMED server-side — hand it to the next
             // mount instead of discarding it (PR #130 review). The stash
@@ -320,10 +325,8 @@ export default function Dashboard() {
           // No confirmation here: the dream stays withheld until the
           // visibility-gated effect above confirms it, so a greeting
           // fetched into a hidden window neither shows nor reserves it.
-          // The claim deadline is re-expressed in device time on arrival.
-          const arrived = anchorClaimDeadline(g);
-          setBrief(arrived);
-          setCachedGreeting(user.id, arrived);
+          setBrief(g);
+          setCachedGreeting(user.id, g);
         })
         .catch(() => {
           if (!active) return;

@@ -124,20 +124,25 @@ export function claimTtlMs(greeting: Greeting): number {
 const MAX_PLAUSIBLE_TTL_MS = 60 * 60 * 1000;
 
 /**
- * Re-express a greeting's claim deadline in DEVICE time (PR #135 review).
+ * Re-express a greeting's claim deadline in DEVICE time, counted from when
+ * the REQUEST WAS SENT (PR #135 review, P1).
  *
- * Called the moment a response arrives, so the remaining lifetime is the
- * server's TTL counted from the device's own clock. Every later comparison
- * then measures elapsed local time rather than the offset between two
- * clocks. Network latency shortens the window slightly, which is the safe
- * direction: the client stops trusting the claim a little before the server
- * does, never after.
+ * The anchor is the request start, not the response arrival. The server
+ * takes its claim at some point after receiving the request, so
+ * `requestedAt + TTL` is always at or before the server's own deadline —
+ * however slow generation, IPC, or a suspended webview made the round trip.
+ * Anchoring on arrival instead granted the client the whole response delay
+ * as extra lifetime, in exactly the wrong direction: the greeting stayed
+ * displayable after the server had re-offered the claim.
+ *
+ * Every later comparison then measures elapsed local time rather than the
+ * offset between two clocks.
  */
-export function anchorClaimDeadline(greeting: Greeting, now = Date.now()): Greeting {
+export function anchorClaimDeadline(greeting: Greeting, requestedAt: number): Greeting {
   if (!greeting.ambientDream || !greeting.ambientDreamClaimToken) return greeting;
   return {
     ...greeting,
-    ambientDreamExpiresAt: new Date(now + claimTtlMs(greeting)).toISOString(),
+    ambientDreamExpiresAt: new Date(requestedAt + claimTtlMs(greeting)).toISOString(),
   };
 }
 
@@ -222,16 +227,16 @@ export function stashOneShotGreeting(
   if (!live) return; // logged out or locked
   if (originUnlockToken !== undefined && originUnlockToken !== live) return;
   const now = Date.now();
-  // Anchor the deadline to THIS device's clock (PR #135 review): the stash
-  // may be read minutes later, and a skewed clock must not extend it.
-  const anchored = anchorClaimDeadline(greeting, now);
-  const expiresAt = oneShotExpiryFor(anchored, now);
+  // NOT re-anchored here: the greeting was already anchored to its request
+  // start when it arrived, and re-anchoring on stash would hand it a fresh
+  // full TTL it never had (PR #135 review).
+  const expiresAt = oneShotExpiryFor(greeting, now);
   // Already past the claim deadline when it arrived (a very slow response):
   // storing it would only queue a duplicate disclosure.
   if (expiresAt <= now) return;
   writeOneShotQueue([
     ...readOneShotQueue(),
-    { greeting: anchored, userId, expiresAt },
+    { greeting, userId, expiresAt },
   ]);
 }
 
@@ -330,16 +335,22 @@ export async function voiceableGreeting(
   if (!greeting.ambientDream || greeting.ambientDreamId == null) return greeting;
   const token = greeting.ambientDreamClaimToken;
   if (!token || dreamClaimExpired(greeting)) return dreamFreeGreeting(greeting);
+  // Stamped BEFORE the request: the server's renewal cannot predate it, so
+  // the local deadline can only be earlier than the server's, never later.
+  const requestedAt = Date.now();
   try {
     const answer = await confirm(greeting.ambientDreamId, token);
     if (!answer.confirmed || !answer.claimToken) return dreamFreeGreeting(greeting);
     // Anchored to the device clock on arrival, so the renewed deadline is a
     // duration counted locally rather than a cross-clock comparison.
-    return anchorClaimDeadline({
-      ...greeting,
-      ambientDreamClaimToken: answer.claimToken,
-      ambientDreamExpiresAt: answer.expiresAt,
-    });
+    return anchorClaimDeadline(
+      {
+        ...greeting,
+        ambientDreamClaimToken: answer.claimToken,
+        ambientDreamExpiresAt: answer.expiresAt,
+      },
+      requestedAt,
+    );
   } catch {
     return dreamFreeGreeting(greeting);
   }

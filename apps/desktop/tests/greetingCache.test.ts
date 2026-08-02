@@ -274,6 +274,21 @@ describe("confirming the claim before voicing (PR #135 review round 3)", () => {
     expect(shown.ambientDreamExpiresAt).toBe(new Date(T0 + 600_000).toISOString());
   });
 
+  test("a slow response does not buy extra display time (round 11)", async () => {
+    // The server takes its claim while handling the request, so counting the
+    // TTL from ARRIVAL handed the client the whole round trip as bonus
+    // lifetime — display outliving the server's claim by exactly the delay.
+    // Anchoring to the request start can only under-estimate.
+    let clock = T0;
+    Date.now = () => clock;
+    const shown = await voiceableGreeting(dreamy(), async () => {
+      clock += 120_000; // a two-minute round trip
+      return ok(RENEWED_TOKEN);
+    });
+    // T0 + TTL, not (T0 + 120s) + TTL.
+    expect(shown.ambientDreamExpiresAt).toBe(new Date(T0 + 600_000).toISOString());
+  });
+
   test("a skewed device clock cannot extend the claim window (round 10)", async () => {
     // Server timestamps an hour ahead of this device: comparing the absolute
     // deadline against Date.now() would have granted an extra hour of

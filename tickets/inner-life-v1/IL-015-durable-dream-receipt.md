@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 17:55 MYT
+- Updated: 2026-08-02 18:32 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -242,6 +242,17 @@ is its own ticket:
   a null inside the viewport counts as covered (the recheck timer makes a
   wrong "no" recoverable; a wrong "yes" consumes the dream for good).
 
+- 2026-08-02 18:32 MYT - PR #135 review round 11 (P1, Codex): round 10 anchored the claim
+  deadline to the response's ARRIVAL, and my note claiming latency shortened
+  the window was simply backwards — the server starts the TTL when it takes
+  the claim, so arrival + TTL runs PAST the server's deadline by the whole
+  round trip (seconds, for a greeting whose generation makes two LLM calls).
+  Deadlines are now anchored to the instant the REQUEST WAS SENT, which the
+  server's claim cannot predate, so the client's window is always at or
+  inside the server's. The stash no longer re-anchors either: the greeting
+  reaches it already anchored, and re-anchoring handed it a fresh full TTL
+  it never had.
+
 ## Validation
 
 - Commands:
@@ -251,7 +262,7 @@ is its own ticket:
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
     0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
     the round-5/6 desktop-only changes
-  - `bun test tests/` (apps/desktop) — 142 passed, 0 failed (2026-08-02 17:55 MYT)
+  - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-02 18:32 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
