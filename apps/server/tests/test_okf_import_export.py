@@ -565,3 +565,32 @@ def test_import_rejects_unterminated_frontmatter(runtime_db, tmp_path) -> None:
 
     with pytest.raises(ValueError, match="Unterminated OKF frontmatter"):
         import_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+
+def test_export_neutralizes_links_to_concepts_absent_from_the_bundle(
+    runtime_db,
+    tmp_path,
+) -> None:
+    # Retired pages are not exported, so a link to one would dangle in the
+    # bundle and be silently dropped on re-import. Keep the visible text and
+    # drop the broken hyperlink so the bundle stays internally consistent.
+    retired = _concept(slug="topic-retired", title="Retired topic")
+    retired.status = "inactive"
+    linking = _concept(
+        slug="topic-linking",
+        title="Linking topic",
+        body_markdown=(
+            "See [Retired topic](topic-retired.md) and "
+            "[Runtime ingestion](topic-runtime-ingestion.md)."
+        ),
+    )
+    runtime_db.add_all([_concept(), retired, linking])
+    runtime_db.commit()
+
+    export_okf_bundle(runtime_db, user_id=1, bundle_dir=tmp_path)
+
+    _frontmatter, body = _read_frontmatter(tmp_path / "concepts" / "topic-linking.md")
+    assert "(topic-retired.md)" not in body
+    assert "See Retired topic and" in body
+    # A link whose target is still exported keeps working.
+    assert "[Runtime ingestion](topic-runtime-ingestion.md)" in body
