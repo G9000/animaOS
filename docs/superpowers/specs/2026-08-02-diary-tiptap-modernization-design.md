@@ -117,8 +117,8 @@ encrypted bodies.
 
 `lib/sanitize.ts` widens the allowlist to admit the new block types:
 
-- **Tags added:** `table`, `thead`, `tbody`, `tr`, `th`, `td`, `details`, `summary`, `div`,
-  `span`, `mark`, `u`
+- **Tags added:** `table`, `thead`, `tbody`, `tr`, `th`, `td`, `colgroup`, `col`, `details`,
+  `summary`, `div`, `span`, `mark`, `u`
 - **Attributes added:** `data-type`, `data-checked`, `data-tone`, `data-attachment-id`,
   `colspan`, `rowspan`, `colwidth`
 - **Never allowed:** `style`, `input`
@@ -138,6 +138,24 @@ Two consequences are deliberate:
 
 `ALLOW_DATA_ATTR` stays `false`, with the specific `data-*` attributes named explicitly in
 `ALLOWED_ATTR`. That interaction is asserted by test rather than assumed.
+
+### Verified by spike
+
+A headless spike (bun + jsdom + `@tiptap/html`) confirmed the following before planning, rather
+than leaving them as assumptions:
+
+- Every block type is **stable** across `editor -> sanitize -> editor -> sanitize`. No content
+  drifts or degrades over repeated saves.
+- Task items round-trip losslessly with the `<input>` stripped: `data-checked="true"` persists on
+  the `<li>`, so checked state survives.
+- DOMPurify honors named `data-*` entries in `ALLOWED_ATTR` even with `ALLOW_DATA_ATTR: false`.
+
+It also surfaced one accepted limitation. Tiptap's table always serializes inline
+`style="min-width: …"` on the `<table>` and on `<col>` elements, and `resizable: false` does not
+suppress it. Since `style` is not allowlisted, **table column widths do not persist across a
+save**; table structure, content, `colspan`, and `rowspan` all do, and the result is stable. Column
+resizing is therefore a view-only affordance. Allowing `style` to preserve widths is not worth the
+sanitizer surface.
 
 ## Workspace shell
 
