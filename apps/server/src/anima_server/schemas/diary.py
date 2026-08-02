@@ -132,3 +132,31 @@ class DiaryFolderResponse(BaseModel):
     name: str
     entryCount: int = 0
     createdAt: datetime | None = None
+
+
+class DiaryDraftImportRequest(BaseModel):
+    userId: int = Field(ge=0)
+    draftId: str = Field(min_length=1, max_length=256)
+    targetEntryId: int | None = Field(default=None, ge=0)
+    html: str = Field(max_length=DIARY_BODY_MAX_LENGTH)
+    title: str = Field(default="", max_length=200)
+    mood: str = Field(default="", max_length=80)
+    entryDate: str = Field(min_length=10, max_length=10)
+    updatedAt: datetime
+
+
+class DiaryDraftImportResponse(BaseModel):
+    stableId: str
+    revision: int
+    generation: int
+    catalogHash: str
+    verified: bool = True
+    authoritative: bool = False
+
+
+class DiaryCorefsPreparedResponse(BaseModel):
+    generation: int
+    catalogHash: str
+    journalStableId: str
+    notesStableId: str
+    authoritative: bool = False

@@ -3,12 +3,18 @@ import { JSDOM } from "jsdom";
 import type { WindowLike } from "dompurify";
 
 import { createDiaryHtmlSanitizer } from "../src/pages/journal/html";
+import sanitizerContract from "../../server/src/anima_server/services/corefs/writing-sanitizer-v1.json";
 
 const sanitizeDiaryHtml = createDiaryHtmlSanitizer(
   new JSDOM("").window as unknown as WindowLike,
 );
 
 describe("diary HTML sanitizer", () => {
+  test("matches the shared versioned golden contract", () => {
+    for (const golden of sanitizerContract.goldens) {
+      expect(sanitizeDiaryHtml(golden.input)).toBe(golden.output);
+    }
+  });
   test("removes executable HTML from imported or API-provided diary bodies", () => {
     const clean = sanitizeDiaryHtml(
       '<p onclick="alert(1)">safe</p><script>alert(2)</script><img src="x" onerror="alert(3)"><a href="javascript:alert(4)">link</a>',

@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from anima_server.config import settings
 from anima_server.db.session import get_user_session_factory
+from anima_server.services.corefs.diary_migration import (
+    LegacyNote,
+    prepare_diary_validation_catalog,
+    read_prepared_writing_objects,
+    resolve_prepared_role,
+)
+from anima_server.services.corefs.formats import decode_draft_document, decode_note_document
+from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -402,3 +410,103 @@ def test_diary_folders_crud_and_filing() -> None:
             json={"name": "Nope"},
         )
         assert missing_folder_response.status_code == 404
+
+
+def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> None:
+    with managed_test_client("anima-diary-draft-import-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        token = str(reg["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        created = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-08-02",
+                "title": "Canonical",
+                "body": "<p>legacy authority</p>",
+                "mood": "calm",
+            },
+        )
+        assert created.status_code == 201
+        uploaded = client.post(
+            f"/api/diary/{created.json()['id']}/attachments",
+            headers=headers,
+            files={"file": ("private.bin", b"native encrypted bytes", "application/octet-stream")},
+        )
+        assert uploaded.status_code == 201
+        payload = {
+            "userId": user_id,
+            "draftId": f"anima:diary:draft:{user_id}:edit-{created.json()['id']}",
+            "targetEntryId": created.json()["id"],
+            "html": "<p>unsaved private draft</p>",
+            "title": "Unsaved",
+            "mood": "hopeful",
+            "entryDate": "2026-08-03",
+            "updatedAt": "2026-08-02T05:00:00Z",
+        }
+
+        first = client.post("/api/diary/drafts/import", headers=headers, json=payload)
+        second = client.post("/api/diary/drafts/import", headers=headers, json=payload)
+        assert first.status_code == second.status_code == 200
+        assert first.json()["verified"] is True
+        assert first.json()["authoritative"] is False
+        assert second.json()["generation"] == first.json()["generation"]
+        assert second.json()["revision"] == first.json()["revision"] == 1
+
+        prepared = client.get("/api/diary/corefs-prepared", headers=headers)
+        assert prepared.status_code == 200
+        assert prepared.json()["authoritative"] is False
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        objects = read_prepared_writing_objects(session=session)
+        encrypted_draft = next(
+            item for item in objects if item.stable_id == first.json()["stableId"]
+        )
+        decoded = decode_draft_document(encrypted_draft.content)
+        assert decoded.body == "<p>unsaved private draft</p>"
+        assert decoded.metadata == {
+            "entryDate": "2026-08-03",
+            "legacyStorageKey": payload["draftId"],
+            "mood": "hopeful",
+            "title": "Unsaved",
+        }
+        native_attachment = next(item for item in objects if item.kind == "attachment")
+        assert native_attachment.content == b"native encrypted bytes"
+
+        legacy = client.get(f"/api/diary?userId={user_id}", headers=headers)
+        assert legacy.status_code == 200
+        assert legacy.json()[0]["body"] == "<p>legacy authority</p>"
+
+
+def test_note_is_read_back_through_authorized_stable_role() -> None:
+    with managed_test_client("anima-corefs-note-readback-") as client:
+        reg = _register_user(client)
+        user_id = int(reg["id"])
+        token = str(reg["unlockToken"])
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        with get_user_session_factory(user_id)() as db:
+            result = prepare_diary_validation_catalog(
+                session=session,
+                db=db,
+                staged_notes=(
+                    LegacyNote(
+                        id="note-1",
+                        title="Native",
+                        body="# encrypted note",
+                        content_type="text/markdown",
+                        updated_at="2026-08-02T00:00:00Z",
+                    ),
+                ),
+            )
+        assert result.published is True
+        role = resolve_prepared_role(session=session, role="core.notes")
+        assert role["stableId"]
+        note = next(
+            item for item in read_prepared_writing_objects(session=session) if item.kind == "note"
+        )
+        decoded = decode_note_document(note.content)
+        assert decoded.title == "Native"
+        assert decoded.body == "# encrypted note"

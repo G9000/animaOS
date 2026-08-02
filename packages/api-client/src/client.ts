@@ -25,6 +25,9 @@ import type {
   DbTableData,
   DbTableInfo,
   DiaryAttachmentData,
+  DiaryCorefsPreparedData,
+  DiaryDraftImportData,
+  DiaryDraftImportResult,
   DiaryEntryCreateData,
   DiaryEntryData,
   DiaryEntryUpdateData,
@@ -1015,6 +1018,13 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ deleted: boolean }>(`/diary/${entryId}`, {
           method: "DELETE",
         }),
+      importLegacyDraft: (userId: number, data: DiaryDraftImportData) =>
+        request<DiaryDraftImportResult>("/diary/drafts/import", {
+          method: "POST",
+          body: { userId, ...data },
+        }),
+      corefsPrepared: () =>
+        request<DiaryCorefsPreparedData>("/diary/corefs-prepared"),
       folders: {
         list: (userId: number) =>
           request<DiaryFolderData[]>(`/diary/folders?userId=${userId}`),

@@ -26,6 +26,7 @@ import {
 } from "./journal/speech";
 import { canSaveDiaryEntry, resolveDiaryBody } from "./journal/content";
 import { createDiaryHtmlSanitizer } from "./journal/html";
+import { collectLegacyDiaryDrafts } from "./journal/draft-migration";
 
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
@@ -883,6 +884,38 @@ export default function Journal() {
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
+
+  // Stage drafts left by older builds into the encrypted, inactive CoreFS
+  // catalog. The plaintext browser keys deliberately remain until PCF-008
+  // verifies authoritative cutover and a later build explicitly removes them.
+  useEffect(() => {
+    if (user?.id == null) return;
+    let drafts: ReturnType<typeof collectLegacyDiaryDrafts> = [];
+    try {
+      drafts = collectLegacyDiaryDrafts(window.localStorage, user.id);
+    } catch {
+      return;
+    }
+    // Each import advances an exact native validation head, so serialize the
+    // candidates instead of racing stale compare-and-swap preconditions.
+    void (async () => {
+      for (const draft of drafts) {
+        try {
+          await api.diary.importLegacyDraft(user.id, {
+          draftId: draft.storageKey,
+          targetEntryId: draft.targetEntryId,
+          html: draft.html,
+          title: draft.title,
+          mood: draft.mood,
+          entryDate: draft.entryDate,
+          updatedAt: draft.updatedAt,
+          });
+        } catch {
+          // Preserve plaintext recovery state and retry on a later mount.
+        }
+      }
+    })();
+  }, [user?.id]);
 
   const releaseRecordingResources = () => {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());

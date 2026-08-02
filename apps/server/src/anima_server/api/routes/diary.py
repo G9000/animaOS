@@ -20,12 +20,21 @@ from anima_server.api.deps.unlock import require_unlocked_session_async
 from anima_server.db import get_db
 from anima_server.schemas.diary import (
     DiaryAttachmentResponse,
+    DiaryCorefsPreparedResponse,
+    DiaryDraftImportRequest,
+    DiaryDraftImportResponse,
     DiaryEntryCreateRequest,
     DiaryEntryResponse,
     DiaryEntryUpdateRequest,
     DiaryFolderCreateRequest,
     DiaryFolderResponse,
     DiaryFolderUpdateRequest,
+)
+from anima_server.services.corefs.diary_migration import (
+    DiaryMigrationError,
+    LegacyDiaryDraft,
+    prepare_diary_validation_catalog,
+    resolve_prepared_role,
 )
 from anima_server.services.diary import (
     DiaryValidationError,
@@ -48,6 +57,73 @@ from anima_server.services.diary import (
 )
 
 router = APIRouter(prefix="/api/diary", tags=["diary"])
+
+
+@router.get("/corefs-prepared", response_model=DiaryCorefsPreparedResponse)
+async def corefs_prepared(request: Request) -> DiaryCorefsPreparedResponse:
+    session = await require_unlocked_session_async(request)
+    try:
+        journal = resolve_prepared_role(session=session, role="core.journal")
+        notes = resolve_prepared_role(session=session, role="core.notes")
+    except DiaryMigrationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if journal.get("generation") != notes.get("generation") or journal.get(
+        "catalogHash"
+    ) != notes.get("catalogHash"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Prepared writing roles do not share one authenticated head.",
+        )
+    return DiaryCorefsPreparedResponse(
+        generation=int(journal["generation"]),
+        catalogHash=str(journal["catalogHash"]),
+        journalStableId=str(journal["stableId"]),
+        notesStableId=str(notes["stableId"]),
+    )
+
+
+@router.post("/drafts/import", response_model=DiaryDraftImportResponse)
+async def import_legacy_draft(
+    payload: DiaryDraftImportRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> DiaryDraftImportResponse:
+    session = await require_unlocked_session_async(request)
+    if session.user_id != payload.userId:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
+    try:
+        migrated = prepare_diary_validation_catalog(
+            session=session,
+            db=db,
+            staged_drafts=(
+                LegacyDiaryDraft(
+                    id=payload.draftId,
+                    target_entry_id=payload.targetEntryId,
+                    body=payload.html,
+                    content_type="text/html",
+                    updated_at=payload.updatedAt.isoformat().replace("+00:00", "Z"),
+                    metadata={
+                        "title": payload.title,
+                        "mood": payload.mood,
+                        "entryDate": payload.entryDate,
+                        "legacyStorageKey": payload.draftId,
+                    },
+                ),
+            ),
+        )
+    except (DiaryMigrationError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if migrated.stable_id is None or migrated.revision is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Encrypted draft verification did not return a revision.",
+        )
+    return DiaryDraftImportResponse(
+        stableId=migrated.stable_id,
+        revision=migrated.revision,
+        generation=migrated.generation,
+        catalogHash=migrated.catalog_hash,
+    )
 
 
 @router.get("", response_model=list[DiaryEntryResponse])
@@ -102,7 +178,8 @@ async def list_folders(
 
     folders = list_diary_folders(db, user_id=userId)
     return [
-        diary_folder_to_response(folder, user_id=userId, entry_count=count) for folder, count in folders
+        diary_folder_to_response(folder, user_id=userId, entry_count=count)
+        for folder, count in folders
     ]
 
 
@@ -234,15 +311,15 @@ async def download_attachment(
     try:
         blob = read_attachment_blob(user_id=session.user_id, attachment=attachment)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found.") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found."
+        ) from exc
     except DiaryValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     headers: dict[str, str] = {}
     if blob.filename:
-        headers["Content-Disposition"] = (
-            "attachment; filename*=UTF-8''" + quote(blob.filename)
-        )
+        headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(blob.filename)
     return Response(content=blob.data, media_type=blob.mime_type, headers=headers)
 
 

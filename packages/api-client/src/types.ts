@@ -900,6 +900,33 @@ export interface DiaryEntryUpdateData {
   clearCover?: boolean;
 }
 
+export interface DiaryDraftImportData {
+  draftId: string;
+  targetEntryId?: number | null;
+  html: string;
+  title: string;
+  mood: string;
+  entryDate: string;
+  updatedAt: string;
+}
+
+export interface DiaryDraftImportResult {
+  stableId: string;
+  revision: number;
+  generation: number;
+  catalogHash: string;
+  verified: boolean;
+  authoritative: boolean;
+}
+
+export interface DiaryCorefsPreparedData {
+  generation: number;
+  catalogHash: string;
+  journalStableId: string;
+  notesStableId: string;
+  authoritative: boolean;
+}
+
 export interface MemorySearchResult {
   type: "item" | "episode";
   id: number;
