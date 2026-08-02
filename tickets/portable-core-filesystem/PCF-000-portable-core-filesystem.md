@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 19:00 MYT
+- Updated: 2026-08-02 19:52 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -341,6 +341,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-02 18:58 MYT - PCF-004's independent plan review rejected five material sequencing/protocol gaps. The corrected plan separates browser-draft optimistic handoff from SQLCipher fencing, moves aggregate API removal after caller migration, consolidates completion recovery in finalization, conservatively retains the full trusted keyring snapshot for corrupt-pointer quarantine, and fixes the invalid focused Cargo invocation. Parent and child remain `in_progress` pending focused plan re-review and execution handoff.
 - 2026-08-02 19:00 MYT - PCF-004's focused plan re-review accepted four repairs and found one remaining implementation omission: the browser draft CAS lacked assigned desktop/API production work. The corrected Task 8 now owns the schema/client token contract, Journal draft-migration enforcement, and concurrent-edit regression. Parent and child remain `in_progress` pending the final focused plan verdict and execution handoff.
 - 2026-08-02 19:00 MYT - PCF-004's final focused plan review approved `433586e8` with zero remaining consequential findings. The parent and child remain `in_progress`; the reviewed child plan is ready for execution-mode handoff, with legacy authority and all external-action boundaries unchanged.
+- 2026-08-02 19:52 MYT - PCF-004 preparation Task 1 completed through `e75d0c4d`: the dedicated FRK subkey, five closed/bounded encrypted formats, canonical semantic validation, authenticated sealed publication provenance, and capability-rooted publication foundation are implemented. Final independent verification passed 11 format, 10 crypto, and 227 CoreFS library tests with 1 ignored; one intermediate known Windows lease flake passed on exact rerun. Spec and quality gates approved with zero Critical/Important findings. PCF-004 and this parent remain `in_progress`; Task 2 durable begin/resume is next and legacy authority is unchanged.
 
 ## Validation
 

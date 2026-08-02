@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 19:00 MYT
+- Updated: 2026-08-02 19:52 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -52,12 +52,16 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-02 18:58 MYT - Independent plan review found five substantive execution gaps: browser localStorage drafts were incorrectly implied to share the SQLCipher fence, aggregate API removal preceded caller migration, completion-receipt ownership was split, corrupt-pointer key retention was not conservative enough, and one Cargo command used two filters. The plan now gives drafts an explicit ID/revision/hash handoff CAS, retires the aggregate API only after migration, owns completion recovery in finalization, retains the full trusted keyring snapshot for quarantine, and uses valid focused commands. Focused re-review is pending.
 - 2026-08-02 19:00 MYT - Focused plan re-review accepted four repairs and found one remaining execution omission: the draft handoff CAS had no assigned production desktop/API work. Task 8 now includes the diary schema, API client contract, Journal draft-migration implementation, and a deterministic concurrent-edit test that preserves a newer local draft when an older completion token arrives. Final focused review is pending.
 - 2026-08-02 19:00 MYT - The final focused plan pass approved `433586e8` with zero remaining consequential findings. PCF-004 is ready for the implementation execution handoff; the child remains `in_progress`, legacy SQLCipher remains authoritative, and no remote publication or merge authority is implied.
+- 2026-08-02 19:52 MYT - Completed reviewed preparation Task 1 in `26781300` plus quality fixes `e75d0c4d`. Added the FRK-generation-bound preparation HKDF domain, five closed independently bounded encrypted record formats, complete contextual AEAD binding, canonical semantic hash/order enforcement, opaque authenticated sealed-envelope provenance, and capability-rooted immutable/fixed-head publication foundations. TDD RED proved the missing subkey/module and three later semantic/publication gaps; final focused verification passed 11 format tests, 10 crypto tests, and 227 CoreFS library tests with 1 ignored. One intermediate full-library run hit the known Windows lease flake and its exact test passed immediately; the independent spec review and final quality re-review approved with zero Critical or Important findings. No Task 2 state machine or authority change was introduced.
 
 ## Validation
 
 - Commands:
   - `$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py -q` (focused bands passed throughout; latest affected PCF-004 band `28 passed`)
   - `cargo test -p anima-corefs --lib --no-fail-fast` (`216 passed`, `1 ignored`)
+  - `cargo test -p anima-corefs preparation_tests::formats -- --nocapture` (Task 1 final: `11 passed`)
+  - `cargo test -p anima-corefs crypto::tests -- --nocapture` (Task 1 final: `10 passed`)
+  - `cargo test -p anima-corefs --lib --no-fail-fast` (Task 1 independent final: `227 passed`, `1 ignored`; one earlier known Windows lease flake passed on exact rerun)
   - `cargo test -p anima-core --lib` (all `218` tests passed across the final affected run)
   - `bun test apps/desktop/tests/journal-corefs.test.ts apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-html.test.ts` (`8 passed` in the final affected run)
   - `bun run build` (passed)
@@ -76,6 +80,8 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}`
   - `packages/anima-corefs/src/{catalog/v2.rs,id.rs,transaction.rs}`
+  - `packages/anima-corefs/src/crypto.rs`
+  - `packages/anima-corefs/src/transaction/{preparation.rs,preparation_tests.rs}`
   - `packages/anima-corefs/src/logical/{backend.rs,mod.rs,path.rs,service.rs,wire.rs}`
   - `packages/anima-corefs/src/transaction/converter.rs`
   - `packages/anima-corefs/tests/{logical_path.rs,logical_snapshot.rs,opaque_id.rs,validation_batch.rs}`

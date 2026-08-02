@@ -39,7 +39,7 @@ Every task below must preserve these properties:
 - Create: `packages/anima-corefs/src/transaction/preparation_tests.rs`
 - Modify: `packages/anima-corefs/src/transaction.rs`
 
-- [ ] **Step 1: Write failing domain-separation and closed-schema tests**
+- [x] **Step 1: Write failing domain-separation and closed-schema tests**
 
 Add tests proving a new `preparation` subkey is deterministic for the same FRK, differs from object-wrap/catalog/search subkeys, and changes with FRK generation. Add decode tests that reject unknown fields, wrong schema versions, wrong Core IDs, wrong FRK versions, duplicate segment indexes, oversized fields, and trailing bytes for:
 
@@ -60,17 +60,17 @@ cargo test -p anima-corefs preparation_tests::formats -- --nocapture
 
 Expected: new tests fail because the preparation key/domain and record codecs do not exist.
 
-- [ ] **Step 2: Implement the preparation key and bounded record codecs**
+- [x] **Step 2: Implement the preparation key and bounded record codecs**
 
 Extend `FrkSubkeys` with a `preparation: SecretBytes` derived from a dedicated HKDF label, and add only an accessor that returns `&SecretBytes`. In `preparation.rs`, define explicit versioned records with `#[serde(deny_unknown_fields)]`, checked integer conversions, and separate limits for pointer, snapshot, descriptor segment, final-intent segment, and receipt envelopes. Bind AEAD AAD to record kind, schema version, `core_id`, preparation ID or pointer hash as appropriate, FRK version, and monotonic snapshot/segment number.
 
 Do not reuse `MAX_CATALOG_ENVELOPE_SIZE` as a catch-all. Define small pointer/snapshot ceilings and segmented descriptor/intent ceilings so each durable unit is independently bounded.
 
-- [ ] **Step 3: Make record publication immutable and durability-aware**
+- [x] **Step 3: Make record publication immutable and durability-aware**
 
 Reuse `publish_immutable_in_with_hook` for content-addressed encrypted records and `atomic_publish_in_with_hook` only for `PREPARATION_HEAD`. Use relative directory handles rooted below `.anima/fs`; never accept an absolute or caller-derived filesystem path.
 
-- [ ] **Step 4: Run the focused and library tests**
+- [x] **Step 4: Run the focused and library tests**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::formats -- --nocapture
@@ -80,7 +80,7 @@ cargo fmt --check -p anima-corefs
 
 Expected: focused tests pass; formatting is clean.
 
-- [ ] **Step 5: Commit the cryptographic/format slice**
+- [x] **Step 5: Commit the cryptographic/format slice**
 
 ```powershell
 git add packages/anima-corefs/src/crypto.rs packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/preparation.rs packages/anima-corefs/src/transaction/preparation_tests.rs
