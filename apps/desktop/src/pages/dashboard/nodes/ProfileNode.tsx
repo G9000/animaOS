@@ -1,7 +1,7 @@
-import { useEffect } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { DotLoader } from "@anima/standard-templates";
 import type { ProfileNode } from "./node-types";
+import { useDreamShownReceipt } from "./useDreamShownReceipt";
 
 type MediaType = "image" | "gif" | "video";
 
@@ -44,9 +44,7 @@ export function ProfileNode({ data }: NodeProps<ProfileNode>) {
     Boolean(brief?.ambientDream) &&
     !briefLoading &&
     currentThought === brief?.message;
-  useEffect(() => {
-    if (dreamVisible) onDreamShown?.();
-  }, [dreamVisible, onDreamShown]);
+  useDreamShownReceipt(dreamVisible, onDreamShown);
 
   return (
     <div className="group relative w-80 overflow-visible">

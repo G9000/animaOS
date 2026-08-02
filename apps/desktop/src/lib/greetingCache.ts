@@ -308,3 +308,56 @@ export function dreamReceiptKey(greeting: Greeting | null): string | null {
   if (greeting.ambientDreamId == null || !greeting.ambientDreamClaimToken) return null;
   return `${greeting.ambientDreamId}:${greeting.ambientDreamClaimToken}`;
 }
+
+/** Backoff for a failed dream receipt, in ms. Bounded and short relative to
+ * `dream_claim_ttl_minutes` (default 10) so every attempt lands while the
+ * claim is still live. */
+export const ACK_RETRY_DELAYS_MS = [2_000, 6_000, 20_000, 60_000];
+
+/**
+ * Deliver a dream receipt, retrying transient failures while the claim lasts
+ * (IL-015 / PR #135 review, P1).
+ *
+ * A dropped acknowledgement is not harmless once the dream has been
+ * DISPLAYED: the claim lapses, the dream becomes offerable again, and an
+ * initiative or later greeting discloses the same narrative a second time.
+ * One failed request is therefore worth several retries, all inside the
+ * claim's own lifetime — attempting after `deadline` is pointless, because
+ * by then the server has already re-offered it.
+ *
+ * Returns true once the server records the receipt. A `false` return means
+ * the dream stays unacknowledged and may be repeated later; that is the
+ * accepted failure, not an error to surface.
+ */
+export async function deliverDreamReceipt(
+  ack: () => Promise<{ acknowledged: boolean }>,
+  options: {
+    /** Epoch ms after which the claim is stale — no attempt is made past it. */
+    deadline: number;
+    delaysMs?: number[];
+    now?: () => number;
+    wait?: (ms: number) => Promise<void>;
+  },
+): Promise<boolean> {
+  const {
+    deadline,
+    delaysMs = ACK_RETRY_DELAYS_MS,
+    now = Date.now,
+    wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  } = options;
+
+  for (let attempt = 0; ; attempt += 1) {
+    if (now() >= deadline) return false;
+    try {
+      const result = await ack();
+      // `acknowledged: false` is a definitive answer — already surfaced, or
+      // the claim was superseded. Retrying cannot change it.
+      return result.acknowledged;
+    } catch {
+      const delay = delaysMs[attempt];
+      // Out of attempts, or the next one would land after the claim lapsed.
+      if (delay === undefined || now() + delay >= deadline) return false;
+      await wait(delay);
+    }
+  }
+}

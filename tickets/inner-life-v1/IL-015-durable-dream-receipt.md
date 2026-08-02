@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 15:19 MYT
+- Updated: 2026-08-02 15:46 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -140,6 +140,23 @@ is its own ticket:
   (`dreamReceiptKey` = `dreamId:claimToken`) since both nodes report and
   effects re-run. A failed ack releases the dedupe so a later render retries.
 
+- 2026-08-02 15:46 MYT - PR #135 review round 5 (two P1s, Codex, both real, both
+  client-side):
+  (1) A React effect runs after the commit even when the window is in the
+  background, so "mounted" is not "seen": a Dashboard that mounted hidden
+  and was closed before ever being looked at still acknowledged the dream.
+  Receipts are now gated on `document.visibilityState` — reported
+  immediately when visible, otherwise deferred to the next
+  `visibilitychange`, and never reported if the page is never shown. A
+  shared `useDreamShownReceipt` hook carries the rule for both nodes.
+  (2) The failed-ack path deleted the dedupe entry and stopped. Nothing
+  re-renders on that deletion, so a transient network failure left a
+  DISPLAYED dream unacknowledged; the claim then lapsed and the same
+  narrative could be disclosed again. `deliverDreamReceipt` now retries on a
+  bounded backoff (2s/6s/20s/60s), refuses to attempt past the claim
+  deadline, and treats `acknowledged: false` as definitive rather than
+  retryable.
+
 ## Validation
 
 - Commands:
@@ -148,7 +165,7 @@ is its own ticket:
   - `bunx tsc --noEmit` (apps/desktop) — clean
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
     0 failed, 2 skipped, 11 deselected** in 14m53s, run 2026-08-02 15:34 MYT
-  - `bun test tests/` (apps/desktop) — 128 passed, 0 failed (2026-08-02 15:19 MYT)
+  - `bun test tests/` (apps/desktop) — 133 passed, 0 failed (2026-08-02 15:46 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
@@ -164,6 +181,7 @@ is its own ticket:
   - `apps/desktop/src/pages/dashboard/nodes/node-types.ts`
   - `apps/desktop/src/pages/dashboard/nodes/GreetingNode.tsx`
   - `apps/desktop/src/pages/dashboard/nodes/ProfileNode.tsx`
+  - `apps/desktop/src/pages/dashboard/nodes/useDreamShownReceipt.ts` (new)
   - `apps/desktop/tests/greetingCache.test.ts`
   - `apps/server/tests/test_inner_life_ambient_dream.py`
 - Notes:

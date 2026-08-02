@@ -28,8 +28,10 @@ import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
   clearOneShotGreetings,
+  deliverDreamReceipt,
   dreamReceiptKey,
   getCachedGreeting,
+  ONESHOT_FALLBACK_TTL_MS,
   peekOneShotGreeting,
   setCachedGreeting,
   stashOneShotGreeting,
@@ -134,14 +136,23 @@ export default function Dashboard() {
     if (user?.id == null || receipt === null || dreamId == null || !token) return;
     if (ackedDreamsRef.current.has(receipt)) return;
     ackedDreamsRef.current.add(receipt);
-    void api.chat
-      .ackGreetingDream(user.id, dreamId, token)
-      .catch(() => {
-        // Best-effort: a failed receipt lets the claim lapse and the dream
-        // comes back later, which is the right failure. Allow a retry if
-        // the same greeting is rendered again.
-        ackedDreamsRef.current.delete(receipt);
-      });
+    // Retry a dropped receipt for as long as the claim lives (PR #135
+    // review): once the dream has been DISPLAYED, losing the receipt is not
+    // harmless — the claim lapses and the same narrative can be disclosed
+    // again through another channel. Nothing here re-renders, so a failure
+    // has to schedule its own retry rather than wait for one.
+    const expiresAt = brief?.ambientDreamExpiresAt;
+    const parsed = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    const deadline = Number.isFinite(parsed)
+      ? parsed
+      : Date.now() + ONESHOT_FALLBACK_TTL_MS;
+    void deliverDreamReceipt(
+      () => api.chat.ackGreetingDream(user.id, dreamId, token),
+      { deadline },
+    ).then((delivered) => {
+      // Never delivered: let a later render of the same greeting try again.
+      if (!delivered) ackedDreamsRef.current.delete(receipt);
+    });
   }, [brief, user?.id]);
 
   useEffect(() => {

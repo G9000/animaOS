@@ -5,6 +5,8 @@ import { setUnlockToken, clearUnlockToken } from "../src/lib/api";
 import {
   ambientConsentAllows,
   dreamClaimExpired,
+  ACK_RETRY_DELAYS_MS,
+  deliverDreamReceipt,
   dreamFreeGreeting,
   dreamReceiptKey,
   ONESHOT_FALLBACK_TTL_MS,
@@ -378,5 +380,104 @@ describe("dream receipts are owed per claim generation (PR #135 review)", () => 
     expect(
       dreamReceiptKey(greeting({ ambientDream: true, ambientDreamId: 42 })),
     ).toBeNull();
+  });
+});
+
+describe("dream receipts survive a dropped request (PR #135 review round 5)", () => {
+  // Deterministic clock and waits: the point is the retry SCHEDULE, not the
+  // wall time it would take.
+  const harness = (deadlineOffset = 600_000) => {
+    let clock = 1_800_000_000_000;
+    const waited: number[] = [];
+    return {
+      waited,
+      now: () => clock,
+      wait: async (ms: number) => {
+        waited.push(ms);
+        clock += ms;
+      },
+      deadline: clock + deadlineOffset,
+      advance: (ms: number) => {
+        clock += ms;
+      },
+    };
+  };
+
+  test("a transient failure is retried until the receipt lands", async () => {
+    const h = harness();
+    let attempts = 0;
+    const delivered = await deliverDreamReceipt(
+      async () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("offline");
+        return { acknowledged: true };
+      },
+      { deadline: h.deadline, now: h.now, wait: h.wait },
+    );
+    expect(delivered).toBe(true);
+    expect(attempts).toBe(3);
+    expect(h.waited).toEqual([ACK_RETRY_DELAYS_MS[0], ACK_RETRY_DELAYS_MS[1]]);
+  });
+
+  test("retries stop once the claim would have lapsed", async () => {
+    // Past the deadline the server has already re-offered the dream, so a
+    // late receipt would surface a claim that is no longer ours.
+    const h = harness(1_500); // shorter than the first backoff
+    let attempts = 0;
+    const delivered = await deliverDreamReceipt(
+      async () => {
+        attempts += 1;
+        throw new Error("offline");
+      },
+      { deadline: h.deadline, now: h.now, wait: h.wait },
+    );
+    expect(delivered).toBe(false);
+    expect(attempts).toBe(1);
+    expect(h.waited).toEqual([]);
+  });
+
+  test("nothing is attempted at all once the claim is already stale", async () => {
+    const h = harness(0);
+    let attempts = 0;
+    const delivered = await deliverDreamReceipt(
+      async () => {
+        attempts += 1;
+        return { acknowledged: true };
+      },
+      { deadline: h.deadline, now: h.now, wait: h.wait },
+    );
+    expect(delivered).toBe(false);
+    expect(attempts).toBe(0);
+  });
+
+  test("a definitive refusal is not retried", async () => {
+    // `acknowledged: false` means already surfaced or superseded — retrying
+    // cannot change the answer.
+    const h = harness();
+    let attempts = 0;
+    const delivered = await deliverDreamReceipt(
+      async () => {
+        attempts += 1;
+        return { acknowledged: false };
+      },
+      { deadline: h.deadline, now: h.now, wait: h.wait },
+    );
+    expect(delivered).toBe(false);
+    expect(attempts).toBe(1);
+  });
+
+  test("the backoff is exhausted rather than looping forever", async () => {
+    const h = harness(3_600_000);
+    let attempts = 0;
+    const delivered = await deliverDreamReceipt(
+      async () => {
+        attempts += 1;
+        throw new Error("offline");
+      },
+      { deadline: h.deadline, now: h.now, wait: h.wait },
+    );
+    expect(delivered).toBe(false);
+    expect(attempts).toBe(ACK_RETRY_DELAYS_MS.length + 1);
+    expect(h.waited).toEqual(ACK_RETRY_DELAYS_MS);
   });
 });

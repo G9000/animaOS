@@ -1,7 +1,7 @@
-import { useEffect } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { DotLoader } from "@anima/standard-templates";
 import type { GreetingNode } from "./node-types";
+import { useDreamShownReceipt } from "./useDreamShownReceipt";
 
 export function GreetingNode({ data }: NodeProps<GreetingNode>) {
   const { agentName, brief, briefLoading, userName, onChat, onClose, onDreamShown } =
@@ -12,14 +12,13 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
     `Hi${firstName ? ` ${firstName}` : ""}, how can I help you today?`;
   const pills = brief?.pills ?? [];
   // IL-015 (PR #135 review, P1): report the dream as SHOWN only from here,
-  // after the commit that puts this text on screen. This node can be closed
-  // — acknowledging from the fetch handler marked dreams surfaced that no
-  // mounted surface ever displayed, which is the exact loss IL-015 exists
-  // to prevent.
+  // after the commit that puts this text on screen AND only while the page
+  // is visible. This node can be closed, and the window can be in the
+  // background — acknowledging from the fetch handler marked dreams
+  // surfaced that nothing on screen ever displayed, the exact loss IL-015
+  // exists to prevent.
   const dreamVisible = Boolean(brief?.ambientDream) && !briefLoading;
-  useEffect(() => {
-    if (dreamVisible) onDreamShown?.();
-  }, [dreamVisible, onDreamShown]);
+  useDreamShownReceipt(dreamVisible, onDreamShown);
 
   return (
     <div className="group relative w-72 overflow-visible">
