@@ -336,9 +336,16 @@ git -c commit.gpgsign=false commit -m "server: fence legacy writing mutations"
 - Modify: `apps/server/src/anima_server/services/corefs/diary_migration.py`
 - Modify: `apps/server/src/anima_server/services/sessions.py`
 - Modify: `apps/server/src/anima_server/api/routes/diary.py`
+- Modify: `apps/server/src/anima_server/schemas/diary.py`
+- Modify: `packages/api-client/src/client.ts`
+- Modify: `packages/api-client/src/types.ts`
+- Modify: `apps/desktop/src/pages/Journal.tsx`
+- Modify: `apps/desktop/src/pages/journal/draft-migration.ts`
 - Modify: `apps/server/tests/test_corefs_diary_migration.py`
 - Modify: `apps/server/tests/test_corefs_notes.py`
 - Modify: `apps/server/tests/conftest.py`
+- Modify: `packages/api-client/tests/client.test.ts`
+- Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
 
 - [ ] **Step 1: Write failing bounded-orchestration tests**
 
@@ -380,6 +387,8 @@ Keep legacy SQLCipher authoritative and routes read-compatible before PCF-008. U
 
 For each browser localStorage draft import, require a stable draft ID, monotonic client revision, and SHA-256 of the exact submitted canonical body. Bind that immutable handoff token into the preparation source digest/intent and return it in the durable completion result. The client removes localStorage only when the completion token still matches its current draft ID/revision/hash; if the user edited during preparation, keep the newer local draft and retry it as a new revision. This external optimistic CAS complements, but is not claimed to be protected by, `BEGIN IMMEDIATE`.
 
+Extend the diary schema and generated-by-hand API client types with an explicit draft handoff request/result containing `draftId`, `clientRevision`, `contentSha256`, and the matching durable completion token. In `draft-migration.ts`, persist/increment the client revision alongside the local draft, hash the exact canonical payload submitted, and re-read localStorage before deletion. `Journal.tsx` must treat a stale completion token as a successful import of the old revision but keep/schedule the newer local revision. Add a deterministic desktop test that edits the draft while the mocked import is in flight and proves the newer value is neither deleted nor overwritten.
+
 - [ ] **Step 7: Retire the aggregate production path after caller migration**
 
 Once `diary_migration.py` and its fakes use only the new preparation lifecycle, remove `CorefsSession.validation_batch_parts_v1` and `CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT` from `packages/anima-core/src/ffi.rs`. Keep crate-private converter helpers and explicitly test-only compatibility fixtures only if the Rust validation-batch tests still require them. Assert with a repository search test/check that no server code calls the aggregate API.
@@ -388,8 +397,9 @@ Once `diary_migration.py` and its fakes use only the new preparation lifecycle, 
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_diary_api.py -q
-uv run ruff check apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py
-git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
+uv run ruff check apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py
+bun test packages/api-client/tests/client.test.ts apps/desktop/tests/journal-draft-migration.test.ts
+git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py packages/api-client/src/client.ts packages/api-client/src/types.ts packages/api-client/tests/client.test.ts apps/desktop/src/pages/Journal.tsx apps/desktop/src/pages/journal/draft-migration.ts apps/desktop/tests/journal-draft-migration.test.ts apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
 git -c commit.gpgsign=false commit -m "server: stream resumable writing preparation"
 ```
 
