@@ -1,8 +1,8 @@
 //! Closed, independently bounded wire records for crash-resumable CoreFS preparation.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::{
@@ -12,11 +12,20 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use cap_std::fs::Dir;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::bounded::{json_to_vec as bounded_json_to_vec, BoundedJsonError};
-use crate::catalog::{ObjectPhysicalName, MAX_CATALOG_ENTRIES};
-use crate::crypto::{CryptoError, FrkSubkeys, ObjectKind, NONCE_LENGTH};
+use crate::catalog::{
+    ContentHash, ObjectPhysicalName, WrappedObjectDekRecord, MAX_CATALOG_ENTRIES,
+};
+use crate::crypto::{
+    generate_object_dek, CryptoError, FrkSubkeys, ObjectBaseAad, ObjectKind, NONCE_LENGTH,
+};
+use crate::envelope::{
+    BodyEncoding, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_VERSION,
+    MAX_METADATA_PLAINTEXT_SIZE, METADATA_SCHEMA_VERSION,
+};
 use crate::id::{validate_opaque_id, OpaqueId};
 use crate::publication::{
     atomic_publish_in_with_hook, publish_immutable_in_with_hook, PublicationPhase,
@@ -38,6 +47,8 @@ const MAX_AAD_CONTEXT_BYTES: usize = 128;
 const MAX_SCOPE_BYTES: usize = 64;
 const MAX_SEGMENT_REFERENCES: usize = 1024;
 const MAX_SEGMENT_ITEMS: usize = 1024;
+const MAX_RECONCILIATION_PAGE_ITEMS: u32 = 128;
+const MAX_RECONCILIATION_PAGE_BYTES: u32 = 64 * 1024;
 
 pub(super) const MAX_PREPARATION_HEAD_PLAINTEXT_SIZE: usize = 4 * 1024;
 pub(super) const MAX_PREPARATION_SNAPSHOT_PLAINTEXT_SIZE: usize = 64 * 1024;
@@ -115,6 +126,10 @@ pub(super) enum PreparationError {
         kind: PreparationReferenceKind,
         segment_index: u32,
     },
+    #[error("the preparation already contains a different revision/content identity for {object_id} revision {revision}")]
+    LogicalRevisionConflict { object_id: String, revision: u64 },
+    #[error("preparation converter validation failed: {0}")]
+    Converter(#[from] super::converter::ValidationBatchError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +149,118 @@ pub(super) struct PreparationCas {
     pub(super) snapshot_sequence: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PrepareObjectRequest {
+    pub(super) object_id: String,
+    pub(super) revision: u64,
+    pub(super) object_key_epoch: u32,
+    pub(super) kind: ObjectKind,
+    pub(super) parent_id: String,
+    pub(super) name: String,
+    pub(super) content_type: String,
+    pub(super) body_encoding: BodyEncoding,
+    pub(super) body_length: u64,
+    pub(super) content_sha256: String,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
+    pub(super) source_character_count: Option<usize>,
+    pub(super) references: Vec<String>,
+    pub(super) policy: super::converter::ValidationBatchPolicy,
+    pub(super) stable_role: Option<String>,
+    pub(super) graph_metadata: BTreeMap<String, Value>,
+    pub(super) source_fingerprint_sha256: String,
+    pub(super) converter_format_version: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PrepareObjectDisposition {
+    Prepared,
+    Matched,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparedObjectSummary {
+    pub(super) object_id: String,
+    pub(super) revision: u64,
+    pub(super) content_sha256: String,
+    pub(super) preparation_ordinal: u64,
+    pub(super) ciphertext_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PrepareObjectOutcome {
+    pub(super) status: PreparationStatus,
+    pub(super) disposition: PrepareObjectDisposition,
+    pub(super) prepared: PreparedObjectSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PreparationIdentity {
+    pub(super) object_id: String,
+    pub(super) revision: u64,
+    pub(super) content_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PreparationPageLimits {
+    pub(super) max_items: u32,
+    pub(super) max_bytes: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationReconciliationRequest {
+    pub(super) cursor: Option<u64>,
+    pub(super) limits: PreparationPageLimits,
+    pub(super) expected: Vec<PreparationIdentity>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PreparationTestLimits {
+    pub(super) descriptor_segment_items: usize,
+    pub(super) max_object_plaintext_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparedObjectMetadata {
+    pub(super) object_id: String,
+    pub(super) revision: u64,
+    pub(super) object_key_epoch: u32,
+    pub(super) kind: ObjectKind,
+    pub(super) parent_id: String,
+    pub(super) name: String,
+    pub(super) content_type: String,
+    pub(super) body_encoding: BodyEncoding,
+    pub(super) body_length: u64,
+    pub(super) content_sha256: String,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
+    pub(super) source_character_count: Option<usize>,
+    pub(super) references: Vec<String>,
+    pub(super) policy: super::converter::ValidationBatchPolicy,
+    pub(super) stable_role: Option<String>,
+    pub(super) graph_metadata: BTreeMap<String, Value>,
+    pub(super) source_fingerprint_sha256: String,
+    pub(super) converter_format_version: u16,
+    pub(super) preparation_ordinal: u64,
+    pub(super) ciphertext_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationReconciliationPage {
+    pub(super) prepared_count: u32,
+    pub(super) total_plaintext_bytes: u64,
+    pub(super) total_ciphertext_bytes: u64,
+    pub(super) descriptor_manifest_root_sha256: String,
+    pub(super) descriptor_segment_roots: Vec<String>,
+    pub(super) items: Vec<PreparedObjectMetadata>,
+    pub(super) missing: Vec<PreparationIdentity>,
+    pub(super) conflicting: Vec<PreparationIdentity>,
+    pub(super) next_cursor: Option<u64>,
+    pub(super) encoded_bytes: u32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PreparationOpenDisposition {
     Begun,
@@ -143,6 +270,8 @@ pub(super) enum PreparationOpenDisposition {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PreparationPublicationTarget {
+    Object,
+    Descriptor,
     Snapshot,
     Head,
 }
@@ -165,6 +294,8 @@ pub(super) struct PreparationStatus {
     pub(super) source_inventory_sha256: String,
     pub(super) total_objects: u32,
     pub(super) total_plaintext_bytes: u64,
+    pub(super) total_ciphertext_bytes: u64,
+    pub(super) descriptor_manifest_root_sha256: String,
     pub(super) next_descriptor_segment: u32,
     pub(super) next_intent_segment: u32,
     pub(super) disposition: PreparationOpenDisposition,
@@ -278,6 +409,7 @@ pub(super) struct PreparationSnapshot {
     pub(super) source_inventory_sha256: String,
     pub(super) total_objects: u32,
     pub(super) total_plaintext_bytes: u64,
+    pub(super) total_ciphertext_bytes: u64,
     pub(super) manifest_root_sha256: String,
     pub(super) manifest_segments: Vec<PreparationSegmentReference>,
     pub(super) final_intent_root_sha256: Option<String>,
@@ -306,6 +438,18 @@ pub(super) struct PreparedObjectDescriptor {
     pub(super) encoded_size: u64,
     pub(super) encrypted_file_sha256: String,
     pub(super) content_sha256: String,
+    pub(super) parent_id: String,
+    pub(super) name: String,
+    pub(super) content_type: String,
+    pub(super) body_encoding: String,
+    pub(super) body_length: u64,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
+    pub(super) source_character_count: Option<u64>,
+    pub(super) references: Vec<String>,
+    pub(super) policy: String,
+    pub(super) stable_role: Option<String>,
+    pub(super) graph_metadata: BTreeMap<String, Value>,
     pub(super) object_key_binding_sha256: String,
     pub(super) wrapped_object_dek: WrappedObjectDekWire,
     pub(super) envelope_metadata_sha256: String,
@@ -516,6 +660,15 @@ impl PreparationRecord for PreparationSnapshot {
         {
             return Err(PreparationError::LimitExceeded("total objects"));
         }
+        if (self.total_objects == 0)
+            != (self.total_plaintext_bytes == 0
+                && self.total_ciphertext_bytes == 0
+                && self.manifest_segments.is_empty())
+        {
+            return Err(PreparationError::InvalidFormat(
+                "snapshot descriptor accounting",
+            ));
+        }
         validate_segment_references(&self.manifest_segments)?;
         validate_segment_references(&self.final_intent_segments)?;
         Ok(())
@@ -679,6 +832,34 @@ impl PreparedObjectDescriptor {
         validate_hash(&self.object_key_binding_sha256)?;
         validate_hash(&self.envelope_metadata_sha256)?;
         validate_hash(&self.source_fingerprint_sha256)?;
+        let body_encoding = parse_body_encoding(&self.body_encoding)?;
+        let policy = parse_policy(&self.policy)?;
+        let source_character_count = self
+            .source_character_count
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| PreparationError::LimitExceeded("source character count"))?;
+        super::converter::validate_converter_object_metadata(
+            &super::converter::ConverterObjectMetadata {
+                object_id: &self.stable_id,
+                revision: self.revision,
+                object_key_epoch: self.object_key_epoch,
+                parent_id: &self.parent_id,
+                name: &self.name,
+                kind: ObjectKind::parse(&self.kind)?,
+                content_type: &self.content_type,
+                body_encoding,
+                body_length: self.body_length,
+                content_sha256: &self.content_sha256,
+                created_at: &self.created_at,
+                updated_at: &self.updated_at,
+                source_character_count,
+                references: &self.references,
+                policy,
+                stable_role: self.stable_role.as_deref(),
+                graph_metadata: &self.graph_metadata,
+            },
+        )?;
         self.wrapped_object_dek
             .validate(required_frk_version, self.object_key_epoch)
     }
@@ -1160,6 +1341,7 @@ impl super::CoreCommitCoordinator {
             source_inventory_sha256: request.source_inventory_sha256.clone(),
             total_objects: 0,
             total_plaintext_bytes: 0,
+            total_ciphertext_bytes: 0,
             manifest_root_sha256: empty_manifest_root(),
             manifest_segments: Vec::new(),
             final_intent_root_sha256: None,
@@ -1310,6 +1492,287 @@ impl super::CoreCommitCoordinator {
         status
     }
 
+    pub(super) fn prepare_object<R: Read>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        request: &PrepareObjectRequest,
+        body: &mut R,
+    ) -> Result<PrepareObjectOutcome, PreparationError> {
+        self.prepare_object_inner(
+            keys,
+            expected,
+            request,
+            body,
+            MAX_SEGMENT_ITEMS,
+            u64::MAX,
+            &mut |_, _| Ok(()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_object_with_limits<R: Read>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        request: &PrepareObjectRequest,
+        body: &mut R,
+        limits: PreparationTestLimits,
+    ) -> Result<PrepareObjectOutcome, PreparationError> {
+        self.prepare_object_inner(
+            keys,
+            expected,
+            request,
+            body,
+            limits.descriptor_segment_items,
+            limits.max_object_plaintext_bytes,
+            &mut |_, _| Ok(()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_object_with_hook<R, F>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        request: &PrepareObjectRequest,
+        body: &mut R,
+        hook: &mut F,
+    ) -> Result<PrepareObjectOutcome, PreparationError>
+    where
+        R: Read,
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.prepare_object_inner(
+            keys,
+            expected,
+            request,
+            body,
+            MAX_SEGMENT_ITEMS,
+            u64::MAX,
+            hook,
+        )
+    }
+
+    fn prepare_object_inner<R, F>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        request: &PrepareObjectRequest,
+        body: &mut R,
+        descriptor_segment_items: usize,
+        max_object_plaintext_bytes: u64,
+        hook: &mut F,
+    ) -> Result<PrepareObjectOutcome, PreparationError>
+    where
+        R: Read,
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_prepare_object_request(request, max_object_plaintext_bytes)?;
+        validate_preparation_cas(expected)?;
+        if descriptor_segment_items == 0 || descriptor_segment_items > MAX_SEGMENT_ITEMS {
+            return Err(PreparationError::LimitExceeded("descriptor segment items"));
+        }
+        let _lease_operation = self.admit_lease_publication_operation()?;
+
+        {
+            let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            self.validate_pinned_layout()?;
+            let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+            let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+            validate_loaded_cas(&loaded, expected)?;
+            if loaded.snapshot.state != PreparationState::Collecting {
+                return Err(PreparationError::ActiveConflict("preparation state"));
+            }
+            let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+            let layout = open_preparation_layout(&preparations, &loaded.snapshot.preparation_id)?;
+            if let Some(descriptor) = find_descriptor(&layout, &loaded.snapshot, keys, request)? {
+                let prepared = prepared_revision_from_descriptor(&descriptor)?;
+                self.validate_prepared_revision_file(&prepared)?;
+                let outcome = matched_object_outcome(&loaded, request, &descriptor);
+                drop(commit_lock);
+                return outcome;
+            }
+            drop(commit_lock);
+        }
+
+        let metadata = envelope_metadata_for_request(request)?;
+        let envelope_metadata_sha256 = envelope_metadata_sha256(&metadata)?;
+        let object_key = generate_object_dek().map_err(super::CommitError::from)?;
+        let aad = ObjectBaseAad::new(
+            &self.core_id,
+            &request.object_id,
+            request.kind,
+            ENVELOPE_VERSION,
+            request.object_key_epoch,
+            request.revision,
+        )
+        .map_err(super::CommitError::from)?;
+        let prepared = self.prepare_plaintext_object_revision_with_hook(
+            keys,
+            &object_key,
+            &aad,
+            &metadata,
+            body,
+            &mut |phase| hook(PreparationPublicationTarget::Object, phase),
+        )?;
+        self.validate_prepared_revision_file(&prepared)?;
+        let descriptor =
+            descriptor_from_prepared(request, &prepared, &envelope_metadata_sha256, 0)?;
+
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        validate_loaded_cas(&loaded, expected)?;
+        if loaded.snapshot.state != PreparationState::Collecting {
+            return Err(PreparationError::ActiveConflict("preparation state"));
+        }
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &loaded.snapshot.preparation_id)?;
+        if let Some(existing) = find_descriptor(&layout, &loaded.snapshot, keys, request)? {
+            let outcome = matched_object_outcome(&loaded, request, &existing);
+            drop(commit_lock);
+            return outcome;
+        }
+
+        let next_ordinal = u64::from(loaded.snapshot.total_objects);
+        let mut descriptor = descriptor;
+        descriptor.preparation_ordinal = next_ordinal;
+        let (segment, replace_last) = next_descriptor_segment(
+            &layout,
+            &loaded.snapshot,
+            keys,
+            descriptor,
+            descriptor_segment_items,
+        )?;
+        let segment_plaintext_bytes = u32::try_from(segment.encode()?.len())
+            .map_err(|_| PreparationError::LimitExceeded("descriptor segment plaintext"))?;
+        let sealed_segment = segment.seal(keys)?;
+        let segment_ciphertext_sha256 = sha256_hex(sealed_segment.as_bytes());
+        publish_immutable_preparation_record_with_hook(
+            &layout.descriptors,
+            &sealed_segment,
+            &mut |phase| hook(PreparationPublicationTarget::Descriptor, phase),
+        )?;
+
+        let mut next_snapshot = loaded.snapshot.clone();
+        let next_total_objects = next_snapshot
+            .total_objects
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("total objects"))?;
+        if usize::try_from(next_total_objects)
+            .map_err(|_| PreparationError::LimitExceeded("total objects"))?
+            > MAX_CATALOG_ENTRIES
+        {
+            return Err(PreparationError::LimitExceeded("total objects"));
+        }
+        next_snapshot.total_objects = next_total_objects;
+        next_snapshot.total_plaintext_bytes = next_snapshot
+            .total_plaintext_bytes
+            .checked_add(request.body_length)
+            .ok_or(PreparationError::LimitExceeded("total plaintext bytes"))?;
+        next_snapshot.total_ciphertext_bytes = next_snapshot
+            .total_ciphertext_bytes
+            .checked_add(prepared.encoded_size)
+            .ok_or(PreparationError::LimitExceeded("total ciphertext bytes"))?;
+        let reference = PreparationSegmentReference {
+            segment_index: segment.segment_index,
+            ciphertext_sha256: segment_ciphertext_sha256,
+            item_count: u32::try_from(segment.descriptors.len())
+                .map_err(|_| PreparationError::LimitExceeded("descriptor segment items"))?,
+            plaintext_bytes: segment_plaintext_bytes,
+        };
+        if replace_last {
+            *next_snapshot
+                .manifest_segments
+                .last_mut()
+                .ok_or(PreparationError::CorruptSnapshot)? = reference;
+        } else {
+            if next_snapshot.manifest_segments.len() >= MAX_SEGMENT_REFERENCES {
+                return Err(PreparationError::LimitExceeded(
+                    "descriptor segment references",
+                ));
+            }
+            next_snapshot.manifest_segments.push(reference);
+        }
+        next_snapshot.manifest_root_sha256 = manifest_root(&next_snapshot.manifest_segments);
+        next_snapshot.sequence = next_snapshot
+            .sequence
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("snapshot sequence"))?;
+        next_snapshot.updated_at_unix_ms =
+            unix_time_millis()?.max(next_snapshot.created_at_unix_ms);
+        let sealed_snapshot = next_snapshot.seal(keys)?;
+        let snapshot_ciphertext_sha256 = sha256_hex(sealed_snapshot.as_bytes());
+        publish_immutable_preparation_record_with_hook(
+            &layout.snapshots,
+            &sealed_snapshot,
+            &mut |phase| hook(PreparationPublicationTarget::Snapshot, phase),
+        )?;
+
+        let current_pointer =
+            read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+        let (current_head, current_pointer_sha256) =
+            authenticate_pointer(&current_pointer, keys, &self.core_id)?;
+        if current_pointer_sha256 != expected.pointer_sha256
+            || current_head.snapshot_sequence != expected.snapshot_sequence
+        {
+            return Err(PreparationError::CasConflict);
+        }
+        let next_head = PreparationHeadRecord {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: self.core_id.clone(),
+            preparation_id: loaded.snapshot.preparation_id,
+            snapshot_sequence: next_snapshot.sequence,
+            snapshot_ciphertext_sha256: snapshot_ciphertext_sha256.clone(),
+            envelope_version: PREPARATION_ENVELOPE_VERSION,
+            required_frk_version: keys.frk_version(),
+        };
+        let sealed_head = next_head.seal(keys)?;
+        publish_preparation_head_with_hook(&self.fs_dir, &sealed_head, &mut |phase| {
+            hook(PreparationPublicationTarget::Head, phase)
+        })?;
+        let status = status_from_loaded(
+            &LoadedPreparation {
+                head: next_head,
+                snapshot: next_snapshot,
+                pointer_sha256: sha256_hex(sealed_head.as_bytes()),
+            },
+            PreparationOpenDisposition::Reconciled,
+        )?;
+        drop(commit_lock);
+        Ok(PrepareObjectOutcome {
+            status,
+            disposition: PrepareObjectDisposition::Prepared,
+            prepared: PreparedObjectSummary {
+                object_id: request.object_id.clone(),
+                revision: request.revision,
+                content_sha256: request.content_sha256.clone(),
+                preparation_ordinal: next_ordinal,
+                ciphertext_bytes: prepared.encoded_size,
+            },
+        })
+    }
+
+    pub(super) fn reconcile_prepared_objects(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationReconciliationRequest,
+    ) -> Result<PreparationReconciliationPage, PreparationError> {
+        validate_reconciliation_request(request)?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::Missing)?;
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &loaded.snapshot.preparation_id)?;
+        let page = reconciliation_page(self, &layout, &loaded, keys, request)?;
+        drop(commit_lock);
+        Ok(page)
+    }
+
     fn load_active_preparation_locked(
         &self,
         _commit_lock: &super::CoreCommitLock,
@@ -1352,6 +1815,581 @@ impl super::CoreCommitCoordinator {
             snapshot,
             pointer_sha256,
         })
+    }
+}
+
+fn validate_preparation_cas(expected: &PreparationCas) -> Result<(), PreparationError> {
+    validate_hash(&expected.pointer_sha256)?;
+    if expected.snapshot_sequence == 0 {
+        return Err(PreparationError::InvalidFormat("snapshot sequence"));
+    }
+    Ok(())
+}
+
+fn validate_loaded_cas(
+    loaded: &LoadedPreparation,
+    expected: &PreparationCas,
+) -> Result<(), PreparationError> {
+    if loaded.pointer_sha256 != expected.pointer_sha256
+        || loaded.snapshot.sequence != expected.snapshot_sequence
+    {
+        return Err(PreparationError::CasConflict);
+    }
+    Ok(())
+}
+
+fn validate_prepare_object_request(
+    request: &PrepareObjectRequest,
+    max_object_plaintext_bytes: u64,
+) -> Result<(), PreparationError> {
+    if request.body_length > max_object_plaintext_bytes {
+        return Err(PreparationError::LimitExceeded("object plaintext bytes"));
+    }
+    if request.converter_format_version == 0 {
+        return Err(PreparationError::InvalidFormat("converter format version"));
+    }
+    validate_hash(&request.source_fingerprint_sha256)?;
+    super::converter::validate_converter_object_metadata(
+        &super::converter::ConverterObjectMetadata {
+            object_id: &request.object_id,
+            revision: request.revision,
+            object_key_epoch: request.object_key_epoch,
+            parent_id: &request.parent_id,
+            name: &request.name,
+            kind: request.kind,
+            content_type: &request.content_type,
+            body_encoding: request.body_encoding,
+            body_length: request.body_length,
+            content_sha256: &request.content_sha256,
+            created_at: &request.created_at,
+            updated_at: &request.updated_at,
+            source_character_count: request.source_character_count,
+            references: &request.references,
+            policy: request.policy,
+            stable_role: request.stable_role.as_deref(),
+            graph_metadata: &request.graph_metadata,
+        },
+    )
+    .map_err(PreparationError::from)
+}
+
+fn envelope_metadata_for_request(
+    request: &PrepareObjectRequest,
+) -> Result<EnvelopeMetadata, PreparationError> {
+    let chunk_count = if request.body_length == 0 {
+        0
+    } else {
+        let chunks = request
+            .body_length
+            .checked_sub(1)
+            .and_then(|value| value.checked_div(BODY_CHUNK_PLAINTEXT_SIZE as u64))
+            .and_then(|value| value.checked_add(1))
+            .ok_or(PreparationError::LimitExceeded("object chunk count"))?;
+        u32::try_from(chunks).map_err(|_| PreparationError::LimitExceeded("object chunk count"))?
+    };
+    let mut metadata = request.graph_metadata.clone();
+    for value in metadata.values_mut() {
+        canonicalize_json(value);
+    }
+    Ok(EnvelopeMetadata {
+        schema_version: METADATA_SCHEMA_VERSION,
+        kind: request.kind.as_str().to_owned(),
+        object_id: request.object_id.clone(),
+        revision: request.revision,
+        created_at: request.created_at.clone(),
+        updated_at: request.updated_at.clone(),
+        content_type: request.content_type.clone(),
+        metadata,
+        body_encoding: request.body_encoding,
+        body_length: request.body_length,
+        body_sha256: request.content_sha256.clone(),
+        chunk_plaintext_size: BODY_CHUNK_PLAINTEXT_SIZE as u32,
+        chunk_count,
+    })
+}
+
+fn envelope_metadata_sha256(metadata: &EnvelopeMetadata) -> Result<String, PreparationError> {
+    let encoded =
+        bounded_json_to_vec(metadata, MAX_METADATA_PLAINTEXT_SIZE).map_err(
+            |error| match error {
+                BoundedJsonError::LimitExceeded => {
+                    PreparationError::LimitExceeded("envelope metadata")
+                }
+                BoundedJsonError::Json(error) => PreparationError::Json(error),
+            },
+        )?;
+    Ok(sha256_hex(&encoded))
+}
+
+fn canonicalize_json(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                canonicalize_json(value);
+            }
+        }
+        Value::Object(values) => {
+            let mut sorted = serde_json::Map::new();
+            let taken = std::mem::take(values);
+            let mut entries: Vec<_> = taken.into_iter().collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            for (key, mut value) in entries {
+                canonicalize_json(&mut value);
+                sorted.insert(key, value);
+            }
+            *values = sorted;
+        }
+        _ => {}
+    }
+}
+
+fn descriptor_from_prepared(
+    request: &PrepareObjectRequest,
+    prepared: &super::PreparedObjectRevision,
+    envelope_metadata_sha256: &str,
+    preparation_ordinal: u64,
+) -> Result<PreparedObjectDescriptor, PreparationError> {
+    let wrapped = prepared
+        .wrapped_dek
+        .to_wrapped_object_dek()
+        .map_err(super::CommitError::from)?;
+    Ok(PreparedObjectDescriptor {
+        stable_id: request.object_id.clone(),
+        revision: request.revision,
+        kind: request.kind.as_str().to_owned(),
+        object_key_epoch: request.object_key_epoch,
+        physical_name: prepared.physical_name.as_str().to_owned(),
+        encoded_size: prepared.encoded_size,
+        encrypted_file_sha256: hex_bytes(&prepared.encrypted_hash),
+        content_sha256: request.content_sha256.clone(),
+        parent_id: request.parent_id.clone(),
+        name: request.name.clone(),
+        content_type: request.content_type.clone(),
+        body_encoding: body_encoding_name(request.body_encoding).to_owned(),
+        body_length: request.body_length,
+        created_at: request.created_at.clone(),
+        updated_at: request.updated_at.clone(),
+        source_character_count: request
+            .source_character_count
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| PreparationError::LimitExceeded("source character count"))?,
+        references: request.references.clone(),
+        policy: policy_name(request.policy).to_owned(),
+        stable_role: request.stable_role.clone(),
+        graph_metadata: request.graph_metadata.clone(),
+        object_key_binding_sha256: hex_bytes(&prepared.object_key_binding),
+        wrapped_object_dek: WrappedObjectDekWire {
+            frk_version: prepared.wrapped_dek.frk_version(),
+            object_key_epoch: prepared.wrapped_dek.object_key_epoch(),
+            algorithm: wrapped.algorithm().to_owned(),
+            envelope_version: wrapped.envelope_version(),
+            nonce_base64: BASE64.encode(wrapped.nonce()),
+            ciphertext_base64: BASE64.encode(wrapped.ciphertext()),
+        },
+        envelope_metadata_sha256: envelope_metadata_sha256.to_owned(),
+        source_fingerprint_sha256: request.source_fingerprint_sha256.clone(),
+        converter_format_version: request.converter_format_version,
+        preparation_ordinal,
+    })
+}
+
+fn prepared_revision_from_descriptor(
+    descriptor: &PreparedObjectDescriptor,
+) -> Result<super::PreparedObjectRevision, PreparationError> {
+    let nonce = BASE64
+        .decode(&descriptor.wrapped_object_dek.nonce_base64)
+        .map_err(|_| PreparationError::InvalidFormat("wrapped object DEK nonce"))?;
+    let ciphertext = BASE64
+        .decode(&descriptor.wrapped_object_dek.ciphertext_base64)
+        .map_err(|_| PreparationError::InvalidFormat("wrapped object DEK ciphertext"))?;
+    let wrapped_dek = WrappedObjectDekRecord::from_parts(
+        descriptor.wrapped_object_dek.frk_version,
+        descriptor.wrapped_object_dek.object_key_epoch,
+        &descriptor.wrapped_object_dek.algorithm,
+        descriptor.wrapped_object_dek.envelope_version,
+        &nonce,
+        ciphertext,
+    )
+    .map_err(super::CommitError::from)?;
+    Ok(super::PreparedObjectRevision {
+        object_id: OpaqueId::parse(&descriptor.stable_id)
+            .map_err(|_| PreparationError::InvalidFormat("stable ID"))?,
+        revision: descriptor.revision,
+        kind: ObjectKind::parse(&descriptor.kind)?,
+        object_key_epoch: descriptor.object_key_epoch,
+        physical_name: ObjectPhysicalName::parse(&descriptor.physical_name)
+            .map_err(super::CommitError::from)?,
+        content_hash: ContentHash::parse(&descriptor.content_sha256)
+            .map_err(super::CommitError::from)?,
+        encoded_size: descriptor.encoded_size,
+        encrypted_hash: parse_hash_array(&descriptor.encrypted_file_sha256)?,
+        object_key_binding: parse_hash_array(&descriptor.object_key_binding_sha256)?,
+        wrapped_dek,
+    })
+}
+
+fn next_descriptor_segment(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+    descriptor: PreparedObjectDescriptor,
+    descriptor_segment_items: usize,
+) -> Result<(PreparedObjectDescriptorSegment, bool), PreparationError> {
+    if let Some(reference) = snapshot.manifest_segments.last() {
+        let mut last = read_descriptor_segment(layout, snapshot, keys, reference)?;
+        if last.descriptors.len() < descriptor_segment_items {
+            last.descriptors.push(descriptor.clone());
+            match last.encode() {
+                Ok(_) => return Ok((last, true)),
+                Err(PreparationError::LimitExceeded(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    let segment_index = u32::try_from(snapshot.manifest_segments.len())
+        .map_err(|_| PreparationError::LimitExceeded("descriptor segment index"))?;
+    Ok((
+        PreparedObjectDescriptorSegment {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: snapshot.core_id.clone(),
+            preparation_id: snapshot.preparation_id.clone(),
+            required_frk_version: snapshot.required_frk_version,
+            segment_index,
+            descriptors: vec![descriptor],
+        },
+        false,
+    ))
+}
+
+fn read_descriptor_segment(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+    reference: &PreparationSegmentReference,
+) -> Result<PreparedObjectDescriptorSegment, PreparationError> {
+    let name = format!(
+        "{:020}-{}.prep-manifest.acore",
+        reference.segment_index, reference.ciphertext_sha256
+    );
+    let encoded = read_referenced_record(
+        &layout.descriptors,
+        &name,
+        MAX_DESCRIPTOR_SEGMENT_ENVELOPE_SIZE,
+        PreparationReferenceKind::Descriptor,
+        reference.segment_index,
+    )?;
+    if sha256_hex(&encoded) != reference.ciphertext_sha256 {
+        return Err(PreparationError::CorruptReferencedRecord {
+            kind: PreparationReferenceKind::Descriptor,
+            segment_index: reference.segment_index,
+        });
+    }
+    PreparedObjectDescriptorSegment::open(
+        &encoded,
+        keys,
+        &snapshot.core_id,
+        snapshot.required_frk_version,
+    )
+    .map_err(|_| PreparationError::CorruptReferencedRecord {
+        kind: PreparationReferenceKind::Descriptor,
+        segment_index: reference.segment_index,
+    })
+}
+
+fn find_descriptor(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+    request: &PrepareObjectRequest,
+) -> Result<Option<PreparedObjectDescriptor>, PreparationError> {
+    for reference in &snapshot.manifest_segments {
+        let segment = read_descriptor_segment(layout, snapshot, keys, reference)?;
+        if let Some(descriptor) = segment
+            .descriptors
+            .into_iter()
+            .find(|descriptor| descriptor.stable_id == request.object_id)
+        {
+            if descriptor.revision != request.revision
+                || descriptor.content_sha256 != request.content_sha256
+            {
+                return Err(PreparationError::LogicalRevisionConflict {
+                    object_id: request.object_id.clone(),
+                    revision: request.revision,
+                });
+            }
+            if !descriptor_matches_request(&descriptor, request)? {
+                return Err(PreparationError::ActiveConflict("object metadata"));
+            }
+            return Ok(Some(descriptor));
+        }
+    }
+    Ok(None)
+}
+
+fn descriptor_matches_request(
+    descriptor: &PreparedObjectDescriptor,
+    request: &PrepareObjectRequest,
+) -> Result<bool, PreparationError> {
+    Ok(descriptor.object_key_epoch == request.object_key_epoch
+        && descriptor.kind == request.kind.as_str()
+        && descriptor.parent_id == request.parent_id
+        && descriptor.name == request.name
+        && descriptor.content_type == request.content_type
+        && parse_body_encoding(&descriptor.body_encoding)? == request.body_encoding
+        && descriptor.body_length == request.body_length
+        && descriptor.created_at == request.created_at
+        && descriptor.updated_at == request.updated_at
+        && descriptor.source_character_count
+            == request
+                .source_character_count
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| PreparationError::LimitExceeded("source character count"))?
+        && descriptor.references == request.references
+        && parse_policy(&descriptor.policy)? == request.policy
+        && descriptor.stable_role == request.stable_role
+        && descriptor.graph_metadata == request.graph_metadata
+        && descriptor.source_fingerprint_sha256 == request.source_fingerprint_sha256
+        && descriptor.converter_format_version == request.converter_format_version)
+}
+
+fn matched_object_outcome(
+    loaded: &LoadedPreparation,
+    request: &PrepareObjectRequest,
+    descriptor: &PreparedObjectDescriptor,
+) -> Result<PrepareObjectOutcome, PreparationError> {
+    Ok(PrepareObjectOutcome {
+        status: status_from_loaded(loaded, PreparationOpenDisposition::Resumed)?,
+        disposition: PrepareObjectDisposition::Matched,
+        prepared: PreparedObjectSummary {
+            object_id: request.object_id.clone(),
+            revision: request.revision,
+            content_sha256: request.content_sha256.clone(),
+            preparation_ordinal: descriptor.preparation_ordinal,
+            ciphertext_bytes: descriptor.encoded_size,
+        },
+    })
+}
+
+fn descriptor_metadata(
+    descriptor: &PreparedObjectDescriptor,
+) -> Result<PreparedObjectMetadata, PreparationError> {
+    Ok(PreparedObjectMetadata {
+        object_id: descriptor.stable_id.clone(),
+        revision: descriptor.revision,
+        object_key_epoch: descriptor.object_key_epoch,
+        kind: ObjectKind::parse(&descriptor.kind)?,
+        parent_id: descriptor.parent_id.clone(),
+        name: descriptor.name.clone(),
+        content_type: descriptor.content_type.clone(),
+        body_encoding: parse_body_encoding(&descriptor.body_encoding)?,
+        body_length: descriptor.body_length,
+        content_sha256: descriptor.content_sha256.clone(),
+        created_at: descriptor.created_at.clone(),
+        updated_at: descriptor.updated_at.clone(),
+        source_character_count: descriptor
+            .source_character_count
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| PreparationError::LimitExceeded("source character count"))?,
+        references: descriptor.references.clone(),
+        policy: parse_policy(&descriptor.policy)?,
+        stable_role: descriptor.stable_role.clone(),
+        graph_metadata: descriptor.graph_metadata.clone(),
+        source_fingerprint_sha256: descriptor.source_fingerprint_sha256.clone(),
+        converter_format_version: descriptor.converter_format_version,
+        preparation_ordinal: descriptor.preparation_ordinal,
+        ciphertext_bytes: descriptor.encoded_size,
+    })
+}
+
+fn validate_reconciliation_request(
+    request: &PreparationReconciliationRequest,
+) -> Result<(), PreparationError> {
+    if request.limits.max_items == 0
+        || request.limits.max_items > MAX_RECONCILIATION_PAGE_ITEMS
+        || request.limits.max_bytes == 0
+        || request.limits.max_bytes > MAX_RECONCILIATION_PAGE_BYTES
+        || request.expected.len() > MAX_RECONCILIATION_PAGE_ITEMS as usize
+    {
+        return Err(PreparationError::LimitExceeded("reconciliation page"));
+    }
+    let mut identities = HashSet::new();
+    for identity in &request.expected {
+        validate_opaque(&identity.object_id, "object ID")?;
+        validate_hash(&identity.content_sha256)?;
+        if identity.revision == 0 || !identities.insert(identity.object_id.as_str()) {
+            return Err(PreparationError::InvalidFormat("reconciliation identity"));
+        }
+    }
+    bounded_json_to_vec(&request.expected, request.limits.max_bytes as usize).map_err(|error| {
+        match error {
+            BoundedJsonError::LimitExceeded => {
+                PreparationError::LimitExceeded("reconciliation page")
+            }
+            BoundedJsonError::Json(error) => PreparationError::Json(error),
+        }
+    })?;
+    Ok(())
+}
+
+fn reconciliation_page(
+    coordinator: &super::CoreCommitCoordinator,
+    layout: &PreparationLayout,
+    loaded: &LoadedPreparation,
+    keys: &FrkSubkeys,
+    request: &PreparationReconciliationRequest,
+) -> Result<PreparationReconciliationPage, PreparationError> {
+    let cursor = request.cursor.unwrap_or(0);
+    if cursor > u64::from(loaded.snapshot.total_objects) {
+        return Err(PreparationError::InvalidFormat("reconciliation cursor"));
+    }
+    let mut expected: BTreeMap<_, _> = request
+        .expected
+        .iter()
+        .map(|identity| (identity.object_id.as_str(), (identity, None::<bool>)))
+        .collect();
+    let mut items = Vec::new();
+    let mut descriptor_segment_roots = Vec::new();
+    let mut encoded_bytes = 0_usize;
+    let mut next_cursor = None;
+    for reference in &loaded.snapshot.manifest_segments {
+        let segment = read_descriptor_segment(layout, &loaded.snapshot, keys, reference)?;
+        let mut included_segment = false;
+        for descriptor in &segment.descriptors {
+            if let Some((identity, state)) = expected.get_mut(descriptor.stable_id.as_str()) {
+                *state = Some(
+                    descriptor.revision == identity.revision
+                        && descriptor.content_sha256 == identity.content_sha256,
+                );
+            }
+            if descriptor.preparation_ordinal < cursor || next_cursor.is_some() {
+                continue;
+            }
+            if items.len() >= request.limits.max_items as usize {
+                next_cursor = Some(descriptor.preparation_ordinal);
+                continue;
+            }
+            let metadata = descriptor_metadata(descriptor)?;
+            let item_bytes = serde_json::to_vec(descriptor)?.len();
+            let root_bytes = if included_segment {
+                0
+            } else {
+                reference.ciphertext_sha256.len()
+            };
+            if encoded_bytes
+                .checked_add(item_bytes)
+                .and_then(|value| value.checked_add(root_bytes))
+                .is_none_or(|value| value > request.limits.max_bytes as usize)
+            {
+                if items.is_empty() {
+                    return Err(PreparationError::LimitExceeded("reconciliation item"));
+                }
+                next_cursor = Some(descriptor.preparation_ordinal);
+                continue;
+            }
+            let prepared = prepared_revision_from_descriptor(descriptor)?;
+            coordinator.validate_prepared_revision_file(&prepared)?;
+            encoded_bytes += item_bytes + root_bytes;
+            if !included_segment {
+                descriptor_segment_roots.push(reference.ciphertext_sha256.clone());
+                included_segment = true;
+            }
+            items.push(metadata);
+        }
+    }
+    let mut missing = Vec::new();
+    let mut conflicting = Vec::new();
+    for (_, (identity, state)) in expected {
+        match state {
+            None => missing.push(identity.clone()),
+            Some(false) => conflicting.push(identity.clone()),
+            Some(true) => {}
+        }
+    }
+    let missing_bytes = serde_json::to_vec(&missing)?.len();
+    let conflicting_bytes = serde_json::to_vec(&conflicting)?.len();
+    encoded_bytes = encoded_bytes
+        .checked_add(missing_bytes)
+        .and_then(|value| value.checked_add(conflicting_bytes))
+        .ok_or(PreparationError::LimitExceeded("reconciliation page"))?;
+    if encoded_bytes > request.limits.max_bytes as usize {
+        return Err(PreparationError::LimitExceeded("reconciliation page"));
+    }
+    Ok(PreparationReconciliationPage {
+        prepared_count: loaded.snapshot.total_objects,
+        total_plaintext_bytes: loaded.snapshot.total_plaintext_bytes,
+        total_ciphertext_bytes: loaded.snapshot.total_ciphertext_bytes,
+        descriptor_manifest_root_sha256: loaded.snapshot.manifest_root_sha256.clone(),
+        descriptor_segment_roots,
+        items,
+        missing,
+        conflicting,
+        next_cursor,
+        encoded_bytes: u32::try_from(encoded_bytes)
+            .map_err(|_| PreparationError::LimitExceeded("reconciliation page"))?,
+    })
+}
+
+pub(super) fn manifest_root(references: &[PreparationSegmentReference]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"anima-corefs-preparation-descriptor-manifest-v1\0");
+    for reference in references {
+        hasher.update(reference.segment_index.to_le_bytes());
+        hasher.update(reference.ciphertext_sha256.as_bytes());
+        hasher.update(reference.item_count.to_le_bytes());
+        hasher.update(reference.plaintext_bytes.to_le_bytes());
+    }
+    hex_bytes(&hasher.finalize())
+}
+
+fn body_encoding_name(value: BodyEncoding) -> &'static str {
+    match value {
+        BodyEncoding::Utf8 => "utf-8",
+        BodyEncoding::Binary => "binary",
+    }
+}
+
+fn parse_body_encoding(value: &str) -> Result<BodyEncoding, PreparationError> {
+    match value {
+        "utf-8" => Ok(BodyEncoding::Utf8),
+        "binary" => Ok(BodyEncoding::Binary),
+        _ => Err(PreparationError::InvalidFormat("body encoding")),
+    }
+}
+
+fn policy_name(value: super::converter::ValidationBatchPolicy) -> &'static str {
+    match value {
+        super::converter::ValidationBatchPolicy::UserWrite => "user_write",
+        super::converter::ValidationBatchPolicy::Inherit => "inherit",
+        super::converter::ValidationBatchPolicy::Deny => "deny",
+    }
+}
+
+fn parse_policy(value: &str) -> Result<super::converter::ValidationBatchPolicy, PreparationError> {
+    match value {
+        "user_write" => Ok(super::converter::ValidationBatchPolicy::UserWrite),
+        "inherit" => Ok(super::converter::ValidationBatchPolicy::Inherit),
+        "deny" => Ok(super::converter::ValidationBatchPolicy::Deny),
+        _ => Err(PreparationError::InvalidFormat("policy")),
+    }
+}
+
+fn parse_hash_array(value: &str) -> Result<[u8; 32], PreparationError> {
+    validate_hash(value)?;
+    let mut decoded = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        decoded[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
+    }
+    Ok(decoded)
+}
+
+fn hex_nibble(value: u8) -> Result<u8, PreparationError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(PreparationError::InvalidFormat("hash")),
     }
 }
 
@@ -1427,6 +2465,8 @@ fn status_from_loaded(
         source_inventory_sha256: loaded.snapshot.source_inventory_sha256.clone(),
         total_objects: loaded.snapshot.total_objects,
         total_plaintext_bytes: loaded.snapshot.total_plaintext_bytes,
+        total_ciphertext_bytes: loaded.snapshot.total_ciphertext_bytes,
+        descriptor_manifest_root_sha256: loaded.snapshot.manifest_root_sha256.clone(),
         next_descriptor_segment,
         next_intent_segment,
         disposition,
@@ -1507,6 +2547,9 @@ fn validate_referenced_segments(
     keys: &FrkSubkeys,
     core_id: &str,
 ) -> Result<(), PreparationError> {
+    let mut descriptor_count = 0_u64;
+    let mut descriptor_plaintext_total = 0_u64;
+    let mut descriptor_ciphertext_total = 0_u64;
     for reference in &snapshot.manifest_segments {
         let name = format!(
             "{:020}-{}.prep-manifest.acore",
@@ -1547,6 +2590,39 @@ fn validate_referenced_segments(
                 segment_index: reference.segment_index,
             });
         }
+        for descriptor in &record.descriptors {
+            if descriptor.preparation_ordinal != descriptor_count {
+                return Err(PreparationError::CorruptReferencedRecord {
+                    kind: PreparationReferenceKind::Descriptor,
+                    segment_index: reference.segment_index,
+                });
+            }
+            descriptor_count = descriptor_count.checked_add(1).ok_or(
+                PreparationError::CorruptReferencedRecord {
+                    kind: PreparationReferenceKind::Descriptor,
+                    segment_index: reference.segment_index,
+                },
+            )?;
+            descriptor_plaintext_total = descriptor_plaintext_total
+                .checked_add(descriptor.body_length)
+                .ok_or(PreparationError::CorruptReferencedRecord {
+                    kind: PreparationReferenceKind::Descriptor,
+                    segment_index: reference.segment_index,
+                })?;
+            descriptor_ciphertext_total = descriptor_ciphertext_total
+                .checked_add(descriptor.encoded_size)
+                .ok_or(PreparationError::CorruptReferencedRecord {
+                    kind: PreparationReferenceKind::Descriptor,
+                    segment_index: reference.segment_index,
+                })?;
+        }
+    }
+    if descriptor_count != u64::from(snapshot.total_objects)
+        || descriptor_plaintext_total != snapshot.total_plaintext_bytes
+        || descriptor_ciphertext_total != snapshot.total_ciphertext_bytes
+        || manifest_root(&snapshot.manifest_segments) != snapshot.manifest_root_sha256
+    {
+        return Err(PreparationError::CorruptSnapshot);
     }
     for reference in &snapshot.final_intent_segments {
         let name = format!(
@@ -1614,7 +2690,7 @@ fn read_referenced_record(
 }
 
 fn empty_manifest_root() -> String {
-    sha256_hex(b"anima-corefs-preparation-empty-manifest-v1\0")
+    manifest_root(&[])
 }
 
 fn unix_time_millis() -> Result<u64, PreparationError> {

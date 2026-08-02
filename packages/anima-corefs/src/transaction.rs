@@ -71,7 +71,8 @@ use crate::crypto::{
 };
 use crate::crypto::{FrkSubkeys, ObjectBaseAad, ObjectKind, SecretBytes};
 use crate::envelope::{
-    read_envelope, rotate_object_key_envelope, EnvelopeError, MAX_ENVELOPE_SIZE,
+    read_envelope, rotate_object_key_envelope, write_envelope, EnvelopeError, EnvelopeMetadata,
+    MAX_ENVELOPE_SIZE,
 };
 use crate::folders::PortableName;
 use crate::head::{decode_head, encode_head, HeadError, HeadRecord, MAX_HEAD_SIZE};
@@ -1943,6 +1944,72 @@ impl CoreCommitCoordinator {
         self.prepare_object_revision_with_hook(keys, object_key, aad, encrypted_object, &mut |_| {
             Ok(())
         })
+    }
+
+    pub(super) fn prepare_plaintext_object_revision_with_hook<R, H>(
+        &self,
+        keys: &FrkSubkeys,
+        object_key: &SecretBytes,
+        aad: &ObjectBaseAad,
+        metadata: &EnvelopeMetadata,
+        body: &mut R,
+        hook: &mut H,
+    ) -> Result<PreparedObjectRevision, CommitError>
+    where
+        R: Read,
+        H: FnMut(PublicationPhase) -> io::Result<()>,
+    {
+        self.validate_pinned_layout()?;
+        if aad.core_id() != self.core_id {
+            return Err(CommitError::InvalidObjectRevision);
+        }
+        let (mut staged, staged_name) =
+            create_temporary_in(&self.objects_dir, OsStr::new("object"))?;
+        hook(PublicationPhase::TemporaryCreated)?;
+        let result = (|| {
+            write_envelope(&mut staged, object_key, aad, metadata, body)?;
+            hook(PublicationPhase::PayloadWritten)?;
+            staged.sync_all()?;
+            hook(PublicationPhase::PayloadSynced)?;
+            staged.seek(SeekFrom::Start(0))?;
+            let (encoded_size, encrypted_hash) =
+                copy_bounded(&mut staged, &mut io::sink(), MAX_ENVELOPE_SIZE)?;
+            self.finalize_staged_object_revision(
+                keys,
+                object_key,
+                aad,
+                &mut staged,
+                &staged_name,
+                encoded_size,
+                encrypted_hash,
+                &mut |point| match point {
+                    CommitFailurePoint::Publication {
+                        target: PublicationTarget::Object,
+                        phase,
+                    } => hook(phase),
+                    _ => Ok(()),
+                },
+            )
+        })();
+        drop(staged);
+        if result.is_err() {
+            let _ = self.objects_dir.remove_file(&staged_name);
+        }
+        result
+    }
+
+    pub(super) fn validate_prepared_revision_file(
+        &self,
+        prepared: &PreparedObjectRevision,
+    ) -> Result<(), CommitError> {
+        validate_prepared_file(
+            &self.objects_dir,
+            prepared,
+            None,
+            #[cfg(test)]
+            None,
+        )?;
+        Ok(())
     }
 
     fn prepare_object_revision_with_hook<R, H>(

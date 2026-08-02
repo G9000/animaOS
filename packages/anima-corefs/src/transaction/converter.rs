@@ -13,7 +13,7 @@ use super::{
 };
 use crate::catalog::{
     CatalogClientMetadata, CatalogEntryCommon, CatalogError, CatalogGeneration,
-    CatalogGenerationEntry, CatalogObject, ObjectLifecycle, MAX_CATALOG_ENTRIES,
+    CatalogGenerationEntry, CatalogObject, ContentHash, ObjectLifecycle, MAX_CATALOG_ENTRIES,
 };
 use crate::crypto::{
     generate_object_dek, unwrap_object_dek, FrkSubkeys, ObjectBaseAad, ObjectKeyAad, ObjectKind,
@@ -81,6 +81,32 @@ pub struct ValidationBatchObject {
     pub references: Vec<String>,
     pub policy: ValidationBatchPolicy,
     pub metadata: BTreeMap<String, Value>,
+}
+
+pub(super) struct ConverterObjectMetadata<'a> {
+    pub(super) object_id: &'a str,
+    pub(super) revision: u64,
+    pub(super) object_key_epoch: u32,
+    pub(super) parent_id: &'a str,
+    pub(super) name: &'a str,
+    pub(super) kind: ObjectKind,
+    pub(super) content_type: &'a str,
+    pub(super) body_encoding: BodyEncoding,
+    pub(super) body_length: u64,
+    pub(super) content_sha256: &'a str,
+    pub(super) created_at: &'a str,
+    pub(super) updated_at: &'a str,
+    pub(super) source_character_count: Option<usize>,
+    pub(super) references: &'a [String],
+    pub(super) policy: ValidationBatchPolicy,
+    pub(super) stable_role: Option<&'a str>,
+    pub(super) graph_metadata: &'a BTreeMap<String, Value>,
+}
+
+pub(super) struct ConverterGraphObject<'a> {
+    pub(super) object_id: &'a str,
+    pub(super) parent_id: &'a str,
+    pub(super) references: &'a [String],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -566,25 +592,14 @@ fn validate_batch(
         validate_kind_and_content(object)?;
     }
 
-    let object_ids: BTreeSet<_> = batch
-        .objects
-        .iter()
-        .map(|item| item.stable_id.as_str())
-        .collect();
-    for object in &batch.objects {
-        if !folder_inputs.contains_key(&object.parent_id) {
-            return Err(ValidationBatchError::Invalid(
-                "object parent is not a folder",
-            ));
-        }
-        if object
-            .references
-            .iter()
-            .any(|reference| !object_ids.contains(reference.as_str()))
-        {
-            return Err(ValidationBatchError::Invalid("object reference is missing"));
-        }
-    }
+    validate_converter_graph_relationships(
+        folder_inputs.keys().map(String::as_str),
+        batch.objects.iter().map(|object| ConverterGraphObject {
+            object_id: &object.stable_id,
+            parent_id: &object.parent_id,
+            references: &object.references,
+        }),
+    )?;
 
     let mut effective = BTreeMap::new();
     let mut visiting = BTreeSet::new();
@@ -702,42 +717,26 @@ fn resolve_folder_policy<'a>(
 }
 
 fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), ValidationBatchError> {
-    let kind_limit = match object.kind {
-        ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note => MAX_WRITING_DOCUMENT_BYTES,
-        ObjectKind::Attachment => MAX_WRITING_ATTACHMENT_BYTES,
-        _ => 0,
-    };
-    if object.content.len() > kind_limit
-        || object.content.len() as u64 > MAX_BODY_LENGTH
-        || object.content_type.len() > 255
-        || object.created_at.len() > 128
-        || object.updated_at.len() > 128
-        || object.references.len() > MAX_CATALOG_ENTRIES
-    {
-        return Err(ValidationBatchError::Invalid(
-            "object metadata or body exceeds kind-specific converter limits",
-        ));
-    }
-    let valid = match object.kind {
-        ObjectKind::Diary => {
-            object.content_type == DIARY_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
-        }
-        ObjectKind::Draft => {
-            object.content_type == DRAFT_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
-        }
-        ObjectKind::Note => {
-            object.content_type == NOTE_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
-        }
-        ObjectKind::Attachment => {
-            !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Binary
-        }
-        _ => false,
-    };
-    if !valid || object.created_at.is_empty() || object.updated_at.is_empty() {
-        return Err(ValidationBatchError::Invalid(
-            "unsupported kind/content type/encoding",
-        ));
-    }
+    validate_converter_object_metadata(&ConverterObjectMetadata {
+        object_id: &object.stable_id,
+        revision: object.expected_revision.unwrap_or(1),
+        object_key_epoch: 1,
+        parent_id: &object.parent_id,
+        name: &object.name,
+        kind: object.kind,
+        content_type: &object.content_type,
+        body_encoding: object.body_encoding,
+        body_length: u64::try_from(object.content.len())
+            .map_err(|_| ValidationBatchError::Invalid("object body length overflow"))?,
+        content_sha256: &hex_digest(&object.content),
+        created_at: &object.created_at,
+        updated_at: &object.updated_at,
+        source_character_count: object.source_character_count,
+        references: &object.references,
+        policy: object.policy,
+        stable_role: None,
+        graph_metadata: &object.metadata,
+    })?;
     if matches!(
         object.kind,
         ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note
@@ -773,6 +772,131 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
         return Err(ValidationBatchError::Invalid(
             "binary attachment cannot declare a source character count",
         ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_converter_object_metadata(
+    object: &ConverterObjectMetadata<'_>,
+) -> Result<(), ValidationBatchError> {
+    OpaqueId::parse(object.object_id)
+        .map_err(|_| ValidationBatchError::Invalid("invalid object ID"))?;
+    OpaqueId::parse(object.parent_id)
+        .map_err(|_| ValidationBatchError::Invalid("invalid parent ID"))?;
+    PortableName::parse(object.name)
+        .map_err(|_| ValidationBatchError::Invalid("invalid object name"))?;
+    if object.revision == 0 || object.object_key_epoch == 0 {
+        return Err(ValidationBatchError::Invalid(
+            "object revision and key epoch must be positive",
+        ));
+    }
+    let kind_limit = u64::try_from(match object.kind {
+        ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note => MAX_WRITING_DOCUMENT_BYTES,
+        ObjectKind::Attachment => MAX_WRITING_ATTACHMENT_BYTES,
+        _ => 0,
+    })
+    .map_err(|_| ValidationBatchError::Invalid("object body limit overflow"))?;
+    if object.body_length > kind_limit
+        || object.body_length > MAX_BODY_LENGTH
+        || object.content_type.len() > 255
+        || object.created_at.is_empty()
+        || object.created_at.len() > 128
+        || object.updated_at.is_empty()
+        || object.updated_at.len() > 128
+        || object.references.len() > MAX_CATALOG_ENTRIES
+    {
+        return Err(ValidationBatchError::Invalid(
+            "object metadata or body exceeds kind-specific converter limits",
+        ));
+    }
+    let valid_format = match object.kind {
+        ObjectKind::Diary => {
+            object.content_type == DIARY_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Draft => {
+            object.content_type == DRAFT_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Note => {
+            object.content_type == NOTE_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Attachment => {
+            !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Binary
+        }
+        _ => false,
+    };
+    if !valid_format {
+        return Err(ValidationBatchError::Invalid(
+            "unsupported kind/content type/encoding",
+        ));
+    }
+    if matches!(
+        object.kind,
+        ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note
+    ) != object.source_character_count.is_some()
+    {
+        return Err(ValidationBatchError::Invalid(
+            "writing source character count presence is invalid",
+        ));
+    }
+    if object
+        .source_character_count
+        .is_some_and(|count| count > MAX_WRITING_BODY_CHARS)
+    {
+        return Err(ValidationBatchError::Invalid(
+            "writing source character count is invalid",
+        ));
+    }
+    ContentHash::parse(object.content_sha256)
+        .map_err(|_| ValidationBatchError::Invalid("invalid content hash"))?;
+    for reference in object.references {
+        OpaqueId::parse(reference)
+            .map_err(|_| ValidationBatchError::Invalid("invalid object reference ID"))?;
+    }
+    if object.policy == ValidationBatchPolicy::UserWrite {
+        return Err(ValidationBatchError::Invalid(
+            "descendant objects must inherit or deny policy",
+        ));
+    }
+    if let Some(role) = object.stable_role {
+        if !ALLOWED_ROLES.contains(&role) {
+            return Err(ValidationBatchError::Invalid("unsupported stable role"));
+        }
+        FolderRole::parse_existing(role)
+            .map_err(|_| ValidationBatchError::Invalid("invalid stable role"))?;
+    }
+    validation_metadata(object.graph_metadata)?;
+    Ok(())
+}
+
+pub(super) fn validate_converter_graph_relationships<'a, I>(
+    folder_ids: impl IntoIterator<Item = &'a str>,
+    objects: I,
+) -> Result<(), ValidationBatchError>
+where
+    I: Clone + IntoIterator<Item = ConverterGraphObject<'a>>,
+{
+    let folder_ids: BTreeSet<_> = folder_ids.into_iter().collect();
+    let object_ids: BTreeSet<_> = objects
+        .clone()
+        .into_iter()
+        .map(|object| object.object_id)
+        .collect();
+    if object_ids.len() != objects.clone().into_iter().count() {
+        return Err(ValidationBatchError::Invalid("duplicate stable ID"));
+    }
+    for object in objects.into_iter() {
+        if !folder_ids.contains(object.parent_id) {
+            return Err(ValidationBatchError::Invalid(
+                "object parent is not a folder",
+            ));
+        }
+        if object
+            .references
+            .iter()
+            .any(|reference| !object_ids.contains(reference.as_str()))
+        {
+            return Err(ValidationBatchError::Invalid("object reference is missing"));
+        }
     }
     Ok(())
 }
