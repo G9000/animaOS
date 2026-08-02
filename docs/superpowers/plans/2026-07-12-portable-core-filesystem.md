@@ -489,6 +489,8 @@ PCF-005 are dependency-eligible but remain unclaimed in backlog.
 **Ticket:** `PCF-004`  
 **Depends on:** `PCF-003`
 
+> **Approved protocol follow-up:** The bounded, crash-resumable preparation work needed to complete this slice is specified in `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md` and sequenced in `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`. That dedicated plan supersedes the aggregate whole-corpus transport described in Step 3 below; all other Task 4 product acceptance remains in force.
+
 **Files:**
 - Modify: `packages/anima-corefs/src/id.rs`
 - Modify: `packages/anima-corefs/src/logical/mod.rs`

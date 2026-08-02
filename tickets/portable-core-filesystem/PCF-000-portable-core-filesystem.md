@@ -9,8 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
+- PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 17:28 MYT
+- Updated: 2026-08-02 18:45 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -336,6 +337,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-02 17:10 MYT - The user approved PCF-004's recommended authenticated persistent preparation protocol, clearing the decision blocker. The child and parent row returned to `in_progress`, the original child `Started:` timestamp is preserved, and the new written design is undergoing independent review before the required user document-approval and implementation-plan gates.
 - 2026-08-02 17:24 MYT - PCF-004's first independent written-spec audit rejected six material protocol gaps rather than generating style churn. The child design now closes the source-seal race, descriptor-snapshot scaling error, ciphertext-validation wording conflict, abandonment recovery seam, corrupt-preparation rotation deadlock, and whole-graph PyO3 reuse risk; the parent row remains `in_progress` pending focused re-review and user document approval.
 - 2026-08-02 17:28 MYT - PCF-004's focused re-review reduced the design to two residual contradictions, now repaired: the active snapshot references rather than embeds segmented final intent, and corrupt pointer bytes move only into a Core-global hash-addressed quarantine. The final pass/fail re-check approved `70f247a9`; parent and child remain `in_progress` pending user approval of the reviewed document.
+- 2026-08-02 18:45 MYT - The user approved PCF-004's independently reviewed resumable-preparation design. The child now has a dedicated test-first implementation plan covering the native durable protocol, bounded PyO3 API, transactional SQLCipher source generation/fence, streaming Python orchestration, and final independent implementation review. Parent and child remain `in_progress`; no implementation or authority transition occurs until the reviewed-plan execution handoff.
 
 ## Validation
 

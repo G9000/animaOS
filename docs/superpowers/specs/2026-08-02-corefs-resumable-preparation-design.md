@@ -1,7 +1,7 @@
 # CoreFS Resumable Preparation Design
 
 **Date:** 2026-08-02
-**Status:** Independently reviewed — pending user approval
+**Status:** Approved — independent review and user approval complete
 **Scope:** Add a bounded-memory, crash-resumable preparation protocol for large inactive CoreFS validation catalogs without weakening single-generation atomic publication
 **Parent design:** [Portable Core Filesystem Design](2026-07-12-portable-core-filesystem-design.md)
 **PRD:** [Portable Core Filesystem v1](../../prds/portable-core-filesystem-v1.md)
