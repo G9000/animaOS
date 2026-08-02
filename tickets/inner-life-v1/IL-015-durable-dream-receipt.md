@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 14:04 MYT
+- Updated: 2026-08-02 14:37 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -100,15 +100,34 @@ is its own ticket:
   rather than voicing it. Boundary verified in both directions: the client
   stops showing its copy no LATER than the server starts re-offering.
 
+- 2026-08-02 14:37 MYT - PR #135 review round 3 (P1, Codex): round 2 made the client
+  decide "is this dream still mine to voice?" by comparing a server
+  timestamp against the DEVICE clock. That is check-then-act against a clock
+  the server does not control — a skewed device or a render delayed past the
+  deadline concludes "still mine" after the claim lapsed and another channel
+  took the dream. The ack was also unscoped, so a stale client could mark the
+  dream surfaced and clear a NEWER greeting's claim mid-disclosure. Both are
+  now claim-scoped: `claimed_at` doubles as a claim-generation token, the
+  greeting hands it to the client (`ambientDreamClaimToken`), and
+  `POST /chat/greeting/dream-claim` re-asserts it atomically immediately
+  before voicing — renewing the claim rather than surfacing it, so a client
+  that dies before painting still loses nothing. Any uncertain answer (no
+  token, locally expired, refused, request failed) voices the dream-free
+  copy; a missing `handoffMessage` blanks the greeting rather than leaking
+  the sentence. `acknowledge_dream` now requires the token too, so a
+  superseded ack is a no-op that leaves the live claim intact. The local
+  expiry check stays as a cheap pre-filter and as storage hygiene, but it is
+  no longer load-bearing for correctness.
+
 ## Validation
 
 - Commands:
-  - `pytest tests/test_inner_life_ambient_dream.py` — 34 passed (2026-08-02 14:04 MYT)
+  - `pytest tests/test_inner_life_ambient_dream.py` — 39 passed (2026-08-02 14:37 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full server suite (`pytest tests/ -p no:randomly`) — **3366 passed,
-    0 failed, 2 skipped, 11 deselected** in 18m05s, run 2026-08-02 14:22 MYT
-  - `bun test tests/` (apps/desktop) — 118 passed, 0 failed (2026-08-02 14:04 MYT)
+  - Full server suite (`pytest tests/ -p no:randomly`) — **3371 passed,
+    0 failed, 2 skipped, 11 deselected** in 14m38s, run 2026-08-02 14:52 MYT
+  - `bun test tests/` (apps/desktop) — 125 passed, 0 failed (2026-08-02 14:37 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`

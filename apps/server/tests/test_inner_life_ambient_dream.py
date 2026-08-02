@@ -564,13 +564,19 @@ def test_optout_between_recheck_and_append_cannot_voice_the_dream(
 
 def test_acknowledgement_surfaces_the_dream_and_clears_the_claim(soul_db) -> None:
     """The client's receipt is what makes surfacing durable."""
-    from anima_server.services.agent.inner_life.dream_receipt import acknowledge_dream
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
 
     user_id = _seed(soul_db)
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
 
-    assert acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id) is True
+    assert acknowledge_dream(
+        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+    ) is True
     soul_db.commit()
     row = soul_db.scalars(select(DreamJournal)).one()
     assert row.surfaced is True
@@ -580,18 +586,30 @@ def test_acknowledgement_surfaces_the_dream_and_clears_the_claim(soul_db) -> Non
 def test_acknowledgement_is_idempotent_and_ownership_scoped(soul_db) -> None:
     """A retried ack, or one for someone else's dream, is a no-op — the
     client acks best-effort and must not be penalised for retrying."""
-    from anima_server.services.agent.inner_life.dream_receipt import acknowledge_dream
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
 
     user_id = _seed(soul_db)
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
-    assert acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id) is True
+    assert acknowledge_dream(
+        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+    ) is True
     soul_db.commit()
 
     # Second ack: already surfaced, nothing to do.
-    assert acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id) is False
+    assert acknowledge_dream(
+        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+    ) is False
     # Another user's ack must never touch this row.
-    assert acknowledge_dream(soul_db, user_id=user_id + 99, dream_id=claim.dream_id) is False
+    assert acknowledge_dream(
+        soul_db, user_id=user_id + 99, dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+    ) is False
     soul_db.commit()
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is True
 
@@ -625,12 +643,18 @@ def test_acknowledged_dream_is_never_offered_again_even_after_the_ttl(soul_db) -
     """Expiry must only rescue UNDELIVERED dreams — a dream the user
     actually saw stays gone, however much time passes."""
     from anima_server.config import settings
-    from anima_server.services.agent.inner_life.dream_receipt import acknowledge_dream
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
 
     user_id = _seed(soul_db)
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
-    acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id)
+    acknowledge_dream(
+        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+    )
     soul_db.commit()
 
     row = soul_db.scalars(select(DreamJournal)).one()
@@ -718,12 +742,18 @@ def test_acknowledged_dream_is_invisible_to_the_initiative_path(soul_db) -> None
     """The converse: a dream the ambient channel actually delivered must
     never be re-voiced as an initiative."""
     from anima_server.services.agent.inner_life import initiative as il
-    from anima_server.services.agent.inner_life.dream_receipt import acknowledge_dream
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
 
     user_id = _seed(soul_db)
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
-    acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id)
+    acknowledge_dream(
+        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+    )
     soul_db.commit()
 
     assert (
@@ -766,6 +796,23 @@ def test_greeting_states_when_its_claim_expires(
         claimed_at = claimed_at.replace(tzinfo=UTC)
     assert expires_at == claimed_at + ttl
     assert before + ttl <= expires_at <= datetime.now(UTC) + ttl
+    # The token names THIS claim generation, so the client can confirm and
+    # acknowledge against the exact row state it was handed.
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_token,
+        confirm_claim,
+    )
+
+    assert result.ambient_dream_claim_token == claim_token(claimed_at)
+    assert (
+        confirm_claim(
+            soul_db,
+            user_id=user_id,
+            dream_id=result.ambient_dream_id,
+            token=result.ambient_dream_claim_token,
+        )
+        is not None
+    )
 
 
 def test_expiry_is_the_same_instant_the_server_re_offers_the_dream(soul_db) -> None:
@@ -806,6 +853,7 @@ def test_no_dream_means_no_expiry(soul_db, monkeypatch: pytest.MonkeyPatch) -> N
     user_id = _seed(soul_db, dream_sharing="off")
     result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
     assert result.ambient_dream_expires_at is None
+    assert result.ambient_dream_claim_token is None
 
 
 def test_released_claim_reports_no_expiry(
@@ -833,4 +881,200 @@ def test_released_claim_reports_no_expiry(
 
     assert result.ambient_dream_id is None
     assert result.ambient_dream_expires_at is None
+    assert result.ambient_dream_claim_token is None
     assert "boat you restored" not in result.message
+
+
+def test_confirm_renews_a_live_claim_and_hands_back_a_new_token(soul_db) -> None:
+    """The client asks the row itself, not its own clock, whether the dream
+    is still its to voice (PR #135 review, P1)."""
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_expires_at,
+        claim_token,
+        confirm_claim,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    token = claim_token(claim.claimed_at)
+
+    confirmed = confirm_claim(
+        soul_db, user_id=user_id, dream_id=claim.dream_id, token=token
+    )
+    soul_db.commit()
+    assert confirmed is not None
+    # Renewed, NOT surfaced: a client that dies before painting loses nothing.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    assert row.surfaced is False
+    assert confirmed.token != token
+    assert confirmed.expires_at > claim_expires_at(claim.claimed_at)
+    # The old token is spent — a replay of the pre-confirm state cannot voice.
+    assert (
+        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
+        is None
+    )
+
+
+def test_confirm_refuses_a_claim_the_server_already_re_offered(soul_db) -> None:
+    """THE duplicate-disclosure guard. A stashed greeting whose claim lapsed
+    while the user was away — and which a second greeting has since claimed —
+    must not voice its copy, however the device clock reads."""
+    from anima_server.config import settings
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_token,
+        confirm_claim,
+    )
+
+    user_id = _seed(soul_db)
+    first = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert first is not None
+    stale_token = claim_token(first.claimed_at)
+
+    # The user never saw it; the claim lapses and a later greeting takes it.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.claimed_at = datetime.now(UTC) - timedelta(
+        minutes=settings.dream_claim_ttl_minutes + 1
+    )
+    soul_db.commit()
+    second = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert second is not None
+    second_token = claim_token(second.claimed_at)
+    assert second_token != stale_token
+
+    # The first client returns and tries to voice its copy: refused.
+    assert (
+        confirm_claim(
+            soul_db, user_id=user_id, dream_id=first.dream_id, token=stale_token
+        )
+        is None
+    )
+    # And the live claim is untouched — the second greeting still owns it.
+    assert (
+        confirm_claim(
+            soul_db, user_id=user_id, dream_id=second.dream_id, token=second_token
+        )
+        is not None
+    )
+
+
+def test_a_stale_ack_cannot_surface_the_dream_or_clear_a_newer_claim(soul_db) -> None:
+    """Regression (PR #135 review, P1): the ack used to check only
+    user/id/surfaced, so a client whose claim had lapsed could mark the dream
+    surfaced and wipe the claim of the greeting currently disclosing it."""
+    from anima_server.config import settings
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+    )
+
+    user_id = _seed(soul_db)
+    first = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert first is not None
+    stale_token = claim_token(first.claimed_at)
+
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.claimed_at = datetime.now(UTC) - timedelta(
+        minutes=settings.dream_claim_ttl_minutes + 1
+    )
+    soul_db.commit()
+    second = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert second is not None
+
+    assert (
+        acknowledge_dream(
+            soul_db, user_id=user_id, dream_id=first.dream_id, token=stale_token
+        )
+        is False
+    )
+    soul_db.commit()
+    row = soul_db.scalars(select(DreamJournal)).one()
+    assert row.surfaced is False  # not consumed by the stale client
+    assert row.claimed_at is not None  # the live claim survives
+    # The current holder can still complete its own receipt.
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id,
+            dream_id=second.dream_id,
+            token=claim_token(second.claimed_at),
+        )
+        is True
+    )
+
+
+def test_confirm_refuses_after_acknowledgement_and_on_garbage_tokens(soul_db) -> None:
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+        confirm_claim,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    token = claim_token(claim.claimed_at)
+
+    assert (
+        confirm_claim(
+            soul_db, user_id=user_id, dream_id=claim.dream_id, token="not-a-timestamp"
+        )
+        is None
+    )
+    assert (
+        confirm_claim(
+            soul_db, user_id=user_id + 99, dream_id=claim.dream_id, token=token
+        )
+        is None
+    )
+    acknowledge_dream(
+        soul_db, user_id=user_id, dream_id=claim.dream_id, token=token
+    )
+    soul_db.commit()
+    # Acknowledged dreams are gone for good — no confirmation revives them.
+    assert (
+        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
+        is None
+    )
+
+
+def test_confirming_extends_the_window_the_dream_stays_unofferable(soul_db) -> None:
+    """Renewal is what makes the confirm safe to do before rendering: the
+    caller gets a fresh TTL, so a slow paint cannot race its own deadline."""
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_expires_at,
+        claim_token,
+        confirm_claim,
+        offerable_dream_query,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    original_deadline = claim_expires_at(claim.claimed_at)
+
+    confirmed = confirm_claim(
+        soul_db,
+        user_id=user_id,
+        dream_id=claim.dream_id,
+        token=claim_token(claim.claimed_at),
+        now=original_deadline - timedelta(seconds=1),
+    )
+    soul_db.commit()
+    assert confirmed is not None
+    # Past the ORIGINAL deadline the dream would have been offerable; the
+    # renewal keeps it held.
+    assert (
+        soul_db.scalars(
+            offerable_dream_query(user_id, now=original_deadline + timedelta(minutes=1))
+        ).first()
+        is None
+    )
+    assert (
+        soul_db.scalars(
+            offerable_dream_query(
+                user_id, now=confirmed.expires_at + timedelta(microseconds=1)
+            )
+        ).first()
+        is not None
+    )

@@ -26,6 +26,7 @@ from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
 from anima_server.services.agent.inner_life.dream_receipt import (
     claim_cutoff,
     claim_expires_at,
+    claim_token,
     offerable_dream_query,
     release_claim,
 )
@@ -101,6 +102,11 @@ class GreetingResult:
     # offer the same narrative again, and replaying the stored one would
     # disclose the dream twice.
     ambient_dream_expires_at: datetime | None = None
+    # IL-015 (PR #135 review, P1): names THIS claim generation. The client
+    # returns it to confirm the dream is still its to voice (the local
+    # deadline above is only a hint — it is measured against the device
+    # clock) and to acknowledge receipt without disturbing a newer claim.
+    ambient_dream_claim_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -356,6 +362,7 @@ def _finalize_ambient_dream(
                 handoff_message=message,
                 dream_id=claim.dream_id,
                 expires_at=claim_expires_at(claim.claimed_at),
+                claim_token=claim_token(claim.claimed_at),
             )
         _release_ambient_dream_claim(db, dream_id=claim.dream_id)
         logger.info(
@@ -410,6 +417,7 @@ class _VoicedDream:
     handoff_message: str | None = None
     dream_id: int | None = None
     expires_at: datetime | None = None
+    claim_token: str | None = None
 
 
 def _release_ambient_dream_claim(db: Session, *, dream_id: int) -> None:
@@ -1200,6 +1208,7 @@ async def generate_greeting(
             handoff_message=voiced.handoff_message,
             ambient_dream_id=voiced.dream_id,
             ambient_dream_expires_at=voiced.expires_at,
+            ambient_dream_claim_token=voiced.claim_token,
         )
 
     # Build the LLM prompt with available context
@@ -1348,6 +1357,7 @@ async def generate_greeting(
             return GreetingResult(
                 ambient_dream_id=voiced.dream_id,
                 ambient_dream_expires_at=voiced.expires_at,
+                ambient_dream_claim_token=voiced.claim_token,
                 message=voiced.message,
                 context=voiced.ctx,
                 llm_generated=True,
@@ -1370,6 +1380,7 @@ async def generate_greeting(
         handoff_message=voiced.handoff_message,
         ambient_dream_id=voiced.dream_id,
         ambient_dream_expires_at=voiced.expires_at,
+        ambient_dream_claim_token=voiced.claim_token,
     )
 
 

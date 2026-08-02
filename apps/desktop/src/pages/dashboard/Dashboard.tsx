@@ -28,12 +28,12 @@ import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
   clearOneShotGreetings,
-  dreamClaimExpired,
   getCachedGreeting,
   peekOneShotGreeting,
   setCachedGreeting,
   stashOneShotGreeting,
   takeOneShotGreeting,
+  voiceableGreeting,
 } from "../../lib/greetingCache";
 import { buildMemoryImages } from "../../lib/image-memories";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
@@ -133,25 +133,20 @@ export default function Dashboard() {
     // expires server-side and the dream is offered again, which is exactly
     // what should happen if the user never saw it. Best-effort: a failed ack
     // just means the dream returns later.
+    // IL-015 (PR #135 review, P1): never voice a dream on the strength of
+    // the device clock alone — confirm the claim against the row itself,
+    // and show the dream-free copy on any uncertain answer.
+    const voiceable = (g: Greeting) =>
+      voiceableGreeting(g, (dreamId, claimToken) =>
+        api.chat.confirmGreetingDreamClaim(user.id, dreamId, claimToken),
+      );
     const ackIfDream = (g: Greeting) => {
-      if (g.ambientDream && g.ambientDreamId != null) {
-        void api.chat.ackGreetingDream(user.id, g.ambientDreamId).catch(() => {});
+      if (g.ambientDream && g.ambientDreamId != null && g.ambientDreamClaimToken) {
+        void api.chat
+          .ackGreetingDream(user.id, g.ambientDreamId, g.ambientDreamClaimToken)
+          .catch(() => {});
       }
     };
-    // IL-015 (PR #135 review): a claim that expired before its response
-    // landed may already have been re-offered elsewhere, so this copy must
-    // not voice the dream. `handoffMessage` is the same greeting without
-    // the dream sentence — show that instead of nothing.
-    const withVoiceableDream = (g: Greeting): Greeting =>
-      dreamClaimExpired(g)
-        ? {
-            ...g,
-            message: g.handoffMessage ?? g.message,
-            ambientDream: false,
-            ambientDreamId: null,
-            handoffMessage: null,
-          }
-        : g;
     const fetchGreeting = () => {
       const cached = getCachedGreeting(user.id);
       if (cached) {
@@ -166,7 +161,7 @@ export default function Dashboard() {
       const originUnlockToken = getUnlockToken();
       api.chat
         .greeting(user.id)
-        .then((g) => {
+        .then(async (g) => {
           if (!active) {
             // The dream inside is CLAIMED server-side — hand it to the next
             // mount instead of discarding it (PR #130 review). The stash
@@ -176,7 +171,15 @@ export default function Dashboard() {
             }
             return;
           }
-          const shown = withVoiceableDream(g);
+          const shown = await voiceable(g);
+          // Unmounted while confirming: the claim was renewed, so hand the
+          // confirmed copy to the next mount rather than dropping it.
+          if (!active) {
+            if (shown.ambientDream) {
+              stashOneShotGreeting(user.id, shown, originUnlockToken);
+            }
+            return;
+          }
           setBrief(shown);
           ackIfDream(shown);
           setCachedGreeting(user.id, shown);
@@ -221,8 +224,11 @@ export default function Dashboard() {
           }
           const oneShot = takeOneShotGreeting(user.id);
           if (oneShot) {
-            setBrief(oneShot);
-            ackIfDream(oneShot);
+            void voiceable(oneShot).then((shown) => {
+              if (!active) return;
+              setBrief(shown);
+              ackIfDream(shown);
+            });
             return;
           }
           // The stash expired between the peek and the take (its claim went

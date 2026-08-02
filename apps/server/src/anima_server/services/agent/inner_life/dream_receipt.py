@@ -15,6 +15,11 @@ user. This module removes the trade instead of choosing a side:
 - An unacknowledged claim EXPIRES after ``dream_claim_ttl_minutes``. Only
   then does the dream become offerable again, so the re-offer window is
   bounded and only opens for greetings that demonstrably never landed.
+- Because a claim can expire and be RE-taken by a different greeting, a
+  client about to voice a dream first CONFIRMS its claim generation
+  (``confirm_claim``) rather than trusting its own clock. Confirmation is
+  the atomic form of "is this still my dream to speak?", and both it and
+  the acknowledgement are scoped to the claim token the client holds.
 
 The asymmetry is deliberate: a lost acknowledgement costs one repeat after
 the TTL, while a lost claim-expiry would cost permanent silence. Repeating
@@ -27,6 +32,7 @@ same problem for initiatives.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -72,23 +78,102 @@ def offerable_dream_query(user_id: int, *, now: datetime | None = None):
     )
 
 
-def acknowledge_dream(
-    db: Session, *, user_id: int, dream_id: int, now: datetime | None = None
-) -> bool:
-    """Record that the client actually received and rendered the dream.
+def claim_token(claimed_at: datetime) -> str:
+    """Opaque handle naming ONE claim generation on a dream row.
 
-    Idempotent and ownership-checked: acknowledging twice, or acknowledging
-    another user's dream, is a no-op returning False. Sets ``surfaced`` (the
-    durable marker every other consumer reads) and clears ``claimed_at`` so
-    no expiry logic ever revisits the row.
+    A dream can be claimed, expire, and be claimed again by a different
+    greeting, so "dream 42" does not identify whose turn it is to voice it
+    (PR #135 review, P1). ``claimed_at`` does — every claim writes a fresh
+    instant — so the timestamp itself is the generation marker. Normalised
+    to UTC before serialising so the string a client returns compares equal
+    to the stored value.
     """
-    del now  # accepted for symmetry with the rest of the module
+    reference = (
+        claimed_at if claimed_at.tzinfo is not None else claimed_at.replace(tzinfo=UTC)
+    )
+    return reference.astimezone(UTC).isoformat()
+
+
+def _parse_claim_token(token: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class ConfirmedClaim:
+    """A claim re-asserted for the caller, with its refreshed deadline."""
+
+    token: str
+    expires_at: datetime
+
+
+def confirm_claim(
+    db: Session, *, user_id: int, dream_id: int, token: str, now: datetime | None = None
+) -> ConfirmedClaim | None:
+    """Re-assert a claim at the moment the client is about to VOICE it.
+
+    The client's own expiry check is a check-then-act against a clock the
+    server does not control: a skewed device, or a render delayed past the
+    deadline, can decide "still mine" after the server has already re-offered
+    the dream elsewhere — and the same narrative gets disclosed twice (PR
+    #135 review, P1). This is the atomic version of that question. It
+    succeeds only while the row still carries THIS claim generation and has
+    not been acknowledged, and it renews the claim in the same statement, so
+    the caller's render is covered by a fresh TTL.
+
+    Returns the renewed claim, or None when it is stale — the caller must
+    then voice the dream-free copy instead. Renewing rather than surfacing
+    keeps IL-015's guarantee intact: a client that dies between confirming
+    and painting loses nothing, because the renewed claim simply expires and
+    the dream is offered again.
+    """
+    claimed_at = _parse_claim_token(token)
+    if claimed_at is None:
+        return None
+    renewed_at = now or datetime.now(UTC)
     result = db.execute(
         update(DreamJournal)
         .where(
             DreamJournal.id == dream_id,
             DreamJournal.user_id == user_id,
             DreamJournal.surfaced.is_(False),
+            DreamJournal.claimed_at == claimed_at,
+        )
+        .values(claimed_at=renewed_at)
+    )
+    if result.rowcount != 1:
+        return None
+    return ConfirmedClaim(
+        token=claim_token(renewed_at), expires_at=claim_expires_at(renewed_at)
+    )
+
+
+def acknowledge_dream(
+    db: Session, *, user_id: int, dream_id: int, token: str
+) -> bool:
+    """Record that the client actually received and rendered the dream.
+
+    Idempotent, ownership-checked and CLAIM-scoped: acknowledging twice,
+    acknowledging another user's dream, or acknowledging with a superseded
+    claim token is a no-op returning False. The token matters (PR #135
+    review): without it a stale client could mark a dream surfaced and clear
+    a NEWER greeting's claim, hijacking a disclosure in flight. Sets
+    ``surfaced`` (the durable marker every other consumer reads) and clears
+    ``claimed_at`` so no expiry logic ever revisits the row.
+    """
+    claimed_at = _parse_claim_token(token)
+    if claimed_at is None:
+        return False
+    result = db.execute(
+        update(DreamJournal)
+        .where(
+            DreamJournal.id == dream_id,
+            DreamJournal.user_id == user_id,
+            DreamJournal.surfaced.is_(False),
+            DreamJournal.claimed_at == claimed_at,
         )
         .values(surfaced=True, claimed_at=None)
     )

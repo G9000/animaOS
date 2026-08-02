@@ -750,6 +750,12 @@ export interface Greeting {
   // `api.chat.ackGreetingDream` once this greeting has actually been shown,
   // otherwise the claim expires and the dream is offered again.
   ambientDreamId?: number | null;
+  // IL-015: names the claim generation behind this greeting. Return it to
+  // `confirmGreetingDreamClaim` before voicing the dream, and to
+  // `ackGreetingDream` afterwards — a dream can be claimed, expire, and be
+  // re-claimed by a later greeting, so the id alone does not say whose turn
+  // it is to speak.
+  ambientDreamClaimToken?: string | null;
   // IL-015: ISO timestamp at which the server-side claim goes stale. A stored
   // copy of this greeting MUST NOT be displayed after it — past this instant
   // the same dream may be offered again through another channel, and showing

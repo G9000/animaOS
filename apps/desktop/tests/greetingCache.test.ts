@@ -5,7 +5,9 @@ import { setUnlockToken, clearUnlockToken } from "../src/lib/api";
 import {
   ambientConsentAllows,
   dreamClaimExpired,
+  dreamFreeGreeting,
   ONESHOT_FALLBACK_TTL_MS,
+  voiceableGreeting,
   getCachedGreeting,
   peekOneShotGreeting,
   purgeGreetingStorage,
@@ -223,5 +225,101 @@ describe("stashed dreams die with their server claim (PR #135 review)", () => {
     // A plain greeting carries no claim, so it never expires — even if some
     // stale expiry field rode along.
     expect(dreamClaimExpired(greeting({ ambientDreamExpiresAt: past }))).toBe(false);
+  });
+});
+
+describe("confirming the claim before voicing (PR #135 review round 3)", () => {
+  const realNow = Date.now;
+  const T0 = 1_800_000_000_000;
+  const dreamy = (overrides: Partial<Greeting> = {}) =>
+    greeting({
+      message: "hi there. I dreamt about something recently.",
+      handoffMessage: "hi there.",
+      ambientDream: true,
+      ambientDreamId: 42,
+      ambientDreamClaimToken: "2026-08-02T06:00:00+00:00",
+      ambientDreamExpiresAt: new Date(T0 + 600_000).toISOString(),
+      ...overrides,
+    });
+  const ok = (token: string) => ({
+    confirmed: true,
+    claimToken: token,
+    expiresAt: new Date(T0 + 900_000).toISOString(),
+  });
+  const refused = { confirmed: false, claimToken: null, expiresAt: null };
+
+  beforeEach(() => {
+    Date.now = () => T0;
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  test("a confirmed claim is voiced and carries the RENEWED token", async () => {
+    const shown = await voiceableGreeting(dreamy(), async () => ok("renewed"));
+    expect(shown.ambientDream).toBe(true);
+    expect(shown.message).toContain("I dreamt");
+    // The ack must use the renewed token, not the spent one.
+    expect(shown.ambientDreamClaimToken).toBe("renewed");
+    expect(shown.ambientDreamExpiresAt).toBe(new Date(T0 + 900_000).toISOString());
+  });
+
+  test("a refused claim degrades to the dream-free copy", async () => {
+    // The server has re-offered this dream to another channel; voicing the
+    // stored copy would disclose the same narrative twice.
+    const shown = await voiceableGreeting(dreamy(), async () => refused);
+    expect(shown.ambientDream).toBe(false);
+    expect(shown.message).toBe("hi there.");
+    expect(shown.ambientDreamId).toBeNull();
+    expect(shown.ambientDreamClaimToken).toBeNull();
+  });
+
+  test("a failed confirmation degrades rather than guessing", async () => {
+    const shown = await voiceableGreeting(dreamy(), async () => {
+      throw new Error("offline");
+    });
+    expect(shown.ambientDream).toBe(false);
+    expect(shown.message).toBe("hi there.");
+  });
+
+  test("a locally expired greeting never even asks", async () => {
+    let asked = false;
+    const shown = await voiceableGreeting(
+      dreamy({ ambientDreamExpiresAt: new Date(T0 - 1).toISOString() }),
+      async () => {
+        asked = true;
+        return ok("renewed");
+      },
+    );
+    expect(asked).toBe(false);
+    expect(shown.ambientDream).toBe(false);
+  });
+
+  test("a dream with no claim token cannot be voiced", async () => {
+    const shown = await voiceableGreeting(
+      dreamy({ ambientDreamClaimToken: null }),
+      async () => ok("renewed"),
+    );
+    expect(shown.ambientDream).toBe(false);
+  });
+
+  test("an ordinary greeting is passed through untouched and unasked", async () => {
+    let asked = false;
+    const plain = greeting({ message: "morning" });
+    const shown = await voiceableGreeting(plain, async () => {
+      asked = true;
+      return ok("renewed");
+    });
+    expect(asked).toBe(false);
+    expect(shown).toEqual(plain);
+  });
+
+  test("a missing dream-free copy blanks the greeting rather than leaking it", async () => {
+    // The server always sends handoffMessage alongside a dream, so its
+    // absence is a bug — and the safe failure is an empty greeting, never
+    // the dream sentence we just decided not to voice.
+    const shown = dreamFreeGreeting(dreamy({ handoffMessage: null }));
+    expect(shown.message).toBe("");
+    expect(shown.ambientDream).toBe(false);
   });
 });

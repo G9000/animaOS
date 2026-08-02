@@ -228,3 +228,68 @@ export function ambientConsentAllows(config: {
   return config.enabled !== false && config.dreamSharing === "ambient";
 }
 
+
+/** Server's answer to "is this dream still mine to voice?" */
+export type DreamClaimConfirmation = {
+  confirmed: boolean;
+  claimToken: string | null;
+  expiresAt: string | null;
+};
+
+/** The same greeting with its dream removed — `handoffMessage` is the copy
+ * the server built without the dream sentence.
+ *
+ * Falls back to an EMPTY message rather than the original when the
+ * dream-free copy is missing: the server always sends one alongside a
+ * dream, so its absence is a bug, and a visibly empty greeting is a much
+ * better failure than re-voicing intimate content we just decided not to
+ * voice. */
+export function dreamFreeGreeting(greeting: Greeting): Greeting {
+  return {
+    ...greeting,
+    message: greeting.handoffMessage ?? "",
+    ambientDream: false,
+    ambientDreamId: null,
+    ambientDreamClaimToken: null,
+    handoffMessage: null,
+  };
+}
+
+/**
+ * Decide what a greeting may actually say, immediately before showing it
+ * (IL-015 / PR #135 review, P1).
+ *
+ * The local expiry check compares a server timestamp against the DEVICE
+ * clock, so it can be wrong in the unsafe direction: a skewed clock or a
+ * render delayed past the deadline concludes "still mine" after the claim
+ * lapsed and another channel took the dream, and the same intimate
+ * narrative gets disclosed twice. `confirm` asks the row itself, atomically.
+ *
+ * Every uncertain answer — no token, locally expired, refused, or a failed
+ * request — degrades to the dream-free copy. Silence costs nothing here:
+ * an unconfirmed dream is not consumed, so it comes back later. On success
+ * the greeting carries the RENEWED token, which the acknowledgement then
+ * uses so a stale client cannot clear a newer claim.
+ */
+export async function voiceableGreeting(
+  greeting: Greeting,
+  confirm: (
+    dreamId: number,
+    claimToken: string,
+  ) => Promise<DreamClaimConfirmation>,
+): Promise<Greeting> {
+  if (!greeting.ambientDream || greeting.ambientDreamId == null) return greeting;
+  const token = greeting.ambientDreamClaimToken;
+  if (!token || dreamClaimExpired(greeting)) return dreamFreeGreeting(greeting);
+  try {
+    const answer = await confirm(greeting.ambientDreamId, token);
+    if (!answer.confirmed || !answer.claimToken) return dreamFreeGreeting(greeting);
+    return {
+      ...greeting,
+      ambientDreamClaimToken: answer.claimToken,
+      ambientDreamExpiresAt: answer.expiresAt,
+    };
+  } catch {
+    return dreamFreeGreeting(greeting);
+  }
+}
