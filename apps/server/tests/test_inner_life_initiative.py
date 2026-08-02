@@ -61,7 +61,7 @@ from anima_server.services.agent.inner_life.initiative import (
 )
 from anima_server.services.presence_config import get_or_create_presence_config
 from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -3404,3 +3404,62 @@ def test_initiative_surfaces_the_dream_it_voiced_not_the_next_one(
     # never spoken and must still be waiting its turn.
     assert rows["the newer dream"] is True
     assert rows["the older dream"] is False
+
+
+def test_initiative_abandons_a_dream_a_greeting_claimed_mid_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (PR #135 review, P1): the initiative held NO reservation
+    while the model generated, which takes seconds. A greeting arriving in
+    that window could claim the same narrative; the post-delivery marker
+    correctly refused to steal the live claim, but by then the initiative
+    had already been delivered — so both channels voiced the same intimate
+    dream. The reservation now happens before delivery, and losing it
+    abandons the fire instead."""
+    from anima_server.models import DreamJournal
+
+    soul_engine = _create_soul_engine()
+    runtime_engine = _create_runtime_engine()
+    soul_factory = _make_factory(soul_engine)
+    runtime_factory = _make_factory(runtime_engine)
+
+    with soul_factory() as db_:
+        db_.add(
+            DreamJournal(
+                user_id=1, narrative="the contested dream", share_worthy=True,
+                surfaced=False, source_refs={}, affect_delta={},
+                dreamt_at=datetime(2026, 1, 2, tzinfo=UTC),
+            )
+        )
+        cfg = get_or_create_presence_config(db_, 1)
+        cfg.dream_sharing = "ambient"
+        db_.commit()
+
+    _seed_enabled_user(soul_factory, runtime_factory, pressures={"dream_residue": 0.9})
+
+    async def fake_generate(soul_db, *, user_id, decision, material, affect_line):
+        # A greeting claims the same dream while the model is still working.
+        soul_db.execute(
+            update(DreamJournal)
+            .where(DreamJournal.narrative == material)
+            .values(claimed_at=datetime(2026, 1, 3, 7, 59, 30, tzinfo=UTC))
+        )
+        soul_db.flush()
+        return f"about: {material}"
+
+    monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
+    tick_initiative_for_user(
+        soul_factory, runtime_factory, user_id=1,
+        local_now=datetime(2026, 1, 3, 8, 0, tzinfo=UTC),
+    )
+
+    # Nothing delivered: the greeting owns this disclosure.
+    with runtime_factory() as db_:
+        assert db_.scalars(select(PendingInitiative)).all() == []
+    with soul_factory() as db_:
+        row = db_.scalars(select(DreamJournal)).one()
+        # Still the greeting's claim, and not surfaced by us.
+        assert row.surfaced is False
+        assert row.claimed_at is not None
+        log = db_.scalars(select(InitiativeLog)).one()
+        assert log.delivered is False

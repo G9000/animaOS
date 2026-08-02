@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-03 02:02 MYT
+- Updated: 2026-08-03 02:27 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -321,14 +321,29 @@ is its own ticket:
   pinned to one side covered the ends of every line while the middle stayed
   clear. Probes are now a 3x3 grid across the visible span.
 
+- 2026-08-03 02:27 MYT - PR #135 review round 17 (P1, Codex — the inverse of round 1's
+  race, and a real ordering hole): the initiative held NO reservation while
+  the model generated, which takes seconds. A greeting arriving in that
+  window could claim the same dream; the post-delivery marker then correctly
+  refused to steal the live claim, but the initiative had ALREADY been
+  delivered — both channels voiced the same narrative and nothing could
+  retract it. The dream is now reserved BEFORE delivery: a conditional claim
+  pinned to the generated row and carrying the offerable predicate, so a
+  greeting that won the race yields rowcount 0 and the fire is abandoned
+  before anything is delivered. Claim and delivery sit in one short
+  transaction, so the database's write serialisation keeps the channels
+  apart; the post-delivery marker pins by id, ownership having been
+  established by the reservation. Verified the regression test fails without
+  it.
+
 ## Validation
 
 - Commands:
   - `pytest tests/test_inner_life_ambient_dream.py` — 44 passed (2026-08-03 00:45 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full server suite (`pytest tests/ -p no:randomly`) — **3377 passed,
-    0 failed, 2 skipped, 11 deselected** in 14m30s, run 2026-08-03 02:02 MYT
+  - Full server suite (`pytest tests/ -p no:randomly`) — **3378 passed,
+    0 failed, 2 skipped, 11 deselected** in 14m52s, run 2026-08-03 02:27 MYT
   - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-03 00:09 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)

@@ -33,7 +33,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,7 @@ from anima_server.services.agent.inner_life.delivery import (
     PendingInitiativeDelivery,
 )
 from anima_server.services.agent.inner_life.dream_receipt import (
+    claim_cutoff,
     offerable_dream_query,
 )
 from anima_server.services.agent.inner_life.drives import (
@@ -1028,6 +1029,38 @@ def _fire(
     if text is None or log_row is None:
         return False, log_row, dream_source_id
 
+    # Reserve the dream before it is DELIVERED, not after (PR #135 review,
+    # P1). Generation takes seconds, and until now the initiative held no
+    # reservation at all: a greeting arriving in that window could claim the
+    # same narrative, and the post-delivery marker — correctly refusing to
+    # steal a live claim — would simply decline, leaving the already-created
+    # initiative and the greeting to voice it twice.
+    #
+    # The claim is pinned to the row this message was generated from and
+    # carries the offerable predicate, so if a greeting DID win the race the
+    # rowcount is 0 and this fire is abandoned before anything is delivered.
+    # Claim and delivery now sit in the same short transaction, so the
+    # database's own write serialisation keeps the two channels apart.
+    if decision.drive == DRIVE_DREAM_RESIDUE and dream_source_id:
+        reserved = soul_db.execute(
+            update(DreamJournal)
+            .where(
+                DreamJournal.id == dream_source_id,
+                DreamJournal.surfaced.is_(False),
+                (DreamJournal.claimed_at.is_(None))
+                | (DreamJournal.claimed_at < claim_cutoff(now)),
+            )
+            .values(claimed_at=now)
+        )
+        if reserved.rowcount != 1:
+            logger.info(
+                "Dream %s was claimed elsewhere during generation for user %s; "
+                "abandoning the initiative rather than voicing it twice",
+                dream_source_id,
+                user_id,
+            )
+            return False, log_row, dream_source_id
+
     try:
         with runtime_db.begin_nested():
             result = delivery.deliver(
@@ -1255,14 +1288,19 @@ def tick_initiative_for_user(
                     # Initiative delivery IS confirmed delivery (the client
                     # polls and acks the PendingInitiative), so this sets
                     # `surfaced` directly rather than taking a claim.
-                    dream_row = soul_db.scalar(
-                        offerable_dream_query(user_id).where(
-                            DreamJournal.id == dream_source_id
+                    # `_fire` reserved this exact row immediately before
+                    # delivering, so the offerable predicate would now fail
+                    # against our OWN claim; ownership is already established
+                    # by that reservation plus the id pin.
+                    soul_db.execute(
+                        update(DreamJournal)
+                        .where(
+                            DreamJournal.id == dream_source_id,
+                            DreamJournal.user_id == user_id,
+                            DreamJournal.surfaced.is_(False),
                         )
+                        .values(surfaced=True, claimed_at=None)
                     )
-                    if dream_row is not None:
-                        dream_row.surfaced = True
-                        dream_row.claimed_at = None
                 # IL-013: every drive that qualified (raw pressure >= theta)
                 # but lost this DELIVERED fire accrues one loss toward its
                 # future ranking boost; the winner's history clears. Gate
