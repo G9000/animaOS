@@ -361,3 +361,24 @@ export async function deliverDreamReceipt(
     }
   }
 }
+
+/**
+ * What the UI may actually SHOW, as opposed to what was fetched
+ * (IL-015 / PR #135 review, P1).
+ *
+ * A greeting rendered into a hidden window can outlive its server-side
+ * claim. Revealing that stale frame would disclose a dream the server has
+ * already re-offered to another channel, so the dream is withheld while the
+ * page is hidden or the claim has lapsed — the caller re-confirms on reveal
+ * and restores it only if the claim is still ours. Withholding rather than
+ * hiding-after-the-fact matters: nothing dream-bearing is ever painted into
+ * a window the user cannot see, so there is no stale frame to expose.
+ */
+export function displayableGreeting(
+  greeting: Greeting | null,
+  pageVisible: boolean,
+): Greeting | null {
+  if (!greeting?.ambientDream) return greeting;
+  if (!pageVisible || dreamClaimExpired(greeting)) return dreamFreeGreeting(greeting);
+  return greeting;
+}

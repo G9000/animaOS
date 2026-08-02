@@ -7,6 +7,7 @@ import {
   dreamClaimExpired,
   ACK_RETRY_DELAYS_MS,
   deliverDreamReceipt,
+  displayableGreeting,
   dreamFreeGreeting,
   dreamReceiptKey,
   ONESHOT_FALLBACK_TTL_MS,
@@ -479,5 +480,59 @@ describe("dream receipts survive a dropped request (PR #135 review round 5)", ()
     expect(delivered).toBe(false);
     expect(attempts).toBe(ACK_RETRY_DELAYS_MS.length + 1);
     expect(h.waited).toEqual(ACK_RETRY_DELAYS_MS);
+  });
+});
+
+describe("a hidden window never holds a voiceable dream (PR #135 review round 6)", () => {
+  const realNow = Date.now;
+  const T0 = 1_800_000_000_000;
+  const live = () =>
+    greeting({
+      message: "hi there. I dreamt about something recently.",
+      handoffMessage: "hi there.",
+      ambientDream: true,
+      ambientDreamId: 42,
+      ambientDreamClaimToken: "2026-08-02T06:00:00+00:00",
+      ambientDreamExpiresAt: new Date(T0 + 600_000).toISOString(),
+    });
+
+  beforeEach(() => {
+    Date.now = () => T0;
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  test("the dream is withheld while the page is hidden", () => {
+    // Nothing dream-bearing is painted into a window the user cannot see,
+    // so there is no stale frame to expose on reveal.
+    const shown = displayableGreeting(live(), false);
+    expect(shown?.ambientDream).toBe(false);
+    expect(shown?.message).toBe("hi there.");
+  });
+
+  test("a lapsed claim is withheld even while visible", () => {
+    const stale = { ...live(), ambientDreamExpiresAt: new Date(T0 - 1).toISOString() };
+    expect(displayableGreeting(stale, true)?.ambientDream).toBe(false);
+  });
+
+  test("a live claim on a visible page is shown untouched", () => {
+    const g = live();
+    expect(displayableGreeting(g, true)).toBe(g);
+  });
+
+  test("ordinary greetings are unaffected by visibility", () => {
+    const plain = greeting({ message: "morning" });
+    expect(displayableGreeting(plain, false)).toBe(plain);
+    expect(displayableGreeting(null, true)).toBeNull();
+  });
+
+  test("a withheld dream owes no receipt", () => {
+    // The ack path reads the DISPLAYED greeting, so a dream held back for
+    // being hidden or stale can never be marked surfaced.
+    expect(dreamReceiptKey(displayableGreeting(live(), false))).toBeNull();
+    expect(dreamReceiptKey(displayableGreeting(live(), true))).toBe(
+      "42:2026-08-02T06:00:00+00:00",
+    );
   });
 });

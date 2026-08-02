@@ -1,35 +1,30 @@
 import { useEffect } from "react";
 
 /**
- * Report that a dream-bearing greeting is on screen — but only once the page
- * is actually VISIBLE (IL-015 / PR #135 review, P1).
+ * Report that a dream-bearing greeting is on screen (IL-015 / PR #135
+ * review, P1).
  *
- * A React effect runs after the commit even when the Dashboard mounted in a
- * background or minimized window, so "mounted" is not "seen". Acknowledging
- * there marks the dream surfaced forever; if the window is then closed
- * before it is ever looked at, the dream is consumed unvoiced — the exact
+ * Two things have to be true before a dream may be acknowledged, because an
+ * acknowledgement marks it surfaced forever: it must have been RENDERED
+ * (this effect runs after the commit that put the text on screen, and the
+ * node calling it can be closed by the user), and the page must actually be
+ * VISIBLE — a React effect runs even when the Dashboard mounted in a
+ * background window, and consuming a dream nobody could see is the exact
  * loss IL-015 exists to prevent.
  *
- * While the page stays hidden nothing is reported: the claim lapses on its
- * own and the dream is offered again, which is the right failure. If the
- * page becomes visible while the greeting is still rendered, the receipt is
- * reported then.
+ * The Dashboard already withholds the dream itself while the page is hidden
+ * or the claim has lapsed, and re-confirms on reveal; the visibility check
+ * here is the second, independent guard on the same rule. Nothing is
+ * deferred or queued: if the page is not visible, no receipt is owed, and
+ * the claim simply lapses so the dream is offered again.
  */
 export function useDreamShownReceipt(shown: boolean, report?: () => void): void {
   useEffect(() => {
     if (!shown || !report) return;
-    // No document (SSR/static render): nothing was painted, so nothing is
+    // No document (static render): nothing was painted, so nothing is
     // reported — never guess in the direction of consuming a dream.
     if (typeof document === "undefined") return;
-    if (document.visibilityState === "visible") {
-      report();
-      return;
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") report();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+    if (document.visibilityState !== "visible") return;
+    report();
   }, [shown, report]);
 }

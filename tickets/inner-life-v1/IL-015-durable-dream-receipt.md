@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 15:46 MYT
+- Updated: 2026-08-02 16:06 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -157,6 +157,20 @@ is its own ticket:
   deadline, and treats `acknowledged: false` as definitive rather than
   retryable.
 
+- 2026-08-02 16:06 MYT - PR #135 review round 6 (P1, Codex — the residual I had flagged
+  in round 5 and chosen to leave open, correctly pushed back on): deferring
+  the receipt to the next reveal was not enough. A window hidden past the
+  claim deadline still had the stale dream RENDERED, so revealing it put the
+  text on screen while `deliverDreamReceipt` declined to ack an expired
+  claim — leaving the row unsurfaced and offerable, i.e. a guaranteed later
+  duplicate. Fixed by withholding rather than hiding after the fact: a dream
+  is only ever rendered while the page is visible AND its claim is live
+  (`displayableGreeting`), so nothing dream-bearing is painted into a window
+  the user cannot see and there is no stale frame to expose. On reveal, a
+  lapsed claim is re-confirmed first and a refusal strips the dream from the
+  greeting for good. The receipt path reads the DISPLAYED greeting, so a
+  withheld dream is never acknowledged either.
+
 ## Validation
 
 - Commands:
@@ -164,8 +178,9 @@ is its own ticket:
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
-    0 failed, 2 skipped, 11 deselected** in 14m53s, run 2026-08-02 15:34 MYT
-  - `bun test tests/` (apps/desktop) — 133 passed, 0 failed (2026-08-02 15:46 MYT)
+    0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
+    the round-5/6 desktop-only changes
+  - `bun test tests/` (apps/desktop) — 138 passed, 0 failed (2026-08-02 16:06 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
@@ -182,6 +197,7 @@ is its own ticket:
   - `apps/desktop/src/pages/dashboard/nodes/GreetingNode.tsx`
   - `apps/desktop/src/pages/dashboard/nodes/ProfileNode.tsx`
   - `apps/desktop/src/pages/dashboard/nodes/useDreamShownReceipt.ts` (new)
+  - `apps/desktop/src/hooks/usePageVisible.ts` (new)
   - `apps/desktop/tests/greetingCache.test.ts`
   - `apps/server/tests/test_inner_life_ambient_dream.py`
 - Notes:

@@ -29,6 +29,9 @@ import {
   ambientConsentAllows,
   clearOneShotGreetings,
   deliverDreamReceipt,
+  displayableGreeting,
+  dreamClaimExpired,
+  dreamFreeGreeting,
   dreamReceiptKey,
   getCachedGreeting,
   ONESHOT_FALLBACK_TTL_MS,
@@ -40,6 +43,7 @@ import {
 } from "../../lib/greetingCache";
 import { buildMemoryImages } from "../../lib/image-memories";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
+import { usePageVisible } from "../../hooks/usePageVisible";
 import { dashboardNodeTypes, type DashboardNode } from "./nodes";
 import { buildInitialNodes } from "./layout";
 import { useNodePositions } from "./useNodePositions";
@@ -66,6 +70,7 @@ export default function Dashboard() {
 
   const [brief, setBrief] = useState<Greeting | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
+  const pageVisible = usePageVisible();
 
   const [reflection, setReflection] = useState<Reflection | null>(null);
   const [reflectionLoading, setReflectionLoading] = useState(false);
@@ -121,18 +126,60 @@ export default function Dashboard() {
     };
   }, [user?.id]);
 
+  // IL-015 (PR #135 review, P1): never voice a dream on the strength of the
+  // device clock alone — confirm the claim against the row itself, and show
+  // the dream-free copy on any uncertain answer.
+  const voiceable = useCallback(
+    (g: Greeting) =>
+      user?.id == null
+        ? Promise.resolve(dreamFreeGreeting(g))
+        : voiceableGreeting(g, (dreamId, claimToken) =>
+            api.chat.confirmGreetingDreamClaim(user.id, dreamId, claimToken),
+          ),
+    [user?.id],
+  );
+
+  // What the UI is allowed to SHOW, as opposed to what was fetched
+  // (IL-015 / PR #135 review, P1). A greeting rendered into a hidden window
+  // can outlive its claim; revealing that stale frame would disclose a dream
+  // the server has already re-offered elsewhere. So the dream is withheld
+  // whenever the page is hidden or the claim has lapsed, and only restored
+  // once the reveal effect below has re-confirmed it.
+  const visibleBrief = useMemo(
+    () => displayableGreeting(brief, pageVisible),
+    [brief, pageVisible],
+  );
+
+  // Re-confirm on reveal. A window that sat hidden past the claim deadline
+  // must not simply un-hide its dream: the claim is re-asserted first, and a
+  // refusal permanently strips the dream from the greeting rather than
+  // leaving stale text one render away from the screen.
+  useEffect(() => {
+    if (!pageVisible || user?.id == null) return;
+    if (!brief?.ambientDream || !dreamClaimExpired(brief)) return;
+    let active = true;
+    void voiceable(brief).then((shown) => {
+      if (active) setBrief(shown);
+    });
+    return () => {
+      active = false;
+    };
+  }, [brief, pageVisible, user?.id, voiceable]);
+
   // IL-015 (PR #135 review, P1): acknowledgement is driven by the node that
   // actually rendered the dream, not by the fetch that produced it. Both
-  // surfaces showing `brief.message` (profile, greeting) can be closed by
-  // the user, and closed nodes are filtered out of the graph entirely — so
+  // surfaces showing the greeting (profile, greeting) can be closed by the
+  // user, and closed nodes are filtered out of the graph entirely — so
   // acking on fetch marked dreams surfaced FOREVER that nothing on screen
-  // ever voiced, which is precisely the loss IL-015 exists to prevent.
-  // Deduped by claim token: both nodes report, and effects re-run.
+  // ever voiced, which is precisely the loss IL-015 exists to prevent. It
+  // reads `visibleBrief`, so a dream withheld for being hidden or stale is
+  // never acknowledged either. Deduped by claim generation: both nodes
+  // report, and effects re-run.
   const ackedDreamsRef = useRef<Set<string>>(new Set());
   const handleDreamShown = useCallback(() => {
-    const receipt = dreamReceiptKey(brief);
-    const dreamId = brief?.ambientDreamId;
-    const token = brief?.ambientDreamClaimToken;
+    const receipt = dreamReceiptKey(visibleBrief);
+    const dreamId = visibleBrief?.ambientDreamId;
+    const token = visibleBrief?.ambientDreamClaimToken;
     if (user?.id == null || receipt === null || dreamId == null || !token) return;
     if (ackedDreamsRef.current.has(receipt)) return;
     ackedDreamsRef.current.add(receipt);
@@ -141,7 +188,7 @@ export default function Dashboard() {
     // harmless — the claim lapses and the same narrative can be disclosed
     // again through another channel. Nothing here re-renders, so a failure
     // has to schedule its own retry rather than wait for one.
-    const expiresAt = brief?.ambientDreamExpiresAt;
+    const expiresAt = visibleBrief?.ambientDreamExpiresAt;
     const parsed = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     const deadline = Number.isFinite(parsed)
       ? parsed
@@ -153,7 +200,7 @@ export default function Dashboard() {
       // Never delivered: let a later render of the same greeting try again.
       if (!delivered) ackedDreamsRef.current.delete(receipt);
     });
-  }, [brief, user?.id]);
+  }, [visibleBrief, user?.id]);
 
   useEffect(() => {
     if (user?.id == null || needsSetup !== false) return;
@@ -171,13 +218,6 @@ export default function Dashboard() {
     // expires server-side and the dream is offered again, which is exactly
     // what should happen if the user never saw it. Best-effort: a failed ack
     // just means the dream returns later.
-    // IL-015 (PR #135 review, P1): never voice a dream on the strength of
-    // the device clock alone — confirm the claim against the row itself,
-    // and show the dream-free copy on any uncertain answer.
-    const voiceable = (g: Greeting) =>
-      voiceableGreeting(g, (dreamId, claimToken) =>
-        api.chat.confirmGreetingDreamClaim(user.id, dreamId, claimToken),
-      );
     const fetchGreeting = () => {
       const cached = getCachedGreeting(user.id);
       if (cached) {
@@ -528,8 +568,12 @@ export default function Dashboard() {
       // server places in the model history — so the ambient dream must not
       // ride along. When the text being explored IS the dream-bearing
       // greeting, swap in the server's dream-free copy.
-      if (brief?.ambientDream && brief.handoffMessage && source === brief.message) {
-        source = brief.handoffMessage;
+      if (
+        visibleBrief?.ambientDream &&
+        visibleBrief.handoffMessage &&
+        source === visibleBrief.message
+      ) {
+        source = visibleBrief.handoffMessage;
       }
       const trimmed = source.trim();
       const canIncludeGreetingContext =
@@ -548,7 +592,7 @@ export default function Dashboard() {
           : [];
       navigate("/chat", { state: { contextMessages, seedThread: true } });
     },
-    [navigate, presenceConfig, brief],
+    [navigate, presenceConfig, visibleBrief],
   );
 
   const initialNodes = useMemo(() => {
@@ -562,12 +606,12 @@ export default function Dashboard() {
         emotion: mood?.dominantEmotion ?? null,
         mood,
         lastSession: episodes[0]?.date ? relativeSession(episodes[0].date) : null,
-        brief,
+        brief: visibleBrief,
         briefLoading,
         reflection,
         reflectionLoading,
         tasks,
-        currentFocus: brief?.context?.currentFocus ?? null,
+        currentFocus: visibleBrief?.context?.currentFocus ?? null,
         episodes,
         nudges,
         galleryImages,
@@ -598,7 +642,7 @@ export default function Dashboard() {
   }, [
     agentName,
     avatarUrl,
-    brief,
+    visibleBrief,
     briefLoading,
     reflection,
     reflectionLoading,
