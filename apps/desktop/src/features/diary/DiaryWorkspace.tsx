@@ -21,9 +21,14 @@ import {
   getSpeechRecognitionConstructor,
   type SpeechRecognitionLike,
 } from "./lib/speech";
-import { canSaveDiaryEntry, resolveDiaryBody } from "./lib/snapshot";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
-import { hasNonTextNode, isDiscardablePage } from "./lib/pageLifecycle";
+import {
+  BLANK_BODY_MARKER,
+  hasNonTextNode,
+  isDiscardablePage,
+  isSignificantEdit,
+  resolveBodyForSave,
+} from "./lib/pageLifecycle";
 import { createDiaryExtensions } from "./editor/extensions";
 import { DiaryBubbleMenu } from "./editor/BubbleMenu";
 import { BlockDragHandle } from "./editor/BlockDragHandle";
@@ -34,22 +39,6 @@ import { PageHeader, useAttachmentBlobUrl } from "./panels/PageHeader";
 const MAX_ENTRY_LIMIT = 200;
 const ENTRY_PAGE_SIZE = 100;
 const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
-
-// Used when the editor has no text and no attachments back it, but the
-// entry still needs a non-empty `body` to satisfy the server's
-// `min_length=1` validation on both create and update.
-const ATTACHMENT_ONLY_BODY_FALLBACK = "Attachment-only diary entry.";
-
-// A brand-new page is now created immediately (see lib/pageLifecycle.ts —
-// "creating a page now POSTs immediately"), before the user has typed
-// anything, so `body` needs *some* non-empty value that also survives the
-// server's strip-then-require-non-empty validation (a whitespace-only
-// string collapses to null server-side and would fail). A zero-width
-// space is not classified as whitespace by that strip, and renders as
-// nothing if this placeholder is ever momentarily visible (e.g. the page
-// gets deleted by the untitled-page cleanup before any real content
-// replaces it).
-const BLANK_ENTRY_BODY = "​";
 
 const DIARY_PROSE_CLASS = cn(
   "prose max-w-none",
@@ -407,28 +396,42 @@ export default function DiaryWorkspace() {
       syncEditorContent(e);
 
       const html = sanitizeDiaryHtml(e.getHTML());
-      // Guard against feeding the editor's own output back in as a user
-      // change: setContent (used when loading an entry) is called with
-      // `{ emitUpdate: false }` so it should not reach onUpdate at all;
-      // this comparison is a second, cheap line of defense against a
-      // save loop if that ever stops being true.
-      if (html === lastLoadedBodyRef.current) return;
-
       const entry = selectedEntryRef.current;
       if (!entry) return;
 
+      // Fix round 1, Finding 1 (CRITICAL): this used to also gate on
+      // `canSaveDiaryEntry`, which returns false once the editor is empty
+      // with no attachments — so clearing all of an entry's text (a
+      // legitimate, intentional edit) never scheduled a save, and the old
+      // body silently survived server-side. `isSignificantEdit` is the
+      // correct gate here: it only skips the case where the editor's
+      // output exactly matches what was just loaded into it (the
+      // `setContent(html, { emitUpdate: false })` echo this guards
+      // against as a second line of defense against a save loop) — an
+      // intentional clear produces different output and is always
+      // scheduled, with an explicit blank body (see resolveBodyForSave).
+      if (!isSignificantEdit({ loadedHtml: lastLoadedBodyRef.current ?? "", currentHtml: html })) {
+        return;
+      }
+      // Advance the reference point to this edit's output. Without this,
+      // lastLoadedBodyRef would stay pinned to whatever was loaded when
+      // the entry was opened: type "hello" (schedules + saves), then
+      // delete it back to exactly the original pristine content — the
+      // comparison above would see current === the *original* load and
+      // wrongly call it a no-op, even though the server still has
+      // "hello" persisted from the intermediate save and the deletion
+      // itself needs to be scheduled. Advancing here means the
+      // comparison is always against the last edit actually scheduled,
+      // not the entry's initial state.
+      lastLoadedBodyRef.current = html;
+
       const plainText = e.getText();
-      const eligible = canSaveDiaryEntry({
-        editorHasContent: !e.isEmpty,
+      const body = resolveBodyForSave({
+        editorIsEmpty: e.isEmpty,
+        editorHtml: html,
         plainText,
         attachmentCount: entry.attachments.length,
-        hasPendingCover: false,
       });
-      if (!eligible) return;
-
-      const body =
-        resolveDiaryBody({ editorIsEmpty: e.isEmpty, editorHtml: html, plainText }) ??
-        ATTACHMENT_ONLY_BODY_FALLBACK;
       schedule({ title: titleRef.current, body });
     },
   });
@@ -562,6 +565,14 @@ export default function DiaryWorkspace() {
   // against fully up-to-date state, then deletes if still discardable.
   // Never call this against the entry the user is currently editing —
   // only against the one being left (a switch target, or on unmount).
+  //
+  // Fix round 1, Finding 3: on the true-unmount path this `flush()` call
+  // is only a real barrier because useAutosave's own teardown no longer
+  // nulls its scheduler ref before flushing (see the comment in
+  // useAutosave.ts) — `flush` here reaches the live scheduler for
+  // whichever entry is being left regardless of which of the two
+  // unmount-time cleanups (this one, or useAutosave's own) happens to run
+  // first, rather than silently resolving instantly against a null ref.
   const evaluateAndMaybeDiscard = async (entry: DiaryEntryData) => {
     await flush();
     const snapshot = lastContentSnapshotRef.current;
@@ -650,7 +661,7 @@ export default function DiaryWorkspace() {
       const created = await api.diary.create(user.id, {
         entryDate: todayISODate(),
         title: null,
-        body: BLANK_ENTRY_BODY,
+        body: BLANK_BODY_MARKER,
         mood: null,
         folderId: activeFolderId,
       });
@@ -949,18 +960,20 @@ export default function DiaryWorkspace() {
     const ed = editorRef.current;
     const entry = selectedEntryRef.current;
     if (!ed || !entry) return;
+    // No canSaveDiaryEntry-style eligibility gate here (fix round 1,
+    // Finding 1): PageHeader's title input only calls onTitleChange from
+    // its own onChange, which only fires on a genuine keystroke, so every
+    // call here already represents a real edit — including typing a title
+    // onto an otherwise-empty entry, which must schedule a save with an
+    // explicit blank body rather than being silently dropped.
     const html = sanitizeDiaryHtml(ed.getHTML());
     const plainText = ed.getText();
-    const eligible = canSaveDiaryEntry({
-      editorHasContent: !ed.isEmpty,
+    const body = resolveBodyForSave({
+      editorIsEmpty: ed.isEmpty,
+      editorHtml: html,
       plainText,
       attachmentCount: entry.attachments.length,
-      hasPendingCover: false,
     });
-    if (!eligible) return;
-    const body =
-      resolveDiaryBody({ editorIsEmpty: ed.isEmpty, editorHtml: html, plainText }) ??
-      ATTACHMENT_ONLY_BODY_FALLBACK;
     schedule({ title: newTitle, body });
   };
 

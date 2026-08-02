@@ -187,4 +187,41 @@ describe("image-only page is not discardable (Task 10 review hazard)", () => {
       }),
     ).toBe(false);
   });
+
+  // Fix round 1 bundled minor: same class of hazard, for the two node
+  // types the round-1 review named (codeBlock) and the one added by
+  // judgement call (blockquote). Verified against the real schema rather
+  // than assumed, since CodeBlockLowlight in particular replaces the
+  // stock codeBlock node and could in principle have renamed it.
+  test("an empty fenced code block is not discardable", () => {
+    const doc = generateJSON("<pre><code></code></pre>", extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    expect(nodeTypeNames.has("codeBlock")).toBe(true);
+    expect(
+      isDiscardablePage({
+        title: null,
+        bodyPlainText: "",
+        attachmentCount: 0,
+        coverAttachmentId: null,
+        hasNonTextContent: hasNonTextNode(nodeTypeNames),
+      }),
+    ).toBe(false);
+  });
+
+  test("an empty blockquote is not discardable", () => {
+    const doc = generateJSON("<blockquote><p></p></blockquote>", extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    expect(nodeTypeNames.has("blockquote")).toBe(true);
+    expect(
+      isDiscardablePage({
+        title: null,
+        bodyPlainText: "",
+        attachmentCount: 0,
+        coverAttachmentId: null,
+        hasNonTextContent: hasNonTextNode(nodeTypeNames),
+      }),
+    ).toBe(false);
+  });
 });

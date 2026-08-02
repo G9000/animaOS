@@ -66,10 +66,29 @@ export function useAutosave<T>(options: UseAutosaveOptions<T>): UseAutosaveResul
     setStatus("idle");
 
     return () => {
-      // Detach immediately so any schedule()/flush()/retry() call that
-      // happens to fire during teardown (e.g. from a render still in
-      // flight) can't reach an instance that's about to be disposed.
-      schedulerRef.current = null;
+      // Fix round 1, Finding 3: this used to null `schedulerRef.current`
+      // synchronously right here, before flush() even started awaiting.
+      // That broke the caller's own "flush the entry being left before
+      // deciding whether to discard it" logic on the true-unmount path:
+      // the component's own unmount-cleanup effect calls the `flush`
+      // wrapper below, which reads `schedulerRef.current` — if this
+      // cleanup (registered earlier in hook order, since useAutosave is
+      // called before that effect) had already nulled the ref, that call
+      // would see `null` and resolve instantly, so the "flush first" step
+      // was a no-op and a PATCH could race the subsequent DELETE.
+      //
+      // Deliberately NOT nulling the ref here: `schedulerRef.current` is
+      // left pointing at this `scheduler` until either (a) this same
+      // effect re-runs for a new `entryId` and overwrites it with a fresh
+      // instance, in the same commit right after this cleanup — nothing
+      // in between ever observes a null gap — or (b) the component fully
+      // unmounts and the ref stops mattering. Any later call to
+      // flush()/schedule()/retry() during teardown safely reaches this
+      // real instance instead of null, and the scheduler's own
+      // `disposed` guard (checked internally by every one of those
+      // methods) is what makes calling them after dispose() has actually
+      // completed a safe no-op — that guard was always the correct place
+      // for this safety, not an external null-out.
       void scheduler.flush().finally(() => scheduler.dispose());
     };
     // `save` is intentionally excluded — see the doc comment above.

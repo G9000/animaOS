@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { hasNonTextNode, isDiscardablePage } from "../src/features/diary/lib/pageLifecycle";
+import {
+  BLANK_BODY_MARKER,
+  hasNonTextNode,
+  isDiscardablePage,
+  isSignificantEdit,
+  resolveBodyForSave,
+} from "../src/features/diary/lib/pageLifecycle";
 
 const base = {
   title: null,
@@ -62,6 +68,101 @@ describe("untitled page cleanup", () => {
   test("discards when hasNonTextContent is explicitly false and everything else is empty", () => {
     expect(isDiscardablePage({ ...base, hasNonTextContent: false })).toBe(true);
   });
+
+  // Fix round 1, Finding 2: BLANK_BODY_MARKER is a zero-width space
+  // (U+200B), and JS's String.trim() does NOT strip Unicode category Cf
+  // "Format" characters — only "White_Space" ones. Before normalizing
+  // these out, isDiscardablePage never saw a freshly-created, untouched
+  // entry (whose body is exactly BLANK_BODY_MARKER) as discardable, so
+  // clicking "+ New entry" and navigating away without typing anything
+  // left an Untitled page behind forever.
+  test("treats a zero-width-space-only body as empty", () => {
+    expect(isDiscardablePage({ ...base, bodyPlainText: BLANK_BODY_MARKER })).toBe(true);
+  });
+
+  test("treats a body of only zero-width characters mixed with real whitespace as empty", () => {
+    expect(isDiscardablePage({ ...base, bodyPlainText: `  ${BLANK_BODY_MARKER} \n\u200C\u200D\uFEFF ` })).toBe(
+      true,
+    );
+  });
+
+  test("does not treat a zero-width space adjacent to real text as empty", () => {
+    expect(isDiscardablePage({ ...base, bodyPlainText: `${BLANK_BODY_MARKER}hello` })).toBe(false);
+  });
+});
+
+describe("isSignificantEdit", () => {
+  // Fix round 1, Finding 1 (CRITICAL): these three cases are exactly what
+  // the review asked to be provable in isolation from canSaveDiaryEntry,
+  // which was the wrong gate (it treated "editor now empty" as "nothing
+  // to save", so an intentional "select all, delete" on a titled entry
+  // never scheduled a save and the old body silently resurrected).
+  test("untouched freshly-loaded entry -> no save (content matches what was loaded)", () => {
+    const html = "<p>secret</p>";
+    expect(isSignificantEdit({ loadedHtml: html, currentHtml: html })).toBe(false);
+  });
+
+  test("user clears all text -> save (content differs, even though the result is empty)", () => {
+    expect(isSignificantEdit({ loadedHtml: "<p>secret</p>", currentHtml: "<p></p>" })).toBe(true);
+  });
+
+  test("user types -> save (content differs)", () => {
+    expect(isSignificantEdit({ loadedHtml: "<p></p>", currentHtml: "<p>hello</p>" })).toBe(true);
+  });
+});
+
+describe("resolveBodyForSave", () => {
+  test("user types -> saves the actual editor HTML", () => {
+    const body = resolveBodyForSave({
+      editorIsEmpty: false,
+      editorHtml: "<p>hello</p>",
+      plainText: "hello",
+      attachmentCount: 0,
+    });
+    expect(body).toBe("<p>hello</p>");
+  });
+
+  // The core of Finding 1's fix: clearing all content must produce a save
+  // with an explicit blank body, not be skipped.
+  test("user clears all text with no attachments -> saves the shared blank marker", () => {
+    const body = resolveBodyForSave({
+      editorIsEmpty: true,
+      editorHtml: "<p></p>",
+      plainText: "",
+      attachmentCount: 0,
+    });
+    expect(body).toBe(BLANK_BODY_MARKER);
+  });
+
+  test("user clears all text but attachments remain -> keeps the attachment-only label", () => {
+    const body = resolveBodyForSave({
+      editorIsEmpty: true,
+      editorHtml: "<p></p>",
+      plainText: "",
+      attachmentCount: 2,
+    });
+    expect(body).toBe("Attachment-only diary entry.");
+  });
+
+  // Finding 2's coordination note: a freshly-created entry (before any
+  // typing) and an intentionally-cleared entry must agree on one blank
+  // representation — both go through this same function.
+  test("a brand-new blank entry's resolved body matches what an intentional clear produces", () => {
+    const fresh = resolveBodyForSave({
+      editorIsEmpty: true,
+      editorHtml: "<p></p>",
+      plainText: "",
+      attachmentCount: 0,
+    });
+    const cleared = resolveBodyForSave({
+      editorIsEmpty: true,
+      editorHtml: "<p></p>",
+      plainText: "",
+      attachmentCount: 0,
+    });
+    expect(fresh).toBe(cleared);
+    expect(fresh).toBe(BLANK_BODY_MARKER);
+  });
 });
 
 describe("hasNonTextNode", () => {
@@ -97,5 +198,24 @@ describe("hasNonTextNode", () => {
 
   test("is true when a taskItem node is present", () => {
     expect(hasNonTextNode(["doc", "taskList", "taskItem", "paragraph"])).toBe(true);
+  });
+
+  // Bundled minor from fix round 1: an empty fenced code block or an empty
+  // blockquote is a deliberate block-level formatting choice (same class
+  // of hazard as the image/table cases above), and both strip to ""
+  // plain text.
+  test("is true when a codeBlock node is present (even if empty)", () => {
+    expect(hasNonTextNode(["doc", "codeBlock"])).toBe(true);
+  });
+
+  test("is true when a blockquote node is present (even if empty)", () => {
+    expect(hasNonTextNode(["doc", "blockquote", "paragraph"])).toBe(true);
+  });
+
+  // Deliberately NOT non-text: a lone hard break reads as incidental
+  // keystroke noise (e.g. a stray Shift+Enter), not a content choice the
+  // user made the way inserting a table/callout/code block is.
+  test("is false when only a hardBreak node is present", () => {
+    expect(hasNonTextNode(["doc", "paragraph", "hardBreak"])).toBe(false);
   });
 });
