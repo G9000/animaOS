@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 16:46 MYT
+- Updated: 2026-08-02 17:03 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -191,6 +191,23 @@ is its own ticket:
   and withheld entirely while an overlay (lightbox, thread preview, episode
   reader) covers the canvas, since occlusion is not observable.
 
+- 2026-08-02 17:03 MYT - PR #135 review round 8 (three P1s, Codex, all real): display
+  approval had no lifetime of its own. (1) It survived the page being
+  hidden, so an opt-out made from another window was skipped on reveal;
+  approval is now cleared whenever the page goes hidden, and every reveal
+  re-confirms. (2) It survived the claim deadline, because nothing
+  re-renders as time passes — a greeting sitting off-viewport could be
+  panned into view long after an initiative had re-offered the same
+  narrative; a timer now expires the approval exactly at the deadline, after
+  which the dream is withheld until re-confirmed. (3) The occlusion gate
+  only knew about the three Dashboard-owned modals, missing the initiative
+  card the LAYOUT renders above the canvas; rather than enumerate overlays,
+  the receipt now hit-tests the greeting element's own centre point, with an
+  ancestor allowance so the canvas pane swallowing the hit does not read as
+  occlusion. A dream this client already ACKNOWLEDGED is exempt from both
+  new expiries: it is durably surfaced and the user has read it, so leaving
+  it on screen discloses nothing new.
+
 ## Validation
 
 - Commands:
@@ -200,7 +217,7 @@ is its own ticket:
   - Full server suite (`pytest tests/ -p no:randomly`) — **3374 passed,
     0 failed, 2 skipped, 11 deselected**, re-run 2026-08-02 16:02 MYT after
     the round-5/6 desktop-only changes
-  - `bun test tests/` (apps/desktop) — 139 passed, 0 failed (2026-08-02 16:46 MYT)
+  - `bun test tests/` (apps/desktop) — 140 passed, 0 failed (2026-08-02 17:03 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`

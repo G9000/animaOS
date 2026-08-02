@@ -73,7 +73,13 @@ export default function Dashboard() {
   // The claim generation the server has approved for DISPLAY. Set only by a
   // successful confirmation, and matched against the greeting's own token so
   // an approval earned by an earlier claim cannot authorise a later one.
+  // Approval is valid only for as long as the page stays continuously
+  // visible and the claim stays live — see the two effects below.
   const [approvedClaim, setApprovedClaim] = useState<string | null>(null);
+  // A claim whose receipt this client actually delivered. The dream is then
+  // durably surfaced and the user has demonstrably read it, so leaving it on
+  // screen is not a new disclosure and it needs no further approval.
+  const [acknowledgedClaim, setAcknowledgedClaim] = useState<string | null>(null);
 
   const [reflection, setReflection] = useState<Reflection | null>(null);
   const [reflectionLoading, setReflectionLoading] = useState(false);
@@ -155,15 +161,48 @@ export default function Dashboard() {
   // fact: nothing dream-bearing is painted into a window the user cannot
   // see, so there is no stale frame to expose on reveal.
   const visibleBrief = useMemo(
-    () => displayableGreeting(brief, { pageVisible, approvedClaimToken: approvedClaim }),
-    [approvedClaim, brief, pageVisible],
+    () =>
+      displayableGreeting(brief, {
+        pageVisible,
+        approvedClaimToken: approvedClaim,
+        acknowledgedClaimToken: acknowledgedClaim,
+      }),
+    [acknowledgedClaim, approvedClaim, brief, pageVisible],
   );
   // Hold the loader while a dream-bearing greeting waits for its first
   // confirmation, so the dream sentence is never seen appearing late.
   const dreamAwaitingConfirm =
     Boolean(brief?.ambientDream) &&
     pageVisible &&
-    brief?.ambientDreamClaimToken !== approvedClaim;
+    brief?.ambientDreamClaimToken !== approvedClaim &&
+    brief?.ambientDreamClaimToken !== acknowledgedClaim;
+
+  // Approval dies with the visible session (PR #135 review, P1). A claim
+  // approved before the window was hidden must not simply be trusted on
+  // reveal: ambient sharing may have been switched off from another window
+  // in between, and skipping confirmation skips the server's consent check.
+  // A dream this client already acknowledged is exempt — the user has read
+  // it, and it is durably surfaced, so re-showing it discloses nothing new.
+  useEffect(() => {
+    if (!pageVisible) setApprovedClaim(null);
+  }, [pageVisible]);
+
+  // Approval also dies at the claim deadline (PR #135 review, P1). Nothing
+  // re-renders as time passes, so a greeting sitting unread — off-viewport,
+  // say — would otherwise keep an expired approval and could be panned into
+  // view long after an initiative had re-offered the same narrative. When
+  // the timer fires the dream is withheld and the effect below re-confirms.
+  useEffect(() => {
+    if (approvedClaim === null) return;
+    const expiresAt = brief?.ambientDreamExpiresAt;
+    const parsed = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    if (!Number.isFinite(parsed)) return;
+    const timer = setTimeout(
+      () => setApprovedClaim(null),
+      Math.max(0, parsed - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [approvedClaim, brief?.ambientDreamExpiresAt]);
 
   // Confirmation happens HERE and nowhere else, and only while the page is
   // visible (PR #135 review, P1). Confirming at fetch time was wrong twice
@@ -181,6 +220,7 @@ export default function Dashboard() {
     const token = brief?.ambientDreamClaimToken;
     if (!brief?.ambientDream || !token) return;
     if (approvedClaim === token) return; // already confirmed for display
+    if (acknowledgedClaim === token) return; // already read by this user
     let active = true;
     void voiceable(brief).then((shown) => {
       if (!active) return;
@@ -192,7 +232,7 @@ export default function Dashboard() {
     return () => {
       active = false;
     };
-  }, [approvedClaim, brief, pageVisible, user?.id, voiceable]);
+  }, [acknowledgedClaim, approvedClaim, brief, pageVisible, user?.id, voiceable]);
 
   // IL-015 (PR #135 review, P1): acknowledgement is driven by the node that
   // actually rendered the dream, not by the fetch that produced it. Both
@@ -227,6 +267,7 @@ export default function Dashboard() {
     ).then((delivered) => {
       // Never delivered: let a later render of the same greeting try again.
       if (!delivered) ackedDreamsRef.current.delete(receipt);
+      else setAcknowledgedClaim(token);
     });
   }, [visibleBrief, user?.id]);
 

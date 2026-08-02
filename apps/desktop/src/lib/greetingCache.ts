@@ -382,15 +382,21 @@ export async function deliverDreamReceipt(
  */
 export function displayableGreeting(
   greeting: Greeting | null,
-  options: { pageVisible: boolean; approvedClaimToken: string | null },
+  options: {
+    pageVisible: boolean;
+    approvedClaimToken: string | null;
+    /** A claim whose receipt this client already delivered: the dream is
+     * durably surfaced and the user has read it, so it needs no further
+     * approval and does not expire off the screen. */
+    acknowledgedClaimToken?: string | null;
+  },
 ): Greeting | null {
   if (!greeting?.ambientDream) return greeting;
-  const { pageVisible, approvedClaimToken } = options;
+  const { pageVisible, approvedClaimToken, acknowledgedClaimToken = null } = options;
+  const token = greeting.ambientDreamClaimToken;
+  if (!token) return dreamFreeGreeting(greeting);
+  if (token === acknowledgedClaimToken) return greeting;
   if (!pageVisible || dreamClaimExpired(greeting)) return dreamFreeGreeting(greeting);
-  if (
-    !greeting.ambientDreamClaimToken ||
-    greeting.ambientDreamClaimToken !== approvedClaimToken
-  )
-    return dreamFreeGreeting(greeting);
+  if (token !== approvedClaimToken) return dreamFreeGreeting(greeting);
   return greeting;
 }

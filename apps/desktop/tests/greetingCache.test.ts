@@ -542,6 +542,27 @@ describe("a dream reaches the screen only when visible, live and approved", () =
     expect(displayableGreeting(g, approved)).toBe(g);
   });
 
+  test("a dream this client already acknowledged stays on screen (round 8)", () => {
+    // Approval dies when the window is hidden and at the claim deadline, so
+    // both would otherwise strip a dream the user has already READ. It is
+    // durably surfaced at that point; leaving it up discloses nothing new.
+    const acknowledged = {
+      pageVisible: false,
+      approvedClaimToken: null,
+      acknowledgedClaimToken: TOKEN,
+    };
+    expect(displayableGreeting(live(), acknowledged)?.ambientDream).toBe(true);
+    const stale = { ...live(), ambientDreamExpiresAt: new Date(T0 - 1).toISOString() };
+    expect(displayableGreeting(stale, acknowledged)?.ambientDream).toBe(true);
+    // But only for the claim generation that was actually acknowledged.
+    expect(
+      displayableGreeting(live(), {
+        ...acknowledged,
+        acknowledgedClaimToken: "2026-08-02T05:00:00+00:00",
+      })?.ambientDream,
+    ).toBe(false);
+  });
+
   test("ordinary greetings are unaffected", () => {
     const plain = greeting({ message: "morning" });
     expect(displayableGreeting(plain, { pageVisible: false, approvedClaimToken: null }))
