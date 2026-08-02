@@ -1,17 +1,18 @@
-use std::ffi::OsStr;
+use std::{ffi::OsStr, io};
 
 use cap_std::{ambient_authority, fs::Dir};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::crypto::{derive_corefs_subkeys, SecretBytes};
 use crate::publication::PublicationPhase;
 
 use super::preparation::{
     publish_immutable_preparation_record_with_hook, publish_preparation_head_with_hook,
-    FinalIntentEntry, FinalIntentSegment, PreparationHeadRecord, PreparationReceipt,
-    PreparationReceiptOutcome, PreparationSegmentReference, PreparationSnapshot, PreparationState,
-    PreparedObjectDescriptor, PreparedObjectDescriptorSegment, WrappedObjectDekWire,
-    MAX_FINAL_INTENT_ENTRY_BYTES,
+    FinalIntentEntry, FinalIntentSegment, PreparationError, PreparationHeadRecord,
+    PreparationReceipt, PreparationReceiptOutcome, PreparationSegmentReference,
+    PreparationSnapshot, PreparationState, PreparedObjectDescriptor,
+    PreparedObjectDescriptorSegment, WrappedObjectDekWire, MAX_FINAL_INTENT_ENTRY_BYTES,
 };
 
 const CORE_ID: &str = "01J00000000000000000000001";
@@ -20,12 +21,18 @@ const PREPARATION_ID: &str = "01J00000000000000000000003";
 const RECEIPT_ID: &str = "01J00000000000000000000004";
 const OWNER_ID: &str = "01J00000000000000000000005";
 const STABLE_ID: &str = "01J00000000000000000000006";
+const STABLE_ID_TWO: &str = "01J00000000000000000000007";
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 fn keys(version: u32) -> crate::crypto::FrkSubkeys {
     derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), version).unwrap()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    hex::encode(digest)
 }
 
 fn head() -> PreparationHeadRecord {
@@ -110,6 +117,7 @@ fn descriptor_segment() -> PreparedObjectDescriptorSegment {
 }
 
 fn intent_segment() -> FinalIntentSegment {
+    let canonical_catalog_entry_json = "{\"kind\":\"diary\"}".to_owned();
     FinalIntentSegment {
         schema_version: 1,
         core_id: CORE_ID.to_owned(),
@@ -119,8 +127,8 @@ fn intent_segment() -> FinalIntentSegment {
         entries: vec![FinalIntentEntry {
             ordinal: 0,
             stable_id: STABLE_ID.to_owned(),
-            canonical_catalog_entry_sha256: HASH_C.to_owned(),
-            canonical_catalog_entry_json: "{\"kind\":\"diary\"}".to_owned(),
+            canonical_catalog_entry_sha256: sha256_hex(canonical_catalog_entry_json.as_bytes()),
+            canonical_catalog_entry_json,
         }],
     }
 }
@@ -184,18 +192,24 @@ mod formats {
 
         let sealed = snapshot().seal(&current_keys).unwrap();
         assert_eq!(
-            PreparationSnapshot::open(&sealed, &current_keys, CORE_ID, 3)
+            PreparationSnapshot::open(sealed.as_bytes(), &current_keys, CORE_ID, 3)
                 .unwrap()
                 .sequence,
             7
         );
-        assert!(PreparationSnapshot::open(&sealed, &current_keys, OTHER_CORE_ID, 3).is_err());
-        assert!(PreparationSnapshot::open(&sealed, &current_keys, CORE_ID, 4).is_err());
-        assert!(PreparationSnapshot::open(&sealed, &keys(4), CORE_ID, 4).is_err());
+        assert!(
+            PreparationSnapshot::open(sealed.as_bytes(), &current_keys, OTHER_CORE_ID, 3).is_err()
+        );
+        assert!(PreparationSnapshot::open(sealed.as_bytes(), &current_keys, CORE_ID, 4).is_err());
+        assert!(PreparationSnapshot::open(sealed.as_bytes(), &keys(4), CORE_ID, 4).is_err());
 
-        let mut trailing = sealed;
+        let mut trailing = sealed.as_bytes().to_vec();
         trailing.push(0);
         assert!(PreparationSnapshot::open(&trailing, &current_keys, CORE_ID, 3).is_err());
+
+        let mut tampered = sealed.as_bytes().to_vec();
+        *tampered.last_mut().unwrap() ^= 0x01;
+        assert!(PreparationSnapshot::open(&tampered, &current_keys, CORE_ID, 3).is_err());
     }
 
     #[test]
@@ -253,6 +267,64 @@ mod formats {
         });
 
         assert!(PreparationSnapshot::decode(&encoded, CORE_ID, 3).is_err());
+    }
+
+    #[test]
+    fn final_intent_rejects_unbound_or_altered_canonical_json() {
+        let mut wrong_digest = intent_segment();
+        wrong_digest.entries[0].canonical_catalog_entry_sha256 = HASH_C.to_owned();
+        assert!(wrong_digest.encode().is_err());
+
+        let mut altered_json = intent_segment();
+        altered_json.entries[0].canonical_catalog_entry_json = "{\"kind\":\"note\"}".to_owned();
+        assert!(altered_json.encode().is_err());
+    }
+
+    #[test]
+    fn snapshot_segment_indexes_must_be_ordered_and_contiguous() {
+        let mut reordered = snapshot();
+        reordered.manifest_segments = vec![segment_reference(1), segment_reference(0)];
+        assert!(reordered.encode().is_err());
+
+        let mut non_contiguous = snapshot();
+        non_contiguous.manifest_segments = vec![segment_reference(0), segment_reference(2)];
+        assert!(non_contiguous.encode().is_err());
+    }
+
+    #[test]
+    fn descriptor_ordinals_must_be_ordered_and_contiguous_within_the_segment() {
+        let mut reordered = descriptor_segment();
+        let mut second = reordered.descriptors[0].clone();
+        second.stable_id = STABLE_ID_TWO.to_owned();
+        second.physical_name = "object-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.acore".to_owned();
+        second.preparation_ordinal = 1;
+        reordered.descriptors.insert(0, second.clone());
+        assert!(reordered.encode().is_err());
+
+        let mut non_contiguous = descriptor_segment();
+        second.preparation_ordinal = 2;
+        non_contiguous.descriptors.push(second);
+        assert!(non_contiguous.encode().is_err());
+    }
+
+    #[test]
+    fn final_intent_ordinals_must_be_ordered_and_contiguous_within_the_segment() {
+        let mut reordered = intent_segment();
+        let canonical_json = "{\"kind\":\"note\"}".to_owned();
+        let second = FinalIntentEntry {
+            ordinal: 1,
+            stable_id: STABLE_ID_TWO.to_owned(),
+            canonical_catalog_entry_sha256: sha256_hex(canonical_json.as_bytes()),
+            canonical_catalog_entry_json: canonical_json,
+        };
+        reordered.entries.insert(0, second.clone());
+        assert!(reordered.encode().is_err());
+
+        let mut non_contiguous = intent_segment();
+        let mut second = second;
+        second.ordinal = 2;
+        non_contiguous.entries.push(second);
+        assert!(non_contiguous.encode().is_err());
     }
 
     #[test]
@@ -330,6 +402,16 @@ mod formats {
         assert!(snapshots_dir.open(OsStr::new(&name)).is_ok());
         assert!(immutable_phases.contains(&PublicationPhase::PayloadSynced));
         assert!(immutable_phases.contains(&PublicationPhase::DestinationSynced));
+        let collision = publish_immutable_preparation_record_with_hook(
+            &snapshots_dir,
+            &sealed_snapshot,
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            collision,
+            PreparationError::Io(error) if error.kind() == io::ErrorKind::AlreadyExists
+        ));
 
         let mut pointer_phases = Vec::new();
         let sealed_head_one = head().seal(&keys(3)).unwrap();
@@ -345,7 +427,7 @@ mod formats {
         publish_preparation_head_with_hook(&fs_dir, &sealed_head_two, &mut |_| Ok(())).unwrap();
         assert_eq!(
             std::fs::read(root.join("PREPARATION_HEAD")).unwrap(),
-            sealed_head_two
+            sealed_head_two.as_bytes()
         );
         assert!(
             publish_preparation_head_with_hook(&fs_dir, &sealed_snapshot, &mut |_| Ok(())).is_err()

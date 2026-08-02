@@ -78,6 +78,18 @@ pub(super) enum PreparationError {
     Io(#[from] io::Error),
 }
 
+pub(super) struct SealedPreparationRecord {
+    encoded: Vec<u8>,
+    kind: PreparationRecordKind,
+    monotonic_number: u64,
+}
+
+impl SealedPreparationRecord {
+    pub(super) fn as_bytes(&self) -> &[u8] {
+        &self.encoded
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 enum PreparationRecordKind {
@@ -109,16 +121,6 @@ impl PreparationRecordKind {
             Self::DescriptorSegment => Ok("prep-manifest.acore"),
             Self::FinalIntentSegment => Ok("prep-intent.acore"),
             Self::Receipt => Ok("prep-receipt.acore"),
-        }
-    }
-
-    fn maximum_envelope_size(self) -> usize {
-        match self {
-            Self::Head => MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
-            Self::Snapshot => MAX_PREPARATION_SNAPSHOT_ENVELOPE_SIZE,
-            Self::DescriptorSegment => MAX_DESCRIPTOR_SEGMENT_ENVELOPE_SIZE,
-            Self::FinalIntentSegment => MAX_FINAL_INTENT_SEGMENT_ENVELOPE_SIZE,
-            Self::Receipt => MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
         }
     }
 }
@@ -313,7 +315,10 @@ macro_rules! impl_record_codecs {
                 decode_record(encoded, expected_core_id, expected_frk_version)
             }
 
-            pub(super) fn seal(&self, keys: &FrkSubkeys) -> Result<Vec<u8>, PreparationError> {
+            pub(super) fn seal(
+                &self,
+                keys: &FrkSubkeys,
+            ) -> Result<SealedPreparationRecord, PreparationError> {
                 seal_record(self, keys)
             }
 
@@ -452,7 +457,7 @@ impl PreparationRecord for PreparedObjectDescriptorSegment {
         }
         let mut stable_ids = HashSet::new();
         let mut physical_names = HashSet::new();
-        let mut ordinals = HashSet::new();
+        let mut previous_ordinal = None;
         for descriptor in &self.descriptors {
             descriptor.validate(self.required_frk_version)?;
             if !stable_ids.insert(descriptor.stable_id.as_str()) {
@@ -461,11 +466,14 @@ impl PreparationRecord for PreparedObjectDescriptorSegment {
             if !physical_names.insert(descriptor.physical_name.as_str()) {
                 return Err(PreparationError::InvalidFormat("duplicate physical name"));
             }
-            if !ordinals.insert(descriptor.preparation_ordinal) {
+            if previous_ordinal.is_some_and(|previous: u64| {
+                previous.checked_add(1) != Some(descriptor.preparation_ordinal)
+            }) {
                 return Err(PreparationError::InvalidFormat(
-                    "duplicate preparation ordinal",
+                    "descriptor ordinals are not contiguous",
                 ));
             }
+            previous_ordinal = Some(descriptor.preparation_ordinal);
         }
         Ok(())
     }
@@ -499,17 +507,20 @@ impl PreparationRecord for FinalIntentSegment {
             ));
         }
         let mut stable_ids = HashSet::new();
-        let mut ordinals = HashSet::new();
+        let mut previous_ordinal = None;
         for entry in &self.entries {
             entry.validate()?;
             if !stable_ids.insert(entry.stable_id.as_str()) {
                 return Err(PreparationError::InvalidFormat("duplicate stable ID"));
             }
-            if !ordinals.insert(entry.ordinal) {
+            if previous_ordinal
+                .is_some_and(|previous: u64| previous.checked_add(1) != Some(entry.ordinal))
+            {
                 return Err(PreparationError::InvalidFormat(
-                    "duplicate final-intent ordinal",
+                    "final-intent ordinals are not contiguous",
                 ));
             }
+            previous_ordinal = Some(entry.ordinal);
         }
         Ok(())
     }
@@ -625,6 +636,12 @@ impl FinalIntentEntry {
                 "non-canonical final-intent entry",
             ));
         }
+        let digest: [u8; 32] = Sha256::digest(self.canonical_catalog_entry_json.as_bytes()).into();
+        if hex_bytes(&digest) != self.canonical_catalog_entry_sha256 {
+            return Err(PreparationError::InvalidFormat(
+                "final-intent entry hash mismatch",
+            ));
+        }
         Ok(())
     }
 }
@@ -657,7 +674,7 @@ fn decode_record<T: PreparationRecord>(
 fn seal_record<T: PreparationRecord>(
     record: &T,
     keys: &FrkSubkeys,
-) -> Result<Vec<u8>, PreparationError> {
+) -> Result<SealedPreparationRecord, PreparationError> {
     if keys.frk_version() != record.required_frk_version() {
         return Err(PreparationError::InvalidFormat("FRK version mismatch"));
     }
@@ -711,7 +728,11 @@ fn seal_record<T: PreparationRecord>(
     if envelope.len() > T::MAX_ENVELOPE_SIZE {
         return Err(PreparationError::LimitExceeded("envelope"));
     }
-    Ok(envelope)
+    Ok(SealedPreparationRecord {
+        encoded: envelope,
+        kind: T::KIND,
+        monotonic_number: record.monotonic_number(),
+    })
 }
 
 fn open_record<T: PreparationRecord>(
@@ -862,10 +883,13 @@ fn validate_segment_references(
     if references.len() > MAX_SEGMENT_REFERENCES {
         return Err(PreparationError::LimitExceeded("segment references"));
     }
-    let mut indexes = HashSet::new();
-    for reference in references {
-        if !indexes.insert(reference.segment_index) {
-            return Err(PreparationError::InvalidFormat("duplicate segment index"));
+    for (expected_index, reference) in references.iter().enumerate() {
+        let expected_index = u32::try_from(expected_index)
+            .map_err(|_| PreparationError::LimitExceeded("segment index"))?;
+        if reference.segment_index != expected_index {
+            return Err(PreparationError::InvalidFormat(
+                "segment indexes are not contiguous",
+            ));
         }
         validate_hash(&reference.ciphertext_sha256)?;
         let item_count = usize::try_from(reference.item_count)
@@ -919,85 +943,44 @@ fn validate_opaque(value: &str, field: &'static str) -> Result<(), PreparationEr
 
 pub(super) fn publish_preparation_head_with_hook<F>(
     fs_dir: &Dir,
-    encoded: &[u8],
+    sealed: &SealedPreparationRecord,
     hook: &mut F,
 ) -> Result<(), PreparationError>
 where
     F: FnMut(PublicationPhase) -> io::Result<()>,
 {
-    let (_, kind) = publication_identity(encoded)?;
-    if kind != PreparationRecordKind::Head {
+    if sealed.kind != PreparationRecordKind::Head {
         return Err(PreparationError::InvalidFormat(
             "PREPARATION_HEAD requires a head envelope",
         ));
     }
-    atomic_publish_in_with_hook(fs_dir, OsStr::new(PREPARATION_HEAD_FILE), encoded, hook)?;
+    atomic_publish_in_with_hook(
+        fs_dir,
+        OsStr::new(PREPARATION_HEAD_FILE),
+        sealed.as_bytes(),
+        hook,
+    )?;
     Ok(())
 }
 
 pub(super) fn publish_immutable_preparation_record_with_hook<F>(
     record_dir: &Dir,
-    encoded: &[u8],
+    sealed: &SealedPreparationRecord,
     hook: &mut F,
 ) -> Result<String, PreparationError>
 where
     F: FnMut(PublicationPhase) -> io::Result<()>,
 {
-    let (monotonic_number, kind) = publication_identity(encoded)?;
-    kind.immutable_suffix()?;
-    let digest: [u8; 32] = Sha256::digest(encoded).into();
+    let suffix = sealed.kind.immutable_suffix()?;
+    let digest: [u8; 32] = Sha256::digest(sealed.as_bytes()).into();
     let name = format!(
-        "{monotonic_number:020}-{}.{}",
+        "{:020}-{}.{}",
+        sealed.monotonic_number,
         hex_bytes(&digest),
-        kind.immutable_suffix()?
+        suffix
     );
-    publish_immutable_in_with_hook(record_dir, OsStr::new(&name), encoded, hook)?;
+    publish_immutable_in_with_hook(record_dir, OsStr::new(&name), sealed.as_bytes(), hook)?;
     Ok(name)
-}
-
-fn publication_identity(encoded: &[u8]) -> Result<(u64, PreparationRecordKind), PreparationError> {
-    if encoded.len() < ENVELOPE_FIXED_HEADER_SIZE + TAG_LENGTH {
-        return Err(PreparationError::InvalidFormat("truncated envelope"));
-    }
-    if &encoded[..8] != ENVELOPE_MAGIC {
-        return Err(PreparationError::InvalidFormat("envelope magic"));
-    }
-    let envelope_version = u16::from_le_bytes(encoded[8..10].try_into().expect("fixed slice"));
-    if envelope_version != PREPARATION_ENVELOPE_VERSION {
-        return Err(PreparationError::UnsupportedEnvelopeVersion(
-            envelope_version,
-        ));
-    }
-    let kind = PreparationRecordKind::parse(encoded[10])?;
-    if encoded.len() > kind.maximum_envelope_size() {
-        return Err(PreparationError::LimitExceeded("preparation envelope"));
-    }
-    let schema_version = u16::from_le_bytes(encoded[11..13].try_into().expect("fixed slice"));
-    if schema_version != PREPARATION_SCHEMA_VERSION {
-        return Err(PreparationError::UnsupportedSchemaVersion(schema_version));
-    }
-    let monotonic_number = u64::from_le_bytes(encoded[17..25].try_into().expect("fixed slice"));
-    let context_length = usize::from(u16::from_le_bytes(
-        encoded[25..27].try_into().expect("fixed slice"),
-    ));
-    let ciphertext_length = usize::try_from(u32::from_le_bytes(
-        encoded[39..43].try_into().expect("fixed slice"),
-    ))
-    .map_err(|_| PreparationError::LimitExceeded("ciphertext"))?;
-    if context_length == 0
-        || context_length > MAX_AAD_CONTEXT_BYTES
-        || ciphertext_length < TAG_LENGTH
-    {
-        return Err(PreparationError::InvalidFormat("envelope lengths"));
-    }
-    let expected_length = ENVELOPE_FIXED_HEADER_SIZE
-        .checked_add(context_length)
-        .and_then(|length| length.checked_add(ciphertext_length))
-        .ok_or(PreparationError::LimitExceeded("preparation envelope"))?;
-    if encoded.len() != expected_length {
-        return Err(PreparationError::InvalidFormat("envelope length"));
-    }
-    Ok((monotonic_number, kind))
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
