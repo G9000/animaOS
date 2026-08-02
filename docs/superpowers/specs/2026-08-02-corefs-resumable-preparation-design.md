@@ -55,6 +55,8 @@ The user approved this persistent protocol instead of either:
 ```text
 .anima/fs/
   PREPARATION_HEAD
+  preparation-quarantine/
+    <pointer-hash>.prep-pointer
   preparations/
     <opaque-preparation-id>/
       manifests/
@@ -63,8 +65,6 @@ The user approved this persistent protocol instead of either:
         <sequence>-<ciphertext-hash>.prep.acore
       receipts/
         <opaque-receipt-id>.prep-receipt.acore
-      quarantine/
-        <pointer-hash>.prep-pointer
 ```
 
 `PREPARATION_HEAD` is a small pointer analogous to `HEAD`: it contains only an opaque preparation ID, snapshot sequence, encrypted snapshot hash, envelope version, and required FRK version. It reveals no logical names, counts, source identifiers, or content hashes. The pointer is accepted only after the referenced encrypted snapshot is reopened, authenticated, and matched to the pointer.
@@ -170,7 +170,7 @@ Before sealing, Python recomputes the generation and inventory in a short consis
 
 `seal_preparation_v1` requires exact preparation CAS plus the verified source mutation generation and inventory digest. It validates the complete folder/object graph, stable roles, policies, names, references, revision preconditions, and descriptor coverage.
 
-The next encrypted `ready` snapshot contains the complete bounded logical catalog intent, its canonical intent digest, the exact expected validation head, and the descriptors it references. It contains no body plaintext.
+The next encrypted `ready` snapshot contains only the authenticated final-intent root, ordered intent segment IDs/hashes/counts, canonical intent digest, exact expected validation head, and descriptor-manifest root. The complete bounded logical catalog intent remains in separately bounded encrypted segments and contains no body plaintext. Finalization reconstructs and validates the intent from those authenticated segments.
 
 Once ready, object preparation is closed. A detected source change requires an explicit return to `collecting` through a new CAS snapshot, not an in-place mutation.
 
@@ -202,7 +202,7 @@ Clearing means an atomic remove/replace protocol with parent-directory durabilit
 
 Abandonment is explicit and exact-CAS. `abandon_preparation_v1` creates or authenticates the deterministic encrypted `abandoned` receipt naming the final authenticated preparation snapshot, then clears `PREPARATION_HEAD`. A crash or retry at either write seam follows the same existing-receipt rules as completion. It never deletes prepared objects synchronously.
 
-A corrupt, replayed, wrong-Core, or otherwise unauthenticatable `PREPARATION_HEAD` cannot use normal abandonment. An explicit operator-only `quarantine_preparation_v1` path acquires the Core commit lock, requires the byte-exact expected pointer hash, durably preserves the original pointer bytes in the preparation quarantine, writes an authenticated quarantine receipt under the active preparation subkey, and only then clears the live pointer by byte-exact CAS. Quarantine does not assert that unknown prepared objects are abandoned and makes the entire affected preparation subtree ineligible for GC. All possibly required FRK generations remain retained until PCF-010 or a later recovery proves the inventory safe.
+A corrupt, replayed, wrong-Core, or otherwise unauthenticatable `PREPARATION_HEAD` cannot use normal abandonment. An explicit operator-only `quarantine_preparation_v1` path acquires the Core commit lock, requires the byte-exact expected pointer hash, durably preserves the original pointer bytes at the Core-global hash-addressed `preparation-quarantine/<pointer-hash>.prep-pointer`, writes an authenticated quarantine receipt under the active preparation subkey, and only then clears the live pointer by byte-exact CAS. No filesystem component or destination is ever derived from unauthenticated pointer fields. Quarantine does not assert that unknown prepared objects are abandoned and makes all preparation inventory not proven unrelated ineligible for GC. All possibly required FRK generations remain retained until PCF-010 or a later recovery proves the inventory safe.
 
 Prepared and crash-orphaned objects are eligible for PCF-010 pruning only when authenticated inventory proves they are referenced by none of:
 
