@@ -58,3 +58,24 @@ describe("diary editor schema", () => {
     expect(out).toContain('data-tone="amber"');
   });
 });
+
+const { createDiaryHtmlSanitizer } = await import("../src/features/diary/lib/sanitize");
+const sanitize = createDiaryHtmlSanitizer(dom.window as any);
+
+describe("diary editor + sanitizer stability", () => {
+  const cases: Record<string, string> = {
+    taskList: '<ul data-type="taskList"><li data-checked="true" data-type="taskItem"><p>done</p></li></ul>',
+    table: "<table><tbody><tr><td><p>a</p></td><td><p>b</p></td></tr></tbody></table>",
+    details: '<details><summary>more</summary><div data-type="detailsContent"><p>hidden</p></div></details>',
+    heading: "<h2>Title</h2><p>hi <strong>there</strong></p>",
+    legacyImage: '<p><img src="data:image/png;base64,AAAA" alt="memory"></p>',
+  };
+
+  for (const [name, input] of Object.entries(cases)) {
+    test(`${name} is stable across repeated save cycles`, () => {
+      const pass1 = sanitize(roundTrip(input));
+      const pass2 = sanitize(roundTrip(pass1));
+      expect(pass2).toBe(pass1);
+    });
+  }
+});
