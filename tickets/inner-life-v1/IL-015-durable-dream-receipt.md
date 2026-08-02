@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-03 00:09 MYT
+- Updated: 2026-08-03 00:31 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -263,6 +263,15 @@ is its own ticket:
   locating it inside the message string, which the static-greeting path does
   not necessarily append at the end. A false "not visible" stays recoverable
   through the recheck timer.
+
+- 2026-08-03 00:31 MYT - PR #135 review round 13 (P1, Codex): three point samples do not
+  establish that a text block is fully on screen — the 5%/95% insets left
+  room for a clipped edge to hide part of the appended dream line, and only
+  the centre x was ever checked. The element's whole bounding box is now
+  required to be inside the viewport, with the samples reduced to what they
+  are good for (occlusion). A block LARGER than the viewport is exempt from
+  the bounds test, since it could never satisfy it and the receipt would be
+  starved forever — which would guarantee the dream is re-offered.
 
 ## Validation
 
