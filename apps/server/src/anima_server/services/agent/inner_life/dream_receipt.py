@@ -124,28 +124,50 @@ def confirm_claim(
     not been acknowledged, and it renews the claim in the same statement, so
     the caller's render is covered by a fresh TTL.
 
-    Returns the renewed claim, or None when it is stale — the caller must
-    then voice the dream-free copy instead. Renewing rather than surfacing
-    keeps IL-015's guarantee intact: a client that dies between confirming
-    and painting loses nothing, because the renewed claim simply expires and
-    the dream is offered again.
+    Returns the renewed claim, or None when it is stale OR consent has since
+    been withdrawn — the caller must then voice the dream-free copy instead.
+    Renewing rather than surfacing keeps IL-015's guarantee intact: a client
+    that dies between confirming and painting loses nothing, because the
+    renewed claim simply expires and the dream is offered again.
     """
+    from anima_server.services.presence_config import (
+        get_presence_config_values,
+        presence_consent_lock,
+    )
+
     claimed_at = _parse_claim_token(token)
     if claimed_at is None:
         return None
     renewed_at = now or datetime.now(UTC)
-    result = db.execute(
-        update(DreamJournal)
-        .where(
-            DreamJournal.id == dream_id,
-            DreamJournal.user_id == user_id,
-            DreamJournal.surfaced.is_(False),
-            DreamJournal.claimed_at == claimed_at,
+    # Consent is re-read here, under the same per-user lock the presence
+    # config PUT holds through its commit (PR #135 review, P1). The claim was
+    # taken when the greeting was generated — possibly minutes ago, and for a
+    # stashed greeting up to a whole TTL ago — so ownership of the claim
+    # proves nothing about CONTINUING consent. An opt-out in that window must
+    # win, exactly as it does in the generation path.
+    with presence_consent_lock(user_id):
+        db.expire_all()
+        values = get_presence_config_values(db, user_id)
+        if not (values.enabled and values.dream_sharing == "ambient"):
+            # Left claimed on purpose: clearing it unconditionally would also
+            # clear a NEWER greeting's claim (the round-3 bug). An unvoiced
+            # claim lapses on its own within the TTL, and the next claim is
+            # consent-gated anyway.
+            db.rollback()
+            return None
+        db.rollback()  # end the read snapshot before upgrading to a write
+        result = db.execute(
+            update(DreamJournal)
+            .where(
+                DreamJournal.id == dream_id,
+                DreamJournal.user_id == user_id,
+                DreamJournal.surfaced.is_(False),
+                DreamJournal.claimed_at == claimed_at,
+            )
+            .values(claimed_at=renewed_at)
         )
-        .values(claimed_at=renewed_at)
-    )
-    if result.rowcount != 1:
-        return None
+        if result.rowcount != 1:
+            return None
     return ConfirmedClaim(
         token=claim_token(renewed_at), expires_at=claim_expires_at(renewed_at)
     )

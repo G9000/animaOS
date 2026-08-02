@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-02 14:37 MYT
+- Updated: 2026-08-02 15:19 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -119,15 +119,36 @@ is its own ticket:
   expiry check stays as a cheap pre-filter and as storage hygiene, but it is
   no longer load-bearing for correctness.
 
+- 2026-08-02 15:19 MYT - PR #135 review round 4 (two P1s, Codex, both real):
+  (1) The new confirm endpoint proved OWNERSHIP of the claim but not
+  CONTINUING consent. A claim is taken when the greeting is generated —
+  for a stashed greeting, up to a whole TTL earlier — so an opt-out in that
+  window would still be answered with a dream. `confirm_claim` now re-reads
+  the presence config under the same per-user `presence_consent_lock` the
+  config PUT holds through its commit, and refuses unless the master switch
+  is on and sharing is still `ambient`. The claim is deliberately NOT
+  released on refusal: clearing it unconditionally would also clear a newer
+  greeting's claim (the round-3 bug), and an unvoiced claim lapses within
+  the TTL anyway.
+  (2) Acknowledgement fired from the fetch handler, right after `setBrief`.
+  Both dashboard surfaces that render the greeting (`profile`, `greeting`)
+  can be CLOSED by the user, and closed nodes are filtered out of the graph
+  — so a dream could be marked surfaced forever while nothing on screen ever
+  voiced it, which is exactly the loss IL-015 exists to prevent. The receipt
+  is now reported by whichever node actually rendered the dream, from an
+  effect that runs after the commit, and deduped by claim generation
+  (`dreamReceiptKey` = `dreamId:claimToken`) since both nodes report and
+  effects re-run. A failed ack releases the dedupe so a later render retries.
+
 ## Validation
 
 - Commands:
-  - `pytest tests/test_inner_life_ambient_dream.py` — 39 passed (2026-08-02 14:37 MYT)
+  - `pytest tests/test_inner_life_ambient_dream.py` — 42 passed (2026-08-02 15:19 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
   - Full server suite (`pytest tests/ -p no:randomly`) — **3371 passed,
     0 failed, 2 skipped, 11 deselected** in 14m38s, run 2026-08-02 14:52 MYT
-  - `bun test tests/` (apps/desktop) — 125 passed, 0 failed (2026-08-02 14:37 MYT)
+  - `bun test tests/` (apps/desktop) — 128 passed, 0 failed (2026-08-02 15:19 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
   - `apps/server/src/anima_server/models/agent_runtime.py`
@@ -139,6 +160,10 @@ is its own ticket:
   - `packages/api-client/src/client.ts`, `packages/api-client/src/types.ts`
   - `apps/desktop/src/pages/dashboard/Dashboard.tsx`
   - `apps/desktop/src/lib/greetingCache.ts`
+  - `apps/desktop/src/pages/dashboard/layout.ts`
+  - `apps/desktop/src/pages/dashboard/nodes/node-types.ts`
+  - `apps/desktop/src/pages/dashboard/nodes/GreetingNode.tsx`
+  - `apps/desktop/src/pages/dashboard/nodes/ProfileNode.tsx`
   - `apps/desktop/tests/greetingCache.test.ts`
   - `apps/server/tests/test_inner_life_ambient_dream.py`
 - Notes:

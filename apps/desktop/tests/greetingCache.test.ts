@@ -6,6 +6,7 @@ import {
   ambientConsentAllows,
   dreamClaimExpired,
   dreamFreeGreeting,
+  dreamReceiptKey,
   ONESHOT_FALLBACK_TTL_MS,
   voiceableGreeting,
   getCachedGreeting,
@@ -321,5 +322,61 @@ describe("confirming the claim before voicing (PR #135 review round 3)", () => {
     const shown = dreamFreeGreeting(dreamy({ handoffMessage: null }));
     expect(shown.message).toBe("");
     expect(shown.ambientDream).toBe(false);
+  });
+});
+
+describe("dream receipts are owed per claim generation (PR #135 review)", () => {
+  test("a dream-bearing greeting owes a receipt keyed by its claim", () => {
+    expect(
+      dreamReceiptKey(
+        greeting({
+          ambientDream: true,
+          ambientDreamId: 42,
+          ambientDreamClaimToken: "2026-08-02T06:00:00+00:00",
+        }),
+      ),
+    ).toBe("42:2026-08-02T06:00:00+00:00");
+  });
+
+  test("re-claiming the same dream owes a NEW receipt", () => {
+    // A dream that lapsed and was claimed again is a different disclosure;
+    // the earlier receipt must not suppress the later one.
+    const first = dreamReceiptKey(
+      greeting({
+        ambientDream: true,
+        ambientDreamId: 42,
+        ambientDreamClaimToken: "2026-08-02T06:00:00+00:00",
+      }),
+    );
+    const second = dreamReceiptKey(
+      greeting({
+        ambientDream: true,
+        ambientDreamId: 42,
+        ambientDreamClaimToken: "2026-08-02T06:30:00+00:00",
+      }),
+    );
+    expect(second).not.toBe(first);
+  });
+
+  test("nothing is owed for greetings that carry no voiceable dream", () => {
+    expect(dreamReceiptKey(null)).toBeNull();
+    expect(dreamReceiptKey(greeting())).toBeNull();
+    // A dream stripped by a refused confirmation must never be acked.
+    expect(
+      dreamReceiptKey(
+        dreamFreeGreeting(
+          greeting({
+            ambientDream: true,
+            ambientDreamId: 42,
+            handoffMessage: "hi there.",
+            ambientDreamClaimToken: "2026-08-02T06:00:00+00:00",
+          }),
+        ),
+      ),
+    ).toBeNull();
+    // No token: the server would reject the ack anyway.
+    expect(
+      dreamReceiptKey(greeting({ ambientDream: true, ambientDreamId: 42 })),
+    ).toBeNull();
   });
 });

@@ -1078,3 +1078,82 @@ def test_confirming_extends_the_window_the_dream_stays_unofferable(soul_db) -> N
         ).first()
         is not None
     )
+
+
+def test_confirm_refuses_after_consent_is_withdrawn(soul_db) -> None:
+    """Regression (PR #135 review, P1): the claim was taken when the greeting
+    was generated — for a stashed greeting, up to a whole TTL earlier. Owning
+    the claim proves nothing about CONTINUING consent, so an opt-out in that
+    window must stop the voicing exactly as it does during generation."""
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_token,
+        confirm_claim,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    token = claim_token(claim.claimed_at)
+
+    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg.dream_sharing = "off"
+    soul_db.commit()
+
+    assert (
+        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
+        is None
+    )
+    # Not surfaced and still claimed: the claim lapses on its own rather than
+    # being cleared, since clearing unconditionally would also drop a NEWER
+    # greeting's claim.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    assert row.surfaced is False
+    assert row.claimed_at is not None
+
+    # Re-enabling ambient makes the very same claim voiceable again.
+    cfg.dream_sharing = "ambient"
+    soul_db.commit()
+    assert (
+        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
+        is not None
+    )
+
+
+def test_confirm_refuses_when_the_presence_master_switch_is_off(soul_db) -> None:
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_token,
+        confirm_claim,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+
+    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg.enabled = False
+    soul_db.commit()
+
+    assert (
+        confirm_claim(
+            soul_db,
+            user_id=user_id,
+            dream_id=claim.dream_id,
+            token=claim_token(claim.claimed_at),
+        )
+        is None
+    )
+
+
+def test_confirmation_is_serialized_with_consent_updates(soul_db) -> None:
+    """The consent re-read and the renewal run under the same per-user lock
+    the presence-config PUT holds through its commit, so an opt-out cannot
+    interleave between them (the round-10 lesson from PR #130)."""
+    import inspect
+
+    from anima_server.services.agent.inner_life.dream_receipt import confirm_claim
+
+    source = inspect.getsource(confirm_claim)
+    assert "with presence_consent_lock(user_id):" in source
+    lock_at = source.index("with presence_consent_lock(user_id):")
+    assert source.index("get_presence_config_values(db, user_id)") > lock_at
+    assert source.index("update(DreamJournal)") > lock_at

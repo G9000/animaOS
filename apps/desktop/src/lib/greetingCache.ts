@@ -293,3 +293,18 @@ export async function voiceableGreeting(
     return dreamFreeGreeting(greeting);
   }
 }
+
+/**
+ * Identifies the receipt owed for a greeting — `dreamId:claimToken`, or null
+ * when there is nothing to acknowledge.
+ *
+ * Keyed by the claim GENERATION, not the dream id (IL-015 / PR #135 review):
+ * the same dream can be claimed, lapse, and be claimed again, and each
+ * generation earns at most one receipt. The Dashboard dedupes on this, since
+ * both nodes that render a greeting report it and effects re-run.
+ */
+export function dreamReceiptKey(greeting: Greeting | null): string | null {
+  if (!greeting?.ambientDream) return null;
+  if (greeting.ambientDreamId == null || !greeting.ambientDreamClaimToken) return null;
+  return `${greeting.ambientDreamId}:${greeting.ambientDreamClaimToken}`;
+}

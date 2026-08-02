@@ -28,6 +28,7 @@ import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
   clearOneShotGreetings,
+  dreamReceiptKey,
   getCachedGreeting,
   peekOneShotGreeting,
   setCachedGreeting,
@@ -63,6 +64,7 @@ export default function Dashboard() {
 
   const [brief, setBrief] = useState<Greeting | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
+
   const [reflection, setReflection] = useState<Reflection | null>(null);
   const [reflectionLoading, setReflectionLoading] = useState(false);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
@@ -117,6 +119,31 @@ export default function Dashboard() {
     };
   }, [user?.id]);
 
+  // IL-015 (PR #135 review, P1): acknowledgement is driven by the node that
+  // actually rendered the dream, not by the fetch that produced it. Both
+  // surfaces showing `brief.message` (profile, greeting) can be closed by
+  // the user, and closed nodes are filtered out of the graph entirely — so
+  // acking on fetch marked dreams surfaced FOREVER that nothing on screen
+  // ever voiced, which is precisely the loss IL-015 exists to prevent.
+  // Deduped by claim token: both nodes report, and effects re-run.
+  const ackedDreamsRef = useRef<Set<string>>(new Set());
+  const handleDreamShown = useCallback(() => {
+    const receipt = dreamReceiptKey(brief);
+    const dreamId = brief?.ambientDreamId;
+    const token = brief?.ambientDreamClaimToken;
+    if (user?.id == null || receipt === null || dreamId == null || !token) return;
+    if (ackedDreamsRef.current.has(receipt)) return;
+    ackedDreamsRef.current.add(receipt);
+    void api.chat
+      .ackGreetingDream(user.id, dreamId, token)
+      .catch(() => {
+        // Best-effort: a failed receipt lets the claim lapse and the dream
+        // comes back later, which is the right failure. Allow a retry if
+        // the same greeting is rendered again.
+        ackedDreamsRef.current.delete(receipt);
+      });
+  }, [brief, user?.id]);
+
   useEffect(() => {
     if (user?.id == null || needsSetup !== false) return;
     let active = true;
@@ -140,13 +167,6 @@ export default function Dashboard() {
       voiceableGreeting(g, (dreamId, claimToken) =>
         api.chat.confirmGreetingDreamClaim(user.id, dreamId, claimToken),
       );
-    const ackIfDream = (g: Greeting) => {
-      if (g.ambientDream && g.ambientDreamId != null && g.ambientDreamClaimToken) {
-        void api.chat
-          .ackGreetingDream(user.id, g.ambientDreamId, g.ambientDreamClaimToken)
-          .catch(() => {});
-      }
-    };
     const fetchGreeting = () => {
       const cached = getCachedGreeting(user.id);
       if (cached) {
@@ -181,7 +201,6 @@ export default function Dashboard() {
             return;
           }
           setBrief(shown);
-          ackIfDream(shown);
           setCachedGreeting(user.id, shown);
         })
         .catch(() => {
@@ -227,7 +246,6 @@ export default function Dashboard() {
             void voiceable(oneShot).then((shown) => {
               if (!active) return;
               setBrief(shown);
-              ackIfDream(shown);
             });
             return;
           }
@@ -556,6 +574,7 @@ export default function Dashboard() {
         onDismissNudge: handleDismissNudge,
         onExploreMemory: handleExploreMemory,
         onCloseNode: handleCloseNode,
+        onDreamShown: handleDreamShown,
         onImageClick: handleImageClick,
         onPreviewThread: handlePreviewThread,
         onOpenThread: handleOpenThread,
@@ -584,6 +603,7 @@ export default function Dashboard() {
     handleViewAllEntries,
     handleDismissNudge,
     handleCloseNode,
+    handleDreamShown,
     handlePreviewThread,
     handleOpenThread,
     handleNewChat,

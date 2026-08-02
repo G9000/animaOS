@@ -54,6 +54,9 @@ export interface DashboardCallbacks {
   onDismissNudge: (type: string) => void;
   onExploreMemory: (episodeId: number) => void;
   onCloseNode: (id: string) => void;
+  /** Reported by whichever node actually rendered a dream-bearing greeting
+   * (IL-015 / PR #135 review). */
+  onDreamShown: () => void;
   onImageClick: (images: GalleryImage[], index: number) => void;
   onPreviewThread: (threadId: number) => void;
   onOpenThread: (threadId: number) => void;
@@ -137,6 +140,7 @@ export function buildInitialNodes(
       briefLoading,
       currentFocus,
       onExplore: callbacks.onExplore,
+      onDreamShown: callbacks.onDreamShown,
       onClose: () => callbacks.onCloseNode("profile"),
     }) as ProfileNode,
   );
@@ -150,6 +154,7 @@ export function buildInitialNodes(
       briefLoading,
       userName,
       onChat: () => callbacks.onExplore(brief?.message ?? "", brief?.pills),
+      onDreamShown: callbacks.onDreamShown,
       onClose: () => callbacks.onCloseNode("greeting"),
     }) as GreetingNode,
   );
