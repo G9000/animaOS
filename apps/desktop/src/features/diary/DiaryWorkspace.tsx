@@ -15,18 +15,17 @@ import {
   resolveBodyForSave,
   snapshotBelongsToEntry,
 } from "./lib/pageLifecycle";
-import { isHtmlBody, escapeHtmlForEditor, formatFileSize } from "./lib/textFormat";
+import { isHtmlBody, escapeHtmlForEditor } from "./lib/textFormat";
 import { handleInstanceTornDown } from "./lib/editorHandoff";
 import { Glyph } from "./editor/glyphIcons";
 import { DiaryEditor } from "./editor/DiaryEditor";
 import { useAutosave } from "./hooks/useAutosave";
+import { useAttachmentUpload } from "./hooks/useAttachmentUpload";
 import { useDiaryEntries } from "./hooks/useDiaryEntries";
 import { useVoiceRecorder } from "./hooks/useVoiceRecorder";
 import { PageHeader } from "./panels/PageHeader";
 import { LibrarySidebar } from "./panels/LibrarySidebar";
 import { DetailsDrawer } from "./panels/DetailsDrawer";
-
-const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
 
 const sanitizeDiaryHtml = createDiaryHtmlSanitizer(window);
 
@@ -37,15 +36,6 @@ function PencilGlyphIcon({ className }: { className?: string }) {
       <path d="M13 7l4 4" />
     </Glyph>
   );
-}
-
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
-    reader.readAsDataURL(file);
-  });
 }
 
 // The one place the editor's ProseMirror doc is walked to decide whether it
@@ -259,6 +249,14 @@ export default function DiaryWorkspace() {
   // against one entry can never be redirected to whatever entry is
   // selected by the time it actually flushes.
   const autosaveEntryId = selectedEntry?.id ?? null;
+
+  // Task 13: the diaryImage node's only path to the network — see the doc
+  // comment on DiaryImageOptions in editor/nodes/AttachmentImage.tsx. Bound
+  // to the currently-selected entry; DiaryEditor is keyed by entry.id, so a
+  // fresh DiaryEditor (and therefore a fresh set of extensions carrying
+  // this closure) is created whenever the id below changes.
+  const uploadInlineImage = useAttachmentUpload(autosaveEntryId, setError);
+
   const {
     schedule,
     flush,
@@ -383,28 +381,35 @@ export default function DiaryWorkspace() {
     schedule({ title: newTitle, body });
   };
 
-  const insertInlineImage = async (file: File) => {
+  // Task 13: the slash "/image" command's file picker no longer reads the
+  // file into a base64 data URL — it inserts a diaryImage node (uploading
+  // -> ready/error), the exact same command used by DiaryEditor's own
+  // paste/drop interception (see nodes/AttachmentImage.tsx). The node's own
+  // `insertContent` dispatch fires the editor's normal onUpdate ->
+  // handleEditorChange, so the content snapshot / autosave scheduling
+  // below already stays current without a separate syncEditorContent call
+  // here (unlike the old setImage-based version, which called it
+  // explicitly as a defensive measure that the same dispatch made
+  // redundant).
+  //
+  // No file-size gate here (there used to be a MAX_INLINE_IMAGE_BYTES
+  // check): that limit existed only because a large inline image meant a
+  // large base64 blob landing straight in the autosaved body/HTML. Now the
+  // bytes go to the attachment store exactly like every other attachment
+  // (Attach button, cover image, voice note) — none of which impose a
+  // client-side size cap — so keeping one just for this path would be an
+  // inconsistent, no-longer-motivated restriction. Server-side limits (if
+  // any) still apply and surface through uploadImage's existing error
+  // channel below.
+  const insertInlineImage = (file: File) => {
     if (!file.type.startsWith("image/")) return;
-    if (file.size > MAX_INLINE_IMAGE_BYTES) {
-      setError(
-        `"${file.name}" is too large to embed inline (max ${formatFileSize(MAX_INLINE_IMAGE_BYTES)}). Use Attach for large files instead.`,
-      );
-      return;
-    }
-    try {
-      const dataUrl = await fileToDataUrl(file);
-      editorRef.current?.chain().focus().setImage({ src: dataUrl, alt: file.name }).run();
-      const entryId = selectedEntryRef.current?.id;
-      if (editorRef.current && entryId != null) syncEditorContent(editorRef.current, entryId);
-    } catch {
-      setError(`Failed to embed "${file.name}".`);
-    }
+    editorRef.current?.commands.insertAttachmentImage(file);
   };
 
   const handleInlineImageFilesSelected = (selected: FileList | null) => {
     if (!selected || selected.length === 0) return;
     for (const file of Array.from(selected)) {
-      void insertInlineImage(file);
+      insertInlineImage(file);
     }
   };
 
@@ -588,16 +593,7 @@ export default function DiaryWorkspace() {
                     initialHtml={initialHtml}
                     onChange={handleEditorChange}
                     onImageRequest={() => hiddenImageInputRef.current?.click()}
-                    onImagePaste={async (file) => {
-                      const entryId = selectedEntryRef.current?.id;
-                      if (entryId == null) return null;
-                      const uploaded = await uploadAttachment(
-                        entryId,
-                        file,
-                        `Failed to attach "${file.name}".`,
-                      );
-                      return uploaded?.id ?? null;
-                    }}
+                    onImageUpload={uploadInlineImage}
                     onEditorReady={handleEditorReady}
                     onEditorDestroyed={handleEditorDestroyed}
                   />

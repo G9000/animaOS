@@ -80,6 +80,33 @@ describe("diary editor + sanitizer stability", () => {
   }
 });
 
+describe("attachment-backed images", () => {
+  test("round-trips attachment id and survives the sanitizer", () => {
+    const input = '<img data-attachment-id="42" alt="a shot">';
+    const out = roundTrip(input);
+    expect(out).toContain('data-attachment-id="42"');
+
+    const pass1 = sanitize(roundTrip(input));
+    const pass2 = sanitize(roundTrip(pass1));
+    expect(pass2).toBe(pass1);
+    expect(pass1).toContain('data-attachment-id="42"');
+  });
+
+  test("never persists transient upload state", () => {
+    const out = roundTrip('<img data-attachment-id="42" alt="a shot">');
+    expect(out).not.toContain("uploadState");
+    expect(out).not.toContain("data-upload-state");
+  });
+
+  test("still round-trips legacy base64 images alongside attachment images", () => {
+    const out = roundTrip(
+      '<p><img src="data:image/png;base64,AAAA" alt="old"></p><p><img data-attachment-id="9" alt="new"></p>',
+    );
+    expect(out).toContain('src="data:image/png;base64,AAAA"');
+    expect(out).toContain('data-attachment-id="9"');
+  });
+});
+
 describe("callout node", () => {
   test("round-trips through the schema and the sanitizer", () => {
     const input = '<div data-type="callout" data-tone="info"><p>heads up</p></div>';
@@ -146,6 +173,40 @@ describe("image-only page is not discardable (Task 10 review hazard)", () => {
       title: null,
       bodyPlainText: "", // what editor.getText() would report
       attachmentCount: 0, // inline images are not upload attachments
+      coverAttachmentId: null,
+      hasNonTextContent: hasNonTextNode(nodeTypeNames),
+    });
+
+    expect(discardable).toBe(false);
+  });
+
+  // Task 13: same hazard, for the new attachment-backed diaryImage node
+  // (which coexists with legacy base64 "image" nodes — see the round-trip
+  // tests above). Verified against the real schema, not just the pure
+  // predicate, so this proves Tiptap really does assign the node type name
+  // "diaryImage" that NON_TEXT_NODE_TYPES expects.
+  test("an attachment-image-only document has empty plain text but a non-text node", () => {
+    const doc = generateJSON('<p><img data-attachment-id="7" alt="a shot"></p>', extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    const bodyPlainText = generateHTML(doc, extensions).replace(/<[^>]+>/g, "");
+    expect(bodyPlainText.trim()).toBe("");
+
+    expect(nodeTypeNames.has("diaryImage")).toBe(true);
+    expect(hasNonTextNode(nodeTypeNames)).toBe(true);
+  });
+
+  test("isDiscardablePage keeps an attachment-image-only page", () => {
+    const doc = generateJSON('<p><img data-attachment-id="7" alt="a shot"></p>', extensions);
+    const nodeTypeNames = collectNodeTypeNames(doc);
+
+    const discardable = isDiscardablePage({
+      title: null,
+      bodyPlainText: "",
+      // useAttachmentUpload deliberately does not mirror into the
+      // entries' attachments array (see its doc comment), so this must be
+      // 0 here for the test to actually exercise the hazard.
+      attachmentCount: 0,
       coverAttachmentId: null,
       hasNonTextContent: hasNonTextNode(nodeTypeNames),
     });

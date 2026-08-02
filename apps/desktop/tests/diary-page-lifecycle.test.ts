@@ -180,6 +180,17 @@ describe("hasNonTextNode", () => {
     expect(hasNonTextNode(["doc", "paragraph", "image"])).toBe(true);
   });
 
+  // Task 13: diaryImage is the new attachment-backed inline image node,
+  // registered alongside (not instead of) the legacy base64 "image" node
+  // above. Same hazard, same fix: a page whose only content is a
+  // newly-pasted attachment-backed image strips to "" plain text and isn't
+  // reflected in attachmentCount (useAttachmentUpload deliberately does not
+  // mirror into the entries' attachments array), so without this entry the
+  // untitled-page cleanup would silently delete it.
+  test("is true when a diaryImage node is present", () => {
+    expect(hasNonTextNode(["doc", "paragraph", "diaryImage"])).toBe(true);
+  });
+
   test("is true when a table node is present", () => {
     expect(hasNonTextNode(["doc", "table", "tableRow", "tableCell"])).toBe(true);
   });

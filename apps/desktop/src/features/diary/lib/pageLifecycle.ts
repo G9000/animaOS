@@ -30,8 +30,17 @@ export interface DiscardablePageInput {
 // is — it reads as incidental keystroke noise (e.g. a stray Shift+Enter),
 // so a document containing only a hard break is still treated as
 // discardable.
+// "diaryImage" (Task 13) is the attachment-backed inline image node —
+// same hazard as the legacy base64 "image" node it coexists with (see
+// editor/extensions.ts and editor/nodes/AttachmentImage.tsx): a page whose
+// only content is a newly-pasted attachment-backed image strips to ""
+// plain text and is not reflected in attachmentCount (useAttachmentUpload
+// deliberately does not mirror into the entries' attachments array — see
+// its doc comment), so without this entry the untitled-page cleanup would
+// treat such a page as discardable and silently delete it.
 export const NON_TEXT_NODE_TYPES: ReadonlySet<string> = new Set([
   "image",
+  "diaryImage",
   "table",
   "horizontalRule",
   "callout",

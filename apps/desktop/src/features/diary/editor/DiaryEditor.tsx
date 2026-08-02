@@ -56,7 +56,14 @@ export interface DiaryEditorProps {
   initialHtml: string;
   onChange: (html: string, plainText: string) => void;
   onImageRequest: () => void;
-  onImagePaste: (file: File) => Promise<number | null>;
+  // Task 13: the diaryImage node's only path to the network (see the doc
+  // comment on DiaryImageOptions in nodes/AttachmentImage.tsx). Used for
+  // ALL THREE ways an inline image can be inserted — clipboard paste,
+  // drag-and-drop, and the slash "/image" file picker (which calls this
+  // indirectly, by invoking the `insertAttachmentImage` command on the
+  // same live editor instance handed back via onEditorReady) — not just
+  // paste, hence the rename from the pre-Task-13 `onImagePaste`.
+  onImageUpload: (file: File) => Promise<number | null>;
   // Deviation from the brief's literal prop list: a few pre-existing,
   // externally-triggered behaviors — inline-image embedding from a hidden
   // file input owned by the parent (still fed by `onImageRequest`),
@@ -90,7 +97,7 @@ export interface DiaryEditorProps {
 }
 
 export function DiaryEditor(props: DiaryEditorProps) {
-  const { onChange, onImageRequest, onImagePaste, onEditorReady, onEditorDestroyed, entryId } = props;
+  const { onChange, onImageRequest, onImageUpload, onEditorReady, onEditorDestroyed, entryId } = props;
   const editorRef = useRef<Editor | null>(null);
   // Captured once in onCreate and read in onDestroy, rather than closing
   // over the `editor` variable produced by this same useEditor(...) call
@@ -102,6 +109,8 @@ export function DiaryEditor(props: DiaryEditorProps) {
     extensions: createDiaryExtensions({
       placeholder: "Write your thoughts… ( '/' for commands · drop or paste an image )",
       onImageRequest,
+      entryId,
+      onImageUpload,
     }),
     content: props.initialHtml,
     editorProps: {
@@ -117,11 +126,16 @@ export function DiaryEditor(props: DiaryEditorProps) {
             .filter((file): file is File => file !== null);
           if (imageFiles.length > 0) {
             event.preventDefault();
-            // Pasted image FILES (e.g. copied from Finder) become
-            // attachments via the parent's onImagePaste, same as the
-            // "Attach" button — distinct from the slash "/image" command's
-            // inline base64 embed, which goes through onImageRequest.
-            for (const file of imageFiles) void onImagePaste(file);
+            // Task 13: pasted image FILES (e.g. copied from Finder) are
+            // inserted inline as attachment-backed diaryImage nodes — no
+            // base64 ever enters the body (see nodes/AttachmentImage.tsx).
+            // Uploading happens inside the node's own NodeView once
+            // inserted, via the `uploadImage` extension option
+            // (DiaryEditor's onImageUpload prop), so there is nothing
+            // further to await here.
+            for (const file of imageFiles) {
+              editorRef.current?.commands.insertAttachmentImage(file);
+            }
             return true;
           }
         }
@@ -139,6 +153,33 @@ export function DiaryEditor(props: DiaryEditorProps) {
           return true;
         }
         return false;
+      },
+      // Task 13: mirrors handlePaste's image interception for drag-and-drop
+      // FILES (as opposed to dragging existing editor content around,
+      // which ProseMirror already handles natively and which this never
+      // sees `dataTransfer.files` for). `stopPropagation` is deliberate and
+      // load-bearing: DiaryWorkspace's composer wrapper also has a native
+      // onDrop (handleComposerDrop) that treats ANY dropped file as a
+      // regular attachment via the "Attach" flow. Without stopping
+      // propagation here, an image dropped onto the editor would be
+      // inserted inline by this handler AND separately uploaded again as a
+      // plain attachment by the wrapper's handler, since that listener
+      // sits further up the same native DOM event bubble (React's own
+      // delegation does not get a chance to run once native propagation is
+      // stopped below it). Non-image file drops intentionally return false
+      // without stopping propagation, so they keep reaching the wrapper's
+      // existing "Attach" behavior unchanged.
+      handleDrop: (_view, event) => {
+        const files = event.dataTransfer?.files;
+        if (!files || files.length === 0) return false;
+        const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+        if (imageFiles.length === 0) return false;
+        event.preventDefault();
+        event.stopPropagation();
+        for (const file of imageFiles) {
+          editorRef.current?.commands.insertAttachmentImage(file);
+        }
+        return true;
       },
     },
     onCreate: ({ editor: created }) => {

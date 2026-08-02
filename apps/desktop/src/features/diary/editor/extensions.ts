@@ -14,6 +14,7 @@ import NodeRange from "@tiptap/extension-node-range";
 import { SLASH_COMMANDS, filterSlashCommands } from "./slashCommands";
 import { createSlashRenderer } from "./SlashMenu";
 import { Callout } from "./nodes/Callout";
+import { DiaryImage } from "./nodes/AttachmentImage";
 
 const lowlight = createLowlight(common);
 
@@ -55,6 +56,15 @@ const SlashCommands = Extension.create<SlashCommandsOptions>({
 export interface DiaryExtensionOptions {
   placeholder?: string;
   onImageRequest?: () => void;
+  // Which entry this editor instance belongs to, and the callback that
+  // actually uploads a NEW inline image's bytes to the encrypted
+  // attachment store. Both are threaded straight into the DiaryImage node
+  // below (Task 13) — see the doc comment on DiaryImageOptions for why
+  // this is the sanctioned way for the diaryImage node to reach the
+  // network without any file under editor/ importing the API client
+  // itself.
+  entryId?: number | null;
+  onImageUpload?: (file: File) => Promise<number | null>;
 }
 
 export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Extensions {
@@ -68,7 +78,15 @@ export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Exte
     Placeholder.configure({
       placeholder: options.placeholder ?? "Write, or press / for blocks",
     }),
+    // allowBase64 stays on so existing entries whose bodies already
+    // contain `<img src="data:image/png;base64,…">` keep rendering
+    // (Task 13 brief, point 2) — NEW inline images never take this path
+    // again; see DiaryImage below.
     TiptapImage.configure({ allowBase64: true }),
+    DiaryImage.configure({
+      entryId: options.entryId ?? null,
+      uploadImage: options.onImageUpload ?? (async () => null),
+    }),
     TaskList,
     TaskItem.configure({ nested: true }),
     Table.configure({ resizable: true }),
