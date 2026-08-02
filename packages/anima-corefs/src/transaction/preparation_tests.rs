@@ -846,7 +846,7 @@ mod begin_resume {
 mod crash_boundaries {
     use super::*;
 
-    fn publication_phases() -> Vec<PublicationPhase> {
+    fn publication_phases(target: PreparationPublicationTarget) -> Vec<PublicationPhase> {
         let phases = vec![
             PublicationPhase::TemporaryCreated,
             PublicationPhase::PayloadWritten,
@@ -857,12 +857,16 @@ mod crash_boundaries {
         #[cfg(not(windows))]
         let phases = {
             let mut phases = phases;
-            phases.extend([
-                PublicationPhase::StagingRemoved,
-                PublicationPhase::CleanupSynced,
-            ]);
+            if target == PreparationPublicationTarget::Snapshot {
+                phases.extend([
+                    PublicationPhase::StagingRemoved,
+                    PublicationPhase::CleanupSynced,
+                ]);
+            }
             phases
         };
+        #[cfg(windows)]
+        let _ = target;
         phases
     }
 
@@ -872,7 +876,7 @@ mod crash_boundaries {
             PreparationPublicationTarget::Snapshot,
             PreparationPublicationTarget::Head,
         ] {
-            for phase in publication_phases() {
+            for phase in publication_phases(target) {
                 let test_core = TestCore::new(&format!("crash-{target:?}-{phase:?}"));
                 let coordinator = test_core.coordinator(CORE_ID);
                 let begun = coordinator
@@ -904,10 +908,52 @@ mod crash_boundaries {
                 let restarted = test_core.coordinator(CORE_ID);
                 let authoritative = restarted.load_preparation_status(&keys(3)).unwrap();
                 assert_eq!(authoritative.preparation_id, begun.preparation_id);
-                assert!(matches!(authoritative.snapshot_sequence, 1 | 2));
                 assert_eq!(authoritative.state, PreparationState::Collecting);
+                assert_eq!(authoritative.total_objects, 0);
+                assert_eq!(authoritative.total_plaintext_bytes, 0);
+                assert_eq!(authoritative.source_schema_version, 1);
                 assert_eq!(authoritative.next_descriptor_segment, 0);
                 assert_eq!(authoritative.next_intent_segment, 0);
+
+                let matching_request = match authoritative.snapshot_sequence {
+                    1 => {
+                        assert_eq!(authoritative.pointer_sha256, begun.pointer_sha256);
+                        assert_eq!(
+                            authoritative.snapshot_ciphertext_sha256,
+                            begun.snapshot_ciphertext_sha256
+                        );
+                        assert_eq!(authoritative.source_mutation_generation, 42);
+                        assert_eq!(authoritative.source_inventory_sha256, HASH_B);
+                        begin_request()
+                    }
+                    2 => {
+                        assert_ne!(authoritative.pointer_sha256, begun.pointer_sha256);
+                        assert_ne!(
+                            authoritative.snapshot_ciphertext_sha256,
+                            begun.snapshot_ciphertext_sha256
+                        );
+                        assert_eq!(authoritative.source_mutation_generation, 43);
+                        assert_eq!(authoritative.source_inventory_sha256, HASH_C);
+                        changed.clone()
+                    }
+                    sequence => panic!("unexpected authoritative snapshot sequence {sequence}"),
+                };
+                let resumed = restarted
+                    .begin_or_resume_preparation(&keys(3), &matching_request)
+                    .unwrap();
+                assert_eq!(resumed, authoritative);
+                let mut wrong_validation_hash = matching_request.clone();
+                wrong_validation_hash.expected_validation_catalog_sha256 = Some(HASH_B.to_owned());
+                assert!(matches!(
+                    restarted.begin_or_resume_preparation(&keys(3), &wrong_validation_hash),
+                    Err(PreparationError::ActiveConflict("validation head"))
+                ));
+                let mut wrong_validation_generation = matching_request;
+                wrong_validation_generation.expected_validation_generation = Some(5);
+                assert!(matches!(
+                    restarted.begin_or_resume_preparation(&keys(3), &wrong_validation_generation),
+                    Err(PreparationError::ActiveConflict("validation head"))
+                ));
                 assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
             }
         }
