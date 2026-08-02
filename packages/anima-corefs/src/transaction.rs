@@ -4,7 +4,7 @@
 mod cache;
 mod converter;
 #[allow(dead_code)]
-mod preparation;
+pub(crate) mod preparation;
 // The lease contract is integrated incrementally by the following implementation tasks.
 #[allow(dead_code)]
 mod object_lease;

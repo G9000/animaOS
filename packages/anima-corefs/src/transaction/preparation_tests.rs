@@ -1,4 +1,9 @@
-use std::{ffi::OsStr, io};
+use std::{
+    ffi::OsStr,
+    io,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use cap_std::{ambient_authority, fs::Dir};
 use serde_json::Value;
@@ -9,11 +14,14 @@ use crate::publication::PublicationPhase;
 
 use super::preparation::{
     publish_immutable_preparation_record_with_hook, publish_preparation_head_with_hook,
-    FinalIntentEntry, FinalIntentSegment, PreparationError, PreparationHeadRecord,
-    PreparationReceipt, PreparationReceiptOutcome, PreparationSegmentReference,
-    PreparationSnapshot, PreparationState, PreparedObjectDescriptor,
-    PreparedObjectDescriptorSegment, WrappedObjectDekWire, MAX_FINAL_INTENT_ENTRY_BYTES,
+    FinalIntentEntry, FinalIntentSegment, PreparationBeginRequest, PreparationCas,
+    PreparationError, PreparationHeadRecord, PreparationOpenDisposition,
+    PreparationPublicationTarget, PreparationReceipt, PreparationReceiptOutcome,
+    PreparationReferenceKind, PreparationSegmentReference, PreparationSnapshot, PreparationState,
+    PreparedObjectDescriptor, PreparedObjectDescriptorSegment, WrappedObjectDekWire,
+    MAX_FINAL_INTENT_ENTRY_BYTES,
 };
+use super::CoreCommitCoordinator;
 
 const CORE_ID: &str = "01J00000000000000000000001";
 const OTHER_CORE_ID: &str = "01J00000000000000000000002";
@@ -26,6 +34,39 @@ const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
+static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct TestCore {
+    root: PathBuf,
+}
+
+impl TestCore {
+    fn new(label: &str) -> Self {
+        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "anima-corefs-preparation-{label}-{}-{sequence}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        Self { root }
+    }
+
+    fn coordinator(&self, core_id: &str) -> CoreCommitCoordinator {
+        CoreCommitCoordinator::new(&self.root, core_id).unwrap()
+    }
+
+    fn fs_path(&self) -> PathBuf {
+        self.root.join("fs")
+    }
+}
+
+impl Drop for TestCore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 fn keys(version: u32) -> crate::crypto::FrkSubkeys {
     derive_corefs_subkeys(&SecretBytes::new(vec![0x42; 32]).unwrap(), version).unwrap()
 }
@@ -33,6 +74,18 @@ fn keys(version: u32) -> crate::crypto::FrkSubkeys {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     hex::encode(digest)
+}
+
+fn begin_request() -> PreparationBeginRequest {
+    PreparationBeginRequest {
+        scope: "pcf004-writing-v1".to_owned(),
+        expected_validation_generation: Some(4),
+        expected_validation_catalog_sha256: Some(HASH_A.to_owned()),
+        source_owner_id: OWNER_ID.to_owned(),
+        source_schema_version: 1,
+        source_mutation_generation: 42,
+        source_inventory_sha256: HASH_B.to_owned(),
+    }
 }
 
 fn head() -> PreparationHeadRecord {
@@ -438,5 +491,425 @@ mod formats {
         drop(snapshots_dir);
         drop(fs_dir);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn install_snapshot_with_references(
+    test_core: &TestCore,
+    status: &super::preparation::PreparationStatus,
+) -> (PathBuf, PathBuf) {
+    let preparation_path = test_core
+        .fs_path()
+        .join("preparations")
+        .join(&status.preparation_id);
+    let preparation_dir = Dir::open_ambient_dir(&preparation_path, ambient_authority()).unwrap();
+    let descriptors_dir = preparation_dir.open_dir("descriptors").unwrap();
+    let intent_dir = preparation_dir.open_dir("intent").unwrap();
+    let snapshots_dir = preparation_dir.open_dir("snapshots").unwrap();
+
+    let mut descriptor = descriptor_segment();
+    descriptor.preparation_id = status.preparation_id.clone();
+    let descriptor_plaintext_bytes = u32::try_from(descriptor.encode().unwrap().len()).unwrap();
+    let sealed_descriptor = descriptor.seal(&keys(3)).unwrap();
+    let descriptor_hash = sha256_hex(sealed_descriptor.as_bytes());
+    let descriptor_name = publish_immutable_preparation_record_with_hook(
+        &descriptors_dir,
+        &sealed_descriptor,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+
+    let mut intent = intent_segment();
+    intent.preparation_id = status.preparation_id.clone();
+    let intent_plaintext_bytes = u32::try_from(intent.encode().unwrap().len()).unwrap();
+    let sealed_intent = intent.seal(&keys(3)).unwrap();
+    let intent_hash = sha256_hex(sealed_intent.as_bytes());
+    let intent_name = publish_immutable_preparation_record_with_hook(
+        &intent_dir,
+        &sealed_intent,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+
+    let next_snapshot = PreparationSnapshot {
+        schema_version: 1,
+        core_id: CORE_ID.to_owned(),
+        preparation_id: status.preparation_id.clone(),
+        sequence: status.snapshot_sequence + 1,
+        state: PreparationState::Collecting,
+        scope: "pcf004-writing-v1".to_owned(),
+        required_frk_version: 3,
+        created_at_unix_ms: 1_700_000_000_000,
+        updated_at_unix_ms: 1_700_000_000_001,
+        expected_validation_generation: Some(4),
+        expected_validation_catalog_sha256: Some(HASH_A.to_owned()),
+        source_owner_id: OWNER_ID.to_owned(),
+        source_inventory_version: 1,
+        source_mutation_generation: 42,
+        source_inventory_sha256: HASH_B.to_owned(),
+        total_objects: 1,
+        total_plaintext_bytes: 1024,
+        manifest_root_sha256: HASH_C.to_owned(),
+        manifest_segments: vec![PreparationSegmentReference {
+            segment_index: 0,
+            ciphertext_sha256: descriptor_hash,
+            item_count: 1,
+            plaintext_bytes: descriptor_plaintext_bytes,
+        }],
+        final_intent_root_sha256: Some(HASH_A.to_owned()),
+        final_intent_segments: vec![PreparationSegmentReference {
+            segment_index: 0,
+            ciphertext_sha256: intent_hash,
+            item_count: 1,
+            plaintext_bytes: intent_plaintext_bytes,
+        }],
+    };
+    let sealed_snapshot = next_snapshot.seal(&keys(3)).unwrap();
+    let snapshot_hash = sha256_hex(sealed_snapshot.as_bytes());
+    publish_immutable_preparation_record_with_hook(&snapshots_dir, &sealed_snapshot, &mut |_| {
+        Ok(())
+    })
+    .unwrap();
+    let next_head = PreparationHeadRecord {
+        schema_version: 1,
+        core_id: CORE_ID.to_owned(),
+        preparation_id: status.preparation_id.clone(),
+        snapshot_sequence: next_snapshot.sequence,
+        snapshot_ciphertext_sha256: snapshot_hash,
+        envelope_version: 1,
+        required_frk_version: 3,
+    };
+    publish_preparation_head_with_hook(
+        &Dir::open_ambient_dir(test_core.fs_path(), ambient_authority()).unwrap(),
+        &next_head.seal(&keys(3)).unwrap(),
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+
+    (
+        preparation_path.join("descriptors").join(descriptor_name),
+        preparation_path.join("intent").join(intent_name),
+    )
+}
+
+mod begin_resume {
+    use super::*;
+
+    #[test]
+    fn no_pointer_begins_and_same_source_identity_resumes_deterministically() {
+        let test_core = TestCore::new("begin-resume");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+
+        assert_eq!(begun.disposition, PreparationOpenDisposition::Begun);
+        assert_eq!(begun.snapshot_sequence, 1);
+        assert_eq!(begun.state, PreparationState::Collecting);
+        assert_eq!(begun.source_schema_version, 1);
+        assert_eq!(begun.source_mutation_generation, 42);
+        assert_eq!(begun.source_inventory_sha256, HASH_B);
+        assert_eq!(begun.next_descriptor_segment, 0);
+        assert_eq!(begun.next_intent_segment, 0);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+        for relative in ["snapshots", "descriptors", "intent", "receipts"] {
+            assert!(test_core
+                .fs_path()
+                .join("preparations")
+                .join(&begun.preparation_id)
+                .join(relative)
+                .is_dir());
+        }
+        assert!(test_core.fs_path().join("preparation-quarantine").is_dir());
+
+        let restarted = test_core.coordinator(CORE_ID);
+        let resumed = restarted
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        assert_eq!(resumed.disposition, PreparationOpenDisposition::Resumed);
+        assert_eq!(resumed.preparation_id, begun.preparation_id);
+        assert_eq!(resumed.snapshot_sequence, begun.snapshot_sequence);
+        assert_eq!(
+            resumed.snapshot_ciphertext_sha256,
+            begun.snapshot_ciphertext_sha256
+        );
+        assert_eq!(resumed.pointer_sha256, begun.pointer_sha256);
+    }
+
+    #[test]
+    fn competing_or_stale_callers_fail_without_replacing_the_active_preparation() {
+        let test_core = TestCore::new("conflicts");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+
+        let mut competing = begin_request();
+        competing.source_owner_id = STABLE_ID.to_owned();
+        assert!(matches!(
+            coordinator.begin_or_resume_preparation(&keys(3), &competing),
+            Err(PreparationError::ActiveConflict("source owner"))
+        ));
+
+        let mut stale = begin_request();
+        stale.source_mutation_generation -= 1;
+        assert!(matches!(
+            coordinator.begin_or_resume_preparation(&keys(3), &stale),
+            Err(PreparationError::StaleSourceState)
+        ));
+
+        let current = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(current.preparation_id, begun.preparation_id);
+        assert_eq!(current.pointer_sha256, begun.pointer_sha256);
+        assert_eq!(current.snapshot_sequence, 1);
+    }
+
+    #[test]
+    fn source_reconciliation_requires_exact_pointer_and_snapshot_cas() {
+        let test_core = TestCore::new("cas");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let mut changed = begin_request();
+        changed.source_mutation_generation += 1;
+        changed.source_inventory_sha256 = HASH_C.to_owned();
+
+        let stale_hash = PreparationCas {
+            pointer_sha256: HASH_A.to_owned(),
+            snapshot_sequence: begun.snapshot_sequence,
+        };
+        assert!(matches!(
+            coordinator.reconcile_preparation_source(&keys(3), &stale_hash, &changed),
+            Err(PreparationError::CasConflict)
+        ));
+        let stale_sequence = PreparationCas {
+            pointer_sha256: begun.pointer_sha256.clone(),
+            snapshot_sequence: begun.snapshot_sequence + 1,
+        };
+        assert!(matches!(
+            coordinator.reconcile_preparation_source(&keys(3), &stale_sequence, &changed),
+            Err(PreparationError::CasConflict)
+        ));
+
+        let reconciled = coordinator
+            .reconcile_preparation_source(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256.clone(),
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &changed,
+            )
+            .unwrap();
+        assert_eq!(
+            reconciled.disposition,
+            PreparationOpenDisposition::Reconciled
+        );
+        assert_eq!(reconciled.snapshot_sequence, 2);
+        assert_ne!(reconciled.pointer_sha256, begun.pointer_sha256);
+    }
+
+    #[test]
+    fn missing_snapshot_corrupt_pointer_wrong_core_and_wrong_frk_fail_closed() {
+        let missing_core = TestCore::new("missing-snapshot");
+        let coordinator = missing_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        std::fs::remove_file(
+            missing_core
+                .fs_path()
+                .join("preparations")
+                .join(&begun.preparation_id)
+                .join("snapshots")
+                .join(format!(
+                    "{:020}-{}.prep.acore",
+                    begun.snapshot_sequence, begun.snapshot_ciphertext_sha256
+                )),
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.begin_or_resume_preparation(&keys(3), &begin_request()),
+            Err(PreparationError::MissingSnapshot)
+        ));
+
+        let corrupt_core = TestCore::new("corrupt-pointer");
+        let coordinator = corrupt_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        std::fs::write(corrupt_core.fs_path().join("PREPARATION_HEAD"), b"torn").unwrap();
+        assert!(matches!(
+            coordinator.begin_or_resume_preparation(&keys(3), &begin_request()),
+            Err(PreparationError::CorruptPointer)
+        ));
+        assert!(corrupt_core
+            .fs_path()
+            .join("preparations")
+            .join(begun.preparation_id)
+            .exists());
+
+        let wrong_binding_core = TestCore::new("wrong-bindings");
+        let coordinator = wrong_binding_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        assert!(matches!(
+            wrong_binding_core
+                .coordinator(OTHER_CORE_ID)
+                .load_preparation_status(&keys(3)),
+            Err(PreparationError::CorruptPointer)
+        ));
+        assert!(matches!(
+            coordinator.load_preparation_status(&keys(4)),
+            Err(PreparationError::WrongFrkVersion {
+                required: 3,
+                provided: 4
+            })
+        ));
+    }
+
+    #[test]
+    fn stale_snapshot_replay_and_missing_referenced_segments_fail_closed() {
+        let replay_core = TestCore::new("snapshot-replay");
+        let coordinator = replay_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let snapshot_directory = replay_core
+            .fs_path()
+            .join("preparations")
+            .join(&begun.preparation_id)
+            .join("snapshots");
+        let old_name = format!(
+            "{:020}-{}.prep.acore",
+            begun.snapshot_sequence, begun.snapshot_ciphertext_sha256
+        );
+        let replay_name = format!(
+            "{:020}-{}.prep.acore",
+            begun.snapshot_sequence + 1,
+            begun.snapshot_ciphertext_sha256
+        );
+        std::fs::copy(
+            snapshot_directory.join(old_name),
+            snapshot_directory.join(replay_name),
+        )
+        .unwrap();
+        let replayed_head = PreparationHeadRecord {
+            schema_version: 1,
+            core_id: CORE_ID.to_owned(),
+            preparation_id: begun.preparation_id.clone(),
+            snapshot_sequence: begun.snapshot_sequence + 1,
+            snapshot_ciphertext_sha256: begun.snapshot_ciphertext_sha256.clone(),
+            envelope_version: 1,
+            required_frk_version: 3,
+        };
+        publish_preparation_head_with_hook(
+            &Dir::open_ambient_dir(replay_core.fs_path(), ambient_authority()).unwrap(),
+            &replayed_head.seal(&keys(3)).unwrap(),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.load_preparation_status(&keys(3)),
+            Err(PreparationError::StaleSnapshotReplay)
+        ));
+
+        for (label, missing_kind) in [
+            ("missing-descriptor", PreparationReferenceKind::Descriptor),
+            ("missing-intent", PreparationReferenceKind::Intent),
+        ] {
+            let test_core = TestCore::new(label);
+            let coordinator = test_core.coordinator(CORE_ID);
+            let begun = coordinator
+                .begin_or_resume_preparation(&keys(3), &begin_request())
+                .unwrap();
+            let (descriptor_path, intent_path) =
+                install_snapshot_with_references(&test_core, &begun);
+            std::fs::remove_file(match missing_kind {
+                PreparationReferenceKind::Descriptor => descriptor_path,
+                PreparationReferenceKind::Intent => intent_path,
+            })
+            .unwrap();
+            assert!(matches!(
+                coordinator.load_preparation_status(&keys(3)),
+                Err(PreparationError::MissingReferencedRecord {
+                    kind,
+                    segment_index: 0
+                }) if kind == missing_kind
+            ));
+        }
+    }
+}
+
+mod crash_boundaries {
+    use super::*;
+
+    fn publication_phases() -> Vec<PublicationPhase> {
+        let phases = vec![
+            PublicationPhase::TemporaryCreated,
+            PublicationPhase::PayloadWritten,
+            PublicationPhase::PayloadSynced,
+            PublicationPhase::DestinationPublished,
+            PublicationPhase::DestinationSynced,
+        ];
+        #[cfg(not(windows))]
+        let phases = {
+            let mut phases = phases;
+            phases.extend([
+                PublicationPhase::StagingRemoved,
+                PublicationPhase::CleanupSynced,
+            ]);
+            phases
+        };
+        phases
+    }
+
+    #[test]
+    fn restart_after_each_immutable_and_pointer_boundary_observes_only_a_complete_snapshot() {
+        for target in [
+            PreparationPublicationTarget::Snapshot,
+            PreparationPublicationTarget::Head,
+        ] {
+            for phase in publication_phases() {
+                let test_core = TestCore::new(&format!("crash-{target:?}-{phase:?}"));
+                let coordinator = test_core.coordinator(CORE_ID);
+                let begun = coordinator
+                    .begin_or_resume_preparation(&keys(3), &begin_request())
+                    .unwrap();
+                let mut changed = begin_request();
+                changed.source_mutation_generation += 1;
+                changed.source_inventory_sha256 = HASH_C.to_owned();
+                let cas = PreparationCas {
+                    pointer_sha256: begun.pointer_sha256.clone(),
+                    snapshot_sequence: begun.snapshot_sequence,
+                };
+                let mut injected = false;
+                let result = coordinator.reconcile_preparation_source_with_hook(
+                    &keys(3),
+                    &cas,
+                    &changed,
+                    &mut |observed_target, observed_phase| {
+                        if observed_target == target && observed_phase == phase {
+                            injected = true;
+                            return Err(io::Error::new(io::ErrorKind::Interrupted, "crash"));
+                        }
+                        Ok(())
+                    },
+                );
+                assert!(injected, "missing hook for {target:?} {phase:?}");
+                assert!(result.is_err());
+
+                let restarted = test_core.coordinator(CORE_ID);
+                let authoritative = restarted.load_preparation_status(&keys(3)).unwrap();
+                assert_eq!(authoritative.preparation_id, begun.preparation_id);
+                assert!(matches!(authoritative.snapshot_sequence, 1 | 2));
+                assert_eq!(authoritative.state, PreparationState::Collecting);
+                assert_eq!(authoritative.next_descriptor_segment, 0);
+                assert_eq!(authoritative.next_intent_segment, 0);
+                assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+            }
+        }
     }
 }
