@@ -52,7 +52,8 @@ PreparationReceipt
 Run:
 
 ```powershell
-cargo test -p anima-corefs crypto::tests::frk_subkeys_are_deterministic_and_domain_separated preparation_tests::formats -- --nocapture
+cargo test -p anima-corefs crypto::tests::frk_subkeys_are_deterministic_and_domain_separated -- --nocapture
+cargo test -p anima-corefs preparation_tests::formats -- --nocapture
 ```
 
 Expected: new tests fail because the preparation key/domain and record codecs do not exist.
@@ -199,7 +200,7 @@ Finalization may read ciphertext multiple times within bounds; it must never mat
 
 - [ ] **Step 4: Add committed-outcome recovery**
 
-Record the intended validation generation/catalog hash before publication. If restart finds that exact generation authoritative, publish/return the deterministic completion receipt. If a different head won, report a typed conflict and preserve the preparation for disposition.
+Record the intended validation generation/catalog hash before publication. Implement and durably publish the deterministic completion receipt in this task. If restart finds that exact generation authoritative, publish/return that receipt. If a different head won, report a typed conflict and preserve the preparation for disposition.
 
 - [ ] **Step 5: Run transaction and integration tests**
 
@@ -228,19 +229,19 @@ git -c commit.gpgsign=false commit -m "corefs: finalize prepared catalogs atomic
 
 - [ ] **Step 1: Write failing terminal-state and rotation tests**
 
-Cover idempotent abandon, crash before/after receipt/head removal, completed receipt replay, active-preparation rotation rejection, corrupt-pointer rotation rejection, Core-global hash-addressed quarantine, quarantine name independence from pointer content, old-FRK retention enforcement, and later safe GC eligibility without physical deletion.
+Cover idempotent abandon, crash before/after abandonment receipt/head removal, completed receipt replay from Task 4, active-preparation rotation rejection, corrupt-pointer rotation rejection, Core-global hash-addressed quarantine, quarantine name independence from pointer content, conservative keyring retention enforcement, and later safe GC eligibility without physical deletion.
 
-- [ ] **Step 2: Implement deterministic completion and abandonment receipts**
+- [ ] **Step 2: Implement deterministic abandonment receipts**
 
-Derive receipt identity from authenticated preparation identity plus terminal outcome. Publish the receipt before clearing `PREPARATION_HEAD` when needed for retry proof; on restart, reconcile receipt, pointer, and validation head into exactly one terminal outcome.
+Completion receipts and post-head completion recovery are implemented in Task 4. Here, derive abandonment receipt identity from authenticated preparation identity plus the abandoned terminal outcome. Publish the receipt before clearing `PREPARATION_HEAD` when needed for retry proof; on restart, reconcile receipt and pointer into exactly one abandoned outcome without disturbing an existing completed receipt.
 
 - [ ] **Step 3: Implement operator-only corrupt-pointer quarantine**
 
-Hash the raw pointer bytes first and move/copy them only to the fixed Core-global quarantine directory under that hash. Do not parse a preparation ID to choose the destination. Require explicit operator action, durable quarantine publication, and retained availability of the pointer's possible old FRK before allowing new preparation activation.
+Hash the raw pointer bytes first and move/copy them only to the fixed Core-global quarantine directory under that hash. Do not parse a preparation ID to choose the destination. At quarantine time, durably record the complete set of keyring generations then available through trusted session state. Require explicit operator action, durable quarantine publication, and retention of that entire conservative key set before allowing new preparation activation.
 
 - [ ] **Step 4: Gate FRK rotation and cleanup**
 
-Reject rotation while a preparation is active or its pointer cannot be authenticated. After approved quarantine, allow rotation only when the keyring retains all versions needed for quarantined encrypted state. Record unreachable prepared objects for PCF-010 retention-aware GC; do not delete them in this task.
+Reject rotation while a preparation is active or its pointer cannot be authenticated. After approved quarantine, allow rotation only while every key generation captured from trusted session state at quarantine remains retained; never infer a narrower set from corrupt pointer fields. PCF-010 may narrow/retire that conservative set only after authenticated recovery or independent proof of safety. Record unreachable prepared objects for PCF-010 retention-aware GC; do not delete them in this task.
 
 - [ ] **Step 5: Run and commit lifecycle coverage**
 
@@ -280,11 +281,7 @@ Assert every method acquires `CorefsOperationGuard`; close waits for an in-fligh
 
 Use bounded JSON only for metadata/status/intent pages and one Python buffer for one object. Convert native outcomes to the existing wire-dictionary style without exposing keys, wrapped DEKs, physical paths, or preparation secrets.
 
-- [ ] **Step 3: Retire the aggregate production path**
-
-After Task 8 moves the sole production caller, remove `CorefsSession.validation_batch_parts_v1` and `CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT`. Keep crate-private converter helpers and any explicitly test-only compatibility fixture only if existing validation-batch tests still require them; no server code may call the aggregate API.
-
-- [ ] **Step 4: Run and commit PyO3 coverage**
+- [ ] **Step 3: Run and commit PyO3 coverage**
 
 ```powershell
 cargo test -p anima-core --lib corefs_preparation -- --nocapture
@@ -349,6 +346,8 @@ Replace fake-session expectations for `validation_batch_parts_v1` with the prepa
 
 Use spies/counters and generated small bodies to model an inventory whose logical aggregate exceeds 1 GiB; assert the orchestrator holds at most one canonical body and one decrypted attachment at a time. Do not allocate a 1 GiB test buffer.
 
+Treat browser localStorage drafts as an external handoff source, not as rows protected by the SQLCipher fence. Add a mutation-between-seal-and-finalize test: the server may durably import the exact submitted draft revision/hash, but the client must retain a newer local draft and submit it as a later revision instead of deleting it on receipt for stale content.
+
 - [ ] **Step 2: Separate inventory from body production**
 
 In `writing_source.py`, add:
@@ -361,7 +360,7 @@ read_writing_source_generation(...)
 begin_writing_source_fence(...)
 ```
 
-Inventory computes deterministic folder/object ordering, IDs, revisions, metadata, attachment storage identities, counts, and a source digest without retaining bodies. The iterator re-reads one source row/blob, canonicalizes/sanitizes it, yields one body to native preparation, then releases it before advancing.
+Inventory computes deterministic folder/object ordering, IDs, revisions, metadata, attachment storage identities, counts, and a source digest without retaining bodies. The iterator re-reads one source row/blob, canonicalizes/sanitizes it, yields one body to native preparation, then releases it before advancing. Browser drafts are excluded from this SQLCipher inventory and enter only through the explicit handoff in Step 6.
 
 - [ ] **Step 3: Remove corpus-wide Python ownership**
 
@@ -377,14 +376,20 @@ Start `BEGIN IMMEDIATE` on a dedicated SQLCipher connection, recompute generatio
 
 - [ ] **Step 6: Preserve unlock and API behavior**
 
-Keep legacy SQLCipher authoritative and routes read-compatible before PCF-008. Unlock may resume a preparation but must not expose partial CoreFS state. Draft import follows the same single-active-preparation CAS and deterministic retry behavior.
+Keep legacy SQLCipher authoritative and routes read-compatible before PCF-008. Unlock may resume a preparation but must not expose partial CoreFS state.
 
-- [ ] **Step 7: Run focused Python validation and commit**
+For each browser localStorage draft import, require a stable draft ID, monotonic client revision, and SHA-256 of the exact submitted canonical body. Bind that immutable handoff token into the preparation source digest/intent and return it in the durable completion result. The client removes localStorage only when the completion token still matches its current draft ID/revision/hash; if the user edited during preparation, keep the newer local draft and retry it as a new revision. This external optimistic CAS complements, but is not claimed to be protected by, `BEGIN IMMEDIATE`.
+
+- [ ] **Step 7: Retire the aggregate production path after caller migration**
+
+Once `diary_migration.py` and its fakes use only the new preparation lifecycle, remove `CorefsSession.validation_batch_parts_v1` and `CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT` from `packages/anima-core/src/ffi.rs`. Keep crate-private converter helpers and explicitly test-only compatibility fixtures only if the Rust validation-batch tests still require them. Assert with a repository search test/check that no server code calls the aggregate API.
+
+- [ ] **Step 8: Run focused Python validation and commit**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_diary_api.py -q
 uv run ruff check apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py
-git add apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
+git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
 git -c commit.gpgsign=false commit -m "server: stream resumable writing preparation"
 ```
 

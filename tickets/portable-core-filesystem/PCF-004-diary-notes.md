@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 18:45 MYT
+- Updated: 2026-08-02 18:58 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -49,6 +49,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-02 17:24 MYT - Independent written-spec audit found six material gaps in the first committed draft `40021e63`: source changes after seal, corrupt-head rotation deadlock, preparation descriptors exceeding catalog-sized snapshots, ciphertext verification contradicting no-reread wording, abandonment crash idempotence, and accidental reuse of whole-graph PyO3 containers. The design now uses a SQLCipher source mutation fence, separately bounded encrypted manifests, explicit bounded ciphertext revalidation, deterministic terminal receipts, operator-only corrupt-head quarantine with old-FRK retention, and a new one-object native input. A focused re-review remains before user document approval.
 - 2026-08-02 17:28 MYT - Focused re-review accepted four of the six repairs and caught two residual contradictions: the ready snapshot still claimed to embed the segmented final intent, and corrupt-pointer quarantine was nested beneath an unauthenticated preparation ID. The ready snapshot now authenticates only bounded segment roots/indexes, and quarantine is Core-global, hash-addressed, and forbidden from using unauthenticated pointer fields. The final pass/fail re-check approved commit `70f247a9`; only user approval of the reviewed document remains before implementation planning.
 - 2026-08-02 18:45 MYT - The user approved the independently reviewed resumable-preparation design. Added the dedicated test-first implementation plan at `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`, covering encrypted preparation formats, durable CAS/recovery, one-object native preparation, exact finalization, terminal/rotation semantics, bounded PyO3 operations, SQLCipher mutation fencing, streaming Python orchestration, and final review/evidence. Implementation remains gated only on the reviewed-plan execution handoff.
+- 2026-08-02 18:58 MYT - Independent plan review found five substantive execution gaps: browser localStorage drafts were incorrectly implied to share the SQLCipher fence, aggregate API removal preceded caller migration, completion-receipt ownership was split, corrupt-pointer key retention was not conservative enough, and one Cargo command used two filters. The plan now gives drafts an explicit ID/revision/hash handoff CAS, retires the aggregate API only after migration, owns completion recovery in finalization, retains the full trusted keyring snapshot for quarantine, and uses valid focused commands. Focused re-review is pending.
 
 ## Validation
 
