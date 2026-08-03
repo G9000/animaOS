@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn, FileIcon, ImageIcon, MicIcon, XIcon } from "@anima/standard-templates";
 import type { DiaryAttachmentData, DiaryEntryData, DiaryEntryUpdateData, DiaryFolderData } from "@anima/api-client";
 import { formatFileSize, formatTimestamp, countWords, isPreviewableAttachment } from "../lib/textFormat";
@@ -174,7 +174,62 @@ export function DetailsDrawer({
   liveTranscript,
   onToggleRecording,
 }: DetailsDrawerProps) {
+  // Finding 3 (PR #139): this initializer only ever runs on first mount.
+  // The caller now renders this component `key={entry.id}` (see
+  // DiaryWorkspace.tsx), so "first mount" happens again for every entry —
+  // this draft can no longer be initialized from one entry and silently
+  // carried over (and, on blur, committed onto) a different one after the
+  // selection changes. Without that key, this state would keep whatever
+  // the previous entry's mood was across a switch. A scan of this
+  // component's other useState calls (AttachmentPreview's `failed` /
+  // `retryToken`) turned up nothing else keyed off the initial `entry`
+  // prop this way — those are already scoped per-attachment by their own
+  // `key={attachment.id}`, and a full DetailsDrawer remount clears them
+  // regardless.
   const [moodValue, setMoodValue] = useState(entry.mood ?? "");
+  const moodValueRef = useRef(moodValue);
+  moodValueRef.current = moodValue;
+  // Tracks the mood value this drawer has last dispatched (or that the
+  // entry already had) so a debounced/flushed commit never re-sends an
+  // identical value twice in a row.
+  const lastCommittedMoodRef = useRef(entry.mood ?? "");
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+  const moodTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearMoodTimer = () => {
+    if (moodTimerRef.current !== null) {
+      clearTimeout(moodTimerRef.current);
+      moodTimerRef.current = null;
+    }
+  };
+
+  const commitMoodValue = (value: string) => {
+    clearMoodTimer();
+    const trimmed = value.trim();
+    if (trimmed === lastCommittedMoodRef.current) return;
+    lastCommittedMoodRef.current = trimmed;
+    onUpdateRef.current({ mood: trimmed || undefined, clearMood: !trimmed });
+  };
+
+  // Also related to Finding 3: mood used to commit ONLY on blur, so a
+  // typed value was dropped if the field never blurred before the drawer
+  // went away (switching entries — now an unmount, given the key above —
+  // or the whole workspace unmounting). A short debounce means typing
+  // alone eventually commits without waiting for blur, and this cleanup
+  // flushes whatever was last typed the moment this instance is torn
+  // down, so neither path can silently lose it.
+  useEffect(() => {
+    return () => {
+      commitMoodValue(moodValueRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const scheduleMoodCommit = (value: string) => {
+    clearMoodTimer();
+    moodTimerRef.current = setTimeout(() => commitMoodValue(value), 600);
+  };
 
   if (!open) return null;
 
@@ -187,12 +242,6 @@ export function DetailsDrawer({
     (a) => isPreviewableAttachment(a.kind) && a.id !== entry.coverAttachmentId,
   );
   const otherAttachments = entry.attachments.filter((a) => !isPreviewableAttachment(a.kind));
-
-  const commitMood = () => {
-    const trimmed = moodValue.trim();
-    if (trimmed === (entry.mood ?? "")) return;
-    onUpdate({ mood: trimmed || undefined, clearMood: !trimmed });
-  };
 
   const wordCount = countWords(bodyText);
   const charCount = bodyText.length;
@@ -264,8 +313,12 @@ export function DetailsDrawer({
           <input
             type="text"
             value={moodValue}
-            onChange={(event) => setMoodValue(event.target.value)}
-            onBlur={commitMood}
+            onChange={(event) => {
+              const { value } = event.target;
+              setMoodValue(value);
+              scheduleMoodCommit(value);
+            }}
+            onBlur={(event) => commitMoodValue(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") (event.target as HTMLInputElement).blur();
             }}

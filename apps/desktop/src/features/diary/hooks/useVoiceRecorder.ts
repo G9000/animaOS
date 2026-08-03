@@ -6,16 +6,30 @@ import {
   type SpeechRecognitionLike,
 } from "../lib/speech";
 
+// The id of whichever entry a recording session belongs to. Always a real
+// DiaryEntryData.id (never null) — the caller only starts a recording
+// against a concrete, currently-selected entry (see DiaryWorkspace's
+// onToggleRecording, guarded on `selectedEntry`).
+export type VoiceRecordingEntryId = number;
+
 export interface UseVoiceRecorderOptions {
   // Called with each finalized speech-to-text chunk (already trimmed, with
-  // a trailing space) as it arrives — the caller owns inserting it into
-  // the live editor, since only DiaryWorkspace holds the editor reference.
-  onFinalTranscript: (text: string) => void;
+  // a trailing space) as it arrives, plus the id of the entry that was
+  // SELECTED WHEN THIS RECORDING SESSION STARTED (not whatever happens to
+  // be selected when the chunk actually arrives — recognition results are
+  // asynchronous, so those can differ if the user switches entries mid-
+  // recording). The caller owns deciding what to do if that id no longer
+  // matches the currently open entry (see the doc comment at the call
+  // site in DiaryWorkspace.tsx) — this hook only reports identity, it
+  // never assumes it is still safe to insert.
+  onFinalTranscript: (text: string, entryId: VoiceRecordingEntryId) => void;
   // Called once with the completed recording, only if any audio was
-  // actually captured — the caller owns turning it into an attachment
-  // upload (which entry it belongs to is workspace state, not recorder
-  // state).
-  onRecordingComplete: (file: File) => void;
+  // actually captured, plus the id of the entry that was selected when
+  // recording STARTED (see onFinalTranscript above — MediaRecorder's
+  // onstop is likewise asynchronous, so "whatever is selected now" at
+  // completion time is not necessarily the entry this audio was recorded
+  // against).
+  onRecordingComplete: (file: File, entryId: VoiceRecordingEntryId) => void;
   onError: (message: string | null) => void;
 }
 
@@ -23,7 +37,11 @@ export interface UseVoiceRecorderResult {
   recording: boolean;
   speechAvailable: boolean;
   liveTranscript: string;
-  start: () => Promise<void>;
+  // Finding 2 (PR #139): takes the id of the entry this session is being
+  // recorded against, captured here (in a ref, before anything async
+  // happens) rather than left for onstop/onresult to re-derive later from
+  // whatever is selected by then.
+  start: (entryId: VoiceRecordingEntryId) => Promise<void>;
   stop: () => void;
   // "Abandon" variant for switching entries mid-recording (still finalizes
   // whatever was captured via the same onstop/onRecordingComplete path —
@@ -55,6 +73,11 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions): UseVoiceReco
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recordedChunksRef = useRef<BlobPart[]>([]);
+  // Finding 2 (PR #139): set once, synchronously, at the top of start() —
+  // before the getUserMedia await — and read by both onstop and
+  // recognition.onresult instead of either of them reaching into
+  // whatever entry is selected by the time they actually fire.
+  const recordingEntryIdRef = useRef<VoiceRecordingEntryId | null>(null);
 
   useEffect(() => {
     setSpeechAvailable(getSpeechRecognitionConstructor() !== null);
@@ -88,7 +111,10 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions): UseVoiceReco
         }
       }
       if (finalText.trim()) {
-        optionsRef.current.onFinalTranscript(`${finalText.trim()} `);
+        const entryId = recordingEntryIdRef.current;
+        if (entryId != null) {
+          optionsRef.current.onFinalTranscript(`${finalText.trim()} `, entryId);
+        }
       }
       setLiveTranscript(interimText.trim());
     };
@@ -112,15 +138,21 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions): UseVoiceReco
     mediaStreamRef.current = null;
     mediaRecorderRef.current = null;
     recognitionRef.current = null;
+    recordingEntryIdRef.current = null;
   };
 
-  const start = async () => {
+  const start = async (entryId: VoiceRecordingEntryId) => {
     if (recording) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       optionsRef.current.onError("Audio recording is not available in this environment.");
       return;
     }
 
+    // Captured synchronously, before the getUserMedia await below ever
+    // yields to the event loop — this is "the entry selected when
+    // recording started", fixed for the whole session regardless of what
+    // the user selects afterward.
+    recordingEntryIdRef.current = entryId;
     optionsRef.current.onError(null);
     recordedChunksRef.current = [];
 
@@ -147,12 +179,13 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions): UseVoiceReco
       recorder.onstop = () => {
         const chunks = recordedChunksRef.current;
         const mimeType = recorder.mimeType || requestedMimeType || "audio/webm";
-        if (chunks.length > 0) {
+        const capturedEntryId = recordingEntryIdRef.current;
+        if (chunks.length > 0 && capturedEntryId != null) {
           const blob = new Blob(chunks, { type: mimeType });
           const file = new File([blob], buildRecordingFilename(new Date(), mimeType), {
             type: mimeType,
           });
-          optionsRef.current.onRecordingComplete(file);
+          optionsRef.current.onRecordingComplete(file, capturedEntryId);
         }
         recordedChunksRef.current = [];
         setRecording(false);

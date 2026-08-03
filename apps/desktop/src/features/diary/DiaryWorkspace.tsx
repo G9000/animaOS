@@ -226,17 +226,38 @@ export default function DiaryWorkspace() {
   // state; they fire at the exact same moments (recorder.onstop,
   // recognition.onresult) as the pre-extraction inline code did.
   const voiceRecorder = useVoiceRecorder({
-    onFinalTranscript: (text) => {
+    // Finding 2 (PR #139): `entryId` here is the entry that was selected
+    // when THIS recording session started (captured inside
+    // useVoiceRecorder's own start(), threaded through unchanged) — not
+    // necessarily the one selected now. Recognition results arrive
+    // asynchronously, so the user can switch entries mid-recording before
+    // a chunk lands.
+    onFinalTranscript: (text, entryId) => {
       const ed = editorRef.current;
-      const entryId = selectedEntryRef.current?.id;
-      if (ed && entryId != null) {
+      const currentEntryId = selectedEntryRef.current?.id;
+      if (ed && currentEntryId === entryId) {
         ed.commands.insertContentAt(ed.state.doc.content.size, text);
         syncEditorContent(ed, entryId);
+        return;
       }
+      // The entry this transcript belongs to is no longer the one open
+      // in the editor. There is no live editor instance for the
+      // ORIGINAL entry to insert into instead — DiaryEditor is keyed by
+      // entry.id and unmounts on switch — and inserting into whatever IS
+      // open now would silently corrupt a different entry's document
+      // (worse than dropping it). So: drop it, but surface that loudly
+      // rather than silently losing dictated text.
+      setError("A voice transcript arrived after you switched entries and was not inserted.");
     },
-    onRecordingComplete: (file) => {
-      const entryId = selectedEntryRef.current?.id;
-      if (entryId != null) void uploadAttachment(entryId, file);
+    // Unlike a transcript, attaching a finished recording does not need a
+    // live editor for the entry it belongs to: uploadAttachment addresses
+    // the entry by id directly (see hooks/useDiaryEntries.ts) and updates
+    // that entry's attachment list wherever it lives in `entries`, so this
+    // stays correct even if the user has since switched away from — or
+    // deleted — the entry that was being recorded. `entryId` is the entry
+    // selected when recording STARTED, not whatever is selected now.
+    onRecordingComplete: (file, entryId) => {
+      void uploadAttachment(entryId, file);
     },
     onError: setError,
   });
@@ -273,6 +294,15 @@ export default function DiaryWorkspace() {
       // try/catch (lib/autosaveScheduler.ts `run()`) is what turns a
       // rejection into "error" status and arms retry().
       await saveEntryFields(entryId, payload);
+    },
+    // Finding 1 (PR #139): the entry being left may no longer be the
+    // selected one (or the component may be fully unmounting) by the time
+    // this fires, so PageHeader's own per-entry "Retry" affordance can't be
+    // relied on to still be showing this entry's status — surface it
+    // through the workspace-level error banner instead, which stays
+    // visible regardless of what is currently selected.
+    onUnsavedOnTeardown: () => {
+      setError("A change to a diary entry could not be saved and was lost.");
     },
   });
 
@@ -450,6 +480,18 @@ export default function DiaryWorkspace() {
     }
   };
 
+  // Finding 4 (PR #139): the non-image half of a mixed image+file drop
+  // onto the editor, forwarded here by DiaryEditor's handleDrop instead of
+  // vanishing — routed through the same uploadAttachment path as every
+  // other non-inline attachment.
+  const handleNonImageFilesDropped = (files: File[]) => {
+    if (!selectedEntry) return;
+    const entryId = selectedEntry.id;
+    for (const file of files) {
+      void uploadAttachment(entryId, file);
+    }
+  };
+
   const handleComposerDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
@@ -603,6 +645,7 @@ export default function DiaryWorkspace() {
                     onImageUpload={uploadInlineImage}
                     onEditorReady={handleEditorReady}
                     onEditorDestroyed={handleEditorDestroyed}
+                    onNonImageFilesDropped={handleNonImageFilesDropped}
                   />
                   {isDraggingFile && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-background/80 pointer-events-none">
@@ -662,6 +705,14 @@ export default function DiaryWorkspace() {
 
       {selectedEntry && (
         <DetailsDrawer
+          // Finding 3 (PR #139): without this key, DetailsDrawer stays
+          // mounted across an entry switch and its `moodValue` state (only
+          // ever initialized from `entry.mood` on first mount) keeps
+          // showing — and, on blur, can commit — the PREVIOUS entry's
+          // mood onto the newly selected one. Keying by entry id forces a
+          // fresh mount (and therefore a fresh `useState(entry.mood ?? "")`
+          // initializer) every time the selection changes.
+          key={selectedEntry.id}
           entry={selectedEntry}
           folders={folders}
           open={drawerOpen}
@@ -682,7 +733,7 @@ export default function DiaryWorkspace() {
               return;
             }
             if (!selectedEntry) return;
-            void voiceRecorder.start();
+            void voiceRecorder.start(selectedEntry.id);
           }}
         />
       )}

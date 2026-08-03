@@ -5,6 +5,7 @@ import { cn } from "@anima/standard-templates";
 import { marked } from "marked";
 import { createDiaryHtmlSanitizer } from "../lib/sanitize";
 import { stripUnresolvedAttachmentImages } from "../lib/attachmentImages";
+import { partitionDroppedFiles } from "../lib/fileDrop";
 import { createDiaryExtensions } from "./extensions";
 import { DiaryBubbleMenu } from "./BubbleMenu";
 import { BlockDragHandle } from "./BlockDragHandle";
@@ -95,10 +96,27 @@ export interface DiaryEditorProps {
   // regardless of which of the two timers fires first.
   onEditorReady?: (editor: Editor, entryId: number) => void;
   onEditorDestroyed?: (editor: Editor) => void;
+  // Finding 4 (PR #139): handleDrop below intercepts image files out of a
+  // drop and stops propagation so the composer wrapper's own "Attach" drop
+  // handler never double-processes them (see the doc comment there). That
+  // means any NON-image files dropped in the same gesture would otherwise
+  // vanish with no feedback, since stopping propagation cuts them off from
+  // the wrapper too. This callback is how they still reach the normal
+  // attachment flow — DiaryWorkspace forwards them to the same
+  // uploadAttachment path handleFilesSelected uses.
+  onNonImageFilesDropped?: (files: File[]) => void;
 }
 
 export function DiaryEditor(props: DiaryEditorProps) {
-  const { onChange, onImageRequest, onImageUpload, onEditorReady, onEditorDestroyed, entryId } = props;
+  const {
+    onChange,
+    onImageRequest,
+    onImageUpload,
+    onEditorReady,
+    onEditorDestroyed,
+    onNonImageFilesDropped,
+    entryId,
+  } = props;
   const editorRef = useRef<Editor | null>(null);
   // Captured once in onCreate and read in onDestroy, rather than closing
   // over the `editor` variable produced by this same useEditor(...) call
@@ -167,18 +185,30 @@ export function DiaryEditor(props: DiaryEditorProps) {
       // plain attachment by the wrapper's handler, since that listener
       // sits further up the same native DOM event bubble (React's own
       // delegation does not get a chance to run once native propagation is
-      // stopped below it). Non-image file drops intentionally return false
-      // without stopping propagation, so they keep reaching the wrapper's
-      // existing "Attach" behavior unchanged.
+      // stopped below it). A pure-non-image drop intentionally returns
+      // false without stopping propagation, so it keeps reaching the
+      // wrapper's existing "Attach" behavior unchanged.
+      //
+      // Finding 4 (PR #139): a MIXED drop (e.g. an image and a PDF
+      // together) used to lose the non-image file entirely — stopping
+      // propagation for the images cut the wrapper off from ever seeing
+      // it, and nothing else picked it up. partitionDroppedFiles splits
+      // the drop once; the image subset is still handled inline here
+      // exactly as before, and the non-image subset is forwarded via
+      // onNonImageFilesDropped so it still reaches the normal attachment
+      // flow instead of vanishing.
       handleDrop: (_view, event) => {
         const files = event.dataTransfer?.files;
         if (!files || files.length === 0) return false;
-        const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+        const { imageFiles, nonImageFiles } = partitionDroppedFiles(files);
         if (imageFiles.length === 0) return false;
         event.preventDefault();
         event.stopPropagation();
         for (const file of imageFiles) {
           editorRef.current?.commands.insertAttachmentImage(file);
+        }
+        if (nonImageFiles.length > 0) {
+          onNonImageFilesDropped?.(nonImageFiles);
         }
         return true;
       },

@@ -16,6 +16,17 @@ export interface UseAutosaveOptions<T> {
   entryId: number | string | null;
   save: (payload: T) => Promise<void>;
   delayMs?: number;
+  // Fires at most once per scheduler instance, from the teardown path
+  // below, and only when a save that failed is STILL unsaved after this
+  // component has already tried flush() and one retry() on the user's
+  // behalf. By the time this fires the user may have already switched to
+  // (or away from) the entry this scheduler belonged to, so the entry's
+  // own per-entry status UI (PageHeader's saveStatus, keyed by entry.id)
+  // can no longer be trusted to still be on screen — callers should
+  // surface this somewhere that stays visible regardless of selection
+  // (e.g. the workspace-level error banner), because the edit is now
+  // genuinely gone: this scheduler is about to be disposed.
+  onUnsavedOnTeardown?: () => void;
 }
 
 export interface UseAutosaveResult<T> {
@@ -46,7 +57,7 @@ export interface UseAutosaveResult<T> {
  * mid-debounce.
  */
 export function useAutosave<T>(options: UseAutosaveOptions<T>): UseAutosaveResult<T> {
-  const { entryId, save, delayMs } = options;
+  const { entryId, save, delayMs, onUnsavedOnTeardown } = options;
   const [status, setStatus] = useState<SaveStatus>("idle");
   const schedulerRef = useRef<AutosaveScheduler<T> | null>(null);
 
@@ -89,9 +100,45 @@ export function useAutosave<T>(options: UseAutosaveOptions<T>): UseAutosaveResul
       // methods) is what makes calling them after dispose() has actually
       // completed a safe no-op — that guard was always the correct place
       // for this safety, not an external null-out.
-      void scheduler.flush().finally(() => scheduler.dispose());
+      //
+      // Finding 1 (PR #139): flush() alone is not enough. A save can have
+      // already failed BEFORE teardown — createAutosaveScheduler keeps a
+      // rejected payload in its private `failed` slot, not in `pending`,
+      // specifically so a stale debounce timer never re-sends it on its
+      // own (see retry()'s doc comment there). flush()'s drain loop only
+      // ever consumes `pending`, so on its own it does nothing for a
+      // payload sitting in `failed` — it would resolve immediately, this
+      // scheduler would get disposed right after, and the user's last
+      // edit would vanish with no save and no error, while reopening the
+      // entry would show stale server content.
+      //
+      // The scheduler already has the right primitive for this: retry()
+      // re-queues `failed` into `pending` and joins the exact same drain
+      // loop flush() does. So: flush first (covers the common case where
+      // nothing had failed), then if a failure is still outstanding, give
+      // it exactly one retry() and flush() again. One attempt only — this
+      // runs unconditionally on every entry switch/unmount, so retrying a
+      // persistently-failing save here in a loop would hammer the server
+      // every time the user navigates. If it fails again, the edit is
+      // genuinely unsaveable right now; onUnsavedOnTeardown (checked
+      // BEFORE dispose(), since invariant C silences onStatusChange after
+      // it) lets the caller surface that rather than swallowing it.
+      void (async () => {
+        await scheduler.flush();
+        if (scheduler.status() === "error") {
+          await scheduler.retry();
+          await scheduler.flush();
+        }
+        if (scheduler.status() === "error") {
+          onUnsavedOnTeardown?.();
+        }
+        scheduler.dispose();
+      })();
     };
-    // `save` is intentionally excluded — see the doc comment above.
+    // `save` and `onUnsavedOnTeardown` are intentionally excluded — same
+    // reasoning as the doc comment above for `save`: only the closures
+    // captured at the moment this effect runs for a given `entryId` are
+    // ever wired into this scheduler instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entryId, delayMs]);
 
