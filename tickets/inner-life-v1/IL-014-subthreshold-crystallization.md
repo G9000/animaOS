@@ -1,19 +1,18 @@
 # IL-014 - Sub-threshold moment crystallization (design ticket)
 
-- Status: backlog
+- Status: done
 - Priority: P3
 - Scope: `apps/server/src/anima_server/services/agent` (design first — no code until the design gate passes)
 - Parent: none
 - Depends on: IL-004, IL-005
-- Owner: unassigned
+- Owner: Claude
 - PRD: docs/prds/presence/inner-life-v1.md
-- Spec: none
+- Spec: docs/superpowers/specs/2026-08-02-il-014-subthreshold-crystallization-design.md
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-07-30 15:50 MYT
-- Started:
-- Completed:
-
+- Updated: 2026-08-02 13:42 MYT
+- Started: 2026-08-02 13:42 MYT
+- Completed: 2026-08-02 13:42 MYT
 Standalone follow-up beyond the closed Inner Life v1 scope — tracked in
 `IL-000`'s "Follow-ups Beyond v1 Scope" section.
 
@@ -66,11 +65,40 @@ resolve on paper first:
   as the highest-value not-yet-adopted idea, deliberately gated on design
   because of the right-to-forget and encryption tensions.
 
+- 2026-08-02 04:10 MYT - Design drafted (see Spec) and awaiting approval — the ticket
+  stays `backlog` deliberately: its acceptance requires design sign-off
+  before an implementation ticket is cut. The doc proposes the buffer
+  mechanism (reusing IL-004 topic keys, soul-store, field-encrypted) and
+  takes a position on each of the four tensions, with one open product
+  question flagged for you: whether the pre-crystallization buffer should
+  be VISIBLE to the user. That answer changes the schema and the consent
+  surface, so it needs deciding before any code.
+
+- 2026-08-02 13:42 MYT - CLOSED AS ALREADY DELIVERED — no code written. Investigation
+  (see Spec) found this capability is IL-004, shipped 2026-07-18: its
+  goal is verbatim "stop silently dropping sub-threshold memory
+  candidates: accumulate them as weighted latent traces per topic and
+  synthesize a fully-provenanced memory when cumulative weight crosses
+  the crystallization threshold". Admission (`fold_to_trace` in
+  soul_writer), accumulation (LatentTrace weight + weekly decay + cap),
+  crystallization (`crystallize_due_traces` -> MemoryItem with
+  source=latent_crystallization), soul-store scoping, vault export and
+  right-to-forget are all in place.
+  This ticket was filed from the v1.1 comparative analysis WITHOUT first
+  checking whether the behavior existed — the mistake is recorded rather
+  than quietly dropped. The design gate's blocking question (visible vs
+  invisible buffer) was moot: IL-004 stores no content at all,
+  `evidence_refs` holds identifiers only. One genuine refinement —
+  requiring contributions from >=2 distinct sessions so a single long
+  conversation can't crystallize a false 'pattern' — is filed as IL-016.
+
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - No implementation: closed as already delivered by IL-004. Verified by
+    reading the delivered code paths listed in the Spec.
 - Changed paths:
-  - none
+  - `docs/superpowers/specs/2026-08-02-il-014-subthreshold-crystallization-design.md`
+    (rewritten as the investigation record)
 - Notes:
-  - none
+  - Follow-up `IL-016` carries the one genuine delta (session spread).

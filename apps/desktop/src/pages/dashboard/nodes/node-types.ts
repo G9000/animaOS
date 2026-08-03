@@ -49,6 +49,13 @@ export interface ProfileNodeData extends BaseNodeData {
   todayContextLine?: string | null;
   currentFocus?: string | null;
   onExplore: (thought: string, pills?: MessagePill[]) => void;
+  /** IL-015 (PR #135 review, P1): called from this node once it has
+   * actually rendered a dream-bearing greeting. Acknowledging a dream marks
+   * it surfaced FOREVER, so the signal has to come from a mounted surface
+   * that really displayed the text — the dashboard lets the user close both
+   * nodes that show it, and acking from the fetch handler consumed dreams
+   * nothing on screen ever voiced. */
+  onDreamShown?: () => void;
 }
 
 export interface GreetingNodeData extends BaseNodeData {
@@ -58,6 +65,13 @@ export interface GreetingNodeData extends BaseNodeData {
   briefLoading: boolean;
   userName?: string;
   onChat: () => void;
+  /** IL-015 (PR #135 review, P1): called from this node once it has
+   * actually rendered a dream-bearing greeting. Acknowledging a dream marks
+   * it surfaced FOREVER, so the signal has to come from a mounted surface
+   * that really displayed the text — the dashboard lets the user close both
+   * nodes that show it, and acking from the fetch handler consumed dreams
+   * nothing on screen ever voiced. */
+  onDreamShown?: () => void;
 }
 
 export interface TasksNodeData extends BaseNodeData {
