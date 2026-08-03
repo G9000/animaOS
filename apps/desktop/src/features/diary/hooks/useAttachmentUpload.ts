@@ -19,13 +19,23 @@ import { api } from "../../../lib/api";
 // brand-new entry is created eagerly (see DiaryWorkspace's startNewEntry)
 // before the editor ever mounts, so in practice this only guards the
 // unmounted-editor window, not a real user-facing gap.
+// PR #139 round 4: the inline-image editor path (slash "/image", paste,
+// drag-and-drop onto the doc) is one of the content-producing initiation
+// points audited alongside the Attach-button/cover/voice-recording uploads
+// in useDiaryEntries.ts's `uploadAttachment`. Fired synchronously, as the
+// FIRST statement inside the returned callback, before the `try`/await —
+// same contract as UseDiaryEntriesOptions.onUploadInitiated there, so a
+// discard evaluation racing an in-flight inline-image upload can never slip
+// in ahead of graduation.
 export function useAttachmentUpload(
   entryId: number | null,
   onError?: (message: string) => void,
+  onUploadInitiated?: (entryId: number) => void,
 ): (file: File) => Promise<number | null> {
   return useCallback(
     async (file: File): Promise<number | null> => {
       if (entryId === null) return null;
+      onUploadInitiated?.(entryId);
       try {
         const uploaded = await api.diary.uploadAttachment(entryId, file);
         return uploaded.id;
@@ -34,6 +44,6 @@ export function useAttachmentUpload(
         return null;
       }
     },
-    [entryId, onError],
+    [entryId, onError, onUploadInitiated],
   );
 }

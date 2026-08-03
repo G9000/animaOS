@@ -31,6 +31,17 @@ export interface UseVoiceRecorderOptions {
   // against).
   onRecordingComplete: (file: File, entryId: VoiceRecordingEntryId) => void;
   onError: (message: string | null) => void;
+  // PR #139 round 4: fired synchronously inside `start()`, right after
+  // `recordingEntryIdRef.current` is set and BEFORE the `getUserMedia`
+  // await — i.e. before this hook ever yields to the event loop. A
+  // voice-only entry (no attachment yet, editor content still blank) is
+  // otherwise indistinguishable from an untouched one to the discard
+  // predicate, so the caller uses this to graduate the entry out of
+  // session-discard eligibility the instant recording is INITIATED, never
+  // waiting for `onRecordingComplete`. This closes the gap even if
+  // `getUserMedia` itself is still pending (permission prompt) when the
+  // user navigates away.
+  onRecordingInitiated?: (entryId: VoiceRecordingEntryId) => void;
 }
 
 export interface UseVoiceRecorderResult {
@@ -153,6 +164,9 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions): UseVoiceReco
     // recording started", fixed for the whole session regardless of what
     // the user selects afterward.
     recordingEntryIdRef.current = entryId;
+    // Synchronous, before the getUserMedia await below — see
+    // UseVoiceRecorderOptions.onRecordingInitiated's doc comment.
+    optionsRef.current.onRecordingInitiated?.(entryId);
     optionsRef.current.onError(null);
     recordedChunksRef.current = [];
 

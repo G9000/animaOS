@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DiaryAttachmentData,
   DiaryEntryData,
@@ -62,18 +62,47 @@ export interface UseDiaryEntriesResult {
   deleteFolder: (folderId: number) => Promise<boolean>;
 }
 
+export interface UseDiaryEntriesOptions {
+  // PR #139 round 4: the structural fix for the "discard races an in-flight
+  // upload" shape (two P1 findings sharing one root cause — attachment
+  // upload at DiaryWorkspace.tsx's old :557/:569/:627, plus the completed-
+  // recording upload at :303). Called synchronously, as the FIRST statement
+  // inside `uploadAttachment`, before the `try`/`await api.diary.
+  // uploadAttachment(...)` — i.e. before this function ever yields to the
+  // event loop. This is the single chokepoint every attachment upload
+  // funnels through (Attach button, drag-drop, cover image, completed voice
+  // recording all call this same `uploadAttachment`), so DiaryWorkspace
+  // wires this callback once, here, to graduate the entry out of
+  // session-discard eligibility (see lib/pageLifecycle.ts's
+  // graduateSessionEntry) the instant an upload is INITIATED — never
+  // waiting for it to complete. A discard evaluation that runs between
+  // initiation and completion (the exact race both findings reported) now
+  // always sees an already-graduated entry.
+  onUploadInitiated?: (entryId: number) => void;
+}
+
 /**
  * The diary feature's data layer: every `api.diary.*` call, moved here from
  * DiaryWorkspace.tsx (Task 12, Step 1) verbatim — same error-message
  * strings, same success/failure state updates, same request shapes. The
  * component that consumes this keeps only selection and UI state.
  */
-export function useDiaryEntries(userId: number | null): UseDiaryEntriesResult {
+export function useDiaryEntries(
+  userId: number | null,
+  options?: UseDiaryEntriesOptions,
+): UseDiaryEntriesResult {
   const [entries, setEntries] = useState<DiaryEntryData[]>([]);
   const [folders, setFolders] = useState<DiaryFolderData[]>([]);
   const [entryLimit, setEntryLimit] = useState(ENTRY_PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Always call the LATEST callback (same pattern as useVoiceRecorder's
+  // optionsRef) so `uploadAttachment`'s identity does not need to change —
+  // and therefore does not need to be in its own useCallback deps — every
+  // time DiaryWorkspace re-renders with a fresh closure.
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const reload = useCallback(
     async (showLoader = true) => {
@@ -213,6 +242,13 @@ export function useDiaryEntries(userId: number | null): UseDiaryEntriesResult {
       file: File,
       errorMessage?: string,
     ): Promise<DiaryAttachmentData | null> => {
+      // PR #139 round 4: fired synchronously, before anything below ever
+      // awaits — see UseDiaryEntriesOptions.onUploadInitiated's doc
+      // comment. This is what closes the "discard races an in-flight
+      // upload" gap: the caller's graduation happens in the same tick the
+      // upload is initiated, not whenever the network call eventually
+      // resolves.
+      optionsRef.current?.onUploadInitiated?.(entryId);
       try {
         const uploaded = await api.diary.uploadAttachment(entryId, file);
         setEntries((current) =>

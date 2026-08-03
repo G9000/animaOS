@@ -61,6 +61,28 @@ function editorHasNonTextContent(ed: Editor): boolean {
 
 export default function DiaryWorkspace() {
   const { user } = useAuth();
+
+  // PR #139 round 3, Finding 2: the untitled-page cleanup
+  // (evaluateAndMaybeDiscard) must only ever discard an entry THIS
+  // workspace session itself created via startNewEntry — an entry loaded
+  // from the server must never be silently deleted, no matter how blank
+  // it looks (e.g. one intentionally cleared back to blank in an earlier
+  // session, per fix round 1's Finding 1). Populated in startNewEntry
+  // right after a create succeeds; an id is removed the moment that entry
+  // receives any real, user-driven edit or has any content-producing
+  // action INITIATED against it — see the round 4 chokepoint doc comments
+  // on UseDiaryEntriesOptions.onUploadInitiated,
+  // UseVoiceRecorderOptions.onRecordingInitiated, and useAttachmentUpload's
+  // own onUploadInitiated parameter — and never added back. See the
+  // graduation ruling on lib/pageLifecycle.ts's isSessionDiscardable for
+  // why that's permanent rather than reversible. In-memory only for this
+  // component's lifetime; never persisted to browser storage.
+  //
+  // Declared before useDiaryEntries below (rather than in its usual spot
+  // alongside the other bookkeeping refs) because useDiaryEntries's
+  // onUploadInitiated option needs to close over it.
+  const sessionCreatedEntryIdsRef = useRef<Set<number>>(new Set());
+
   const {
     entries,
     folders,
@@ -80,7 +102,19 @@ export default function DiaryWorkspace() {
     createFolder,
     renameFolder,
     deleteFolder,
-  } = useDiaryEntries(user?.id ?? null);
+  } = useDiaryEntries(user?.id ?? null, {
+    // PR #139 round 4 (P1 x2, one root cause): the single chokepoint every
+    // attachment upload funnels through — Attach button
+    // (handleFilesSelected), drag-and-drop (handleNonImageFilesDropped),
+    // cover image (handleCoverFileSelected), and a completed voice
+    // recording (onRecordingComplete below) all call the SAME
+    // uploadAttachment. Graduating here, inside useDiaryEntries itself
+    // (synchronously, before its own await — see
+    // UseDiaryEntriesOptions.onUploadInitiated), means none of those four
+    // call sites — nor any future one added later — can forget to
+    // graduate: there is nothing left for a call site to remember to do.
+    onUploadInitiated: (entryId) => graduateSessionEntry(sessionCreatedEntryIdsRef.current, entryId),
+  });
 
   const [creatingEntry, setCreatingEntry] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -157,20 +191,8 @@ export default function DiaryWorkspace() {
     hasNonTextContent: true,
   });
 
-  // PR #139 round 3, Finding 2: the untitled-page cleanup
-  // (evaluateAndMaybeDiscard) must only ever discard an entry THIS
-  // workspace session itself created via startNewEntry — an entry loaded
-  // from the server must never be silently deleted, no matter how blank
-  // it looks (e.g. one intentionally cleared back to blank in an earlier
-  // session, per fix round 1's Finding 1). Populated in startNewEntry
-  // right after a create succeeds; an id is removed the moment that entry
-  // receives any real, user-driven edit (see graduateSessionEntry's call
-  // sites in handleEditorChange, handleTitleChange, and
-  // handleDrawerUpdate) and never added back — see the graduation ruling
-  // on lib/pageLifecycle.ts's isSessionDiscardable for why that's
-  // permanent rather than reversible. In-memory only for this component's
-  // lifetime; never persisted to browser storage.
-  const sessionCreatedEntryIdsRef = useRef<Set<number>>(new Set());
+  // sessionCreatedEntryIdsRef itself is declared above, before
+  // useDiaryEntries — see the comment there.
 
   // PR #139 round 3, Finding 1: the last mood DetailsDrawer has reported
   // as typed (not yet necessarily committed to the server) for a given
@@ -302,6 +324,17 @@ export default function DiaryWorkspace() {
     onRecordingComplete: (file, entryId) => {
       void uploadAttachment(entryId, file);
     },
+    // PR #139 round 4: recording is a content-producing action whose only
+    // observable trace (the audio file) doesn't exist until
+    // onRecordingComplete — by which point a discard evaluation may already
+    // have run and deleted the entry (Finding: "voice-only entry deleted
+    // before its audio lands"). useVoiceRecorder fires this synchronously,
+    // inside start(), before its getUserMedia await — see
+    // UseVoiceRecorderOptions.onRecordingInitiated's doc comment — so the
+    // entry graduates the instant recording is INITIATED, closing the gap
+    // even if the permission prompt is still pending when the user
+    // navigates away.
+    onRecordingInitiated: (entryId) => graduateSessionEntry(sessionCreatedEntryIdsRef.current, entryId),
     onError: setError,
   });
 
@@ -320,7 +353,16 @@ export default function DiaryWorkspace() {
   // to the currently-selected entry; DiaryEditor is keyed by entry.id, so a
   // fresh DiaryEditor (and therefore a fresh set of extensions carrying
   // this closure) is created whenever the id below changes.
-  const uploadInlineImage = useAttachmentUpload(autosaveEntryId, setError);
+  const uploadInlineImage = useAttachmentUpload(autosaveEntryId, setError, (entryId) =>
+    // PR #139 round 4: the inline-image path (slash "/image", paste,
+    // drag-and-drop onto the doc) is content-producing exactly like the
+    // Attach-button/cover/voice-recording uploads, but it doesn't route
+    // through useDiaryEntries's uploadAttachment (see the doc comment on
+    // useAttachmentUpload — inline images address the document body
+    // directly, not the attachments array). Same contract: fired
+    // synchronously, before this hook's own await.
+    graduateSessionEntry(sessionCreatedEntryIdsRef.current, entryId),
+  );
 
   const {
     schedule,
@@ -550,6 +592,13 @@ export default function DiaryWorkspace() {
     setSelectedId(entryId);
   };
 
+  // PR #139 round 4: `void uploadAttachment(...)` is fire-and-forget on
+  // purpose (the Attach button doesn't block on the network) — but
+  // uploadAttachment itself now graduates this entry out of session-discard
+  // eligibility synchronously, before it awaits, so a discard evaluation
+  // triggered by an immediate entry switch can never race ahead of it. See
+  // UseDiaryEntriesOptions.onUploadInitiated's doc comment in
+  // hooks/useDiaryEntries.ts.
   const handleFilesSelected = (selected: FileList | null) => {
     if (!selected || selected.length === 0 || !selectedEntry) return;
     const entryId = selectedEntry.id;
@@ -624,13 +673,12 @@ export default function DiaryWorkspace() {
 
   const handleCoverFileSelected = async (file: File) => {
     if (!selectedEntry) return;
+    // PR #139 round 4: no separate graduateSessionEntry call needed here —
+    // uploadAttachment (via useDiaryEntries's onUploadInitiated chokepoint)
+    // already graduates this entry synchronously, the instant the upload
+    // below is initiated, before it awaits the network.
     const uploaded = await uploadAttachment(selectedEntry.id, file, "Failed to set cover image.");
     if (!uploaded) return;
-    // PR #139 round 3, Finding 2: setting a cover is a real, user-driven
-    // edit — graduate it the same as any other (belt-and-suspenders here,
-    // since the attachment upload above already keeps attachmentCount > 0
-    // permanently, which independently keeps isDiscardablePage false).
-    graduateSessionEntry(sessionCreatedEntryIdsRef.current, selectedEntry.id);
     await updateEntry(selectedEntry.id, { coverAttachmentId: uploaded.id }, "Failed to set cover image.");
   };
 
