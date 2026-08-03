@@ -13,6 +13,11 @@ const base = {
   attachmentCount: 0,
   coverAttachmentId: null,
   hasNonTextContent: false,
+  mood: null,
+  folderId: null,
+  initialFolderId: null,
+  entryDate: "2026-01-01",
+  initialEntryDate: "2026-01-01",
 };
 
 describe("untitled page cleanup", () => {
@@ -88,6 +93,65 @@ describe("untitled page cleanup", () => {
 
   test("does not treat a zero-width space adjacent to real text as empty", () => {
     expect(isDiscardablePage({ ...base, bodyPlainText: `${BLANK_BODY_MARKER}hello` })).toBe(false);
+  });
+
+  // PR #139 round 2, Finding 2 (P1): a newly created entry with only a
+  // mood set (no title, body, attachments, or cover) was silently deleted
+  // by the untitled-page cleanup — the mood PATCH succeeded, then this
+  // predicate judged the page untouched because it had no mood input at
+  // all. mood has no ambient default (createEntry always seeds it null —
+  // see hooks/useDiaryEntries.ts), so any non-empty value is unambiguously
+  // a deliberate user action.
+  test("keeps a page whose only content is a mood", () => {
+    expect(isDiscardablePage({ ...base, mood: "hopeful" })).toBe(false);
+  });
+
+  test("treats an empty-string mood the same as no mood", () => {
+    expect(isDiscardablePage({ ...base, mood: "" })).toBe(true);
+  });
+
+  test("treats a whitespace-only mood as empty", () => {
+    expect(isDiscardablePage({ ...base, mood: "   " })).toBe(true);
+  });
+
+  // PR #139 round 2 audit: folderId. Unlike mood, a brand-new page's
+  // folderId is frequently non-null already (createEntry seeds it from
+  // whatever folder is active in the sidebar at creation — see
+  // DiaryWorkspace.tsx's startNewEntry / hooks/useDiaryEntries.ts). Bare
+  // non-null-ness is therefore NOT a safe "the user deliberately did this"
+  // signal — most blank pages created inside an active folder would never
+  // be cleaned up if it were. The real signal is a CHANGE from the value
+  // captured when the entry became selected (initialFolderId).
+  test("discards a blank page whose folderId matches its initial value (ambient default, never touched)", () => {
+    expect(isDiscardablePage({ ...base, folderId: 3, initialFolderId: 3 })).toBe(true);
+  });
+
+  test("keeps a blank page whose folderId was deliberately changed from its initial value", () => {
+    expect(isDiscardablePage({ ...base, folderId: 5, initialFolderId: 3 })).toBe(false);
+  });
+
+  test("keeps a blank page deliberately moved OUT of its initial folder (folderId cleared)", () => {
+    expect(isDiscardablePage({ ...base, folderId: null, initialFolderId: 3 })).toBe(false);
+  });
+
+  // PR #139 round 2 audit: entryDate. Same reasoning as folderId —
+  // entryDate always has a value (creation seeds it with today's date via
+  // todayISODate() — see hooks/useDiaryEntries.ts), so its mere presence
+  // can't be the signal. This IS distinguishable from a deliberate change,
+  // using the same changed-from-baseline technique as folderId:
+  // initialEntryDate is the value captured when the entry became selected,
+  // so a value that still matches it was never touched, and a value that
+  // differs was deliberately picked by the user.
+  test("discards a blank page whose entryDate matches its initial value (never touched)", () => {
+    expect(isDiscardablePage({ ...base, entryDate: "2026-01-01", initialEntryDate: "2026-01-01" })).toBe(
+      true,
+    );
+  });
+
+  test("keeps a blank page whose entryDate was deliberately changed from its initial value", () => {
+    expect(isDiscardablePage({ ...base, entryDate: "2026-02-14", initialEntryDate: "2026-01-01" })).toBe(
+      false,
+    );
   });
 });
 

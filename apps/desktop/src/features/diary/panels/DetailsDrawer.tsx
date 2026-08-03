@@ -92,14 +92,14 @@ function AttachmentPreview({
               setFailed(false);
               setRetryToken((t) => t + 1);
             }}
-            className="font-mono text-[9px] uppercase tracking-[0.14em] text-accent hover:text-accent/80"
+            className="font-mono text-label uppercase tracking-caps-2 text-accent hover:text-accent/80"
           >
             Retry
           </button>
           <button
             type="button"
             onClick={() => onOpenAttachment(attachment)}
-            className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground"
+            className="font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-foreground"
           >
             Download
           </button>
@@ -117,7 +117,7 @@ function AttachmentPreview({
       <img
         src={previewUrl}
         alt={attachment.filename || "Diary attachment"}
-        className="max-h-64 max-w-full rounded-lg border border-foreground/[0.08] object-contain"
+        className="max-h-64 max-w-full rounded-lg border border-hairline object-contain"
       />
     );
   }
@@ -127,7 +127,7 @@ function AttachmentPreview({
   }
 
   return (
-    <video controls src={previewUrl} className="max-h-64 max-w-full rounded-lg border border-foreground/[0.08]" />
+    <video controls src={previewUrl} className="max-h-64 max-w-full rounded-lg border border-hairline" />
   );
 }
 
@@ -136,7 +136,16 @@ export interface DetailsDrawerProps {
   folders: DiaryFolderData[];
   open: boolean;
   onClose: () => void;
-  onUpdate: (data: DiaryEntryUpdateData) => void;
+  // PR #139 round 2, Finding 1: `entryId` is the entry THIS update
+  // originated from, not necessarily whatever is selected in the parent by
+  // the time the call lands. See lib/drawerUpdate.ts's doc comment on
+  // `resolveDrawerUpdateEntryId` for the full mechanism (a debounced/
+  // teardown commit — namely mood's — can arrive after the parent has
+  // already advanced its own "currently selected" state). This component
+  // always passes its own `entry.id`, which is stable for its whole mounted
+  // lifetime because the parent keys it by `entry.id` (fix round 1,
+  // Finding 3) — a fresh mount is guaranteed for every entry switch.
+  onUpdate: (entryId: number, data: DiaryEntryUpdateData) => void;
   onDelete: () => void;
   // Deviations beyond the brief's literal prop list: cover/attachment
   // upload need a real File (not expressible in DiaryEntryUpdateData), and
@@ -209,7 +218,7 @@ export function DetailsDrawer({
     const trimmed = value.trim();
     if (trimmed === lastCommittedMoodRef.current) return;
     lastCommittedMoodRef.current = trimmed;
-    onUpdateRef.current({ mood: trimmed || undefined, clearMood: !trimmed });
+    onUpdateRef.current(entry.id, { mood: trimmed || undefined, clearMood: !trimmed });
   };
 
   // Also related to Finding 3: mood used to commit ONLY on blur, so a
@@ -247,9 +256,9 @@ export function DetailsDrawer({
   const charCount = bodyText.length;
 
   return (
-    <aside className="w-80 shrink-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-foreground/[0.08]">
-        <h2 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/70">Details</h2>
+    <aside className="w-80 shrink-0 rounded-xl border border-hairline bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-hairline">
+        <h2 className="font-mono text-caption uppercase tracking-caps-4 text-muted-foreground/70">Details</h2>
         <button
           type="button"
           onClick={onClose}
@@ -267,17 +276,17 @@ export function DetailsDrawer({
               <CoverBanner attachment={coverAttachment} onError={onAttachmentError} />
               <button
                 type="button"
-                onClick={() => onUpdate({ clearCover: true })}
-                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-foreground/[0.1] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:text-destructive"
+                onClick={() => onUpdate(entry.id, { clearCover: true })}
+                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-lg bg-background/80 border border-hairline px-2 py-1 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-destructive"
               >
                 <XIcon size="sm" />
                 Remove cover
               </button>
             </div>
           ) : (
-            <label className="w-full h-12 rounded-xl border border-dashed border-foreground/[0.12] flex items-center justify-center gap-2 text-muted-foreground/60 hover:text-foreground hover:border-foreground/25 transition-colors cursor-pointer">
+            <label className="w-full h-12 rounded-xl border border-dashed border-hairline flex items-center justify-center gap-2 text-muted-foreground/60 hover:text-foreground hover:border-foreground/25 transition-colors cursor-pointer">
               <ImageIcon size="sm" />
-              <span className="font-mono text-[10px] uppercase tracking-[0.14em]">Add cover image</span>
+              <span className="font-mono text-caption uppercase tracking-caps-2">Add cover image</span>
               <input
                 type="file"
                 accept="image/*"
@@ -293,7 +302,7 @@ export function DetailsDrawer({
         </section>
 
         <section className="space-y-2">
-          <label className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">
+          <label className="flex items-center gap-2 font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60">
             <CalendarGlyphIcon className="size-3.5" />
             Date
           </label>
@@ -302,14 +311,14 @@ export function DetailsDrawer({
             value={entry.entryDate}
             onChange={(event) => {
               if (event.target.value === entry.entryDate) return;
-              onUpdate({ entryDate: event.target.value });
+              onUpdate(entry.id, { entryDate: event.target.value });
             }}
-            className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-2.5 py-1.5 text-detail text-foreground outline-none focus:border-accent/50"
+            className="w-full bg-foreground/[0.04] border border-hairline rounded-lg px-2.5 py-1.5 text-detail text-foreground outline-none focus:border-accent/50"
           />
         </section>
 
         <section className="space-y-2">
-          <label className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">Mood</label>
+          <label className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60">Mood</label>
           <input
             type="text"
             value={moodValue}
@@ -324,25 +333,25 @@ export function DetailsDrawer({
             }}
             placeholder="How are you feeling?"
             maxLength={80}
-            className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-2.5 py-1.5 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50"
+            className="w-full bg-foreground/[0.04] border border-hairline rounded-lg px-2.5 py-1.5 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50"
           />
         </section>
 
         {folders.length > 0 && (
           <section className="space-y-2">
-            <label className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">
+            <label className="flex items-center gap-2 font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60">
               <FolderGlyphIcon className="size-3.5" />
               Folder
             </label>
             <select
               value={entry.folderId ?? ""}
               onChange={(event) =>
-                onUpdate({
+                onUpdate(entry.id, {
                   folderId: event.target.value ? Number(event.target.value) : undefined,
                   clearFolder: !event.target.value,
                 })
               }
-              className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-2.5 py-1.5 text-detail text-foreground outline-none focus:border-accent/50"
+              className="w-full bg-foreground/[0.04] border border-hairline rounded-lg px-2.5 py-1.5 text-detail text-foreground outline-none focus:border-accent/50"
             >
               <option value="">No folder</option>
               {folders.map((folder) => (
@@ -356,8 +365,8 @@ export function DetailsDrawer({
 
         <section className="space-y-2">
           <div className="flex items-center justify-between">
-            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">Attachments</p>
-            <label className="inline-flex items-center gap-1 cursor-pointer font-mono text-[9px] uppercase tracking-[0.14em] text-accent hover:text-accent/80">
+            <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60">Attachments</p>
+            <label className="inline-flex items-center gap-1 cursor-pointer font-mono text-label uppercase tracking-caps-2 text-accent hover:text-accent/80">
               <FileIcon size="sm" />
               Attach
               <input
@@ -390,8 +399,8 @@ export function DetailsDrawer({
                       {attachment.kind === "image" && (
                         <button
                           type="button"
-                          onClick={() => onUpdate({ coverAttachmentId: attachment.id })}
-                          className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 rounded-lg bg-background/80 border border-foreground/[0.1] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+                          onClick={() => onUpdate(entry.id, { coverAttachmentId: attachment.id })}
+                          className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 rounded-lg bg-background/80 border border-hairline px-1.5 py-0.5 font-mono text-micro uppercase tracking-caps-2 text-muted-foreground hover:text-foreground"
                         >
                           <StarGlyphIcon className="size-3" />
                           Set cover
@@ -400,7 +409,7 @@ export function DetailsDrawer({
                       <button
                         type="button"
                         onClick={() => onOpenAttachment(attachment)}
-                        className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/60 hover:text-foreground"
+                        className="font-mono text-label uppercase tracking-caps-2 text-muted-foreground/60 hover:text-foreground"
                       >
                         {attachment.filename || attachment.kind} · {formatFileSize(attachment.sizeBytes)}
                       </button>
@@ -417,11 +426,11 @@ export function DetailsDrawer({
                         key={attachment.id}
                         type="button"
                         onClick={() => onOpenAttachment(attachment)}
-                        className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-hairline bg-foreground/[0.03] px-2 py-1 text-caption text-muted-foreground hover:text-foreground hover:border-hairline-strong"
                       >
                         <Icon size="sm" className="shrink-0" />
                         <span className="truncate">{attachment.filename || attachment.kind}</span>
-                        <span className="font-mono text-[9px] text-muted-foreground/50">
+                        <span className="font-mono text-label text-muted-foreground/50">
                           {formatFileSize(attachment.sizeBytes)}
                         </span>
                       </button>
@@ -434,22 +443,22 @@ export function DetailsDrawer({
         </section>
 
         <section className="space-y-2">
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">Voice note</p>
+          <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60">Voice note</p>
           <button
             type="button"
             onClick={onToggleRecording}
             className={cn(
-              "w-full inline-flex items-center justify-center rounded-lg border px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-mono transition-colors",
+              "w-full inline-flex items-center justify-center rounded-lg border px-3 py-2 text-label uppercase tracking-caps-2 font-mono transition-colors",
               recording
                 ? "border-destructive/40 text-destructive bg-destructive/10"
-                : "border-foreground/[0.08] bg-foreground/[0.03] text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]",
+                : "border-hairline bg-foreground/[0.03] text-muted-foreground hover:text-foreground hover:border-hairline-strong",
             )}
           >
             <MicIcon size="sm" className="mr-2" />
             {recording ? "Stop recording" : "Record voice note"}
           </button>
           {recording && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em] text-destructive">
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 font-mono text-label uppercase tracking-caps-3 text-destructive">
               <span>{speechAvailable ? "Recording / transcribing" : "Recording"}</span>
               {liveTranscript && (
                 <p className="mt-1 normal-case tracking-normal text-foreground/70">{liveTranscript}</p>
@@ -458,23 +467,23 @@ export function DetailsDrawer({
           )}
         </section>
 
-        <section className="space-y-1 border-t border-foreground/[0.08] pt-4">
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/40">
+        <section className="space-y-1 border-t border-hairline pt-4">
+          <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/40">
             {wordCount} {wordCount === 1 ? "word" : "words"} · {charCount} {charCount === 1 ? "character" : "characters"}
           </p>
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/40">
+          <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/40">
             Created {formatTimestamp(entry.createdAt)}
           </p>
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/40">
+          <p className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/40">
             Updated {formatTimestamp(entry.updatedAt)}
           </p>
         </section>
 
-        <section className="border-t border-foreground/[0.08] pt-4">
+        <section className="border-t border-hairline pt-4">
           <button
             type="button"
             onClick={onDelete}
-            className="w-full rounded-lg border border-destructive/40 px-3 py-2 font-mono text-[9px] uppercase tracking-[0.14em] text-destructive hover:bg-destructive/10"
+            className="w-full rounded-lg border border-destructive/40 px-3 py-2 font-mono text-label uppercase tracking-caps-2 text-destructive hover:bg-destructive/10"
           >
             Delete entry
           </button>

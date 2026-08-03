@@ -254,12 +254,12 @@ div[data-type="callout"] > *:last-child {
 /* Slash command menu (Tiptap Suggestion popup) — mounted imperatively
    outside React's tree, so it carries its own positioned root. */
 .diary-slash-menu {
-  @apply absolute z-40 w-56 rounded-lg border border-foreground/[0.1] bg-card shadow-xl overflow-hidden;
+  @apply absolute z-40 w-56 rounded-lg border border-hairline bg-card shadow-xl overflow-hidden;
   position: absolute;
 }
 
 .diary-slash-menu-empty {
-  @apply px-3 py-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50;
+  @apply px-3 py-2 font-mono text-label uppercase tracking-caps-2 text-muted-foreground/50;
 }
 
 .diary-slash-menu-list {
@@ -286,7 +286,7 @@ div[data-type="callout"] > *:last-child {
 }
 
 .diary-slash-menu-item-hint {
-  @apply font-mono text-[9px] text-muted-foreground/40;
+  @apply font-mono text-label text-muted-foreground/40;
 }
 
 /* Selection bubble menu (Task 6) — positioned by @tiptap/react/menus'
@@ -296,7 +296,7 @@ div[data-type="callout"] > *:last-child {
    underlying @tiptap/extension-drag-handle plugin; a selection in progress
    should always win if the two ever visually coincide. */
 .diary-bubble-menu {
-  @apply flex items-center gap-1 rounded-lg border border-foreground/[0.1] bg-card px-1.5 py-1 shadow-xl;
+  @apply flex items-center gap-1 rounded-lg border border-hairline bg-card px-1.5 py-1 shadow-xl;
   z-index: 30;
 }
 
@@ -321,7 +321,7 @@ div[data-type="callout"] > *:last-child {
 }
 
 .diary-bubble-menu-tone {
-  @apply h-5 w-5 rounded-full border border-foreground/[0.15] cursor-pointer transition-transform;
+  @apply h-5 w-5 rounded-full border border-hairline-strong cursor-pointer transition-transform;
 }
 
 .diary-bubble-menu-tone:hover {
@@ -390,7 +390,7 @@ div[data-type="callout"] > *:last-child {
 }
 
 .diary-drag-handle-menu {
-  @apply absolute left-0 top-full mt-1 w-40 rounded-lg border border-foreground/[0.1] bg-card py-1 shadow-xl overflow-visible;
+  @apply absolute left-0 top-full mt-1 w-40 rounded-lg border border-hairline bg-card py-1 shadow-xl overflow-visible;
 }
 
 /* `.text-detail` (font-size) comes from @anima/standard-templates/tokens.css
@@ -410,7 +410,7 @@ div[data-type="callout"] > *:last-child {
 }
 
 .diary-drag-handle-submenu {
-  @apply absolute left-full top-0 ml-1 w-44 rounded-lg border border-foreground/[0.1] bg-card py-1 shadow-xl;
+  @apply absolute left-full top-0 ml-1 w-44 rounded-lg border border-hairline bg-card py-1 shadow-xl;
 }
 
 .diary-bubble-menu-tone-lilac {

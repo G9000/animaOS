@@ -136,7 +136,7 @@ function AttachmentImageView(props: NodeViewProps) {
       )}
     >
       {uploadState === "uploading" && (
-        <div className="flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-secondary/40 px-3 py-8 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground animate-pulse">
+        <div className="flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-secondary/40 px-3 py-8 font-mono text-caption uppercase tracking-caps-2 text-muted-foreground animate-pulse">
           Uploading{caption ? ` "${caption}"` : " image"}…
         </div>
       )}
@@ -145,7 +145,7 @@ function AttachmentImageView(props: NodeViewProps) {
         <button
           type="button"
           onClick={handleUploadRetry}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-4 font-mono text-[10px] uppercase tracking-[0.12em] text-destructive hover:bg-destructive/20"
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-4 font-mono text-caption uppercase tracking-caps-2 text-destructive hover:bg-destructive/20"
         >
           Failed to upload{caption ? ` "${caption}"` : ""} — click to retry
         </button>
@@ -156,7 +156,7 @@ function AttachmentImageView(props: NodeViewProps) {
           <button
             type="button"
             onClick={handleDownloadRetry}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-4 font-mono text-[10px] uppercase tracking-[0.12em] text-destructive hover:bg-destructive/20"
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-4 font-mono text-caption uppercase tracking-caps-2 text-destructive hover:bg-destructive/20"
           >
             Failed to load image — click to retry
           </button>
@@ -167,7 +167,7 @@ function AttachmentImageView(props: NodeViewProps) {
             className="mx-auto block max-h-[32rem] rounded-xl border border-border/60 shadow-lg"
           />
         ) : (
-          <div className="flex items-center justify-center rounded-xl border border-border/60 bg-secondary/40 px-3 py-8 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground animate-pulse">
+          <div className="flex items-center justify-center rounded-xl border border-border/60 bg-secondary/40 px-3 py-8 font-mono text-caption uppercase tracking-caps-2 text-muted-foreground animate-pulse">
             Loading image…
           </div>
         ))}

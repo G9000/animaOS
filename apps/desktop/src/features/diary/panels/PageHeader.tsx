@@ -69,7 +69,7 @@ export function PageHeader({
         {statusLabel && (
           <span
             className={cn(
-              "font-mono text-[9px] tracking-[0.16em] uppercase",
+              "font-mono text-label tracking-caps-3 uppercase",
               saveStatus === "error" ? "text-destructive" : "text-muted-foreground/50",
             )}
           >
@@ -80,7 +80,7 @@ export function PageHeader({
           <button
             type="button"
             onClick={onRetry}
-            className="font-mono text-[9px] uppercase tracking-[0.16em] text-destructive underline underline-offset-2 hover:text-destructive/80"
+            className="font-mono text-label uppercase tracking-caps-3 text-destructive underline underline-offset-2 hover:text-destructive/80"
           >
             Retry
           </button>

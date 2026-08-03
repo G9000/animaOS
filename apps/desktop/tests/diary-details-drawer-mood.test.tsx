@@ -58,6 +58,7 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
     const container = dom.window.document.getElementById("root") as HTMLElement;
     const root = createRoot(container);
     const updates: any[] = [];
+    const entryIds: number[] = [];
 
     try {
       await act(async () => {
@@ -68,7 +69,10 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
             folders={[]}
             open={true}
             onClose={() => {}}
-            onUpdate={(data) => updates.push(data)}
+            onUpdate={(entryId, data) => {
+              entryIds.push(entryId);
+              updates.push(data);
+            }}
             onDelete={() => {}}
             onCoverFileSelected={() => {}}
             onFilesSelected={() => {}}
@@ -105,6 +109,7 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
 
       expect(updates.length).toBe(1);
       expect(updates[0]).toEqual({ mood: "hopeful", clearMood: false });
+      expect(entryIds[0]).toBe(1);
     } finally {
       root.unmount();
     }
@@ -114,6 +119,7 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
     const container = dom.window.document.getElementById("root") as HTMLElement;
     const root = createRoot(container);
     const updates: any[] = [];
+    const entryIds: number[] = [];
 
     try {
       await act(async () => {
@@ -124,7 +130,10 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
             folders={[]}
             open={true}
             onClose={() => {}}
-            onUpdate={(data) => updates.push(data)}
+            onUpdate={(entryId, data) => {
+              entryIds.push(entryId);
+              updates.push(data);
+            }}
             onDelete={() => {}}
             onCoverFileSelected={() => {}}
             onFilesSelected={() => {}}
@@ -158,6 +167,7 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
 
       expect(updates.length).toBe(1);
       expect(updates[0]).toEqual({ mood: "relieved", clearMood: false });
+      expect(entryIds[0]).toBe(1);
     } catch (e) {
       root.unmount();
       throw e;

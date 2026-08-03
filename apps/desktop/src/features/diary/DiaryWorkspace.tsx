@@ -16,6 +16,7 @@ import {
   resolveBodyForSave,
   snapshotBelongsToEntry,
 } from "./lib/pageLifecycle";
+import { dispatchDrawerUpdate } from "./lib/drawerUpdate";
 import { isHtmlBody, escapeHtmlForEditor } from "./lib/textFormat";
 import { handleInstanceTornDown } from "./lib/editorHandoff";
 import { Glyph } from "./editor/glyphIcons";
@@ -102,6 +103,17 @@ export default function DiaryWorkspace() {
   // were registered — always see the latest entry/title/content snapshot.
   const selectedEntryRef = useRef<DiaryEntryData | null>(null);
   const titleRef = useRef("");
+  // PR #139 round 2, Finding 2 audit: folderId and entryDate always carry a
+  // value (seeded at creation from the active folder / today's date — see
+  // hooks/useDiaryEntries.ts), so their mere presence on an otherwise-blank
+  // page is not a reliable "the user deliberately did this" signal the way
+  // mood's is. These capture the baseline each field had when the entry
+  // became selected in this session, so the untitled-page cleanup
+  // (evaluateAndMaybeDiscard) can tell "still whatever it started as" apart
+  // from "the user explicitly changed it" — see the doc comments on
+  // lib/pageLifecycle.ts's DiscardablePageInput.
+  const initialFolderIdRef = useRef<number | null>(null);
+  const initialEntryDateRef = useRef("");
   // The last body HTML this component itself fed INTO the editor via its
   // `initialHtml` prop (or that the user's own edit last advanced it to —
   // see handleEditorChange). Compared against onChange's output as a
@@ -203,6 +215,8 @@ export default function DiaryWorkspace() {
     if (!selectedEntry) return;
     lastLoadedBodyRef.current = initialHtml;
     titleRef.current = selectedEntry.title ?? "";
+    initialFolderIdRef.current = selectedEntry.folderId ?? null;
+    initialEntryDateRef.current = selectedEntry.entryDate;
   }, [selectedEntry?.id, initialHtml]);
 
   // Remove drafts written by older builds. Diary content must stay in the
@@ -336,6 +350,11 @@ export default function DiaryWorkspace() {
       attachmentCount: entry.attachments.length,
       coverAttachmentId: entry.coverAttachmentId,
       hasNonTextContent: snapshot.hasNonTextContent,
+      mood: entry.mood ?? null,
+      folderId: entry.folderId ?? null,
+      initialFolderId: initialFolderIdRef.current,
+      entryDate: entry.entryDate,
+      initialEntryDate: initialEntryDateRef.current,
     });
     if (!discardable) return;
     await discardEntrySilently(entry.id);
@@ -551,38 +570,25 @@ export default function DiaryWorkspace() {
     await updateEntry(selectedEntry.id, { coverAttachmentId: uploaded.id }, "Failed to set cover image.");
   };
 
-  // Dispatches DetailsDrawer's single generic `onUpdate` to the right
-  // hook call with the right pre-existing error message (point 7) — folder
-  // changes specifically need moveEntryToFolder (which also refreshes
-  // folder entry counts), not the generic updateEntry.
-  const handleDrawerUpdate = (data: DiaryEntryUpdateData) => {
-    const entry = selectedEntryRef.current;
-    if (!entry) return;
-    if ("folderId" in data || "clearFolder" in data) {
-      void moveEntryToFolder(entry.id, data.folderId ?? null);
-      return;
-    }
-    if ("entryDate" in data) {
-      void updateEntry(entry.id, data, "Failed to update the entry date.");
-      return;
-    }
-    if ("mood" in data || "clearMood" in data) {
-      void updateEntry(entry.id, data, "Failed to update mood.");
-      return;
-    }
-    if ("clearCover" in data) {
-      void updateEntry(entry.id, data, "Failed to remove cover image.");
-      return;
-    }
-    if ("coverAttachmentId" in data) {
-      void updateEntry(entry.id, data, "Failed to set cover image.");
-      return;
-    }
-    void updateEntry(entry.id, data);
+  // Dispatches DetailsDrawer's single generic `onUpdate(entryId, data)` to
+  // the right hook call with the right pre-existing error message (point
+  // 7) — folder changes specifically need moveEntryToFolder (which also
+  // refreshes folder entry counts), not the generic updateEntry.
+  //
+  // PR #139 round 2, Finding 1: `entryId` (the entry DetailsDrawer's update
+  // ORIGINATED from) is what gets targeted — never
+  // `selectedEntryRef.current`, which may have already advanced to a
+  // different entry by the time a deferred commit (mood's debounce/
+  // unmount flush) arrives. See lib/drawerUpdate.ts.
+  const handleDrawerUpdate = (entryId: number, data: DiaryEntryUpdateData) => {
+    dispatchDrawerUpdate(entryId, data, selectedEntryRef.current?.id ?? null, {
+      moveEntryToFolder: (id, folderId) => void moveEntryToFolder(id, folderId),
+      updateEntry: (id, updateData, errorMessage) => void updateEntry(id, updateData, errorMessage),
+    });
   };
 
   return (
-    <div className="h-full pt-16 p-4 flex gap-4 overflow-hidden">
+    <div className="h-full pt-hud p-4 flex gap-4 overflow-hidden">
       <LibrarySidebar
         entries={entries}
         folders={folders}
@@ -607,7 +613,7 @@ export default function DiaryWorkspace() {
       />
 
       {/* Canvas — always editable */}
-      <main className="flex-1 min-w-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
+      <main className="flex-1 min-w-0 rounded-xl border border-hairline bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
         {error && (
           <div className="mx-8 mt-4 border border-destructive/30 bg-destructive/10 px-3 py-2 text-detail text-destructive animate-fade-in">
             {error}
@@ -649,7 +655,7 @@ export default function DiaryWorkspace() {
                   />
                   {isDraggingFile && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent/60 bg-background/80 pointer-events-none">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
+                      <p className="font-mono text-caption uppercase tracking-caps-4 text-accent">
                         Drop to attach
                       </p>
                     </div>
@@ -659,10 +665,10 @@ export default function DiaryWorkspace() {
             </div>
 
             {/* Bottom toolbar */}
-            <div className="border-t border-foreground/[0.08]">
+            <div className="border-t border-hairline">
               <div className="max-w-3xl mx-auto px-8 py-3">
                 <div className="flex items-center gap-2">
-                  <label className="inline-flex items-center rounded-lg border border-foreground/[0.08] bg-foreground/[0.03] cursor-pointer px-3 py-2 text-[9px] uppercase tracking-[0.12em] font-mono text-muted-foreground hover:text-foreground hover:border-foreground/[0.15] transition-colors">
+                  <label className="inline-flex items-center rounded-lg border border-hairline bg-foreground/[0.03] cursor-pointer px-3 py-2 text-label uppercase tracking-caps-2 font-mono text-muted-foreground hover:text-foreground hover:border-hairline-strong transition-colors">
                     <FileIcon size="sm" className="mr-2" />
                     Attach
                     <input
@@ -695,7 +701,7 @@ export default function DiaryWorkspace() {
           <div className="flex-1 flex items-center justify-center">
             <div className="flex flex-col items-center gap-2 text-muted-foreground/30">
               <PencilGlyphIcon className="size-6" />
-              <p className="text-center font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground/40">
+              <p className="text-center font-mono text-caption tracking-caps-4 uppercase text-muted-foreground/40">
                 {creatingEntry ? "Creating…" : "Select an entry, or start a new one"}
               </p>
             </div>
@@ -744,7 +750,7 @@ export default function DiaryWorkspace() {
           onClick={() => setPendingDeleteId(null)}
         >
           <div
-            className="rounded-xl border border-foreground/[0.1] bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
+            className="rounded-xl border border-hairline bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
             onClick={(event) => event.stopPropagation()}
           >
             <p className="text-body text-foreground">Delete this diary entry?</p>
@@ -753,14 +759,14 @@ export default function DiaryWorkspace() {
               <button
                 type="button"
                 onClick={() => setPendingDeleteId(null)}
-                className="rounded-lg border border-foreground/[0.08] px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                className="rounded-lg border border-hairline px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-foreground hover:border-hairline-strong"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void confirmDelete()}
-                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10"
+                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-destructive hover:bg-destructive/10"
               >
                 Delete
               </button>

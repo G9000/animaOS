@@ -49,7 +49,7 @@ function EntryCoverThumbnail({ entry }: { entry: DiaryEntryData }) {
 
   if (!cover) return null;
   return (
-    <div className="h-14 w-14 shrink-0 rounded-lg border border-foreground/[0.08] bg-secondary/40 overflow-hidden">
+    <div className="h-14 w-14 shrink-0 rounded-lg border border-hairline bg-secondary/40 overflow-hidden">
       {url && <img src={url} alt="" className="h-full w-full object-cover" />}
     </div>
   );
@@ -170,7 +170,7 @@ export function LibrarySidebar({
 
   if (collapsed) {
     return (
-      <aside className="w-14 shrink-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col items-center gap-2 overflow-hidden py-3">
+      <aside className="w-14 shrink-0 rounded-xl border border-hairline bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col items-center gap-2 overflow-hidden py-3">
         <button
           type="button"
           onClick={onToggleCollapsed}
@@ -207,11 +207,11 @@ export function LibrarySidebar({
   }
 
   return (
-    <aside className="w-80 shrink-0 rounded-xl border border-foreground/[0.08] bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
+    <aside className="w-80 shrink-0 rounded-xl border border-hairline bg-background/95 backdrop-blur-[36px] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-5 py-4">
         <div>
           <h1 className="font-['Playfair_Display'] text-2xl font-semibold text-foreground">Diary</h1>
-          <p className="font-mono text-[9px] tracking-[0.22em] uppercase text-muted-foreground/50 mt-1">
+          <p className="font-mono text-label tracking-caps-4 uppercase text-muted-foreground/50 mt-1">
             {entries.length} {entries.length === 1 ? "entry" : "entries"}
           </p>
         </div>
@@ -236,7 +236,7 @@ export function LibrarySidebar({
         </div>
       </div>
 
-      <div className="border-b border-foreground/[0.08] px-2 py-2 space-y-0.5">
+      <div className="border-b border-hairline px-2 py-2 space-y-0.5">
         <button
           type="button"
           onClick={() => onFolderChange(null)}
@@ -247,7 +247,7 @@ export function LibrarySidebar({
         >
           <FolderGlyphIcon className={activeFolderId === null ? "text-accent" : "text-muted-foreground/60"} />
           <span className="flex-1 truncate text-detail">All entries</span>
-          <span className="font-mono text-[9px] text-muted-foreground/40">{entries.length}</span>
+          <span className="font-mono text-label text-muted-foreground/40">{entries.length}</span>
         </button>
         {folders.map((folder) => (
           <div key={folder.id} className="group relative flex items-center">
@@ -261,7 +261,7 @@ export function LibrarySidebar({
                   if (event.key === "Enter") void commitRenameFolder();
                   if (event.key === "Escape") setEditingFolderId(null);
                 }}
-                className="flex-1 mx-1 bg-foreground/[0.04] border border-foreground/[0.1] rounded-lg px-2 py-1 text-detail text-foreground outline-none focus:border-accent/50"
+                className="flex-1 mx-1 bg-foreground/[0.04] border border-hairline rounded-lg px-2 py-1 text-detail text-foreground outline-none focus:border-accent/50"
               />
             ) : (
               <button
@@ -278,7 +278,7 @@ export function LibrarySidebar({
                   className={activeFolderId === folder.id ? "text-accent" : "text-muted-foreground/60"}
                 />
                 <span className="flex-1 truncate text-detail">{folder.name}</span>
-                <span className="font-mono text-[9px] text-muted-foreground/40">{folder.entryCount}</span>
+                <span className="font-mono text-label text-muted-foreground/40">{folder.entryCount}</span>
               </button>
             )}
             {editingFolderId !== folder.id && (
@@ -323,13 +323,13 @@ export function LibrarySidebar({
               }
             }}
             placeholder="Folder name"
-            className="mx-1 bg-foreground/[0.04] border border-foreground/[0.1] rounded-lg px-2 py-1 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50"
+            className="mx-1 bg-foreground/[0.04] border border-hairline rounded-lg px-2 py-1 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50"
           />
         ) : (
           <button
             type="button"
             onClick={() => setIsAddingFolder(true)}
-            className="w-full flex items-center gap-2 rounded-lg px-3 py-1.5 text-left font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.05]"
+            className="w-full flex items-center gap-2 rounded-lg px-3 py-1.5 text-left font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.05]"
           >
             <PlusIcon size="sm" />
             New folder
@@ -337,7 +337,7 @@ export function LibrarySidebar({
         )}
       </div>
 
-      <div className="px-3 py-2.5 border-b border-foreground/[0.08] space-y-2">
+      <div className="px-3 py-2.5 border-b border-hairline space-y-2">
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/40 pointer-events-none">
             <SearchGlyphIcon />
@@ -347,14 +347,14 @@ export function LibrarySidebar({
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder="Search entries…"
-            className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg pl-9 pr-2 py-1.5 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50 transition-colors"
+            className="w-full bg-foreground/[0.04] border border-hairline rounded-lg pl-9 pr-2 py-1.5 text-detail text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/50 transition-colors"
           />
         </div>
         <div className="flex items-center gap-3 px-1">
           <button
             type="button"
             onClick={() => setFiltersOpen((open) => !open)}
-            className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground hover:text-foreground"
+            className="inline-flex items-center gap-1 font-mono text-label uppercase tracking-caps-3 text-muted-foreground hover:text-foreground"
           >
             {filtersOpen ? "Hide filters" : "Filters"}
             {filtersOpen ? <ChevronUpIcon size="sm" /> : <ChevronDownIcon size="sm" />}
@@ -363,13 +363,13 @@ export function LibrarySidebar({
             <button
               type="button"
               onClick={clearFilters}
-              className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60 hover:text-destructive"
+              className="font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60 hover:text-destructive"
             >
               Clear
             </button>
           )}
           {hasActiveFilters && (
-            <span className="ml-auto font-mono text-[9px] text-muted-foreground/40">
+            <span className="ml-auto font-mono text-label text-muted-foreground/40">
               {filteredEntries.length}/{entries.length}
             </span>
           )}
@@ -379,7 +379,7 @@ export function LibrarySidebar({
             <select
               value={moodFilter}
               onChange={(event) => setMoodFilter(event.target.value)}
-              className="w-full bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-2 py-1 text-[10px] text-muted-foreground outline-none"
+              className="w-full bg-foreground/[0.04] border border-hairline rounded-lg px-2 py-1 text-caption text-muted-foreground outline-none"
             >
               <option value="">All moods</option>
               {availableMoods.map((moodOption) => (
@@ -393,14 +393,14 @@ export function LibrarySidebar({
                 type="date"
                 value={dateFrom}
                 onChange={(event) => setDateFrom(event.target.value)}
-                className="flex-1 min-w-0 bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-1.5 py-1 text-[10px] text-muted-foreground outline-none"
+                className="flex-1 min-w-0 bg-foreground/[0.04] border border-hairline rounded-lg px-1.5 py-1 text-caption text-muted-foreground outline-none"
               />
               <span className="text-muted-foreground/30">–</span>
               <input
                 type="date"
                 value={dateTo}
                 onChange={(event) => setDateTo(event.target.value)}
-                className="flex-1 min-w-0 bg-foreground/[0.04] border border-foreground/[0.08] rounded-lg px-1.5 py-1 text-[10px] text-muted-foreground outline-none"
+                className="flex-1 min-w-0 bg-foreground/[0.04] border border-hairline rounded-lg px-1.5 py-1 text-caption text-muted-foreground outline-none"
               />
             </div>
           </div>
@@ -417,14 +417,14 @@ export function LibrarySidebar({
         ) : entries.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-muted-foreground/30">
             <PencilGlyphIcon className="size-5" />
-            <p className="text-center font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground/40">
+            <p className="text-center font-mono text-caption tracking-caps-4 uppercase text-muted-foreground/40">
               No entries yet
             </p>
             <button
               type="button"
               onClick={onCreate}
               disabled={creatingEntry}
-              className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em] text-accent hover:text-accent/80 disabled:opacity-50"
+              className="mt-1 font-mono text-label uppercase tracking-caps-3 text-accent hover:text-accent/80 disabled:opacity-50"
             >
               Create your first entry
             </button>
@@ -432,13 +432,13 @@ export function LibrarySidebar({
         ) : filteredEntries.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-muted-foreground/30">
             <SearchGlyphIcon />
-            <p className="text-center font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground/40">
+            <p className="text-center font-mono text-caption tracking-caps-4 uppercase text-muted-foreground/40">
               No matching entries
             </p>
             <button
               type="button"
               onClick={clearFilters}
-              className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em] text-accent hover:text-accent/80"
+              className="mt-1 font-mono text-label uppercase tracking-caps-3 text-accent hover:text-accent/80"
             >
               Clear filters
             </button>
@@ -461,13 +461,13 @@ export function LibrarySidebar({
                     <EntryCoverThumbnail entry={entry} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/75">
+                        <span className="font-mono text-label tracking-caps-4 uppercase text-muted-foreground/75">
                           {formatEntryDate(entry.entryDate)}
                         </span>
                         {entry.mood && (
                           <span
                             className={cn(
-                              "rounded-full border px-1.5 py-0 text-[9px] uppercase tracking-[0.08em] truncate",
+                              "rounded-full border px-1.5 py-0 text-label uppercase tracking-caps-1 truncate",
                               moodPillClass(entry.mood),
                             )}
                           >
@@ -475,7 +475,7 @@ export function LibrarySidebar({
                           </span>
                         )}
                         {entry.attachments.length > 0 && (
-                          <span className="ml-auto font-mono text-[9px] text-muted-foreground/40 shrink-0">
+                          <span className="ml-auto font-mono text-label text-muted-foreground/40 shrink-0">
                             {entry.attachments.length} ⊕
                           </span>
                         )}
@@ -509,7 +509,7 @@ export function LibrarySidebar({
           <button
             type="button"
             onClick={onLoadMore}
-            className="w-full mt-1 py-2.5 rounded-lg font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]"
+            className="w-full mt-1 py-2.5 rounded-lg font-mono text-label uppercase tracking-caps-3 text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]"
           >
             Load more
           </button>
@@ -522,7 +522,7 @@ export function LibrarySidebar({
           onClick={() => setPendingDeleteFolderId(null)}
         >
           <div
-            className="rounded-xl border border-foreground/[0.1] bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
+            className="rounded-xl border border-hairline bg-card px-6 py-5 max-w-sm w-full mx-4 shadow-xl animate-fade-in"
             onClick={(event) => event.stopPropagation()}
           >
             <p className="text-body text-foreground">Delete this folder?</p>
@@ -533,14 +533,14 @@ export function LibrarySidebar({
               <button
                 type="button"
                 onClick={() => setPendingDeleteFolderId(null)}
-                className="rounded-lg border border-foreground/[0.08] px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground hover:border-foreground/[0.15]"
+                className="rounded-lg border border-hairline px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-muted-foreground hover:text-foreground hover:border-hairline-strong"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void confirmDeleteFolder()}
-                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10"
+                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-mono text-label uppercase tracking-caps-2 text-destructive hover:bg-destructive/10"
               >
                 Delete
               </button>

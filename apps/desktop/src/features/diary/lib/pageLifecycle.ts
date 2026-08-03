@@ -12,6 +12,38 @@ export interface DiscardablePageInput {
   // `bodyPlainText`, so bodyPlainText alone is not a safe signal that the
   // page is untouched. See the doc comment on isDiscardablePage.
   hasNonTextContent: boolean;
+  // PR #139 round 2, Finding 2 (P1): the entry's current mood. A page with
+  // no title, body, attachments, or cover but a deliberately-set mood is
+  // still a deliberate, metadata-only entry — not something the user
+  // "never touched". Unlike folderId/entryDate below, mood has no ambient
+  // default: `createEntry` always creates a page with `mood: null` (see
+  // hooks/useDiaryEntries.ts), so a non-empty mood can only ever mean the
+  // user typed one into DetailsDrawer. No baseline-comparison is needed —
+  // any non-empty value is unambiguously a user action.
+  mood: string | null;
+  // PR #139 round 2 audit: same class of gap as mood, but folderId is NOT
+  // safe to treat the same way mood is. `createEntry({ folderId })` seeds a
+  // brand-new page's folderId from whatever folder is active in the
+  // sidebar at creation time (see hooks/useDiaryEntries.ts and
+  // DiaryWorkspace.tsx's `startNewEntry`) — so a non-null folderId on an
+  // otherwise-blank page is frequently just ambient context, not a
+  // deliberate choice about THIS page. The only genuine signal is whether
+  // the user CHANGED it after that: `initialFolderId` is the folderId
+  // this entry had when it became selected in this session (captured once,
+  // on entry switch — see DiaryWorkspace.tsx's `initialFolderIdRef`), and
+  // `folderId` is its current value. A blank page discards if these still
+  // match (nothing was deliberately changed); it stays if they differ (the
+  // user explicitly filed it into — or out of — a folder).
+  folderId: number | null;
+  initialFolderId: number | null;
+  // Same reasoning and same technique as folderId: `entryDate` always has
+  // a value (creation seeds it with today's date — see
+  // hooks/useDiaryEntries.ts's `todayISODate()`), so its mere presence is
+  // not a signal. Only a change from the value captured when the entry
+  // became selected (`initialEntryDate`, mirroring `initialFolderId`) means
+  // the user deliberately picked a different date for a blank page.
+  entryDate: string;
+  initialEntryDate: string;
 }
 
 // Node type names that carry meaning beyond their plain text. Kept as a
@@ -106,6 +138,18 @@ export function hasNonTextNode(nodeTypeNames: Iterable<string>): boolean {
  * content. `hasNonTextContent` must be computed by scanning the actual
  * document structure (e.g. `editor.state.doc.descendants`), never derived
  * from `bodyPlainText`.
+ *
+ * PR #139 round 2, Finding 2 (P1): this used to have no mood input at all,
+ * so creating a page, setting only its mood, and navigating away silently
+ * deleted it — the mood PATCH succeeded, then this predicate judged the
+ * page untouched. mood is now checked the same way title is (empty/null
+ * only). folderId and entryDate are also checked, but via a
+ * changed-from-baseline comparison rather than a bare presence check —
+ * both always carry a value seeded at creation from ambient context (the
+ * active folder, today's date), so their mere presence is not a reliable
+ * signal of deliberate user action; only a change from that baseline is.
+ * See the field-level doc comments on DiscardablePageInput for why each
+ * signal is shaped the way it is.
  */
 export function isDiscardablePage(input: DiscardablePageInput): boolean {
   return (
@@ -113,7 +157,10 @@ export function isDiscardablePage(input: DiscardablePageInput): boolean {
     normalizePlainText(input.bodyPlainText) === "" &&
     input.attachmentCount === 0 &&
     input.coverAttachmentId === null &&
-    !input.hasNonTextContent
+    !input.hasNonTextContent &&
+    (input.mood ?? "").trim() === "" &&
+    input.folderId === input.initialFolderId &&
+    input.entryDate === input.initialEntryDate
   );
 }
 
