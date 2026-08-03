@@ -387,19 +387,23 @@ async def list_concepts(
     request: Request,
     userId: int,
     limit: int = 50,
+    includeRetired: bool = False,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
     safe_limit = min(max(limit, 1), 200)
+    stmt = select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.user_id == userId)
+    if not includeRetired:
+        # A refresh compile retires superseded pages as "inactive". Retrieval
+        # and lint scope to "active"; the library listing must match, or the
+        # wiki keeps showing pages its sources no longer support.
+        stmt = stmt.where(RuntimeKnowledgeConcept.status == "active")
     concepts = list(
         runtime_db.scalars(
-            select(RuntimeKnowledgeConcept)
-            .where(RuntimeKnowledgeConcept.user_id == userId)
-            .order_by(
+            stmt.order_by(
                 RuntimeKnowledgeConcept.updated_at.desc(),
                 RuntimeKnowledgeConcept.id.desc(),
-            )
-            .limit(safe_limit)
+            ).limit(safe_limit)
         ).all()
     )
     return {"concepts": [_concept_summary(concept) for concept in concepts]}
@@ -479,7 +483,13 @@ async def search_knowledge(
         _concept_summary(concept)
         for concept in runtime_db.scalars(
             select(RuntimeKnowledgeConcept)
-            .where(RuntimeKnowledgeConcept.user_id == userId)
+            .where(
+                RuntimeKnowledgeConcept.user_id == userId,
+                # Retired pages are excluded from every retrieval path; search
+                # must match or a refresh compile's superseded pages keep
+                # surfacing as live results.
+                RuntimeKnowledgeConcept.status == "active",
+            )
             .order_by(
                 RuntimeKnowledgeConcept.updated_at.desc(),
                 RuntimeKnowledgeConcept.id.desc(),

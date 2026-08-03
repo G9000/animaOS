@@ -22,7 +22,7 @@ from anima_server.services.corefs.sealed_runtime import (
     seal_runtime_fields,
 )
 
-_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _OKF_IMPORT_SOURCE = "okf_import"
 _SOURCE_REFERENCES_HEADING = "## Source References"
 
@@ -51,11 +51,18 @@ def export_okf_bundle(
     concepts = list(
         db.scalars(
             select(RuntimeKnowledgeConcept)
-            .where(RuntimeKnowledgeConcept.user_id == user_id)
+            .where(
+                RuntimeKnowledgeConcept.user_id == user_id,
+                # A refresh compile retires superseded pages as "inactive";
+                # retrieval and lint scope to "active", so the exported bundle
+                # must too or retired pages reappear on every export.
+                RuntimeKnowledgeConcept.status == "active",
+            )
             .order_by(RuntimeKnowledgeConcept.slug)
         ).all()
     )
 
+    exported_slugs = {concept.slug for concept in concepts}
     for concept in concepts:
         frontmatter = _frontmatter_for_export(concept)
         citations = _citation_records_for_export(
@@ -65,7 +72,9 @@ def export_okf_bundle(
         )
         if citations:
             frontmatter["x_anima_citations"] = citations
-        body = _ensure_trailing_newline(concept.body_markdown)
+        body = _ensure_trailing_newline(
+            _unlink_absent_bundle_targets(concept.body_markdown, exported_slugs)
+        )
         if citations:
             body = _append_source_references(body, citations)
         _concept_markdown_path(concepts_dir, concept.slug).write_text(
@@ -252,14 +261,40 @@ def _find_existing_link(
 
 def _extract_relative_link_slugs(body_markdown: str) -> list[str]:
     slugs: list[str] = []
-    for target in _MARKDOWN_LINK_RE.findall(body_markdown):
-        if "://" in target or target.startswith("#"):
-            continue
-        path = Path(target.split("#", maxsplit=1)[0])
-        if path.suffix.lower() != ".md":
-            continue
-        slugs.append(path.stem)
+    for _text, target in _MARKDOWN_LINK_RE.findall(body_markdown):
+        slug = _relative_link_slug(target)
+        if slug is not None:
+            slugs.append(slug)
     return slugs
+
+
+def _relative_link_slug(target: str) -> str | None:
+    """The concept slug a bundle-relative markdown link points at, if any."""
+    if "://" in target or target.startswith("#"):
+        return None
+    path = Path(target.split("#", maxsplit=1)[0])
+    if path.suffix.lower() != ".md":
+        return None
+    return path.stem
+
+
+def _unlink_absent_bundle_targets(body_markdown: str, exported_slugs: set[str]) -> str:
+    """Drop bundle-relative links whose target is not part of this bundle.
+
+    Retired concepts are not exported, so a link to one would dangle in the
+    bundle and be silently discarded on re-import (`_replace_imported_links`
+    skips unknown targets). Keep the visible text and remove only the broken
+    hyperlink, so an exported bundle never carries a dangling concept link.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        text, target = match.group(1), match.group(2)
+        slug = _relative_link_slug(target)
+        if slug is None or slug in exported_slugs:
+            return match.group(0)
+        return text
+
+    return _MARKDOWN_LINK_RE.sub(_replace, body_markdown)
 
 
 def _frontmatter_for_export(concept: RuntimeKnowledgeConcept) -> dict[str, object]:
@@ -382,7 +417,12 @@ def _parse_markdown(path: Path) -> tuple[dict[str, object], str]:
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         return {"type": "note", "title": _title_from_slug(path.stem)}, text
-    _, yaml_text, body = text.split("---\n", maxsplit=2)
+    parts = text.split("---\n", maxsplit=2)
+    if len(parts) < 3:
+        # The import route reports ValueError as the 422 detail; without this
+        # the caller would get a tuple-unpacking message instead.
+        raise ValueError(f"Unterminated OKF frontmatter in {path}")
+    _, yaml_text, body = parts
     parsed = yaml.safe_load(yaml_text) or {}
     if not isinstance(parsed, dict):
         raise ValueError(f"Invalid OKF frontmatter in {path}")

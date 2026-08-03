@@ -1,6 +1,7 @@
 import type { NodeProps } from "@xyflow/react";
 import { DotLoader } from "@anima/standard-templates";
 import type { ProfileNode } from "./node-types";
+import { useDreamShownReceipt } from "./useDreamShownReceipt";
 
 type MediaType = "image" | "gif" | "video";
 
@@ -28,12 +29,25 @@ export function ProfileNode({ data }: NodeProps<ProfileNode>) {
     todayContextLine,
     onExplore,
     onClose,
+    onDreamShown,
   } = data;
 
   const mediaType = getMediaType(avatarUrl);
   const currentThought =
     brief?.message ?? mood?.synthesizedContext ?? todayContextLine;
   const pills = currentThought === brief?.message ? (brief?.pills ?? []) : [];
+  // IL-015 (PR #135 review, P1): the dream counts as shown only once this
+  // node has actually rendered the greeting text — the same condition the
+  // markup below uses. See GreetingNode for why the fetch handler is the
+  // wrong place to acknowledge from.
+  const dreamVisible =
+    Boolean(brief?.ambientDream) &&
+    !briefLoading &&
+    currentThought === brief?.message;
+  const profileRef = useDreamShownReceipt<HTMLParagraphElement>(
+    dreamVisible,
+    onDreamShown,
+  );
 
   return (
     <div className="group relative w-80 overflow-visible">
@@ -107,7 +121,10 @@ export function ProfileNode({ data }: NodeProps<ProfileNode>) {
               {briefLoading ? (
                 <DotLoader />
               ) : currentThought ? (
-                <p className="text-detail italic text-foreground/58 leading-relaxed">
+                <p
+                  ref={profileRef}
+                  className="text-detail italic text-foreground/58 leading-relaxed"
+                >
                   {currentThought}
                 </p>
               ) : (
