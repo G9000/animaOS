@@ -33,12 +33,6 @@ const StarterKit = (await import("@tiptap/starter-kit")).default;
 
 // The REAL, currently-shipped module (this file's fix target).
 const AfterFix = await import("../src/features/diary/editor/nodes/AttachmentImage");
-// The module as it was actually shipped before this fix — vendored
-// verbatim from git HEAD (see tests/fixtures/pre-round5-attachment-image/
-// README-equivalent comment in useAttachmentBlobUrl.ts stub) so the
-// "BEFORE" test below exercises the real pre-fix code path instead of a
-// locally-redefined stand-in for it.
-const BeforeFix = await import("./fixtures/pre-round5-attachment-image/editor/nodes/AttachmentImage");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -111,56 +105,6 @@ function firstDiaryImageLocalId(editor: any): string {
 const { act } = React;
 
 describe("PR #139 round 5 (P1): inline-image upload completion must survive NodeView teardown", () => {
-  test("BEFORE (bug reproduction, real pre-fix shipped AttachmentImage.tsx): a successful upload that resolves after the editor unmounts is silently discarded — pendingFiles leaks, nothing observes the success", async () => {
-    const upload = deferred<number | null>();
-    let editorRef: any;
-
-    const DiaryImageBefore = BeforeFix.DiaryImage.configure({
-      entryId: 7,
-      uploadImage: () => upload.promise,
-    });
-
-    const handle = await mount(
-      React.createElement(Harness, {
-        diaryImageExtension: DiaryImageBefore,
-        onReady: (ed: any) => {
-          editorRef = ed;
-        },
-      }),
-    );
-
-    let localId!: string;
-    await act(async () => {
-      editorRef.commands.insertAttachmentImage(file("photo.png"));
-    });
-    localId = firstDiaryImageLocalId(editorRef);
-    const storage = editorRef.storage.diaryImage;
-    expect(storage.pendingFiles.has(localId)).toBe(true);
-
-    // The user navigates away (switches entries / leaves /journal) BEFORE
-    // the upload resolves — DiaryEditor is keyed by entry id, so this is a
-    // full unmount of the NodeView, exactly like a real entry switch.
-    await act(async () => {
-      handle.unmount();
-    });
-
-    // NOW the upload succeeds — the server has already created the
-    // attachment row. Real shipped pre-fix behavior: the effect's cleanup
-    // set `cancelled = true`, so the completion handler bails out before
-    // doing anything at all.
-    upload.resolve(42);
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    // BUG: the pendingFiles cache entry leaks forever (the delete call was
-    // guarded behind the same `if (cancelled) return` that skipped the
-    // attribute update) — a silent partial success with no cleanup and no
-    // way for anything else to learn the upload succeeded.
-    expect(storage.pendingFiles.has(localId)).toBe(true); // BUG: never cleaned up
-  });
-
   test("AFTER (fixed): a successful upload that resolves after the editor unmounts cleans up pendingFiles and reports the orphan instead of silently discarding it", async () => {
     const upload = deferred<number | null>();
     let editorRef: any;
