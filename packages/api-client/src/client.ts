@@ -766,6 +766,35 @@ export function createApiClient(options: ApiClientOptions) {
         request<DailyBrief>(`/chat/brief?userId=${userId}`),
       greeting: (userId: number) =>
         request<Greeting>(`/chat/greeting?userId=${userId}`),
+      // IL-015 (PR #135 review): ask whether this dream is still ours to
+      // voice, immediately before voicing it. `confirmed: false` means the
+      // claim lapsed and another channel may already have spoken it — show
+      // the dream-free copy instead. Success renews the claim (it does NOT
+      // surface the dream), so dying before the paint still costs nothing.
+      confirmGreetingDreamClaim: (
+        userId: number,
+        dreamId: number,
+        claimToken: string,
+      ) =>
+        request<{
+          confirmed: boolean;
+          claimToken: string | null;
+          expiresAt: string | null;
+        }>(
+          `/chat/greeting/dream-claim?userId=${userId}&dreamId=${dreamId}` +
+            `&claimToken=${encodeURIComponent(claimToken)}`,
+          { method: "POST" },
+        ),
+      // IL-015: confirm a dream-bearing greeting actually reached the user.
+      // Until this lands the claim expires and the dream is offered again,
+      // so a dropped response no longer silences it. Scoped to the claim
+      // token so a stale client cannot clear a newer greeting's claim.
+      ackGreetingDream: (userId: number, dreamId: number, claimToken: string) =>
+        request<{ acknowledged: boolean }>(
+          `/chat/greeting/dream-ack?userId=${userId}&dreamId=${dreamId}` +
+            `&claimToken=${encodeURIComponent(claimToken)}`,
+          { method: "POST" },
+        ),
       reflection: (userId: number) =>
         request<Reflection>(`/chat/reflection?userId=${userId}`),
       nudges: (userId: number) =>

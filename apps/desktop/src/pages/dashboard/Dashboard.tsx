@@ -27,15 +27,23 @@ import type { GalleryImage } from "./nodes/node-types";
 import { api, getUnlockToken } from "../../lib/api";
 import {
   ambientConsentAllows,
+  anchorClaimDeadline,
   clearOneShotGreetings,
+  deliverDreamReceipt,
+  displayableGreeting,
+  dreamFreeGreeting,
+  dreamReceiptKey,
   getCachedGreeting,
+  ONESHOT_FALLBACK_TTL_MS,
   peekOneShotGreeting,
   setCachedGreeting,
   stashOneShotGreeting,
   takeOneShotGreeting,
+  voiceableGreeting,
 } from "../../lib/greetingCache";
 import { buildMemoryImages } from "../../lib/image-memories";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
+import { usePageVisible } from "../../hooks/usePageVisible";
 import { dashboardNodeTypes, type DashboardNode } from "./nodes";
 import { buildInitialNodes } from "./layout";
 import { useNodePositions } from "./useNodePositions";
@@ -62,6 +70,18 @@ export default function Dashboard() {
 
   const [brief, setBrief] = useState<Greeting | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
+  const pageVisible = usePageVisible();
+  // The claim generation the server has approved for DISPLAY. Set only by a
+  // successful confirmation, and matched against the greeting's own token so
+  // an approval earned by an earlier claim cannot authorise a later one.
+  // Approval is valid only for as long as the page stays continuously
+  // visible and the claim stays live — see the two effects below.
+  const [approvedClaim, setApprovedClaim] = useState<string | null>(null);
+  // A claim whose receipt this client actually delivered. The dream is then
+  // durably surfaced and the user has demonstrably read it, so leaving it on
+  // screen is not a new disclosure and it needs no further approval.
+  const [acknowledgedClaim, setAcknowledgedClaim] = useState<string | null>(null);
+
   const [reflection, setReflection] = useState<Reflection | null>(null);
   const [reflectionLoading, setReflectionLoading] = useState(false);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
@@ -92,6 +112,11 @@ export default function Dashboard() {
   const [reactFlowInstance, setReactFlowInstance] =
     useState<ReactFlowInstance<DashboardNode> | null>(null);
 
+  // Anything that covers the canvas hides the greeting behind it, and an
+  // IntersectionObserver cannot see occlusion (PR #135 review, P1).
+  const overlayOpen =
+    galleryLightbox !== null || previewThreadId !== null || selectedEpisode !== null;
+
   const [nodes, setNodes, onNodesChange] = useNodesState<DashboardNode>([]);
 
   useEffect(() => {
@@ -116,60 +141,190 @@ export default function Dashboard() {
     };
   }, [user?.id]);
 
+  // IL-015 (PR #135 review, P1): never voice a dream on the strength of the
+  // device clock alone — confirm the claim against the row itself, and show
+  // the dream-free copy on any uncertain answer.
+  const voiceable = useCallback(
+    (g: Greeting) =>
+      user?.id == null
+        ? Promise.resolve(dreamFreeGreeting(g))
+        : voiceableGreeting(g, (dreamId, claimToken) =>
+            api.chat.confirmGreetingDreamClaim(user.id, dreamId, claimToken),
+          ),
+    [user?.id],
+  );
+
+  // What the UI is allowed to SHOW, as opposed to what was fetched
+  // (IL-015 / PR #135 review, P1). A dream is withheld unless the page is
+  // visible, the claim has not lapsed, AND the server has approved this
+  // exact claim generation for display — approval is where consent and
+  // ownership are actually checked. Withholding beats hiding after the
+  // fact: nothing dream-bearing is painted into a window the user cannot
+  // see, so there is no stale frame to expose on reveal.
+  const visibleBrief = useMemo(
+    () =>
+      displayableGreeting(brief, {
+        pageVisible,
+        approvedClaimToken: approvedClaim,
+        acknowledgedClaimToken: acknowledgedClaim,
+      }),
+    [acknowledgedClaim, approvedClaim, brief, pageVisible],
+  );
+  // Hold the loader while a dream-bearing greeting waits for its first
+  // confirmation, so the dream sentence is never seen appearing late.
+  const dreamAwaitingConfirm =
+    Boolean(brief?.ambientDream) &&
+    pageVisible &&
+    brief?.ambientDreamClaimToken !== approvedClaim &&
+    brief?.ambientDreamClaimToken !== acknowledgedClaim;
+
+  // Approval dies with the visible session (PR #135 review, P1). A claim
+  // approved before the window was hidden must not simply be trusted on
+  // reveal: ambient sharing may have been switched off from another window
+  // in between, and skipping confirmation skips the server's consent check.
+  // A dream this client already acknowledged is exempt — the user has read
+  // it, and it is durably surfaced, so re-showing it discloses nothing new.
+  useEffect(() => {
+    if (!pageVisible) setApprovedClaim(null);
+  }, [pageVisible]);
+
+  // Approval also dies at the claim deadline (PR #135 review, P1). Nothing
+  // re-renders as time passes, so a greeting sitting unread — off-viewport,
+  // say — would otherwise keep an expired approval and could be panned into
+  // view long after an initiative had re-offered the same narrative. When
+  // the timer fires the dream is withheld and the effect below re-confirms.
+  useEffect(() => {
+    if (approvedClaim === null || !brief?.ambientDream) return;
+    const expiresAt = brief.ambientDreamExpiresAt;
+    const parsed = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    if (!Number.isFinite(parsed)) return;
+    // The deadline was re-expressed in DEVICE time when the response
+    // arrived (`anchorClaimDeadline`), so this subtraction measures elapsed
+    // local time rather than the offset between two clocks — a device clock
+    // running behind the server used to push this timer PAST the real
+    // deadline (PR #135 review).
+    const timer = setTimeout(
+      () => setApprovedClaim(null),
+      Math.max(0, parsed - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [approvedClaim, brief?.ambientDream, brief?.ambientDreamExpiresAt]);
+
+  // Confirmation happens HERE and nowhere else, and only while the page is
+  // visible (PR #135 review, P1). Confirming at fetch time was wrong twice
+  // over: a Dashboard that mounted hidden reserved a dream it was not
+  // showing, and — because the reveal path only re-confirmed an EXPIRED
+  // claim — an opt-out made from another window while this one was hidden
+  // was never noticed, so the dream appeared on reveal despite the server
+  // being ready to refuse it. Every hidden-to-visible transition now asks
+  // again, and the answer carries the server's consent check.
+  //
+  // A refusal strips the dream permanently rather than leaving stale text
+  // one render away from the screen.
+  useEffect(() => {
+    if (!pageVisible || user?.id == null) return;
+    const token = brief?.ambientDreamClaimToken;
+    if (!brief?.ambientDream || !token) return;
+    if (approvedClaim === token) return; // already confirmed for display
+    if (acknowledgedClaim === token) return; // already read by this user
+    let active = true;
+    void voiceable(brief).then((shown) => {
+      if (!active) return;
+      setBrief(shown);
+      if (shown.ambientDream && shown.ambientDreamClaimToken) {
+        setApprovedClaim(shown.ambientDreamClaimToken);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [acknowledgedClaim, approvedClaim, brief, pageVisible, user?.id, voiceable]);
+
+  // IL-015 (PR #135 review, P1): acknowledgement is driven by the node that
+  // actually rendered the dream, not by the fetch that produced it. Both
+  // surfaces showing the greeting (profile, greeting) can be closed by the
+  // user, and closed nodes are filtered out of the graph entirely — so
+  // acking on fetch marked dreams surfaced FOREVER that nothing on screen
+  // ever voiced, which is precisely the loss IL-015 exists to prevent. It
+  // reads `visibleBrief`, so a dream withheld for being hidden or stale is
+  // never acknowledged either. Deduped by claim generation: both nodes
+  // report, and effects re-run.
+  const ackedDreamsRef = useRef<Set<string>>(new Set());
+  const handleDreamShown = useCallback(() => {
+    const receipt = dreamReceiptKey(visibleBrief);
+    const dreamId = visibleBrief?.ambientDreamId;
+    const token = visibleBrief?.ambientDreamClaimToken;
+    if (user?.id == null || receipt === null || dreamId == null || !token) return;
+    if (ackedDreamsRef.current.has(receipt)) return;
+    ackedDreamsRef.current.add(receipt);
+    // Retry a dropped receipt for as long as the claim lives (PR #135
+    // review): once the dream has been DISPLAYED, losing the receipt is not
+    // harmless — the claim lapses and the same narrative can be disclosed
+    // again through another channel. Nothing here re-renders, so a failure
+    // has to schedule its own retry rather than wait for one.
+    const expiresAt = visibleBrief?.ambientDreamExpiresAt;
+    const parsed = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    const deadline = Number.isFinite(parsed)
+      ? parsed
+      : Date.now() + ONESHOT_FALLBACK_TTL_MS;
+    void deliverDreamReceipt(
+      () => api.chat.ackGreetingDream(user.id, dreamId, token),
+      { deadline },
+    ).then((delivered) => {
+      // Never delivered: let a later render of the same greeting try again.
+      if (!delivered) ackedDreamsRef.current.delete(receipt);
+      else setAcknowledgedClaim(token);
+    });
+  }, [visibleBrief, user?.id]);
+
   useEffect(() => {
     if (user?.id == null || needsSetup !== false) return;
     let active = true;
     // A dream-bearing greeting stashed by an unmounted fetch (below) is
-    // displayed exactly once — but ONLY after re-checking consent against
-    // the freshly loaded presence config (PR #130 review): an opt-out
-    // between the stash and this mount must win, so the stash is discarded
-    // (the dream was consumed server-side; the user asked for silence).
-    if (peekOneShotGreeting(user.id)) {
-      void api.presence
-        .get(user.id)
-        .then((cfg) => {
-          // Unmounted before the consent check resolved? LEAVE the queue
-          // intact (PR #130 round 4) — this is the only durable copy of an
-          // already-consumed dream, and the next mount can still render it.
-          if (!active) return;
-          setPresenceConfig(cfg);
-          if (ambientConsentAllows(cfg)) {
-            const oneShot = takeOneShotGreeting(user.id);
-            if (oneShot) setBrief(oneShot);
-          } else {
-            // Consent withdrawn: the user asked for silence — discard.
-            clearOneShotGreetings(user.id);
-          }
-        })
-        .catch(() => {
-          // Unknown consent: prefer silence THIS mount, but keep the queue
-          // for a mount that can actually verify consent.
-        });
-      return () => {
-        active = false;
-      };
-    }
-    const cached = getCachedGreeting(user.id);
-    if (cached) {
-      setBrief(cached.greeting);
-    } else {
+    // displayed at most once — and only if it is still BOTH consented and
+    // unexpired. Consent: re-checked against the freshly loaded presence
+    // config (PR #130 review), because an opt-out between the stash and
+    // this mount must win. Expiry: the stash dies with the server-side
+    // claim (PR #135 review), because past that deadline the same dream can
+    // be offered through another channel and replaying this copy would
+    // disclose it twice.
+    // IL-015: acknowledge only once a dream-bearing greeting is actually
+    // DISPLAYED — not when it is fetched or stashed. An unacknowledged claim
+    // expires server-side and the dream is offered again, which is exactly
+    // what should happen if the user never saw it. Best-effort: a failed ack
+    // just means the dream returns later.
+    const fetchGreeting = () => {
+      const cached = getCachedGreeting(user.id);
+      if (cached) {
+        setBrief(cached.greeting);
+        return;
+      }
       setBriefLoading(true);
       // Bind the handoff to the session that ASKED for this greeting
       // (PR #130 review): if the user logs out and someone else signs in
       // before this resolves, the late callback must not write A's
       // decrypted dream into B's storage.
       const originUnlockToken = getUnlockToken();
+      // Stamped before the request: greeting generation can take seconds,
+      // and the server's claim is taken during it, so counting the claim's
+      // life from here can only under-estimate it (PR #135 review).
+      const requestedAt = Date.now();
       api.chat
         .greeting(user.id)
-        .then((g) => {
+        .then((raw) => {
+          const g = anchorClaimDeadline(raw, requestedAt);
           if (!active) {
-            // The dream inside was already consumed server-side — hand it
-            // to the next mount instead of discarding it (PR #130 review).
+            // The dream inside is CLAIMED server-side — hand it to the next
+            // mount instead of discarding it (PR #130 review). The stash
+            // carries the claim's expiry and is dropped past it (IL-015).
             if (g.ambientDream) {
               stashOneShotGreeting(user.id, g, originUnlockToken);
             }
             return;
           }
+          // No confirmation here: the dream stays withheld until the
+          // visibility-gated effect above confirms it, so a greeting
+          // fetched into a hidden window neither shows nor reserves it.
           setBrief(g);
           setCachedGreeting(user.id, g);
         })
@@ -196,7 +351,41 @@ export default function Dashboard() {
         .finally(() => {
           if (active) setBriefLoading(false);
         });
+    };
+    if (peekOneShotGreeting(user.id)) {
+      void api.presence
+        .get(user.id)
+        .then((cfg) => {
+          // Unmounted before the consent check resolved? LEAVE the queue
+          // intact (PR #130 round 4) — this is the only copy of a claimed
+          // dream, and the next mount can still render it.
+          if (!active) return;
+          setPresenceConfig(cfg);
+          if (!ambientConsentAllows(cfg)) {
+            // Consent withdrawn: the user asked for silence — discard.
+            clearOneShotGreetings(user.id);
+            return;
+          }
+          const oneShot = takeOneShotGreeting(user.id);
+          if (oneShot) {
+            setBrief(oneShot);
+            return;
+          }
+          // The stash expired between the peek and the take (its claim went
+          // stale): there is nothing safe to replay, so ask for a fresh
+          // greeting. The dream was never acknowledged, so it is offerable
+          // again and may simply come back in that response.
+          fetchGreeting();
+        })
+        .catch(() => {
+          // Unknown consent: prefer silence THIS mount, but keep the queue
+          // for a mount that can actually verify consent.
+        });
+      return () => {
+        active = false;
+      };
     }
+    fetchGreeting();
     return () => {
       active = false;
     };
@@ -450,8 +639,12 @@ export default function Dashboard() {
       // server places in the model history — so the ambient dream must not
       // ride along. When the text being explored IS the dream-bearing
       // greeting, swap in the server's dream-free copy.
-      if (brief?.ambientDream && brief.handoffMessage && source === brief.message) {
-        source = brief.handoffMessage;
+      if (
+        visibleBrief?.ambientDream &&
+        visibleBrief.handoffMessage &&
+        source === visibleBrief.message
+      ) {
+        source = visibleBrief.handoffMessage;
       }
       const trimmed = source.trim();
       const canIncludeGreetingContext =
@@ -470,7 +663,7 @@ export default function Dashboard() {
           : [];
       navigate("/chat", { state: { contextMessages, seedThread: true } });
     },
-    [navigate, presenceConfig, brief],
+    [navigate, presenceConfig, visibleBrief],
   );
 
   const initialNodes = useMemo(() => {
@@ -484,12 +677,12 @@ export default function Dashboard() {
         emotion: mood?.dominantEmotion ?? null,
         mood,
         lastSession: episodes[0]?.date ? relativeSession(episodes[0].date) : null,
-        brief,
-        briefLoading,
+        brief: visibleBrief,
+        briefLoading: briefLoading || dreamAwaitingConfirm,
         reflection,
         reflectionLoading,
         tasks,
-        currentFocus: brief?.context?.currentFocus ?? null,
+        currentFocus: visibleBrief?.context?.currentFocus ?? null,
         episodes,
         nudges,
         galleryImages,
@@ -507,6 +700,9 @@ export default function Dashboard() {
         onDismissNudge: handleDismissNudge,
         onExploreMemory: handleExploreMemory,
         onCloseNode: handleCloseNode,
+        // An overlay covers the canvas, so nothing behind it counts as seen
+        // (PR #135 review): withhold the receipt until it closes.
+        onDreamShown: overlayOpen ? undefined : handleDreamShown,
         onImageClick: handleImageClick,
         onPreviewThread: handlePreviewThread,
         onOpenThread: handleOpenThread,
@@ -519,7 +715,7 @@ export default function Dashboard() {
   }, [
     agentName,
     avatarUrl,
-    brief,
+    visibleBrief,
     briefLoading,
     reflection,
     reflectionLoading,
@@ -535,6 +731,9 @@ export default function Dashboard() {
     handleViewAllEntries,
     handleDismissNudge,
     handleCloseNode,
+    handleDreamShown,
+    overlayOpen,
+    dreamAwaitingConfirm,
     handlePreviewThread,
     handleOpenThread,
     handleNewChat,

@@ -1404,8 +1404,22 @@ class DreamJournal(Base):
     share_worthy: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
     )
+    # IL-010: the dream has been VOICED to the user and acknowledged. Only a
+    # confirmed receipt sets this, so it is the durable "never say this
+    # again" flag.
     surfaced: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    # IL-015: when a greeting CLAIMED this dream, pending the client's
+    # receipt. Distinct from ``surfaced`` on purpose: a claim proves only
+    # that a response was composed, not that it reached anyone, so an
+    # unacknowledged claim EXPIRES (see
+    # ``services.agent.inner_life.dream_receipt``) and the dream becomes
+    # offerable again. Cleared on acknowledgement (when ``surfaced`` is set)
+    # and on release (consent withdrawn mid-generation).
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

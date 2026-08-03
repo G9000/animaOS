@@ -9,7 +9,7 @@
 - PRD: docs/prds/presence/inner-life-v1.md
 - Plan: docs/superpowers/plans/2026-07-15-inner-life-v1.md
 - Created: 2026-07-15 16:55 MYT
-- Updated: 2026-08-02 02:35 MYT
+- Updated: 2026-08-02 13:42 MYT
 - Started: 2026-07-15 16:55 MYT
 - Completed: 2026-07-29 12:35 MYT
 
@@ -38,7 +38,8 @@ Deliver Inner Life v1: continuous affect state with offline catch-up, drive-base
 - `IL-012` - Mood-congruent reconsolidation target (`done` 2026-07-29, PR #128, depends on `IL-006`).
 - `IL-013` - Drive starvation carryover in initiative selection (`done` 2026-07-29, PR #128, depends on `IL-003`).
 - `IL-015` - Durable client receipt for ambient dream surfacing (`backlog`, depends on `IL-010`): filed from PR #130 review; IL-010's claim-on-serve can lose a dream to a dropped HTTP response, and closing that needs a claim/ack protocol (schema + endpoint). IL-010 records the accepted residual risk.
-- `IL-014` - Sub-threshold moment crystallization (`backlog` design ticket, depends on `IL-004`, `IL-005`): filed 2026-07-30 from the v1.1 comparative analysis; gated on a design review of its right-to-forget and encryption tensions before any code.
+- `IL-014` - Sub-threshold moment crystallization (`done` 2026-08-02, CLOSED AS ALREADY DELIVERED by `IL-004` — no code written; filed without first checking the capability existed, see the spec for the investigation).
+- `IL-016` - Require session spread before a latent trace crystallizes (`backlog`, depends on `IL-004`): the one genuine refinement from the IL-014 investigation — weight can accumulate within a single conversation, so a long session can crystallize a false "pattern".
 
 ## Completed Ticket History
 
