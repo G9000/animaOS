@@ -14,6 +14,7 @@ import {
   hasNonTextNode,
   isSessionDiscardable,
   isSignificantEdit,
+  isUntouchedCreatedEntry,
   resolveBodyForSave,
   resolveLiveMood,
   snapshotBelongsToEntry,
@@ -64,6 +65,42 @@ function editorHasNonTextContent(ed: Editor): boolean {
   return hasNonTextNode(nodeTypeNames);
 }
 
+// PR #139 round 8, Finding 4: pulled out of `startNewEntry`'s closure so
+// the exact decision it makes once `createEntry`'s POST resolves — select
+// it, or clean it up — can be exercised directly in tests against a real
+// (mocked-network) `createEntry`/`discardEntrySilently`, without needing
+// to mount the whole workspace (which needs AuthContext, a live Tiptap
+// editor, and more). `isMounted` is a function (not a captured boolean)
+// so the caller can flip its own ref out from under this call mid-flight,
+// exactly mirroring how `isMountedRef.current` can change while
+// `createEntry`'s await is still pending.
+export async function finalizeCreatedEntry(
+  created: DiaryEntryData,
+  isMounted: () => boolean,
+  handlers: {
+    select: (id: number) => void;
+    discardEntrySilently: (id: number) => Promise<boolean>;
+  },
+): Promise<void> {
+  if (!isMounted()) {
+    // The originating workspace is already gone: never call a state
+    // setter on it (there's nothing left to update), and never guess —
+    // reuse the exact same discard predicate every other cleanup path
+    // uses (`isSessionDiscardable`, via `isUntouchedCreatedEntry`), fed
+    // straight from `created` itself. The untouched creation payload IS
+    // the ground truth for "what did this entry look like before anyone
+    // touched it" — there is no live editor/DetailsDrawer state left to
+    // reconcile against, and none is needed: nothing could have touched
+    // this entry between the POST and now, because the only component
+    // that could reach it is the one that just unmounted.
+    if (isUntouchedCreatedEntry(created)) {
+      await handlers.discardEntrySilently(created.id);
+    }
+    return;
+  }
+  handlers.select(created.id);
+}
+
 export default function DiaryWorkspace() {
   const { user } = useAuth();
 
@@ -87,6 +124,24 @@ export default function DiaryWorkspace() {
   // alongside the other bookkeeping refs) because useDiaryEntries's
   // onUploadInitiated option needs to close over it.
   const sessionCreatedEntryIdsRef = useRef<Set<number>>(new Set());
+
+  // PR #139 round 8, Finding 4: `startNewEntry` (below) awaits `createEntry`
+  // — a real network POST — before deciding what to do with the result.
+  // Nothing prevents this whole workspace from unmounting (e.g. the user
+  // navigates away from `/journal`) while that await is still pending: the
+  // POST has no way to be cancelled, and it keeps going regardless. This
+  // ref is the only way `startNewEntry`'s continuation can tell, once the
+  // await resolves, whether the component it's still running "inside of"
+  // is still actually mounted — a plain boolean in a ref (never state,
+  // since flipping it must never itself trigger a render) that starts
+  // `true` and flips to `false` in this effect's cleanup, which runs
+  // before any other unmount cleanup that matters here.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const {
     entries,
@@ -616,16 +671,21 @@ export default function DiaryWorkspace() {
       if (leaving) await evaluateAndMaybeDiscard(leaving);
       const created = await createEntry({ folderId: activeFolderId });
       if (created) {
-        // PR #139 round 3, Finding 2: this is the ONLY place an entry id
-        // becomes eligible for the untitled-page cleanup — see
-        // sessionCreatedEntryIdsRef's doc comment. An entry loaded from
-        // the server (or any id this workspace did not itself POST) is
-        // never added here and therefore never discardable.
-        sessionCreatedEntryIdsRef.current.add(created.id);
-        setSelectedId(created.id);
+        await finalizeCreatedEntry(created, () => isMountedRef.current, {
+          select: (id) => {
+            // PR #139 round 3, Finding 2: this is the ONLY place an entry
+            // id becomes eligible for the untitled-page cleanup — see
+            // sessionCreatedEntryIdsRef's doc comment. An entry loaded
+            // from the server (or any id this workspace did not itself
+            // POST) is never added here and therefore never discardable.
+            sessionCreatedEntryIdsRef.current.add(id);
+            setSelectedId(id);
+          },
+          discardEntrySilently,
+        });
       }
     } finally {
-      setCreatingEntry(false);
+      if (isMountedRef.current) setCreatingEntry(false);
     }
   };
 
@@ -744,9 +804,16 @@ export default function DiaryWorkspace() {
     // permanently. See the ruling on lib/pageLifecycle.ts's
     // isSessionDiscardable.
     graduateSessionEntry(sessionCreatedEntryIdsRef.current, entryId);
-    dispatchDrawerUpdate(entryId, data, selectedEntryRef.current?.id ?? null, {
+    // PR #139 round 8, Finding 2: return the dispatch's own promise (rather
+    // than firing-and-forgetting it here, as before) so DetailsDrawer's
+    // mood-commit tracking can await a real success/failure outcome instead
+    // of assuming every PATCH lands. `updateEntry` below already resolves
+    // `null` on failure (hooks/useDiaryEntries.ts) — this just forwards
+    // "was it non-null" as a boolean instead of discarding that signal.
+    return dispatchDrawerUpdate(entryId, data, selectedEntryRef.current?.id ?? null, {
       moveEntryToFolder: (id, folderId) => void moveEntryToFolder(id, folderId),
-      updateEntry: (id, updateData, errorMessage) => void updateEntry(id, updateData, errorMessage),
+      updateEntry: (id, updateData, errorMessage) =>
+        updateEntry(id, updateData, errorMessage).then((updated) => updated !== null),
     });
   };
 

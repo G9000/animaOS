@@ -230,6 +230,67 @@ export function graduateSessionEntry(sessionCreatedIds: Set<number>, entryId: nu
   sessionCreatedIds.delete(entryId);
 }
 
+export interface CreatedEntrySnapshot {
+  title: string | null;
+  body: string;
+  // Deliberately the raw `attachments` array (matching `DiaryEntryData`
+  // itself, what `createEntry`'s response actually is) rather than a
+  // pre-computed `attachmentCount` — a round-8 integration bug caught in
+  // this function's own tests: passing a real `DiaryEntryData` straight
+  // through to something expecting `attachmentCount` silently reads
+  // `undefined` (no such field on the entity) instead of `0`, which
+  // trivially fails the `=== 0` check below and makes a genuinely
+  // untouched entry look "not blank". Taking the array and computing
+  // `.length` here removes that mismatch entirely.
+  attachments: unknown[];
+  coverAttachmentId: number | null;
+  mood: string | null;
+  folderId: number | null;
+  entryDate: string;
+}
+
+/**
+ * PR #139 round 8, Finding 4: whether a `createEntry(...)` POST's own
+ * response describes an entry nobody has touched yet — used ONLY for the
+ * "the workspace that started this create already unmounted before it
+ * resolved" case (DiaryWorkspace.tsx's `startNewEntry`), where there is no
+ * live editor/DetailsDrawer state left to consult and no
+ * `sessionCreatedEntryIdsRef` membership to check (this id was
+ * deliberately never added to that set on this path — see
+ * `startNewEntry`'s own comment).
+ *
+ * Deliberately reuses `isSessionDiscardable` rather than inventing a
+ * second "looks blank" rule: `created` fresh off `createEntry` (see
+ * hooks/useDiaryEntries.ts) is asserted `createdThisSession: true`
+ * directly, since this is only ever called for an id the very same
+ * `startNewEntry` invocation just POSTed — never for an id loaded from
+ * anywhere else. Every other field is read straight off the server's own
+ * response, which is the ONLY source of truth available once the
+ * originating component is gone: `bodyPlainText` is `created.body` itself
+ * (always the literal `BLANK_BODY_MARKER` for an unedited creation — see
+ * `createEntry` — and `isDiscardablePage`'s own zero-width-strip already
+ * normalizes that to ""), `hasNonTextContent` is unconditionally `false`
+ * (no editor ever ran against this entry, so it cannot contain an
+ * image/table/divider/etc.), and `folderId`/`entryDate` are compared
+ * against themselves as their own baseline (nothing has had the chance to
+ * change them since creation).
+ */
+export function isUntouchedCreatedEntry(created: CreatedEntrySnapshot): boolean {
+  return isSessionDiscardable({
+    createdThisSession: true,
+    title: created.title,
+    bodyPlainText: created.body,
+    attachmentCount: created.attachments.length,
+    coverAttachmentId: created.coverAttachmentId,
+    hasNonTextContent: false,
+    mood: created.mood,
+    folderId: created.folderId,
+    initialFolderId: created.folderId,
+    entryDate: created.entryDate,
+    initialEntryDate: created.entryDate,
+  });
+}
+
 export interface MoodDraft {
   entryId: number;
   mood: string;

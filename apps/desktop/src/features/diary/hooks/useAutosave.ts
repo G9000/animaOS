@@ -71,7 +71,36 @@ export function useAutosave<T>(options: UseAutosaveOptions<T>): UseAutosaveResul
     const scheduler = createAutosaveScheduler<T>({
       delayMs,
       save,
-      onStatusChange: setStatus,
+      // Finding 1 (PR #139 round 8): `setStatus` is the SAME React state
+      // setter across every scheduler generation for this hook instance —
+      // recreating the scheduler on entryId change does not create a new
+      // status slot. Without this guard, an outgoing scheduler's teardown
+      // retry (the async IIFE in the cleanup below) can still be running
+      // when the user has already switched to a new entry; its
+      // onStatusChange calls would otherwise publish entry A's
+      // saving/error/saved status into entry B's header, and could even
+      // report "saved" while B's own debounce is still pending — directly
+      // violating this hook's "status never reads saved while pending"
+      // invariant for B.
+      //
+      // `schedulerRef.current === scheduler` is the identity check: this
+      // closure captures `scheduler` (this generation's own instance), and
+      // compares it against whatever the ref currently holds. The effect
+      // cleanup below deliberately does NOT null the ref on teardown (see
+      // its own comment — that was round 1's fix for the discard-flush
+      // race), so this can't rely on "ref is null now" to detect
+      // staleness. It doesn't need to: the moment a new entryId's effect
+      // body runs, it synchronously overwrites `schedulerRef.current` with
+      // the NEW scheduler in the same commit right after the old effect's
+      // cleanup — so by the time an old generation's async teardown work
+      // resolves and calls this, the ref no longer points at `scheduler`
+      // and the identity check fails, silently dropping the stale publish
+      // instead of forwarding it to shared state.
+      onStatusChange: (next) => {
+        if (schedulerRef.current === scheduler) {
+          setStatus(next);
+        }
+      },
     });
     schedulerRef.current = scheduler;
     setStatus("idle");

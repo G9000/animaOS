@@ -145,7 +145,17 @@ export interface DetailsDrawerProps {
   // always passes its own `entry.id`, which is stable for its whole mounted
   // lifetime because the parent keys it by `entry.id` (fix round 1,
   // Finding 3) — a fresh mount is guaranteed for every entry switch.
-  onUpdate: (entryId: number, data: DiaryEntryUpdateData) => void;
+  // PR #139 round 8, Finding 2: return value reports whether the update
+  // actually succeeded (a promise resolving `true`/`false`), or `void` for
+  // fields/callers that don't need it. Mood is the only field here that
+  // maintains a "have I already committed this value" marker
+  // (`lastCommittedMoodRef`, below) — that marker must never advance ahead
+  // of a confirmed success, so `commitMoodValue` awaits this to decide
+  // whether to keep or roll back its optimistic advance. Every other field
+  // (date, folder, cover) fires-and-forgets exactly as before; passing
+  // `void` back from those call sites is a no-op for this promise-aware
+  // caller.
+  onUpdate: (entryId: number, data: DiaryEntryUpdateData) => Promise<boolean> | void;
   // PR #139 round 3, Finding 1: fires synchronously on every mood
   // keystroke, unlike `onUpdate` which only reaches the parent on commit
   // (600ms debounce, blur, or unmount flush — see `commitMoodValue`
@@ -228,8 +238,31 @@ export function DetailsDrawer({
     clearMoodTimer();
     const trimmed = value.trim();
     if (trimmed === lastCommittedMoodRef.current) return;
+    // PR #139 round 8, Finding 2: this marker used to advance unconditionally,
+    // before `onUpdate` had even returned — so a failed PATCH still looked
+    // "already committed" to every later check (a second blur, the next
+    // debounce tick, or the unmount flush), and the mood was silently
+    // dropped for good. Advance optimistically (so a rapid second identical
+    // commit attempt while the request is in flight is still a no-op — the
+    // pre-existing, load-bearing behavior this dedup guard exists for), then
+    // roll back to the previous committed value if the update reports
+    // failure. Rolling back — rather than simply never advancing until
+    // success — means the marker is always either "confirmed committed" or
+    // "back to what's actually on the server", never stuck showing a value
+    // that was never saved; and rolling back to `previous` (not leaving it
+    // at `trimmed`) makes `trimmed !== lastCommittedMoodRef.current` true
+    // again, so the very next blur/debounce/unmount naturally retries the
+    // same value instead of needing a separate retry mechanism.
+    const previous = lastCommittedMoodRef.current;
     lastCommittedMoodRef.current = trimmed;
-    onUpdateRef.current(entry.id, { mood: trimmed || undefined, clearMood: !trimmed });
+    const result = onUpdateRef.current(entry.id, { mood: trimmed || undefined, clearMood: !trimmed });
+    if (result instanceof Promise) {
+      void result.then((success) => {
+        if (!success && lastCommittedMoodRef.current === trimmed) {
+          lastCommittedMoodRef.current = previous;
+        }
+      });
+    }
   };
 
   // Also related to Finding 3: mood used to commit ONLY on blur, so a

@@ -40,7 +40,7 @@ const TURN_INTO_ICONS: Record<string, ReactNode> = {
   callout: <CalloutGlyphIcon />,
 };
 
-interface HoveredNode {
+export interface HoveredNode {
   node: ProseMirrorNode;
   pos: number;
 }
@@ -107,6 +107,108 @@ function isSimpleTextblockWrapper(node: ProseMirrorNode): boolean {
     if (!node.child(i).isTextblock) return false;
   }
   return true;
+}
+
+// Finding 3 (PR #139 round 8): pulled out of `BlockDragHandle`'s
+// `handleTurnInto` closure so it can be exercised directly against a real
+// `Editor` + real document in tests — asserting on the resulting document,
+// not a return value — without needing to render the `DragHandle` UI
+// (which needs live DOM positions/floating-ui) just to prove the fix.
+// Behavior is unchanged from the original inline version, aside from the
+// atom guard called out below.
+export function performTurnInto(
+  editor: Editor,
+  hovered: HoveredNode,
+  command: SlashCommand,
+  confirm: (message: string) => boolean,
+): void {
+  const { node: hoveredNode, pos: hoveredPos } = hovered;
+
+  if (DESTRUCTIVE_TURN_INTO_IDS.has(command.id)) {
+    // Finding 1: only prompt when there's actually something to lose — an
+    // empty block converting to a table/divider has no text for the
+    // dialog's wording to be honest about, and shouldn't interrupt the
+    // user for nothing.
+    if (hoveredNode.textContent.trim().length > 0) {
+      const noun = command.id === "table" ? "a table" : "a divider";
+      const confirmed = confirm(`Converting to ${noun} will discard this block's text. Continue?`);
+      // On cancel: bail out before touching the editor at all, so there's
+      // no partial transaction, no moved selection, no leftover node — the
+      // document is byte-identical to before the click.
+      if (!confirmed) return;
+    }
+    // Confirmed (or nothing to lose): replace the whole hovered block,
+    // wrapper included — that's the point of these two conversions, so no
+    // lift/preserve trick applies here. This branch already addresses the
+    // hovered node's own range directly (`hoveredPos` .. `hoveredPos +
+    // hoveredNode.nodeSize`), so it is unaffected by the atom hazard below
+    // — it never constructs a text selection past the node's end.
+    command.run(editor, { from: hoveredPos, to: hoveredPos + hoveredNode.nodeSize });
+    return;
+  }
+
+  // Finding 3 (PR #139 round 8): an atom (inline image, horizontal rule)
+  // has `nodeSize === 1` — there is no position *inside* it for a text
+  // selection to occupy. The collapsed-selection trick further down
+  // computes `from = pos + 1`, which for an atom is the position
+  // immediately AFTER it, not inside it — so `setTextSelection` would
+  // silently land the cursor in whatever follows (typically the next
+  // block's start), and the `command.run(...)` below would then convert
+  // THAT block instead of leaving the atom untouched. "Turn into" a
+  // textblock type is not a meaningful operation on an atom in the first
+  // place (there's no text to carry over), so it's refused outright — the
+  // submenu in BlockDragHandle also hides this action while hovering an
+  // atom; this is defense-in-depth for any direct caller.
+  if (hoveredNode.isAtom) return;
+
+  // Finding 2: "Turn into X" must always yield X, never toggle away from
+  // it — toggleBulletList()/toggleBlockquote()/etc. are correct as
+  // *toggles* in the slash-menu flow (Task 5), but here the user picked an
+  // explicit target. If the hovered block is already that type, this is a
+  // no-op: do nothing rather than calling a toggle command that would flip
+  // it back to a paragraph.
+  if (matchesTargetType(hoveredNode, command)) return;
+
+  let node = hoveredNode;
+  let pos = hoveredPos;
+
+  if (isSimpleTextblockWrapper(node)) {
+    // Finding 3 (Task 7): lift the wrapper's (first) child out to a
+    // top-level position before converting it, so the result isn't left
+    // nested inside the original wrapper.
+    const child = node.firstChild;
+    if (!child) return;
+    const childPos = pos + 1;
+    const from = childPos + 1;
+    const to = Math.max(from, childPos + child.nodeSize - 1);
+    const lifted = editor.chain().focus().setTextSelection({ from, to }).lift(child.type.name).run();
+    if (!lifted) return;
+    // Lifting a single-child wrapper removes exactly its own opening
+    // token, so the child's own start shifts left by one slot, landing it
+    // at the wrapper's old `pos` — verified against a live Editor instance
+    // (see task-7-report.md) rather than assumed.
+    const liftedNode = editor.state.doc.nodeAt(pos);
+    if (!liftedNode) return;
+    node = liftedNode;
+  }
+
+  // SlashCommand.run always starts with `deleteRange(range)` — that's
+  // correct for the slash-menu flow, where `range` is the typed "/query"
+  // text that needs erasing before the block command runs. Reusing it
+  // here with the hovered node's own range (`{ from: pos, to: pos +
+  // node.nodeSize }`) would delete the block's content before the
+  // conversion command ever ran. Instead, move the selection onto the
+  // node's inline content and pass a *collapsed* range at that same spot:
+  // deleteRange then deletes nothing, and the setNode/toggle command that
+  // follows acts on the selection already in place, converting the block
+  // while keeping its text. Verified against a live Editor instance (see
+  // task-7-report.md) for paragraph/heading/code-block conversions. Safe
+  // from the atom hazard above: by this point `node` is guaranteed to be a
+  // (possibly lifted) textblock or textblock-wrapper child, never an atom.
+  const from = pos + 1;
+  const to = Math.max(from, pos + node.nodeSize - 1);
+  editor.chain().focus().setTextSelection({ from, to }).run();
+  command.run(editor, { from, to: from });
 }
 
 // A button nested inside the handle's own draggable container needs its own
@@ -193,88 +295,7 @@ export function BlockDragHandle({ editor }: { editor: Editor }) {
 
   const handleTurnInto = (command: SlashCommand) => {
     if (!hovered) return;
-    const { node: hoveredNode, pos: hoveredPos } = hovered;
-
-    if (DESTRUCTIVE_TURN_INTO_IDS.has(command.id)) {
-      // Finding 1: only prompt when there's actually something to lose —
-      // an empty block converting to a table/divider has no text for the
-      // dialog's wording to be honest about, and shouldn't interrupt the
-      // user for nothing.
-      if (hoveredNode.textContent.trim().length > 0) {
-        const noun = command.id === "table" ? "a table" : "a divider";
-        const confirmed = window.confirm(
-          `Converting to ${noun} will discard this block's text. Continue?`,
-        );
-        // On cancel: bail out before touching the editor at all, so there's
-        // no partial transaction, no moved selection, no leftover node —
-        // the document is byte-identical to before the click.
-        if (!confirmed) {
-          closeMenus();
-          return;
-        }
-      }
-      // Confirmed (or nothing to lose): replace the whole hovered block,
-      // wrapper included — that's the point of these two conversions, so
-      // no lift/preserve trick applies here.
-      command.run(editor, { from: hoveredPos, to: hoveredPos + hoveredNode.nodeSize });
-      closeMenus();
-      return;
-    }
-
-    // Finding 2: "Turn into X" must always yield X, never toggle away from
-    // it — toggleBulletList()/toggleBlockquote()/etc. are correct as
-    // *toggles* in the slash-menu flow (Task 5), but here the user picked
-    // an explicit target. If the hovered block is already that type, this
-    // is a no-op: do nothing rather than calling a toggle command that
-    // would flip it back to a paragraph.
-    if (matchesTargetType(hoveredNode, command)) {
-      closeMenus();
-      return;
-    }
-
-    let node = hoveredNode;
-    let pos = hoveredPos;
-
-    if (isSimpleTextblockWrapper(node)) {
-      // Finding 3: lift the wrapper's (first) child out to a top-level
-      // position before converting it, so the result isn't left nested
-      // inside the original wrapper.
-      const child = node.firstChild;
-      if (!child) return;
-      const childPos = pos + 1;
-      const from = childPos + 1;
-      const to = Math.max(from, childPos + child.nodeSize - 1);
-      const lifted = editor
-        .chain()
-        .focus()
-        .setTextSelection({ from, to })
-        .lift(child.type.name)
-        .run();
-      if (!lifted) return;
-      // Lifting a single-child wrapper removes exactly its own opening
-      // token, so the child's own start shifts left by one slot, landing
-      // it at the wrapper's old `pos` — verified against a live Editor
-      // instance (see task-7-report.md) rather than assumed.
-      const liftedNode = editor.state.doc.nodeAt(pos);
-      if (!liftedNode) return;
-      node = liftedNode;
-    }
-
-    // SlashCommand.run always starts with `deleteRange(range)` — that's
-    // correct for the slash-menu flow, where `range` is the typed "/query"
-    // text that needs erasing before the block command runs. Reusing it
-    // here with the hovered node's own range (`{ from: pos, to: pos +
-    // node.nodeSize }`) would delete the block's content before the
-    // conversion command ever ran. Instead, move the selection onto the
-    // node's inline content and pass a *collapsed* range at that same spot:
-    // deleteRange then deletes nothing, and the setNode/toggle command that
-    // follows acts on the selection already in place, converting the block
-    // while keeping its text. Verified against a live Editor instance (see
-    // task-7-report.md) for paragraph/heading/code-block conversions.
-    const from = pos + 1;
-    const to = Math.max(from, pos + node.nodeSize - 1);
-    editor.chain().focus().setTextSelection({ from, to }).run();
-    command.run(editor, { from, to: from });
+    performTurnInto(editor, hovered, command, (message) => window.confirm(message));
     closeMenus();
   };
 
@@ -326,20 +347,29 @@ export function BlockDragHandle({ editor }: { editor: Editor }) {
             >
               Turn into
             </NonDraggableButton>
-            {turnIntoOpen && (
-              <div className="diary-drag-handle-submenu" draggable={false}>
-                {TURN_INTO_COMMANDS.map((command) => (
-                  <NonDraggableButton
-                    key={command.id}
-                    className={cn("diary-drag-handle-menu-item", "text-detail")}
-                    onClick={() => handleTurnInto(command)}
-                  >
-                    {TURN_INTO_ICONS[command.id]}
-                    <span>{command.label}</span>
-                  </NonDraggableButton>
-                ))}
-              </div>
-            )}
+            {
+              // Finding 3 (PR #139 round 8): an atom (inline image,
+              // horizontal rule) has no "inside" for any of these commands
+              // to convert — hiding the whole submenu while hovering one
+              // is the chosen fix, rather than trying to make the
+              // collapsed-selection trick work against a position that
+              // doesn't exist. See performTurnInto's own guard above for
+              // the defense-in-depth check backing this up.
+              !hovered?.node.isAtom && turnIntoOpen && (
+                <div className="diary-drag-handle-submenu" draggable={false}>
+                  {TURN_INTO_COMMANDS.map((command) => (
+                    <NonDraggableButton
+                      key={command.id}
+                      className={cn("diary-drag-handle-menu-item", "text-detail")}
+                      onClick={() => handleTurnInto(command)}
+                    >
+                      {TURN_INTO_ICONS[command.id]}
+                      <span>{command.label}</span>
+                    </NonDraggableButton>
+                  ))}
+                </div>
+              )
+            }
           </div>
         </div>
       )}

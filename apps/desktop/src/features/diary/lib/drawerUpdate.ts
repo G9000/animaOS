@@ -36,7 +36,18 @@ export function resolveDrawerUpdateEntryId(
 
 export interface DrawerUpdateHandlers {
   moveEntryToFolder: (entryId: number, folderId: number | null) => void;
-  updateEntry: (entryId: number, data: DiaryEntryUpdateData, errorMessage?: string) => void;
+  // PR #139 round 8, Finding 2: returns whether the PATCH actually
+  // succeeded (see hooks/useDiaryEntries.ts's `updateEntry`, which already
+  // resolves `null` on failure — this just surfaces that as a boolean
+  // instead of discarding it). Only the mood branch below currently uses
+  // the return value (DetailsDrawer's `lastCommittedMoodRef` needs a real
+  // success signal to avoid marking a failed save as committed); every
+  // other branch keeps firing-and-forgetting exactly as before.
+  updateEntry: (
+    entryId: number,
+    data: DiaryEntryUpdateData,
+    errorMessage?: string,
+  ) => Promise<boolean> | void;
 }
 
 /**
@@ -62,7 +73,7 @@ export function dispatchDrawerUpdate(
   data: DiaryEntryUpdateData,
   currentlySelectedEntryId: number | null,
   handlers: DrawerUpdateHandlers,
-): void {
+): Promise<boolean> | void {
   const targetId = resolveDrawerUpdateEntryId(originatingEntryId, currentlySelectedEntryId);
 
   if ("folderId" in data || "clearFolder" in data) {
@@ -70,20 +81,16 @@ export function dispatchDrawerUpdate(
     return;
   }
   if ("entryDate" in data) {
-    handlers.updateEntry(targetId, data, "Failed to update the entry date.");
-    return;
+    return handlers.updateEntry(targetId, data, "Failed to update the entry date.");
   }
   if ("mood" in data || "clearMood" in data) {
-    handlers.updateEntry(targetId, data, "Failed to update mood.");
-    return;
+    return handlers.updateEntry(targetId, data, "Failed to update mood.");
   }
   if ("clearCover" in data) {
-    handlers.updateEntry(targetId, data, "Failed to remove cover image.");
-    return;
+    return handlers.updateEntry(targetId, data, "Failed to remove cover image.");
   }
   if ("coverAttachmentId" in data) {
-    handlers.updateEntry(targetId, data, "Failed to set cover image.");
-    return;
+    return handlers.updateEntry(targetId, data, "Failed to set cover image.");
   }
-  handlers.updateEntry(targetId, data);
+  return handlers.updateEntry(targetId, data);
 }

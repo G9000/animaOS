@@ -173,4 +173,83 @@ describe("DetailsDrawer mood commit (PR #139, Finding 3)", () => {
       throw e;
     }
   });
+
+  test("a failed mood save is retried instead of being treated as committed (Finding 2, round 8)", async () => {
+    const container = dom.window.document.getElementById("root") as HTMLElement;
+    const root = createRoot(container);
+    const updates: any[] = [];
+    let succeed = false;
+    // Reports outcome, exactly like DiaryWorkspace's real `handleDrawerUpdate`
+    // does after PR #139 round 8, Finding 2's fix — a promise resolving to
+    // whether the PATCH actually succeeded.
+    const onUpdate = (_entryId: number, data: any) => {
+      updates.push(data);
+      return Promise.resolve(succeed);
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <DetailsDrawer
+            key={1}
+            entry={makeEntry({ mood: null })}
+            folders={[]}
+            open={true}
+            onClose={() => {}}
+            onUpdate={onUpdate}
+            onDelete={() => {}}
+            onCoverFileSelected={() => {}}
+            onFilesSelected={() => {}}
+            onOpenAttachment={() => {}}
+            onAttachmentError={() => {}}
+            bodyText=""
+            recording={false}
+            speechAvailable={false}
+            liveTranscript=""
+            onToggleRecording={() => {}}
+          />,
+        );
+      });
+
+      const input = container.querySelector(
+        'input[placeholder="How are you feeling?"]',
+      ) as HTMLInputElement;
+
+      await act(async () => {
+        typeInto(input, "hopeful");
+      });
+      // Let the debounce fire: first commit attempt, which fails.
+      await act(async () => {
+        await tick(700);
+      });
+      expect(updates.length).toBe(1);
+      expect(updates[0]).toEqual({ mood: "hopeful", clearMood: false });
+
+      // Give the failure's rollback microtask room to run before the next
+      // commit attempt.
+      await act(async () => {
+        await tick(0);
+      });
+
+      succeed = true;
+      // Unmount without any further typing or blur — the same untouched
+      // draft as before. BEFORE the fix: `lastCommittedMoodRef` had already
+      // advanced to "hopeful" the instant the failed PATCH was fired, so
+      // this teardown flush sees the (unchanged) draft as already
+      // committed and never calls `onUpdate` again — the failed save is
+      // silently treated as saved and the mood is lost for good.
+      //
+      // AFTER the fix: the failure rolled the marker back, so this
+      // teardown flush still sees "hopeful" as uncommitted and retries it.
+      act(() => {
+        root.unmount();
+      });
+
+      expect(updates.length).toBe(2);
+      expect(updates[1]).toEqual({ mood: "hopeful", clearMood: false });
+    } catch (e) {
+      root.unmount();
+      throw e;
+    }
+  });
 });
