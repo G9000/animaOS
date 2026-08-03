@@ -1,5 +1,5 @@
 import type { NodeProps } from "@xyflow/react";
-import { DotLoader } from "@anima/standard-templates";
+import { DotLoader, cn, glassPanel } from "@anima/standard-templates";
 import type { GreetingNode } from "./node-types";
 import { useDreamShownReceipt } from "./useDreamShownReceipt";
 
@@ -29,14 +29,14 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
       {/* Close */}
       <button
         onClick={onClose}
-        className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-foreground/[0.07] font-mono text-[8px] text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover:opacity-100 transition-all duration-200 backdrop-blur-sm"
+        className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-hairline-faint font-mono text-micro text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover:opacity-100 transition-all duration-200 backdrop-blur-sm"
         aria-label="Close greeting"
       >
         ×
       </button>
 
       {/* Glass card */}
-      <div className="rounded-xl bg-background/25 backdrop-blur-[36px] border border-foreground/[0.08] shadow-[0_4px_28px_rgba(0,0,0,0.18)] px-5 py-5">
+      <div className={cn(glassPanel, "px-5 py-5")}>
         {briefLoading ? (
           <div className="py-4">
             <DotLoader />
@@ -46,7 +46,7 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
 
             {/* Attribution */}
             {brief?.llmGenerated && (
-              <span className="font-mono text-[7.5px] tracking-[0.3em] uppercase text-foreground/22 block">
+              <span className="font-mono text-[7.5px] tracking-caps-5 uppercase text-foreground/22 block">
                 from {agentName}
               </span>
             )}
@@ -67,7 +67,7 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
                 {pills.map((pill) => (
                   <span
                     key={`${pill.kind}:${pill.label}`}
-                    className="font-mono text-[7.5px] tracking-[0.12em] uppercase text-foreground/30 border border-foreground/[0.08] bg-foreground/[0.02] px-1.5 py-0.5 rounded-sm"
+                    className="font-mono text-[7.5px] tracking-caps-2 uppercase text-foreground/30 border border-hairline bg-foreground/[0.02] px-1.5 py-0.5 rounded-sm"
                   >
                     {pill.label}
                   </span>
@@ -79,7 +79,7 @@ export function GreetingNode({ data }: NodeProps<GreetingNode>) {
             <div className="flex justify-end pt-1">
               <button
                 onClick={onChat}
-                className="font-mono text-[8px] tracking-[0.2em] uppercase text-foreground/40 hover:text-foreground/80 border border-foreground/[0.09] hover:border-foreground/25 bg-foreground/[0.02] hover:bg-foreground/[0.05] px-3 py-1 rounded-sm transition-all duration-150"
+                className="font-mono text-micro tracking-caps-4 uppercase text-foreground/40 hover:text-foreground/80 border border-hairline hover:border-foreground/25 bg-foreground/[0.02] hover:bg-foreground/[0.05] px-3 py-1 rounded-sm transition-all duration-150"
               >
                 start chat →
               </button>

@@ -145,14 +145,14 @@ export function LayoutSidebar() {
                   {agentName}
                 </span>
                 {relationship && (
-                  <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-muted-foreground/40 leading-none">
+                  <span className="font-mono text-micro tracking-caps-2 uppercase text-muted-foreground/40 leading-none">
                     {relationship}
                   </span>
                 )}
               </div>
               {dominantEmotion && (
                 <span className={cn(
-                  "flex-shrink-0 font-mono text-[8px] tracking-[0.12em] uppercase px-1.5 py-0.5 rounded-sm ml-2",
+                  "flex-shrink-0 font-mono text-micro tracking-caps-2 uppercase px-1.5 py-0.5 rounded-sm ml-2",
                   moodBadgeClass(dominantEmotion),
                 )}>
                   {dominantEmotion}
@@ -214,7 +214,7 @@ export function LayoutSidebar() {
           >
             <span className="text-xs leading-none select-none">{theme === "dark" ? "☀" : "☾"}</span>
             {!collapsed && (
-              <span className="text-caption font-mono tracking-[0.16em] uppercase">
+              <span className="text-caption font-mono tracking-caps-3 uppercase">
                 {theme === "dark" ? "Light" : "Dark"}
               </span>
             )}
@@ -233,7 +233,7 @@ export function LayoutSidebar() {
               className={cn("transition-transform duration-200", !collapsed && "rotate-180")}
             />
             {!collapsed && (
-              <span className="text-caption font-mono tracking-[0.16em] uppercase">Collapse</span>
+              <span className="text-caption font-mono tracking-caps-3 uppercase">Collapse</span>
             )}
           </button>
         </div>

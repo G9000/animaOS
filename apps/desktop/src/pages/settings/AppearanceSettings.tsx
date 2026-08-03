@@ -9,10 +9,9 @@ import {
 } from "../../hooks/useBackground";
 import { useClockFormat } from "../../hooks/useClockFormat";
 import { inferBackgroundType } from "../../lib/background";
-import { cn } from "@anima/standard-templates";
+import { cn, glass } from "@anima/standard-templates";
 
-const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
-const INPUT = "w-full bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2.5 font-mono text-[11px] text-foreground placeholder:text-foreground/25 outline-none focus:border-foreground/[0.18] transition-colors";
+const INPUT = "w-full bg-foreground/[0.04] border border-hairline px-3 py-2.5 font-mono text-detail text-foreground placeholder:text-foreground/25 outline-none focus:border-hairline-strong transition-colors";
 
 const THEME_OPTIONS: { value: Theme; label: string; hint: string; bg: string; fg: string; accent: string }[] = [
   { value: "dark",   label: "Dark",   hint: "Low-light",   bg: "#191917", fg: "#e8e3d5", accent: "#c2622a" },
@@ -45,11 +44,11 @@ function ThemeCard({ label, hint, bg, fg, accent, active, isSystem, onClick }: {
         "flex-1 flex flex-col gap-3 p-3 border transition-all duration-150",
         active
           ? "border-accent/60 bg-accent/[0.06]"
-          : "border-foreground/[0.07] hover:border-foreground/[0.15] hover:bg-foreground/[0.03]",
+          : "border-hairline-faint hover:border-hairline-strong hover:bg-foreground/[0.03]",
       )}
     >
       {/* Mini UI preview */}
-      <div className="w-full h-14 overflow-hidden border border-foreground/[0.06] relative" style={isSystem ? undefined : { background: bg }}>
+      <div className="w-full h-14 overflow-hidden border border-hairline-faint relative" style={isSystem ? undefined : { background: bg }}>
         {isSystem ? (
           <>
             <div className="absolute inset-0 left-0 w-1/2" style={{ background: "#191917" }} />
@@ -71,10 +70,10 @@ function ThemeCard({ label, hint, bg, fg, accent, active, isSystem, onClick }: {
       </div>
 
       <div className="text-left space-y-0.5">
-        <div className={cn("font-mono text-[10px] tracking-[0.1em] transition-colors", active ? "text-accent" : "text-foreground/60")}>
+        <div className={cn("font-mono text-caption tracking-caps-1 transition-colors", active ? "text-accent" : "text-foreground/60")}>
           {label}
         </div>
-        <div className="font-mono text-[8px] text-foreground/25 tracking-wide">{hint}</div>
+        <div className="font-mono text-micro text-foreground/25 tracking-wide">{hint}</div>
       </div>
 
       {active && <div className="w-full h-px bg-accent/40" />}
@@ -90,8 +89,8 @@ function Slider({ label, value, min, max, step, onChange, format }: {
   return (
     <div className="space-y-2.5">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">{label}</span>
-        <span className="font-mono text-[9px] text-foreground/35 tabular-nums">{format(value)}</span>
+        <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">{label}</span>
+        <span className="font-mono text-label text-foreground/35 tabular-nums">{format(value)}</span>
       </div>
       <div className="relative h-4 flex items-center">
         <div className="absolute inset-x-0 h-px bg-foreground/[0.10]" />
@@ -137,7 +136,7 @@ export default function AppearanceSettings() {
     switch (bgConfig.type) {
       case "default":
         return (
-          <p className="font-mono text-[9px] text-foreground/25 tracking-wide leading-relaxed">
+          <p className="font-mono text-label text-foreground/25 tracking-wide leading-relaxed">
             Uses the current theme's default background.
           </p>
         );
@@ -152,7 +151,7 @@ export default function AppearanceSettings() {
                 onChange={(e) => setBgConfig({ ...bgConfig, value: e.target.value })}
                 className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
               />
-              <div className="w-10 h-10 border border-foreground/[0.1]" style={{ background: bgConfig.value ?? "#000" }} />
+              <div className="w-10 h-10 border border-hairline" style={{ background: bgConfig.value ?? "#000" }} />
             </div>
             <input
               type="text"
@@ -168,7 +167,7 @@ export default function AppearanceSettings() {
         return (
           <div className="space-y-3">
             {bgConfig.value && (
-              <div className="h-8 w-full border border-foreground/[0.08]" style={{ background: bgConfig.value }} />
+              <div className="h-8 w-full border border-hairline" style={{ background: bgConfig.value }} />
             )}
             <textarea
               value={bgConfig.value ?? ""}
@@ -177,7 +176,7 @@ export default function AppearanceSettings() {
               rows={2}
               className={`${INPUT} resize-none`}
             />
-            <p className="font-mono text-[8px] text-foreground/20 tracking-wide">Any valid CSS background value.</p>
+            <p className="font-mono text-micro text-foreground/20 tracking-wide">Any valid CSS background value.</p>
           </div>
         );
 
@@ -193,7 +192,7 @@ export default function AppearanceSettings() {
               onChange={handleBgFileChange}
             />
             {hasFile && bgUrl ? (
-              <div className="relative w-full h-40 border border-foreground/[0.08] overflow-hidden bg-foreground/[0.02]">
+              <div className="relative w-full h-40 border border-hairline overflow-hidden bg-foreground/[0.02]">
                 {bgConfig.type === "video"
                   ? <video src={bgUrl} autoPlay muted loop playsInline className="absolute inset-0 w-full h-full object-cover" />
                   : <img src={bgUrl} alt="Background" className="absolute inset-0 w-full h-full object-cover" />}
@@ -202,13 +201,13 @@ export default function AppearanceSettings() {
                   <button
                     onClick={() => bgInputRef.current?.click()}
                     disabled={bgUploading}
-                    className="font-mono text-[8px] tracking-[0.14em] uppercase px-2.5 py-1.5 bg-background/70 backdrop-blur-sm border border-foreground/[0.12] text-foreground/60 hover:text-foreground/90 disabled:opacity-30 transition-colors"
+                    className="font-mono text-micro tracking-caps-2 uppercase px-2.5 py-1.5 bg-background/70 backdrop-blur-sm border border-hairline text-foreground/60 hover:text-foreground/90 disabled:opacity-30 transition-colors"
                   >
                     Replace
                   </button>
                   <button
                     onClick={() => setBgConfig({ ...DEFAULT_BACKGROUND })}
-                    className="font-mono text-[8px] tracking-[0.14em] uppercase px-2.5 py-1.5 bg-background/70 backdrop-blur-sm border border-destructive/30 text-destructive/60 hover:text-destructive/90 transition-colors"
+                    className="font-mono text-micro tracking-caps-2 uppercase px-2.5 py-1.5 bg-background/70 backdrop-blur-sm border border-destructive/30 text-destructive/60 hover:text-destructive/90 transition-colors"
                   >
                     Remove
                   </button>
@@ -218,13 +217,13 @@ export default function AppearanceSettings() {
               <button
                 onClick={() => bgInputRef.current?.click()}
                 disabled={bgUploading || bgLoading}
-                className="w-full py-8 border border-dashed border-foreground/[0.12] hover:border-foreground/[0.22] hover:bg-foreground/[0.02] transition-all group"
+                className="w-full py-8 border border-dashed border-hairline hover:border-hairline-strong hover:bg-foreground/[0.02] transition-all group"
               >
                 <div className="flex flex-col items-center gap-2">
                   <svg className="text-foreground/20 group-hover:text-foreground/40 transition-colors" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
                   </svg>
-                  <span className="font-mono text-[8px] tracking-[0.18em] uppercase text-foreground/25 group-hover:text-foreground/50 transition-colors">
+                  <span className="font-mono text-micro tracking-caps-3 uppercase text-foreground/25 group-hover:text-foreground/50 transition-colors">
                     {bgUploading ? "Saving..." : `Upload ${bgConfig.type === "video" ? "video" : "image"}`}
                   </span>
                 </div>
@@ -243,9 +242,9 @@ export default function AppearanceSettings() {
 
       {/* ── Theme ── */}
       <div className={glass}>
-        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
-          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Theme</h2>
-          <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-foreground/20">
+        <div className="px-5 pt-4 pb-3 border-b border-hairline flex items-center justify-between">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">Theme</h2>
+          <span className="font-mono text-micro tracking-caps-2 uppercase text-foreground/20">
             {effective === "dark" ? "Dark mode active" : "Light mode active"}
           </span>
         </div>
@@ -264,18 +263,18 @@ export default function AppearanceSettings() {
 
       {/* ── Background ── */}
       <div className={glass}>
-        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08]">
-          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Background</h2>
+        <div className="px-5 pt-4 pb-3 border-b border-hairline">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">Background</h2>
         </div>
 
         {/* Type tabs */}
-        <div className="flex border-b border-foreground/[0.05]">
+        <div className="flex border-b border-hairline-faint">
           {BACKGROUND_TYPES.map((opt) => (
             <button
               key={opt.value}
               onClick={() => handleBgTypeChange(opt.value)}
               className={cn(
-                "flex-1 py-2.5 font-mono text-[8px] tracking-[0.16em] uppercase transition-all border-b-[2px] -mb-px",
+                "flex-1 py-2.5 font-mono text-micro tracking-caps-3 uppercase transition-all border-b-[2px] -mb-px",
                 bgConfig.type === opt.value
                   ? "border-accent text-foreground/75"
                   : "border-transparent text-foreground/25 hover:text-foreground/50",
@@ -290,20 +289,20 @@ export default function AppearanceSettings() {
           {renderBgEditor()}
 
           {bgConfig.type !== "default" && (
-            <div className="space-y-4 pt-3 border-t border-foreground/[0.06]">
+            <div className="space-y-4 pt-3 border-t border-hairline-faint">
               {bgConfig.type === "image" && (
                 <div className="space-y-2">
-                  <span className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Fit</span>
+                  <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">Fit</span>
                   <div className="flex gap-1">
                     {BACKGROUND_FITS.map((opt) => (
                       <button
                         key={opt.value}
                         onClick={() => setBgConfig({ ...bgConfig, fit: opt.value })}
                         className={cn(
-                          "flex-1 py-2 font-mono text-[8px] tracking-[0.14em] uppercase border transition-all",
+                          "flex-1 py-2 font-mono text-micro tracking-caps-2 uppercase border transition-all",
                           bgConfig.fit === opt.value
-                            ? "border-foreground/[0.18] bg-foreground/[0.08] text-foreground/80"
-                            : "border-foreground/[0.07] text-foreground/30 hover:text-foreground/60 hover:border-foreground/[0.14]",
+                            ? "border-hairline-strong bg-foreground/[0.08] text-foreground/80"
+                            : "border-hairline-faint text-foreground/30 hover:text-foreground/60 hover:border-hairline-strong",
                         )}
                       >
                         {opt.label}
@@ -317,15 +316,15 @@ export default function AppearanceSettings() {
             </div>
           )}
 
-          {bgError && <p className="font-mono text-[9px] text-destructive/70 tracking-wide">{bgError}</p>}
+          {bgError && <p className="font-mono text-label text-destructive/70 tracking-wide">{bgError}</p>}
         </div>
       </div>
 
       {/* ── Clock ── */}
       <div className={glass}>
-        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
-          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Clock</h2>
-          <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-foreground/20">
+        <div className="px-5 pt-4 pb-3 border-b border-hairline flex items-center justify-between">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">Clock</h2>
+          <span className="font-mono text-micro tracking-caps-2 uppercase text-foreground/20">
             Nav bar display
           </span>
         </div>
@@ -341,15 +340,15 @@ export default function AppearanceSettings() {
                 "flex-1 flex flex-col gap-2.5 p-3 border transition-all duration-150",
                 clockFormat === value
                   ? "border-accent/60 bg-accent/[0.06]"
-                  : "border-foreground/[0.07] hover:border-foreground/[0.15] hover:bg-foreground/[0.03]",
+                  : "border-hairline-faint hover:border-hairline-strong hover:bg-foreground/[0.03]",
               )}
             >
-              <span className="font-mono text-[18px] tracking-[0.12em] text-foreground/50 leading-none">
+              <span className="font-mono text-[18px] tracking-caps-2 text-foreground/50 leading-none">
                 {preview}
               </span>
               <div className="flex items-center justify-between">
                 <span className={cn(
-                  "font-mono text-[10px] tracking-[0.1em] transition-colors",
+                  "font-mono text-caption tracking-caps-1 transition-colors",
                   clockFormat === value ? "text-accent" : "text-foreground/50",
                 )}>
                   {label}

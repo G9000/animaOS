@@ -139,7 +139,7 @@ export function ChatBubble({
           <div className="flex items-center gap-2 mb-1 px-1 select-none">
             <span
               className={cn(
-                "font-mono text-[9px] tracking-[0.18em] uppercase",
+                "font-mono text-label tracking-caps-3 uppercase",
                 isUser ? "text-foreground/40" : "text-foreground/30",
               )}
             >
@@ -147,7 +147,7 @@ export function ChatBubble({
             </span>
             {fullTimestamp && (
               <span
-                className="font-mono text-[9px] text-foreground/20"
+                className="font-mono text-label text-foreground/20"
                 title={fullTimestamp}
               >
                 {timestamp}
@@ -161,10 +161,10 @@ export function ChatBubble({
           className={cn(
             "relative group/bubble",
             isUser
-              ? "bg-foreground/[0.09] border border-foreground/[0.08]"
+              ? "bg-foreground/[0.09] border border-hairline"
               : isSystem
-                ? "bg-foreground/[0.04] border border-foreground/[0.06]"
-                : "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08]",
+                ? "bg-foreground/[0.04] border border-hairline-faint"
+                : "bg-background/25 backdrop-blur-[40px] border border-hairline",
           )}
         >
           {/* Copy button - appears on hover */}
@@ -177,15 +177,15 @@ export function ChatBubble({
 
         {/* Translation */}
         {translating && (
-          <div className="mt-2 px-3 py-2 bg-foreground/[0.04] border border-foreground/[0.06] font-mono text-[10px] text-foreground/40 animate-pulse tracking-[0.18em] uppercase flex items-center gap-2">
+          <div className="mt-2 px-3 py-2 bg-foreground/[0.04] border border-hairline-faint font-mono text-caption text-foreground/40 animate-pulse tracking-caps-3 uppercase flex items-center gap-2">
             <span className="w-3 h-3 border border-foreground/20 border-t-foreground/50 animate-spin" />
             Translating...
           </div>
         )}
         {translation && !translating && (
-          <div className="mt-2 px-3 py-2 bg-foreground/[0.04] border border-foreground/[0.06]">
+          <div className="mt-2 px-3 py-2 bg-foreground/[0.04] border border-hairline-faint">
             <div className="flex items-center gap-2 mb-1">
-              <span className="font-mono text-[9px] text-foreground/30 tracking-[0.18em] uppercase">
+              <span className="font-mono text-label text-foreground/30 tracking-caps-3 uppercase">
                 Translation
               </span>
               <button
@@ -205,7 +205,7 @@ export function ChatBubble({
         {showReasoning && message.reasoning && (
           <div className="mt-2 w-full px-3 py-3 bg-primary/[0.04] border border-primary/20 rounded-none">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-mono text-[9px] text-primary/50 tracking-[0.18em] uppercase flex items-center gap-1.5">
+              <span className="font-mono text-label text-primary/50 tracking-caps-3 uppercase flex items-center gap-1.5">
                 <LightbulbIcon className="w-3 h-3" />
                 Reasoning
               </span>
@@ -216,7 +216,7 @@ export function ChatBubble({
                 <ChevronDownIcon className="w-3 h-3" />
               </button>
             </div>
-            <div className="text-[12px] text-muted-foreground/80 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-60 overflow-y-auto scrollbar-thin">
+            <div className="text-body text-muted-foreground/80 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-60 overflow-y-auto scrollbar-thin">
               {message.reasoning}
             </div>
           </div>
@@ -289,7 +289,7 @@ export function ChatBubble({
           />
 
           {message.source && (
-            <span className="font-mono text-[8px] text-muted-foreground/30 ml-1">
+            <span className="font-mono text-micro text-muted-foreground/30 ml-1">
               via {message.source}
             </span>
           )}
@@ -332,7 +332,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex items-center gap-1 px-2 py-1 font-mono text-[9px] tracking-wider transition-all disabled:opacity-30",
+        "flex items-center gap-1 px-2 py-1 font-mono text-label tracking-wider transition-all disabled:opacity-30",
         active ? activeClass : inactiveClass,
       )}
     >
@@ -349,7 +349,7 @@ interface TokenUsageProps {
 
 function RetrievalUsage({ retrievalSummary }: { retrievalSummary: string }) {
   return (
-    <div className="flex items-center gap-2 mt-1 px-1 font-mono text-[9px] text-muted-foreground/30 tracking-wider">
+    <div className="flex items-center gap-2 mt-1 px-1 font-mono text-label text-muted-foreground/30 tracking-wider">
       <span className="text-emerald-400/55">MEMORY</span>
       <span>{retrievalSummary}</span>
     </div>
@@ -369,7 +369,7 @@ function TokenUsage({ events }: TokenUsageProps) {
       .length ?? 0;
 
   return (
-    <div className="flex items-center gap-2 mt-1 px-1 font-mono text-[9px] text-muted-foreground/30">
+    <div className="flex items-center gap-2 mt-1 px-1 font-mono text-label text-muted-foreground/30">
       <span>{(usage.totalTokens ?? 0).toLocaleString()} tkn</span>
       <span className="text-muted-foreground/15">·</span>
       <span>{usage.promptTokens ?? 0}in</span>

@@ -52,17 +52,17 @@ export function QueryEditor({
           onKeyDown={handleKeyDown}
           placeholder="SELECT * FROM users LIMIT 10"
           rows={5}
-          className="w-full px-3 py-2.5 rounded-none bg-input border border-border text-[13px] font-mono resize-y placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
+          className="w-full px-3 py-2.5 rounded-none bg-input border border-border text-ui font-mono resize-y placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
         />
         <div className="flex items-center justify-between mt-3">
           <div className="flex items-center gap-3">
-            <span className="text-[11px] text-muted-foreground/50">
+            <span className="text-detail text-muted-foreground/50">
               Ctrl+Enter to run
             </span>
             <QueryFavorites onSelectQuery={onSetSql} currentSql={sql} />
             <button
               onClick={() => onSetShowHistory(!showHistory)}
-              className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1"
+              className="text-detail text-muted-foreground hover:text-foreground flex items-center gap-1"
             >
               <Icons.History /> {showHistory ? "Hide" : "Show"} history (
               {queryHistory.length})
@@ -83,7 +83,7 @@ export function QueryEditor({
                     );
                   }
                 }}
-                className={`text-[11px] flex items-center gap-1 ${
+                className={`text-detail flex items-center gap-1 ${
                   isBookmarked("query", sql)
                     ? "text-primary"
                     : "text-muted-foreground hover:text-foreground"
@@ -119,7 +119,7 @@ export function QueryEditor({
       {/* Query History */}
       {showHistory && queryHistory.length > 0 && (
         <div className="bg-card border border-border rounded-none overflow-hidden">
-          <div className="px-3 py-2 bg-input border-b border-border text-[11px] text-muted-foreground flex items-center justify-between">
+          <div className="px-3 py-2 bg-input border-b border-border text-detail text-muted-foreground flex items-center justify-between">
             <span>Recent Queries</span>
             <button
               onClick={() => onSetQueryHistory([])}
@@ -139,7 +139,7 @@ export function QueryEditor({
                     onSetSql(item.sql);
                     onSetShowHistory(false);
                   }}
-                  className="flex-1 text-left text-[11px] font-mono truncate"
+                  className="flex-1 text-left text-detail font-mono truncate"
                 >
                   <span className="text-muted-foreground/40 w-12 inline-block">
                     {item.rowCount ?? "?"} rows
@@ -174,7 +174,7 @@ export function QueryEditor({
                   const csv = convertToCsv(queryResult);
                   downloadFile(csv, "query-result.csv", "text/csv");
                 }}
-                className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
+                className="text-detail text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
                 <Icons.Download /> CSV
               </button>
@@ -186,7 +186,7 @@ export function QueryEditor({
                     "application/json"
                   )
                 }
-                className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
+                className="text-detail text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
                 <Icons.Download /> JSON
               </button>
@@ -197,7 +197,7 @@ export function QueryEditor({
           {queryResult.rows.some((row) =>
             Object.values(row).some((v) => isEncryptedValue(v))
           ) && (
-            <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-none flex items-center gap-2 text-[11px] text-amber-500">
+            <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-none flex items-center gap-2 text-detail text-amber-500">
               <Icons.Warning />
               <span>Some fields are encrypted and cannot be displayed.</span>
             </div>
@@ -205,7 +205,7 @@ export function QueryEditor({
 
           <div className="border border-border rounded-none overflow-hidden">
             <div className="overflow-auto max-h-[400px]">
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-detail font-mono">
                 <thead className="sticky top-0 bg-card border-b border-border">
                   <tr>
                     {queryResult.columns.map((col) => (
@@ -247,7 +247,7 @@ export function QueryEditor({
 function QueryCell({ value }: { value: unknown }) {
   if (isEncryptedValue(value)) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 border border-amber-500/30">
+      <span className="inline-flex items-center gap-1 text-caption px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 border border-amber-500/30">
         <Icons.Lock />
         encrypted
       </span>

@@ -64,13 +64,13 @@ export default function Soul() {
       {/* Toolbar */}
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-border bg-card/40">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
+          <span className="font-mono text-caption text-muted-foreground tracking-wider">
             DIRECTIVE
           </span>
           {hasChanges && (
             <>
               <div className="w-px h-3 bg-border" />
-              <span className="font-mono text-[9px] text-warning/60 tracking-wider">
+              <span className="font-mono text-label text-warning/60 tracking-wider">
                 UNSAVED
               </span>
             </>
@@ -80,14 +80,14 @@ export default function Soul() {
           <button
             onClick={handleReset}
             disabled={!hasChanges || saving}
-            className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground disabled:opacity-15 tracking-wider transition-colors"
+            className="font-mono text-label text-muted-foreground/40 hover:text-foreground disabled:opacity-15 tracking-wider transition-colors"
           >
             RESET
           </button>
           <button
             onClick={handleSave}
             disabled={!hasChanges || saving}
-            className="font-mono px-3 py-1 text-[9px] tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] disabled:opacity-20 transition-colors"
+            className="font-mono px-3 py-1 text-label tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] disabled:opacity-20 transition-colors"
           >
             {saving ? "SAVING..." : "SAVE"}
           </button>
@@ -96,10 +96,10 @@ export default function Soul() {
 
       {/* Description */}
       <div className="px-5 py-2 border-b border-border/50">
-        <p className="font-mono text-[10px] text-muted-foreground/40 leading-relaxed max-w-lg tracking-wider">
+        <p className="font-mono text-caption text-muted-foreground/40 leading-relaxed max-w-lg tracking-wider">
           YOUR INSTRUCTIONS TO ANIMA. CHANGES TAKE EFFECT NEXT CONVERSATION.
         </p>
-        <p className="font-mono text-[8px] text-muted-foreground/20 mt-0.5 tracking-wider">
+        <p className="font-mono text-micro text-muted-foreground/20 mt-0.5 tracking-wider">
           CMD+S SAVE
         </p>
       </div>
@@ -108,7 +108,7 @@ export default function Soul() {
       <div className="flex-1 p-4 min-h-0">
         {loading ? (
           <div className="flex items-center justify-center h-full">
-            <span className="font-mono text-[10px] text-muted-foreground/30 animate-pulse tracking-wider">
+            <span className="font-mono text-caption text-muted-foreground/30 animate-pulse tracking-wider">
               LOADING...
             </span>
           </div>
@@ -127,16 +127,16 @@ export default function Soul() {
       {/* Status bar */}
       <div className="px-5 py-2 border-t border-border flex items-center gap-4">
         {saved && (
-          <span className="font-mono text-[9px] text-primary tracking-wider">
+          <span className="font-mono text-label text-primary tracking-wider">
             SAVED
           </span>
         )}
         {error && (
-          <span className="font-mono text-[9px] text-destructive tracking-wider">
+          <span className="font-mono text-label text-destructive tracking-wider">
             {error}
           </span>
         )}
-        <span className="ml-auto font-mono text-[8px] text-muted-foreground/20 tracking-wider">
+        <span className="ml-auto font-mono text-micro text-muted-foreground/20 tracking-wider">
           {content.length} CHARS | {content.split("\n").length} LINES
         </span>
       </div>

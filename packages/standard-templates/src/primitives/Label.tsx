@@ -7,7 +7,7 @@ export function Label({ className, ...props }: LabelProps) {
   return (
     <label
       className={cn(
-        "text-[11px] font-medium tracking-wide text-muted-foreground",
+        "text-detail font-medium tracking-wide text-muted-foreground",
         className,
       )}
       {...props}

@@ -14,7 +14,7 @@ export function PathsTab({ searchResults, onEntityClick }: PathsTabProps) {
   if (searchResults === null) {
     return (
       <div className="text-center py-12">
-        <p className="font-mono text-[10px] text-muted-foreground/30 tracking-wider">
+        <p className="font-mono text-caption text-muted-foreground/30 tracking-wider">
           SEARCH_FOR_ENTITIES_TO_SEE_CONNECTIONS
         </p>
       </div>
@@ -26,7 +26,7 @@ export function PathsTab({ searchResults, onEntityClick }: PathsTabProps) {
       {/* Matched Entities */}
       {searchResults.entities.length > 0 && (
         <div>
-          <h3 className="font-mono text-[9px] text-muted-foreground/50 tracking-wider mb-2">
+          <h3 className="font-mono text-label text-muted-foreground/50 tracking-wider mb-2">
             MATCHED_ENTITIES ({searchResults.entities.length})
           </h3>
           <div className="flex flex-wrap gap-2">
@@ -36,7 +36,7 @@ export function PathsTab({ searchResults, onEntityClick }: PathsTabProps) {
                 onClick={() => onEntityClick(entity.id)}
                 className="px-3 py-1.5 bg-card border border-border hover:border-primary/30 transition-colors"
               >
-                <span className="font-mono text-[10px] text-foreground">{entity.name}</span>
+                <span className="font-mono text-caption text-foreground">{entity.name}</span>
               </button>
             ))}
           </div>
@@ -46,7 +46,7 @@ export function PathsTab({ searchResults, onEntityClick }: PathsTabProps) {
       {/* Graph Paths */}
       {searchResults.paths.length > 0 ? (
         <div>
-          <h3 className="font-mono text-[9px] text-muted-foreground/50 tracking-wider mb-2">
+          <h3 className="font-mono text-label text-muted-foreground/50 tracking-wider mb-2">
             CONNECTED_PATHS ({searchResults.paths.length})
           </h3>
           <div className="space-y-1">
@@ -55,19 +55,19 @@ export function PathsTab({ searchResults, onEntityClick }: PathsTabProps) {
                 key={i}
                 className="flex items-center gap-2 px-3 py-2 bg-card border border-border"
               >
-                <span className="font-mono text-[10px] text-foreground">{path.source}</span>
-                <span className="font-mono text-[8px] text-muted-foreground/30">({path.source_type})</span>
-                <span className={`font-mono text-[9px] tracking-wider ${getRelationColor(path.relation)}`}>
+                <span className="font-mono text-caption text-foreground">{path.source}</span>
+                <span className="font-mono text-micro text-muted-foreground/30">({path.source_type})</span>
+                <span className={`font-mono text-label tracking-wider ${getRelationColor(path.relation)}`}>
                   {path.relation}
                 </span>
-                <span className="font-mono text-[10px] text-foreground">{path.destination}</span>
-                <span className="font-mono text-[8px] text-muted-foreground/30">({path.destination_type})</span>
+                <span className="font-mono text-caption text-foreground">{path.destination}</span>
+                <span className="font-mono text-micro text-muted-foreground/30">({path.destination_type})</span>
               </div>
             ))}
           </div>
         </div>
       ) : (
-        <p className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+        <p className="font-mono text-caption text-muted-foreground/40 tracking-wider">
           NO_CONNECTIONS_FOUND
         </p>
       )}

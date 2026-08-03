@@ -18,7 +18,7 @@ export function GraphTabs({ tab, onTabChange }: GraphTabsProps) {
         <button
           key={t.key}
           onClick={() => onTabChange(t.key)}
-          className={`font-mono text-[9px] px-2.5 py-1.5 tracking-wider transition-colors ${
+          className={`font-mono text-label px-2.5 py-1.5 tracking-wider transition-colors ${
             tab === t.key
               ? "bg-primary/[0.08] text-primary border-b-2 border-primary"
               : "text-muted-foreground/50 hover:text-muted-foreground"

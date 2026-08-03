@@ -150,18 +150,18 @@ export default function Memory() {
   };
 
   return (
-    <div className="flex flex-col h-full pt-16">
+    <div className="flex flex-col h-full pt-hud">
       {/* Header */}
       <div className="px-5 py-2.5 border-b border-border bg-card/40">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
+            <span className="font-mono text-caption text-muted-foreground tracking-wider">
               MEMORY
             </span>
             {overview && (
               <>
                 <div className="w-px h-3 bg-border" />
-                <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
                   {overview.totalItems} ITEMS
                 </span>
               </>
@@ -170,13 +170,13 @@ export default function Memory() {
           <div className="flex items-center gap-3">
             <Link
               to="/memory/images"
-              className="inline-flex items-center gap-1.5 border border-foreground/[0.10] bg-foreground/[0.04] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.08]"
+              className="inline-flex items-center gap-1.5 border border-hairline bg-foreground/[0.04] px-2.5 py-1 font-mono text-label uppercase tracking-caps-3 text-muted-foreground/60 hover:text-foreground hover:bg-foreground/[0.08]"
             >
               <ImageIcon size="sm" />
               Images
             </Link>
             {overview?.currentFocus && (
-              <div className="font-mono text-[9px] text-muted-foreground/50">
+              <div className="font-mono text-label text-muted-foreground/50">
                 <span className="text-muted-foreground/30 tracking-wider mr-1.5">FOCUS:</span>
                 {overview.currentFocus}
               </div>
@@ -193,13 +193,13 @@ export default function Memory() {
                   if (!e.target.value.trim()) clearSearch();
                 }}
                 placeholder="Search..."
-                className="w-32 bg-input border border-border px-2 py-0.5 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/20 outline-none focus:border-primary/40 focus:w-44 transition-all"
+                className="w-32 bg-input border border-border px-2 py-0.5 font-mono text-caption text-foreground placeholder:text-muted-foreground/20 outline-none focus:border-primary/40 focus:w-44 transition-all"
               />
               {searchResults !== null && (
                 <button
                   type="button"
                   onClick={clearSearch}
-                  className="font-mono text-[9px] text-muted-foreground/30 hover:text-muted-foreground tracking-wider"
+                  className="font-mono text-label text-muted-foreground/30 hover:text-muted-foreground tracking-wider"
                 >
                   CLR
                 </button>
@@ -215,7 +215,7 @@ export default function Memory() {
           <button
             key={t.key}
             onClick={() => { setTab(t.key); setShowCreate(false); setEditingId(null); }}
-            className={`font-mono text-[9px] px-2.5 py-1.5 tracking-wider transition-colors ${
+            className={`font-mono text-label px-2.5 py-1.5 tracking-wider transition-colors ${
               tab === t.key
                 ? "bg-primary/[0.08] text-primary border-b-2 border-primary"
                 : "text-muted-foreground/50 hover:text-muted-foreground"
@@ -235,12 +235,12 @@ export default function Memory() {
         {searchResults !== null && (
           <div className="space-y-1 max-w-2xl mb-6">
             <div className="flex items-center justify-between mb-3">
-              <span className="font-mono text-[9px] text-muted-foreground/50 tracking-wider">
+              <span className="font-mono text-label text-muted-foreground/50 tracking-wider">
                 {searching ? "SEARCHING..." : `${searchResults.length} RESULT${searchResults.length !== 1 ? "S" : ""} // "${searchQuery}"`}
               </span>
               <button
                 onClick={clearSearch}
-                className="font-mono text-[9px] text-muted-foreground/30 hover:text-muted-foreground tracking-wider"
+                className="font-mono text-label text-muted-foreground/30 hover:text-muted-foreground tracking-wider"
               >
                 CLEAR
               </button>
@@ -254,27 +254,27 @@ export default function Memory() {
                   <p className="text-sm text-foreground leading-relaxed flex-1">
                     {r.content}
                   </p>
-                  <span className="font-mono text-[8px] px-1.5 py-0.5 bg-input border border-border tracking-wider text-muted-foreground/50">
+                  <span className="font-mono text-micro px-1.5 py-0.5 bg-input border border-border tracking-wider text-muted-foreground/50">
                     {r.type === "episode" ? "EPISODE" : r.category?.toUpperCase()}
                   </span>
                 </div>
               </div>
             ))}
             {searchResults.length === 0 && !searching && (
-              <p className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">NO MATCHES</p>
+              <p className="font-mono text-caption text-muted-foreground/40 tracking-wider">NO MATCHES</p>
             )}
           </div>
         )}
 
         {loading && (
-          <div className="font-mono text-[10px] text-muted-foreground/40 animate-pulse tracking-wider">LOADING...</div>
+          <div className="font-mono text-caption text-muted-foreground/40 animate-pulse tracking-wider">LOADING...</div>
         )}
 
         {/* Episodes */}
         {!loading && tab === "episodes" && (
           <div className="space-y-1 max-w-2xl">
             {episodes.length === 0 && (
-              <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+              <div className="font-mono text-caption text-muted-foreground/40 tracking-wider">
                 NO EPISODES YET. GENERATED AFTER 3+ TURNS.
               </div>
             )}
@@ -289,13 +289,13 @@ export default function Memory() {
                       {ep.summary}
                     </p>
                     <div className="flex items-center gap-3 mt-2">
-                      <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                      <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
                         {ep.date}{ep.time ? ` ${ep.time}` : ""}
                       </span>
                       {ep.emotionalArc && (
                         <>
                           <span className="text-border">|</span>
-                          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                          <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
                             {ep.emotionalArc}
                           </span>
                         </>
@@ -303,7 +303,7 @@ export default function Memory() {
                       {ep.turnCount != null && (
                         <>
                           <span className="text-border">|</span>
-                          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                          <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
                             {ep.turnCount}T
                           </span>
                         </>
@@ -314,7 +314,7 @@ export default function Memory() {
                         {ep.topics.map((topic) => (
                           <span
                             key={topic}
-                            className="font-mono text-[8px] px-1.5 py-0.5 bg-input border border-border tracking-wider text-muted-foreground/50"
+                            className="font-mono text-micro px-1.5 py-0.5 bg-input border border-border tracking-wider text-muted-foreground/50"
                           >
                             {topic.toUpperCase()}
                           </span>
@@ -344,7 +344,7 @@ export default function Memory() {
         {!loading && tab !== "episodes" && (
           <div className="space-y-1 max-w-2xl">
             {items.length === 0 && !showCreate && (
-              <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+              <div className="font-mono text-caption text-muted-foreground/40 tracking-wider">
                 NO {tab.toUpperCase()} YET. EXTRACTED FROM CONVERSATIONS OR ADD MANUALLY.
               </div>
             )}
@@ -370,13 +370,13 @@ export default function Memory() {
                     <div className="flex gap-2">
                       <button
                         onClick={() => saveEdit(item)}
-                        className="font-mono text-[9px] text-muted-foreground hover:text-foreground tracking-wider"
+                        className="font-mono text-label text-muted-foreground hover:text-foreground tracking-wider"
                       >
                         SAVE
                       </button>
                       <button
                         onClick={cancelEdit}
-                        className="font-mono text-[9px] text-muted-foreground hover:text-foreground tracking-wider"
+                        className="font-mono text-label text-muted-foreground hover:text-foreground tracking-wider"
                       >
                         CANCEL
                       </button>
@@ -389,17 +389,17 @@ export default function Memory() {
                         {item.content}
                       </p>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                        <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                           {IMPORTANCE_LABELS[item.importance] || ""}
                         </span>
                         <span className="text-border">|</span>
-                        <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                        <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                           {item.source?.toUpperCase()}
                         </span>
                         {item.createdAt && (
                           <>
                             <span className="text-border">|</span>
-                            <span className="font-mono text-[8px] text-muted-foreground/30">
+                            <span className="font-mono text-micro text-muted-foreground/30">
                               {new Date(item.createdAt).toLocaleDateString()}
                             </span>
                           </>
@@ -409,13 +409,13 @@ export default function Memory() {
                     <div className="shrink-0 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => startEdit(item)}
-                        className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground tracking-wider"
+                        className="font-mono text-label text-muted-foreground/40 hover:text-foreground tracking-wider"
                       >
                         EDIT
                       </button>
                       <button
                         onClick={() => deleteItem(item.id)}
-                        className="font-mono text-[9px] text-muted-foreground/40 hover:text-destructive tracking-wider"
+                        className="font-mono text-label text-muted-foreground/40 hover:text-destructive tracking-wider"
                       >
                         DEL
                       </button>
@@ -441,7 +441,7 @@ export default function Memory() {
                   autoFocus
                 />
                 <div className="flex items-center gap-3">
-                  <label className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                  <label className="font-mono text-label text-muted-foreground/40 tracking-wider">
                     IMP
                   </label>
                   <div className="flex gap-px">
@@ -449,7 +449,7 @@ export default function Memory() {
                       <button
                         key={n}
                         onClick={() => setNewImportance(n)}
-                        className={`w-5 h-5 font-mono text-[9px] border transition-colors ${
+                        className={`w-5 h-5 font-mono text-label border transition-colors ${
                           n === newImportance
                             ? "bg-primary/[0.08] text-primary border-primary/40"
                             : "bg-input text-muted-foreground/40 border-border hover:border-text-muted/30"
@@ -459,20 +459,20 @@ export default function Memory() {
                       </button>
                     ))}
                   </div>
-                  <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                  <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                     {IMPORTANCE_LABELS[newImportance]?.toUpperCase()}
                   </span>
                   <div className="ml-auto flex gap-2">
                     <button
                       onClick={() => { setShowCreate(false); setNewContent(""); }}
-                      className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground tracking-wider"
+                      className="font-mono text-label text-muted-foreground/40 hover:text-foreground tracking-wider"
                     >
                       CANCEL
                     </button>
                     <button
                       onClick={handleCreate}
                       disabled={!newContent.trim()}
-                      className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary tracking-wider disabled:opacity-20"
+                      className="font-mono text-label text-muted-foreground/40 hover:text-primary tracking-wider disabled:opacity-20"
                     >
                       ADD
                     </button>
@@ -482,7 +482,7 @@ export default function Memory() {
             ) : (
               <button
                 onClick={() => setShowCreate(true)}
-                className="w-full text-left font-mono text-[9px] text-muted-foreground/30 hover:text-muted-foreground/50 tracking-wider py-2 px-4 border border-dashed border-border hover:border-text-muted/20 transition-colors"
+                className="w-full text-left font-mono text-label text-muted-foreground/30 hover:text-muted-foreground/50 tracking-wider py-2 px-4 border border-dashed border-border hover:border-text-muted/20 transition-colors"
               >
                 + ADD {categoryForTab(tab).toUpperCase()}
               </button>

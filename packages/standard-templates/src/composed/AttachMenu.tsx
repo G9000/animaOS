@@ -36,7 +36,7 @@ export function AttachMenu({ onAttach }: AttachMenuProps) {
           "size-7 flex items-center justify-center border transition-colors duration-150",
           open
             ? "border-accent bg-accent text-accent-foreground"
-            : "border-foreground/[0.08] text-foreground/35 hover:border-foreground/[0.14] hover:text-foreground/65 hover:bg-foreground/[0.04]",
+            : "border-hairline text-foreground/35 hover:border-hairline-strong hover:text-foreground/65 hover:bg-foreground/[0.04]",
         )}
       >
         <PlusIcon size="sm" />
@@ -60,7 +60,7 @@ export function AttachMenu({ onAttach }: AttachMenuProps) {
                 )}
               >
                 <Icon size="sm" />
-                <span className="font-mono text-[8px] tracking-[0.16em] uppercase">
+                <span className="font-mono text-micro tracking-caps-3 uppercase">
                   {label}
                 </span>
               </button>

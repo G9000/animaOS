@@ -241,7 +241,7 @@ export function PromptInput({
 
             <div className="ml-auto flex items-center gap-3">
               {value.length > 0 && (
-                <span className="font-mono text-[10px] tabular-nums text-muted-foreground/35 select-none">
+                <span className="font-mono text-caption tabular-nums text-muted-foreground/35 select-none">
                   {value.length}
                 </span>
               )}
@@ -273,10 +273,10 @@ export function PromptInput({
           "flex flex-col",
           "rounded-2xl",
           "bg-background/25 backdrop-blur-[40px]",
-          "border border-foreground/[0.08]",
+          "border border-hairline",
           "shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)]",
           "transition-all duration-200",
-          "focus-within:border-foreground/[0.18]",
+          "focus-within:border-hairline-strong",
           disabled && "opacity-50",
         )}
       >
@@ -293,7 +293,7 @@ export function PromptInput({
                 <button
                   type="button"
                   onClick={img.onRemove}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/80 border border-foreground/[0.12] text-foreground/60 hover:text-foreground flex items-center justify-center text-[10px] leading-none"
+                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/80 border border-hairline text-foreground/60 hover:text-foreground flex items-center justify-center text-caption leading-none"
                 >
                   ×
                 </button>
@@ -310,21 +310,21 @@ export function PromptInput({
                 <div
                   key={doc.id}
                   title={doc.error ?? doc.filename}
-                  className="relative shrink-0 w-24 h-16 rounded-xl bg-foreground/[0.05] border border-foreground/[0.08] flex flex-col justify-between p-2 overflow-hidden"
+                  className="relative shrink-0 w-24 h-16 rounded-xl bg-foreground/[0.05] border border-hairline flex flex-col justify-between p-2 overflow-hidden"
                 >
                   <div className="flex items-center gap-1.5">
                     <DocumentIcon size="sm" className="text-foreground/35 shrink-0" />
-                    <span className={cn("font-mono text-[8px] tracking-[0.12em] uppercase leading-none", statusColor)}>
+                    <span className={cn("font-mono text-micro tracking-caps-2 uppercase leading-none", statusColor)}>
                       {statusLabel}
                     </span>
                   </div>
-                  <span className="text-[10px] text-foreground/55 truncate leading-tight w-full">
+                  <span className="text-caption text-foreground/55 truncate leading-tight w-full">
                     {doc.filename}
                   </span>
                   <button
                     type="button"
                     onClick={doc.onRemove}
-                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/80 border border-foreground/[0.12] text-foreground/60 hover:text-foreground flex items-center justify-center text-[10px] leading-none"
+                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/80 border border-hairline text-foreground/60 hover:text-foreground flex items-center justify-center text-caption leading-none"
                   >
                     ×
                   </button>
@@ -354,7 +354,7 @@ export function PromptInput({
 
           <div className="ml-auto flex items-center gap-1.5">
             {value.length > 0 && (
-              <span className="font-mono text-[9px] tabular-nums text-foreground/20 select-none mr-1">
+              <span className="font-mono text-label tabular-nums text-foreground/20 select-none mr-1">
                 {value.length}
               </span>
             )}
@@ -366,7 +366,7 @@ export function PromptInput({
                   "size-7 flex items-center justify-center border transition-all duration-150",
                   isListening
                     ? "border-accent bg-accent text-accent-foreground animate-pulse"
-                    : "border-foreground/[0.08] text-foreground/20 hover:text-foreground/60 hover:border-foreground/[0.14]",
+                    : "border-hairline text-foreground/20 hover:text-foreground/60 hover:border-hairline-strong",
                 )}
               >
                 <MicIcon size="sm" />
@@ -379,7 +379,7 @@ export function PromptInput({
                 "size-7 flex items-center justify-center transition-all duration-150 border",
                 hasContent && !disabled
                   ? "bg-accent border-accent text-accent-foreground hover:bg-accent/90"
-                  : "border-foreground/[0.08] text-foreground/20 cursor-not-allowed",
+                  : "border-hairline text-foreground/20 cursor-not-allowed",
               )}
             >
               <SendIcon size="sm" />

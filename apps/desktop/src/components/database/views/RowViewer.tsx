@@ -186,7 +186,7 @@ export function RowViewer({
             className="w-full bg-input border border-border rounded-none pl-7 pr-3 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40"
           />
           {rowFilter && (
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground/50">
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-caption text-muted-foreground/50">
               {filteredRows.length}
             </span>
           )}
@@ -206,7 +206,7 @@ export function RowViewer({
         </label>
 
         {editMode && (tableData?.primaryKeys?.length ?? 0) === 0 && (
-          <span className="text-[11px] text-muted-foreground/60 italic">No PK</span>
+          <span className="text-detail text-muted-foreground/60 italic">No PK</span>
         )}
 
         <div className="w-px h-6 bg-border" />
@@ -319,12 +319,12 @@ export function RowViewer({
                 className="p-2 bg-input rounded border border-border/50"
               >
                 <div
-                  className="text-[10px] text-muted-foreground truncate"
+                  className="text-caption text-muted-foreground truncate"
                   title={stat.name}
                 >
                   {stat.name}
                 </div>
-                <div className="text-[10px] mt-1 space-y-0.5">
+                <div className="text-caption mt-1 space-y-0.5">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground/60">Nulls:</span>
                     <span>{stat.nullCount}</span>
@@ -350,7 +350,7 @@ export function RowViewer({
       {tableData.rows.some((row) =>
         Object.values(row).some((v) => isEncryptedValue(v))
       ) && (
-        <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-none flex items-center gap-2 text-[11px] text-amber-500">
+        <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-none flex items-center gap-2 text-detail text-amber-500">
           <Icons.Warning />
           <span>
             Some fields are encrypted. The decryption key may not be available
@@ -489,7 +489,7 @@ function ListView({
   return (
     <div className="border border-border rounded-none overflow-hidden">
       <div className="overflow-auto max-h-[calc(100vh-400px)]" ref={containerRef}>
-        <table className="w-full text-[12px] font-mono">
+        <table className="w-full text-body font-mono">
           <thead className="sticky top-0 z-10">
             <tr className="bg-card border-b border-border">
               {showSelection && (
@@ -516,7 +516,7 @@ function ListView({
                   <div className="flex flex-col">
                     <span className="truncate">{col}</span>
                     {columnTypes[col] && (
-                      <span className="text-[9px] text-muted-foreground/40 font-normal">
+                      <span className="text-label text-muted-foreground/40 font-normal">
                         {columnTypes[col]}
                       </span>
                     )}
@@ -565,13 +565,13 @@ function ListView({
                           <div className="flex gap-1">
                             <button
                               onClick={() => onSaveEdit(row)}
-                              className="text-[10px] text-primary hover:underline"
+                              className="text-caption text-primary hover:underline"
                             >
                               Save
                             </button>
                             <button
                               onClick={onCancelEdit}
-                              className="text-[10px] text-muted-foreground hover:underline"
+                              className="text-caption text-muted-foreground hover:underline"
                             >
                               Cancel
                             </button>
@@ -683,7 +683,7 @@ function CardsView({
             >
               {/* Card Header */}
               <div className="flex items-center justify-between mb-2 pb-2 border-b border-border/50">
-                <span className="text-[10px] text-muted-foreground">Row {i + 1}</span>
+                <span className="text-caption text-muted-foreground">Row {i + 1}</span>
                 <div className="flex gap-1">
                   {editable && (
                     <>
@@ -691,13 +691,13 @@ function CardsView({
                         <>
                           <button
                             onClick={() => onSaveEdit(row)}
-                            className="text-[10px] px-2 py-0.5 bg-primary/20 text-primary rounded"
+                            className="text-caption px-2 py-0.5 bg-primary/20 text-primary rounded"
                           >
                             Save
                           </button>
                           <button
                             onClick={onCancelEdit}
-                            className="text-[10px] px-2 py-0.5 bg-input text-muted-foreground rounded"
+                            className="text-caption px-2 py-0.5 bg-input text-muted-foreground rounded"
                           >
                             Cancel
                           </button>
@@ -737,12 +737,12 @@ function CardsView({
                 {displayCols.map((col) => (
                   <div key={col} className="flex items-start gap-2">
                     <span
-                      className="text-[10px] text-muted-foreground/60 w-20 shrink-0 truncate"
+                      className="text-caption text-muted-foreground/60 w-20 shrink-0 truncate"
                       title={col}
                     >
                       {col}
                     </span>
-                    <div className="flex-1 min-w-0 text-[11px] truncate">
+                    <div className="flex-1 min-w-0 text-detail truncate">
                       {isEditing ? (
                         <input
                           type="text"
@@ -753,7 +753,7 @@ function CardsView({
                               [col]: e.target.value,
                             })
                           }
-                          className="w-full bg-input border border-border rounded px-1.5 py-0.5 text-[11px] outline-none"
+                          className="w-full bg-input border border-border rounded px-1.5 py-0.5 text-detail outline-none"
                         />
                       ) : (
                         <CellRenderer
@@ -775,7 +775,7 @@ function CardsView({
                   </div>
                 ))}
                 {remainingCols.length > 0 && (
-                  <div className="text-[10px] text-muted-foreground/40 pt-1">
+                  <div className="text-caption text-muted-foreground/40 pt-1">
                     +{remainingCols.length} more columns
                   </div>
                 )}
@@ -797,7 +797,7 @@ function CompactView({ columns, rows }: CompactViewProps) {
   return (
     <div className="border border-border rounded-none overflow-hidden">
       <div className="overflow-auto max-h-[calc(100vh-400px)]">
-        <table className="w-full text-[11px]">
+        <table className="w-full text-detail">
           <thead className="sticky top-0 bg-card border-b border-border">
             <tr>
               {columns.slice(0, 5).map((col) => (
@@ -838,7 +838,7 @@ function CompactView({ columns, rows }: CompactViewProps) {
 function CompactCell({ value }: { value: unknown }) {
   if (isEncryptedValue(value)) {
     return (
-      <span className="inline-flex items-center gap-1 text-[9px] px-1 rounded bg-amber-500/15 text-amber-500">
+      <span className="inline-flex items-center gap-1 text-label px-1 rounded bg-amber-500/15 text-amber-500">
         <Icons.Lock />
       </span>
     );

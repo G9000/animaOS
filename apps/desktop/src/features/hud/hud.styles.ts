@@ -1,8 +1,7 @@
-export const glass =
-  "relative flex items-center z-20 h-16 " +
-  "bg-background/20 backdrop-blur-[44px] " +
-  "border border-foreground/[0.08] " +
-  "shadow-[0_8px_32px_rgba(0,0,0,0.20)]";
+import { glass as glassSurface } from "@anima/standard-templates";
+
+/** The HUD bar: the shared glass surface plus the bar's own layout. */
+export const glass = `relative flex items-center z-20 h-hud ${glassSurface}`;
 
 export const CLIP_PATH = {
   cutBottomRight: "polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%)",

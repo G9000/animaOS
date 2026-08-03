@@ -55,7 +55,7 @@ function ThinkingAnimation({ thinkingMonologue }: { thinkingMonologue: string[] 
         ))}
       </div>
       <span
-        className="font-mono text-[10px] text-foreground/30 transition-opacity duration-300"
+        className="font-mono text-caption text-foreground/30 transition-opacity duration-300"
         style={{ opacity: visible ? 1 : 0 }}
       >
         {lines[idx % lines.length]}
@@ -79,7 +79,7 @@ export function StreamingView({
       {/* Live trace panel during streaming */}
       {showTrace && traceEvents.length > 0 && (
         <div className="animate-in fade-in duration-200 pt-2">
-          <div className="font-mono text-[8px] text-yellow-400/60 tracking-[0.2em] uppercase mb-2">
+          <div className="font-mono text-micro text-yellow-400/60 tracking-caps-4 uppercase mb-2">
             TRACE
           </div>
           <div className="bg-card/50 border-l-2 border-yellow-400/40 px-4 py-2.5">
@@ -91,11 +91,11 @@ export function StreamingView({
       {/* Reasoning indicator */}
       {reasoningBuffer && (
         <div className="animate-in fade-in duration-200 pt-2">
-          <div className="font-mono text-[8px] text-accent/50 tracking-[0.2em] uppercase mb-1.5">
+          <div className="font-mono text-micro text-accent/50 tracking-caps-4 uppercase mb-1.5">
             thinking
           </div>
           <div className="bg-primary/[0.06] border border-primary/15 px-4 py-3">
-            <div className="text-[12px] text-muted-foreground/70 whitespace-pre-wrap break-words leading-relaxed font-mono">
+            <div className="text-body text-muted-foreground/70 whitespace-pre-wrap break-words leading-relaxed font-mono">
               {reasoningBuffer}
               <span className="inline-block w-1.5 h-3 bg-primary/50 ml-0.5 animate-cursor" />
             </div>
@@ -120,7 +120,7 @@ export function StreamingView({
       {/* Waiting — thinking animation */}
       {!streamBuffer && !reasoningBuffer && (
         <div className="animate-in fade-in duration-200 pt-2">
-          <div className="w-fit bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] px-4 py-3">
+          <div className="w-fit bg-background/25 backdrop-blur-[40px] border border-hairline px-4 py-3">
             <ThinkingAnimation thinkingMonologue={thinkingMonologue} />
           </div>
         </div>

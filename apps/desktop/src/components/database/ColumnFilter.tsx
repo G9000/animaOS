@@ -80,7 +80,7 @@ export function ColumnFilterPanel({
         <Icons.Filter />
         Filter
         {activeFilters.length > 0 && (
-          <span className="ml-1 px-1.5 py-0.5 bg-primary/30 rounded-none text-[10px]">
+          <span className="ml-1 px-1.5 py-0.5 bg-primary/30 rounded-none text-caption">
             {activeFilters.length}
           </span>
         )}
@@ -91,11 +91,11 @@ export function ColumnFilterPanel({
           {/* Active Filters */}
           {activeFilters.length > 0 && (
             <div className="mb-3 space-y-1.5">
-              <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Active</div>
+              <div className="text-caption text-muted-foreground uppercase tracking-wide">Active</div>
               {activeFilters.map((filter, idx) => (
                 <div
                   key={idx}
-                  className="flex items-center justify-between px-2 py-1.5 bg-input rounded text-[11px]"
+                  className="flex items-center justify-between px-2 py-1.5 bg-input rounded text-detail"
                 >
                   <span className="truncate">
                     <span className="font-mono">{filter.column}</span>{" "}
@@ -112,7 +112,7 @@ export function ColumnFilterPanel({
               ))}
               <button
                 onClick={onClearFilters}
-                className="w-full mt-2 px-2 py-1 text-[10px] text-muted-foreground hover:text-destructive border border-dashed border-text-muted/30 rounded"
+                className="w-full mt-2 px-2 py-1 text-caption text-muted-foreground hover:text-destructive border border-dashed border-text-muted/30 rounded"
               >
                 Clear all filters
               </button>
@@ -121,7 +121,7 @@ export function ColumnFilterPanel({
 
           {/* Add New Filter */}
           <div className="space-y-2">
-            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Add Filter</div>
+            <div className="text-caption text-muted-foreground uppercase tracking-wide">Add Filter</div>
             
             <select
               value={selectedColumn}

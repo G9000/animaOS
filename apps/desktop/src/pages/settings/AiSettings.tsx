@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
 import type { AgentConfig, OllamaModelInfo, ProviderInfo } from "@anima/api-client";
 import { api } from "../../lib/api";
-import { cn, EyeIcon, EyeOffIcon } from "@anima/standard-templates";
+import { cn, liftX, EyeIcon, EyeOffIcon, glass } from "@anima/standard-templates";
 import { getProviderLogo } from "./_provider-logos";
 
 const OLLAMA_DEFAULT_URL = "http://localhost:11434";
@@ -61,8 +61,7 @@ const PROVIDER_KEY_HINTS: Record<string, string> = {
   doubleword: "Contact your Doubleword account for an API key.",
 };
 
-const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
-const INPUT = "w-full bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2.5 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-foreground/[0.18] transition-colors font-mono";
+const INPUT = "w-full bg-foreground/[0.04] border border-hairline px-3 py-2.5 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-hairline-strong transition-colors font-mono";
 
 export default function AiSettings() {
   const { user } = useAuth();
@@ -257,10 +256,10 @@ export default function AiSettings() {
 
       {/* ── Provider ── */}
       <div className={`${glass} overflow-visible`}>
-        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
-          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Inference Provider</h2>
+        <div className="px-5 pt-4 pb-3 border-b border-hairline flex items-center justify-between">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">Inference Provider</h2>
           <div className="flex items-center gap-2.5">
-            <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-foreground/40">
+            <span className="font-mono text-label tracking-caps-2 uppercase text-foreground/40">
               Cloud {cloudEnabled ? "on" : "off"}
             </span>
             <MiniToggle checked={cloudEnabled} onChange={(v) => { if (v) handleEnableCloud(); else handleDisableCloud(); }} />
@@ -288,10 +287,10 @@ export default function AiSettings() {
                 <path d="M8 7v3M8 11.5v.5" />
               </svg>
               <div className="space-y-1.5">
-                <p className="font-mono text-[10px] text-amber-300/80 tracking-[0.12em] uppercase font-semibold">
+                <p className="font-mono text-caption text-amber-300/80 tracking-caps-2 uppercase font-semibold">
                   Cloud provider active — {provider}
                 </p>
-                <p className="font-mono text-[9px] text-foreground/55 tracking-wide leading-relaxed">
+                <p className="font-mono text-label text-foreground/55 tracking-wide leading-relaxed">
                   Your messages are processed by {provider}'s servers.{" "}
                   {EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider)
                     ? "Everything else — your memories, vault, diary, and personal data — never leaves this device and remains fully encrypted."
@@ -300,7 +299,7 @@ export default function AiSettings() {
               </div>
             </div>
           ) : !cloudEnabled && (
-            <p className="font-mono text-[9px] text-foreground/30 tracking-wide mt-3 leading-relaxed">
+            <p className="font-mono text-label text-foreground/30 tracking-wide mt-3 leading-relaxed">
               Enable cloud to unlock hosted models. Only messages are sent — memories stay encrypted on-device.
             </p>
           )}
@@ -309,10 +308,10 @@ export default function AiSettings() {
 
       {/* ── Embeddings ── */}
       <div className={`${glass}`}>
-        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
-          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Embeddings</h2>
+        <div className="px-5 pt-4 pb-3 border-b border-hairline flex items-center justify-between">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">Embeddings</h2>
           <div className="flex items-center gap-2.5">
-            <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-foreground/40">
+            <span className="font-mono text-label tracking-caps-2 uppercase text-foreground/40">
               Advanced {embeddingAdvanced ? "on" : "off"}
             </span>
             <MiniToggle checked={embeddingAdvanced} onChange={(v) => { setEmbeddingAdvanced(v); setSaved(false); if (!v) { setEmbeddingApiKey(""); setReplacingEmbeddingKey(false); } }} />
@@ -321,13 +320,13 @@ export default function AiSettings() {
 
         <div className="p-4 space-y-3">
           {!embeddingAdvanced ? (
-            <p className="font-mono text-[9px] text-foreground/40 tracking-wide leading-relaxed">
+            <p className="font-mono text-label text-foreground/40 tracking-wide leading-relaxed">
               Built-in (recommended) — {BUNDLED_EMBEDDING_MODEL}, runs on this device.
             </p>
           ) : (
             <>
               <div className="space-y-2">
-                <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Provider</label>
+                <label className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">Provider</label>
                 <select
                   value={embeddingProvider}
                   onChange={(e) => {
@@ -345,7 +344,7 @@ export default function AiSettings() {
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Model</label>
+                <label className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">Model</label>
                 <input
                   type="text"
                   value={embeddingModel}
@@ -353,7 +352,7 @@ export default function AiSettings() {
                   className={INPUT}
                   placeholder={EMBEDDING_DEFAULT_MODELS[embeddingProvider] || "Embedding model identifier..."}
                 />
-                <p className="font-mono text-[8px] text-foreground/20 leading-relaxed">
+                <p className="font-mono text-micro text-foreground/20 leading-relaxed">
                   Changing the provider or model re-checks the embedding contract; existing memories are re-embedded automatically.
                 </p>
               </div>
@@ -364,10 +363,10 @@ export default function AiSettings() {
                     <path d="M8 7v3M8 11.5v.5" />
                   </svg>
                   <div className="space-y-1.5">
-                    <p className="font-mono text-[10px] text-amber-300/80 tracking-[0.12em] uppercase font-semibold">
+                    <p className="font-mono text-caption text-amber-300/80 tracking-caps-2 uppercase font-semibold">
                       Cloud embedding provider active — {embeddingProvider}
                     </p>
-                    <p className="font-mono text-[9px] text-foreground/55 tracking-wide leading-relaxed">
+                    <p className="font-mono text-label text-foreground/55 tracking-wide leading-relaxed">
                       Unlike chat, this sends more than messages: the text of your memories and document chunks is transmitted to {embeddingProvider}'s servers to be embedded. This overrides the "memories stay encrypted on-device" guarantee shown above for anything that gets embedded with this provider.
                     </p>
                   </div>
@@ -375,17 +374,17 @@ export default function AiSettings() {
               )}
               {!EMBEDDING_LOCAL_PROVIDERS.has(embeddingProvider) && (
                 <div className="space-y-2">
-                  <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">API Key</label>
+                  <label className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">API Key</label>
                   {embeddingProviderHasKey && !replacingEmbeddingKey ? (
-                    <div className="flex items-center justify-between border border-foreground/[0.08] px-4 py-3">
-                      <span className="font-mono text-[10px] text-foreground/40 tracking-wide">sk-·····················</span>
+                    <div className="flex items-center justify-between border border-hairline px-4 py-3">
+                      <span className="font-mono text-caption text-foreground/40 tracking-wide">sk-·····················</span>
                       <div className="flex items-center gap-3">
                         <button type="button" onClick={() => setReplacingEmbeddingKey(true)}
-                          className="font-mono text-[8px] tracking-[0.16em] uppercase text-foreground/40 hover:text-foreground/70 transition-colors">
+                          className="font-mono text-micro tracking-caps-3 uppercase text-foreground/40 hover:text-foreground/70 transition-colors">
                           Change
                         </button>
                         <button type="button" onClick={handleRemoveEmbeddingKey} disabled={saving}
-                          className="font-mono text-[8px] tracking-[0.16em] uppercase text-destructive/50 hover:text-destructive/80 disabled:opacity-30 transition-colors">
+                          className="font-mono text-micro tracking-caps-3 uppercase text-destructive/50 hover:text-destructive/80 disabled:opacity-30 transition-colors">
                           Remove
                         </button>
                       </div>
@@ -412,7 +411,7 @@ export default function AiSettings() {
                       </div>
                       {replacingEmbeddingKey && (
                         <button type="button" onClick={() => { setReplacingEmbeddingKey(false); setEmbeddingApiKey(""); }}
-                          className="font-mono text-[8px] tracking-[0.14em] uppercase text-foreground/30 hover:text-foreground/60 transition-colors">
+                          className="font-mono text-micro tracking-caps-2 uppercase text-foreground/30 hover:text-foreground/60 transition-colors">
                           Cancel
                         </button>
                       )}
@@ -427,12 +426,12 @@ export default function AiSettings() {
 
       {/* ── Model — full width, 3-zone ── */}
       <div className={`${glass}`}>
-        <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.08] flex items-center justify-between">
-          <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40">Model</h2>
+        <div className="px-5 pt-4 pb-3 border-b border-hairline flex items-center justify-between">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">Model</h2>
           {provider === "ollama" && (
             <button
               onClick={() => void loadOllamaModels(ollamaUrl || OLLAMA_DEFAULT_URL)}
-              className="flex items-center gap-1.5 font-mono text-[8px] tracking-wider uppercase text-foreground/30 hover:text-foreground/60 transition-colors"
+              className="flex items-center gap-1.5 font-mono text-micro tracking-wider uppercase text-foreground/30 hover:text-foreground/60 transition-colors"
             >
               {ollamaModelsLoading ? "Loading..." : `${ollamaModels.length} installed · Refresh`}
             </button>
@@ -440,7 +439,7 @@ export default function AiSettings() {
         </div>
 
         <div className="flex flex-col">
-          <div className="px-4 py-2 border-b border-foreground/[0.04] flex items-center gap-2">
+          <div className="px-4 py-2 border-b border-hairline-faint flex items-center gap-2">
             <svg className="shrink-0 text-foreground/20" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="6.5" cy="6.5" r="4.5" /><path d="M11 11l3 3" />
             </svg>
@@ -449,10 +448,10 @@ export default function AiSettings() {
               value={modelSearch}
               onChange={(e) => setModelSearch(e.target.value)}
               placeholder={provider === "ollama" ? "Filter installed..." : "Filter models..."}
-              className="flex-1 bg-transparent font-mono text-[9px] text-foreground/70 placeholder:text-foreground/20 outline-none"
+              className="flex-1 bg-transparent font-mono text-label text-foreground/70 placeholder:text-foreground/20 outline-none"
             />
             {modelSearch && (
-              <button onClick={() => setModelSearch("")} className="font-mono text-[8px] text-foreground/20 hover:text-foreground/50 transition-colors">✕</button>
+              <button onClick={() => setModelSearch("")} className="font-mono text-micro text-foreground/20 hover:text-foreground/50 transition-colors">✕</button>
             )}
           </div>
           <div className="overflow-y-auto max-h-[11rem]">
@@ -467,7 +466,7 @@ export default function AiSettings() {
               />
             ) : (
               <div className="px-4 py-5 space-y-1.5">
-                <p className="font-mono text-[8px] text-foreground/25 mb-2">No suggestions — enter a model identifier manually.</p>
+                <p className="font-mono text-micro text-foreground/25 mb-2">No suggestions — enter a model identifier manually.</p>
                 <input
                   type="text"
                   value={model}
@@ -478,7 +477,7 @@ export default function AiSettings() {
               </div>
             )}
             {ollamaModelsError && (
-              <p className="px-4 py-2 font-mono text-[9px] text-destructive/70">{ollamaModelsError}</p>
+              <p className="px-4 py-2 font-mono text-label text-destructive/70">{ollamaModelsError}</p>
             )}
           </div>
         </div>
@@ -487,9 +486,9 @@ export default function AiSettings() {
       {/* ── Connection / BYOK ── */}
       {(requiresKey || provider === "ollama") && (
         <div className={`${glass}`}>
-            <div className="px-5 pt-4 pb-3 border-b border-foreground/[0.05] flex items-center gap-2.5">
+            <div className="px-5 pt-4 pb-3 border-b border-hairline-faint flex items-center gap-2.5">
               <span className="text-foreground/35 shrink-0">{getProviderLogo(provider)}</span>
-              <h2 className="font-mono text-[9px] tracking-[0.26em] uppercase text-foreground/40 flex-1">
+              <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40 flex-1">
                 {requiresKey ? "API Key" : "Endpoint"}
               </h2>
             </div>
@@ -499,17 +498,17 @@ export default function AiSettings() {
                 <>
                   {providerHasKey && !replacingKey ? (
                     /* ── Saved state ── */
-                    <div className="flex items-center justify-between border border-foreground/[0.08] px-4 py-3">
-                      <span className="font-mono text-[10px] text-foreground/40 tracking-wide">
+                    <div className="flex items-center justify-between border border-hairline px-4 py-3">
+                      <span className="font-mono text-caption text-foreground/40 tracking-wide">
                         {(() => { const hint = getKeyHint(provider); return hint ? `sk-···············${hint}` : `sk-·····················`; })()}
                       </span>
                       <div className="flex items-center gap-3">
                         <button type="button" onClick={() => setReplacingKey(true)}
-                          className="font-mono text-[8px] tracking-[0.16em] uppercase text-foreground/40 hover:text-foreground/70 transition-colors">
+                          className="font-mono text-micro tracking-caps-3 uppercase text-foreground/40 hover:text-foreground/70 transition-colors">
                           Change
                         </button>
                         <button type="button" onClick={handleRemoveKey} disabled={saving}
-                          className="font-mono text-[8px] tracking-[0.16em] uppercase text-destructive/50 hover:text-destructive/80 disabled:opacity-30 transition-colors">
+                          className="font-mono text-micro tracking-caps-3 uppercase text-destructive/50 hover:text-destructive/80 disabled:opacity-30 transition-colors">
                           Remove
                         </button>
                       </div>
@@ -537,11 +536,11 @@ export default function AiSettings() {
                       </div>
                       {replacingKey ? (
                         <button type="button" onClick={() => { setReplacingKey(false); setApiKey(""); }}
-                          className="font-mono text-[8px] tracking-[0.14em] uppercase text-foreground/30 hover:text-foreground/60 transition-colors">
+                          className="font-mono text-micro tracking-caps-2 uppercase text-foreground/30 hover:text-foreground/60 transition-colors">
                           Cancel
                         </button>
                       ) : PROVIDER_KEY_HINTS[provider] && (
-                        <p className="font-mono text-[8px] text-foreground/30 leading-relaxed">
+                        <p className="font-mono text-micro text-foreground/30 leading-relaxed">
                           Get your key at <span className="text-foreground/50">{PROVIDER_KEY_HINTS[provider]}</span>
                         </p>
                       )}
@@ -552,7 +551,7 @@ export default function AiSettings() {
 
               {provider === "ollama" && (
                 <div className="space-y-2">
-                  <label className="font-mono text-[8px] tracking-[0.22em] uppercase text-foreground/30">Base URL</label>
+                  <label className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">Base URL</label>
                   <input
                     type="text"
                     value={ollamaUrl}
@@ -560,7 +559,7 @@ export default function AiSettings() {
                     className={INPUT}
                     placeholder={OLLAMA_DEFAULT_URL}
                   />
-                  <p className="font-mono text-[8px] text-foreground/20 leading-relaxed">
+                  <p className="font-mono text-micro text-foreground/20 leading-relaxed">
                     Defaults to localhost. Change if Ollama runs on a remote machine.
                   </p>
                 </div>
@@ -572,13 +571,13 @@ export default function AiSettings() {
       {/* ── Save ── */}
       <div className={`${glass} px-5 py-3 flex items-center justify-between`}>
         <div>
-          {saved && <span className="font-mono text-[9px] text-accent tracking-[0.18em] uppercase">✓ Saved</span>}
-          {error && <span className="font-mono text-[9px] text-destructive/70 tracking-wide">{error}</span>}
+          {saved && <span className="font-mono text-label text-accent tracking-caps-3 uppercase">✓ Saved</span>}
+          {error && <span className="font-mono text-label text-destructive/70 tracking-wide">{error}</span>}
         </div>
         <button
           onClick={handleSave}
           disabled={saving}
-          className="font-mono text-[9px] tracking-[0.2em] uppercase px-6 py-2.5 bg-accent text-background font-semibold hover:opacity-90 disabled:opacity-30 transition-all"
+          className="font-mono text-label tracking-caps-4 uppercase px-6 py-2.5 bg-accent text-background font-semibold hover:opacity-90 disabled:opacity-30 transition-all"
         >
           {saving ? "Saving..." : "Save Settings"}
         </button>
@@ -595,7 +594,7 @@ function MiniToggle({ checked, onChange }: { checked: boolean; onChange: (v: boo
       onClick={() => onChange(!checked)}
       className={cn(
         "relative inline-flex h-5 w-9 shrink-0 cursor-pointer border transition-all duration-200",
-        checked ? "border-accent/50 bg-accent/[0.12]" : "border-foreground/[0.15] bg-foreground/[0.04]",
+        checked ? "border-accent/50 bg-accent/[0.12]" : "border-hairline-strong bg-foreground/[0.04]",
       )}
     >
       <span className={cn(
@@ -618,12 +617,12 @@ function ModelList({ provider, ollamaModels, suggestions, search, activeModel, o
   const logo = getProviderLogo(provider);
   if (provider === "ollama") {
     const filtered = ollamaModels.filter((m) => m.name.toLowerCase().includes(q));
-    if (filtered.length === 0) return <p className="px-4 py-4 font-mono text-[8px] text-foreground/25">No models match "{search}"</p>;
+    if (filtered.length === 0) return <p className="px-4 py-4 font-mono text-micro text-foreground/25">No models match "{search}"</p>;
     const sorted = [...filtered].sort((a, b) => (b.name === activeModel ? 1 : 0) - (a.name === activeModel ? 1 : 0));
     return <>{sorted.map((m) => <ModelRow key={m.name} name={m.name} size={m.size ?? undefined} logo={logo} active={activeModel === m.name} onClick={() => onSelect(m.name)} />)}</>;
   }
   const filtered = suggestions.filter((s) => s.toLowerCase().includes(q));
-  if (filtered.length === 0) return <p className="px-4 py-4 font-mono text-[8px] text-foreground/25">No models match "{search}"</p>;
+  if (filtered.length === 0) return <p className="px-4 py-4 font-mono text-micro text-foreground/25">No models match "{search}"</p>;
   const sorted = [...filtered].sort((a, b) => (b === activeModel ? 1 : 0) - (a === activeModel ? 1 : 0));
   return <>{sorted.map((s) => <ModelRow key={s} name={s} logo={logo} active={activeModel === s} onClick={() => onSelect(s)} />)}</>;
 }
@@ -642,7 +641,7 @@ function ModelRow({ name, size, logo, active, onClick }: { name: string; size?: 
         "group w-full flex items-center gap-2.5 pl-3 pr-3 py-2.5 text-left transition-all duration-150 border-l-[3px]",
         active
           ? "bg-accent border-accent-dark"
-          : "border-transparent hover:bg-foreground/[0.05] hover:border-foreground/[0.15]",
+          : "border-transparent hover:bg-foreground/[0.05] hover:border-hairline-strong",
       )}
     >
       {logo && (
@@ -654,14 +653,14 @@ function ModelRow({ name, size, logo, active, onClick }: { name: string; size?: 
         </span>
       )}
       <span className={cn(
-        "font-mono text-[9px] tracking-wide truncate flex-1 transition-colors",
+        "font-mono text-label tracking-wide truncate flex-1 transition-colors",
         active ? "text-background font-semibold" : "text-foreground/55 group-hover:text-foreground/85",
       )}>
         {name}
       </span>
       {size != null && (
         <span className={cn(
-          "font-mono text-[8px] shrink-0 tabular-nums",
+          "font-mono text-micro shrink-0 tabular-nums",
           active ? "text-background/55" : "text-foreground/20",
         )}>
           {formatModelSize(size)}
@@ -678,34 +677,30 @@ function ProviderCard({ name, badge, active, disabled, onClick }: { name: string
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "relative flex flex-col items-center justify-center gap-2 py-3.5 px-2 border transition-all duration-150 overflow-visible",
+        disabled ? "" : liftX,
+        "relative flex flex-col items-center justify-center gap-2 py-3.5 px-2 border transition-colors duration-150 overflow-visible",
         active
           ? "bg-accent border-accent z-10"
           : disabled
-          ? "border-foreground/[0.05] text-foreground/20 cursor-not-allowed"
-          : "border-foreground/[0.08] hover:border-foreground/[0.2] hover:bg-foreground/[0.04]",
+          ? "border-hairline-faint text-foreground/20 cursor-not-allowed"
+          : "border-hairline hover:border-hairline-strong hover:bg-foreground/[0.04]",
       )}
-      style={active ? {
-        transform: "translateX(6px)",
-        boxShadow: "-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 55%, transparent)",
-      } : undefined}
-      onMouseEnter={(e) => { if (!active && !disabled) { const el = e.currentTarget; el.style.transform = "translateX(3px)"; el.style.boxShadow = "-2px 2px 0 rgba(0,0,0,0.25), -3px 3px 0 rgba(0,0,0,0.12)"; } }}
-      onMouseLeave={(e) => { if (!active && !disabled) { const el = e.currentTarget; el.style.transform = ""; el.style.boxShadow = ""; } }}
+      data-lifted={active || undefined}
     >
       <span className={cn("transition-colors", active ? "text-background" : disabled ? "text-foreground/20" : "text-foreground/50")}>
         {logo}
       </span>
       <span className={cn(
-        "font-mono text-[10px] tracking-[0.1em] uppercase leading-none font-medium",
+        "font-mono text-caption tracking-caps-1 uppercase leading-none font-medium",
         active ? "text-background" : disabled ? "text-foreground/20" : "text-foreground/65",
       )}>
         {name}
       </span>
       <span className={cn(
-        "font-mono text-[7px] tracking-[0.2em] uppercase px-1.5 py-0.5 border leading-none",
+        "font-mono text-nano tracking-caps-4 uppercase px-1.5 py-0.5 border leading-none",
         active
           ? "border-background/30 text-background/60"
-          : "border-foreground/[0.08] text-foreground/25",
+          : "border-hairline text-foreground/25",
       )}>
         {badge}
       </span>

@@ -1,4 +1,14 @@
 export { cn } from "./utils/cn";
+export {
+  glass,
+  glassPanel,
+  glassRaised,
+  lift,
+  liftDownRight,
+  liftUpRight,
+  liftX,
+  liftXAccent,
+} from "./styles";
 
 // ── Primitives ─────────────────────────────────────────────────────────────
 export { Alert, type AlertProps, type AlertVariant } from "./primitives/Alert";

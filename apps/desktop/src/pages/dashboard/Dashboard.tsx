@@ -862,7 +862,7 @@ export default function Dashboard() {
               className="max-h-[75vh] max-w-full object-contain rounded shadow-2xl"
             />
             {galleryLightbox.images[galleryLightbox.index].caption && (
-              <p className="font-mono text-[10px] tracking-wider text-muted-foreground/60 text-center">
+              <p className="font-mono text-caption tracking-wider text-muted-foreground/60 text-center">
                 {galleryLightbox.images[galleryLightbox.index].caption}
               </p>
             )}
@@ -885,7 +885,7 @@ export default function Dashboard() {
               >
                 ←
               </button>
-              <span className="font-mono text-[9px] tracking-wider text-muted-foreground/40">
+              <span className="font-mono text-label tracking-wider text-muted-foreground/40">
                 {galleryLightbox.index + 1} / {galleryLightbox.images.length}
               </span>
               <button
@@ -936,7 +936,7 @@ export default function Dashboard() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold">{agentName}</div>
-                <div className="font-mono text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+                <div className="font-mono text-label tracking-wider text-muted-foreground/40 uppercase">
                   {new Date(selectedEpisode.date).toLocaleDateString(undefined, {
                     month: "long",
                     day: "numeric",
@@ -951,7 +951,7 @@ export default function Dashboard() {
                 {[1, 2, 3, 4, 5].map((n) => (
                   <span
                     key={n}
-                    className={`text-[10px] leading-none ${
+                    className={`text-caption leading-none ${
                       n <= selectedEpisode.significanceScore
                         ? "text-accent/70"
                         : "text-border"
@@ -970,7 +970,7 @@ export default function Dashboard() {
             </div>
             <div className="p-4 space-y-3">
               {selectedEpisode.emotionalArc && (
-                <p className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/40">
+                <p className="font-mono text-label tracking-caps-3 uppercase text-muted-foreground/40">
                   {selectedEpisode.emotionalArc}
                 </p>
               )}

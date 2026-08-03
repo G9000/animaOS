@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { getTranslateLang, setTranslateLang, LANGUAGES } from "../../lib/preferences";
+import { glass } from "@anima/standard-templates";
 
-const glass =
-  "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
 
 /** Native-script representation shown alongside the Latin label */
 const NATIVE: Record<string, string> = {
@@ -48,7 +47,7 @@ export default function LanguageSettings() {
 
       {/* Header */}
       <div className={`${glass} px-6 py-5`}>
-        <p className="font-mono text-[9px] tracking-[0.32em] uppercase text-foreground/30 mb-3">
+        <p className="font-mono text-label tracking-caps-5 uppercase text-foreground/30 mb-3">
           Translation Language
         </p>
         <div className="flex items-end justify-between gap-4">
@@ -56,7 +55,7 @@ export default function LanguageSettings() {
             <p className="font-mono text-[22px] tracking-tight text-foreground/90 leading-none">
               {NATIVE[currentLang] ?? selected?.label}
             </p>
-            <p className="font-mono text-[10px] tracking-[0.18em] text-foreground/30 mt-1.5 uppercase">
+            <p className="font-mono text-caption tracking-caps-3 text-foreground/30 mt-1.5 uppercase">
               {selected?.label} · {currentLang.toUpperCase()}
             </p>
           </div>
@@ -67,8 +66,8 @@ export default function LanguageSettings() {
       {/* Search + grid */}
       <div className={`${glass} px-6 py-5 space-y-4`}>
         {/* Filter input */}
-        <div className="flex items-center gap-3 border-b border-foreground/[0.08] pb-4">
-          <span className="font-mono text-[10px] text-foreground/20 shrink-0 tracking-widest">
+        <div className="flex items-center gap-3 border-b border-hairline pb-4">
+          <span className="font-mono text-caption text-foreground/20 shrink-0 tracking-widest">
             ⌕
           </span>
           <input
@@ -76,12 +75,12 @@ export default function LanguageSettings() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="search languages…"
-            className="flex-1 bg-transparent font-mono text-[10px] tracking-[0.14em] text-foreground/70 placeholder:text-foreground/20 focus:outline-none"
+            className="flex-1 bg-transparent font-mono text-caption tracking-caps-2 text-foreground/70 placeholder:text-foreground/20 focus:outline-none"
           />
           {query && (
             <button
               onClick={() => setQuery("")}
-              className="font-mono text-[10px] text-foreground/20 hover:text-foreground/50 transition-colors"
+              className="font-mono text-caption text-foreground/20 hover:text-foreground/50 transition-colors"
             >
               ×
             </button>
@@ -90,7 +89,7 @@ export default function LanguageSettings() {
 
         {/* Language grid */}
         {filtered.length === 0 ? (
-          <p className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/20 text-center py-4">
+          <p className="font-mono text-label tracking-caps-3 uppercase text-foreground/20 text-center py-4">
             No match
           </p>
         ) : (
@@ -105,7 +104,7 @@ export default function LanguageSettings() {
                     "group relative flex flex-col gap-0.5 px-3 py-2.5 text-left border transition-all duration-150",
                     isSelected
                       ? "border-accent/40 bg-accent/[0.07]"
-                      : "border-foreground/[0.06] hover:border-foreground/[0.12] hover:bg-foreground/[0.04]",
+                      : "border-hairline-faint hover:border-hairline hover:bg-foreground/[0.04]",
                   ].join(" ")}
                 >
                   {/* Active bar */}
@@ -115,7 +114,7 @@ export default function LanguageSettings() {
 
                   <span
                     className={[
-                      "font-mono text-[11px] tracking-[0.06em] leading-tight transition-colors",
+                      "font-mono text-detail tracking-caps-1 leading-tight transition-colors",
                       isSelected
                         ? "text-foreground/90"
                         : "text-foreground/40 group-hover:text-foreground/65",
@@ -125,7 +124,7 @@ export default function LanguageSettings() {
                   </span>
                   <span
                     className={[
-                      "font-mono text-[8px] tracking-[0.22em] uppercase transition-colors",
+                      "font-mono text-micro tracking-caps-4 uppercase transition-colors",
                       isSelected
                         ? "text-accent/60"
                         : "text-foreground/20 group-hover:text-foreground/35",
@@ -141,7 +140,7 @@ export default function LanguageSettings() {
       </div>
 
       {/* Footer note */}
-      <p className="font-mono text-[9px] tracking-[0.2em] uppercase text-foreground/15 px-1">
+      <p className="font-mono text-label tracking-caps-4 uppercase text-foreground/15 px-1">
         Used when translating messages in chat
       </p>
     </div>
