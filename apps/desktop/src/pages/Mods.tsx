@@ -86,7 +86,7 @@ export default function Mods() {
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
-        <span className="font-mono text-[10px] text-muted-foreground/40 tracking-widest">
+        <span className="font-mono text-caption text-muted-foreground/40 tracking-widest">
           LOADING MODULES...
         </span>
       </div>
@@ -96,15 +96,15 @@ export default function Mods() {
   if (error) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3">
-        <span className="font-mono text-[10px] text-destructive tracking-wider">
+        <span className="font-mono text-caption text-destructive tracking-wider">
           ANIMA-MOD NOT RUNNING
         </span>
-        <span className="font-mono text-[8px] text-muted-foreground/40">
+        <span className="font-mono text-micro text-muted-foreground/40">
           {error}
         </span>
         <button
           onClick={refresh}
-          className="font-mono text-[9px] text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors"
+          className="font-mono text-label text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors"
         >
           RETRY
         </button>
@@ -113,23 +113,23 @@ export default function Mods() {
   }
 
   return (
-    <div className="h-full overflow-auto pt-16 p-6">
+    <div className="h-full overflow-auto pt-hud p-6">
       <div className="max-w-5xl mx-auto">
         <div className="flex flex-col gap-4 mb-6">
           <div className="flex items-center gap-3">
-            <h1 className="font-mono text-[11px] tracking-widest text-muted-foreground/60">
+            <h1 className="font-mono text-detail tracking-widest text-muted-foreground/60">
               MODULES
             </h1>
             <button
               onClick={() => void refresh()}
-              className="font-mono text-[8px] text-muted-foreground/40 border border-border px-2 py-1 hover:text-foreground hover:border-text-muted/30 transition-colors ml-auto"
+              className="font-mono text-micro text-muted-foreground/40 border border-border px-2 py-1 hover:text-foreground hover:border-text-muted/30 transition-colors ml-auto"
               title="Refresh modules"
             >
               REFRESH
             </button>
             <button
               onClick={() => setShowInstall(true)}
-              className="font-mono text-[8px] text-primary border border-primary/30 px-2 py-1 hover:bg-primary/10 transition-colors"
+              className="font-mono text-micro text-primary border border-primary/30 px-2 py-1 hover:bg-primary/10 transition-colors"
             >
               ADD
             </button>
@@ -141,14 +141,14 @@ export default function Mods() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="search modules"
-              className="bg-input border border-border px-3 py-2 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none sm:w-64"
+              className="bg-input border border-border px-3 py-2 font-mono text-caption text-foreground focus:border-primary/50 outline-none sm:w-64"
             />
             <div className="flex flex-wrap gap-1">
               {STATUS_FILTERS.map((status) => (
                 <button
                   key={status}
                   onClick={() => setStatusFilter(status)}
-                  className={`font-mono text-[8px] tracking-widest border px-2 py-1 transition-colors ${
+                  className={`font-mono text-micro tracking-widest border px-2 py-1 transition-colors ${
                     statusFilter === status
                       ? "border-primary text-primary"
                       : "border-border text-muted-foreground/40 hover:text-foreground"
@@ -184,13 +184,13 @@ export default function Mods() {
             onClick={() => setShowInstall(true)}
             className="border border-dashed border-border p-4 flex items-center justify-center text-muted-foreground/30 hover:text-muted-foreground/60 hover:border-text-muted/30 transition-colors min-h-[88px]"
           >
-            <span className="font-mono text-[10px] tracking-wider">+ ADD MODULE</span>
+            <span className="font-mono text-caption tracking-wider">+ ADD MODULE</span>
           </button>
         </div>
 
         {filteredMods.length === 0 && (
           <div className="border border-border mt-4 p-6 text-center">
-            <span className="font-mono text-[9px] text-muted-foreground/40 tracking-widest">
+            <span className="font-mono text-label text-muted-foreground/40 tracking-widest">
               NO MODULES MATCH
             </span>
           </div>
@@ -200,33 +200,33 @@ export default function Mods() {
         {showInstall && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowInstall(false)}>
             <div className="bg-card border border-border p-6 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-              <h2 className="font-mono text-[10px] tracking-widest text-muted-foreground/60 mb-4">INSTALL MODULE</h2>
+              <h2 className="font-mono text-caption tracking-widest text-muted-foreground/60 mb-4">INSTALL MODULE</h2>
               <input
                 type="text"
                 placeholder="github:user/repo"
                 value={installSource}
                 onChange={(e) => setInstallSource(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleInstall()}
-                className="w-full bg-input border border-border px-3 py-2 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none mb-3"
+                className="w-full bg-input border border-border px-3 py-2 font-mono text-caption text-foreground focus:border-primary/50 outline-none mb-3"
                 autoFocus
               />
-              <p className="font-mono text-[8px] text-muted-foreground/30 mb-4">
+              <p className="font-mono text-micro text-muted-foreground/30 mb-4">
                 Install a module from a GitHub repository. Example: github:username/anima-mod-example
               </p>
               {installError && (
-                <p className="font-mono text-[8px] text-destructive mb-3">{installError}</p>
+                <p className="font-mono text-micro text-destructive mb-3">{installError}</p>
               )}
               <div className="flex gap-2 justify-end">
                 <button
                   onClick={() => setShowInstall(false)}
-                  className="font-mono text-[9px] text-muted-foreground/40 px-3 py-1 hover:text-foreground transition-colors"
+                  className="font-mono text-label text-muted-foreground/40 px-3 py-1 hover:text-foreground transition-colors"
                 >
                   CANCEL
                 </button>
                 <button
                   onClick={handleInstall}
                   disabled={installing || !installSource.trim()}
-                  className="font-mono text-[9px] text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors disabled:opacity-40"
+                  className="font-mono text-label text-primary border border-primary/30 px-3 py-1 hover:bg-primary/10 transition-colors disabled:opacity-40"
                 >
                   {installing ? "INSTALLING..." : "INSTALL"}
                 </button>

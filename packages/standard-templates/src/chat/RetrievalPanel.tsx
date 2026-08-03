@@ -23,7 +23,7 @@ export function RetrievalPanel({
 
   return (
     <div className={cn("space-y-2", className)}>
-      <div className="flex flex-wrap items-center gap-1.5 font-mono text-[9px] tracking-wider text-muted-foreground/55">
+      <div className="flex flex-wrap items-center gap-1.5 font-mono text-label tracking-wider text-muted-foreground/55">
         <TraceChip
           label="RETRIEVER"
           value={retrieval.retriever}
@@ -57,7 +57,7 @@ export function RetrievalPanel({
               key={`${fragment.rank}-${fragment.memoryItemId}`}
               className="border border-border/60 bg-background/25 px-2.5 py-2"
             >
-              <div className="flex flex-wrap items-center gap-2 font-mono text-[9px] tracking-wider text-muted-foreground/55">
+              <div className="flex flex-wrap items-center gap-2 font-mono text-label tracking-wider text-muted-foreground/55">
                 <span className="text-emerald-400/70">#{fragment.rank}</span>
                 <span>item:{fragment.memoryItemId}</span>
                 {fragment.category && (
@@ -76,13 +76,13 @@ export function RetrievalPanel({
           ))}
         </div>
       ) : (
-        <div className="border border-border/60 bg-background/25 px-2.5 py-2 font-mono text-[10px] text-muted-foreground/45 tracking-wider">
+        <div className="border border-border/60 bg-background/25 px-2.5 py-2 font-mono text-caption text-muted-foreground/45 tracking-wider">
           No context fragments returned.
         </div>
       )}
 
       {hiddenCount > 0 && (
-        <div className="font-mono text-[9px] tracking-wider text-muted-foreground/35">
+        <div className="font-mono text-label tracking-wider text-muted-foreground/35">
           +{hiddenCount} more fragment{hiddenCount === 1 ? "" : "s"}
         </div>
       )}

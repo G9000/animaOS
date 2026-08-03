@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { QuickCaptureNode } from "./node-types";
+import { cn, glassPanel } from "@anima/standard-templates";
 
 type SaveState = "idle" | "saving" | "saved";
 
@@ -35,20 +36,20 @@ export function QuickCaptureNode({ data }: NodeProps<QuickCaptureNode>) {
 
       <button
         onClick={onClose}
-        className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-foreground/[0.07] font-mono text-[8px] text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover:opacity-100 transition-all duration-200 backdrop-blur-sm"
+        className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-hairline-faint font-mono text-micro text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover:opacity-100 transition-all duration-200 backdrop-blur-sm"
         aria-label="Close capture"
       >
         ×
       </button>
 
-      <div className="overflow-hidden rounded-xl bg-background/25 backdrop-blur-[36px] border border-foreground/[0.08] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col">
+      <div className={cn(glassPanel, "overflow-hidden flex flex-col")}>
 
         {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-3.5 h-9 border-b border-foreground/[0.06]">
-          <span className="font-mono text-[8px] tracking-[0.3em] uppercase text-foreground/30">
+        <div className="shrink-0 flex items-center justify-between px-3.5 h-9 border-b border-hairline-faint">
+          <span className="font-mono text-micro tracking-caps-5 uppercase text-foreground/30">
             Capture
           </span>
-          <span className="font-mono text-[7px] tracking-wider text-foreground/15">
+          <span className="font-mono text-nano tracking-wider text-foreground/15">
             ⌘↵ to save
           </span>
         </div>
@@ -60,11 +61,11 @@ export function QuickCaptureNode({ data }: NodeProps<QuickCaptureNode>) {
           onKeyDown={handleKeyDown}
           placeholder="capture a thought…"
           rows={5}
-          className="bg-transparent px-3.5 py-3 font-mono text-[10px] tracking-wide text-foreground/65 placeholder:text-foreground/18 focus:outline-none resize-none leading-relaxed nowheel"
+          className="bg-transparent px-3.5 py-3 font-mono text-caption tracking-wide text-foreground/65 placeholder:text-foreground/18 focus:outline-none resize-none leading-relaxed nowheel"
         />
 
         {/* Footer */}
-        <div className="shrink-0 px-3.5 h-8 border-t border-foreground/[0.05] flex items-center justify-end gap-3">
+        <div className="shrink-0 px-3.5 h-8 border-t border-hairline-faint flex items-center justify-end gap-3">
           {saveState === "saved" ? (
             <span className="font-mono text-[7.5px] tracking-wider text-accent/70">
               saved ✓
@@ -82,7 +83,7 @@ export function QuickCaptureNode({ data }: NodeProps<QuickCaptureNode>) {
               <button
                 onClick={() => void handleSave()}
                 disabled={!text.trim() || saveState === "saving"}
-                className="font-mono text-[7.5px] tracking-[0.2em] uppercase text-foreground/30 hover:text-foreground/70 disabled:opacity-20 disabled:cursor-default transition-colors"
+                className="font-mono text-[7.5px] tracking-caps-4 uppercase text-foreground/30 hover:text-foreground/70 disabled:opacity-20 disabled:cursor-default transition-colors"
               >
                 {saveState === "saving" ? "…" : "save →"}
               </button>

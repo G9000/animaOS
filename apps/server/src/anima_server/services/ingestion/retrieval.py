@@ -337,7 +337,10 @@ def _concept_hits(
         _reciprocal_rank_fusion(dense_ranked, lexical_ranked) if lexical_ranked else dense_ranked
     )
     hits: list[KnowledgeConceptHit] = []
-    for concept_id, _fused_score in fused[:limit]:
+    # Filter before truncating, as in `_span_hits`.
+    for concept_id, _fused_score in fused:
+        if len(hits) >= limit:
+            break
         concept = concepts_by_id.get(concept_id)
         if concept is None:
             continue
@@ -391,6 +394,11 @@ def _span_hits(
                 RuntimeSourceSpan.user_id == user_id,
                 RuntimeSource.user_id == user_id,
                 RuntimeEmbedding.user_id == user_id,
+                # Must mirror the lexical corpus above: nothing in the pipeline
+                # embeds a section span, but `upsert_source_span_embedding` has
+                # no guard of its own, and a dense-only row that the lexical
+                # corpus lacks would consume a result slot and then be dropped.
+                RuntimeSourceSpan.span_kind != "section",
             )
         ).all()
     )
@@ -424,7 +432,11 @@ def _span_hits(
         _reciprocal_rank_fusion(dense_ranked, lexical_ranked) if lexical_ranked else dense_ranked
     )
     hits: list[KnowledgeEvidenceSpanHit] = []
-    for span_id, _fused_score in fused[:limit]:
+    # Filter before truncating: a ranked id the corpus no longer covers must
+    # not consume one of the `limit` slots.
+    for span_id, _fused_score in fused:
+        if len(hits) >= limit:
+            break
         pair = spans_by_id.get(span_id)
         if pair is None:
             continue

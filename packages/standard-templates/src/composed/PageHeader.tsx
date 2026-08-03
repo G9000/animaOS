@@ -13,7 +13,7 @@ export function PageHeader({ title, meta, actions, className }: PageHeaderProps)
     <div className={cn("px-5 py-3 border-b-2 border-border bg-card/40", className)}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] text-muted-foreground tracking-[0.22em] uppercase">
+          <span className="font-mono text-caption text-muted-foreground tracking-caps-4 uppercase">
             {title}
           </span>
           {meta && (

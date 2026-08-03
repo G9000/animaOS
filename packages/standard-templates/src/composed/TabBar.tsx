@@ -21,7 +21,7 @@ export function TabBar({ tabs, active, onSelect, className }: TabBarProps) {
           key={t.key}
           onClick={() => onSelect(t.key)}
           className={cn(
-            "font-mono text-[9px] px-3 py-2 tracking-[0.18em] uppercase transition-all rounded-none border",
+            "font-mono text-label px-3 py-2 tracking-caps-3 uppercase transition-all rounded-none border",
             active === t.key
               ? "bg-primary text-primary-foreground border-primary "
               : "bg-transparent text-muted-foreground border-transparent hover:text-foreground hover:bg-secondary",
@@ -30,7 +30,7 @@ export function TabBar({ tabs, active, onSelect, className }: TabBarProps) {
           {t.label}
           {t.count !== undefined && (
             <span className={cn(
-              "ml-1.5 text-[8px]",
+              "ml-1.5 text-micro",
               active === t.key ? "text-primary-foreground/60" : "text-muted-foreground/40"
             )}>
               {t.count}

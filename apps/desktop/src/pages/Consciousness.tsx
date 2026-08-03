@@ -240,24 +240,24 @@ export default function Consciousness() {
   const isEditable = tab !== "emotions" && tab !== "growth_log";
 
   return (
-    <div className="flex flex-col h-full pt-16">
+    <div className="flex flex-col h-full pt-hud">
       {/* Header */}
       <div className="px-5 py-2.5 border-b border-border bg-card/40">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
+            <span className="font-mono text-caption text-muted-foreground tracking-wider">
               MIND
             </span>
             {selfModel && (
               <>
                 <div className="w-px h-3 bg-border" />
-                <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+                <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
                   {Object.keys(selfModel.sections).length} SECTIONS
                 </span>
                 {totalPendingOps > 0 && (
                   <>
                     <div className="w-px h-3 bg-border" />
-                    <span className="font-mono text-[9px] text-primary/70 tracking-wider">
+                    <span className="font-mono text-label text-primary/70 tracking-wider">
                       {totalPendingOps} PENDING
                     </span>
                   </>
@@ -267,21 +267,21 @@ export default function Consciousness() {
           </div>
           <div className="flex items-center gap-3">
             {actionMessage && (
-              <span className="font-mono text-[9px] text-muted-foreground/60 tracking-wider">
+              <span className="font-mono text-label text-muted-foreground/60 tracking-wider">
                 {actionMessage}
               </span>
             )}
             <button
               onClick={handleReflect}
               disabled={reflecting || sleeping}
-              className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
+              className="font-mono text-label text-muted-foreground/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
             >
               {reflecting ? "REFLECTING..." : "REFLECT"}
             </button>
             <button
               onClick={handleSleep}
               disabled={sleeping || reflecting}
-              className="font-mono text-[9px] text-muted-foreground/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
+              className="font-mono text-label text-muted-foreground/40 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
             >
               {sleeping ? "RUNNING..." : "SLEEP"}
             </button>
@@ -289,18 +289,18 @@ export default function Consciousness() {
               <button
                 onClick={handleConsolidatePendingOps}
                 disabled={consolidating || reflecting || sleeping}
-                className="font-mono text-[9px] text-primary/70 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
+                className="font-mono text-label text-primary/70 hover:text-primary tracking-wider transition-colors disabled:opacity-20"
               >
                 {consolidating ? "CONSOLIDATING..." : "CONSOLIDATE"}
               </button>
             )}
             {saved && (
-              <span className="font-mono text-[9px] text-primary tracking-wider">
+              <span className="font-mono text-label text-primary tracking-wider">
                 SAVED
               </span>
             )}
             {error && (
-              <span className="font-mono text-[9px] text-destructive tracking-wider">
+              <span className="font-mono text-label text-destructive tracking-wider">
                 {error}
               </span>
             )}
@@ -308,14 +308,14 @@ export default function Consciousness() {
               <>
                 <button
                   onClick={cancelEdit}
-                  className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground tracking-wider transition-colors"
+                  className="font-mono text-label text-muted-foreground/40 hover:text-foreground tracking-wider transition-colors"
                 >
                   CANCEL
                 </button>
                 <button
                   onClick={handleSave}
                   disabled={saving}
-                  className="font-mono px-3 py-1 text-[9px] tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] disabled:opacity-20 transition-colors"
+                  className="font-mono px-3 py-1 text-label tracking-wider bg-primary/[0.08] text-primary border border-primary/30 hover:bg-primary/[0.12] disabled:opacity-20 transition-colors"
                 >
                   {saving ? "SAVING..." : "SAVE"}
                 </button>
@@ -324,7 +324,7 @@ export default function Consciousness() {
             {!editing && isEditable && currentSection && (
               <button
                 onClick={startEdit}
-                className="font-mono text-[9px] text-muted-foreground/40 hover:text-foreground tracking-wider transition-colors"
+                className="font-mono text-label text-muted-foreground/40 hover:text-foreground tracking-wider transition-colors"
               >
                 EDIT
               </button>
@@ -345,7 +345,7 @@ export default function Consciousness() {
                 setTab(t.key);
                 setEditing(false);
               }}
-              className={`font-mono text-[9px] px-2.5 py-1.5 tracking-wider transition-colors ${
+              className={`font-mono text-label px-2.5 py-1.5 tracking-wider transition-colors ${
                 tab === t.key
                   ? "bg-primary/[0.08] text-primary border-b-2 border-primary"
                   : "text-muted-foreground/40 hover:text-muted-foreground"
@@ -353,7 +353,7 @@ export default function Consciousness() {
             >
               <span>{t.label}</span>
               {pendingCount > 0 && (
-                <span className="ml-1.5 text-[8px] text-primary/70">
+                <span className="ml-1.5 text-micro text-primary/70">
                   {pendingCount}
                 </span>
               )}
@@ -364,24 +364,24 @@ export default function Consciousness() {
 
       {/* Description */}
       <div className="px-5 py-2 border-b border-border/50">
-        <p className="font-mono text-[10px] text-muted-foreground/40 leading-relaxed max-w-lg tracking-wider">
+        <p className="font-mono text-caption text-muted-foreground/40 leading-relaxed max-w-lg tracking-wider">
           {SECTION_DESCRIPTIONS[tab]}
         </p>
         {currentPendingOps.length > 0 && (
-          <p className="font-mono text-[8px] text-primary/70 mt-1 tracking-wider">
+          <p className="font-mono text-micro text-primary/70 mt-1 tracking-wider">
             {currentPendingOps.length} PENDING UPDATE
             {currentPendingOps.length === 1 ? "" : "S"} QUEUED FOR{" "}
             {tab.replace("_", " ").toUpperCase()}.
           </p>
         )}
         {hasPendingConflict && (
-          <p className="font-mono text-[8px] text-destructive/80 mt-1 tracking-wider">
+          <p className="font-mono text-micro text-destructive/80 mt-1 tracking-wider">
             MANUAL EDITS WRITE DIRECTLY TO SOUL MEMORY. THESE QUEUED UPDATES MAY
             STILL APPLY AFTERWARD. CONSOLIDATE FIRST IF YOU WANT A CLEAN BASE.
           </p>
         )}
         {editing && (
-          <p className="font-mono text-[8px] text-muted-foreground/20 mt-0.5 tracking-wider">
+          <p className="font-mono text-micro text-muted-foreground/20 mt-0.5 tracking-wider">
             CMD+S SAVE | ESC CANCEL
           </p>
         )}
@@ -391,7 +391,7 @@ export default function Consciousness() {
       <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
         {loading && (
           <div className="flex items-center justify-center h-full">
-            <span className="font-mono text-[10px] text-muted-foreground/30 animate-pulse tracking-wider">
+            <span className="font-mono text-caption text-muted-foreground/30 animate-pulse tracking-wider">
               LOADING...
             </span>
           </div>
@@ -411,14 +411,14 @@ export default function Consciousness() {
             {hasPendingConflict && (
               <div className="border border-destructive/20 bg-destructive/[0.05] px-4 py-3">
                 <div className="flex items-center justify-between gap-4">
-                  <p className="font-mono text-[9px] text-destructive/85 tracking-wider leading-relaxed">
+                  <p className="font-mono text-label text-destructive/85 tracking-wider leading-relaxed">
                     PENDING CORE-MEMORY UPDATES EXIST FOR THIS BLOCK. IF YOU
                     SAVE NOW, THE QUEUED WRITES CAN STILL LAND LATER.
                   </p>
                   <button
                     onClick={handleConsolidatePendingOps}
                     disabled={consolidating}
-                    className="shrink-0 font-mono text-[8px] text-destructive/85 hover:text-destructive tracking-wider transition-colors disabled:opacity-30"
+                    className="shrink-0 font-mono text-micro text-destructive/85 hover:text-destructive tracking-wider transition-colors disabled:opacity-30"
                   >
                     {consolidating ? "CONSOLIDATING..." : "CONSOLIDATE NOW"}
                   </button>
@@ -444,7 +444,7 @@ export default function Consciousness() {
       {/* Footer */}
       {currentSection && !editing && (
         <div className="px-5 py-2 border-t border-border flex items-center gap-4">
-          <span className="font-mono text-[8px] text-muted-foreground/20 tracking-wider">
+          <span className="font-mono text-micro text-muted-foreground/20 tracking-wider">
             V{currentSection.version} |{" "}
             {currentSection.updatedBy?.toUpperCase()}
             {currentSection.updatedAt &&
@@ -459,7 +459,7 @@ export default function Consciousness() {
 function SectionView({ section }: { section: SelfModelSection | null }) {
   if (!section || !section.content.trim()) {
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+      <div className="font-mono text-caption text-muted-foreground/40 tracking-wider">
         NO CONTENT YET. POPULATED AS ANIMA LEARNS FROM CONVERSATIONS.
       </div>
     );
@@ -489,7 +489,7 @@ function PendingOpsView({ ops }: { ops: PendingMemoryOpData[] }) {
   return (
     <div className="max-w-2xl mb-4 border border-primary/20 bg-primary/[0.04]">
       <div className="px-4 py-2 border-b border-primary/15">
-        <span className="font-mono text-[9px] text-primary/75 tracking-wider">
+        <span className="font-mono text-label text-primary/75 tracking-wider">
           PENDING CONSOLIDATION
         </span>
       </div>
@@ -497,20 +497,20 @@ function PendingOpsView({ ops }: { ops: PendingMemoryOpData[] }) {
         {ops.map((op) => (
           <div key={op.id} className="px-4 py-3">
             <div className="flex items-center gap-3">
-              <span className="font-mono text-[8px] text-primary/70 tracking-wider">
+              <span className="font-mono text-micro text-primary/70 tracking-wider">
                 {op.opType.replace("_", " ").toUpperCase()}
               </span>
-              <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+              <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                 {op.targetBlock.toUpperCase()}
               </span>
               {op.createdAt && (
-                <span className="font-mono text-[8px] text-muted-foreground/20 tracking-wider">
+                <span className="font-mono text-micro text-muted-foreground/20 tracking-wider">
                   {new Date(op.createdAt).toLocaleString()}
                 </span>
               )}
             </div>
             {op.oldContent && op.opType === "replace" && (
-              <p className="font-mono text-[9px] text-muted-foreground/35 mt-2 tracking-wider">
+              <p className="font-mono text-label text-muted-foreground/35 mt-2 tracking-wider">
                 REPLACES: {op.oldContent}
               </p>
             )}
@@ -527,7 +527,7 @@ function PendingOpsView({ ops }: { ops: PendingMemoryOpData[] }) {
 function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
   if (!emotions) {
     return (
-      <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+      <div className="font-mono text-caption text-muted-foreground/40 tracking-wider">
         NO EMOTIONAL DATA AVAILABLE.
       </div>
     );
@@ -538,7 +538,7 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Dominant emotion */}
       {emotions.dominantEmotion && (
         <div className="bg-card border-l-2 border-primary/30 px-4 py-3">
-          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+          <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
             DOMINANT
           </span>
           <p className="text-lg text-foreground mt-1 capitalize">
@@ -550,7 +550,7 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Synthesized context */}
       {emotions.synthesizedContext && (
         <div>
-          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+          <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
             CONTEXT
           </span>
           <p className="text-sm text-foreground/70 leading-relaxed mt-1">
@@ -562,7 +562,7 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       {/* Recent signals */}
       {emotions.recentSignals.length > 0 && (
         <div>
-          <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">
+          <span className="font-mono text-label text-muted-foreground/40 tracking-wider">
             SIGNALS
           </span>
           <div className="mt-2 space-y-px">
@@ -587,22 +587,22 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
                       />
                     ))}
                   </div>
-                  <span className="font-mono text-[8px] text-muted-foreground/30 tracking-wider">
+                  <span className="font-mono text-micro text-muted-foreground/30 tracking-wider">
                     {signal.trajectory?.toUpperCase()}
                   </span>
                 </div>
                 {signal.topic && (
-                  <p className="font-mono text-[10px] text-muted-foreground/40 mt-1">
+                  <p className="font-mono text-caption text-muted-foreground/40 mt-1">
                     re: {signal.topic}
                   </p>
                 )}
                 {signal.evidence && (
-                  <p className="text-[11px] text-muted-foreground/30 mt-0.5 italic">
+                  <p className="text-detail text-muted-foreground/30 mt-0.5 italic">
                     "{signal.evidence}"
                   </p>
                 )}
                 {signal.createdAt && (
-                  <span className="font-mono text-[8px] text-muted-foreground/20 mt-1 block tracking-wider">
+                  <span className="font-mono text-micro text-muted-foreground/20 mt-1 block tracking-wider">
                     {new Date(signal.createdAt).toLocaleString()}
                   </span>
                 )}
@@ -613,7 +613,7 @@ function EmotionsView({ emotions }: { emotions: EmotionalContextData | null }) {
       )}
 
       {emotions.recentSignals.length === 0 && !emotions.dominantEmotion && (
-        <div className="font-mono text-[10px] text-muted-foreground/40 tracking-wider">
+        <div className="font-mono text-caption text-muted-foreground/40 tracking-wider">
           NO SIGNALS DETECTED. EMERGE FROM CONVERSATIONS.
         </div>
       )}

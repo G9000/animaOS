@@ -51,7 +51,7 @@ export default function Profile() {
   }
 
   return (
-    <div className="h-full overflow-y-auto pt-16">
+    <div className="h-full overflow-y-auto pt-hud">
       <div className="max-w-[520px] mx-auto px-8 py-8">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
@@ -179,7 +179,7 @@ function Field({
 }) {
   return (
     <div>
-      <label className="block text-[11px] text-muted-foreground mb-1.5 uppercase tracking-wider">
+      <label className="block text-detail text-muted-foreground mb-1.5 uppercase tracking-wider">
         {label}
       </label>
       {children}

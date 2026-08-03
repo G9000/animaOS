@@ -70,7 +70,7 @@ export function KeyboardShortcutsHelp() {
               >
                 <div>
                   <div className="text-sm">{shortcut.action}</div>
-                  <div className="text-[10px] text-muted-foreground/60">{shortcut.scope}</div>
+                  <div className="text-caption text-muted-foreground/60">{shortcut.scope}</div>
                 </div>
                 <kbd className="px-2 py-1 bg-input border border-border rounded text-xs font-mono">
                   {shortcut.key}
@@ -79,7 +79,7 @@ export function KeyboardShortcutsHelp() {
             ))}
           </div>
         </div>
-        <div className="px-4 py-3 bg-input border-t border-border text-[11px] text-muted-foreground/60">
+        <div className="px-4 py-3 bg-input border-t border-border text-detail text-muted-foreground/60">
           Press <kbd className="px-1 py-0.5 bg-card border border-border rounded">Ctrl</kbd> +{" "}
           <kbd className="px-1 py-0.5 bg-card border border-border rounded">?</kbd> to show this help
         </div>

@@ -100,7 +100,7 @@ export function CompactChatBubble({
     return (
       <div className={cn("flex justify-center", isGrouped ? "pt-1" : "pt-6", className)}>
         <div className="max-w-[80%] px-3 py-2 bg-background/25 backdrop-blur-[32px] shadow-[0_4px_20px_rgba(0,0,0,0.25)]">
-          <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/30 select-none block mb-1">
+          <span className="font-mono text-label tracking-caps-3 uppercase text-foreground/30 select-none block mb-1">
             System
           </span>
           {bubbleContent}
@@ -121,7 +121,7 @@ export function CompactChatBubble({
           {/* Header chip */}
           {!isGrouped && fullTimestamp && (
             <div className="inline-flex bg-background/20 backdrop-blur-[16px] px-2.5 py-1 mb-2">
-              <span className="font-mono text-[9px] text-foreground/30 select-none" title={fullTimestamp}>
+              <span className="font-mono text-label text-foreground/30 select-none" title={fullTimestamp}>
                 {timestamp}
               </span>
             </div>
@@ -178,7 +178,7 @@ export function CompactChatBubble({
       {/* Header — timestamp only */}
       {!isGrouped && fullTimestamp && (
         <div className="inline-flex bg-background/20 backdrop-blur-[16px] px-2.5 py-1 mb-2">
-          <span className="font-mono text-[9px] text-foreground/30 select-none" title={fullTimestamp}>
+          <span className="font-mono text-label text-foreground/30 select-none" title={fullTimestamp}>
             {timestamp}
           </span>
         </div>
@@ -196,7 +196,7 @@ export function CompactChatBubble({
           {showReasoningPanel && (
             <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-accent/35 shadow-[0_2px_12px_rgba(0,0,0,0.18)]">
               <div className="flex items-center justify-between mb-2">
-                <span className="font-mono text-[9px] text-accent/50 tracking-[0.15em] uppercase flex items-center gap-1.5">
+                <span className="font-mono text-label text-accent/50 tracking-caps-2 uppercase flex items-center gap-1.5">
                   <LightbulbIcon className="w-3 h-3" />
                   Reasoning
                 </span>
@@ -204,7 +204,7 @@ export function CompactChatBubble({
                   <XIcon className="w-3 h-3" />
                 </button>
               </div>
-              <div className="text-[11px] text-foreground/55 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+              <div className="text-detail text-foreground/55 leading-relaxed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
                 {message.reasoning}
               </div>
             </div>
@@ -213,7 +213,7 @@ export function CompactChatBubble({
           {showRetrievalPanel && retrieval && (
             <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-emerald-400/40 shadow-[0_2px_12px_rgba(0,0,0,0.18)]">
               <div className="flex items-center justify-between mb-1.5">
-                <span className="font-mono text-[9px] text-emerald-400/55 tracking-[0.15em] uppercase flex items-center gap-1.5">
+                <span className="font-mono text-label text-emerald-400/55 tracking-caps-2 uppercase flex items-center gap-1.5">
                   <LightbulbIcon className="w-3 h-3" />
                   Memory
                 </span>
@@ -260,7 +260,7 @@ export function CompactChatBubble({
         </div>
         <CompactTokenUsage events={message.traceEvents} />
         {hasRetrieval && retrieval && (
-          <span className="font-mono text-[8px] text-emerald-400/40 ml-1">
+          <span className="font-mono text-micro text-emerald-400/40 ml-1">
             · mem {formatRetrievalSummary(retrieval)}
           </span>
         )}
@@ -273,7 +273,7 @@ export function CompactChatBubble({
 
 function TranslatingIndicator() {
   return (
-    <div className="pl-3 pr-3 py-2 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-accent/30 shadow-[0_2px_12px_rgba(0,0,0,0.15)] font-mono text-[9px] text-foreground/35 tracking-[0.15em] uppercase flex items-center gap-2">
+    <div className="pl-3 pr-3 py-2 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-accent/30 shadow-[0_2px_12px_rgba(0,0,0,0.15)] font-mono text-label text-foreground/35 tracking-caps-2 uppercase flex items-center gap-2">
       <span className="w-2.5 h-2.5 border border-accent/30 border-t-accent/70 animate-spin shrink-0" />
       Translating...
     </div>
@@ -284,7 +284,7 @@ function TranslationPanel({ translation, onClose }: { translation: string; onClo
   return (
     <div className="pl-3 pr-3 py-2.5 bg-background/[0.22] backdrop-blur-[28px] border-l-2 border-foreground/20 shadow-[0_2px_12px_rgba(0,0,0,0.15)]">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="font-mono text-[9px] text-foreground/35 tracking-[0.15em] uppercase">Translation</span>
+        <span className="font-mono text-label text-foreground/35 tracking-caps-2 uppercase">Translation</span>
         <button onClick={onClose} className="text-foreground/25 hover:text-foreground/60 transition-colors">
           <XIcon className="w-3 h-3" />
         </button>
@@ -308,7 +308,7 @@ function BarButton({ active, onClick, disabled, icon, label }: BarButtonProps) {
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex items-center gap-1 px-1.5 py-1 font-mono text-[9px] tracking-[0.1em] transition-all duration-150 disabled:opacity-30",
+        "flex items-center gap-1 px-1.5 py-1 font-mono text-label tracking-caps-1 transition-all duration-150 disabled:opacity-30",
         active ? "text-accent/80" : "text-foreground/30 hover:text-foreground/60",
       )}
     >
@@ -324,7 +324,7 @@ function CompactTokenUsage({ events }: { events?: TraceEvent[] }) {
   if (!usage) return null;
   const totalMs = timing?.reduce((sum, t) => sum + (t.stepDurationMs ?? 0), 0) ?? 0;
   return (
-    <div className="flex items-center gap-1 font-mono text-[8px] text-foreground/20 ml-1">
+    <div className="flex items-center gap-1 font-mono text-micro text-foreground/20 ml-1">
       <span>{(usage.totalTokens ?? 0).toLocaleString()} tkn</span>
       {(usage.cachedInputTokens ?? 0) > 0 && (
         <span className="text-emerald-500/35">· {usage.cachedInputTokens}c</span>

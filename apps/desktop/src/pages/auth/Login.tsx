@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
-import { Button, StandardInput } from "@anima/standard-templates";
+import { Button, StandardInput, glass } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
 
@@ -148,7 +148,7 @@ export default function Login() {
   return (
     <div className="h-screen w-screen text-foreground overflow-hidden relative">
       <Link
-        className="absolute right-6 top-6 z-20 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+        className="absolute right-6 top-6 z-20 font-mono text-caption uppercase tracking-caps-3 text-muted-foreground hover:text-foreground"
         to="/daemon"
       >
         daemon recovery
@@ -165,7 +165,7 @@ export default function Login() {
 
       {/* Bottom bar */}
       <div className="absolute bottom-0 left-0 right-0 z-10 px-8 pb-10 flex items-end justify-between">
-        <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+        <div className={glass}>
           <Button size="xs" variant="main" onClick={goBack}>← back</Button>
         </div>
 
@@ -184,7 +184,7 @@ export default function Login() {
 
 
         {!recovering ? (
-          <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+          <div className={glass}>
             <Button size="xs" variant="main" onClick={() => { setRecovering(true); setError(""); setInput(""); }}>
               forgot password?
             </Button>

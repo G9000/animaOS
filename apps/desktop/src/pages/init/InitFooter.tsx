@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTheme } from "../../hooks/useTheme";
-import { Button } from "@anima/standard-templates";
+import { Button, glass } from "@anima/standard-templates";
 import pkg from "../../../package.json";
 
 interface InitFooterProps {
@@ -41,7 +41,7 @@ export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
         <span className="text-label font-mono text-accent tracking-widest uppercase">
           v{pkg.version}
         </span>
-        <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+        <div className={glass}>
           <Button
             size="xs"
             variant="main"
@@ -53,7 +53,7 @@ export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
       </div>
 
       <div className="flex flex-col items-center gap-1.5">
-        <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+        <div className={glass}>
           <Button
             size="xl"
             variant="main"
@@ -74,7 +74,7 @@ export function InitFooter({ hintVisible, onBegin }: InitFooterProps) {
         </span>
       </div>
 
-      <div className="bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]">
+      <div className={glass}>
         <Button
           size="xs"
           variant="main"

@@ -238,7 +238,7 @@ export function ThreadPreviewModal({ thread, onClose, onOpenFull }: Props) {
         </div>
 
         {/* NodeShell header */}
-        <div className="px-3.5 h-9 flex items-center bg-accent/10 border-b border-foreground/[0.06] shrink-0 overflow-hidden">
+        <div className="px-3.5 h-9 flex items-center bg-accent/10 border-b border-hairline-faint shrink-0 overflow-hidden">
           <div className="min-w-0 flex items-center gap-1.5">
             <ChatIcon size="sm" className="text-muted-foreground shrink-0" />
             <span className="font-mono font-semibold text-label uppercase text-foreground truncate">
@@ -286,7 +286,7 @@ export function ThreadPreviewModal({ thread, onClose, onOpenFull }: Props) {
               />
 
               {error && (
-                <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-[11px] tracking-wider">
+                <div className="mx-10 bg-card border-l-2 border-destructive px-4 py-3 font-mono text-destructive text-detail tracking-wider">
                   ERR: {error}
                 </div>
               )}
@@ -309,7 +309,7 @@ export function ThreadPreviewModal({ thread, onClose, onOpenFull }: Props) {
               />
               <div className="mt-2 h-4 flex items-center justify-center">
                 {streaming && (
-                  <span className="font-mono text-[8px] text-accent/50 tracking-[0.2em] uppercase animate-pulse">
+                  <span className="font-mono text-micro text-accent/50 tracking-caps-4 uppercase animate-pulse">
                     processing...
                   </span>
                 )}

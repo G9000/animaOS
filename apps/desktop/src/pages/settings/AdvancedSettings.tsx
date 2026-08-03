@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { getDbViewerEnabled, setDbViewerEnabled, getShowTrace, setShowTrace } from "../../lib/preferences";
+import { glass } from "@anima/standard-templates";
 
-const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
 
 export default function AdvancedSettings() {
   const [dbViewer, setDbViewer] = useState(getDbViewerEnabled);
@@ -9,7 +9,7 @@ export default function AdvancedSettings() {
 
   return (
     <div className={`${glass} p-6 space-y-5`}>
-      <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+      <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">
         Debug Tools
       </h2>
 
@@ -48,10 +48,10 @@ function ToggleRow({
   return (
     <label className="flex items-start justify-between gap-6 cursor-pointer group">
       <div className="space-y-1 min-w-0">
-        <p className="font-mono text-[11px] tracking-wide text-foreground/70 group-hover:text-foreground transition-colors">
+        <p className="font-mono text-detail tracking-wide text-foreground/70 group-hover:text-foreground transition-colors">
           {label}
         </p>
-        <p className="font-mono text-[10px] text-foreground/30 leading-relaxed tracking-wide">
+        <p className="font-mono text-caption text-foreground/30 leading-relaxed tracking-wide">
           {description}
         </p>
       </div>
@@ -61,7 +61,7 @@ function ToggleRow({
         onClick={() => onChange(!checked)}
         className={[
           "relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer border transition-all duration-200",
-          checked ? "border-accent/50 bg-accent/[0.12]" : "border-foreground/[0.1] bg-foreground/[0.04]",
+          checked ? "border-accent/50 bg-accent/[0.12]" : "border-hairline bg-foreground/[0.04]",
         ].join(" ")}
       >
         <span

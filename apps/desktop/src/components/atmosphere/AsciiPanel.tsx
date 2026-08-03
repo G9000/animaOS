@@ -17,7 +17,7 @@ function SliderRow({ label, value, min, max, step, display, onChange }: {
 }) {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="font-mono text-[8px] tracking-[0.14em] text-muted-foreground uppercase w-[5.5rem] shrink-0">
+      <span className="font-mono text-micro tracking-caps-2 text-muted-foreground uppercase w-[5.5rem] shrink-0">
         {label}
       </span>
       <input
@@ -31,7 +31,7 @@ function SliderRow({ label, value, min, max, step, display, onChange }: {
           "[&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer",
         )}
       />
-      <span className="font-mono text-[9px] text-accent w-8 text-right shrink-0 tabular-nums">
+      <span className="font-mono text-label text-accent w-8 text-right shrink-0 tabular-nums">
         {display}
       </span>
     </div>
@@ -43,7 +43,7 @@ function ToggleChip({ label, active, onClick }: { label: string; active: boolean
     <button
       onClick={onClick}
       className={cn(
-        "font-mono text-[8px] tracking-[0.14em] uppercase px-2.5 py-1 border transition-colors duration-150",
+        "font-mono text-micro tracking-caps-2 uppercase px-2.5 py-1 border transition-colors duration-150",
         active
           ? "border-accent text-accent bg-accent/10"
           : "border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground",
@@ -94,7 +94,7 @@ export function AsciiPanel({ className }: AsciiPanelProps) {
     <div className={cn("w-72 p-4 flex flex-col gap-3", className)}>
 
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[8px] tracking-[0.14em] text-muted-foreground uppercase shrink-0">
+        <span className="font-mono text-micro tracking-caps-2 text-muted-foreground uppercase shrink-0">
           Glyph Set
         </span>
         <div className="flex items-center gap-1.5">
@@ -103,7 +103,7 @@ export function AsciiPanel({ className }: AsciiPanelProps) {
             onChange={e => update({ glyphSet: e.target.value })}
             disabled={settings.randomizeGlyphs}
             className={cn(
-              "font-mono text-[9px] tracking-[0.1em] uppercase cursor-pointer",
+              "font-mono text-label tracking-caps-1 uppercase cursor-pointer",
               "bg-transparent border border-border text-accent px-2 py-1",
               "focus:outline-none focus:border-accent",
               "disabled:opacity-40 disabled:cursor-not-allowed",
@@ -128,14 +128,14 @@ export function AsciiPanel({ className }: AsciiPanelProps) {
         display={String(settings.brightness)}  onChange={v => update({ brightness: v })} />
 
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[8px] tracking-[0.14em] text-muted-foreground uppercase shrink-0">Density</span>
+        <span className="font-mono text-micro tracking-caps-2 text-muted-foreground uppercase shrink-0">Density</span>
         <div className="flex gap-1">
           {DENSITY.map(p => (
             <button
               key={p.label}
               onClick={() => update({ cols: p.cols })}
               className={cn(
-                "font-mono text-[8px] tracking-[0.14em] uppercase px-2.5 py-1 border transition-colors duration-150",
+                "font-mono text-micro tracking-caps-2 uppercase px-2.5 py-1 border transition-colors duration-150",
                 settings.cols === p.cols
                   ? "border-accent text-accent bg-accent/10"
                   : "border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground",
@@ -155,20 +155,20 @@ export function AsciiPanel({ className }: AsciiPanelProps) {
       <div className="h-px bg-border" />
 
       <div className="flex flex-col gap-1.5">
-        <span className="font-mono text-[8px] tracking-[0.14em] text-muted-foreground uppercase">Background</span>
+        <span className="font-mono text-micro tracking-caps-2 text-muted-foreground uppercase">Background</span>
         {srcOverride ? (
           <div className="flex items-center gap-2">
-            <span className="font-mono text-[8px] text-accent truncate flex-1 min-w-0" title={srcOverrideName}>
+            <span className="font-mono text-micro text-accent truncate flex-1 min-w-0" title={srcOverrideName}>
               {srcOverrideName ?? "custom file"}
             </span>
-            <button onClick={clearUpload} className="font-mono text-[8px] text-muted-foreground hover:text-destructive transition-colors shrink-0">
+            <button onClick={clearUpload} className="font-mono text-micro text-muted-foreground hover:text-destructive transition-colors shrink-0">
               ✕ reset
             </button>
           </div>
         ) : (
           <button
             onClick={() => fileRef.current?.click()}
-            className="font-mono text-[8px] tracking-[0.14em] uppercase px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground transition-colors text-left"
+            className="font-mono text-micro tracking-caps-2 uppercase px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground transition-colors text-left"
           >
             ↑ upload image or video
           </button>
@@ -178,7 +178,7 @@ export function AsciiPanel({ className }: AsciiPanelProps) {
 
       <button
         onClick={() => { clearUpload(); reset(); }}
-        className="font-mono text-[8px] tracking-[0.14em] uppercase text-muted-foreground/70 hover:text-muted-foreground transition-colors text-left pt-1"
+        className="font-mono text-micro tracking-caps-2 uppercase text-muted-foreground/70 hover:text-muted-foreground transition-colors text-left pt-1"
       >
         ↺ reset to defaults
       </button>

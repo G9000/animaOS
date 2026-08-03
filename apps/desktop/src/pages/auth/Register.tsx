@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { Button, StandardInput } from "@anima/standard-templates";
+import { Button, StandardInput, glass } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
 
@@ -19,7 +19,6 @@ const STEPS = [
   { key: "confirm",  label: "ready to begin?",          password: false },
 ] as const;
 
-const glass = "bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]";
 
 export default function Register() {
   const { isProvisioned, setUser } = useAuth();
@@ -138,7 +137,7 @@ export default function Register() {
         {isPersona ? (
           <div className={glass}>
             <div className="bg-accent px-2">
-              <p key={label} className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in">
+              <p key={label} className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase animate-fade-in">
                 {label}
               </p>
             </div>
@@ -157,7 +156,7 @@ export default function Register() {
         ) : isConfirm ? (
           <div className={glass}>
             <div className="bg-accent px-2">
-              <p key={label} className="font-mono text-ui font-semibold tracking-[0.25em] text-foreground uppercase animate-fade-in">
+              <p key={label} className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase animate-fade-in">
                 {label}
               </p>
             </div>

@@ -50,13 +50,13 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
 
         return (
           <div key={key}>
-            <label className="block font-mono text-[9px] tracking-wider text-muted-foreground/60 mb-1">
+            <label className="block font-mono text-label tracking-wider text-muted-foreground/60 mb-1">
               {field.label}
               {field.required && <span className="text-destructive ml-1">*</span>}
             </label>
 
             {field.description && (
-              <p className="font-mono text-[8px] text-muted-foreground/30 mb-1">{field.description}</p>
+              <p className="font-mono text-micro text-muted-foreground/30 mb-1">{field.description}</p>
             )}
 
             {field.type === "boolean" ? (
@@ -78,7 +78,7 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
                   <button
                     key={opt}
                     onClick={() => set(key, opt)}
-                    className={`font-mono text-[9px] px-2 py-1 border transition-colors ${
+                    className={`font-mono text-label px-2 py-1 border transition-colors ${
                       values[key] === opt
                         ? "border-primary text-primary"
                         : "border-border text-muted-foreground/40 hover:text-foreground"
@@ -94,21 +94,21 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
                 value={values[key] === "***" ? "" : String(values[key] ?? "")}
                 placeholder={values[key] === "***" ? "saved" : ""}
                 onChange={(e) => set(key, e.target.value)}
-                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
+                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-caption text-foreground focus:border-primary/50 outline-none"
               />
             ) : field.type === "number" ? (
               <input
                 type="number"
                 value={String(values[key] ?? field.default ?? "")}
                 onChange={(e) => set(key, Number(e.target.value))}
-                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
+                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-caption text-foreground focus:border-primary/50 outline-none"
               />
             ) : (
               <input
                 type="text"
                 value={String(values[key] ?? field.default ?? "")}
                 onChange={(e) => set(key, e.target.value)}
-                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/50 outline-none"
+                className="w-full bg-input border border-border px-2 py-1.5 font-mono text-caption text-foreground focus:border-primary/50 outline-none"
               />
             )}
           </div>
@@ -116,13 +116,13 @@ export default function ConfigForm({ schema, values: initialValues, onSave }: Co
       })}
 
       {error && (
-        <p className="font-mono text-[8px] text-destructive">{error}</p>
+        <p className="font-mono text-micro text-destructive">{error}</p>
       )}
 
       <button
         onClick={handleSave}
         disabled={saving}
-        className="font-mono text-[9px] tracking-wider text-primary border border-primary/30 px-4 py-1.5 hover:bg-primary/10 transition-colors disabled:opacity-40"
+        className="font-mono text-label tracking-wider text-primary border border-primary/30 px-4 py-1.5 hover:bg-primary/10 transition-colors disabled:opacity-40"
       >
         {saving ? "SAVING..." : "SAVE"}
       </button>

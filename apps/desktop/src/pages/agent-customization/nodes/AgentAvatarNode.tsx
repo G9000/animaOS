@@ -180,7 +180,7 @@ export function AgentAvatarNode({ data, id }: NodeProps<AvatarNode>) {
                 className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/av:opacity-100 transition-all duration-200"
                 style={{ background: "color-mix(in oklch, var(--background) 35%, transparent)" }}
               >
-                <span className="font-mono text-[8px] tracking-[0.18em] uppercase text-foreground/80">
+                <span className="font-mono text-micro tracking-caps-3 uppercase text-foreground/80">
                   {uploading ? "Uploading…" : "Change photo"}
                 </span>
               </div>
@@ -192,7 +192,7 @@ export function AgentAvatarNode({ data, id }: NodeProps<AvatarNode>) {
         {adjusting ? (
           <div className="px-3.5 py-3 space-y-2.5">
             <div className="flex items-center gap-2.5">
-              <span className="font-mono text-[9px] text-muted-foreground/40 select-none">−</span>
+              <span className="font-mono text-label text-muted-foreground/40 select-none">−</span>
               <input
                 type="range"
                 min={100}
@@ -203,9 +203,9 @@ export function AgentAvatarNode({ data, id }: NodeProps<AvatarNode>) {
                 className="nodrag flex-1 h-px"
                 style={{ accentColor: "var(--accent)" }}
               />
-              <span className="font-mono text-[9px] text-muted-foreground/40 select-none">+</span>
+              <span className="font-mono text-label text-muted-foreground/40 select-none">+</span>
             </div>
-            <p className="font-mono text-[8px] text-center text-muted-foreground/25 tracking-wide">
+            <p className="font-mono text-micro text-center text-muted-foreground/25 tracking-wide">
               drag to reposition
             </p>
           </div>

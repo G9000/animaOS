@@ -9,7 +9,7 @@ const STATUS_STYLES: Record<string, string> = {
 export default function StatusBadge({ status }: { status: string }) {
   const style = STATUS_STYLES[status] ?? STATUS_STYLES.stopped;
   return (
-    <span className={`font-mono text-[8px] tracking-widest uppercase ${style}`}>
+    <span className={`font-mono text-micro tracking-widest uppercase ${style}`}>
       {status}
     </span>
   );

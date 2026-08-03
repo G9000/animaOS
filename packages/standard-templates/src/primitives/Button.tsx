@@ -5,7 +5,7 @@ import { cn } from "../utils/cn";
 export const buttonVariants = cva(
   // Base — shared across all variants
   [
-    "group relative overflow-hidden font-mono tracking-[0.22em] uppercase cursor-pointer",
+    "group relative overflow-hidden font-mono tracking-caps-4 uppercase cursor-pointer",
     "inline-flex items-center justify-center gap-1.5",
     "border rounded-none transition-all duration-200",
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
@@ -31,9 +31,9 @@ export const buttonVariants = cva(
           "border-transparent bg-transparent text-foreground hover:text-accent-foreground before:absolute before:inset-0 before:bg-accent before:-translate-x-full hover:before:translate-x-0 before:transition-transform before:duration-300 before:ease-out",
       },
       size: {
-        xs: "text-[9px] px-3 py-1.5 gap-1",
-        sm: "text-[10px] px-4 py-2",
-        md: "text-[11px] px-5 py-2.5",
+        xs: "text-label px-3 py-1.5 gap-1",
+        sm: "text-caption px-4 py-2",
+        md: "text-detail px-5 py-2.5",
         lg: "text-xs px-6 py-3",
         xl: "text-sm px-7 py-3.5",
       },

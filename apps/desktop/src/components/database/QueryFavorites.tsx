@@ -115,11 +115,11 @@ export function QueryFavorites({ onSelectQuery, currentSql }: QueryFavoritesProp
                     >
                       <div className="text-sm font-medium truncate">{query.name}</div>
                       {query.description && (
-                        <div className="text-[10px] text-muted-foreground/70 truncate">
+                        <div className="text-caption text-muted-foreground/70 truncate">
                           {query.description}
                         </div>
                       )}
-                      <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground/50">
+                      <div className="flex items-center gap-2 mt-1 text-caption text-muted-foreground/50">
                         <span>{new Date(query.createdAt).toLocaleDateString()}</span>
                         {query.runCount > 0 && (
                           <span>• Run {query.runCount} times</span>

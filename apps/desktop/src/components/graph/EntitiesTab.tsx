@@ -26,13 +26,13 @@ export function EntitiesTab({
     <div className="space-y-4">
       {/* Filter */}
       <div className="flex items-center gap-2">
-        <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider">FILTER:</span>
+        <span className="font-mono text-label text-muted-foreground/40 tracking-wider">FILTER:</span>
         <div className="flex gap-px">
           {ENTITY_TYPES.map((t) => (
             <button
               key={t.key}
               onClick={() => onFilterChange(t.key)}
-              className={`px-2 py-1 font-mono text-[9px] tracking-wider transition-colors ${
+              className={`px-2 py-1 font-mono text-label tracking-wider transition-colors ${
                 entityFilter === t.key
                   ? "bg-primary/[0.08] text-primary"
                   : "bg-input text-muted-foreground/40 hover:text-muted-foreground"
@@ -46,7 +46,7 @@ export function EntitiesTab({
 
       {/* Entity List */}
       {loading ? (
-        <div className="font-mono text-[10px] text-muted-foreground/40 animate-pulse tracking-wider">
+        <div className="font-mono text-caption text-muted-foreground/40 animate-pulse tracking-wider">
           LOADING...
         </div>
       ) : (
@@ -59,12 +59,12 @@ export function EntitiesTab({
                 className="flex items-center justify-between px-3 py-2 bg-card border border-border hover:border-primary/30 transition-colors text-left"
               >
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-mono text-[11px] text-foreground truncate">{entity.name}</span>
-                  <span className="font-mono text-[8px] text-muted-foreground/40 tracking-wider shrink-0">
+                  <span className="font-mono text-detail text-foreground truncate">{entity.name}</span>
+                  <span className="font-mono text-micro text-muted-foreground/40 tracking-wider shrink-0">
                     {entity.type.toUpperCase()}
                   </span>
                 </div>
-                <span className="font-mono text-[9px] text-muted-foreground/30 shrink-0">
+                <span className="font-mono text-label text-muted-foreground/30 shrink-0">
                   {entity.mentions}M
                 </span>
               </button>
@@ -77,17 +77,17 @@ export function EntitiesTab({
               <button
                 onClick={() => onOffsetChange(Math.max(0, entityOffset - ENTITY_LIMIT))}
                 disabled={entityOffset === 0}
-                className="font-mono text-[9px] text-muted-foreground/40 hover:text-muted-foreground disabled:opacity-30 tracking-wider"
+                className="font-mono text-label text-muted-foreground/40 hover:text-muted-foreground disabled:opacity-30 tracking-wider"
               >
                 PREV
               </button>
-              <span className="font-mono text-[9px] text-muted-foreground/30">
+              <span className="font-mono text-label text-muted-foreground/30">
                 {entityOffset + 1}-{Math.min(entityOffset + ENTITY_LIMIT, entityTotal)} / {entityTotal}
               </span>
               <button
                 onClick={() => onOffsetChange(entityOffset + ENTITY_LIMIT)}
                 disabled={entityOffset + ENTITY_LIMIT >= entityTotal}
-                className="font-mono text-[9px] text-muted-foreground/40 hover:text-muted-foreground disabled:opacity-30 tracking-wider"
+                className="font-mono text-label text-muted-foreground/40 hover:text-muted-foreground disabled:opacity-30 tracking-wider"
               >
                 NEXT
               </button>

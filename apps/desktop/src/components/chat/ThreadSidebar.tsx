@@ -66,7 +66,7 @@ export function ThreadSidebar({
     : "bg-foreground/25";
 
   return (
-    <div className="w-64 flex-shrink-0 border-r border-foreground/[0.08] flex flex-col bg-background/25 backdrop-blur-[40px] shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)] pt-14">
+    <div className="w-64 flex-shrink-0 border-r border-hairline flex flex-col bg-background/25 backdrop-blur-[40px] shadow-[0_20px_50px_-12px_rgba(0,0,0,0.28)] pt-14">
 
       {/* Header */}
       <div className="flex items-center gap-1.5 px-3 pt-4 pb-3 flex-shrink-0">
@@ -77,7 +77,7 @@ export function ThreadSidebar({
         >
           <ChevronLeftIcon size="sm" />
         </button>
-        <span className="flex-1 font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/30 select-none text-center">
+        <span className="flex-1 font-mono text-label tracking-caps-4 uppercase text-foreground/30 select-none text-center">
           Chats
         </span>
         <button
@@ -93,8 +93,8 @@ export function ThreadSidebar({
       <div className="px-3 pb-3 flex-shrink-0">
         <div className={cn(
           "flex items-center gap-2 h-8 px-2.5 rounded-sm transition-colors",
-          "bg-foreground/[0.04] border border-foreground/[0.06]",
-          "focus-within:border-foreground/[0.14] focus-within:bg-foreground/[0.06]",
+          "bg-foreground/[0.04] border border-hairline-faint",
+          "focus-within:border-hairline-strong focus-within:bg-foreground/[0.06]",
         )}>
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none" className="text-foreground/25 shrink-0">
             <circle cx="4.5" cy="4.5" r="3.5" stroke="currentColor" strokeWidth="1.3" />
@@ -124,7 +124,7 @@ export function ThreadSidebar({
       {/* Thread list */}
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-px">
         {filteredThreads.length === 0 ? (
-          <div className="py-12 font-mono text-[9px] text-foreground/20 tracking-[0.2em] uppercase text-center">
+          <div className="py-12 font-mono text-label text-foreground/20 tracking-caps-4 uppercase text-center">
             {searchQuery ? "No match" : "No chats yet"}
           </div>
         ) : (
@@ -153,7 +153,7 @@ export function ThreadSidebar({
                   className="flex-1 text-left pl-4 pr-2 py-2.5 min-w-0"
                 >
                   <div className={cn(
-                    "text-[13px] truncate leading-snug",
+                    "text-ui truncate leading-snug",
                     isActive
                       ? "text-foreground font-medium"
                       : "text-foreground/55 group-hover/thread:text-foreground/90",
@@ -161,7 +161,7 @@ export function ThreadSidebar({
                     {formatThreadTitle(thread)}
                   </div>
                   {timeStr && (
-                    <div className="font-mono text-[9px] text-foreground/25 mt-0.5 tracking-wide">
+                    <div className="font-mono text-label text-foreground/25 mt-0.5 tracking-wide">
                       {timeStr}
                     </div>
                   )}
@@ -182,12 +182,12 @@ export function ThreadSidebar({
 
       {/* Context usage footer */}
       {contextStats && (
-        <div className="flex-shrink-0 border-t border-foreground/[0.06] px-3 py-2.5">
+        <div className="flex-shrink-0 border-t border-hairline-faint px-3 py-2.5">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="font-mono text-[8px] tracking-[0.2em] uppercase text-foreground/25 select-none">
+            <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/25 select-none">
               Context
             </span>
-            <span className="font-mono text-[8px] text-foreground/30 select-none">
+            <span className="font-mono text-micro text-foreground/30 select-none">
               {pct != null
                 ? `${pct}%`
                 : `${contextStats.usedTokens.toLocaleString()}t`}

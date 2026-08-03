@@ -186,7 +186,7 @@ export function Dashboard({
                 <span className="font-mono text-xs truncate">{table.name}</span>
                 {isBookmarked("table", table.name) && <Icons.BookmarkSolid />}
               </div>
-              <div className="text-[10px] text-muted-foreground">
+              <div className="text-caption text-muted-foreground">
                 {table.rowCount.toLocaleString()} rows
               </div>
             </button>
