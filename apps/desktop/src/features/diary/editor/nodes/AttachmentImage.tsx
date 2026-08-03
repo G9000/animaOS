@@ -80,6 +80,18 @@ interface DiaryImageStorage {
   // always reflects whether THIS node is mounted right now, not whether
   // it was mounted when the request went out.
   liveHandlers: Map<string, (outcome: UploadOutcome) => void>;
+  // Round 6 fix (P2): an in-flight guard keyed by `localId`, independent of
+  // any single effect invocation's lifetime. Round 5 removed the upload
+  // effect's `cancelled` flag (correctly — it discarded successful
+  // uploads), but left no guard at all against the effect body itself
+  // running twice for the same node (React Strict Mode's mount -> cleanup
+  // -> mount is the dev-time trigger, but any effect re-run for any reason
+  // is equally exposed). Marks "an upload has been started for this
+  // localId and hasn't resolved yet" so a second invocation can skip
+  // calling `uploadImage` again — see `claimUploadSlot` below. Cleared by
+  // `handleUploadResolution` on genuine completion (success OR failure) so
+  // a legitimate Retry can still re-upload.
+  uploadsInFlight: Set<string>;
 }
 
 export type UploadOutcome =
@@ -91,6 +103,21 @@ export type UploadOutcome =
 // no network — safe to test with a bare Map.
 export function isEditorAvailable(storage: DiaryImageStorage, localId: string): boolean {
   return storage.liveHandlers.has(localId);
+}
+
+// Round 6 fix (P2): the in-flight guard's decision, factored out pure and
+// unit-testable exactly like `isEditorAvailable` above — no React, no
+// network, safe to test with a bare Set. Returns true (and claims the
+// slot) the FIRST time it is asked about a given `localId`; every
+// subsequent call before that upload resolves returns false without
+// mutating anything. The caller (the upload effect below) uses this to
+// decide whether to actually call `uploadImage` — NOT whether to register
+// as an observer, which is handled unconditionally by the separate
+// mount-tracking effect regardless of this guard's answer.
+export function claimUploadSlot(storage: DiaryImageStorage, localId: string): boolean {
+  if (storage.uploadsInFlight.has(localId)) return false;
+  storage.uploadsInFlight.add(localId);
+  return true;
 }
 
 // The other half of the completion contract, also pure and unit-testable:
@@ -108,6 +135,11 @@ export function handleUploadResolution(
   uploadedId: number | null,
   onOrphaned: (attachmentId: number) => void,
 ): void {
+  // Round 6 fix: cleared on every genuine completion, success or failure
+  // alike, so a legitimate Retry (which flips uploadState back to
+  // "uploading" and re-runs the upload effect) is free to claim the slot
+  // again rather than being permanently blocked by this round's guard.
+  storage.uploadsInFlight.delete(localId);
   const handler = storage.liveHandlers.get(localId);
   if (uploadedId === null) {
     handler?.({ status: "error" });
@@ -190,6 +222,17 @@ function AttachmentImageView(props: NodeViewProps) {
       updateAttributes({ uploadState: "error" });
       return;
     }
+    // Round 6 fix (P2): guards against a second `uploadImage` call for this
+    // same `localId` when this effect's body runs more than once before the
+    // first call resolves (React Strict Mode's mount -> cleanup -> mount is
+    // the dev-time reproduction, but the gap was real regardless of cause —
+    // round 5 removed the old `cancelled` flag and left nothing in its
+    // place). The mount-tracking effect above still registers this
+    // instance's handler in `storage.liveHandlers` unconditionally, so
+    // whichever NodeView ends up mounted when the ONE in-flight upload
+    // resolves still receives the result via `handleUploadResolution` —
+    // this only suppresses the redundant network call, never the outcome.
+    if (!claimUploadSlot(storage, localId)) return;
     options
       .uploadImage(file)
       .then((uploadedId) => {
@@ -306,7 +349,7 @@ export const DiaryImage = Node.create<DiaryImageOptions, DiaryImageStorage>({
   },
 
   addStorage() {
-    return { pendingFiles: new Map(), liveHandlers: new Map() };
+    return { pendingFiles: new Map(), liveHandlers: new Map(), uploadsInFlight: new Set() };
   },
 
   addAttributes() {

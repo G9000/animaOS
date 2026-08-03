@@ -118,6 +118,15 @@ export function createSlashRenderer() {
     },
     onUpdate(props: SuggestionProps<SlashCommand>) {
       current = props;
+      // Round 6 fix (P2): once Escape has torn down `container`/`root`
+      // (below), stay torn down for the rest of THIS trigger session —
+      // `draw()`/`position()` already no-op when `root`/`container` are
+      // null, so simply not recreating them here is what keeps the menu
+      // from reappearing on the next keystroke while the user is still
+      // inside the same `/query`. A fresh trigger calls `onStart` again,
+      // which unconditionally recreates both, so a new `/` still opens the
+      // menu normally.
+      if (!root || !container) return;
       selectedIndex = Math.min(selectedIndex, Math.max(props.items.length - 1, 0));
       draw();
       position(props);
@@ -141,6 +150,20 @@ export function createSlashRenderer() {
         return true;
       }
       if (event.key === "Escape") {
+        // Round 6 fix (P2): Tiptap's suggestion plugin treats a `true`
+        // return as "handled the keystroke", not "close the menu" — the
+        // old code returned true here without tearing anything down, so
+        // the popup stayed visible. Tear down exactly as `onExit` does
+        // (unmount the React root, remove the DOM node, null both out) so
+        // it visually disappears immediately; `onUpdate` above then
+        // refuses to recreate them for the rest of this trigger session,
+        // and `onExit` itself (called later when the `/query` ends) is
+        // already null-safe against running again on an already-torn-down
+        // popup.
+        root?.unmount();
+        container?.remove();
+        root = null;
+        container = null;
         return true;
       }
       return false;

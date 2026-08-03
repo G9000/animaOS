@@ -209,16 +209,119 @@ describe("PR #139 round 5 (P1): inline-image upload completion must survive Node
   });
 });
 
+describe("PR #139 round 6 (P2): a second upload effect invocation for the same localId must not start a second upload", () => {
+  test("claimUploadSlot returns true exactly once per localId, until the guard is cleared", () => {
+    const storage: any = { pendingFiles: new Map(), liveHandlers: new Map(), uploadsInFlight: new Set() };
+    expect(AfterFix.claimUploadSlot(storage, "a")).toBe(true);
+    // A second (and third) invocation for the same localId before
+    // resolution must not re-claim the slot.
+    expect(AfterFix.claimUploadSlot(storage, "a")).toBe(false);
+    expect(AfterFix.claimUploadSlot(storage, "a")).toBe(false);
+    // A different localId is independent.
+    expect(AfterFix.claimUploadSlot(storage, "b")).toBe(true);
+    // Once cleared (genuine completion), the same localId can claim again —
+    // this is what makes Retry still work.
+    storage.uploadsInFlight.delete("a");
+    expect(AfterFix.claimUploadSlot(storage, "a")).toBe(true);
+  });
+
+  test("handleUploadResolution clears the in-flight guard on both success and failure, not just success", () => {
+    const successStorage: any = {
+      pendingFiles: new Map([["a", file("x.png")]]),
+      liveHandlers: new Map(),
+      uploadsInFlight: new Set(["a"]),
+    };
+    AfterFix.handleUploadResolution(successStorage, "a", 5, () => {});
+    expect(successStorage.uploadsInFlight.has("a")).toBe(false);
+
+    const failureStorage: any = {
+      pendingFiles: new Map([["a", file("x.png")]]),
+      liveHandlers: new Map(),
+      uploadsInFlight: new Set(["a"]),
+    };
+    AfterFix.handleUploadResolution(failureStorage, "a", null, () => {});
+    expect(failureStorage.uploadsInFlight.has("a")).toBe(false);
+  });
+
+  test("React Strict Mode's effect setup -> cleanup -> setup for a freshly inserted image starts exactly ONE upload, and the mounted NodeView still receives the result", async () => {
+    const upload = deferred<number | null>();
+    let uploadCalls = 0;
+    let editorRef: any;
+
+    const DiaryImageAfter = AfterFix.DiaryImage.configure({
+      entryId: 7,
+      uploadImage: () => {
+        uploadCalls += 1;
+        return upload.promise;
+      },
+    });
+
+    const handle = await mount(
+      React.createElement(
+        React.StrictMode,
+        null,
+        React.createElement(Harness, {
+          diaryImageExtension: DiaryImageAfter,
+          onReady: (ed: any) => {
+            editorRef = ed;
+          },
+        }),
+      ),
+    );
+
+    try {
+      await act(async () => {
+        editorRef.commands.insertAttachmentImage(file("photo.png"));
+      });
+
+      // Strict Mode ran the upload effect's setup -> cleanup -> setup for
+      // the newly mounted NodeView. Without the round 6 guard this fires
+      // uploadImage twice; with it, exactly once.
+      expect(uploadCalls).toBe(1);
+
+      upload.resolve(123);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const node = (() => {
+        let found: any = null;
+        editorRef.state.doc.descendants((n: any) => {
+          if (n.type.name === "diaryImage") {
+            found = n;
+            return false;
+          }
+          return true;
+        });
+        return found;
+      })();
+
+      // The observer requirement: the ONE upload that did fire still
+      // reaches whichever NodeView instance ends up mounted — the result
+      // is not silently dropped just because the effect guard suppressed
+      // the redundant call.
+      expect(node).not.toBeNull();
+      expect(node.attrs.attachmentId).toBe(123);
+      expect(node.attrs.uploadState).toBe("ready");
+    } finally {
+      await act(async () => {
+        handle.unmount();
+      });
+    }
+  });
+});
+
 describe("PR #139 round 5: isEditorAvailable / handleUploadResolution (pure, unit-testable)", () => {
   test("isEditorAvailable reflects whether a live handler is registered for that localId", () => {
-    const storage = { pendingFiles: new Map(), liveHandlers: new Map() } as any;
+    const storage = { pendingFiles: new Map(), liveHandlers: new Map(), uploadsInFlight: new Set() } as any;
     expect(AfterFix.isEditorAvailable(storage, "a")).toBe(false);
     storage.liveHandlers.set("a", () => {});
     expect(AfterFix.isEditorAvailable(storage, "a")).toBe(true);
   });
 
   test("handleUploadResolution forwards to the live handler and leaves pendingFiles for the caller when mounted", () => {
-    const storage = { pendingFiles: new Map([["a", file("x.png")]]), liveHandlers: new Map() } as any;
+    const storage = { pendingFiles: new Map([["a", file("x.png")]]), liveHandlers: new Map(), uploadsInFlight: new Set() } as any;
     const outcomes: any[] = [];
     storage.liveHandlers.set("a", (outcome: any) => outcomes.push(outcome));
     const orphaned: number[] = [];
@@ -231,7 +334,7 @@ describe("PR #139 round 5: isEditorAvailable / handleUploadResolution (pure, uni
   });
 
   test("handleUploadResolution cleans up pendingFiles and reports the orphan when not mounted", () => {
-    const storage = { pendingFiles: new Map([["a", file("x.png")]]), liveHandlers: new Map() } as any;
+    const storage = { pendingFiles: new Map([["a", file("x.png")]]), liveHandlers: new Map(), uploadsInFlight: new Set() } as any;
     const orphaned: number[] = [];
 
     AfterFix.handleUploadResolution(storage, "a", 5, (id: number) => orphaned.push(id));
@@ -241,7 +344,7 @@ describe("PR #139 round 5: isEditorAvailable / handleUploadResolution (pure, uni
   });
 
   test("handleUploadResolution on failure with no live handler does nothing (accepted limitation: a discarded FAILURE with no server-side trace, unlike a discarded success)", () => {
-    const storage = { pendingFiles: new Map([["a", file("x.png")]]), liveHandlers: new Map() } as any;
+    const storage = { pendingFiles: new Map([["a", file("x.png")]]), liveHandlers: new Map(), uploadsInFlight: new Set() } as any;
     const orphaned: number[] = [];
 
     AfterFix.handleUploadResolution(storage, "a", null, (id: number) => orphaned.push(id));

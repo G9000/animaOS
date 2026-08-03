@@ -19,6 +19,11 @@ import {
   snapshotBelongsToEntry,
 } from "./lib/pageLifecycle";
 import { dispatchDrawerUpdate } from "./lib/drawerUpdate";
+import {
+  drainOrphanUploadNotices,
+  queueOrphanUploadNotice,
+  subscribeOrphanUploadNotices,
+} from "./lib/orphanUploadNotices";
 import { isHtmlBody, escapeHtmlForEditor } from "./lib/textFormat";
 import { handleInstanceTornDown } from "./lib/editorHandoff";
 import { Glyph } from "./editor/glyphIcons";
@@ -373,19 +378,42 @@ export default function DiaryWorkspace() {
   // the attachment row against `entryId` (uploadInlineImage's own closure
   // addressed the upload there directly, independent of NodeView
   // lifetime), so there is nothing to redo — only to make visible.
-  // `reload(false)` is the same silent, no-loader refresh deleteEntry
-  // already uses; it re-fetches `entries` (attachments included) so the
-  // orphaned attachment shows up in that entry's details-drawer list
-  // without a full app restart. Never touches the editor, live or not.
-  const handleInlineUploadOrphaned = useCallback(
-    (_entryId: number, _attachmentId: number) => {
-      setError(
-        "An image finished uploading after you left the entry. It was saved as an attachment instead of appearing inline.",
-      );
-      void reload(false);
-    },
-    [setError, reload],
-  );
+  //
+  // Round 6 fix (P2, regression): this used to call `setError`/`reload`
+  // directly, which only reaches state owned by THIS DiaryWorkspace
+  // instance. That is fine when the user merely switched entries (the
+  // workspace is still mounted), but is silently lost when the user leaves
+  // `/journal` entirely before the upload resolves — this component (and
+  // its `setError`/`reload`) is already gone by then. Routing through
+  // `queueOrphanUploadNotice` instead means the notice always lands
+  // somewhere that outlives this specific mount (see
+  // lib/orphanUploadNotices.ts) — the drain-on-mount/subscribe effect
+  // below is what actually calls `setError`/`reload` for the currently
+  // live workspace, whether that's this exact mount (still around) or the
+  // next one (remounted after a route change).
+  const handleInlineUploadOrphaned = useCallback((entryId: number, attachmentId: number) => {
+    queueOrphanUploadNotice({ entryId, attachmentId });
+  }, []);
+
+  // Round 6 fix: surfaces orphan-upload notices queued via
+  // `queueOrphanUploadNotice` — both the ones queued before this workspace
+  // ever mounted (drained once, immediately below) and any queued while
+  // it's alive (via the subscription, so the "still in /journal, just
+  // switched entries" case keeps working exactly as round 5 left it).
+  // Draining is idempotent (see drainOrphanUploadNotices's doc comment), so
+  // resubscribing when `reload`'s identity changes (userId/entryLimit —
+  // see useDiaryEntries) never re-shows an already-shown notice.
+  useEffect(() => {
+    const showQueued = () => {
+      const message = drainOrphanUploadNotices();
+      if (message) {
+        setError(message);
+        void reload(false);
+      }
+    };
+    showQueued();
+    return subscribeOrphanUploadNotices(showQueued);
+  }, [setError, reload]);
 
   const {
     schedule,
